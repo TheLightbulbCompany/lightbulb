@@ -171,6 +171,8 @@ SCENARIOS: list[dict] = [
     {"name": "silence", "caller": "+15550109114", "silent": True, "max_s": 75,
      "expect": {"outcome": ["answered"], "agent_hangs_up": True,
                 "judge": ["Did the assistant check whether anyone was there when the line was silent?"]}},
+    {"name": "no_caller", "caller": "+15550109117", "absent": True, "max_s": 45,
+     "expect": {"agent_left_empty_room": True}},
     {"name": "hangup_early", "caller": "+15550109115", "hangup_at": 4, "max_s": 10,
      "persona": "You just listen.",
      "expect": {"outcome": ["answered"], "rows": 0, "max_duration": 30}},
@@ -294,6 +296,14 @@ async def run_scenario(sc: dict, lk: dict) -> dict:
     line, max_s = sc.get("line", OPEN), sc.get("max_s", 150)
     async with api.LiveKitAPI(lk["LIVEKIT_URL"], lk["LIVEKIT_API_KEY"], lk["LIVEKIT_API_SECRET"]) as lkapi:
         await lkapi.agent_dispatch.create_dispatch(api.CreateAgentDispatchRequest(agent_name=AGENT, room=room_name))
+        if sc.get("absent"):  # nobody ever joins: the agent should leave by itself
+            await asyncio.sleep(max_s)
+            ps = await lkapi.room.list_participants(api.ListParticipantsRequest(room=room_name))
+            await lkapi.room.delete_room(api.DeleteRoomRequest(room=room_name))
+            left = not any(p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_AGENT for p in ps.participants)
+            return {"name": sc["name"], "room": room_name, "record": {}, "agent_speech": [], "caller_turns": [],
+                    "heard": [], "said": [], "usage": dict.fromkeys(("in_audio", "in_text", "out_audio", "out_text"), 0),
+                    "interrupted_at": None, "hung_up_by": "agent" if left else "nobody", "wall_s": max_s}  # fmt: skip
     token = (
         api.AccessToken(lk["LIVEKIT_API_KEY"], lk["LIVEKIT_API_SECRET"])
         .with_identity(f"sip_{sc['caller']}")
@@ -398,7 +408,10 @@ async def run_scenario(sc: dict, lk: dict) -> dict:
         for w in watchers:
             w.cancel()
         async with api.LiveKitAPI(lk["LIVEKIT_URL"], lk["LIVEKIT_API_KEY"], lk["LIVEKIT_API_SECRET"]) as lkapi:
-            await lkapi.room.delete_room(api.DeleteRoomRequest(room=room_name))  # a late job finds no room
+            try:
+                await lkapi.room.delete_room(api.DeleteRoomRequest(room=room_name))  # a late job finds no room
+            except api.TwirpError:
+                pass  # the agent hung up and deleted it already
     record = {}
     for _ in range(60):  # the worker posts /end on its shutdown (about 25 s after the caller leaves)
         await asyncio.sleep(1)
@@ -504,6 +517,11 @@ def score(sc: dict, run: dict) -> dict:
     rows = [r for r in calendar(OWNERS[sc.get("line", OPEN)]) if r["sk"].startswith("VOICEBOOK#")]
     mine = [r for r in rows if r.get("phone") == sc["caller"]]
     said = [x["text"] for x in lines if x["who"] == "assistant"]
+    if exp.get("agent_left_empty_room"):
+        checks = {"agent left the empty room": run["hung_up_by"] == "agent"}
+        return {"name": sc["name"], "pass": all(checks.values()), "checks": checks, "timing": timing(run), "judge": {},
+                "outcome": None, "durationSec": None, "steps": [], "transcript": [], "heard": [], "said": [],
+                "usage": run["usage"], "room": run["room"], "hung_up_by": run["hung_up_by"]}  # fmt: skip
     checks = {
         "record_ended": rec.get("status") == "ended",
         "greeting is the first line, verbatim": bool(said) and norm(said[0]) == norm(GREETING),

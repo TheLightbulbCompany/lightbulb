@@ -3,7 +3,6 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import {
   DEFAULT_ADMIN_HOSTS,
-  PAPERCLIP_HOSTS as PAPERCLIP_HOST_LIST,
   ROOT_DOMAIN,
   SITE_URL,
 } from "@/lib/domain";
@@ -103,18 +102,6 @@ export function decidePaperclipLinkRedirect(
   return shellUrl ? { kind: "redirect", to: shellUrl } : null;
 }
 
-// Hostnames whose traffic is handled by the paperclip-proxy upstream
-// via a Next-level rewrite (next.config.ts `beforeFiles`). Middleware
-// must passthrough for these or it'll run Clerk auth on a non-Isol8
-// host (where there's no Clerk session) and redirect users away
-// before the rewrite gets a chance to proxy the request.
-//
-// IMPORTANT: this check has to run BEFORE clerkMiddleware wraps the
-// request — otherwise Clerk's own dev-browser handshake fires (returns
-// a 307 to clerk.accounts.dev/v1/client/handshake?...) regardless of
-// what our inner callback does. Wrapping clerkMiddleware from outside
-// is the only way to fully bypass it for these hosts.
-const PAPERCLIP_HOSTS = new Set(PAPERCLIP_HOST_LIST);
 
 export type CanonicalHostDecision = { kind: "redirect"; to: string } | null;
 
@@ -165,11 +152,6 @@ export default function middleware(req: NextRequest, evt: Parameters<typeof _cle
   if (canonicalHost) return NextResponse.redirect(canonicalHost.to, 308);
   // Recall's bot loads /meet-bot in a bare browser: public, and no Clerk handshake.
   if (req.nextUrl.pathname === "/meet-bot" || req.nextUrl.pathname.startsWith("/meet-bot/")) return NextResponse.next();
-  if (PAPERCLIP_HOSTS.has(host)) {
-    // Bypass clerkMiddleware entirely so Clerk's dev-browser handshake
-    // doesn't 307-redirect the request away from the beforeFiles rewrite.
-    return NextResponse.next();
-  }
   return _clerkMiddleware(req, evt);
 }
 

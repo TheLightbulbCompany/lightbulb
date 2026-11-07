@@ -38,7 +38,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/email.md` | Sending or reading mail: the team address, the inbox, verification codes, who can wake you, meetings (calendar invites), the three `send` forms, and the limits. |
 | `references/text.md` | A text arrives from a customer ("You received a text message." with a Reply-Key), replying to it, and the business's listed phone. |
 | `references/front-desk.md` | Serving a business's customers by text; building and running OpenCLI site adapters; payment links. |
-| `references/money.md` | The owner's **Money** tab, budgets, `request_purchase`, getting the company its own Stripe account, and what to do when a task needs a paid service the company does not have. |
+| `references/money.md` | The owner's **Money** tab, budgets, `request_purchase`, and what to do when a task needs a paid service the company does not have. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/software-projects.md` | Work in an existing git repository (clone, branch, fix, PR): connections to check, repo, keeping your workspace small, Vercel/AWS deploys, CI, PR review. |
 | `references/voice.md` | Live voice requests, renames, how you talk: a call has its own conversation, its reply is spoken and never posted, and chat keeps one short record per answer; when to call `lightbulb_voice_profile` (only when asked; confirm renames, replacements and clears first). |

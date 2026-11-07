@@ -351,18 +351,6 @@ async def list_workspace_sessions(
     return await local_sessions.list_workspace_sessions(auth, include_ended=include_ended)
 
 
-class SessionsRemoved(ContractModel):
-    removed: int
-
-
-@router.delete("/messaging/sessions", response_model=SessionsRemoved)
-async def remove_ended_local_sessions(ended: bool = Query(...), auth: AuthContext = Depends(get_current_user)):
-    """The caller takes every ended session of their own off the lists. Only `ended=true` exists."""
-    if not ended:
-        raise service.ApiProblem("INVALID_REQUEST", "Only ended sessions can be removed.")
-    return SessionsRemoved(removed=await local_sessions.remove_ended_sessions(auth))
-
-
 @router.delete("/messaging/sessions/{session_id}", status_code=204)
 async def remove_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
     """Owner-only: take one ended session off every list. 409 while it is live."""
@@ -797,12 +785,6 @@ async def get_link_preview(
     return preview
 
 
-@router.get("/messaging/feed", response_model=service.FeedResponse)
-async def get_feed(auth: AuthContext = Depends(get_current_user)):
-    """The workspace feed (Activity): ensured on first read, the caller seated; ``{roomId, topic}``."""
-    return await service.get_feed(auth)
-
-
 @router.get("/messaging/live-config", response_model=LiveConfig, response_model_exclude_none=True)
 async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
@@ -1003,16 +985,6 @@ async def update_room_message(
     room_id: str, message_id: str, request: UpdateMessageRequest, auth: AuthContext = Depends(get_current_user)
 ):
     return await service.update_message(auth, room_id, message_id, request)
-
-
-@router.put("/messaging/rooms/{room_id}/pins/{message_id}", response_model=RoomDetail)
-async def pin_room_message(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
-    return await service.set_pin(auth, room_id, message_id, True)
-
-
-@router.delete("/messaging/rooms/{room_id}/pins/{message_id}", response_model=RoomDetail)
-async def unpin_room_message(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
-    return await service.set_pin(auth, room_id, message_id, False)
 
 
 @router.get("/messaging/rooms/{room_id}/memory", response_model=RoomMemoryResponse)

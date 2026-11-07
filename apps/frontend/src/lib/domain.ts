@@ -2,8 +2,8 @@
  * The one place the product's domain is written down.
  *
  * Everything host-shaped in the web app derives from here: canonical URLs and
- * JSON-LD, the admin + paperclip host allowlists (`src/middleware.ts`), the
- * company-host rewrites and CSP own-origins (`next.config.ts`), and the
+ * JSON-LD, the admin host allowlist (`src/middleware.ts`), the
+ * CSP own-origins (`next.config.ts`), and the
  * desktop-updater host echo. Moving domains is an edit to this file — or to
  * `NEXT_PUBLIC_APP_URL` — not a grep.
  *
@@ -73,12 +73,6 @@ export const DEFAULT_ADMIN_HOSTS = [
   ...PRODUCT_DOMAINS.flatMap((d) => [`admin.${d}`, `admin.dev.${d}`]),
   "admin.localhost:3000",
 ];
-
-/** Hosts proxied wholesale to the per-tenant Paperclip BFF. */
-export const PAPERCLIP_HOSTS = PRODUCT_DOMAINS.flatMap((d) => [
-  `company.${d}`,
-  `dev.company.${d}`,
-]);
 
 /**
  * The retired product domain, still attached to this Vercel project. Every

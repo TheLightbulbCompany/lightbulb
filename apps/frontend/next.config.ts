@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
-import { LAUNCH_HOSTS, PRODUCT_DOMAINS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
+import { LAUNCH_HOSTS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
 import { AWS_REGION } from "./src/lib/aws";
 
 const ENGINE_INSTALLER = "https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh";
@@ -252,13 +252,6 @@ const nextConfig: NextConfig = {
   // endpoint is reached without a 307.
   skipTrailingSlashRedirect: true,
   async rewrites() {
-    // beforeFiles runs ahead of Next.js routing — required for the
-    // company.* host rewrites because otherwise dev.company.<root>/foo
-    // would match Next's `/foo` route (or fall through Clerk middleware
-    // which redirects unsigned users away). Vercel-only rewrites in
-    // vercel.json fire AFTER Next routing for the same reason. Putting
-    // them in beforeFiles routes the request to the backend proxy
-    // before Next sees it.
     const localDevApiProxy =
       process.env.NODE_ENV === "development" && process.env.LOCAL_DEV_API_PROXY === "1"
         ? [
@@ -270,20 +263,6 @@ const nextConfig: NextConfig = {
         : [];
 
     return {
-      // One pair per product domain, so the hosts middleware bypasses Clerk for
-      // (PAPERCLIP_HOSTS, derived from the same list) are exactly the hosts
-      // rewritten here.
-      beforeFiles: PRODUCT_DOMAINS.flatMap(
-        (d) =>
-          [
-            [`dev.company.${d}`, `https://api-dev.${d}`],
-            [`company.${d}`, `https://api.${d}`],
-          ] as const,
-      ).map(([host, api]) => ({
-        source: "/:path*",
-        has: [{ type: "host" as const, value: host }],
-        destination: `${api}/__paperclip_proxy__/:path*`,
-      })),
       afterFiles: [
         ...localDevApiProxy,
         // DCV 1.14 resolves its worker base relative to the /chat document,

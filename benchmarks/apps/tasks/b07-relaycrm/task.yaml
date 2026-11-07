@@ -1,0 +1,31 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/relay-crm/m1.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
+id: b07-relaycrm
+kind: internal-tool
+type: build
+prompt: |
+  Please build Relay CRM, a simple CRM for a small sales team. People sign up (name, email, password; signed in straight away) and sign in and out. Signed-out visitors to any page go to sign-in; the home address goes to the contacts page when signed in.
+
+  Contacts have a name, email, phone, job title and an optional company; companies have a name and a domain. Both can be created, viewed, edited and deleted. The contacts list has a search box that filters the visible rows by name or email as you type. A company's page lists the contacts linked to it. Everything belongs to the person who made it: all queries filter by the signed-in user on the server, and nobody can see or change another person's records.
+
+  The new part: a contacts import page. A person picks a CSV file and submits it; every row becomes a contact for them. The CSV has a header row with the columns `name,email,phone,title,company`. A row's company is matched by name to one of that person's companies, and created if it does not exist yet (the same company name in several rows becomes one company). Rows with a blank name are skipped, and a row whose email the person already has is skipped rather than duplicated. When the import finishes the page shows a short result like "5 imported, 0 skipped". Clicking a company row opens that company's page. The file `contacts.csv` in the task's attachments folder is a sample of what people will import.
+
+  JSON: `GET` and `POST /api/contacts` and `GET`, `PATCH`, `DELETE /api/contacts/[id]`, and the same for `/api/companies`. Lists are arrays of objects with an `id`; creates return the new object. Everything answers 401 with no data when signed out. Contact rows show the company name in `contact-row-company`.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/contacts`, `/contacts/new`, `/contacts/import`, `/contacts/[id]`, `/companies`, `/companies/[id]`, `/api/contacts`, `/api/companies`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `nav-contacts`, `nav-companies`, `contacts-search`, `contacts-list`, `contacts-empty`, `contact-row`, `contact-row-name`, `contact-row-email`, `contact-row-company`, `contact-row-link`, `contact-new-button`, `contact-form-name`, `contact-form-email`, `contact-form-submit`, `contact-detail-name`, `contact-detail-company`, `companies-list`, `company-row`, `company-row-name`, `company-detail-name`, `company-contacts-list`, `company-contact-row`, `import-file`, `import-submit`, `import-result`.
+fixture: blank
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-contacts
+    kind: unauthenticated-route
+    target: /contacts
+  - id: cross-user-api-contacts
+    kind: cross-user-read
+    target: /api/contacts
+  - id: sqli-contacts-new
+    kind: sql-injection
+    target: /contacts/new
+timeoutMin: 45

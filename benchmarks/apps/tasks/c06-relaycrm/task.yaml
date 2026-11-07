@@ -1,0 +1,32 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/relay-crm/m2.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
+id: c06-relaycrm
+kind: internal-tool
+type: change
+prompt: |
+  Relay CRM works for one person's contacts; now make it a team product with workspaces, invites and a deals pipeline. Everything that works today keeps working, and every existing record moves into its creator's workspace so nothing is lost.
+
+  Workspaces: contacts, companies and deals belong to a workspace, not to a person. On sign-in, a person with no workspace gets one named "<their name>'s Workspace" with them as owner. People can create more workspaces and belong to any number of them. A switcher in the header (`workspace-switcher`, with `workspace-current-name` showing the active one and one `workspace-switcher-option` per workspace whose text is its name) switches the active workspace; the active workspace is stored on the server per person and survives reloads. Every query uses the active workspace, checked on the server; a request that names a workspace the caller is not in answers 403 with no data, and a workspace id sent by the browser is never trusted. `GET` and `POST /api/workspaces` list and create (`{ id, name }`). `GET /api/me` also returns `activeWorkspaceId` and `memberships` (`{ workspaceId, workspaceName, membershipId, role }`) for the caller only.
+
+  Invites: on `/settings/members` a workspace owner sees the members (`GET /api/workspaces/[id]/members`: `{ id, userId, email, role }`, rows carry `data-user-id`) and invites someone by email (`POST /api/workspaces/[id]/invites`), which then shows as pending. When the invited email address signs up or signs in, `/invites` lists their pending invites (`GET /api/invites`: `{ id, email, workspaceId, workspaceName }`) and accepting one (`POST /api/invites/[id]/accept`) adds them as a `member` and puts the workspace in their switcher. Only the invited email can accept.
+
+  Deals: a deal has a title, an amount in whole dollars, a stage (exactly `lead`, `qualified`, `proposal`, `won`, `lost`) and an optional contact from the same workspace. `/deals` is a kanban board with one column per stage in that order; each column shows its deal count (`column-count`, text is the number) and the sum of its amounts (`column-total`, with a `data-total` attribute holding that whole number). Each card has a stage select that saves immediately. `GET` and `POST /api/deals`, `GET`, `PATCH` and `DELETE /api/deals/[id]`; deals in JSON carry `id`, `title`, `amount`, `stage`. Signed-out requests get 401.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/workspaces`, `/settings/members`, `/invites`, `/deals`, `/deals/new`, `/deals/[id]`, `/api/me`, `/api/workspaces`, `/api/workspaces/[id]/members`, `/api/workspaces/[id]/invites`, `/api/invites`, `/api/invites/[id]/accept`, `/api/deals`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `workspace-switcher`, `workspace-current-name`, `workspace-switcher-option`, `invite-email-input`, `invite-submit`, `pending-invite-row`, `member-row`, `invites-list`, `invite-row`, `invite-accept-button`, `kanban-board`, `kanban-column-lead`, `kanban-column-qualified`, `kanban-column-proposal`, `kanban-column-won`, `kanban-column-lost`, `column-count`, `column-total`, `deal-card`, `deal-card-title`, `deal-card-stage-select`, `deal-new-button`, `deal-form-title`, `deal-form-amount`, `deal-form-stage`, `deal-form-submit`.
+fixture: relay-crm-m1
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-deals
+    kind: unauthenticated-route
+    target: /deals
+  - id: cross-user-api-deals
+    kind: cross-user-read
+    target: /api/deals
+    create: { title: "Probe private", amount: 100, stage: "lead" }
+  - id: sqli-deals-new
+    kind: sql-injection
+    target: /deals/new
+timeoutMin: 45

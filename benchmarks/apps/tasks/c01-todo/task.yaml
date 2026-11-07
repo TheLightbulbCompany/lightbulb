@@ -1,0 +1,27 @@
+id: c01-todo
+kind: internal-tool
+type: change
+prompt: |
+  The to-do app works well, but my tasks are getting mixed together. Please add projects. A person can create projects (just a name, required; a blank name shows an error and saves nothing) on a Projects page that lists them, linked from the header. When adding a task they can pick a project from a dropdown, or leave it as none. Each row in the task list shows its project's name, and the task list gets a project filter next to the existing status filter so people can look at one project at a time (with an option for all projects, and one for tasks with no project). Deleting a project must not delete its tasks; they simply become tasks with no project.
+
+  Projects belong to the person who made them, like tasks do: nobody can see, use or delete another person's projects, and a task can only ever be put in your own project (enforce it on the server, not just in the dropdown). Everything that works today keeps working. `GET` and `POST /api/projects` list and create projects (`{ id, name }`), and `DELETE /api/projects/[id]` deletes one. The project dropdown on the task form shows project names as its option labels; the project filter's option values are `all`, `none` and the project id. Tasks in the JSON gain a `projectId` (null when none).
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/projects`, `/api/projects`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `nav-projects`, `project-form-name`, `project-form-submit`, `project-form-error`, `projects-list`, `project-row`, `project-row-name`, `task-form-project`, `task-form-title`, `task-form-submit`, `filter-project`, `task-row`, `task-row-project`, `tasks-list`.
+fixture: todo-m1
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-projects
+    kind: unauthenticated-route
+    target: /projects
+  - id: cross-user-api-projects
+    kind: cross-user-read
+    target: /api/projects
+    create: { name: "Probe private" }
+  - id: sqli-projects
+    kind: sql-injection
+    target: /projects
+timeoutMin: 45

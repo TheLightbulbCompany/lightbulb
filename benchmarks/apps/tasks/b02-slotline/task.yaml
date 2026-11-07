@@ -1,0 +1,29 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/slotline/m1.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
+id: b02-slotline
+kind: form
+type: build
+prompt: |
+  Please build an appointment booking app called Slotline for a clinic with several practitioners. People sign up with name, email and password (signed in straight away), sign in and out.
+
+  The clinic is in Denver, so all times belong to the America/Denver timezone: the header shows that timezone's name. Anyone signed in can add, edit and delete practitioners (a name and a specialty) and services (a name and a length in whole minutes); these are shared by everybody. A booking is for one practitioner, one service and a start time that the person types into a date-and-time field in clinic time. The app works out the end time itself from the service length and ignores any end time, status or patient the browser sends. A booking is either booked or cancelled; cancelling keeps the booking and asks for confirmation first. Each person's bookings page lists only their own bookings, soonest first, and nobody can see or change another person's booking.
+
+  Keep every stored time in UTC. Each booking row on the list carries `data-start`, `data-end` and `data-status` attributes, where the times are ISO 8601 in UTC ending in `Z` (for example `2030-01-15T17:00:00.000Z`) and the status is exactly `booked` or `cancelled`. The detail page's `booking-detail-end` carries the same `data-end`. The practitioner and service selects on the booking form list the names as their option labels. The JSON lists `GET /api/practitioners`, `/api/services` and `/api/bookings` return arrays of objects with an id (bookings carry `startAt`, `endAt`, `status`); creating returns the new object; `GET /api/bookings/[id]` returns one booking (403 or 404 for someone else's); everything answers 401 with no data when signed out, and signed-out visitors to any page go to sign-in.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/bookings`, `/bookings/new`, `/bookings/[id]`, `/practitioners`, `/practitioners/new`, `/services`, `/services/new`, `/api/bookings`, `/api/bookings/[id]`, `/api/practitioners`, `/api/services`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `clinic-timezone`, `nav-bookings`, `practitioner-new-button`, `practitioners-list`, `practitioner-row`, `practitioner-row-name`, `practitioner-form-name`, `practitioner-form-specialty`, `practitioner-form-submit`, `service-new-button`, `services-list`, `service-row`, `service-row-name`, `service-form-name`, `service-form-duration`, `service-form-submit`, `bookings-list`, `bookings-empty`, `booking-new-button`, `booking-row`, `booking-row-status`, `booking-row-link`, `booking-form-practitioner`, `booking-form-service`, `booking-form-start`, `booking-form-submit`, `booking-form-error`, `booking-detail-status`, `booking-detail-end`, `booking-cancel-button`, `booking-cancel-confirm`.
+fixture: blank
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-bookings
+    kind: unauthenticated-route
+    target: /bookings
+  - id: cross-user-api-bookings
+    kind: cross-user-read
+    target: /api/bookings
+  - id: sqli-practitioners-new
+    kind: sql-injection
+    target: /practitioners/new
+timeoutMin: 45

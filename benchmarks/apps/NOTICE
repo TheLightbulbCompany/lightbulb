@@ -1,0 +1,15 @@
+Dyad
+Copyright (c) Dyad contributors.
+
+This product bundles dependencies that carry separate attribution requirements.
+
+mustardscript
+License: Apache-2.0
+Repository: https://github.com/mustardscript/mustardscript
+
+Playwright
+License: Apache-2.0
+Repository: https://github.com/microsoft/playwright
+
+---
+Lightbulb: this directory includes material derived from Dyad (commit 0ee4a524, benchmarks/app-builder/). Nothing from Dyad's src/pro is used.

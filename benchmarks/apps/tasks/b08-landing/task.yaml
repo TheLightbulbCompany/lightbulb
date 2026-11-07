@@ -1,0 +1,22 @@
+id: b08-landing
+kind: site
+type: build
+prompt: |
+  I run a small neighbourhood bakery called Crumb & Co and I need a one-page website for it. It should have five sections in this order: a hero with the bakery name, a one-line promise and a button; a section about what we offer (at least three items: sourdough, pastries, custom cakes); a pricing section (at least three priced items, for example a loaf, a box of six pastries and a custom cake from a price); a short FAQ (at least four questions, such as allergens, ordering ahead, delivery and opening hours); and a contact section with a form asking for name, email and a message.
+
+  The contact form checks that the name and message are filled in and the email looks like an email, and shows a message next to the form if not. When it is fine it saves the message in a database table called `contact_messages` (name, email, message, when it arrived) so we can read them later, and shows a thank-you message on the page.
+
+  Make the page ready for search engines and sharing without being asked again: a proper page title and meta description (50 to 160 characters), Open Graph title and description, the language set on the page, exactly one main heading, a canonical link, a favicon, descriptive text for any image, and `/robots.txt` and `/sitemap.xml` that work. It should look good and read well on a laptop.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/`, `/robots.txt`, `/sitemap.xml`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `section-hero`, `section-features`, `section-pricing`, `section-faq`, `section-contact`, `contact-name`, `contact-email`, `contact-message`, `contact-submit`, `contact-error`, `contact-success`.
+fixture: blank
+journeys: journeys.spec.ts
+probes:
+  - id: sqli-contact-form
+    kind: sql-injection
+    target: /
+timeoutMin: 45

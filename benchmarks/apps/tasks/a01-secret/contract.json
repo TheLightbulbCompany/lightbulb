@@ -1,0 +1,9 @@
+{
+  "routes": [
+    "/status"
+  ],
+  "testids": [
+    "status-check",
+    "status-result"
+  ]
+}

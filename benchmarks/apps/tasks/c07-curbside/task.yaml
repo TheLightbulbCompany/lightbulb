@@ -1,0 +1,33 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/curbside/m2.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
+id: c07-curbside
+kind: payments
+type: change
+prompt: |
+  Curbside works for customers ordering from restaurants; now make it a three-sided marketplace with merchants and couriers. Everything that works today keeps working.
+
+  Actors: every signed-in person is a customer. Creating a restaurant makes that person its merchant. `POST /api/courier/register` (and a button on `/courier`) makes a person a courier, recording the name they signed up with. `GET /api/me` also returns `isMerchant`, `isCourier` and `restaurantIds` (restaurants the caller owns), nothing about anyone else.
+
+  Who sees what: a customer sees only their own orders. A merchant sees, at `/merchant/orders` and `GET /api/merchant/orders`, only orders of restaurants they own. A courier sees at `/courier` the pool of available deliveries (orders that are `ready` and unclaimed; `GET /api/courier/deliveries/available`), and at `/courier/deliveries` the ones they claimed (`GET /api/courier/deliveries`). A courier may open an order's detail only after claiming it. Anyone without the needed actor type gets 403 and no data, and those pages show neither a list nor an empty message. The one page open to everybody is `/courier`, where a non-courier finds the register button (`courier-register-button`); available deliveries are shown only to couriers.
+
+  Lifecycle: statuses are `placed`, `accepted`, `preparing`, `ready`, `picked_up`, `delivered`, `cancelled`. Every change goes through `POST /api/orders/[id]/transition` with `{ "to": "<status>" }`, and each legal step belongs to exactly one actor: placed to accepted, accepted to preparing and preparing to ready by the merchant who owns the restaurant; ready to picked_up and picked_up to delivered by the courier who claimed it; placed to cancelled by the customer who placed it. Any other step is illegal and answers 409 with no change; a legal step by the wrong actor answers 403 with no change. Enforce both on the server; hiding buttons is not enough. The merchant row has buttons `transition-accepted`, `transition-preparing`, `transition-ready`; a courier's delivery row has `transition-picked_up` and `transition-delivered`.
+
+  Claiming: `POST /api/deliveries/[id]/claim` (the id is the order's id) assigns the calling courier to an order that is `ready` and unclaimed and returns the delivery. It must be atomic: when several couriers claim at once exactly one wins, and a claim on an already-claimed delivery answers 409 and leaves the first courier in place. A delivery carries the order's `id`, its `status` and `courierId` (the courier's user id, or null while unclaimed); order JSON also carries `courierId`. Rows on each list carry `data-order-id`.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/merchant/orders`, `/courier`, `/courier/deliveries`, `/orders/[id]`, `/api/me`, `/api/orders/[id]/transition`, `/api/courier/register`, `/api/courier/deliveries/available`, `/api/courier/deliveries`, `/api/deliveries/[id]/claim`, `/api/merchant/orders`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `merchant-orders-list`, `merchant-order-row`, `merchant-order-status`, `transition-accepted`, `transition-preparing`, `transition-ready`, `courier-register-button`, `available-list`, `available-row`, `claim-button`, `available-empty`, `my-deliveries-list`, `my-delivery-row`, `my-delivery-status`, `transition-picked_up`, `transition-delivered`, `order-row`, `order-row-status`, `orders-list`.
+fixture: curbside-m1
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-merchant-orders
+    kind: unauthenticated-route
+    target: /merchant/orders
+  - id: cross-user-api-orders
+    kind: cross-user-read
+    target: /api/orders
+  - id: sqli-restaurants-new
+    kind: sql-injection
+    target: /restaurants/new
+timeoutMin: 45

@@ -1,0 +1,33 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/portalis/m2.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
+id: c05-portalis
+kind: portal
+type: change
+prompt: |
+  Portalis works for a single organization; now make it a real multi-organization product with invites, roles and projects. Everything that works today keeps working.
+
+  Roles: `org_admin` and `org_member`. Admins can invite, revoke invites, change roles, remove members, edit organization settings and delete projects. Members can view the organization and view, create and edit projects, and nothing else.
+
+  Invites: an admin invites an email address with a role on the members page (`invite-email-input`, `invite-role-select` with values `org_admin` / `org_member`, `invite-submit`). It shows in a pending-invites table with its status (`pending`, `accepted` or `revoked`, as the text of `invite-status`) and a revoke button. There is no outgoing email here, so the pending row must show the full absolute accept link as the text of `invite-link`: this app's own origin (taken from the incoming request, never a hard-coded port) followed by `/invite/{token}`. Tokens are long random strings that cannot be guessed and are not derived from the email. The accept page `/invite/{token}` shows the organization's name (`accept-invite-org-name`) and an accept button; accepting needs a signed-in person (send signed-out visitors to sign-in and then back), adds them with exactly the invited role and marks the invite accepted. Revoked, already-accepted and unknown tokens must fail with an error shown in `accept-invite-error`.
+
+  Projects belong to one organization (a name and a description; list, create, edit, delete) and must never show up or be reachable under another organization. An organization switcher in the header of every `/orgs/*` page lists all the organizations the person belongs to. `GET /api/me` also reports the caller's memberships as `memberships: [{ orgId, role }]`, only their own.
+
+  All changes go through this JSON API, which the screens call: `GET` and `POST /api/orgs/{orgId}/projects` (`{ name, description }`), `PATCH` and `DELETE /api/orgs/{orgId}/projects/{projectId}`, `POST /api/orgs/{orgId}/invites` (`{ email, role }`, returns the invite with its `id`, `token` and `status`), `DELETE /api/orgs/{orgId}/invites/{inviteId}` (revokes), `PATCH` and `DELETE /api/orgs/{orgId}/members/{userId}`, and `POST /api/invites/{token}/accept`. Status codes on all of them: 401 when signed out, 404 when the caller is not a member of the organization or the thing belongs to another organization (never reveal that it exists), 403 when they are a member without the right role. Decide permissions from the database on every request, never from the request body.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/orgs/{orgId}/members`, `/orgs/{orgId}/projects`, `/orgs/{orgId}/projects/new`, `/orgs/{orgId}/projects/{projectId}`, `/invite/{token}`, `/api/me`, `/api/orgs/{orgId}/projects`, `/api/orgs/{orgId}/invites`, `/api/invites/{token}/accept`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `org-name-input`, `org-slug-input`, `create-org-submit`, `invite-email-input`, `invite-role-select`, `invite-submit`, `invites-table`, `invite-row`, `invite-status`, `invite-link`, `invite-revoke`, `member-row`, `member-role`, `accept-invite-org-name`, `accept-invite-submit`, `accept-invite-error`, `projects-list`, `new-project-link`, `project-row`, `project-row-name`, `project-name-input`, `project-create-submit`, `project-detail-name`, `org-switcher`, `org-switcher-option`.
+fixture: portalis-m1
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-orgs
+    kind: unauthenticated-route
+    target: /orgs
+  - id: cross-user-api-orgs
+    kind: cross-user-read
+    target: /api/orgs
+  - id: sqli-orgs-new
+    kind: sql-injection
+    target: /orgs/new
+timeoutMin: 45

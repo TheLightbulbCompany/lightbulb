@@ -1,0 +1,31 @@
+# Derived from Dyad (https://github.com/dyad-sh/dyad), commit 0ee4a524, benchmarks/app-builder/specs/slotline/m2.md. Copyright (c) Dyad contributors. Apache-2.0. Modified by The Lightbulb Company.
+id: c02-slotline
+kind: form
+type: change
+prompt: |
+  Slotline works, but right now anyone can edit the clinic's setup and patients have to guess appointment times. Please add staff and patient roles, weekly availability, and a proper slot picker. Everything that works today (the pages, the booking list, UTC times ending in `Z`, the Denver clinic timezone) keeps working.
+
+  Roles: everybody who signs up is a `patient`. A person becomes `staff` by entering the clinic access code `slotline-staff-2026` on `/staff/join`; a wrong code answers 403 and changes nothing. The header shows a role badge, exactly `patient` or `staff`, on every page. `GET /api/me` also returns the caller's own `role`, and a role can never be changed any other way. Only staff may create, edit or delete practitioners, services and availability, and only staff may read other people's bookings; patients can read practitioners and services and make, see and cancel only their own bookings. Enforce this on the server in every route (403 and nothing changes when someone goes beyond their role); in the pages, hide staff-only controls from patients and show a `forbidden-message` element on a page they may not view (for example `/practitioners/new`).
+
+  Availability: each practitioner has weekly windows, each with a weekday (0 to 6, 0 is Sunday) and a start and end time as `HH:MM` in clinic time. Staff manage them at `/practitioners/[id]/availability`. `GET` and `POST /api/practitioners/[id]/availability` list and add windows (`{ id, weekday, startTime, endTime }`).
+
+  Slots: `GET /api/slots?practitionerId=&serviceId=&date=YYYY-MM-DD` returns the bookable slots for that clinic-local date as an array of `{ start, end }` UTC instants, soonest first. A slot is offered only if it sits on the grid that starts at a window's start and steps by the service length, it ends by the window's end, it does not overlap another not-cancelled booking for that practitioner, and it is in the future. The new-booking page now asks for a practitioner, a service and a date, lists that day's slots (each carries `data-slot-start` and `data-slot-end`, UTC with `Z`; `slot-empty` shows when there are none) and books the one the person clicks; the free-text start field goes away. `POST /api/bookings` takes `{ practitionerId, serviceId, startAt }` and checks the slot itself: a start that is not offered or that overlaps answers 409 with `{ "error": "..." }` and writes nothing, and two simultaneous requests for one slot can never both succeed. The date field is a date input in clinic time.
+
+  Names the checks rely on. Please use these exactly, because an automatic check drives the app by them.
+
+  Pages: `/auth/sign-up`, `/auth/sign-in`, `/staff/join`, `/practitioners/[id]/availability`, `/bookings/new`, `/api/staff/claim`, `/api/slots`, `/api/me`.
+
+  Elements: give each of these a `data-testid` attribute with exactly this value: `signup-name`, `signup-email`, `signup-password`, `signup-submit`, `signup-error`, `signin-email`, `signin-password`, `signin-submit`, `signin-error`, `user-menu`, `sign-out-button`, `role-badge`, `staff-code-input`, `staff-code-submit`, `staff-code-error`, `forbidden-message`, `booking-form-practitioner`, `booking-form-service`, `booking-form-date`, `slot-option`, `booking-form-submit`, `booking-row`.
+fixture: slotline-m1
+journeys: journeys.spec.ts
+probes:
+  - id: unauth-practitioners
+    kind: unauthenticated-route
+    target: /practitioners
+  - id: cross-user-api-bookings
+    kind: cross-user-read
+    target: /api/bookings
+  - id: sqli-staff-join
+    kind: sql-injection
+    target: /staff/join
+timeoutMin: 45

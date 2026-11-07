@@ -1,0 +1,29 @@
+{
+  "routes": [
+    "/auth/sign-up",
+    "/auth/sign-in",
+    "/customers",
+    "/customers/import",
+    "/api/customers"
+  ],
+  "testids": [
+    "signup-name",
+    "signup-email",
+    "signup-password",
+    "signup-submit",
+    "signup-error",
+    "signin-email",
+    "signin-password",
+    "signin-submit",
+    "signin-error",
+    "user-menu",
+    "sign-out-button",
+    "import-file",
+    "import-submit",
+    "import-result",
+    "customers-list",
+    "customer-row",
+    "customer-row-name",
+    "customer-row-notes"
+  ]
+}

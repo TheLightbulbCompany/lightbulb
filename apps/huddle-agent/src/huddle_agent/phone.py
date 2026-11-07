@@ -25,7 +25,6 @@ from livekit.agents import (
     room_io,
 )
 from livekit.plugins import google
-from livekit.plugins.google.beta import GeminiTTS
 
 logger = logging.getLogger("phone")
 # LIVEKIT_AGENT_NAME wins over the decorator's kwarg (livekit-agents 1.8); the image's ENV says lightbulb-huddle.
@@ -232,9 +231,6 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=google.realtime.RealtimeModel(
             model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
         ),
-        tts=GeminiTTS(
-            voice_name=VOICE, api_key=key
-        ),  # the compliance greeting, word for word
     )
     transcript: list[dict] = []
 
@@ -266,12 +262,13 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    # The greeting plays in full before the caller's audio reaches the model (the compliance line is never cut off).
-    session.input.set_audio_enabled(False)
-    try:
-        await session.say(info["greeting"])
-    finally:
-        session.input.set_audio_enabled(True)
+    # The Live model speaks the compliance greeting. Dev test 7 Nov: a TTS say() and caller audio switched off while it
+    # played both stalled the Gemini Live session (the reply never finished), so the caller can talk over it.
+    # The plugin drops this reply's transcription ("no active generation"), so the record gets the line it was told.
+    transcript.append({"role": "assistant", "text": info["greeting"]})
+    session.generate_reply(
+        instructions=f'Greet the caller by saying exactly this, word for word, and nothing else: "{info["greeting"]}"'
+    )
 
 
 if __name__ == "__main__":

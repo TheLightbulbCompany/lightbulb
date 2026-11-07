@@ -155,6 +155,8 @@ async def ingest_message(owner_id: str, room: dict, message: dict, *, task: dict
         room_id = room["roomId"]
         if task is None and room.get("task"):
             task = await tasks_repo.get_task(owner_id, room["task"]["taskId"])
+        if room.get("task") and task and await tasks_repo.from_contact(owner_id, task):
+            return False  # a phone caller's task room: its posts quote the caller, never memory
         members = room.get("members") or await messaging_repo.list_members(room_id)
         if group := await group_room(owner_id, {**room, "members": members}, task):
             kind, actor = "room", workspace_memory.room_actor(owner_id, group)

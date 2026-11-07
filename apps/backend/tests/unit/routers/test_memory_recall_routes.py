@@ -332,6 +332,7 @@ def test_internal_remember_takes_on_behalf_of_from_the_payload(hook):
     with (
         patch.object(memory_api, "neighbours", AsyncMock(return_value=[])),
         patch.object(memory_api.network_member, "call_op", call),
+        patch("core.services.effect_doors.live_attempts", AsyncMock(return_value=[])),  # no phone caller's task
     ):
         r = client.post(
             "/api/v1/internal/memory/remember/org_a",

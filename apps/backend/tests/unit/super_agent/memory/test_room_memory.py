@@ -230,3 +230,16 @@ async def test_a_dm_task_room_writes_the_private_lane(table, core):
     room = {**_room(members=(LB,), task={"taskId": TASK}), "roomId": "task:" + TASK}
     assert await room_memory.ingest_message(OWNER, room, _msg(), task=task) is True
     assert core.events[0]["actorId"] == "org_1:user_sam"
+
+
+async def test_a_phone_callers_task_room_is_never_ingested(table, core):
+    """Review #4987 blocker 2: the Worker's posts in a phone_contact task's room quote the caller: not team memory."""
+    task = {"taskId": TASK, "lane": "shared", "triggerId": "voice:c"}
+    trig = AsyncMock(return_value={"ref": {"origin": "phone_contact"}})
+    with patch.object(room_memory.tasks_repo, "get_trigger", trig):
+        assert (
+            await room_memory.ingest_message(OWNER, _room(members=(LB,), task={"taskId": TASK}), _msg(), task=task)
+            is False
+        )
+    assert core.events == [] and core.records == []
+    trig.assert_awaited_once_with(OWNER, "voice:c")

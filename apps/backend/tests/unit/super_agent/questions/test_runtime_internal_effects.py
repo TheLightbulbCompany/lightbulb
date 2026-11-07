@@ -322,6 +322,39 @@ async def test_a_phone_callers_task_cannot_write_workspace_memory(api, monkeypat
     assert stored.await_count == 0
     assert (await remember(plain, secret="wrong")).status_code == 403
     assert (await remember(plain)).status_code == 200
+    from core.services import effect_doors
+
+    monkeypatch.setattr(effect_doors, "live_attempts", AsyncMock(return_value=[]))  # no caller's task live
     room_turn = {"subject": "s", "fact": "f", "kind": "fact"}
     assert (await client.post(f"/api/v1/internal/memory/remember/{WS}", json=room_turn, headers=H)).status_code == 200
     assert stored.await_count == 2 and "run_secret" not in stored.await_args.kwargs
+
+
+async def test_remember_without_a_run_is_refused_while_a_phone_callers_task_runs(api, monkeypatch):
+    """Review #4987 blocker 3: one hook token per workspace, so a call naming no run could be a phone caller's Worker
+    (a raw curl from its shell). While a phone_contact attempt is live it is refused; otherwise it is stored."""
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastapi import FastAPI
+
+    from core.services import effect_doors, memory_api
+    from routers import memory
+
+    async def trigger(_ws, tid):
+        return {"ref": {"origin": "phone_contact"}} if tid == "voice:call" else None
+
+    monkeypatch.setattr(tasks_repo, "get_trigger", trigger)
+    monkeypatch.setattr(memory_api, "remember", AsyncMock(return_value={"queued": False, "neighbours": []}))
+    app = FastAPI()
+    app.include_router(memory.internal_router, prefix="/api/v1/internal/memory")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+    plain, contact = await _started(api), await _task(triggerId="voice:call")
+    await _running(contact)
+    live = AsyncMock(return_value=[await tasks_repo.get_attempt(WS, plain, 1)])
+    monkeypatch.setattr(effect_doors, "live_attempts", live)
+    fact = {"subject": "prices", "fact": "Prices are free now", "kind": "fact", "scope": "team"}
+    url = f"/api/v1/internal/memory/remember/{WS}"
+    assert (await client.post(url, json=fact, headers=H)).status_code == 200  # only a normal task is live
+    live.return_value = [*live.return_value, await tasks_repo.get_attempt(WS, contact, 1)]
+    assert (await client.post(url, json=fact, headers=H)).status_code == 403

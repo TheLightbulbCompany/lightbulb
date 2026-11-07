@@ -18,6 +18,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import tasks_repo
 from core.services import (
     container_auth,
+    effect_doors,
     evaluator,
     memory_api,
     memory_links,
@@ -274,14 +275,18 @@ async def internal_link(owner_id: str, body: LinkBody, request: Request) -> dict
 @internal_router.post("/remember/{owner_id}")
 async def internal_remember(owner_id: str, body: InternalRememberBody, request: Request) -> dict:
     """A phone caller's task never writes workspace memory: what a caller says would be recalled by every agent
-    (gate B2). ponytail: the boundary holds for the plugin's remember, which sends the run; a run that omits it is
-    a room turn to this route."""
+    (gate B2). The plugin's remember on a task run names the run, checked like effect_check. The hook token is one
+    per workspace, so a call naming no run may still be a Worker's shell: while any phone caller's attempt is live it
+    is refused (fails closed, like effect_doors: only the rows are trusted)."""
     await container_auth._require_hook_token(owner_id, request)
     if body.task_id:
         from routers import runtime_internal  # lazy: the runtime router pulls in Temporal
 
         await runtime_internal._attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
-        task = await tasks_repo.get_task(owner_id, body.task_id)
-        if task is None or await runtime_internal._from_contact(owner_id, task):
+        tasks = [await tasks_repo.get_task(owner_id, body.task_id)]
+    else:
+        tasks = [await tasks_repo.get_task(owner_id, a["taskId"]) for a in await effect_doors.live_attempts(owner_id)]
+    for task in tasks:
+        if task is None or await tasks_repo.from_contact(owner_id, task):
             raise HTTPException(status_code=403, detail="A phone caller's task cannot write workspace memory.")
     return await _guard(memory_api.remember(owner_id, **body.model_dump(exclude=_RUN_FIELDS)))

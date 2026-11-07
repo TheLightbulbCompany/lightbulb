@@ -53,21 +53,15 @@ def _no_stored_soul_md_by_default(monkeypatch):
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
 
 
-class _Http:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args):
-        return None
-
-
 def _wire_paperclip_mirror(monkeypatch, admin):
-    """The Paperclip edge _mirror_agent_update's own PATCH-mirror step reaches -- same pattern
-    as test_runtime_rpc_agent_update.py's _wire_admin."""
-    monkeypatch.setattr(rpc.httpx, "AsyncClient", lambda **_kwargs: _Http())
-    monkeypatch.setattr(rpc, "PaperclipAdminClient", lambda http_client: admin)
-    monkeypatch.setattr(rpc, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-    monkeypatch.setattr(rpc, "resolve_company_id_for_owner", AsyncMock(return_value="company"))
+    """The registry edge _mirror_agent_update writes through. ``admin`` stands in for the store:
+    ``get_agent``'s row is the roster, and every registry update lands on ``admin.patch_agent``."""
+
+    async def _update(ws, agent_id, fields):
+        return await admin.patch_agent(agent_id=agent_id, body=fields)
+
+    monkeypatch.setattr(rpc.agent_registry, "roster", AsyncMock(return_value=[admin.get_agent.return_value]))
+    monkeypatch.setattr(rpc.agent_registry, "update", AsyncMock(side_effect=_update))
 
 
 def _wire_profile_inputs(monkeypatch, inputs):
@@ -100,7 +94,8 @@ async def test_agents_create_on_agentcore_row_writes_the_real_profile_with_no_pa
     container = {"gateway_token": "tok", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
     paperclip_agent = {"id": "agent_new", "name": "Ada", "role": "engineer", "title": "Backend engineer"}
     monkeypatch.setattr(rpc.container_rpc, "running_container", AsyncMock(return_value=(container, "10.0.0.1")))
-    monkeypatch.setattr(rpc, "create_paperclip_for_chat", AsyncMock(return_value=paperclip_agent))
+    monkeypatch.setattr(rpc.agent_registry, "create", AsyncMock(return_value=paperclip_agent))
+    monkeypatch.setattr(rpc.agent_registry, "delete", AsyncMock())
     _wire_profile_inputs(monkeypatch, _MANAGED_INPUTS)
     upload_mock = AsyncMock()
     monkeypatch.setattr(rpc.hermes_profiles, "upload_profile", upload_mock)
@@ -135,7 +130,8 @@ async def test_agents_create_hermes_profile_error_is_a_clean_rpc_error_not_a_500
     container = {"gateway_token": "tok", "runtime_host": "agentcore"}
     paperclip_agent = {"id": "agent_new", "name": "Ada"}
     monkeypatch.setattr(rpc.container_rpc, "running_container", AsyncMock(return_value=(container, "10.0.0.1")))
-    monkeypatch.setattr(rpc, "create_paperclip_for_chat", AsyncMock(return_value=paperclip_agent))
+    monkeypatch.setattr(rpc.agent_registry, "create", AsyncMock(return_value=paperclip_agent))
+    monkeypatch.setattr(rpc.agent_registry, "delete", AsyncMock())
     _wire_profile_inputs(monkeypatch, HermesProfileError("byo api key read failed"))
     monkeypatch.setattr(rpc, "publish_owner_users", AsyncMock())
 
@@ -397,12 +393,12 @@ async def test_mirror_agent_update_model_only_never_touches_paperclip_even_on_ag
         "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_MANAGED_INPUTS)
     )
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", MagicMock())
-    client = MagicMock()
-    monkeypatch.setattr(rpc.httpx, "AsyncClient", client)
+    update = AsyncMock()
+    monkeypatch.setattr(rpc.agent_registry, "update", update)
 
     await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "candidate/model"}, agentcore=True)
 
-    client.assert_not_called()
+    update.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -445,10 +441,10 @@ async def test_agents_update_on_agentcore_row_returns_ok_and_never_reaches_conta
 
 @pytest.mark.asyncio
 async def test_agents_update_paperclip_failure_is_an_error_not_ok(monkeypatch):
-    """Role/title/capabilities live only on the Paperclip row: a failed mirror must not answer ok."""
+    """Role/title/capabilities live only on the registry row: a failed write must not answer ok."""
     admin = MagicMock()
     admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
-    admin.patch_agent = AsyncMock(side_effect=RuntimeError("paperclip down"))
+    admin.patch_agent = AsyncMock(side_effect=rpc.agent_registry.RegistryUnavailable("store down"))
     _wire_paperclip_mirror(monkeypatch, admin)
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Renamed"}])

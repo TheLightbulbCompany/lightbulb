@@ -1685,17 +1685,6 @@ async def send_renamed_notices(
     await send_voice_notices(owner_id, notices)
 
 
-async def _rename_agent(agent_id: str, name: str) -> None:
-    """Paperclip directly, as the Teams PATCH does: a failure raises, so nothing else moves.
-    (Not runtime_rpc._mirror_agent_update: it swallows Paperclip errors.)"""
-    from core.services.paperclip_admin_client import shared_admin_client
-    from core.services.paperclip_admin_session import get_admin_session_cookie
-
-    admin = shared_admin_client()
-    cookie = await get_admin_session_cookie(admin._http)
-    await admin.patch_agent(session_cookie=cookie, agent_id=agent_id, body={"name": name})
-
-
 async def edit_voice_profile(
     owner_id: str, *, agent_id: str, run_id: str, action: str, name: str | None, text: str | None
 ) -> dict:
@@ -1718,11 +1707,13 @@ async def edit_voice_profile(
             raise _problem(422, code="invalid_name")
         if any(r["id"] != agent_id and str(r.get("name") or "").casefold() == new.casefold() for r in roster):
             raise _problem(409, code="name_taken")
-        # ponytail: counted before the rename, so a Paperclip 5xx costs one of the 3; counting after
+        # ponytail: counted before the rename, so a failed write costs one of the 3; counting after
         # would let a burst rename past the limit. A refund on failure if that ever matters.
         if not await messaging_repo.count_voice_edit(owner_id, agent_id, "rename", RENAME_DAILY_LIMIT):
             raise _problem(429, code="rate_limited")
-        await _rename_agent(agent_id, new)
+        from core.services import agent_registry
+
+        await agent_registry.update(owner_id, agent_id, {"name": new})
         from core.services.hermes_provisioning import refresh_agent_soul
 
         await refresh_agent_soul(owner_id, agent_id, by=speaker)  # also sends C3 `renamed`

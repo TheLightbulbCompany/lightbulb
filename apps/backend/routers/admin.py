@@ -638,7 +638,7 @@ async def admin_agent_delete(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
+    from core.services.agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
 
     owner_id, _ = await resolve_admin_owner_id(user_id)
     try:

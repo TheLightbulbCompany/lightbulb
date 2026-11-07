@@ -48,6 +48,8 @@ export interface AgentConfig {
   hours: Record<string, Day>; holidays: string;
   /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
   services: { name: string; minutes: number; price: string; staff: string; minutesGuessed?: boolean }[]; bufferMin: number;
+  /** IANA zone the hours are in; Onboarding saves the browser's. The server defaults to America/New_York. */
+  timezone?: string;
   bookingsGo: "google" | "square" | "other" | "own"; otherSystem: string;
   number: string; forwardFrom: string;
   handoff: { number: string; onlyOpenHours: boolean };

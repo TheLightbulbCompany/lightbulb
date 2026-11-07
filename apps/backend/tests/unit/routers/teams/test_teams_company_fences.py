@@ -1,8 +1,6 @@
-"""Every Teams BFF route that takes an entity id is fenced to the caller's workspace company.
+"""Every Teams BFF route that takes an entity id is fenced to the caller's workspace.
 
-Paperclip authorizes by the member's session, and a Paperclip user can hold
-memberships in more than one company, so the session alone does not pin an
-entity to THIS workspace. A route with an id path param must depend on one of
+A route with an id path param must depend on one of
 the fence dependencies below, or be listed in ``ALLOWLIST`` with a reason.
 The allowlist must match exactly, so a fixed route has to leave it too.
 """
@@ -11,12 +9,9 @@ import re
 
 from routers.teams import agents, router
 
-FENCES = {agents._company_agent}
-
-_INLINE = "fetches the entity itself and 404s a foreign companyId inline (behaviour-tested)"
+FENCES = {agents._workspace_agent}
 
 ALLOWLIST = {
-    ("GET", "/teams/agents/{agent_id}"): _INLINE,
     ("POST", "/teams/agents/{agent_id}/heartbeat"): "410 Gone, reads nothing",
     ("POST", "/teams/agents/{agent_id}/wakeup"): "410 Gone, reads nothing",
 }

@@ -122,4 +122,4 @@ async def test_integration_read_goes_through_the_shared_reader(m):
             ),
         )
     assert out == {"text": "Dentist at 2026-11-09T10:00"}
-    r.assert_awaited_once_with("org_1", "calendar", "")
+    r.assert_awaited_once_with("org_1", "calendar", "", instructions=True)  # owner mode: the private instructions

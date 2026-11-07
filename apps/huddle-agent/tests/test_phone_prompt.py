@@ -83,7 +83,7 @@ def test_the_transcript_keeps_final_lines_in_spoken_order_once():
         },
         {"role": "system", "text": "x", "t": 0.5},
     ]
-    assert phone.clean_transcript(items, GREETING) == [
+    assert phone.clean_transcript(items) == [
         {"who": "assistant", "text": GREETING, "t": 1.1},
         {"who": "caller", "text": "I didn't hear you respond.", "t": 14.0},
         {"who": "caller", "text": "Hey, how are you?", "t": 29.0},
@@ -93,11 +93,79 @@ def test_the_transcript_keeps_final_lines_in_spoken_order_once():
             "t": 33.0,
         },
     ]
+    assert phone.disclosure_of(items, GREETING, "Lightbulb") == "ok"
 
 
-def test_a_dropped_greeting_is_restored_and_marked():
-    items = [{"role": "user", "text": "Hi", "t": 6.0}]
-    assert phone.clean_transcript(items, GREETING) == [
-        {"who": "assistant", "text": GREETING, "t": 0.0, "assumed": True},
-        {"who": "caller", "text": "Hi", "t": 6.0},
+def _guard():
+    said = []
+    return phone.DisclosureGuard(GREETING, "Lightbulb", said.append), said
+
+
+def test_a_paraphrased_greeting_is_missing_and_the_disclosure_is_said_once():
+    items = [
+        {
+            "role": "assistant",
+            "text": "Hi there, Super Agent Test, how can I help?",
+            "t": 1.0,
+        }
     ]
+    assert phone.disclosure_of(items, GREETING, "Lightbulb") == "missing"
+    guard, said = _guard()
+    guard.seen(items)
+    items.append({"role": "user", "text": "Hi", "t": 6.0})
+    guard.seen(items)
+    assert (
+        said == ["I'm Lightbulb, an AI assistant, and this call is recorded."]
+        and guard.corrected
+    )
+    cut_off = [
+        {"role": "assistant", "text": GREETING[:40], "t": 1.0, "interrupted": True}
+    ]
+    assert phone.disclosure_of(cut_off, GREETING, "Lightbulb") == "missing"
+
+
+def test_the_exact_greeting_or_a_disclosing_variant_is_ok_and_nothing_extra_is_said():
+    loud = GREETING.upper().replace(".", "!").replace("  ", " ")
+    variant = "Hi, you've reached Lightbulb, the AI assistant here; heads up, this call is recorded."
+    for text in (GREETING, loud, variant):
+        items = [{"role": "assistant", "text": text, "t": 1.0}]
+        assert phone.disclosure_of(items, GREETING, "Lightbulb") == "ok", text
+        guard, said = _guard()
+        guard.seen(items)
+        assert said == [] and not guard.corrected
+
+
+def test_nothing_transcribed_before_the_caller_is_unknown_and_nothing_is_inserted():
+    items = [
+        {"role": "user", "text": "Hi", "t": 6.0},
+        {"role": "assistant", "text": "Hello!", "t": 8.0},
+    ]
+    assert phone.disclosure_of(items, GREETING, "Lightbulb") == "unknown"
+    assert phone.disclosure_of([], GREETING, "Lightbulb") == "unknown"
+    assert phone.clean_transcript(items) == [
+        {"who": "caller", "text": "Hi", "t": 6.0},
+        {"who": "assistant", "text": "Hello!", "t": 8.0},
+    ]
+    guard, said = _guard()
+    guard.seen(items)
+    assert said == []
+
+
+def test_the_corrective_line_is_one_reply_that_says_never_again():
+    calls = []
+
+    class Session:
+        def generate_reply(self, **kwargs):
+            calls.append(kwargs)
+
+    phone.say_disclosure(
+        Session(), "I'm Lightbulb, an AI assistant, and this call is recorded."
+    )
+    (only,) = calls
+    assert (
+        '"I\'m Lightbulb, an AI assistant, and this call is recorded."'
+        in only["instructions"]
+    )
+    assert (
+        "once" in only["instructions"] and "Never say it again" in only["instructions"]
+    )

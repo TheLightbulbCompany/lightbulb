@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 
 import httpx
@@ -69,10 +70,9 @@ def e164(number: str) -> str:
     return "+" + n if n.isdigit() else n
 
 
-def clean_transcript(items: list[dict], greeting: str) -> list[dict]:
+def clean_transcript(items: list[dict]) -> list[dict]:
     """The call's transcript for the record: final lines only (an interrupted, cut-off reply is dropped), in spoken
-    order (`t`, seconds since the call started), consecutive repeats once. When the plugin never emitted the greeting
-    (it sometimes drops that reply's transcription), the greeting the agent was told to say opens it, marked."""
+    order (`t`, seconds since the call started), consecutive repeats once. Only what was transcribed; nothing added."""
     out: list[dict] = []
     for i in sorted(items, key=lambda i: i["t"]):
         who = {"user": "caller", "assistant": "assistant"}.get(i["role"])
@@ -82,11 +82,64 @@ def clean_transcript(items: list[dict], greeting: str) -> list[dict]:
         if out and (out[-1]["who"], out[-1]["text"]) == (who, line["text"]):
             continue
         out.append(line)
-    if not any(x["who"] == "assistant" and x["text"] == greeting.strip() for x in out):
-        out.insert(
-            0, {"who": "assistant", "text": greeting.strip(), "t": 0.0, "assumed": True}
-        )
     return out
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
+def discloses(text: str, greeting: str, assistant: str) -> bool:
+    """The greeting as said: the greeting itself (case, punctuation, spacing aside), or a line that still names the
+    assistant and says "AI assistant" and "recorded"."""
+    t = _norm(text)
+    return t == _norm(greeting) or all(
+        _norm(w) in t for w in (assistant, "AI assistant", "recorded")
+    )
+
+
+def disclosure_of(items: list[dict], greeting: str, assistant: str) -> str:
+    """`ok` / `missing` from the first assistant line spoken before the caller's first line (a cut-off greeting
+    counts: it wasn't all said); `unknown` when none was transcribed before the caller spoke."""
+    for i in sorted(items, key=lambda i: i["t"]):
+        if i["role"] == "user":
+            return "unknown"
+        if i["role"] == "assistant":
+            ok = not i.get("interrupted") and discloses(i["text"], greeting, assistant)
+            return "ok" if ok else "missing"
+    return "unknown"
+
+
+class DisclosureGuard:
+    """Watches the first lines of the call. If the first assistant line is in and fails the check, `say` is called
+    once with the disclosure sentence, right away. PHONE_TEST_FAIL_DISCLOSURE=1 fails the check (scripted runs)."""
+
+    def __init__(self, greeting: str, assistant: str, say) -> None:
+        self.greeting, self.assistant, self._say = greeting, assistant, say
+        self.line = f"I'm {assistant}, an AI assistant, and this call is recorded."
+        self.corrected, self._done = False, False
+
+    def seen(self, items: list[dict]) -> None:
+        if self._done:
+            return
+        verdict = disclosure_of(items, self.greeting, self.assistant)
+        if verdict == "unknown" and not any(i["role"] == "user" for i in items):
+            return  # nothing to judge yet
+        self._done = True
+        if verdict == "missing" or (
+            verdict == "ok" and os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1"
+        ):
+            self.corrected = True
+            self._say(self.line)
+
+
+def say_disclosure(session, line: str) -> None:
+    """One-shot reply with that exact line. Gemini Live can't take a turn back out of its history, so the
+    instruction itself says once and never again (the greeting's leak came from an open-ended "greet" turn)."""
+    session.generate_reply(
+        instructions=f'Say exactly this sentence, once, right now: "{line}" Then carry on with the caller where you '
+        "left off. Never say it again."
+    )
 
 
 async def greet(session) -> None:
@@ -276,6 +329,11 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     items: list[dict] = []
     t0 = time.time()
+    guard = DisclosureGuard(
+        info["greeting"],
+        info["assistantName"],
+        lambda line: say_disclosure(session, line),
+    )
 
     @session.on("conversation_item_added")
     def _item(ev) -> None:
@@ -292,6 +350,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     "interrupted": ev.item.interrupted,
                 }
             )
+            guard.seen(items)
 
     async def hang_up() -> None:
         await ctx.delete_room()  # disconnects the SIP caller too
@@ -306,7 +365,11 @@ async def entrypoint(ctx: JobContext) -> None:
             {
                 "durationSec": int(time.monotonic() - started),
                 "summary": "; ".join(agent.did),
-                "transcript": clean_transcript(items, info["greeting"]),
+                "transcript": clean_transcript(items),
+                "disclosure": disclosure_of(
+                    items, info["greeting"], info["assistantName"]
+                ),
+                "disclosureRepeated": guard.corrected,
             },
         )
         logger.info(

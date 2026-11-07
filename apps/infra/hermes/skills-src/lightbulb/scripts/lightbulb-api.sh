@@ -24,7 +24,7 @@ usage() {
 Usage:
   lightbulb-api.sh <METHOD> <path> [json-body]
     METHOD   GET | POST | PUT | PATCH | DELETE
-    path     absolute path under the API, e.g. /api/v1/company/provisioning/u/$ISOL8_OWNER_ID/catalog
+    path     absolute path under the API, e.g. /api/v1/company/stripe/u/$ISOL8_OWNER_ID
     json     request body (POST/PUT/PATCH); sent as application/json
 Env (already set): OPENCLAW_HOOK_TOKEN, ISOL8_API_URL
 Output: body, then the HTTP status on the last line.

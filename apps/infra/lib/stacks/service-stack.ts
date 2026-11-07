@@ -218,19 +218,6 @@ export interface ServiceStackProps extends cdk.StackProps {
    * defaults to "" so an unconfigured env just can't start that flow yet.
    */
   stripeConnectClientId?: string;
-  /**
-   * Provider catalog partition for the Stripe Projects provisioning rail:
-   * `prod | dev | testing`. Dev reads/writes Stripe's `testing` partition,
-   * prod the real one. NOT a payment-mode switch — Stripe's own caveat:
-   * "Selecting a DEV or TESTING catalog doesn't mean 'no real charges.'"
-   * Defaults to `prod`, the safe value for an env that forgot to set it:
-   * reading one partition while writing another provisions into a catalog
-   * the owner never saw.
-   */
-  stripeProjectsCatalog?: string;
-  /** Apps: hostname suffix (`{name}.{appsDomain}`) and the Route53 zone holding it. */
-  appsDomain?: string;
-  appsHostedZoneId?: string;
   /** LiveKit server URL for huddles. Empty (default) keeps huddle routes 503 — ships dark. */
   livekitUrl?: string;
   /** Agent name huddle/meeting dispatches target. Unset keeps the backend default (prod's lightbulb-huddle). */
@@ -736,38 +723,6 @@ export class ServiceStack extends cdk.Stack {
       ],
     });
 
-    // Apps DNS (core/services/apps_dns.py). Standalone ManagedPolicy: the inline
-    // task-role policy is near its 10 KB ceiling. Scoped to the one hosted zone,
-    // and changes to this env's app names plus Vercel's `_vercel.*` verification
-    // TXTs: dev and prod share the zone (R60). The names condition key only
-    // exists on ChangeResourceRecordSets, so the list stays unconditioned.
-    if (props.appsHostedZoneId) {
-      const zone = `arn:aws:route53:::hostedzone/${props.appsHostedZoneId}`;
-      const appsDomain = (props.appsDomain ?? "apps.thelightbulb.company").toLowerCase();
-      new iam.ManagedPolicy(this, "BackendAppsDns", {
-        managedPolicyName: `lightbulb-${env}-backend-apps-dns`,
-        roles: [this.taskRole],
-        statements: [
-          new iam.PolicyStatement({
-            sid: "AppsDnsRecords",
-            actions: ["route53:ChangeResourceRecordSets"],
-            resources: [zone],
-            conditions: {
-              "ForAllValues:StringLike": {
-                // Normalized names: lowercase, no trailing dot.
-                "route53:ChangeResourceRecordSetsNormalizedRecordNames": [`*.${appsDomain}`, "_vercel.*"],
-              },
-            },
-          }),
-          new iam.PolicyStatement({
-            sid: "AppsDnsList",
-            actions: ["route53:ListResourceRecordSets"],
-            resources: [zone],
-          }),
-        ],
-      });
-    }
-
     // Agent-email outbound send (SES). Standalone ManagedPolicy for the SAME
     // 10 KB inline-policy-ceiling reason as BackendOwnerBedrockManage above.
     // Scoped to the platform mail domain identity (plus the legacy one, see
@@ -1168,10 +1123,6 @@ export class ServiceStack extends cdk.Stack {
     // password. Without this grant the proxy 500s on every Teams click with
     // an AccessDeniedException, even when Clerk auth succeeds.
 
-    // Marketplace tables — backend needs read/write on listings, purchases,
-    // payout-accounts, takedowns. Browse + search are served by the in-process
-    // search service (60s-TTL DDB scan), so the same listings grant covers it.
-
     // Bedrock
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -1412,7 +1363,9 @@ export class ServiceStack extends cdk.Stack {
     // can be rolled back without losing buyer history. Blocked from public
     // access; bytes are served via signed URLs from the marketplace API.
     // -------------------------------------------------------------------------
-    const marketplaceArtifactsBucket = new s3.Bucket(this, "MarketplaceArtifactsBucket", {
+    // Data resource: nothing reads it since the Marketplace deletion (#4975). Kept so
+    // removing it from CDK does not delete it; delete with the founder's go.
+    new s3.Bucket(this, "MarketplaceArtifactsBucket", {
       bucketName: `lightbulb-${env}-marketplace-artifacts`,
       versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -1449,8 +1402,6 @@ export class ServiceStack extends cdk.Stack {
         },
       ],
     });
-
-    marketplaceArtifactsBucket.grantReadWrite(this.taskRole);
 
     // -------------------------------------------------------------------------
     // CFN Templates S3 Bucket (public-read of the connector template only)
@@ -1848,37 +1799,12 @@ export class ServiceStack extends cdk.Stack {
       // wholesale without a code revert if prod ever misbehaves. The
       // stop_reason stamping and chat-send server wake are live regardless.
       TRIAL_WAKE_GATE_ENABLED: "true",
-      // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
-      // env vars via core.config.settings; empty defaults keep the app
-      // booting in non-marketplace contexts (unit tests, smoke tests).
-      MARKETPLACE_LISTINGS_TABLE:
-        tableName(env, "marketplace-listings"),
-      MARKETPLACE_PURCHASES_TABLE:
-        tableName(env, "marketplace-purchases"),
-      MARKETPLACE_PAYOUT_ACCOUNTS_TABLE:
-        tableName(env, "marketplace-payout-accounts"),
-      MARKETPLACE_TAKEDOWNS_TABLE:
-        tableName(env, "marketplace-takedowns"),
-      MARKETPLACE_SELLERS_TABLE:
-        tableName(env, "marketplace-sellers"),
-      MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
       // Deterministic public S3 URL of the hosted AWS connector
       // CloudFormation template. The connections aws-setup endpoint feeds this
       // as the quick-create TemplateURL (CloudFormation must fetch it
       // anonymously). Bucket name + key are fixed, so this is a literal string
       // — no cross-stack output ref needed (the bucket lives in this stack).
       CFN_TEMPLATE_URL: `https://${resourcePrefix(env)}cfn-templates.s3.us-east-1.amazonaws.com/${CFN_TEMPLATE_KEY}`,
-      // Stripe Connect onboarding redirects — environment-specific so
-      // dev/prod hit the correct marketplace host. Stripe-hosted onboarding
-      // bounces sellers back here on refresh + completion.
-      STRIPE_CONNECT_REFRESH_URL:
-        env === "prod"
-          ? `https://${rootDomain}/marketplace/payouts/refresh`
-          : `https://dev.${rootDomain}/marketplace/payouts/refresh`,
-      STRIPE_CONNECT_RETURN_URL:
-        env === "prod"
-          ? `https://${rootDomain}/marketplace/payouts/return`
-          : `https://dev.${rootDomain}/marketplace/payouts/return`,
       // Company Stripe account — owner's own business account on the same
       // Connect platform. Return/refresh land on Settings → Connections; the
       // OAuth redirect is the backend callback on the API host.
@@ -1901,13 +1827,6 @@ export class ServiceStack extends cdk.Stack {
       STRIPE_PUBLISHABLE_KEY: env === "dev"
         ? (process.env.STRIPE_PUBLISHABLE_KEY_DEV ?? "")
         : (process.env.STRIPE_PUBLISHABLE_KEY_PROD ?? ""),
-      // Provider catalog partition. dev reads/writes Stripe's `testing`
-      // partition, prod the real one. NOT a payment-mode switch — Stripe's own
-      // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real
-      // charges.'"
-      STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
-      APPS_DOMAIN: props.appsDomain ?? "apps.thelightbulb.company",
-      APPS_HOSTED_ZONE_ID: props.appsHostedZoneId ?? "",
       LIVEKIT_URL: props.livekitUrl ?? "",
       ...(props.livekitAgentName ? { LIVEKIT_AGENT_NAME: props.livekitAgentName } : {}),
       // Accounts v2 API version pin for the company account/account-link
@@ -1985,37 +1904,10 @@ export class ServiceStack extends cdk.Stack {
       STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
       ),
-      // Marketplace webhook signing secrets. TWO Stripe endpoint
-      // registrations deliver to /webhooks/stripe-marketplace: a
-      // platform-scoped one (checkout/refund events — they originate on
-      // the platform balance) whose secret is STRIPE_MARKETPLACE_WEBHOOK_SECRET,
-      // and a Connect-scoped one (connected-account account.updated) whose
-      // secret is STRIPE_CONNECT_WEBHOOK_SECRET. The route verifies against
-      // both. An empty value means that half's events fail signature
-      // verification: empty MARKETPLACE ⇒ paid checkouts never produce
-      // purchase rows; empty CONNECT ⇒ onboarding-completed payout flushes
-      // never fire. Operator provisions both via `aws secretsmanager
-      // update-secret` with the secrets returned when the endpoints are
-      // created (Stripe API returns each endpoint's secret at creation).
-      STRIPE_MARKETPLACE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(
-          this,
-          "ImportStripeMarketplaceWebhookSecret",
-          `lightbulb/${env}/stripe_marketplace_webhook_secret`,
-        ),
-      ),
-      STRIPE_CONNECT_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(
-          this,
-          "ImportStripeConnectWebhookSecret",
-          `lightbulb/${env}/stripe_connect_webhook_secret`,
-        ),
-      ),
       ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
       ),
-      // Keys bedrock_gate_tokens.derive_gate_bearer. By name, like the Stripe
-      // Connect secret above: AuthStack deploys first and creates it. Same CMK,
+      // Keys bedrock_gate_tokens.derive_gate_bearer. By name: AuthStack deploys first and creates it. Same CMK,
       // so KmsDecryptForSecrets covers decrypt.
       GATE_BEARER_HMAC_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportGateBearerHmacKey", `lightbulb/${env}/gate_bearer_hmac_key`),

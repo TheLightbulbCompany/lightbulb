@@ -340,9 +340,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Questions / secrets ..... references/surfaces.md
   - Integrations wiring ..... references/integrations.md
                               <- apps/backend/routers/integrations.py; core/services/hermes_profiles.py (translate_mcp_servers)
-  - Marketplace flows ....... references/marketplace.md
-                              <- apps/backend/routers/{marketplace_listings,marketplace_import}.py; core/services/{marketplace_service,agent_export,catalog_service,claude_code_import}.py
-                                 routers/marketplace_purchases.py (checkout: seller cannot buy own listing)
   - Starter team + roster ... references/company-and-plans.md
                               <- apps/backend/core/services/paperclip_provisioning.py (STARTER_ROSTER + provision_org);
                                  core/services/{agent_provenance,paperclip_agent_lifecycle}.py;
@@ -374,10 +371,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  outside a voice run); scripts/lightbulb-post.sh (voice.md forbids it in a voice run;
                                  /agent-posts has no voice guard); backend POST /internal/agents/voice-profile/{owner}
                                  (409 name_taken, 429 rate_limited). Pinned by apps/infra/hermes/tests/test_voice_skill.py.
-  - Provisioning rail ....... references/money.md
-                              <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
-                                 core/services/provisioning_workflow.py (STATES, account_id_for's refusals incl.
-                                 services_account_needed); core/services/owner_facts.py (the `provisioning` facts list)
   - Buying things ........... references/money.md ("Buying things")
                               <- plugins/lightbulb/__init__.py (`request_purchase`, PURCHASE_SCHEMA); backend
                                  routers/company_link_wallet.py (agent door, refusal codes), core/services/purchases.py (policy),
@@ -396,8 +389,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  _REPRODUCIBLE_DIRS node_modules/*venv/.next/dist/build, work/ of other conversations never
                                  restored, save at end of turn);
                                  apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);
-                                 the provisioning-rail fallback = routers/company_provisioning.py container_catalog
-                                 (nothing offered that fits the task);
                                  Hermes's bundled github / requesting-code-review skills (/opt/hermes/skills, the base image);
                                  PyPI package graphifyy (its `graphify` entry point; `graphify query --graph`,
                                  `graphify update . --no-cluster` = AST only), mirrored by this repo's own
@@ -405,15 +396,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the review routine = skills-src/paperclip/references/routines.md (an agent may create a
                                  routine assigned to itself; `schedule` trigger) + references/platform-primitives.md
                                  (Automations: a GitHub trigger added from the routine's own detail panel, owner-side).
-  - Apps ................... references/apps.md + references/apps-reviewer.md + SKILL.md routing rows
-                              <- the `lightbulb app` CLI (TheLightbulbCompany/cli src/apps/: commands new|up|publish|rollback|
-                                 status|destroy|check|evidence|report-broken-tool, `next` = fix|diagnose|undo fix caps, the done
-                                 gate `done`, `--approved` for the destructive-migration gate, `publish` needs review evidence)
-                                 + its starter (AGENTS.md, playbooks/<kind>.md, .lightbulb/{plan,lessons,known-fixes}.md);
-                                 backend routers/apps.py (/api/v1/apps/build/*: UpResult state|preview_url|canvas_url|sample_data|
-                                 cost_cents|error.next) + apps_room.py post_approval_line (the approval's wake line, why
-                                 apps.md says end the turn); Canvas apps/frontend/src/components/canvas/ + hooks/useApps.ts.
-                                 Room words (preview, live, publish, undo, Canvas) are spec 2026-10-28-apps-design.md §2.
   - Skills (dirs/scope) ..... references/skills.md
                               <- apps/backend/core/services/hermes_profiles.py (SKILLS_DIR_LIGHTBULB,
                                  SKILLS_DIR_HERMES_BUNDLED, SKILLS_EXTERNAL_DIRS, the `skills` config block);
@@ -422,7 +404,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  paperclip fork server/src/routes/agents.ts — listSkills exists for
                                  claude/codex/cursor/gemini/grok/opencode/pi but NOT hermes_gateway,
                                  which is why the company-skills route answers supported:false
-  - Skills / self-learning .. references/marketplace.md
+  - Skills / self-learning .. references/skills.md
                               <- apps/frontend/src/components/control/panels/SkillsTab.tsx
   - Connected integrations / roster manifest
                               references/integrations.md ("What YOU already have connected") +

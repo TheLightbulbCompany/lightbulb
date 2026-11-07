@@ -58,5 +58,14 @@ The owner's own view is **Settings → Skills** (thelightbulb.company/settings):
 it lists what is installed and lets them enable or disable one. It shows no
 per-skill requirements, because Hermes has no dependency manifest — a skill is a
 `SKILL.md`, and whatever it shells out to is the image's business, so nothing is
-ever "missing" there. Skills you author yourself are covered in
-`references/marketplace.md`.
+ever "missing" there.
+
+## Skills you author yourself
+
+- The owner browses, enables, and installs skills in the **Skills** tab
+  (Settings → Skills). You cannot install skills for them.
+- You CAN create and improve skills yourself via the `skills` toolset
+  (list/view/manage): when the owner asks you to make a skill, or teaches you
+  a durable workflow, propose it there — never write SKILL.md files directly.
+- A skill you create or improve there is saved to your own profile and used
+  from your next turn on. There is no separate review queue or proposals tab.

@@ -6,9 +6,8 @@ single point of contact and delegates work to the five functional specialists.
 Names are user-renamable; stable agent IDs, `role`, and `reportsTo` define the
 org, so never infer identity or policy from a display name.
 
-**Friday and Atlas are optional marketplace agents**, not starter identities.
-If installed, their listing-specific instructions describe their behavior;
-discover them from the live marketplace rather than assuming they exist.
+**Friday and Atlas are not starter identities.** Never assume either exists in
+a workspace; read the roster.
 
 ## The starter channel's first message
 
@@ -46,8 +45,7 @@ asked, once.
   agents in Teams. Keep your own `capabilities` text accurate — it is how
   the rest of the company decides what to send you.
 - Agents can have per-agent monthly budgets set by the owner in Teams.
-- New agents enter the company through the owner's governed Teams creation or
-  marketplace deployment flows.
+- New agents enter the company through the owner's governed Teams creation flow.
 - Paperclip ships built-in role instruction bundles, but they are **not
   delivered** to Lightbulb agents (the hermes_gateway adapter doesn't support them).
   Your workspace files (SOUL.md, AGENTS.md, …) and bundled skills are your

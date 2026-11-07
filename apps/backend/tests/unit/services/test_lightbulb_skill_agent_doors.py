@@ -118,7 +118,7 @@ def test_the_skill_says_the_teams_api_is_owner_only():
 def test_the_401_row_is_scoped_to_hook_token_routes():
     flat = _flat()
     assert "A 401 from the script itself on a `/u/<owner>` route is a platform fault" in flat
-    assert "the script refuses them before sending" in flat
+    assert "refuses those routes before sending" in flat
 
 
 def test_the_skill_describes_the_generic_starter_roster_and_optional_classics():
@@ -127,4 +127,4 @@ def test_the_skill_describes_the_generic_starter_roster_and_optional_classics():
     for role in ("CEO", "Engineering", "Finance", "Growth", "Analytics", "Customer Operations"):
         assert role in flat
     assert "Names are user-renamable" in flat
-    assert "Friday and Atlas are optional marketplace agents" in flat
+    assert "Friday and Atlas are not starter identities" in flat

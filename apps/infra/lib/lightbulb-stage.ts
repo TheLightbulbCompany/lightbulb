@@ -295,13 +295,6 @@ export class LightbulbStage extends cdk.Stage {
       agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
       stripeConnectClientId: STRIPE_CONNECT_CLIENT_ID_BY_ENV[env],
       vendorOrgId: VENDOR_ORG_ID_BY_ENV[env],
-      // Dev provisions out of Stripe's `testing` catalog partition so a dev
-      // experiment can never create a real provider resource out of the prod
-      // catalog. Prod reads and writes the real one.
-      stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
-      // App hostnames live in the root zone (dev and prod share it, so dev gets its own subdomain).
-      appsDomain: env === "prod" ? "apps.thelightbulb.company" : "apps.dev.thelightbulb.company",
-      appsHostedZoneId: dns.hostedZone.hostedZoneId,
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
       livekitAgentName: LIVEKIT_AGENT_NAME_BY_ENV[env],
     });

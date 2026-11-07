@@ -40,13 +40,38 @@ from core.services.agent_email import (
     from_header,
     resolve_agent_name,
 )
-from core.services.agent_export import resolve_apex_ceo_agent_id
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 from core.services.agent_mail_tenant import ensure_tenant
 from core.services.owner_facts import write_owner_facts
 from core.services.paperclip_owner_email import lookup_owner_email
 
 logger = logging.getLogger(__name__)
+
+
+async def resolve_apex_ceo_agent_id(*, owner_id: str) -> str | None:
+    """The owner's apex CEO (Friday) Paperclip agent id, or ``None`` on any failure.
+
+    A nice-to-have default, so a Paperclip outage degrades to ``None`` (the caller
+    falls back to the onboarding row) rather than failing the send.
+    """
+    import httpx
+
+    from core.services.company_deploy_service import _find_friday_id
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
+
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        try:
+            agents = await fetch_paperclip_agents_for_owner(
+                owner_id=owner_id,
+                repo=PaperclipRepo(table_name="paperclip-companies"),
+                admin_client=PaperclipAdminClient(http_client=http),
+            )
+        except Exception as exc:  # noqa: BLE001 -- degrade, never fail the send
+            logger.warning("agent_mail_owner_send: apex CEO lookup failed for owner=%s: %s", owner_id, exc)
+            return None
+    return _find_friday_id(agents)
+
 
 # Runaway fence. With the one-shot latch gone (it was wrong — see module
 # docstring), this is what stops an agent stuck in a loop from mailing its

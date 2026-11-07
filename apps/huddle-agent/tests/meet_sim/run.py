@@ -104,6 +104,14 @@ SCENARIOS = {
         ],
         "notes": True,
     },
+    "optout": {  # a guest opts out: after that, nothing they say is heard, even named
+        "lines": [
+            {"who": "p3", "text": "{name}, please don't transcribe me.", "expect": "silent"},
+            {"who": "p3", "text": "{name}, how many phone calls did we get today?", "after": 6, "expect": "silent"},
+            {"who": "p1", "text": "{name}, how many phone calls did we get today?", "after": 14, "expect": "answer",
+             "says": "{calls_today}"},
+        ],
+    },
     "timecap": {  # run with the worker's MEET_MAX_S=60: it says goodbye and leaves by itself
         "lines": [
             {"who": "p1", "text": "{name}, how many phone calls did we get today?", "after": 3, "expect": "answer",

@@ -89,6 +89,19 @@ QUESTION_WORDS = {
 }  # fmt: skip
 
 
+_OPT_OUT = re.compile(
+    r"\b(?:don'?t|do not|stop|quit|no more)\s+(?:transcrib\w*|record\w*)\s+(?:me|my)\b|\bopt (?:me )?out\b"
+    r"|\bleave me out of the transcript",
+    re.I,
+)
+
+
+def opts_out(text: str) -> bool:
+    """The speaker asks not to be transcribed (spec §5: "guests can opt out of transcription per person (that STT
+    stream stops)"). Said by anyone, about themselves: it only ever takes their own voice out."""
+    return bool(_OPT_OUT.search(text))
+
+
 def wakes(name: str, text: str, people: list[dict] | None = None) -> bool:
     """The strict wake (the nudge's): a sentence OPENS with the name (after an optional "hey"/"ok") and asks --
     a comma and two words or more; straight into a request word ("Nova read me..."); or straight into a question
@@ -432,6 +445,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         "today": time.strftime("%A %Y-%m-%d"),
     }, names)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
+    opted_out: set[str] = set()  # identities that asked not to be transcribed: no transcriber, not in the mix
     # the huddle's per-person transcriber (agent.py): the gate's ears, with the exact speaker of each line
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
@@ -467,7 +481,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             await stream.aclose()
 
     def on_track(track: rtc.Track, _pub, p: rtc.RemoteParticipant) -> None:
-        if track.kind == rtc.TrackKind.KIND_AUDIO and p.identity.startswith("meet:"):
+        if track.kind == rtc.TrackKind.KIND_AUDIO and p.identity.startswith("meet:") and p.identity not in opted_out:
             names[p.identity] = p.name or "Someone"
             gate.people = [{"name": n} for n in names.values()]
             if (old := readers.pop(p.identity, None)) is not None:
@@ -507,7 +521,17 @@ async def run(ctx: JobContext, meta: dict) -> None:
         return names.get(identity, "Someone") if identity else "Several people"
 
     def on_heard(who: str, item: str, text: str, final: bool) -> None:
-        if not text.strip():
+        if not text.strip() or who in opted_out:
+            return
+        if final and opts_out(text):
+            # from here on: their transcriber stops, their voice leaves what Gemini hears, the line itself is
+            # not kept, and the transcript says so (what they said before stays)
+            opted_out.add(who)
+            if (r := readers.pop(who, None)) is not None:
+                r.cancel()
+            lines.append({"mark": len(lines), "kind": "agent", "name": name[:200], "at": time.time(),
+                          "text": f"{label(who)} asked not to be transcribed; nothing more they say is kept."})  # fmt: skip
+            logger.info("meet: a participant opted out of transcription")
             return
         t = agent.heard(item, text, final, time.monotonic(), who=who)
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", final)

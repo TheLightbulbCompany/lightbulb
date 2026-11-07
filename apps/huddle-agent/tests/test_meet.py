@@ -275,3 +275,12 @@ def test_no_nudge_when_someone_in_the_room_has_the_assistants_name():
     for people in ([{"name": "Nova Smith"}], [{"name": "Nova"}], [{"name": "Maya"}, {"name": "nova"}]):
         assert not meet.wakes("Nova", "Nova, can you share your screen?", people), people
     assert meet.wakes("Nova", "Nova, can you share your screen?", [{"name": "Maya"}, {"name": "Novak"}])
+
+
+def test_opting_out_of_transcription():
+    for line in ("Nova, don't transcribe me.", "Please stop transcribing me", "Can you opt me out?",
+                 "Do not record me, thanks.", "Leave me out of the transcript, please."):  # fmt: skip
+        assert meet.opts_out(line), line
+    for line in ("Nova, how many calls?", "Don't transcribe the numbers wrong.", "I stopped recording the demo.",
+                 "We opted for the cheaper plan."):  # fmt: skip
+        assert not meet.opts_out(line), line

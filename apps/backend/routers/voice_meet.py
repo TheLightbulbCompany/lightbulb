@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 CHAT_CHARS = 500  # Meet's chat limit (meeting_bots.say)
 ANNOUNCE = (
     '{name} is in this meeting for {company}. It listens and speaks only when someone says "{name}, ..."; '
-    'say "{name}, stop" to cut it off. Guests can ask; only {company}\'s members can approve work.'
+    'say "{name}, stop" to cut it off. Guests can ask; only {company}\'s members can approve work. '
+    'Say "{name}, don\'t transcribe me" and nothing more you say is transcribed or heard by it.'
 )
 GUEST_ONLY = "Only a member can ask me for that in a meeting: everyone here would hear or see it."
 GUEST_NOTE = "A guest asked for this in a meeting; it needs a member's OK before anything is spent or sent."

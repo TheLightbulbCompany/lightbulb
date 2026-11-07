@@ -236,6 +236,12 @@ class Settings(BaseSettings):
     LIVEKIT_AGENT_NAME: str = "lightbulb-huddle"
     # The one phone line (E.164) this environment gives out; its LiveKit dispatch rule routes to this env's agent.
     VOICE_LINE_NUMBER: str = ""
+    # Buying a number per business at Go live (voice_onboarding.provision_at_go_live). Off until Twilio KYC clears;
+    # while off, Go live gives VOICE_LINE_NUMBER. The trunk is the Twilio Elastic SIP trunk that points at LiveKit.
+    VOICE_BUY_NUMBERS: bool = False
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_TRUNK_SID: str = ""
     """The worker huddles and meetings dispatch to. Prod's deployed agent keeps the default; dev's Mac worker is lightbulb-meet-dev."""
     HUDDLE_WORKER_SECRET: str = ""
     # Meetings (Recall.ai bots). See meetings_available(): without LiveKit + a Recall key an invite opens the room only.

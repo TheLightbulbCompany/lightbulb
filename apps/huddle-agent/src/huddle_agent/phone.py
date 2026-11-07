@@ -205,6 +205,7 @@ class Backend:
             detail = r.json().get("detail")
         except ValueError:
             detail = None
+        logger.info("phone %s: %s -> %s %s", self.call_id, path, r.status_code, str(detail)[:200])
         return {
             "error": (detail or {}).get("code", f"http_{r.status_code}")
             if isinstance(detail, dict)

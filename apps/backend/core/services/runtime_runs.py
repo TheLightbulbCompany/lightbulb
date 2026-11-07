@@ -255,7 +255,17 @@ async def stop_task_session(owner_id: str, task_id: str, run_id: str | None = No
 
 async def curate(owner_id: str, agent_id: str) -> dict:
     """Run the curator for one specialist on the WORKSPACE session (`POST /internal/v1/curate`,
-    spec 07 §3.5: never in a Worker VM). Returns the bridge's `{"ran", "changed"}`."""
+    spec 07 §3.5: never in a Worker VM). Returns the bridge's `{"ran", "changed"}`.
+
+    Only on a warm workspace session (Phase 2: nothing but a live use wakes a workspace): a cold one
+    answers `{"ran": False}` without an invoke, and the bridge's own idle pass (`_curate_when_idle`)
+    curates on the next turn there. The curator comes due every 7 days anyway; waking a parked
+    microVM after every task bought a ~55 s cold start and a full idle tail for a no-op."""
+    from core.services import hermes_provisioning
+
+    container = await _container(owner_id)
+    if not await hermes_provisioning._session_warm(owner_id, container.get("agentcore_runtime_arn")):
+        return {"ran": False, "changed": False}
     data = await _call(
         owner_id, "/internal/v1/curate", method="POST", body={"agentId": agent_id}, timeout_s=CURATE_TIMEOUT_S
     )

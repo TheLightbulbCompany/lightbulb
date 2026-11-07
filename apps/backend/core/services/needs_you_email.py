@@ -1,15 +1,16 @@
-"""The away email (T15): a DM, @mention or approval left unseen five minutes while the
+"""The away email (T15): a DM, @mention or open task Question left unseen five minutes while the
 person is away gets one short email linking straight to it.
 
 Pending checks are rows on the messaging table's sparse deadline index
 (``sweep = "away"``, the run ledger's ``by-run-deadline`` GSI), keyed
-``AWAY#<user> / M#<room>#<message>`` or ``A#<company>#<approval>``:
+``AWAY#<user> / M#<room>#<message>`` or ``Q#<task>#<qid>``:
 
 - the messaging projector writes one per DM and @mention it notifies (not muted);
-- ``queue_approval`` writes one per workspace member when Paperclip creates an approval.
+- ``queue_question`` writes one per answerer of a super-agent Question. Paperclip approval rows
+  (``A#…``, written before Phase 1 task 7) are dropped unsent.
 
 Every minute one backend task (pass admission) reads the due rows and, per row:
-drops it if it was seen (read cursor past the message; approval answered), if the
+drops it if it was seen (read cursor past the message; Question answered), if the
 person turned the email off, or in their quiet hours (22:00-08:00 local, D8); defers it
 while they are in the app (``users.last_active_at`` within five minutes; AppSync has no
 disconnect, so the signal is a room read or the visible-app ping ``POST /users/me/active``)
@@ -29,7 +30,6 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
-import httpx
 import jwt as pyjwt
 from botocore.exceptions import ClientError
 
@@ -86,23 +86,6 @@ def unsubscribe_url(user_id: str) -> str:
 # ---------------------------------------------------------------------------
 # queueing
 # ---------------------------------------------------------------------------
-
-
-async def queue_approval(*, company_id: str, approval_id: str, user_ids: list[str], title: str, body: str) -> None:
-    """One pending check per member for a new approval. ``title``/``body`` are the push copy
-    (``"Growth · LB-12"``, ``"Needs your approval: Launch email"``). Never raises."""
-    try:
-        from core.repositories.paperclip_repo import PaperclipRepo
-
-        ws = await PaperclipRepo(table_name="paperclip-companies").find_workspace_by_company(company_id)
-        owner_id = ws.org_id if ws is not None else ""
-        await _queue(
-            user_ids,
-            f"A#{company_id}#{approval_id}",
-            {"kind": "approval", "ownerId": owner_id, "approvalId": approval_id, "title": title, "body": body},
-        )
-    except Exception:
-        logger.warning("needs_you_email: approval queue failed company=%s", company_id, exc_info=True)
 
 
 async def queue_question(ws: str, task_id: str, qid: str, user_ids: list[str], title: str, body: str) -> None:
@@ -171,14 +154,6 @@ def render(row: dict, *, author: str = "", room: dict | None = None, sent: int) 
             "lines": ["Lightbulb is waiting on your answer to a task.", f"Open it: {url}"],
             "url": url,
         }
-    if row["kind"] == "approval":
-        who = (row.get("title") or "").split(" · ")[0] or "An agent"
-        url = _link({"panel": "teams-approval-detail", "detailId": row["approvalId"]}, sent)
-        return {
-            "subject": "An approval is waiting in Lightbulb",
-            "lines": [f"{who} is waiting on your answer in Lightbulb.", f"Open it: {url}"],
-            "url": url,
-        }
     where = _where(room or {}, author)
     url = _link({"panel": "chat", "room": row["roomId"], "message": row["messageId"]}, sent)
     if row["kind"] == "mention":
@@ -241,28 +216,6 @@ async def _claim_room_slot(user_id: str, slot: str, now_epoch: int) -> bool:
         raise
 
 
-async def _approval_pending(approval_id: str) -> bool:
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_admin_session import get_admin_session_cookie
-
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=5.0) as http:
-        admin = PaperclipAdminClient(http_client=http)
-        cookie = await get_admin_session_cookie(http)
-        approval = await admin.get_approval(session_cookie=cookie, approval_id=approval_id)
-    return isinstance(approval, dict) and approval.get("status") == "pending"
-
-
-async def _still_in_workspace(owner_id: str, user_id: str) -> bool:
-    from core.repositories.paperclip_repo import PaperclipRepo
-
-    ws = (
-        await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id, consistent_read=True)
-        if owner_id
-        else None
-    )
-    return ws is not None and user_id in (ws.member_user_ids or set())
-
-
 async def _done(row: dict, reason: str) -> None:
     await messaging_repo.finish_away_check(row["pk"], row["sk"])
     put_metric("away_email.outcome", dimensions={"outcome": reason, "kind": row.get("kind") or "unknown"})
@@ -287,13 +240,9 @@ async def check_one(row: dict, now: datetime) -> bool:
         if not await questions.can_answer_now(row["ownerId"], q, user_id):
             await _done(row, "not_member")
             return False
-    elif kind == "approval":
-        if not await _still_in_workspace(row.get("ownerId") or "", user_id):
-            await _done(row, "not_member")
-            return False
-        if not await _approval_pending(row["approvalId"]):
-            await _done(row, "seen")
-            return False
+    elif kind == "approval":  # a Paperclip approval queued before Phase 1 task 7: nothing can answer it now
+        await _done(row, "gone")
+        return False
     else:
         room = await messaging_repo.get_room(row["roomId"])
         if room is None or room.get("deletedAt"):
@@ -328,7 +277,7 @@ async def check_one(row: dict, now: datetime) -> bool:
         else:
             await messaging_repo.defer_away_check(row["pk"], row["sk"], now_epoch + PRESENT_S)
         return False
-    slot = "approvals" if kind in ("approval", "task_question") else row["roomId"]
+    slot = "approvals" if kind == "task_question" else row["roomId"]
     if not await _claim_room_slot(user_id, slot, now_epoch):
         await _done(row, "room_cap")
         return False

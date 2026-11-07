@@ -3418,7 +3418,7 @@ async def label_run_followup(owner_id: str, run_id: str, follow_up: str) -> dict
 
 # ---------------------------------------------------------------------------
 # away-email checks (T15): ``AWAY#<user>`` rows on the same sparse deadline index,
-# ``sweep = "away"``; written by the projector and ``needs_you_email.queue_approval``
+# ``sweep = "away"``; written by the projector and ``needs_you_email.queue_question``
 # ---------------------------------------------------------------------------
 
 

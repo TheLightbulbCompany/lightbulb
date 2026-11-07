@@ -30,6 +30,12 @@ import re
 import time
 from collections.abc import Mapping
 
+import jwt
+
+# Google stamps either issuer form. PyJWKClient caches the JWKS itself (an hour, per kid).
+_GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"]
+_google_jwks_client = jwt.PyJWKClient("https://www.googleapis.com/oauth2/v3/certs", cache_keys=True, lifespan=3600)
+
 _KEY_RE = re.compile(r"^[A-Za-z0-9:_-]{1,128}$")
 
 
@@ -182,6 +188,11 @@ def verify_google_oidc(token: str | None, audience: str) -> bool:
     """Gmail Pub/Sub push: a live Google-signed OIDC JWT for ``audience`` (blocking)."""
     if not token:
         return False
-    from routers.paperclip_trigger_proxy import _verify_google_oidc_sync
-
-    return _verify_google_oidc_sync(token, audience)
+    try:
+        key = _google_jwks_client.get_signing_key_from_jwt(token).key
+        claims = jwt.decode(
+            token, key, algorithms=["RS256"], audience=audience, issuer=_GOOGLE_ISSUERS, options={"require": ["exp"]}
+        )
+    except Exception:  # unknown kid, bad signature, wrong iss/aud, expired: simply "not verified"
+        return False
+    return claims.get("email_verified") is True

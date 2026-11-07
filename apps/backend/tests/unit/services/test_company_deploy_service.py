@@ -16,7 +16,6 @@ The load-bearing invariants under test (from the task brief):
 * agents are created in topological order (managers before reports);
 * the package CEO / division head reports to Friday; a child reports to its
   own manager's freshly-minted id;
-* routines are created via ``create_agent_routines`` (the dormant path);
 * on failure the agents this run created are rolled back INLINE — deleted +
   unwound — and never an ``is_seeded_agent``;
 * an unreachable container creates ZERO agents;
@@ -34,7 +33,7 @@ import pytest
 
 from core.services import company_deploy_service as svc
 from core.services.company_agent_materializer import render_agent_identity_md
-from core.services.company_package import DeployPlan, PlannedAgent, PlannedRoutine
+from core.services.company_package import DeployPlan, PlannedAgent
 from core.services.hermes_provisioning import HermesProfileError
 from core.services.paperclip_agent_lifecycle import resolve_agent_adapter as real_resolve_agent_adapter
 
@@ -118,7 +117,6 @@ class Harness:
     def __init__(self) -> None:
         self.admin = FakeAdmin()
         self.http = FakeHttp()
-        self.routine_calls: list[dict] = []
         self.seeded_ids: set[str] = set()
         self.deleted: list[str] = []
         self.container = dict(AGENTCORE_CONTAINER)
@@ -166,13 +164,6 @@ def _install(monkeypatch, h: Harness, plan=None):
         return "hermes_gateway", {"url": "https://fake", "hookToken": "hook_tok"}
 
     monkeypatch.setattr(svc, "resolve_agent_adapter", fake_resolve_adapter)
-
-    # Routines.
-    async def fake_create_routines(*, admin, session_cookie, company_id, agent_id, routines):
-        h.routine_calls.append({"agent_id": agent_id, "routines": routines})
-        return [f"routine_{agent_id}"]
-
-    monkeypatch.setattr(svc, "create_agent_routines", fake_create_routines)
 
     # Rollback deps.
     async def fake_is_seeded(*, owner_id, agent_id):
@@ -342,80 +333,6 @@ async def test_child_reports_to_freshly_minted_manager(monkeypatch):
     assert by_name["CEO"]["reports_to"] == FRIDAY_ID
     assert by_name["CTO"]["reports_to"] == FRIDAY_ID  # reports to package ceo -> Friday
     assert by_name["Worker"]["reports_to"] == h.admin.name_to_id["CTO"]
-
-
-# ---------------------------------------------------------------------------
-# Routines (dormant path)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_routines_created_via_create_agent_routines(monkeypatch):
-    plan = _simple_plan(
-        routines=[
-            PlannedRoutine(agent_slug="cto", title="Nightly", description="d", cron="0 8 * * *"),
-            PlannedRoutine(agent_slug="worker", title="Hourly", description="d2", cron="0 * * * *"),
-            # cron-less routine is dropped (create_agent_routines requires a cron).
-            PlannedRoutine(agent_slug="worker", title="NoCron", description="d3", cron=None),
-        ]
-    )
-    h = Harness()
-    h.container = dict(AGENTCORE_CONTAINER)
-    _install(monkeypatch, h, plan=plan)
-    _wire_agentcore_profile(monkeypatch)
-
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    by_agent = {c["agent_id"]: c["routines"] for c in h.routine_calls}
-    cto_id = h.admin.name_to_id["CTO"]
-    worker_id = h.admin.name_to_id["Worker"]
-    assert by_agent[cto_id] == [{"title": "Nightly", "description": "d", "cron": "0 8 * * *"}]
-    assert by_agent[worker_id] == [{"title": "Hourly", "description": "d2", "cron": "0 * * * *"}]
-
-
-@pytest.mark.asyncio
-async def test_no_cron_routines_creates_none(monkeypatch):
-    """A plan with no cron'd routines makes no create_agent_routines calls and
-    still completes without raising."""
-    plan = _simple_plan(routines=[])
-    h = Harness()
-    h.container = dict(AGENTCORE_CONTAINER)
-    _install(monkeypatch, h, plan=plan)
-    _wire_agentcore_profile(monkeypatch)
-
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    assert h.routine_calls == []
-    assert len(h.admin.create_calls) == 3
-
-
-@pytest.mark.asyncio
-async def test_routine_failure_does_not_roll_back_materialized_company(monkeypatch):
-    """A create_agent_routines failure AFTER every agent materialized leaves the
-    deployed company intact — routines are created paused and are re-addable from
-    Teams, so a routine hiccup must NOT tear down healthy agents. run never
-    raises."""
-    plan = _simple_plan(routines=[PlannedRoutine(agent_slug="cto", title="Nightly", description="d", cron="0 8 * * *")])
-    h = Harness()
-    h.container = dict(AGENTCORE_CONTAINER)
-    _install(monkeypatch, h, plan=plan)
-    _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
-
-    async def boom(*, admin, session_cookie, company_id, agent_id, routines):
-        raise RuntimeError("routine creation exploded")
-
-    monkeypatch.setattr(svc, "create_agent_routines", boom)
-
-    # Must NOT raise.
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    # All three agents were created + their Hermes profiles written...
-    assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO", "Worker"]
-    assert len(write_profile.calls) == 3
-    # ...and NONE were rolled back despite the routine failure.
-    assert h.deleted == []
-    # Admin session still closed.
-    assert h.http.closed is True
 
 
 # ---------------------------------------------------------------------------

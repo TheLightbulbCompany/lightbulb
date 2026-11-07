@@ -2458,9 +2458,8 @@ async def test_waiting_and_long_turn_finish_notify_the_owner_once(transport):
     assert [json.loads(h["events"][0])["payload"]["state"] for h in attention] == ["waiting", "finished"]
 
     # Activity: the owner's feed holds both; the waiting one pins while the session still waits.
-    teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
     with patch("time.time", return_value=10200):
-        page = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
+        page = await activity.list_activity(ALICE, cursor=None, limit=30)
     session_items = [i for i in page.items if i.kind == "session"]
     assert [(i.subtype, i.state) for i in session_items] == [("finished", "open"), ("waiting", "resolved")]
     assert session_items[0].actions[0].navigate.kind == "session" and session_items[0].actions[0].navigate.id == sid
@@ -2469,12 +2468,12 @@ async def test_waiting_and_long_turn_finish_notify_the_owner_once(transport):
     with patch("core.services.push_service.send_push_to_user", push), patch("time.time", return_value=10300):
         await relay(transport).handle_message("conn-1", heartbeat(sid, status="waiting-approval"))
         await asyncio.gather(*module._tasks)
-        page = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
+        page = await activity.list_activity(ALICE, cursor=None, limit=30)
     assert page.items[0].subtype == "waiting" and page.items[0].state == "open"
     assert page.attention_count == 1
     # Nobody else is told: Bob's feed has no session items.
     with patch("time.time", return_value=10300):
-        bob = await activity.list_activity(BOB, cursor=None, limit=30, teams_ctx=teams)
+        bob = await activity.list_activity(BOB, cursor=None, limit=30)
     assert not [i for i in bob.items if i.kind == "session"]
 
 
@@ -2652,9 +2651,8 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
     await send(10401, batch("b3", 8, [end("c1", "finished", background=True)]))
     assert len(pushes) == 3 and pushes[2][2].startswith("Finished")
 
-    teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
     with patch("time.time", return_value=10500):
-        feed = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
+        feed = await activity.list_activity(ALICE, cursor=None, limit=30)
     assert len([i for i in feed.items if i.kind == "session"]) == 3
 
 

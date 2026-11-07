@@ -863,7 +863,7 @@ def test_status_reports_the_key_mode_so_the_card_can_label_test_data(monkeypatch
     ],
 )
 def test_the_paywall_copy_names_stripe_not_scheduled_routines(client, monkeypatch, method, path, body):
-    from routers.teams import _guards
+    from core.services import entitlement_guards as _guards
 
     monkeypatch.setattr(mod, "require_always_on_entitlement", _guards.require_always_on_entitlement)
     monkeypatch.setattr(_guards.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))

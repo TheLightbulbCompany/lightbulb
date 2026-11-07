@@ -1,8 +1,7 @@
-"""Webhook fires verified in the backend (spec 06 §3.5, contracts-v2 §11). No route of its own.
+"""Webhook fires verified in the backend (spec 06 §3.5, contracts-v2 §11).
 
-`paperclip_trigger_proxy` (same public URL `/api/v1/hooks/t/{owner}/{public_id}`) and `meta_webhook` hand a
-delivery here when the workspace is on the super-agent switch and the trigger has a `HOOK#` row; everything
-else keeps going to Paperclip unchanged.
+The public URL is `POST /api/v1/hooks/t/{owner}/{public_id}`; `meta_webhook` hands its deliveries here too.
+A trigger with no `HOOK#` row is a 404 (the Paperclip trigger proxy is gone, Phase 1 task 7).
 
 Order: entitlement 402 → `HOOK#` (the key binds the public id to this owner) 404 → rate 429 → Google `sync` /
 GitHub `ping` 204 → signature 401 → event filter 200 `ignored` → dedupe key → raw body to S3 →
@@ -19,7 +18,7 @@ import time
 from datetime import datetime, timezone
 
 import boto3
-from fastapi import Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.common import WorkflowIDReusePolicy
 
@@ -35,6 +34,7 @@ from core.temporal.client import get_client
 from routers._public_ingress import _check_rate_limit
 
 logger = logging.getLogger(__name__)
+router = APIRouter()
 
 _SECRET_TTL_S = 60
 # (owner, secret name) -> (secret dict or None, fetched at). Rotation shows up within a minute.
@@ -154,3 +154,11 @@ async def fire_verified(owner_id: str, public_id: str, body: bytes, *, dedupe_ke
     if hook is None:
         return _json(404, {"detail": "unknown_trigger"})
     return await _start(owner_id, hook, dedupe_key, body)
+
+
+@router.post("/t/{owner_id}/{public_id}")
+async def fire_route(owner_id: str, public_id: str, request: Request) -> Response:
+    # public ids are short alphanumerics; the guard keeps path injection out of keys and rate buckets.
+    if not public_id.isalnum() or len(public_id) > 64:
+        raise HTTPException(status_code=400, detail="invalid_public_id")
+    return await fire(owner_id, public_id, request)

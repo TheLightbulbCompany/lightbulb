@@ -10,7 +10,7 @@ import pytest
 
 from core.services import paperclip_agent_lifecycle as lifecycle
 from core.services import user_provision
-from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
+from core.services.paperclip_agent_lifecycle import NIGHTLY_CEO_ROUTINE_TITLE
 
 OFF = {"enabled": False, "wakeOnDemand": True}
 FEED_TITLE = user_provision.CEO_ROUTINES[0][1]

@@ -504,10 +504,6 @@ class Settings(BaseSettings):
     # plugin configJson is per-company on the deployed fork line, so env is
     # the only instance-wide channel).
     PAPERCLIP_EVENTS_WEBHOOK_SECRET: str = ""
-    # owner_id -> Paperclip agent id that platform-failed, recovery-blocked issues escalate
-    # to (core/services/paperclip_escalation.py); an owner not listed uses its starter
-    # Engineering agent. JSON object, set per env by CDK (service-stack.ts).
-    PAPERCLIP_ESCALATION_AGENT_OVERRIDES: dict[str, str] = {}
     # The `hub.verify_token` Meta echoes back on the one-time subscribe
     # handshake for the APP-LEVEL webhook callback (routers/meta_webhook.py).
     # It is a shared string of our choosing, set identically here and in the

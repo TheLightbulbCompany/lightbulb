@@ -1,8 +1,7 @@
 """Error-translation contract tests for ConnectionService.
 
 The service wraps DynamoDB calls and translates every boto `ClientError`
-into a `ConnectionServiceError` so callers (websocket lifecycle code,
-TeamsEventBroker fanout) get a consistent exception type to catch.
+into a `ConnectionServiceError` so callers (websocket lifecycle code) get a consistent exception type to catch.
 
 `get_connection` is the synchronous per-message lookup and
 `delete_connection` is the $disconnect hook. A regression that lets a raw

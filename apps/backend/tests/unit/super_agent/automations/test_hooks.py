@@ -1,7 +1,7 @@
 """Webhooks verified in the backend at their existing URLs (lane A, Task 7; spec 06 §3.5).
 
-Same URL `/api/v1/hooks/t/{owner}/{public_id}`: a super-agent workspace with a `HOOK#` row is verified and
-fired here; everything else goes to Paperclip exactly as before."""
+Same URL `/api/v1/hooks/t/{owner}/{public_id}`: a trigger with a `HOOK#` row is verified and fired here;
+anything else is a 404 (the Paperclip trigger proxy is gone, Phase 1 task 7)."""
 
 import hashlib
 import hmac
@@ -129,9 +129,12 @@ async def test_signature_failure_401_no_trigger(env, client):
 
 async def test_unknown_public_id_404(env, client):
     await _hook()
-    with patch("routers.paperclip_trigger_proxy._resolve_trigger_binding", AsyncMock(return_value=False)):
-        r = _post(client, b"{}", {}, pid="0" * 24)
+    r = _post(client, b"{}", {}, pid="0" * 24)
     assert r.status_code == 404
+
+
+async def test_bad_public_id_400(env, client):
+    assert _post(client, b"{}", {}, pid="a-b").status_code == 400
 
 
 async def test_other_owners_public_id_404(env, client):
@@ -261,14 +264,10 @@ async def test_meta_backend_fire_unavailable_still_200_but_logged(env, client, m
     assert any(r.name == "routers.meta_webhook" and PID in r.getMessage() for r in caplog.records)
 
 
-async def test_no_hook_row_forwards_to_paperclip(env, client):
-    """Switch on but the trigger is still a Paperclip routine (before the cutover): today's path."""
-    with (
-        patch("routers.paperclip_trigger_proxy.hooks.fire", AsyncMock()) as fire,
-        patch("routers.paperclip_trigger_proxy.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
-    ):
-        r = _post(client, _stripe_body(), _stripe_headers(_stripe_body()))
-    assert not fire.called and r.status_code == 402
+async def test_no_hook_row_is_404_never_paperclip(env, client):
+    """A pre-switch Paperclip trigger (no `HOOK#` row) no longer fires anywhere."""
+    r = _post(client, _stripe_body(), _stripe_headers(_stripe_body()))
+    assert r.status_code == 404 and env.temporal.started == []
 
 
 async def test_meta_entry_fires_verified(env, client, monkeypatch):

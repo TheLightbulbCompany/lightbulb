@@ -5,15 +5,13 @@ PostHog, Sentry, Linear, Attio) to arm a trigger. Upstream Paperclip mints
 its own ``secretMaterial.webhookUrl`` from ``PAPERCLIP_API_URL``, which CDK
 sets to the in-VPC Cloud Map host (``paperclip-stack.ts``) — unreachable
 from the public internet, so it must never be handed to an owner. The
-reachable address is this platform's tier-2 ingress proxy:
-``POST /api/v1/hooks/t/{owner_id}/{public_id}``
-(``routers/paperclip_trigger_proxy.py``, mounted in ``main.py``).
+reachable address is this platform's hook route:
+``POST /api/v1/hooks/t/{owner_id}/{public_id}`` (``routers/hooks.py``, mounted in ``main.py``).
 
 A subtly wrong URL pasted into Stripe fails silently at delivery time —
 worse than showing nothing — so every producer reads the shape from here
-rather than re-spelling it: the guided seed (``inbound_triggers``), the
-Gmail push OIDC audience check (``paperclip_trigger_proxy``), and the
-Teams BFF routine projection (``routers/teams/work.py``).
+rather than re-spelling it: the guided seed (``inbound_triggers``) and the
+Gmail push OIDC audience check (``routers/hooks.py``).
 """
 
 from __future__ import annotations

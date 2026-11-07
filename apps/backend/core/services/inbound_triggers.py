@@ -2,9 +2,8 @@
 inbound integration event — the backend seam behind "connect Stripe -> pick
 'payment failed' -> get a pre-filled automation."
 
-Composes the same two-call ``create_routine`` -> ``create_routine_trigger``
-sequence ``core/services/agent_routine_provisioning.py`` uses for scheduled
-routines (reuses its routine-body builder directly), driven by the registry
+Composes the two-call ``create_routine`` -> ``create_routine_trigger``
+sequence, driven by the registry
 (``core/services/credentials/registry.py``) instead of a hardcoded spec list.
 
 Pass ``routine_id`` and the first call is skipped: the trigger is ATTACHED to
@@ -264,9 +263,7 @@ def _provider_event_names(events: list[registry.InboundEvent]) -> list[str]:
 
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
-    """Same resolution ``routers.paperclip_trigger_proxy._company_id_for_owner``
-    uses, duplicated here rather than imported across the router/service
-    boundary (services must not depend on routers)."""
+    """The owner's Paperclip company id, or None."""
     ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
     return (ws.company_id or None) if ws is not None else None
 

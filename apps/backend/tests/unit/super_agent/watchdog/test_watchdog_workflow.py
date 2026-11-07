@@ -38,7 +38,7 @@ def _fakes(calls, n_candidates=12, judge_fails=False, act_fails=False):
         return Proposal("ws", c.task_id, 1, "judge", "none" if c.age_min % 2 else "steer", f"f-{c.task_id}", 0.9)
 
     @activity.defn(name="watchdog_act")
-    async def act(cfg: WatchdogConfig, p: Proposal) -> ActOut:
+    async def act(cfg: WatchdogConfig, p: Proposal, by: str = "watchdog") -> ActOut:  # the real signature
         calls.append(("act", p.action))
         if act_fails:
             raise RuntimeError("act blew up")

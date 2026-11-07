@@ -53,7 +53,9 @@ class WatchdogWorkflow:
             if p.action == "none":
                 continue
             try:
-                out = await workflow.execute_activity("watchdog_act", args=[cfg, p], result_type=ActOut, **_ACT)
+                out = await workflow.execute_activity(
+                    "watchdog_act", args=[cfg, p, "watchdog"], result_type=ActOut, **_ACT
+                )
             except ActivityError:
                 continue
             acted += out.outcome == "done"

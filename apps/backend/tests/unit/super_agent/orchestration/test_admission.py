@@ -148,6 +148,27 @@ async def test_admit_explicit_ask_respond(world):
     assert trig["admission"] == "respond" and trig["actorUserId"] == "sam"
 
 
+async def test_cli_send_is_admitted_as_its_person_in_their_dm_lane(world):
+    # A computer's (CLI), the hosted MCP's or A2A's send: author kind "system", accountable person on actorUserId.
+    world["meta"]["kind"] = "dm"
+    msg = {**_msg(), "author": {"kind": "system", "id": "mcp:sam:engine"}, "actorUserId": "sam"}
+    tid = await _admit(world, msg)
+    assert world["router"] == [admission.TriggerRef(WS, tid, ts.router_lane_key("sam"), "respond", ROOM)]
+    trig = await repo.get_trigger(WS, tid)
+    assert trig["actorUserId"] == "sam"
+
+
+@pytest.mark.parametrize(
+    "author",
+    [{"kind": "system", "id": "lightbulb:notice"}, {"kind": "agent", "id": CEO}],
+    ids=["system-notice", "agent-own-post"],
+)
+async def test_system_notices_and_agent_posts_never_wake(world, author):
+    world["meta"]["kind"] = "dm"
+    tid = await _admit(world, {**_msg(), "author": author})
+    assert world["router"] == [] and await repo.get_trigger(WS, tid) is None
+
+
 async def test_admit_message_ingests_memory_once(world, monkeypatch):
     seen = []
 

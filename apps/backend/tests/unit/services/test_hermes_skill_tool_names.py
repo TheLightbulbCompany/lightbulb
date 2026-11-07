@@ -52,7 +52,7 @@ def _texts(skills: Path):
 
 def test_the_build_produces_the_hermes_image_tree(skills):
     assert (skills / "lightbulb/SKILL.md").exists()
-    assert (skills / "paperclip/SKILL.md").exists()
+    assert not (skills / "paperclip").exists()  # Paperclip exit (task 8b.2)
     # The one thing the build deliberately does not ship: the engineer-facing
     # MAINTENANCE.md files.
     assert not list(skills.rglob("MAINTENANCE.md"))
@@ -84,11 +84,6 @@ def test_our_own_plugin_tool_names_are_still_referenced(skills):
     anchors = (REPO / "apps/infra/hermes/skills-src/lightbulb/MAINTENANCE.md").read_text()
     assert "send_room_message" in anchors
     assert "hire_suggestion" in anchors
-
-
-def test_the_paperclip_helper_path_points_at_the_baked_skills_dir(skills):
-    text = (skills / "paperclip/SKILL.md").read_text()
-    assert "/opt/hermes-skills/paperclip/scripts/paperclip-api.sh" in text
 
 
 def test_there_is_no_overlay_shadowing_the_source(skills):

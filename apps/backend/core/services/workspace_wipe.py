@@ -125,10 +125,12 @@ from core.services.billing_service import delete_stripe_customer
 from core.services.hermes_provisioning import delete_workspace_runtime
 from core.services.voice_calls import wipe_owner_voice
 from core.services.oauth_service import revoke_user_oauth
-from core.services.owner_secret_sweep import _list_names_with_prefix, delete_owner_secrets, list_owner_secret_names
-from core.services.paperclip_api_key import (
+from core.services.owner_secret_sweep import (
+    _list_names_with_prefix,
     delete_owner_agent_key_secrets,
+    delete_owner_secrets,
     list_owner_agent_key_secret_names,
+    list_owner_secret_names,
 )
 from core.services.paperclip_user_delete import delete_paperclip_user
 

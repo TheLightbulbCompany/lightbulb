@@ -7,8 +7,6 @@ self-assign". Paperclip allows it: an agent assigning a NEW issue to itself pass
 under the standard trust preset, and the delegation-cycle guard skips self-assignment.
 """
 
-import json
-import os
 import pathlib
 import subprocess
 
@@ -21,23 +19,6 @@ def _built(tmp_path):
     return out
 
 
-def test_no_skill_text_forbids_filing_your_own_task(tmp_path):
-    out = _built(tmp_path)
-    for rel in ("paperclip/SKILL.md", "paperclip/references/delegation.md"):
-        text = (out / rel).read_text()
-        assert "Never self-assign" not in text, rel
-        assert "Never take a task that is not yours" in text, rel
-    assert "`--assignee` yourself, is allowed" in (out / "paperclip/SKILL.md").read_text()
-    howto = (out / "lightbulb/references/chat-vs-document.md").read_text()
+def test_the_howto_files_your_own_task_assigned_to_yourself(tmp_path):
+    howto = (_built(tmp_path) / "lightbulb/references/chat-vs-document.md").read_text()
     assert "assigned to yourself" in howto and '--assignee "<your agent id>"' in howto
-
-
-def test_assigned_create_sends_the_assignee_and_starts_it(tmp_path):
-    script = _built(tmp_path) / "paperclip/scripts/paperclip-api.sh"
-    env = {**os.environ, "HERMES_SESSION_KEY": "", "LIGHTBULB_ROOM_SESSION_KEY": ""}
-    body = subprocess.run(
-        [str(script), "create", "company-1", "--title", "Trace CTAs", "--assignee", "agent-self", "--dry-run"],
-        check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env,
-    ).stdout
-    sent = json.loads(body)
-    assert sent["assigneeAgentId"] == "agent-self" and sent["status"] == "todo"

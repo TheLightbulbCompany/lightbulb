@@ -1192,65 +1192,18 @@ async def test_paused_automation_record_survives_a_whole_item_put_and_clears_per
 
 
 # ---------------------------------------------------------------------------
-# Per-agent Paperclip API keys (agent_keys map, Fernet)
+# Old per-agent Paperclip API keys (agent_keys map; delete only)
 # ---------------------------------------------------------------------------
 
 
-async def test_agent_key_round_trip_is_encrypted_at_rest(repo):
-    await repo.put_workspace(_make_company("org_k"))
-
-    assert await repo.get_agent_key("org_k", "a1") is None
-    assert await repo.put_agent_key("org_k", "a1", "pcp_live_1") == "pcp_live_1"
-    assert await repo.get_agent_key("org_k", "a1") == "pcp_live_1"
-
-    raw = repo._table().get_item(Key={"user_id": "org_k"})["Item"]["agent_keys"]["a1"]
-    assert "pcp_live_1" not in raw
-
-    await repo.delete_agent_key("org_k", "a1")
-    assert await repo.get_agent_key("org_k", "a1") is None
-    await repo.delete_agent_key("org_k", "a1")  # idempotent
-
-
-async def test_put_agent_key_is_create_only_and_returns_the_winner(repo):
-    await repo.put_workspace(_make_company("org_k"))
-    await repo.put_agent_key("org_k", "a1", "first")
-
-    assert await repo.put_agent_key("org_k", "a1", "second") == "first"
-    assert await repo.get_agent_key("org_k", "a1") == "first"
-
-
-async def test_put_agent_key_overwrites_an_undecryptable_key(repo):
+async def test_delete_agent_key_drops_an_old_key_idempotently(repo):
     await repo.put_workspace(_make_company("org_k"))
     repo._table().update_item(
-        Key={"user_id": "org_k"},
-        UpdateExpression="SET agent_keys = :m",
-        ExpressionAttributeValues={":m": {"a1": "not-a-fernet-token"}},
+        Key={"user_id": "org_k"}, UpdateExpression="SET agent_keys = :m", ExpressionAttributeValues={":m": {"a1": "x"}}
     )
-
-    assert await repo.get_agent_key("org_k", "a1") is None
-    assert await repo.put_agent_key("org_k", "a1", "fresh") == "fresh"
-    assert await repo.get_agent_key("org_k", "a1") == "fresh"
-
-
-async def test_put_agent_key_without_a_workspace_row_writes_nothing(repo):
-    assert await repo.put_agent_key("org_none", "a1", "k") is None
-    assert "Item" not in repo._table().get_item(Key={"user_id": "org_none"})
-
-
-async def test_a_concurrent_agent_key_survives_a_put_workspace_from_an_older_snapshot(repo):
-    """A reconcile reads the row, a hire stores a key, then the reconcile writes its snapshot:
-    the key must survive (put_workspace never writes agent_keys)."""
-    await repo.put_workspace(_make_company("org_k"))
-    await repo.put_agent_key("org_k", "a0", "k0")
-    snapshot = await repo.get_workspace("org_k")
-
-    await repo.put_agent_key("org_k", "a1", "k1")
-    snapshot.last_error = "reconciled"
-    await repo.put_workspace(snapshot)
-
-    assert await repo.get_agent_key("org_k", "a0") == "k0"
-    assert await repo.get_agent_key("org_k", "a1") == "k1"
-    assert (await repo.get_workspace("org_k")).last_error == "reconciled"
+    await repo.delete_agent_key("org_k", "a1")
+    assert repo._table().get_item(Key={"user_id": "org_k"})["Item"]["agent_keys"] == {}
+    await repo.delete_agent_key("org_k", "a1")  # idempotent
 
 
 async def test_put_workspace_still_clears_fields_the_snapshot_does_not_carry(repo):

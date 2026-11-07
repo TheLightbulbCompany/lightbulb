@@ -672,26 +672,20 @@ def _workspace(args: dict, *, session_id: str = "", **_kw) -> str:
         return "Lightbulb workspace is unavailable right now."
 
 
-# ---- request_approval: a person's decision as a real Paperclip approval ------------------------
-# Observed dev 2026-10-14 (Walker Studio): told to raise an approval through
-# `paperclip-api.sh raw POST .../approvals` with a jq body, the managed model asked in chat or
-# assigned the person a task instead, and /teams/approvals stayed empty. One named tool is what
-# the model reaches for. Auth is the agent's own Paperclip key from the profile's secret scope,
-# the same credential paperclip-api.sh uses (turn._secret_scope; Hermes copies the ContextVar
-# into tool workers).
+# ---- request_approval: a person's decision on a task run, as a Question ------------------------
+# One named tool is what the model reaches for (dev 2026-10-14). Off a task run it refuses and the agent asks in
+# its reply (approval modes ruling, 6 Nov).
 APPROVAL_SCHEMA = {
     "name": "request_approval",
-    "description": "Ask a person to decide something: creates an approval in their Needs you with "
-                   "Approve and Reject buttons; approving it wakes you with the answer. Use it for "
-                   "every sign-off (a plan, prices, spend, a launch, a public post, a vendor), never a "
-                   "task assigned to the person or a question in chat. On a Lightbulb task these stop for "
+    "description": "On a Lightbulb task, ask a person to decide something: a question in their Needs you "
+                   "with Allow and Deny; their answer wakes you. Use it for every sign-off (a plan, prices, "
+                   "spend, a launch, a public post, a vendor), never a question in chat. These stop for "
                    "approval by themselves, so don't ask before them: lightbulb-mail.sh / lightbulb-text.sh "
                    "send, lightbulb app publish, gh pr merge, request_purchase and lightbulb_network send. "
                    "Any OTHER send, spend or publish still needs request_approval first, once: gog gmail send "
                    "or calendar invites, a QuickBooks send_invoice, a browser or computer checkout, form "
                    "submit or post, git push, vercel deploy, npm publish, gh release, gh pr create, or a raw "
-                   "curl with credentials. Linked tasks move to in_review. "
-                   "Returns the approval's link: give it to the person in your reply.",
+                   "curl with credentials. In a room conversation, ask in your reply instead.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -699,19 +693,13 @@ APPROVAL_SCHEMA = {
             "summary": {"type": "string",
                         "description": "What the person needs to decide it, in two or three sentences, "
                                        "with the document link if there is one."},
-            "tasks": {"type": "array", "items": {"type": "string"},
-                      "description": "Tasks this decision is about, as identifiers like WAL-6 (or ids)."},
-            "recommendedAction": {"type": "string", "description": "What you will do if approved."},
-            "companyPlan": {"type": "boolean",
-                            "description": "True only when this is your plan or strategy for the whole company."},
             "subkind": {"type": "string", "enum": ["tool", "spend", "purchase", "provider_consent", "send"],
-                        "description": "On a Lightbulb task: what kind of decision this is (who may answer follows "
-                                       "from it). Leave it out otherwise."},
+                        "description": "What kind of decision this is (who may answer follows from it)."},
         },
         "required": ["title", "summary"],
     },
 }
-APPROVAL_NO_KEY = "request_approval is unavailable: this turn has no Paperclip credentials."
+APPROVAL_TASK_ONLY = "request_approval works only on a Lightbulb task. Ask the person in your reply instead."
 TASK_SUBKINDS = ("tool", "spend", "purchase", "provider_consent", "send")  # context-free ones (spec 05 §3.3)
 TASK_STALE_RUN = "This run is no longer the task's current attempt: stop and end your turn."
 TASK_CLOSED = "This task was stopped: stop and end your turn."
@@ -765,62 +753,6 @@ def _task_question(ctx: dict, *, kind: str, subkind: str, title: str, text: str,
     return f"{label}. Question {qid} is open; the answer arrives as input when they answer. Carry on meanwhile."
 
 
-def _paperclip_call(method: str, url: str, key: str, body: dict | None = None, run_id: str | None = None):
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    if run_id:  # a live heartbeat run's checkout lock needs its id (fork issues.ts)
-        headers["X-Paperclip-Run-Id"] = run_id
-    request = urllib.request.Request(
-        url, data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=20) as res:
-        return json.loads(res.read() or b"{}")
-
-
-def _scope_secret(name: str) -> str:
-    try:
-        from agent.secret_scope import get_secret
-
-        return str(get_secret(name) or "").strip()
-    except Exception:  # noqa: BLE001 -- unimportable, or no scope installed (fails closed)
-        return ""
-
-
-def _app_url() -> str:
-    try:
-        facts = json.loads((turn_context._home() / "lightbulb-facts.json").read_text(encoding="utf-8"))
-        return str(facts.get("app_url") or "").rstrip("/")
-    except Exception:  # noqa: BLE001 -- a relative link still opens in the app
-        return ""
-
-
-def _http_error_text(exc: urllib.error.HTTPError) -> str:
-    try:
-        err = json.loads(exc.read(4096) or b"{}")
-        detail = err.get("error") if isinstance(err, dict) else None
-    except Exception:  # noqa: BLE001
-        detail = None
-    return f"HTTP {exc.code}" + (f": {str(detail)[:200]}" if detail else "")
-
-
-_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-
-
-def _with_from_section(description: str) -> str:
-    """paperclip-api.sh's ``with_from_section``: a task moved from a room turn records the room
-    (and the message and person that asked), so its own run knows where to report back."""
-    from bridge import turn
-
-    key = _scope_secret("LIGHTBULB_ROOM_SESSION_KEY")  # set for room turns only (turn.py room_env)
-    if not turn.ROOM_SESSION_RE.match(key) or "## From" in description.splitlines():
-        return description
-    room = key.rsplit(":", 1)[-1]
-    text = f"## From\nFiled from room `{room}`."
-    if _SAFE_ID.match(message := _scope_secret("LIGHTBULB_ROOM_MESSAGE_ID")):
-        text += f" The message that asked: /chat?panel=chat&room={room}&message={message}"
-    if _SAFE_ID.match(asker := _scope_secret("LIGHTBULB_ROOM_REQUESTER_ID")):
-        text += f" Asked by user `{asker}`."
-    return f"{description}\n\n{text}" if description else text
-
-
 def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if _task_run(ctx):  # a super-agent task run: one Question row, never Paperclip
@@ -833,81 +765,17 @@ def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
             options=[{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}], blocking=True,
             key=f"approval:{title}:{summary}",
         )
-    base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
-    if not base or not key:
-        return APPROVAL_NO_KEY
-    run_id = _scope_secret("PAPERCLIP_RUN_ID") or None
-    title, summary = str(args.get("title") or "").strip(), str(args.get("summary") or "").strip()
-    if not title or not summary:
-        return "title and summary are required."
-    refs = [str(t).strip() for t in (args.get("tasks") or []) if str(t).strip()]
-    try:
-        me = _paperclip_call("GET", f"{base}/api/agents/me", key)
-        issues = []
-        for ref in refs:  # GET /api/issues/:id resolves WAL-6 identifiers too (fork router.param)
-            try:
-                issues.append(_paperclip_call("GET", f"{base}/api/issues/{urllib.parse.quote(ref)}", key))
-            except urllib.error.HTTPError as exc:
-                if exc.code == 404:
-                    return f"Approval not created: task {ref} was not found."
-                raise
-        company_id = me["companyId"]
-        # Read before the create: a failure after it would read "not created" and invite a duplicate.
-        company = _paperclip_call("GET", f"{base}/api/companies/{company_id}", key)
-        # approve_ceo_strategy is the ROOT CEO's company plan only: by role, never by name.
-        root_ceo = me.get("role") == "ceo" and not me.get("reportsTo")
-        ceo_plan = bool(args.get("companyPlan")) and root_ceo
-        payload = {"title": title, "summary": summary}
-        if ceo_plan:
-            payload["plan"] = summary
-        if str(args.get("recommendedAction") or "").strip():
-            payload["recommendedAction"] = str(args["recommendedAction"]).strip()
-        body = {"type": "approve_ceo_strategy" if ceo_plan else "request_board_approval",
-                "requestedByAgentId": me["id"], "payload": payload}
-        if issues:
-            body["issueIds"] = [issue["id"] for issue in issues]
-    except urllib.error.HTTPError as exc:
-        return f"Approval not created: {_http_error_text(exc)}."
-    except Exception as exc:  # noqa: BLE001
-        return f"Approval not created: {type(exc).__name__}."
-    try:
-        approval = _paperclip_call("POST", f"{base}/api/companies/{company_id}/approvals", key, body, run_id)
-    except Exception as exc:  # noqa: BLE001
-        if isinstance(exc, urllib.error.HTTPError):
-            return f"Approval not created: {_http_error_text(exc)}."
-        return f"Approval not created: {type(exc).__name__}."
-    result = {"approvalId": approval["id"], "type": body["type"],
-              "link": f"{_app_url()}/{company.get('issuePrefix')}/approvals/{approval['id']}"}
-    # The linked approval is the review path an agent-authored in_review needs, so it goes first.
-    not_moved = []
-    for issue in issues:
-        try:
-            change = {"status": "in_review"}
-            described = _with_from_section(issue.get("description") or "")
-            if described != (issue.get("description") or ""):
-                change["description"] = described
-            _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, change, run_id)
-        except urllib.error.HTTPError as exc:
-            not_moved.append(f"{issue.get('identifier') or issue['id']} ({_http_error_text(exc)})")
-        except Exception as exc:  # noqa: BLE001
-            not_moved.append(f"{issue.get('identifier') or issue['id']} ({type(exc).__name__})")
-    if not_moved:
-        result["notMovedToInReview"] = not_moved
-    return json.dumps(result)
+    return APPROVAL_TASK_ONLY
 
 
-# ---- ask_person: a question, or a blocked report, as a Paperclip interaction ---------------------
-# Paperclip's issue-thread interactions already reach Activity's Needs you ("has a question for
-# you", core/services/activity.py render_interaction) and wake the assignee when answered. Agents
-# only had a hand-built raw API call for them, so a blocked agent left a comment nobody read
-# (G1, 30 Oct: ISOA-867 sat 8 days). One named tool, like request_approval above.
+# ---- ask_person: a question, or a blocked report, as a Question on the task run ------------------
+# A blocked agent used to leave a comment nobody read (G1, 30 Oct). One named tool, like request_approval above.
 ASK_PERSON_SCHEMA = {
     "name": "ask_person",
     "description": "Ask a person a question on your task: it shows in their Needs you, and their answer "
                    "wakes you with it. Use it instead of guessing between options, and instead of a "
-                   "comment when you are blocked (blocked: true also marks the task blocked). Give 2 to 4 "
-                   "likely answers, recommended first, or none for a typed answer. One open question per "
-                   "task: a new one replaces your earlier unanswered one, so ask everything in one. In a "
+                   "comment when you are blocked (blocked: true ends your turn until the answer). Give 2 to 4 "
+                   "likely answers, recommended first, or none for a typed answer. Ask everything in one. In a "
                    "room conversation, ask in your reply instead.",
     "parameters": {
         "type": "object",
@@ -916,8 +784,6 @@ ASK_PERSON_SCHEMA = {
             "options": {"type": "array", "items": {"type": "string"},
                         "description": "2 to 4 likely answers, recommended first."},
             "details": {"type": "string", "description": "What the person needs to know to answer."},
-            "task": {"type": "string",
-                     "description": "The task this is about, like WAL-6. Defaults to the task you are running."},
             "blocked": {"type": "boolean", "description": "True when the work cannot continue until the answer."},
         },
         "required": ["question"],
@@ -1063,55 +929,7 @@ def _ask_person(args: dict, *, session_id: str = "", **_kw) -> str:
             options=[{"id": f"o{i}", "label": label[:200]} for i, label in enumerate(options, 1)],
             blocking=bool(args.get("blocked")), key=f"question:{question}:{details}",
         )
-    ref = str(args.get("task") or "").strip() or _scope_secret("PAPERCLIP_TASK_ID")
-    run_id = _scope_secret("PAPERCLIP_RUN_ID")
-    if not ref or not run_id:  # the fork's create requires the agent's run (routes requireAgentRunId)
-        return ASK_IN_REPLY
-    base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
-    if not base or not key:
-        return "ask_person is unavailable: this turn has no Paperclip credentials."
-    choices = ([{"id": f"o{i}", "label": label[:1000]} for i, label in enumerate(options, 1)]
-               or [{"id": "answer", "label": "Type your answer", "freeText": True}])
-    prompt = {"id": "q1", "prompt": question[:4000], "selectionMode": "single", "required": True,
-              "options": choices}
-    if str(args.get("details") or "").strip():
-        prompt["helpText"] = str(args["details"]).strip()[:4000]
-    body = {"kind": "ask_user_questions", "resolverPolicy": "board_only",
-            "continuationPolicy": "wake_assignee", "title": question[:240],
-            "payload": {"version": 1, "supersedeOnUserComment": True, "questions": [prompt]}}
-    try:
-        try:
-            issue = _paperclip_call("GET", f"{base}/api/issues/{urllib.parse.quote(ref)}", key)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return f"Question not created: task {ref} was not found."
-            raise
-        me = _paperclip_call("GET", f"{base}/api/agents/me", key)
-        company = _paperclip_call("GET", f"{base}/api/companies/{me['companyId']}", key)
-        # The fork replays a key only for the same run and an identical body, and 409s anything else
-        # under it (issue-thread-interactions.ts isEquivalentCreateRequest), so both are in the key.
-        digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:24]
-        body["idempotencyKey"] = f"ask:{issue['id']}:{run_id}:{digest}"
-        made = _paperclip_call("POST", f"{base}/api/issues/{issue['id']}/interactions", key, body, run_id)
-        if made.get("status", "pending") != "pending":  # a replay of a card already answered or expired
-            return f"Question not created: this exact question is already {made.get('status')} on this task."
-        blocked = False
-        if args.get("blocked"):  # after the card exists: a failed ask never leaves the task parked
-            change = {"status": "blocked", "unblockDescriptor": {
-                "owner": {"agentId": me["id"]},  # an agent may name only itself (heartbeat.md)
-                "action": f"Resume when the person answers: {question}"[:500]}}
-            try:
-                _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, change, run_id)
-                blocked = True
-            except urllib.error.HTTPError:
-                pass  # the question is out; the result says the task is not blocked
-    except urllib.error.HTTPError as exc:
-        return f"Question not created: {_http_error_text(exc)}."
-    except Exception as exc:  # noqa: BLE001
-        return f"Question not created: {type(exc).__name__}."
-    ident = issue.get("identifier") or issue["id"]
-    return json.dumps({"interactionId": made.get("id"), "blocked": blocked,
-                       "link": f"{_app_url()}/{company.get('issuePrefix')}/issues/{ident}"})
+    return ASK_IN_REPLY
 
 
 def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:

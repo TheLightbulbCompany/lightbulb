@@ -21,11 +21,10 @@ class FakeBackend:
     """urlopen stand-in for the backend's /api/v1/internal/memory/* endpoints."""
 
     def __init__(self, reply=None, fail=False):
-        self.reply, self.fail, self.calls, self.board = PAGE if reply is None else reply, fail, [], []
+        self.reply, self.fail, self.calls = PAGE if reply is None else reply, fail, []
 
     def __call__(self, req, timeout=None):
-        if req.data is None:  # the task board's GET
-            return io.BytesIO(json.dumps(self.board if "in_progress" in req.full_url else []).encode())
+        assert req.data is not None, "a GET: the Paperclip board read is gone (task 8b.2)"
         self.calls.append((req.full_url, req.get_header("Authorization"), json.loads(req.data), timeout))
         if self.fail:
             raise TimeoutError("timed out")
@@ -34,12 +33,8 @@ class FakeBackend:
 
 @pytest.fixture
 def backend(mod, monkeypatch):  # noqa: F811
-    for k, v in {"PAPERCLIP_API_URL": "http://pc.local/", "PAPERCLIP_API_KEY": "pk-agent",
-                 "PAPERCLIP_COMPANY_ID": "co-1"}.items():
-        monkeypatch.setenv(k, v)  # the task board's identity; memory uses the bridge's
     monkeypatch.setattr(bridge, "API", "http://api.local")
     monkeypatch.setattr(bridge, "HOOK_TOKEN", "hook-tok")
-    mod._BOARD.clear()
     fake = FakeBackend()
     monkeypatch.setattr(mod.urllib.request, "urlopen", fake)
     return fake
@@ -75,30 +70,21 @@ def test_prefetch_injects_page_lines_under_budget(mod, backend):
     p = provider(mod, FakeClient())
     assert p.prefetch(said("launch?")).splitlines() == [
         "Remembered:", "- Launch is Nov 3 (contested)", "- Weekly reports"]
-    backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
-    mod._BOARD.clear()
-    recalled, board = p.prefetch(said("launch?")).split("\n\n")
-    assert recalled.endswith("- Weekly reports") and "ISOA-9 Launch page" in board
 
 
-def test_prefetch_backend_failure_returns_board_only(mod, backend, caplog):
+def test_prefetch_backend_failure_returns_nothing(mod, backend, caplog):
     backend.fail = True
     with caplog.at_level(logging.WARNING):
         out = provider(mod, FakeClient()).prefetch(said("secret launch plan?"))
     assert out == "" and "secret launch plan" not in caplog.text
-    backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
-    mod._BOARD.clear()
-    assert "ISOA-9" in provider(mod, FakeClient()).prefetch(said("secret launch plan?"))  # the board survives
     assert any("recall failed" in r.message for r in caplog.records)
 
 
 @pytest.mark.parametrize("reply", [[], {"results": None}, {"results": [None]}, {"results": [{"content": 5}]},
                                    {"results": [{"rank": 1}]}])
-def test_prefetch_malformed_page_returns_board_only(mod, backend, reply):
+def test_prefetch_malformed_page_returns_nothing(mod, backend, reply):
     backend.reply = reply
-    backend.board = [{"identifier": "ISOA-9", "title": "Launch page"}]
-    out = provider(mod, FakeClient()).prefetch(said("launch?"))
-    assert out.startswith("Task board, partial") and "Remembered" not in out
+    assert provider(mod, FakeClient()).prefetch(said("launch?")) == ""
 
 
 @pytest.mark.parametrize("reply", [[], {"results": [None]}, {"results": "x"}])

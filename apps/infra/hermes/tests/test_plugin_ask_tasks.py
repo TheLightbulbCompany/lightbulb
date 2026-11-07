@@ -38,7 +38,6 @@ def task_run(tmp_path, monkeypatch):
         return state["answer"]
 
     monkeypatch.setattr(lightbulb, "_post", post)
-    monkeypatch.setattr(lightbulb, "_paperclip_call", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Paperclip called")))
     state["home"] = tmp_path
     return state
 
@@ -133,12 +132,11 @@ def test_backend_down_is_reported_not_raised(task_run):
 
 
 def test_room_run_never_takes_the_task_path(task_run, monkeypatch):
-    """A room or Paperclip turn keeps today's Paperclip path (its own suite is the golden): here, with no
-    Paperclip credentials, it answers today's refusal and posts nothing to the task route."""
+    """A room turn is told to ask in its reply and posts nothing to the task route (no Paperclip branch left)."""
     room = {k: v for k, v in CTX.items() if k not in ("taskId", "attempt", "runSecret")} | {"family": "room", "roomId": "r1"}
     monkeypatch.setattr(turn_context, "read", lambda sid: room)
     assert lightbulb._ask_person({"question": "x"}, session_id="s1") == lightbulb.ASK_IN_REPLY
-    assert lightbulb._request_approval({"title": "t", "summary": "s"}, session_id="s1") == lightbulb.APPROVAL_NO_KEY
+    assert lightbulb._request_approval({"title": "t", "summary": "s"}, session_id="s1") == lightbulb.APPROVAL_TASK_ONLY
     monkeypatch.setattr(turn_context, "read", lambda sid: None)
     assert lightbulb._ask_person({"question": "x"}) == lightbulb.ASK_IN_REPLY
     assert task_run["posts"] == []

@@ -190,8 +190,6 @@ def _profile_write_stubs(monkeypatch):
     )
     monkeypatch.setattr(hp, "resolve_profile_inputs", AsyncMock(return_value=inputs))
     monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp"))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", lambda *a, **k: SimpleNamespace())
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", AsyncMock())
     monkeypatch.setattr("core.services.hermes_profiles.read_soul_md", lambda o, a: None)

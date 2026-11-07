@@ -546,7 +546,8 @@
               "enum": [
                 "phone_contact",
                 "meeting",
-                "owner"
+                "owner",
+                "owner_voice"
               ],
               "type": "string"
             },

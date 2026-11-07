@@ -259,7 +259,6 @@ def test_front_desk_profile_has_no_workspace_connectors():
     def build(agent_id):
         files = write_agent_profile(
             "org_a", {"id": agent_id, "role": "general"}, provider_choice="byo_key", byo_provider="anthropic",
-            paperclip_api_key="pcp",
             integrations=connected, env_vars={}, contact_only=inputs.contact_only(agent_id),
         )  # fmt: skip
         return files, yaml.safe_load(files.config_yaml)

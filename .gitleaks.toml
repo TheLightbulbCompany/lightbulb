@@ -24,7 +24,6 @@ paths = [
   '''^apps/backend/tests/unit/services/test_session_redact\.py$''',
   '''^apps/backend/tests/unit/services/test_slack_signing\.py$''',
   '''^apps/backend/tests/unit/services/test_website_logins\.py$''',
-  '''^apps/desktop/src-tauri/terminal/xterm\.js$''',
   '''^docs/runbooks/openrouter-managed-inference\.md$''',
 ]
 # Clerk publishable keys and PostHog project keys are public by design.

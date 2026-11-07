@@ -84,7 +84,6 @@ export const KIND_WORD: Record<OutputKind, string> = {
 /** The filters: Creations' segments and the Files type select. Links is one read for link and PR. */
 export const KIND_FILTERS: readonly { id: string; label: string; kinds?: readonly OutputKind[] }[] = [
   { id: "all", label: "All" },
-  { id: "apps", label: "Apps", kinds: ["app"] },
   { id: "docs", label: "Docs", kinds: ["document"] },
   { id: "files", label: "Files", kinds: ["file"] },
   { id: "mail", label: "Mail", kinds: ["mail"] },

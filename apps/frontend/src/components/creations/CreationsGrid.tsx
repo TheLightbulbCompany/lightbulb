@@ -6,14 +6,11 @@
 
 import "./creations.css";
 import { useMemo, useState, type ReactElement } from "react";
-import { AppWindow, FileText, Mail, PanelsTopLeft } from "lucide-react";
-import { roomDisplayName, specialistLabel, type CreationOutput } from "@lightbulb/shared";
+import { FileText, Mail } from "lucide-react";
+import { roomDisplayName, type CreationOutput } from "@lightbulb/shared";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { projectRooms } from "@/components/home/HomeProjects";
 import { openChatPanelWithDraft } from "@/components/workspace/workspaceController";
-import { creationState } from "@/components/canvas/appText";
-import { useApps, type AppRow } from "@/hooks/useApps";
-import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { KIND_FILTERS, KIND_WORD, openOutput, outputName } from "./openOutput";
 import { isDocx, isTextDoc, OutputThumb } from "./OutputThumb";
@@ -23,16 +20,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 /** Radix Select has no empty value: "all projects" is this sentinel. */
 const ALL = "__all__";
 
-/** Live app pages framed on the grid, and docs previewed (each kind its own count); every one after these (Load more
- *  included) shows its glyph. */
+/** Docs previewed on the grid; every one after these (Load more included) shows its glyph. */
 const MAX_FRAMES = 6;
 
 /** The cursor lands on the first "…", selected, so typing replaces it. */
 const MAKE = [
-  { label: "App", noun: "an app", hint: "A small app", Icon: AppWindow, draft: "Build me a small app that …" },
   { label: "Doc", noun: "a doc", hint: "A brief, a plan", Icon: FileText, draft: "Write a doc: …" },
   { label: "Email", noun: "an email", hint: "A draft to send", Icon: Mail, draft: "Draft an email to … about …" },
-  { label: "Page", noun: "a page", hint: "A one-page site", Icon: PanelsTopLeft, draft: "Make a one-page site for …" },
 ] as const;
 
 export function CreationsGrid(): ReactElement {
@@ -41,8 +35,6 @@ export function CreationsGrid(): ReactElement {
   const kinds = KIND_FILTERS.find((f) => f.id === kind)?.kinds;
   const filter = useMemo(() => ({ ...(kinds ? { kind: kinds } : {}), ...(roomId ? { roomId } : {}) }), [kinds, roomId]);
   const { outputs, loading, error, retry, hasMore, loadingMore, loadMore } = useCreations(filter);
-  const { apps } = useApps();
-  const { agentNames } = useLiveEvents();
   const rooms = useMessagingWorkspaceOptional()?.directoryProps?.rooms;
   const projects = useMemo(() => projectRooms(rooms ?? []), [rooms]);
   const projectName = (id: string | null) => {
@@ -51,16 +43,12 @@ export function CreationsGrid(): ReactElement {
   };
   const filtered = kind !== "all" || !!roomId;
   const [noAgent, setNoAgent] = useState(false);
-  // The first MAX_FRAMES apps that would frame (public, openable) get a live page, the first MAX_FRAMES text docs their
-  // title and first lines; the rest their glyph.
+  // The first MAX_FRAMES text docs get their title and first lines; the rest their glyph.
   const framed = new Set<number>();
-  let pages = 0, docs = 0;
+  let docs = 0;
   outputs.forEach((o, i) => {
-    const app = o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined;
-    if (pages < MAX_FRAMES && app?.open_to === "public" && app.can_open !== false) { framed.add(i); pages++; }
-    else if (docs < MAX_FRAMES && (isTextDoc(o) || isDocx(o))) { framed.add(i); docs++; }
+    if (docs < MAX_FRAMES && (isTextDoc(o) || isDocx(o))) { framed.add(i); docs++; }
   });
-  const [now] = useState(() => Date.now()); // ages as of the page's opening
 
   return <div className="creations"><div className="frame-doc creations__col">
     <div className="frame-doc__title"><h1>Creations</h1></div>
@@ -98,9 +86,8 @@ export function CreationsGrid(): ReactElement {
       </ul>
       : outputs.length === 0 ? <p className="creations__note">{filtered ? "Nothing here yet." : "Everything Lightbulb and the specialists make lands here."}</p>
       : <ul className="creations__grid" aria-label="Creations">
-        {outputs.map((o, i) => <CreationCard key={`${o.taskId}:${o.id}`} output={o} now={now} frame={framed.has(i)}
-          app={o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined}
-          project={projectName(o.roomId)} who={specialistLabel(o.specialist, agentNames)} />)}
+        {outputs.map((o, i) => <CreationCard key={`${o.taskId}:${o.id}`} output={o} frame={framed.has(i)}
+          project={projectName(o.roomId)} />)}
       </ul>}
     {hasMore && !loading && !error && <div className="creations__more">
       <button type="button" className="creations__more-btn" disabled={loadingMore} onClick={loadMore}>{loadingMore ? "Loading…" : "Load more"}</button>
@@ -108,18 +95,16 @@ export function CreationsGrid(): ReactElement {
   </div></div>;
 }
 
-function CreationCard({ output: o, app, project, who, now, frame }: {
-  output: CreationOutput; app?: AppRow; project: string | null; who: string; now: number; frame: boolean;
+function CreationCard({ output: o, project, frame }: {
+  output: CreationOutput; project: string | null; frame: boolean;
 }): ReactElement {
-  const state = app ? creationState(app, who === "Lightbulb" ? "Engineering" : who, now) : null;
   // The age reads "just now", "3m ago", as Tasks and Files say it (W13).
   const meta = [KIND_WORD[o.kind], project, timeAgo(o.createdAt)].filter(Boolean).join(" · ");
   return <li className="creations__card">
     <button type="button" className="creations__open" aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o, undefined, "creations")}>
-      <OutputThumb output={o} app={app} frame={frame} />
+      <OutputThumb output={o} frame={frame} />
     </button>
     <p className="creations__title" title={outputName(o)}>{outputName(o)}</p>
     <p className="creations__meta">{meta}</p>
-    {state && <p className="creations__state">{state}</p>}
   </li>;
 }

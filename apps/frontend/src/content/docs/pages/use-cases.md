@@ -53,4 +53,4 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 
 ## Start with one
 
-Pick one loop. Give it an owner — hire a specialist from the [marketplace](/marketplace), or ask your CEO for one and it recruits the role. Connect the tool it needs, wire the trigger, set the gate, and let it run. Automations need an always-on workspace, which is what the paid plans buy — see [Skills, routines, and automations](/docs/skills-and-automations).
+Pick one loop. Give it an owner — ask your CEO for one and it recruits the role. Connect the tool it needs, wire the trigger, set the gate, and let it run. Automations need an always-on workspace, which is what the paid plans buy — see [Skills, routines, and automations](/docs/skills-and-automations).

@@ -38,11 +38,7 @@ Mention an agent with an outcome, not a click-by-click script:
 
 The agent reads the thread above it, does the work, and posts the result in the room, where your teammate can see it, continue it, or approve it. When an agent needs a yes, for a plan, a spend or a new hire, it asks in the room with an approval card and waits for a person.
 
-## 8. Share a session (optional, Mac app)
-
-If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/desktop) can share those sessions with your workspace. Sharing is opt-in: turn it on in the app, then share a session (or choose to share every new one). Sessions over SSH, in containers or inside an IDE are not supported. A teammate can watch a shared session live. With your OK, they can also join it, and pick up a Claude Code session where you stopped.
-
-## 9. Plans and providers
+## 8. Plans and providers
 
 See [pricing](/pricing) for what a team pays. Your agents run on Lightbulb-managed AI during the free month; after your plan is active you can switch to your own ChatGPT account or an OpenAI or Anthropic key in the **Model & Credits** tab.
 

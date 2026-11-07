@@ -7,8 +7,6 @@ import { LiveEventsProvider } from "@/hooks/useLiveEvents";
 import { SharedLiveViewHost } from "@/components/workspace/panels/sharedLiveView";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
-import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
-import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
 import { RunNotifications } from "@/components/notifications/RunNotifications";
 import { SettingsRedirect } from "@/components/workspace/SettingsRedirect";
 
@@ -46,10 +44,6 @@ export default function ChatPage() {
           <HuddleProvider>
             <WorkspaceShell />
           </HuddleProvider>
-          {/* Drawer + toast must live INSIDE LiveEventsProvider — useHire() and
-              PickAgentStep both call useAgents() which calls useLiveEvents(). */}
-          <MarketplaceDrawer />
-          <MarketplaceToast />
           <RunNotifications />
           {/* The page's one browser live-view connection, shared by the panel and previews. */}
           <SharedLiveViewHost />

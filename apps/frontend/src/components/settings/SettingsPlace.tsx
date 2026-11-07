@@ -632,7 +632,7 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   mcp: IntegrationsPanel,
   desktop: DesktopPanel,
   // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
-  // Tauri local_mcp_* commands. Renders a download prompt in a browser.
+  // Tauri local_mcp_* commands. Not listed in a browser.
   "local-mcp": LocalMcpServers,
   // SkillsTab takes an optional `agentId`; mounting it prop-less yields the
   // owner-level (global) skills surface — the engine-room home.
@@ -747,7 +747,9 @@ export function navKeyDown(e: React.KeyboardEvent, item: NavItem & { panel: stri
 
 export function SettingsPlace({ id, params }: PanelProps) {
   const developer = useShowsDeveloper() || DEVELOPER_PANELS.has(params.section ?? "");
-  const sections = developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? "")));
+  const sections = (developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? ""))))
+    // A browser has no local MCP servers to show: one list for both the select and the tabs.
+    .map((s) => isDesktopApp() ? s : { ...s, items: s.items.filter((i) => i.panel !== "local-mcp") });
   const isAdmin = useIsWorkspaceAdmin();
   const visible = (item: NavItem): item is NavItem & { panel: Panel } =>
     item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel));

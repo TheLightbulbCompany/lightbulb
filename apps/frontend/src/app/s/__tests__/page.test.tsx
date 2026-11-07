@@ -525,14 +525,14 @@ describe("session link page", () => {
   });
 
   // Round 18: a signed-out person saw only "Sign up to continue", and nothing about the Mac app or the command.
-  it("tells a signed-out person how to continue: the Mac app, then the command; sign-up is the CLI's confirm step", async () => {
+  it("tells a signed-out person how to continue: the command; sign-up is the CLI's confirm step", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({ continuable: true }) }) as Response));
     const { unmount } = render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     const steps = screen.getByRole("region", { name: "Continue" });
-    expect(steps.querySelector("a")?.getAttribute("href")).toBe("/api/download/desktop");
+    expect(steps.querySelector("a")).toBeNull(); // the Mac app is gone: no download link
     expect(steps.textContent).toContain("lightbulb continue '");
     expect(steps.textContent).toContain("It opens this page again, where you sign up, free, and confirm");
     expect(screen.queryByRole("button", { name: "Sign up to continue" })).toBeNull();

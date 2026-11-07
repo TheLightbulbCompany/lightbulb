@@ -6,7 +6,7 @@ import { DesktopFileAccess } from "./DesktopFileAccess";
 import { DesktopOpenAtLogin } from "./DesktopOpenAtLogin";
 import { AgentSessionSwitches, DesktopPermissions, LocalSessions } from "./LocalSessions";
 
-// Settings → Desktop. In a browser: one card with the download. In the desktop app:
+// Settings → Desktop. In a browser: the agent session switches. In the desktop app:
 // open at login, agent switches, approved folders, session sharing. Each card renders
 // nothing when its own desktop command is missing (an older app build).
 
@@ -28,21 +28,6 @@ export function DesktopSettings() {
           <DesktopPermissions />
           <DesktopFileAccess />
           <LocalSessions />
-        </>
-      ) : desktop === false ? (
-        <>
-          <p className="settings-page-desc">Pairing, sharing and agent permissions live on your Mac, so open the Lightbulb desktop app to change them.</p>
-          <div className="settings-card">
-            <div className="settings-card-header">
-              <div>
-                <div className="settings-card-title">Lightbulb for Mac</div>
-                <div className="settings-card-desc">Apple Silicon</div>
-              </div>
-              {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
-              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-              <a href="/api/download/desktop" className="settings-btn-outline">Download</a>
-            </div>
-          </div>
         </>
       ) : null}
       {desktop !== null && <AgentSessionSwitches />}

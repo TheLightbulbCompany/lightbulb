@@ -272,11 +272,6 @@ jest.mock("../../../../lib/roomActivity", () => ({
   useRoomActivity: () => ({ liveLine: (roomId: string) => mockLiveLines[roomId] ?? null, working: () => false }),
 }));
 jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
-const mockDesktopGet = jest.fn(async (_path: string): Promise<{
-  enabled: boolean; devices: { deviceId: string; generation: string; name: string }[];
-}> => ({ enabled: false, devices: [] }));
-const mockDesktopApi = { get: (path: string) => mockDesktopGet(path) };
-jest.mock("../../../../lib/desktopSessions", () => ({ useDesktopSessionApi: () => mockDesktopApi }));
 jest.mock("../../../../components/room/NewMessageSheet", () => {
   const { Text: RNText, View: RNView } = require("react-native");
   return {
@@ -317,8 +312,6 @@ const busySession: LocalSession = {
 
 describe("Chats", () => {
   beforeEach(() => {
-    mockDesktopGet.mockReset();
-    mockDesktopGet.mockResolvedValue({ enabled: false, devices: [] });
     mockPush.mockClear();
     mockSetParams.mockClear();
     mockRouteFilter = undefined;
@@ -445,20 +438,6 @@ describe("Chats", () => {
     expect(mockSetOptions).not.toHaveBeenCalledWith(expect.objectContaining({ headerLargeTitle: true }));
     await fireEvent.press(screen.getByLabelText("New message"));
     expect(screen.getByText("MOCK_NEW_MESSAGE_SHEET")).toBeTruthy();
-  });
-
-  it("opens New session directly from the header", async () => {
-    mockDesktopGet.mockResolvedValue({ enabled: true, devices: [{ deviceId: "mac-1", generation: "gen-1", name: "Your Mac" }] });
-    await render(<ChatsTab />);
-    await waitFor(() => expect(screen.getByLabelText("New session")).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("New session"));
-    expect(mockPush).toHaveBeenCalledWith("/(app)/session/new");
-  });
-
-  it("hides New session when remote execution is disabled", async () => {
-    await render(<ChatsTab />);
-    await waitFor(() => expect(mockDesktopGet).toHaveBeenCalledWith("/desktop-sessions/targets"));
-    expect(screen.queryByLabelText("New session")).toBeNull();
   });
 
   it("filters sessions, channels and direct messages without changing their recency order", async () => {

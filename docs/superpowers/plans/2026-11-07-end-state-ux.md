@@ -174,6 +174,78 @@ Paths: `VP` = `apps/backend/routers/voice_phone.py`, `V` = `apps/backend/routers
 
 ---
 
+## Scope: ponytail MVP (founder, 7 Nov, late) — this section wins over the task list below
+
+The founder: "Voice agents in front of Hermes for our two use cases, done really well. Limit guards and features. Don't skimp on review or security. Common sense of a senior AWS engineer."
+
+The rule for implementers:
+- No pre-recorded audio and no scripts.
+- No new tools unless a scenario needs them.
+- Prefer the vendor's documented default.
+- Review and security checks are unchanged.
+
+**MVP (build these, in this order):**
+| # | Task | MVP cut |
+|---|---|---|
+| 1 | Go live / Pause, Next-time notes | merged (#5014) |
+| 20 | Read surface | PASS (#5021) |
+| 25 | Voice is home, Settings | merged (#5016) |
+| 16 | Signed-in Meet bot | merged (#5017) |
+| 4 | Contact boundary | as written |
+| 2 | Time zone, no overlaps | as written (#5024) |
+| 3 | Caller memory, Forget, remember | **no waitlist tool/route** |
+| 6 | Calls → Needs-you Questions → Knowledge | as written |
+| 24 | Orb states, Yours rows | as written (#5023) |
+| 33 | OpenAI by default | after #5025 (one-vendor lane) |
+| 7 | Google Calendar during the call | as written: the owner's calendar is where bookings go |
+| 11 | Numbers: keep-and-forward or new | as written, buying behind KYC |
+| 10 | **forwarding check only** | `forward_check` purpose and route only; Ring me and call back are later (the owner can simply call the number) |
+| 30 | Onboarding | number choice, forwarding check, Go live; **no** Places listing read, **no** Square/Fresha sign-in, **no** voice preview (website read stays) |
+| 19 | Members are members; a guest's spend ask → card | as written |
+| 21 | Office results back into Meet chat; follow-up status | as written (needed for "draft the post and put the link in chat") |
+| 15 | Approvals: **voice "yes" → one-tap confirm card only** | drop the low-risk voice-only path; every seat's "yes" sets `pendingConfirm` and pushes the card |
+| 17 | Tile status | Listening · Thinking · Speaking · Drafting · Page ready; one announcement; **no** "Not transcribing" (opt-out parked) |
+| 27 | Panes | **Forget** in the call pane + follow-up status in the meeting pane only |
+| 28 | Needs you | kind labels, the confirm card ("approved by voice in … · confirm"), Line-problem fix link; **no** hold-to-talk answer, **no** "have Nova call back" |
+| 29 | Agent page | greeting style field; remove "Email me the notes"; missed-caller/waitlist texts shown off; **hide** controls that do nothing yet (Voice, Spanish, waitlist checkbox, Square/other systems); no Ring me, no Join next meeting |
+| 31 | Mac app opens /voice, mic works | as written |
+| 37 | **One basic error metric** | `VoiceCallOutcome{outcome}` plus one alarm on worker/route errors; no p95 latency alarms |
+| 23 | **Replay gate fails for real** | the `gate.py` exit code + asserts only; the dev Recall webhook is later |
+| 39 | Eval bar | **pass^3 per scenario on the existing harnesses + 20 real dial-ins** before "sellable"; noise, packet-loss, accent and Spanish runs are later |
+| #5007 | Per-person hearing / asker | lane PR, merge |
+
+**Later (do not start):**
+- 5: recording, one-sentence summary, spam.
+- 8: Square/Calendly/Zenoti and browser write-back.
+- 9: SMS. It also needs Twilio KYC + 10DLC.
+- 10: Ring me and call back.
+- 12: owner mode by phone. The orb is owner mode.
+- 13: minutes meter and run-out. Billing is Phase 6; the Settings card's fallback sum stays.
+- 14: voice choice, Spanish, preview.
+- 18: stale answers to chat; the "stop" hardening beyond #5007.
+- 22: meeting notes and decisions. Parked, #5018 draft.
+- 26: row actions, live push. The 20 s poll stays.
+- 32: mobile tabs.
+- 34: tool-enforced read-back. The prompt's read-back stays; revisit if the 20 real dial-ins show booking errors.
+- 35: spoken progress.
+- 36: warm transfer.
+- 38: 55-min session renewal. Meetings keep the 90-minute cap.
+- #5009: per-guest transcription opt-out. Parked.
+- From 15: the low-risk voice-only approvals.
+- From 23: the dev Recall webhook.
+- From 37: p95 latency alarms.
+- From 39: noise, packet-loss and accent runs.
+
+The acceptance checklist below is cut the same way. Steps that need a Later task are skipped in the founder's test:
+- phone 2: the text;
+- phone 7: the warm part (a cold transfer stays);
+- phone 9: owner mode by phone;
+- phone 10: spam;
+- phone 11: minutes;
+- Meet 6: opt-out;
+- Meet 8: over an hour;
+- the "Answer & have Nova call back" in phone 5 (the answer still goes into Knowledge).
+
 ## Order and lanes
 
 **Priority (founder, 7 Nov, late): the live-answer flow first.** The order is:

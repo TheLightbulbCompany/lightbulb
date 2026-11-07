@@ -29,10 +29,6 @@ export function activityHrefs(target: Navigate): Href[] {
       return target.roomId
         ? notificationHrefs({ roomId: target.roomId, threadRootMessageId: target.id }) ?? []
         : [];
-    case "issue":
-      return [{ pathname: "/(app)/teams/issue/[id]", params: { id: target.id } }];
-    case "run":
-      return [{ pathname: "/(app)/teams/run/[runId]", params: { runId: target.id } }];
     case "approval":
       return ["/(app)/(tabs)/teams"];
     case "session":

@@ -5,12 +5,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronRight, Copy, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FileViewerContent, isPaneViewable, normalizeContentType } from "@/components/media/FileViewerContent";
-import { DocumentRow } from "@/components/teams/issues/DocumentRow";
-import { AttachmentIssueContext, issueAttachmentContentPath } from "@/components/teams/shared/lib/attachments";
-import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import type { CompanyAgent, CompanyMember, IssueDocument } from "@/components/teams/shared/types";
-import { useUser } from "@clerk/nextjs";
-import { actorName } from "@/components/teams/shared/lib/actorName";
+import { issueAttachmentContentPath } from "@/components/teams/shared/lib/attachments";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
 import { openPanel, openTaskPane, updatePanelParams, useWorkspaceState } from "../workspaceController";
@@ -23,8 +18,6 @@ import { formatBytes } from "@/lib/utils";
 import { docPreview, fileTypeWord, plainCta, resultPiece } from "@/components/creations/docText";
 import { stripMetaLines } from "@/lib/ctaLinks";
 import type { PanelProps } from "../panelComponents";
-import { DocumentContents } from "./DocumentContents";
-import { CONTENTS_MIN_HEADINGS, outlineOf } from "./documentOutline";
 import { parseArtifactSource, type ArtifactSource } from "./artifactSource";
 import { PaneActionsHost } from "../PaneHeader";
 
@@ -40,7 +33,6 @@ export function ArtifactDockPanel({ params }: PanelProps) {
   const source = useMemo(() => parseArtifactSource(params), [params]);
   if (!source) return <PaneFrame><p role="alert" className="p-4 text-ui">This link does not point at a file.</p></PaneFrame>;
   if (source.src === "file") return <OpenInFiles agent={source.agent} path={source.path} />;
-  if (source.src === "paperclip" && source.kind === "document") return <DocumentPane source={source} />;
   return <FilePane key={source.src === "text" ? `text:${source.task}:${source.n}` : `${source.src}:${source.id}`} source={source}
     task={params.task ?? null} from={params.from ?? null} />;
 }
@@ -184,38 +176,4 @@ function CopyText({ blob }: { blob: Blob }) {
     onClick={() => void blobText(blob).then((t) => navigator.clipboard.writeText(plainCta(t))).then(() => setCopied(true), () => undefined)}>
     {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
   </button>;
-}
-
-/** The document view: title, who changed it and when, a contents list, and the reviewable row (comments, versions). */
-function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "document" }> }) {
-  const { read } = useTeamsApi();
-  const { data, error, mutate: refreshDoc } = read<IssueDocument>(`/issues/${encodeURIComponent(source.issue)}/documents/${encodeURIComponent(source.key)}`);
-  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
-  const { data: membersData } = read<{ members: CompanyMember[] }>("/members");
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  const { user } = useUser();
-  const [editing, setEditing] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
-  const canEdit = (editing || !data?.lockedAt) && !previewing;
-  const actions = <>
-    {canEdit && <Button type="button" variant="outline" size="sm" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>Edit</Button>}
-  </>;
-  const agents = agentsData?.agents ?? [];
-  const author = actorName({ agentId: data?.updatedByAgentId, userId: data?.updatedByUserId, agents, members: membersData?.members, currentUserId: user?.id });
-  const when = data?.updatedAt ?? data?.createdAt;
-  const outline = outlineOf(data?.body ?? "");
-  return (
-    <PaneFrame actions={actions}>
-      {error && <p role="alert" className="p-4 text-ui">{describeError(error)}</p>}
-      {data && <div className="mx-auto max-w-2xl p-4">
-        <h2 className="text-lg font-semibold">{data.title || data.key}</h2>
-        <p className="mb-3 text-caption text-muted-foreground">{author}{when ? ` · updated ${timeAgo(when)}` : ""} · rev {data.latestRevisionNumber ?? 1}{data.lockedAt ? ` · locked by ${actorName({ agentId: data.lockedByAgentId, agents })}` : ""}</p>
-        {/* The outline is the latest body's; while a past revision is previewed its headings may differ, so the list hides. */}
-        {!previewing && !editing && outline.length >= CONTENTS_MIN_HEADINGS && <DocumentContents entries={outline} bodyRef={bodyRef} />}
-        <AttachmentIssueContext.Provider value={source.issue}>
-          <div ref={bodyRef}><DocumentRow doc={data} agents={agents} issueId={source.issue} defaultOpen hideTitle editing={editing} onEditingChange={setEditing} onPreviewingChange={setPreviewing} onRestored={() => { void refreshDoc(); }} /></div>
-        </AttachmentIssueContext.Provider>
-      </div>}
-    </PaneFrame>
-  );
 }

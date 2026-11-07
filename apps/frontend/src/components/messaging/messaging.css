@@ -652,7 +652,7 @@
 .room-app-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .room-quote-card { box-shadow: inset 3px 0 0 var(--border); }
 
-/* Document cards (RoomDocumentCards): a linked Paperclip document, opened in place. */
+/* Document cards: an attached file, opened in place. */
 .room-doc-card { width: 100%; text-align: left; font: inherit; cursor: pointer; }
 .room-doc-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--foreground); }
 .room-doc-card-head > svg { flex: none; color: var(--muted-foreground); }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
-import { Check, CheckSquare, Cpu, FileText, MessageSquare, Users, Pencil, Plus, X } from "lucide-react";
+import { Check, Cpu, FileText, MessageSquare, Users, Pencil, Plus, X } from "lucide-react";
 import useSWR from "swr";
 import { useOrganization } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
@@ -12,13 +12,13 @@ import { useBilling } from "@/hooks/useBilling";
 import { navigateShell } from "@/lib/shellNav";
 import { PROVIDER_PICKER } from "@/components/chat/ChatErrorCard";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import type { Approval, CompanyAgent } from "@/components/teams/shared/types";
+import type { CompanyAgent } from "@/components/teams/shared/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { buildSetupSteps, isBandComplete, isConnectorStep, setupProgress, type SetupStep, type SetupStepId } from "@lightbulb/shared";
-import { openInviteDialog, openPanel } from "@/components/workspace/workspaceController";
+import { openInviteDialog } from "@/components/workspace/workspaceController";
 import { ConnectorIcon } from "./ConnectorIcons";
 import { RoomInviteCard } from "./RoomInviteCard";
 import type { RoomParticipant } from "./types";
@@ -82,8 +82,6 @@ interface OnboardingBandProps {
   humanSpoke?: boolean;
 }
 
-const ANSWERED = new Set(["approved", "rejected"]);
-
 export function OnboardingBand({ participants, humanSpoke = false }: OnboardingBandProps): ReactElement | null {
   const { connections, startOAuth, isLoading: connectionsLoading, error: connectionsError } = useConnections();
   const { organization, membership } = useOrganization();
@@ -93,9 +91,6 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
   // cache entry rather than issuing a second request.
   const { data: roster, isLoading: rosterLoading, mutate: refreshRoster } =
     teams.read<{ agents?: CompanyAgent[] }>("/agents");
-  // Every status, not just pending (the BFF passes no filter): "answered" is any approved or rejected.
-  const { data: approvals, error: approvalsError, isLoading: approvalsLoading } =
-    teams.read<{ approvals?: Approval[] }>("/approvals");
   const api = useApi();
   const { account: billing, isLoading: billingLoading } = useBilling();
 
@@ -133,9 +128,8 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
       // A failed read drops the card rather than showing one that lies.
       contextImported: contextError ? null : context?.imported,
       humanSpoke,
-      approvalAnswered: approvalsError ? null : (approvals?.approvals ?? []).some((a) => ANSWERED.has(a.status)),
     }),
-    [participants, connections, agentNames, workspaceMembers, billing, context, contextError, humanSpoke, approvals, approvalsError],
+    [participants, connections, agentNames, workspaceMembers, billing, context, contextError, humanSpoke],
   );
   const complete = isBandComplete(steps);
   // Read once per mount: the session that first sees the band complete keeps "All set" up.
@@ -152,7 +146,6 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
   const onStep = useCallback((step: SetupStep) => {
     if (step.id === "invite") return openInviteDialog();
     if (step.id === "tell-ceo") return document.querySelector<HTMLTextAreaElement>(".room-composer textarea")?.focus();
-    if (step.id === "approval") return openPanel("activity", {}, { pushUrl: true });
     if (step.id === "name-agents") return setNaming((open) => !open);
     if (step.id === "context") return setSharing(true);
     if (step.id === "starter-model") return navigateShell(PROVIDER_PICKER);
@@ -171,7 +164,7 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
   // the whole band on every cold load and then have it vanish.
   // A failed catalog read would derive every connector as outstanding.
   // Billing only has to settle, not succeed: a failed read just omits its card.
-  if (connectionsLoading || connectionsError || rosterLoading || billingLoading || contextLoading || approvalsLoading || !ownerId) return null;
+  if (connectionsLoading || connectionsError || rosterLoading || billingLoading || contextLoading || !ownerId) return null;
   if (storedDismissal || dismissedNow) return null;
   if (complete) {
     return allSetSeen ? null : (
@@ -186,7 +179,7 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
   const starter = byId("starter-model");
   const invite = byId("invite");
   const connectors = steps.filter(isConnectorStep);
-  const core = (["tell-ceo", "approval"] as const).map(byId).filter((step): step is SetupStep => !!step);
+  const core = (["tell-ceo"] as const).map(byId).filter((step): step is SetupStep => !!step);
   const later = steps.filter((step) => step.later);
 
   return (
@@ -306,7 +299,6 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
 const ACTION_ICONS: Partial<Record<SetupStepId, ReactElement>> = {
   invite: <Users size={16} aria-hidden="true" />,
   "tell-ceo": <MessageSquare size={16} aria-hidden="true" />,
-  approval: <CheckSquare size={16} aria-hidden="true" />,
   "name-agents": <Pencil size={16} aria-hidden="true" />,
   context: <FileText size={16} aria-hidden="true" />,
 };

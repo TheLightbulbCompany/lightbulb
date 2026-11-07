@@ -245,4 +245,8 @@ describe("Work dissolved: where its pages live now", () => {
       expect(describePanel(key, { app: "a1", agent: "x" })).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: {} });
     }
   });
+
+  it("an old Paperclip document link opens Activity", () => {
+    expect(describePanel("artifact", { src: "paperclip", kind: "document", issue: "i", key: "plan" })).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: {} });
+  });
 });

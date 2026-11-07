@@ -135,18 +135,15 @@ export interface ExecuteContext {
 
 type RunAction = Extract<RunToastAction, { kind: "working" | "success" | "failure" }>;
 
-/** "Pulse · ISOA-400" / "Finished: Draft launch posts" for a team (Paperclip) run. */
+/** "Pulse" / "Finished a run" for a team run. */
 async function teamRunCopy(action: RunAction, agents: Agent[], ctx: ExecuteContext): Promise<{ title: string; body: string }> {
-  const [issue, fetched] = await Promise.all([
-    action.issueId ? ctx.apiGet(`/teams/issues/${action.issueId}`).catch(() => null) : null,
-    ctx.teamAgents ? null : ctx.apiGet("/teams/agents").catch(() => null),
-  ]) as [{ identifier?: string | null; title?: string | null } | null, { agents?: { id: string; name?: string }[] } | null];
+  const fetched = (ctx.teamAgents ? null : await ctx.apiGet("/teams/agents").catch(() => null)) as { agents?: { id: string; name?: string }[] } | null;
   const teamAgents = ctx.teamAgents ?? fetched?.agents;
   const name = teamAgents?.find((agent) => agent.id === action.agentId)?.name
     ?? agents.find((agent) => agent.id === action.agentId)?.name ?? "An agent";
-  const title = notificationTitle(name, issue?.identifier || null);
+  const title = notificationTitle(name, null);
   if (action.kind === "failure") return { title, body: runFailureLine(action.errorCode, action.error) };
-  return { title, body: notificationLine(issue?.title ? `Finished: ${issue.title}` : "Finished a run") };
+  return { title, body: notificationLine("Finished a run") };
 }
 
 function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteContext): void {

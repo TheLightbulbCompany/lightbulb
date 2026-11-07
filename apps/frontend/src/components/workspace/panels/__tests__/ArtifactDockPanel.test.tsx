@@ -42,14 +42,6 @@ it("a refused fetch shows the error card", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(/can't open this file/i);
 });
 
-it("renders a Paperclip document body as markdown, with no link to the retired task page", async () => {
-  teamsRead.mockReturnValue({ data: { id: "d", key: "plan", title: "Launch plan", body: "# Launch\n\nStep one.", format: "markdown" } });
-  render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "i1", key: "plan", ident: "ISOA-9" }} />);
-  expect(await screen.findByRole("heading", { name: "Launch" })).toBeInTheDocument();
-  expect(screen.getByText("Step one.")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /open task/i })).toBeNull();
-});
-
 it("refetches only when the source really changes", async () => {
   downloadBlob.mockReset();
   downloadBlob.mockResolvedValue(new Blob(["a,b\n1,2\n"], { type: "text/csv" }));
@@ -92,9 +84,6 @@ it("encodes every path segment taken from the URL", async () => {
   teamsDownload.mockResolvedValue(new Blob(["a"], { type: "text/plain" }));
   render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "attachment", issue: "../i", id: "a?b" }} />);
   await vi.waitFor(() => expect(teamsDownload).toHaveBeenCalledWith("/issues/..%2Fi/attachments/a%3Fb/content"));
-  teamsRead.mockReturnValue({ data: undefined });
-  render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "../i", key: "k/1" }} />);
-  expect(teamsRead).toHaveBeenCalledWith("/issues/..%2Fi/documents/k%2F1");
 });
 
 it("super-agent: a text doc's Copy and Download sit in the pane header, not on a row of their own (W14)", async () => {

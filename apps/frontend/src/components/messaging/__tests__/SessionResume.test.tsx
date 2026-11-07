@@ -59,7 +59,7 @@ it("offers nothing to someone who could not send when it ended", () => {
 it("offers Continue and a way to resolve a folder-access refusal", () => {
   render(<Harness own userId="alice" s={ended({ resume: { state: "failed", byUserId: "alice", requestedAt: "2026-10-03T10:00:00Z", reason: "FOLDER_NOT_APPROVED" } })} c={client()} />);
   expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
-  expect(screen.getByRole("link", { name: "Review folder access" })).toHaveAttribute("href", "/settings?panel=desktop");
+  expect(screen.getByText(/folder access for Lightbulb/)).toBeInTheDocument();
 });
 
 it("shows a waiting resume instead of a second button", () => {

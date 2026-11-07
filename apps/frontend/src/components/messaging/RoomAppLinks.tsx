@@ -15,7 +15,7 @@ import { openInviteDialog } from "@/components/workspace/workspaceController";
 
 /**
  * Links to our own app, shown as the native thing they point at instead of the
- * site's OG card. Documents are rendered by RoomDocumentCards; this covers connect buttons, agents, rooms,
+ * site's OG card. This covers connect buttons, agents, rooms,
  * messages and sessions. Anything it cannot resolve from data already loaded renders
  * nothing — the link in the text stays a plain (in-app) link.
  */

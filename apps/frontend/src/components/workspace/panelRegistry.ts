@@ -223,13 +223,15 @@ export function describePanel(
   }
 
   if (key === "artifact") {
+    // Retired: a Paperclip document link opens Activity, like the other retired panels.
+    if (params.src === "paperclip" && params.kind === "document") return describePanel("activity", {});
     const p: Record<string, string> = {};
     for (const k of ARTIFACT_PARAM_KEYS) if (params[k]) p[k] = params[k];
     if (!parseArtifactSource(p)) return null;
     // Where "‹" and Escape return ("task:<id>", "files"): in the URL, so the reconcile of the pushed URL (and a
     // reload) keeps it. It was a one-shot, and that reconcile's re-open cleared it: Escape closed the pane (W14-5).
     if (params.back && /^(task:[\w-]+|tasks|files|scheduled|creations|chat)$/.test(params.back)) p.back = params.back;
-    return { panelId: "artifact", component: "artifact", title: p.name ?? p.ident ?? "File", params: p };
+    return { panelId: "artifact", component: "artifact", title: p.name ?? "File", params: p };
   }
 
   // One super-agent task (TaskPane). Only reachable while the switch is on: nothing links here otherwise.

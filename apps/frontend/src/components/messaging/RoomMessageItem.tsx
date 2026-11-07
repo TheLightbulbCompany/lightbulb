@@ -13,7 +13,6 @@ import { MarkdownView } from "@/components/teams/shared/components/MarkdownView"
 import { cn } from "@/lib/utils";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
-import { RoomDocumentCards } from "./RoomDocumentCards";
 import { RoomImageAttachments } from "./RoomImageAttachments";
 import { CardContext, type CardContextValue, useCardPressState } from "./openui/CardContext";
 import { RoomAppLinks } from "./RoomAppLinks";
@@ -131,7 +130,6 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         // The reply that carries the cards (the first thread's card), wherever it landed; else the next message.
         onShowReply={(taskId) => (document.querySelector(`[data-task-card="${CSS.escape(taskId)}"]`)?.closest("article")
           ?? document.getElementById(id)?.parentElement?.querySelector(`#${CSS.escape(id)} ~ article`))?.scrollIntoView({ block: "nearest", behavior: "smooth" })} />}
-      {!message.deletedAt && <RoomDocumentCards text={message.text} />}
       {!message.deletedAt && <RoomAppLinks text={message.text} />}
       {!message.deletedAt && <RoomLinkPreviews text={message.text} />}
       {receipt && <p role="status" className="text-caption text-muted-foreground">{receipt}</p>}

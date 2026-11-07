@@ -291,7 +291,11 @@ class Receptionist(Agent):
             "greeting": info["greeting"],
             "facts": info.get("facts") or "nothing; take a message for any question about the business.",
             "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
-            "can": f"On this line you can't {' or '.join(off)}." if off else "",
+            "can": (
+                "This line is not taking bookings right now: you can only take a message, and the owner will call back."
+                if info.get("mode") == "message_only"
+                else f"On this line you can't {' or '.join(off)}." if off else ""
+            ),
             "instructions": f"The owner's instructions: {info['instructions']}" if info.get("instructions") else "",
         }))  # fmt: skip
         self._b, self._transfer = backend, transfer

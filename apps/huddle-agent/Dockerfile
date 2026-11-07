@@ -91,4 +91,7 @@ USER appuser
 # Run the AgentServer using UV
 # UV will activate the virtual environment and run the agent.
 # The "start" command tells the AgentServer to connect to LiveKit and begin waiting for jobs.
-CMD ["uv", "run", "python", "-m", "huddle_agent.agent", "start"]
+# AGENT_MODULE picks the worker: the huddle (default) or the phone receptionist (huddle_agent.phone, set as an
+# agent secret on its own LiveKit agent).
+ENV AGENT_MODULE=huddle_agent.agent
+CMD ["sh", "-c", "exec uv run python -m \"$AGENT_MODULE\" start"]

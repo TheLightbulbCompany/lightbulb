@@ -9,7 +9,7 @@ import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DAYS, nameOf, useAgentConfig, type AgentConfig } from "./data";
 
-type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "greeting";
+type Save = "idle" | "saving" | "saved" | "error" | "forbidden";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
@@ -30,12 +30,10 @@ export function AgentPage() {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       save(next).then(() => setSaveState("saved"),
-        (e: { status?: number }) => setSaveState(e?.status === 403 ? "forbidden" : e?.status === 422 ? "greeting" : "error"));
+        (e: { status?: number }) => setSaveState(e?.status === 403 ? "forbidden" : "error"));
     }, 600);
   };
   const name = nameOf(c);
-  const greeting = c.greeting || defaultGreeting(business, name);
-  const lawful = isLawful(greeting);
   const status = c.paused ? "Paused" : c.live ? "Live" : "Not live yet";
 
   return <div className="vx-page">
@@ -44,10 +42,10 @@ export function AgentPage() {
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
           {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
-        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "greeting"} style={{ marginTop: 6 }}>
+        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
             : saveState === "forbidden" ? "Only an admin can change the assistant."
-            : saveState === "greeting" ? "Not saved: a live assistant's greeting keeps “AI assistant” and “this call is recorded”." : "Changes save as you make them."}</p>
+            : "Changes save as you make them."}</p>
       </div>
       <div className="vx-actions" style={{ marginTop: 0 }}>
         {c.number && <Button asChild variant="outline" size="sm"><a href={`tel:${c.number}`}>Test call</a></Button>}
@@ -56,27 +54,19 @@ export function AgentPage() {
       </div>
     </header>
 
-    <Sec title="Name, greeting & voice">
+    <Sec title="Name & greeting">
       <label className="vx-label">Name (callers hear it; in a meeting you say &ldquo;{name}, …&rdquo;)
         <input className="vx-field" value={c.name} maxLength={40} placeholder="Nova" onChange={(e) => set({ name: e.target.value })} /></label>
-      <label className="vx-label">Greeting
-        <textarea className="vx-field" rows={3} maxLength={400} value={c.greeting} placeholder={greeting} onChange={(e) => set({ greeting: e.target.value })} /></label>
-      <p className="vx-hint" style={{ color: lawful ? "var(--fg-mute)" : "var(--err)", fontSize: "var(--text-caption)" }}>
-        {lawful ? "“AI assistant” and “this call is recorded” stay in the first sentence: that is what the recording and AI-disclosure laws want. No real person's name, no cloned voice."
-          : "Keep “AI assistant” and “this call is recorded” in the greeting: the recording and AI-disclosure laws want both."}</p>
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end" }}>
-        <label className="vx-label">Voice
-          <select className="vx-field" value={c.voice} onChange={(e) => set({ voice: e.target.value })}>
-            {["Warm", "Bright", "Calm"].map((v) => <option key={v}>{v}</option>)}</select></label>
-        <Check label="Also speaks Spanish" on={c.spanish} set={(spanish) => set({ spanish })} />
-      </div>
+      <label className="vx-label">Greeting style
+        <textarea className="vx-field" rows={3} maxLength={400} value={c.greeting} placeholder={`How ${name} should open: tone, what to mention`} onChange={(e) => set({ greeting: e.target.value })} /></label>
+      <p className="vx-hint" style={{ color: "var(--fg-mute)", fontSize: "var(--text-caption)" }}>
+        {name} always says its name, that it&apos;s an AI assistant and that the call is recorded.</p>
     </Sec>
 
     <Sec title={`What ${name} may do for callers`} hint={`Anything unchecked, or anything it doesn't know: ${name} takes a message and puts it in Needs you.`}>
       <div>
         <Check label="Book appointments" on={c.allow.book} set={(book) => set({ allow: { ...c.allow, book } })} />
         <Check label="Move and cancel appointments" on={c.allow.move} set={(move) => set({ allow: { ...c.allow, move } })} />
-        <Check label="Add callers to the waitlist" on={c.allow.waitlist} set={(waitlist) => set({ allow: { ...c.allow, waitlist } })} />
         <Check label="Greet returning clients by name" on={c.allow.greetByName} set={(greetByName) => set({ allow: { ...c.allow, greetByName } })} />
         <Check label="Answer prices, hours, services and directions" on={c.allow.answer} set={(answer) => set({ allow: { ...c.allow, answer } })} />
         <Check label="Take deposits or payments (not available yet)" on={false} disabled />
@@ -105,16 +95,12 @@ export function AgentPage() {
       </div>
     </Sec>
 
-    <Sec title="Calendar & booking system" hint={<>Connect Google Calendar or Square in <Link className="vx-link" href="/chat?panel=settings">Settings › Connections</Link>.</>}>
+    <Sec title="Calendar & booking system" hint={<>Connect Google Calendar in <Link className="vx-link" href="/chat?panel=settings">Settings › Connections</Link>.</>}>
       <label className="vx-label">Bookings go to
-        <select className="vx-field" value={c.bookingsGo} onChange={(e) => set({ bookingsGo: e.target.value as AgentConfig["bookingsGo"] })}>
-          <option value="google">Google Calendar</option><option value="square">Square</option>
-          <option value="other">Another booking system (Fresha, GlossGenius, Booksy, Vagaro…)</option>
-          <option value="own">{name}&apos;s own calendar for now</option>
+        <select className="vx-field" value={c.bookingsGo === "google" ? "google" : "own"} onChange={(e) => set({ bookingsGo: e.target.value as AgentConfig["bookingsGo"] })}>
+          <option value="google">Google Calendar</option>
+          <option value="own">{name}&apos;s own calendar{c.bookingsGo === "square" || c.bookingsGo === "other" ? " for now" : ""}</option>
         </select></label>
-      {c.bookingsGo === "other" && <label className="vx-label">Which one
-        <input className="vx-field" value={c.otherSystem} placeholder="Fresha" onChange={(e) => set({ otherSystem: e.target.value })} />
-        <span className="vx-muted">{name} writes each booking there after the call, using your sign-in.</span></label>}
     </Sec>
 
     <Sec title="Number & forwarding">
@@ -134,15 +120,14 @@ export function AgentPage() {
     <Sec title="Meetings" hint={<>Invite <span className="vx-code">agents@thelightbulb.company</span> to any Google Meet. {name} joins, listens, and speaks only when someone says &ldquo;{name}&rdquo;. Guests are told it&apos;s there; anyone can say &ldquo;{name}, don&apos;t transcribe me&rdquo;.</>}>
       <div>
         <Check label="Turn action items into follow-ups" on={c.meetings.followUps} set={(followUps) => set({ meetings: { ...c.meetings, followUps } })} />
-        <Check label="Email me the notes after" on={c.meetings.emailNotes} set={(emailNotes) => set({ meetings: { ...c.meetings, emailNotes } })} />
       </div>
     </Sec>
 
     <Sec title="Reminders & follow-ups">
       <div>
         <Check label="Text clients the day before their appointment" on={c.reminders.dayBefore} set={(dayBefore) => set({ reminders: { ...c.reminders, dayBefore } })} />
-        <Check label="Text back missed callers who didn't leave a message" on={c.reminders.missedCallers} set={(missedCallers) => set({ reminders: { ...c.reminders, missedCallers } })} />
-        <Check label="Text the waitlist when a slot frees up" on={c.reminders.waitlist} set={(waitlist) => set({ reminders: { ...c.reminders, waitlist } })} />
+        <Check label="Text back missed callers who didn't leave a message" on={false} disabled note="Off until we finish a consent review" />
+        <Check label="Text the waitlist when a slot frees up" on={false} disabled note="Off until we finish a consent review" />
       </div>
     </Sec>
   </div>;
@@ -152,9 +137,9 @@ export function Sec({ title, hint, children }: { title: string; hint?: React.Rea
   return <section className="vx-sec"><h2>{title}</h2>{hint && <p className="vx-hint">{hint}</p>}<div className="vx-grid">{children}</div></section>;
 }
 
-export function Check({ label, on, set, disabled }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean }) {
+export function Check({ label, on, set, disabled, note }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean; note?: string }) {
   return <label className="vx-check" data-off={disabled}>
-    <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set?.(e.target.checked)} />{label}</label>;
+    <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set?.(e.target.checked)} />{label}{note && <small className="vx-muted">{note}</small>}</label>;
 }
 
 export function KnowledgeList({ c, set }: { c: AgentConfig; set: (p: Partial<AgentConfig>) => void }) {
@@ -175,10 +160,6 @@ export function KnowledgeList({ c, set }: { c: AgentConfig; set: (p: Partial<Age
 }
 
 type Edit = { c: AgentConfig; set: (p: Partial<AgentConfig>) => void };
-
-export const defaultGreeting = (business: string, name: string) =>
-  `Thanks for calling ${business}. This is ${name}, ${business}'s AI assistant. This call is recorded. How can I help?`;
-export const isLawful = (greeting: string) => /AI assistant/i.test(greeting) && /recorded/i.test(greeting);
 
 export function HoursEditor({ c, set }: Edit) {
   return <>

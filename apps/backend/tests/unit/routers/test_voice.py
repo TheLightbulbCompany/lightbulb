@@ -88,16 +88,12 @@ async def test_agent_config_member_cannot_write(repos, async_client_org_member):
 
 
 @pytest.mark.asyncio
-async def test_a_live_greeting_must_disclose_ai_and_recording(repos, async_client_org_admin, monkeypatch):  # noqa: F811
+async def test_a_greeting_style_without_the_disclosure_words_saves(repos, async_client_org_admin, monkeypatch):  # noqa: F811
+    # The worker's DisclosureGuard guarantees the name, "AI assistant" and the recording; the field is only style.
     monkeypatch.setattr("core.config.settings.VOICE_LINE_NUMBER", "+14842079294")  # Go live needs a number
     put = lambda cfg: async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})  # noqa: E731
-    r = await put({"live": True, "greeting": "Hi, this is Nova. How can I help?"})
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "greeting_needs_disclosure"
-    assert (
-        await put({"live": True, "greeting": "This is Nova, the AI assistant. This call is recorded."})
-    ).status_code == 200
-    assert (await put({"live": True, "greeting": ""})).status_code == 200  # the page's default says both
-    assert (await put({"live": False, "greeting": "Hi"})).status_code == 200  # a draft before Go live
+    assert (await put({"live": True, "greeting": "Hi, warm and brief."})).status_code == 200
+    assert (await put({"live": True, "greeting": ""})).status_code == 200
 
 
 @pytest.mark.asyncio

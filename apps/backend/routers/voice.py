@@ -38,7 +38,6 @@ router = APIRouter()
 TIMELINE_ROOMS = 300
 MAX_CONFIG_BYTES = 64_000
 #: What a live greeting must say (the frontend's `isLawful`): an empty greeting is the page's default, which says both.
-_AI, _RECORDED = re.compile(r"AI assistant", re.I), re.compile(r"recorded", re.I)
 _E164 = re.compile(r"\+[1-9]\d{6,14}")  # routers/agent_text._valid_phone
 
 
@@ -139,10 +138,6 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
     require_org_admin(auth)
     if len(json.dumps(body.config)) > MAX_CONFIG_BYTES:
         raise HTTPException(status_code=413, detail={"code": "too_large"})
-    greeting = str(body.config.get("greeting") or "")
-    if body.config.get("live") and greeting.strip() and not (_AI.search(greeting) and _RECORDED.search(greeting)):
-        # The recording and AI-disclosure laws want both, and the page is not the only writer.
-        raise HTTPException(status_code=422, detail={"code": "greeting_needs_disclosure"})
     tz = body.config.get("timezone")
     if tz:
         try:

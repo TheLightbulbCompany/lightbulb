@@ -201,9 +201,10 @@ async def check_watch(ws: str, task_id: str, spec: WatchSpec) -> str:
 async def _pr_checks(ws: str, target: dict) -> str:
     import httpx
 
-    from core.services.inbound_triggers import _GITHUB_API_BASE, _GITHUB_HEADERS, _github_token
+    from core.services.credentials.integration_secret_store import github_token
+    from core.services.inbound_triggers import _GITHUB_API_BASE, _GITHUB_HEADERS
 
-    token = await _github_token(ws)
+    token = await github_token(ws)
     if not token:
         return "error"
     repo, number = str(target.get("repo") or ""), int(target.get("number") or 0)

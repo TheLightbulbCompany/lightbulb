@@ -22,7 +22,6 @@ only the subscription lifecycle remains here.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any, Awaitable, Callable
@@ -57,76 +56,13 @@ _SETTLED_PAYMENT_STATUSES = ("paid", "no_payment_required")
 # subscription change, each can see ``old_status == "trial_local"``, and PostHog dedupes on the uuid.
 _TRIAL_CONVERTED_NAMESPACE = uuid.UUID("2b7e3c1a-9d4f-4e6b-8a2c-5f1d7e9b3c60")
 
-"""Strong refs for fire-and-forget tasks — see ``dispatch_company_stripe_request``. Module-level
-because the tasks outlive the request that spawned them."""
-_BACKGROUND_TASKS: set[asyncio.Task] = set()
-
-
-async def _request_company_stripe(owner_id: str) -> None:
-    """Best-effort "connect the company's Stripe account" card. Never raises."""
-    from core.services import company_stripe_approval
-
-    try:
-        await company_stripe_approval.request_company_stripe(
-            owner_id=owner_id,
-            issue_id=None,
-            reason=(
-                "Your subscription is live. Connecting the company's Stripe account "
-                "turns on payments, customers and revenue reporting."
-            ),
-        )
-    except Exception:
-        put_metric("company_stripe.request.error")
-        logger.exception(
-            "Could not file the company Stripe request for owner %s on entering_live — "
-            "the owner can still connect from Settings, and Friday can re-file",
-            owner_id,
-        )
-
-
-def dispatch_company_stripe_request(owner_id: str) -> None:
-    """Ask the owner to set up (or connect) the company's Stripe account.
-
-    Nothing platform-side asked before this: ``request_company_stripe`` had a
-    single caller, the container hook route, so the card appeared only when
-    Friday spontaneously filed it — and the resulting
-    ``company_stripe_account_id`` is what the whole Money data plane
-    (Payments / Customers / Products / Home rollups) reads through.
-
-    We ASK, never auto-create. Creating the account for the owner would
-    foreclose "connect my existing Stripe" (``connect/start`` 409s once bound),
-    permanently stamp a raw owner_id as the Stripe display name, and flip owner
-    facts to ``pending`` — which the fleet skill reads as "already requested,
-    do not ask again".
-
-    Idempotent twice over, so firing it here is safe: the call short-circuits
-    when an account is already bound, and ``file_board_card`` dedupes on the
-    pending ``company_stripe`` marker, so at most one card exists at a time.
-
-    Fire-and-forget: filing a card is several Paperclip round trips (company lookup, admin
-    cookie, pending list, then the create), too many to await inside a Stripe
-    webhook, and the strong reference below is what stops asyncio garbage-
-    collecting the task mid-await.
-
-    An owner whose Paperclip company does not exist yet gets NO card and no
-    error: ``file_board_card`` returns None on the company gate. Reachable only
-    on the rare direct-to-paid entry (no prior ``trial_local`` row, so no
-    provisioned container yet), and ``entering_live`` is a one-shot edge that
-    never re-fires — the owner's Settings page and Friday remain the fallbacks,
-    exactly as they were before this dispatch existed.
-    """
-    task = asyncio.create_task(_request_company_stripe(owner_id))
-    _BACKGROUND_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_TASKS.discard)
-
 
 async def on_entering_live(owner_id: str) -> None:
     """Side effects of a workspace's FIRST move onto a paid subscription, from either
-    provider (Stripe here, Apple in apple_iap). Both calls are internally best-effort/deduped."""
+    provider (Stripe here, Apple in apple_iap). Best-effort/deduped."""
     from core.services import launch_referral
 
     await launch_referral.on_subscription_activated(owner_id)
-    dispatch_company_stripe_request(owner_id)
 
 
 # ---------------------------------------------------------------------------

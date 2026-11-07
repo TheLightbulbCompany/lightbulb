@@ -9,7 +9,7 @@ disposable" CLAUDE.md rule.)
 
 The pivot to a Slack-like multiplayer workspace is why the pre-pivot activation
 ladder and the "autonomous runs per owner per week" North Star are gone — along
-with the Paperclip routine/run reads that fed them (§6 explicitly ignores
+with the routine/run reads that fed them (§6 explicitly ignores
 ``agent_run_completed`` volume: routines and the nightly CEO inflate it and it
 rewards automation churn, not humans coming back). Five metrics:
 

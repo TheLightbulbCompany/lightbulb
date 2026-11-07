@@ -90,3 +90,12 @@ async def delete(owner_id: str, provider: str) -> bool:
         return True
 
     return await run_in_thread(_delete)
+
+
+async def github_token(owner_id: str) -> str | None:
+    """The owner's stored GitHub token, or None when not connected. The paste rail stores
+    ``{"token": ...}``, the direct_oauth rail stores ``access_token``."""
+    credential = await get(owner_id, "github")
+    if not credential:
+        return None
+    return credential.get("token") or credential.get("access_token")

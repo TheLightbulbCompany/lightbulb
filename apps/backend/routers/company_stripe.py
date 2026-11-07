@@ -13,7 +13,7 @@ import time
 from typing import Annotated, Literal
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -21,10 +21,8 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, oauth_state_repo
-from core.services import company_stripe, company_stripe_approval, owner_lifecycle, provision_gate
+from core.services import company_stripe, owner_lifecycle, provision_gate
 from core.services.owner_facts import write_owner_facts
-from core.services.container_auth import _require_hook_token
-from routers.company_board import file_card
 from core.services.entitlement_guards import COMPANY_STRIPE_MESSAGE, require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -518,24 +516,3 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
         )
     await write_owner_facts(owner_id)
     return {"disconnected": True, "stripe_released": released}
-
-
-class RequestStripeBody(BaseModel):
-    issue_id: str | None = None
-    reason: str = ""
-
-
-@router.post("/u/{owner_id}/request")
-async def request_from_container(owner_id: str, body: RequestStripeBody, request: Request):
-    """Container-authed (hook token): Friday asks the owner to set up Stripe."""
-    await _require_hook_token(owner_id, request)
-    row = await billing_repo.get_by_owner_id(owner_id) or {}
-    if row.get("company_stripe_account_id"):
-        return {"approval_id": None, "status": "connected"}
-    approval_id = await file_card(
-        owner_id,
-        company_stripe_approval.request_company_stripe(owner_id=owner_id, issue_id=body.issue_id, reason=body.reason),
-    )
-    # "no_company": the owner has no Paperclip company yet, so there is no
-    # board to file against — not a duplicate, not a failure.
-    return {"approval_id": approval_id, "status": "filed" if approval_id else "no_company"}

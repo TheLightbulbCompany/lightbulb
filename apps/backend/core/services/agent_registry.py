@@ -205,6 +205,7 @@ _VERIFY_FIELDS = (
 )
 
 
+# ponytail: delete after the prod data move (task 3)
 async def _paperclip_agents(ws: str) -> list[dict] | None:
     """The owner's live Paperclip agents: the call `load_agent_roster` makes today. Raises when unavailable.
     None when the workspace has no active company (missing, provisioning, failed): the list is unknown, not empty."""
@@ -227,6 +228,7 @@ async def _paperclip_agents(ws: str) -> list[dict] | None:
     return [r for r in rows if isinstance(r, dict) and r.get("id")]
 
 
+# ponytail: delete after the prod data move (task 3)
 async def seed_from_paperclip(ws: str, *, dry_run: bool = False) -> SeedReport:
     """Id-preserving backfill: every non-terminated Paperclip agent → its `AGENT#` row. Idempotent: an
     unchanged row is not written. A registry row whose agent is terminated or gone in Paperclip is soft-deleted:
@@ -272,6 +274,7 @@ def _comparable(row: dict) -> dict[str, Any]:
     return out
 
 
+# ponytail: delete after the prod data move (task 3)
 async def verify(ws: str) -> list[Diff]:
     """Set and field equality of the registry against Paperclip (terminated / deleted dropped on each side)."""
     paperclip = {

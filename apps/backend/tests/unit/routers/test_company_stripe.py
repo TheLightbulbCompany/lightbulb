@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
-from core.services.paperclip_admin_client import PaperclipApiError  # noqa: E402
 from main import app  # noqa: E402
 from routers import company_stripe as mod  # noqa: E402
 
@@ -519,89 +518,6 @@ def test_disconnect_deauthorizes_and_clears(client, facts):
     deauth.assert_awaited_once_with(account_id="acct_x")
     clear.assert_awaited_once_with("org_a", account_id="acct_x")
     facts.assert_awaited_once_with("org_a")
-
-
-def test_request_from_container_files_approval(client):
-    with (
-        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
-        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
-        patch(
-            "core.services.company_stripe_approval.request_company_stripe",
-            AsyncMock(return_value="apr_new"),
-        ),
-    ):
-        resp = client.post(
-            "/api/v1/company/stripe/u/org_a/request",
-            json={"issue_id": "iss_1", "reason": "x"},
-        )
-    assert resp.status_code == 200
-    assert resp.json() == {"approval_id": "apr_new", "status": "filed"}
-
-
-def test_request_from_container_already_connected(client):
-    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x"}
-    with (
-        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
-        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
-    ):
-        resp = client.post(
-            "/api/v1/company/stripe/u/org_a/request",
-            json={"issue_id": "iss_1", "reason": "x"},
-        )
-    assert resp.status_code == 200
-    assert resp.json() == {"approval_id": None, "status": "connected"}
-
-
-def test_request_from_container_maps_paperclip_4xx_to_502(client):
-    """A 400 means the board REFUSED the card. Reporting it as an outage tells
-    the agent to retry something that can never succeed."""
-    with (
-        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
-        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
-        patch.object(
-            mod.company_stripe_approval,
-            "request_company_stripe",
-            AsyncMock(side_effect=PaperclipApiError("POST /approvals -> 400", 400, {"error": "invalid type"})),
-        ),
-    ):
-        resp = client.post(
-            "/api/v1/company/stripe/u/org_a/request",
-            json={"issue_id": "iss_1", "reason": "x"},
-        )
-    assert resp.status_code == 502
-    assert resp.json()["detail"]["code"] == "paperclip_rejected"
-    assert resp.json()["detail"]["message"] == "POST /approvals -> 400"
-
-
-def test_request_from_container_no_paperclip_company(client):
-    with (
-        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
-        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
-        patch.object(mod.company_stripe_approval, "request_company_stripe", AsyncMock(return_value=None)),
-    ):
-        resp = client.post(
-            "/api/v1/company/stripe/u/org_a/request",
-            json={"issue_id": "iss_1", "reason": "x"},
-        )
-    assert resp.status_code == 200
-    assert resp.json() == {"approval_id": None, "status": "no_company"}
-
-
-def test_request_from_container_maps_paperclip_5xx_to_503(client):
-    with (
-        patch.object(mod, "_require_hook_token", AsyncMock(return_value={})),
-        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
-        patch(
-            "core.services.company_stripe_approval.request_company_stripe",
-            AsyncMock(side_effect=PaperclipApiError("boom", 502, None)),
-        ),
-    ):
-        resp = client.post(
-            "/api/v1/company/stripe/u/org_a/request",
-            json={"issue_id": "iss_1", "reason": "x"},
-        )
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["code"] == "paperclip_unavailable"
 
 
 # --- the api_key door -------------------------------------------------------

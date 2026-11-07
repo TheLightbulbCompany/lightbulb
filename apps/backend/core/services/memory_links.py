@@ -124,7 +124,7 @@ def _board_row(task: dict, dated: bool = False) -> str:
 
 async def board_text(ws: str, audience: dict) -> str:
     """The super-agent task board for one audience, in the plugin's board wording (it replaces the
-    Paperclip read on super-agent turns): working and waiting, and resolved in the last 14 days."""
+    old board read on super-agent turns): working and waiting, and resolved in the last 14 days."""
     since = (datetime.now(UTC) - timedelta(days=BOARD_DONE_DAYS)).isoformat()
     doing, waiting, done = await asyncio.gather(
         _visible_rows(ws, "working", audience),

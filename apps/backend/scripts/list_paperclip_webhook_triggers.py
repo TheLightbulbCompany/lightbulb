@@ -1,3 +1,4 @@
+# ponytail: delete after the prod data move (task 3)
 """Print every Paperclip webhook trigger with no ``HOOK#`` row (inventory §1d C, the pre-switch triggers).
 
 Phase-1 task 7 deletes ``routers/paperclip_trigger_proxy.py``, the public front door these fired through;

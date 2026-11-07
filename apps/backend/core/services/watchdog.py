@@ -565,7 +565,7 @@ async def _act(cfg: WatchdogConfig, p: Proposal, by: str) -> str:
 
     try:
         await start_task_workflow(p.ws, p.task_id, "reconcile")
-    except Exception as exc:  # the attempt is spent either way (Paperclip lesson)
+    except Exception as exc:  # the attempt is spent either way
         await watchdog_repo.finish_action(p.ws, p.task_id, "reconcile", n, "failed", type(exc).__name__)
         return "failed"
     await watchdog_repo.finish_action(p.ws, p.task_id, "reconcile", n, "done")

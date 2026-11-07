@@ -103,6 +103,7 @@ def _pending_brief_key(owner_id: str) -> str:
     return f"{_PENDING_BRIEF_PREFIX}{owner_id}"
 
 
+# ponytail: delete after the prod data move (task 3)
 # --- tasks-table META translation (spec 03 §6.2) ---------------------------
 
 _OLD_ROW_ONLY = frozenset({"company_id", "agent_keys", "agent_cost_remainder"})

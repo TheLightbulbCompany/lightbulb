@@ -311,7 +311,7 @@ _EXPORT_PAGE = 100
 
 @router.get("/tasks/export")
 async def export_tasks(auth: Auth) -> StreamingResponse:
-    """Owner-only download of every task in the workspace, one JSON object per line (replaces the Paperclip-issues
+    """Owner-only download of every task in the workspace, one JSON object per line (replaces
     `/teams/workspace/export`). Declared before `/tasks/{id}`."""
     ws = await _workspace(auth)
     if not auth.is_org_admin:

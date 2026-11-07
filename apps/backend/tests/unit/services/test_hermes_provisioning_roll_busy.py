@@ -152,11 +152,8 @@ async def test_a_busy_owner_fails_the_script(monkeypatch):
 
     monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", _busy)
     monkeypatch.setattr(roll_hermes_runtimes, "prepare_hermes_workspace", AsyncMock(return_value=False))
-    synced = AsyncMock()
-    monkeypatch.setattr(roll_hermes_runtimes, "sync_paperclip_adapter_config", synced)
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--respec"]) == 1
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a"]) == 1
-    assert synced.await_count == 2  # a roll also converges the Paperclip adapter config
 
 
 @pytest.mark.asyncio
@@ -169,7 +166,6 @@ async def test_a_respec_mints_a_missing_boot_secret_field_and_restarts_the_sessi
     roll = AsyncMock(return_value="updated")
     monkeypatch.setattr(roll_hermes_runtimes, "prepare_hermes_workspace", prepare)
     monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", roll)
-    monkeypatch.setattr(roll_hermes_runtimes, "sync_paperclip_adapter_config", AsyncMock())
 
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--respec"]) == 0
     prepare.assert_awaited_once_with("org_a")

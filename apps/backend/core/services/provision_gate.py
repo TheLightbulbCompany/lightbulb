@@ -136,7 +136,7 @@ def is_paid_subscription(account: Mapping[str, Any] | None) -> bool:
 
 def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
     """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
-    Paperclip routines, autonomous heartbeats).
+    routines, autonomous heartbeats).
 
     Autonomy is what the $50/mo subscription buys, so this is exactly the
     paid predicate: a ``trial_local`` owner is NEVER always-on entitled.

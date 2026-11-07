@@ -151,8 +151,6 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
         try:
             async with connections.owner_lifecycle_guard(owner_id):
                 await connections._disconnect_teardown(owner_id, provider, p)
-            if provider == "github":
-                await connections.paperclip_github_token.sync_after_disconnect(owner_id)
             revoked.append(f"connection:{provider}")
         except Exception:  # noqa: BLE001 — a kill switch keeps going past one bad provider
             logger.exception("company_policy: revoke-all could not disconnect %s owner_id=%s", provider, owner_id)

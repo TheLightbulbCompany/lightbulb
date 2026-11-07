@@ -3,7 +3,7 @@
 Wave 2's Temporal activities are its only callers: no route, no flag here (contracts-v2 §1: the backend
 decides the mode and writes it onto the request; wave 1 sends Worker mode on the workspace's own VM).
 `create_run` mints the task run's local-session grant and forwards it (contracts-v2 §14.3), so paired
-local sessions work in tasks the way they do in Paperclip runs.
+local sessions work in tasks.
 """
 
 import logging

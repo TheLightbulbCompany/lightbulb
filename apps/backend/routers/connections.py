@@ -41,7 +41,7 @@ from core.services.credentials import (
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
-from core.services import ideas, paperclip_github_token, rules_builtins
+from core.services import ideas, rules_builtins
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
 from core.services import owner_lifecycle
@@ -812,7 +812,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
 async def _after_connect(owner_id: str, provider: str) -> None:
     """Once a service reads connected: tell an open Activity view to drop a stale Reconnect item
     (``access_token._announce_reconnect`` filed it; the item closes when the row flips back), and
-    wake the idea starts waiting on it. Best-effort and outside the revoke fence: a slow Paperclip
+    wake the idea starts waiting on it. Best-effort and outside the revoke fence: a slow upstream
     must not spend the lease, and a connect never fails because a nudge did."""
     try:
         from core.services.live_events import publish_owner_users
@@ -942,11 +942,6 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
         # Nothing is written before the guard, so this is a clean no-op --
         # tell the caller to retry rather than surface a raw 500.
         raise HTTPException(status_code=409, detail="busy")
-    if provider == "github":
-        # The workspace token is gone, so Paperclip's copy goes too. After the guard, not
-        # inside it -- see the connect twin in oauth_callback. A failed cleanup is retried in
-        # the background, then swept at the next backend start.
-        await paperclip_github_token.sync_after_disconnect(owner_id)
     return {"status": "disconnected", "provider": provider}
 
 
@@ -1286,14 +1281,6 @@ async def oauth_callback(
         # retryable error instead of a raw 500.
         return _done("error=busy", origin)
     await _after_connect(owner_id, prov)
-    if prov == "github":
-        # Hand Paperclip the same token (its GITHUB_TOKEN company secret), so the PRs and
-        # issues a task mentions resolve authenticated. Best-effort and AFTER the guard: the
-        # lease is what a concurrent disconnect or provision waits on (30 s budget), and a slow
-        # Paperclip must not spend it. An overlapping disconnect is handled inside the sync,
-        # which re-reads the token right before and right after its write (see
-        # ``sync_github_token``); every reconcile re-asserts it too.
-        await paperclip_github_token.sync_best_effort(owner_id)
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the

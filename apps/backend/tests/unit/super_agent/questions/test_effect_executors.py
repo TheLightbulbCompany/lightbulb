@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from core.services import agent_mail_send, paperclip_github_token
+from core.services import agent_mail_send
+from core.services.credentials import integration_secret_store
 from core.services import effect_executors as ex
 
 OWNER = "org_1"
@@ -41,7 +42,7 @@ PATH = "/repos/acme/web/pulls/7"
 @pytest.fixture
 def github(monkeypatch):
     """GitHub behind a MockTransport: `routes[(method, path)]` answers; every request is recorded."""
-    monkeypatch.setattr(paperclip_github_token, "github_token", AsyncMock(return_value="ghp_x"))
+    monkeypatch.setattr(integration_secret_store, "github_token", AsyncMock(return_value="ghp_x"))
     state = {"routes": {}, "seen": []}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -91,7 +92,7 @@ async def test_pr_merge_unreachable_before_send_is_refused(github):
 
 
 async def test_pr_merge_without_github(monkeypatch):
-    monkeypatch.setattr(paperclip_github_token, "github_token", AsyncMock(return_value=None))
+    monkeypatch.setattr(integration_secret_store, "github_token", AsyncMock(return_value=None))
     with pytest.raises(ex.ExecutorRefused) as err:
         await ex.pr_merge(OWNER, PR, "user_sam")
     assert err.value.code == "github_not_connected"

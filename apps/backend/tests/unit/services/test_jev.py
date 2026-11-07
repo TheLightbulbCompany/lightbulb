@@ -205,7 +205,7 @@ async def test_card_reads_run_on_the_jev_executor(monkeypatch):
         return None
 
     monkeypatch.setattr(jev, "_read", get_object)
-    monkeypatch.setattr(jev, "_paperclip_agent", AsyncMock(return_value={}))
+    monkeypatch.setattr(jev, "_registry_agent", AsyncMock(return_value={}))
     await jev.agent_card("org_1", "a1", "Bob")
     assert threads and all(name.startswith("jev") for name in threads)
 
@@ -248,7 +248,7 @@ def _profile(monkeypatch, files: dict[str, str], config: dict, agent: dict | Non
 
     monkeypatch.setattr(jev, "_read", get_object)
     paperclip = AsyncMock(return_value=agent or {})
-    monkeypatch.setattr(jev, "_paperclip_agent", paperclip)
+    monkeypatch.setattr(jev, "_registry_agent", paperclip)
     return reads, paperclip
 
 
@@ -330,7 +330,7 @@ async def test_card_sources_failing_degrade_to_display_name(monkeypatch):
         raise RuntimeError("s3 down")
 
     monkeypatch.setattr(jev, "_read", boom)
-    monkeypatch.setattr(jev, "_paperclip_agent", AsyncMock(side_effect=RuntimeError("paperclip down")))
+    monkeypatch.setattr(jev, "_registry_agent", AsyncMock(side_effect=RuntimeError("paperclip down")))
     assert await jev.agent_card("org_1", "a1", "Finance") == "Finance. Tools: none."
 
 

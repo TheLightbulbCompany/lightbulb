@@ -27,6 +27,7 @@ def wired(monkeypatch):
         first_contact_state="not_started",
         owner_email="owner@example.com",
         company_id="co_1",
+        teams_state="active",
         friday_agent_id="agent_friday",
         live_ceo_agent_id="agent_ceo_live",
         live_ceo_calls=0,
@@ -61,6 +62,7 @@ def wired(monkeypatch):
                 "onboarding_generation": "01G",
                 "user_id": owner_id,
                 "company_id": st.company_id,
+                "teams_state": st.teams_state,
                 "friday_agent_id": st.friday_agent_id,
                 "first_contact_state": st.first_contact_state,
             }
@@ -432,6 +434,20 @@ async def test_send_to_owner_falls_back_to_stored_ceo_identity(wired):
     assert wired.ensure_agent_id == "agent_friday"
 
 
+@pytest.mark.asyncio
+async def test_send_to_owner_without_company_id_sends(wired):
+    """A natively provisioned workspace has no company_id: the active META row is enough."""
+    wired.company_id = None
+    assert await _send() == "sent"
+
+
+@pytest.mark.asyncio
+async def test_send_to_owner_before_provisioning_is_incomplete(wired):
+    wired.teams_state = "provisioning"
+    assert await _send() == "error"
+    assert wired.settle_reason == "incomplete_provisioning" and wired.ses_calls == 0
+
+
 def test_daily_cap_is_fifty():
     assert mod.DAILY_SEND_CAP == 50
 
@@ -482,7 +498,7 @@ async def test_member_send_shares_the_daily_cap(member_wired):
 
 @pytest.mark.asyncio
 async def test_member_send_before_provisioning_sends_nothing(member_wired):
-    member_wired.company_id = None
+    member_wired.teams_state = None
     assert await _send_member() == "error"
     assert member_wired.ses_calls == 0 and member_wired.cap_calls == 0
 
@@ -503,18 +519,11 @@ async def test_member_send_honours_the_complaint_pause(member_wired):
 
 
 @pytest.mark.asyncio
-async def test_resolve_apex_ceo_degrades_to_none_when_paperclip_fetch_fails(monkeypatch):
-    """Moved from agent_export: a Paperclip outage yields None, never a failed send."""
-    import core.services.paperclip_openclaw_pairing as pairing
-
-    async def _boom(**_):
-        raise RuntimeError("down")
-
-    monkeypatch.setattr(pairing, "fetch_paperclip_agents_for_owner", _boom)
+async def test_resolve_apex_ceo_reads_the_registry_and_degrades_to_none(monkeypatch):
+    monkeypatch.setattr(mod.agent_registry, "roster", AsyncMock(side_effect=RuntimeError("ddb")))
     assert await mod.resolve_apex_ceo_agent_id(owner_id="user_abc") is None
-
-    async def _agents(**_):
-        return [{"id": "div", "role": "ceo", "reportsTo": "fri"}, {"id": "fri", "role": "ceo", "reportsTo": None}]
-
-    monkeypatch.setattr(pairing, "fetch_paperclip_agents_for_owner", _agents)
+    roster = [{"id": "div", "role": "ceo", "reportsTo": "fri"}, {"id": "fri", "role": "ceo", "reportsTo": None}]
+    monkeypatch.setattr(mod.agent_registry, "roster", AsyncMock(return_value=roster))
     assert await mod.resolve_apex_ceo_agent_id(owner_id="user_abc") == "fri"
+    monkeypatch.setattr(mod.agent_registry, "roster", AsyncMock(return_value=[]))
+    assert await mod.resolve_apex_ceo_agent_id(owner_id="user_abc") is None

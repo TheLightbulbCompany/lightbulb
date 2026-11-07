@@ -31,8 +31,7 @@ from core.services import agent_email as ae  # noqa: E402
 @pytest.mark.asyncio
 async def test_append_agent_mail_footer_is_default_on_and_escapes_html(monkeypatch):
     monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={}))
-    monkeypatch.setattr(ae, "PaperclipRepo", _onboarding_repo())
-    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme & Co"))
+    monkeypatch.setattr(ae, "workspace_name", AsyncMock(return_value="Acme & Co"))
     monkeypatch.setattr(ae.settings, "FRONTEND_URL", "https://lightbulb.example/")
 
     text, rendered_html = await ae.append_agent_mail_footer(
@@ -70,77 +69,28 @@ async def test_append_agent_mail_footer_honors_owner_opt_out(monkeypatch):
     ) == ("Hello", "<p>Hello</p>")
 
 
-def _onboarding_repo(company_id="co_1", friday="agent_friday"):
-    """A stand-in for ``PaperclipRepo`` whose ``get_onboarding_state`` returns
-    a fixed onboarding row."""
-
-    class _Repo:
-        def __init__(self, table_name): ...
-
-        async def get_onboarding_state(self, owner_id):
-            return {"company_id": company_id, "friday_agent_id": friday}
-
-    return _Repo
-
-
-def _admin_returning(agent: dict):
-    """A stand-in for ``shared_admin_client()`` whose ``get_agent`` returns a
-    fixed agent dict."""
-
-    class _Admin:
-        _http = None
-
-        async def get_agent(self, *, session_cookie, agent_id):
-            return agent
-
-    return _Admin
+def _registry(rows: dict):
+    """``agent_registry.get`` over ``{(ws, agent_id): row}``."""
+    return AsyncMock(side_effect=lambda ws, agent_id: rows.get((ws, agent_id)))
 
 
 @pytest.mark.asyncio
-async def test_resolve_agent_name_reads_current_company_scoped_name_for_legacy_seed(monkeypatch):
-    monkeypatch.setattr(
-        ae,
-        "shared_admin_client",
-        lambda: _admin_returning({"name": "Ada", "companyId": "co_1"})(),
-    )
-    monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-
-    assert (
-        await ae.resolve_agent_name(
-            agent_id="agent_friday",
-            company_id="co_1",
-        )
-        == "Ada"
-    )
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_name_rejects_agent_from_a_different_company(monkeypatch):
-    """get_agent rides the shared admin cookie and is not company-scoped — a
-    container-supplied agent_id from a different owner's company must not
-    put a foreign agent's name on this owner's mail."""
-
-    monkeypatch.setattr(
-        ae, "shared_admin_client", lambda: _admin_returning({"name": "Mallory", "companyId": "co_other"})()
-    )
-    monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-    assert await ae.resolve_agent_name(agent_id="agent_mallory", company_id="co_1") is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_agent_name_rejects_agent_with_no_companyid(monkeypatch):
-    """A record with no ``companyId`` at all is unresolved, not authorized —
-    the cross-company guard must not treat a falsy companyId as a pass."""
-    monkeypatch.setattr(ae, "shared_admin_client", lambda: _admin_returning({"name": "Nameless"})())
-    monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-    assert await ae.resolve_agent_name(agent_id="agent_nameless", company_id="co_1") is None
+async def test_resolve_agent_name_reads_the_workspace_registry(monkeypatch):
+    rows = {("o", "a1"): {"agentId": "a1", "name": " Ada "}, ("o", "gone"): {"name": "Old", "status": "deleted"}}
+    monkeypatch.setattr(ae.agent_registry, "get", _registry(rows))
+    assert await ae.resolve_agent_name(owner_id="o", agent_id="a1") == "Ada"
+    assert await ae.resolve_agent_name(owner_id="o", agent_id="gone") is None
+    # Another workspace's agent id never resolves: the registry is keyed by workspace.
+    assert await ae.resolve_agent_name(owner_id="other", agent_id="a1") is None
+    monkeypatch.setattr(ae.agent_registry, "get", AsyncMock(side_effect=RuntimeError("ddb")))
+    assert await ae.resolve_agent_name(owner_id="o", agent_id="a1") is None
 
 
 @pytest.fixture
 def team(monkeypatch):
     monkeypatch.setattr(ae.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
     monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value={"slug": "acme"}))
-    monkeypatch.setattr(ae, "PaperclipRepo", _onboarding_repo())
+    monkeypatch.setattr(ae, "workspace_name", AsyncMock(return_value="Acme"))
     monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"address": TEAM}))
 
 
@@ -175,10 +125,10 @@ async def test_ensure_team_address_refuses_another_owners_row(monkeypatch, team)
 
 
 @pytest.mark.asyncio
-async def test_ensure_team_address_slug_derives_from_live_company_name(monkeypatch, team):
-    """No slug yet: allocated from the company name the agent chose, read live."""
+async def test_ensure_team_address_slug_derives_from_workspace_name(monkeypatch, team):
+    """No slug yet: allocated from the workspace name."""
     monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
-    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Renamed By Friday"))
+    monkeypatch.setattr(ae, "workspace_name", AsyncMock(return_value="Renamed By Friday"))
     slug = AsyncMock(return_value="renamed")
     monkeypatch.setattr(ae, "allocate_company_slug", slug)
     monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "o"}))
@@ -189,7 +139,7 @@ async def test_ensure_team_address_slug_derives_from_live_company_name(monkeypat
 @pytest.mark.asyncio
 async def test_ensure_team_address_reasons(monkeypatch, team):
     monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
-    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value=None))
+    monkeypatch.setattr(ae, "allocate_company_slug", AsyncMock(return_value=None))
     assert await ae.ensure_team_address("o", None) == (None, "slug_allocation_failed")
     monkeypatch.setattr(ae.settings, "AGENT_EMAIL_DOMAIN", "")
     assert await ae.ensure_team_address("o", None) == (None, "disabled")
@@ -197,16 +147,37 @@ async def test_ensure_team_address_reasons(monkeypatch, team):
 
 @pytest.mark.asyncio
 async def test_from_header_is_the_agent_on_the_team_address(monkeypatch, team):
-    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme"))
     monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value="Friday"))
     header = await ae.from_header("o", "agent_friday", TEAM)
     assert header == formataddr(("Friday · Acme agents", TEAM))
-    assert ae.resolve_agent_name.await_args.kwargs == {"agent_id": "agent_friday", "company_id": "co_1"}
+    assert ae.resolve_agent_name.await_args.kwargs == {"owner_id": "o", "agent_id": "agent_friday"}
+
+
+@pytest.mark.asyncio
+async def test_agent_mail_from_uses_registry_name(monkeypatch, team):
+    monkeypatch.setattr(ae.agent_registry, "get", _registry({("o", "a1"): {"agentId": "a1", "name": "Ada"}}))
+    assert await ae.from_header("o", "a1", TEAM) == formataddr(("Ada · Acme agents", TEAM))
+
+
+@pytest.mark.asyncio
+async def test_team_address_minted_for_workspace_without_company_id(monkeypatch):
+    """A workspace provisioned natively has no company_id and maybe no saved name: the slug
+    comes from the owner id and the address is still minted."""
+    monkeypatch.setattr(ae.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
+    monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
+    from core.services import workspace_name as wn
+
+    monkeypatch.setattr(wn.PaperclipRepo, "get_workspace", AsyncMock(return_value=None))
+    monkeypatch.setattr(wn.clerk_admin, "get_organization", AsyncMock(return_value=None))
+    slug = AsyncMock(return_value="org-1")
+    monkeypatch.setattr(ae, "allocate_company_slug", slug)
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "org_1"}))
+    assert await ae.ensure_team_address("org_1", None) == ("agents@org-1.thelightbulb.company", "ok")
+    assert slug.await_args.kwargs["name"] == "org_1"
 
 
 @pytest.mark.asyncio
 async def test_from_header_falls_back_to_the_bare_address(monkeypatch, team):
-    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme"))
     monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value=None))
     assert await ae.from_header("o", "agent_x", TEAM) == TEAM
 
@@ -219,7 +190,6 @@ async def test_from_header_sends_as_the_public_address(monkeypatch, team):
     monkeypatch.setattr(
         ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"address": TEAM, "public_address": PUBLIC})
     )
-    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme"))
     monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value="Friday"))
     assert await ae.from_header("o", "agent_friday", TEAM) == formataddr(("Friday · Acme agents", PUBLIC))
     monkeypatch.setattr(ae, "resolve_agent_name", AsyncMock(return_value=None))

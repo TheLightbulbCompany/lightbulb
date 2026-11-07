@@ -20,10 +20,8 @@ from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import launch_entries_repo, launch_teams_repo, launch_waitlist_repo, user_repo
-from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import agent_email, launch_phase, launch_revenue, readiness_state
+from core.services import launch_phase, launch_revenue, readiness_state, workspace_name
 from core.services.launch_phase import Schedule, phase
-from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 from schemas.launch import TEAM_SEATS_MAX
 
 logger = logging.getLogger(__name__)
@@ -74,22 +72,12 @@ def credits_milestone_reached(row: dict | None) -> int:
 
 
 async def _suggested_display_name(owner_id: str) -> str | None:
-    """Friday renames the Paperclip company during onboarding's first run —
-    the agent picks the name from the owner's idea (see
-    ``agent_email.resolve_company_name``'s docstring) — so by the time an
-    owner can see this field their company already has a real name.
-    Composed from the same id + name resolvers ``company_stripe`` and
-    ``agent_email`` already use, rather than a third lookup. Degrades to
-    None on ANY failure (missing company, Paperclip hiccup, ...); callers
-    MUST gate this on onboarded + not-yet-joined so the hot /launch/me read
-    never pays for an unused cross-service round trip."""
+    """The workspace's saved name (``workspace_name.saved_name``), or None on ANY failure.
+    Callers MUST gate this on onboarded + not-yet-joined so the hot /launch/me read never
+    pays for an unused lookup."""
     try:
-        repo = PaperclipRepo(table_name="paperclip-companies")
-        company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
-        if not company_id:
-            return None
-        return await agent_email.resolve_company_name(company_id)
-    except Exception as e:  # noqa: BLE001 — a Paperclip hiccup must never fail /launch/me
+        return await workspace_name.saved_name(owner_id)
+    except Exception as e:  # noqa: BLE001 -- a lookup hiccup must never fail /launch/me
         logger.warning("launch_service: suggested_display_name lookup failed for %s: %s", owner_id, e)
         return None
 
@@ -112,7 +100,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     # connected state instead of inviting a key re-paste. Read for joined
     # rows only — the entry can't exist otherwise.
     entry = await launch_entries_repo.get(owner_id) if joined else None
-    # Only worth the cross-service Paperclip call when the suggestion would
+    # Only worth the name lookup when the suggestion would
     # actually be USEFUL: an onboarded caller who hasn't joined yet.
     #
     # The `onboarded` term is now a correctness gate, not just a cost one.
@@ -130,7 +118,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     # route), so an org owner can never reach joined=True — without this,
     # every /launch/me read from an onboarded org owner (LaunchJoinBanner
     # mounts unconditionally in the workspace shell, revalidating on
-    # focus/mount) would pay a Paperclip round trip for a suggestion that
+    # focus/mount) would pay a lookup for a suggestion that
     # can never be used.
     suggested_display_name = (
         await _suggested_display_name(owner_id) if onboarded and not joined and not auth.is_org_context else None

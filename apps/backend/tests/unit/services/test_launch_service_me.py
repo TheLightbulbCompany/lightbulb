@@ -239,40 +239,18 @@ async def test_me_post_close_ruled_out_row():
     assert body["winner"] is False and body["compete_eligible"] is False
 
 
-async def test_suggested_display_name_resolves_the_live_paperclip_company_name():
-    """Friday renames the company during onboarding, so once the id
-    resolves the name comes straight from `agent_email.resolve_company_name`
-    — composed from the two resolvers, not a third lookup."""
-    with (
-        patch(
-            "core.services.launch_service.resolve_company_id_for_owner",
-            AsyncMock(return_value="company_1"),
-        ) as resolve_id,
-        patch(
-            "core.services.launch_service.agent_email.resolve_company_name",
-            AsyncMock(return_value="Northwind Ceramics"),
-        ) as resolve_name,
-    ):
-        name = await launch_service._suggested_display_name("user_1")
-    assert name == "Northwind Ceramics"
-    resolve_id.assert_awaited_once()
-    resolve_name.assert_awaited_once_with("company_1")
+async def test_suggested_display_name_is_the_saved_workspace_name():
+    with patch("core.services.workspace_name.saved_name", AsyncMock(return_value="Northwind Ceramics")) as saved:
+        assert await launch_service._suggested_display_name("user_1") == "Northwind Ceramics"
+    saved.assert_awaited_once_with("user_1")
 
 
-async def test_suggested_display_name_is_none_when_no_company_id_yet():
-    with (
-        patch("core.services.launch_service.resolve_company_id_for_owner", AsyncMock(return_value=None)),
-        patch("core.services.launch_service.agent_email.resolve_company_name", AsyncMock()) as resolve_name,
-    ):
+async def test_suggested_display_name_is_none_when_no_name_was_saved():
+    with patch("core.services.workspace_name.saved_name", AsyncMock(return_value=None)):
         assert await launch_service._suggested_display_name("user_1") is None
-    resolve_name.assert_not_awaited()  # no id -> never even asks Paperclip for a name
 
 
-async def test_suggested_display_name_degrades_to_none_on_a_paperclip_failure():
-    """A Paperclip hiccup must never fail /launch/me — mirrors the
-    `# noqa: BLE001` degrade-to-None pattern the existing resolvers use."""
-    with patch(
-        "core.services.launch_service.resolve_company_id_for_owner",
-        AsyncMock(side_effect=RuntimeError("paperclip is down")),
-    ):
+async def test_suggested_display_name_degrades_to_none_on_a_failure():
+    """A lookup hiccup must never fail /launch/me."""
+    with patch("core.services.workspace_name.saved_name", AsyncMock(side_effect=RuntimeError("ddb down"))):
         assert await launch_service._suggested_display_name("user_1") is None

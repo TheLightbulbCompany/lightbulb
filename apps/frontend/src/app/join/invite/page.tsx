@@ -39,11 +39,11 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
     const v = Array.isArray(raw) ? raw[0] : raw; // never truncated: a ticket is a long JWT
     if (v) query.set(key, v);
   }
-  // T09: an invitation from an approval card lands the new teammate on that card.
+  // T09: an invitation from an approval card lands the new teammate on Activity, where Needs you lists it.
   const approval = /^[A-Za-z0-9_-]{1,64}$/.test(one(search.approval)) ? one(search.approval) : "";
   const decision = one(search.decision);
   if (approval) {
-    query.set("redirect_url", `/chat?panel=teams-approval-detail&detailId=${approval}`);
+    query.set("redirect_url", "/chat?panel=activity");
   }
   const qs = query.toString() ? `?${query}` : "";
   const status = one(search.__clerk_status);

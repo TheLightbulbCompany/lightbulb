@@ -27,9 +27,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read: (path: strin
   ? { agents: [{ id: "agent-a", name: "Alpha" }, { id: "agent-b", name: "Beta" }] } : { members: [] } }) }) }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: null, isSubscribed: true }) }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({ useCompanyStripeStatus: () => ({ data: {} }) }));
-vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
-  useMarketplaceDrawer: () => ({ state: {}, open: vi.fn(), setFreshlyInstalled: vi.fn() }),
-}));
+
 vi.mock("@/components/chat/HealthIndicator", () => ({ HealthIndicator: () => null }));
 vi.mock("@/components/desktop/NodeStatusPill", () => ({ NodeStatusPill: () => null }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => null }));

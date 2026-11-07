@@ -146,3 +146,12 @@ async def test_cli_refuses_prod():
 
     with patch.object(settings, "ENVIRONMENT", "prod"):
         assert await script.main(["--all", "--apply"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_cli_allow_prod_lifts_only_the_prod_refusal(tasks_table, paperclip):
+    from scripts import backfill_agent_registry as script
+
+    with patch.object(settings, "ENVIRONMENT", "prod"):
+        assert await script.main(["--all", "--apply", "--allow-prod"]) == 0
+        assert await script.main(["--all", "--verify", "--allow-prod"]) == 0

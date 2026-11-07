@@ -9,8 +9,6 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
-import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
@@ -54,11 +52,9 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
     setSelectedAgent(initialAgentId);
   }
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
-  // "+ New" opens a chooser first (hire from marketplace vs build custom);
-  // the create form only renders once the user picks "build".
-  const [createStep, setCreateStep] = useState<"choose" | "build" | null>(null);
+  // "+ New" opens the create form.
+  const [createStep, setCreateStep] = useState<"build" | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const { open: openMarketplace } = useMarketplaceDrawer();
 
   const agents = rosterAgents as AgentEntry[];
   const defaultId = rosterDefaultId;
@@ -119,7 +115,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
           <span className="text-xs text-[var(--midnight-muted)]">{agents.length}</span>
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="outline" size="sm" onClick={() => setCreateStep("choose")}>
+          <Button variant="outline" size="sm" onClick={() => setCreateStep("build")}>
             <Plus size={16} className="mr-1" /> New
           </Button>
           <Button variant="ghost" size="sm" onClick={() => mutate()} aria-label="Refresh agents">
@@ -131,19 +127,6 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
       <div className="border-b border-[var(--edge)]">
         <AgentEmailSection />
       </div>
-
-      {createStep === "choose" && (
-        <div className="px-4 py-3 border-b border-[var(--edge)]">
-          <AgentCreateChooser
-            surface="control"
-            onHire={() => {
-              setCreateStep(null);
-              openMarketplace({ view: "browse" });
-            }}
-            onBuild={() => setCreateStep("build")}
-          />
-        </div>
-      )}
 
       {createStep === "build" && (
         <div className="px-4 py-3 border-b border-[var(--edge)]">

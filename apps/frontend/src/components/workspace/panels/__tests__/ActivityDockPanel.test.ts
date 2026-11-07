@@ -38,14 +38,14 @@ describe("openActivityTarget", () => {
     expect(opened).not.toHaveBeenCalled();
   });
 
-  it("opens Paperclip things in their Teams detail", () => {
+  it("opens Activity for an old Paperclip thing (its page is gone)", () => {
     openActivityTarget({ kind: "issue", id: "issue-41", roomId: null });
     openActivityTarget({ kind: "run", id: "run-9", roomId: null });
     openActivityTarget({ kind: "approval", id: "ap-2", roomId: null });
     expect(openPanel.mock.calls).toEqual([
-      ["teams-issue-detail", { detailId: "issue-41" }, { pushUrl: true }],
-      ["teams-run-detail", { detailId: "run-9" }, { pushUrl: true }],
-      ["teams-approval-detail", { detailId: "ap-2" }, { pushUrl: true }],
+      ["activity", {}, { pushUrl: true }],
+      ["activity", {}, { pushUrl: true }],
+      ["activity", {}, { pushUrl: true }],
     ]);
   });
 

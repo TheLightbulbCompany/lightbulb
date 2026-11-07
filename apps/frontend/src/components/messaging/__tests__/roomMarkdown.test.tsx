@@ -13,7 +13,7 @@ describe("roomMarkdown", () => {
       </MarkdownView>,
     );
     const anchor = screen.getByRole("link", { name: "ISOA-317" });
-    expect(anchor).toHaveAttribute("href", "/chat?panel=teams-issue-detail&detailId=ISOA-317");
+    expect(anchor).toHaveAttribute("href", "/chat?panel=activity");
     expect(anchor).not.toHaveAttribute("target");
   });
 

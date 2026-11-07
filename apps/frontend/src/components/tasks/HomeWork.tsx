@@ -96,10 +96,8 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, schedu
       {/* No Done or Closed rows on the first page yet: the next page is the list's own "Show more". */}
       {hasOlder && !done.length && !closed.length && <ShowMore loading={loading} onMore={() => void loadOlder()} />}
     </>}
-    {/* Work dissolved (UX slice 4): what was scheduled is a group here, and the old task board is one link away. */}
+    {/* Work dissolved (UX slice 4): what was scheduled is a group here. */}
     {scheduled && <ScheduledGroup automations={automations} initiallyOpen={scheduledOpen} />}
-    <button type="button" className="justify-self-start px-2 text-ui text-muted-foreground hover:text-foreground hover:underline"
-      onClick={() => openPanel("teams-issues", {}, { pushUrl: true })}>See tasks from before 5 Nov on the old board</button>
   </div>;
 }
 

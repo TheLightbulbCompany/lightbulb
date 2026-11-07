@@ -122,10 +122,8 @@ describe("HomeWork", () => {
     await userEvent.click(within(scheduled).getByRole("button", { name: /Morning digest/ }));
     expect(openPanel).toHaveBeenCalledWith("automation", { id: "a2" }, { pushUrl: true });
     expect(within(scheduled).queryByText("Post the signups once")).toBeNull();
-    // The old task board is one link away, once, at the foot.
-    expect(screen.getAllByRole("button", { name: /old board/ })).toHaveLength(1);
-    await userEvent.click(screen.getByRole("button", { name: /old board/ }));
-    expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
+    // The old task board is gone (Phase 1 task 7): no link to it.
+    expect(screen.queryByRole("button", { name: /old board/ })).toBeNull();
 
     // The rail badge and each room's About dot count the same rows.
     const { result: badge } = renderHook(() => useNeedsYouCount(), { wrapper: Fresh });

@@ -1,35 +1,28 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ScrollText, Wrench, CalendarClock, LayoutDashboard, History, Brain, Laptop } from "lucide-react";
+import { Bot, ScrollText, Wrench, Brain, Laptop } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentMemoryTab } from "./AgentMemoryTab";
 import { SessionsTimeline } from "./SessionsTimeline";
 import { AgentToolsTab } from "./AgentToolsTab";
-import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
-import { AgentDashboardTab } from "@/components/teams/agents/AgentDashboardTab";
-import { AgentRunsTab } from "@/components/teams/agents/AgentRunsTab";
 import { useAgents } from "@/hooks/useAgents";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { AgentEntry } from "./agents-types";
 
-type InspectorTab = "overview" | "dashboard" | "runs" | "instructions" | "memory" | "sessions" | "tools" | "schedule";
+type InspectorTab = "overview" | "instructions" | "memory" | "sessions" | "tools";
 
 // Module-level tab metadata (no inline component literals).
 const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "overview", icon: Bot, label: "Overview" },
-  // Ported stock Paperclip agent Dashboard + Runs (components/teams/agents).
-  { id: "dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { id: "runs", icon: History, label: "Runs" },
   { id: "instructions", icon: ScrollText, label: "Instructions" },
   { id: "memory", icon: Brain, label: "Memory" },
   { id: "sessions", icon: Laptop, label: "Sessions" },
   { id: "tools", icon: Wrench, label: "Tools" },
-  { id: "schedule", icon: CalendarClock, label: "Schedule" },
 ];
 
 function isInspectorTab(v: string | null | undefined): v is InspectorTab {
@@ -203,36 +196,12 @@ export function AgentInspectorPanel({
             ) : null}
           </>
         ) : null}
-        {activeTab === "dashboard" ? (
-          // Needs the Paperclip roster row (role/title/reports-to); same
-          // graceful degrade as the org section when it isn't there.
-          orgAgent ? (
-            <AgentDashboardTab agent={orgAgent} agents={rosterAgents} />
-          ) : (
-            <p className="py-4 text-sm text-[var(--midnight-muted)]">
-              Dashboard unavailable for this agent.
-            </p>
-          )
-        ) : null}
-        {activeTab === "runs" ? <AgentRunsTab agentId={inspectedAgentId} /> : null}
         {activeTab === "instructions" ? (
           <AgentInstructionsTab agentId={inspectedAgentId} />
         ) : null}
         {activeTab === "memory" ? <AgentMemoryTab /> : null}
         {activeTab === "sessions" ? <SessionsTimeline /> : null}
         {activeTab === "tools" ? <AgentToolsTab agentId={inspectedAgentId} /> : null}
-        {activeTab === "schedule" ? (
-          // RoutinesPanel needs no TeamsEventsProvider/CommandPaletteProvider:
-          // useTeamsApi is Clerk-backed and useInlineTeamsNav is null-safe. It
-          // DOES need MarketplaceDrawerProvider (its empty state's "Hire an
-          // agent" exit), which app/chat/page.tsx mounts above every route
-          // that reaches this inspector.
-          // The agentId prop scopes the list to this agent's routines (no chip);
-          // the panel's own error/empty states cover an unavailable Teams side.
-          <>
-            <RoutinesPanel agentId={inspectedAgentId} />
-          </>
-        ) : null}
       </div>
     </div>
   );

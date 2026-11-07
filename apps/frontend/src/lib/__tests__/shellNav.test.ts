@@ -26,61 +26,33 @@ describe("setCurrentEntryNamer", () => {
 });
 
 describe("shellUrlFromPaperclipPath", () => {
-  it("maps company-prefixed issue paths to the in-shell detail URL", () => {
-    expect(shellUrlFromPaperclipPath("/ISOA/issues/ISOA-171")).toBe(
-      "/chat?panel=teams-issue-detail&detailId=ISOA-171",
-    );
-    expect(shellUrlFromPaperclipPath("/PAP/issues/PAP-224#comment-abc")).toBe(
-      "/chat?panel=teams-issue-detail&detailId=PAP-224#comment-abc",
-    );
-    expect(shellUrlFromPaperclipPath("/PAP/issues/PAP-224#document-plan")).toBe(
-      "/chat?panel=teams-issue-detail&detailId=PAP-224#document-plan",
-    );
+  it("opens Activity for an old Paperclip issue, run, goal, approval or project link (the board is gone)", () => {
+    for (const path of ["/ISOA/issues/ISOA-171", "/PAP/issues/PAP-224#comment-abc", "/PAP/issues/PAP-224#document-plan",
+      "/PAP/agents/cto/runs/run-9", "/PAP/goals/g-142", "/PAP/approvals/ca6ba09d-b558", "/PAP/projects/growth"]) {
+      expect(shellUrlFromPaperclipPath(path), path).toBe("/chat?panel=activity");
+    }
   });
 
-  it("maps run paths to the run detail panel", () => {
-    expect(shellUrlFromPaperclipPath("/PAP/agents/cto/runs/run-9")).toBe(
-      "/chat?panel=teams-run-detail&detailId=run-9",
-    );
-  });
-
-  it("maps goal paths to the goal detail panel", () => {
-    expect(shellUrlFromPaperclipPath("/PAP/goals/g-142")).toBe(
-      "/chat?panel=teams-goal-detail&detailId=g-142",
-    );
-  });
-
-  it("maps agent paths to the agent inspector, and project paths to project detail", () => {
-    expect(shellUrlFromPaperclipPath("/PAP/approvals/ca6ba09d-b558")).toBe(
-      "/chat?panel=teams-approval-detail&detailId=ca6ba09d-b558",
-    );
-    // Carries the raw id through unresolved — the panel/hook resolves a
-    // non-uuid (url-key) id against the loaded roster/project list.
+  it("maps agent paths to the agent inspector", () => {
+    // Carries the raw id through unresolved — the inspector resolves a
+    // non-uuid (url-key) id against the loaded roster.
     expect(shellUrlFromPaperclipPath("/PAP/agents/cto")).toBe(
       "/chat?panel=agent-inspector&agent=cto",
-    );
-    expect(shellUrlFromPaperclipPath("/PAP/projects/growth")).toBe(
-      "/chat?panel=teams-project-detail&detailId=growth",
     );
   });
 
   it("tolerates a dropped company prefix for issues and approvals only", () => {
-    expect(shellUrlFromPaperclipPath("/issues/ISOA-171")).toBe(
-      "/chat?panel=teams-issue-detail&detailId=ISOA-171",
-    );
-    expect(shellUrlFromPaperclipPath("/approvals/ca6ba09d-b558")).toBe(
-      "/chat?panel=teams-approval-detail&detailId=ca6ba09d-b558",
-    );
-    // Goals/agents/projects keep the prefix mandatory — no company-scoped
-    // list to safely fall back to the way issues/approvals do.
+    expect(shellUrlFromPaperclipPath("/issues/ISOA-171")).toBe("/chat?panel=activity");
+    expect(shellUrlFromPaperclipPath("/approvals/ca6ba09d-b558")).toBe("/chat?panel=activity");
+    // Goals/agents/projects keep the prefix mandatory.
     expect(shellUrlFromPaperclipPath("/goals/g-142")).toBeNull();
     expect(shellUrlFromPaperclipPath("/agents/cto")).toBeNull();
     expect(shellUrlFromPaperclipPath("/projects/growth")).toBeNull();
   });
 
   it("reads the retired /teams/tasks and /teams/issues links agents still write as issue links", () => {
-    expect(shellUrlFromPaperclipPath("/teams/tasks/ISOA-12")).toBe("/chat?panel=teams-issue-detail&detailId=ISOA-12");
-    expect(shellUrlFromPaperclipPath("/teams/issues/ISOA-12")).toBe("/chat?panel=teams-issue-detail&detailId=ISOA-12");
+    expect(shellUrlFromPaperclipPath("/teams/tasks/ISOA-12")).toBe("/chat?panel=activity");
+    expect(shellUrlFromPaperclipPath("/teams/issues/ISOA-12")).toBe("/chat?panel=activity");
     expect(shellUrlFromPaperclipPath("/teams/inbox")).toBeNull();
   });
 

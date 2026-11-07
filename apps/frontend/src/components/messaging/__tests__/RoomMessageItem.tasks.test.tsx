@@ -7,7 +7,6 @@ import { Fresh, fakeTasksClient, type FakeTasksClient } from "@/components/tasks
 const live = vi.hoisted(() => ({ tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-vi.mock("../MessageTaskCard", () => ({ MessageTaskCard: () => <div data-testid="legacy-task-card" /> }));
 // The row as the server holds it: activate flips it, and the card's re-read sees the flip.
 const automation = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 const api = vi.hoisted(() => ({
@@ -77,7 +76,6 @@ describe("RoomMessageItem tasks", () => {
     expect(screen.getByText("Launch email draft")).toBeInTheDocument();
     expect(screen.getByText("Stripe fee estimate")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Suggested" })).toBeNull();
-    expect(screen.queryByTestId("legacy-task-card")).toBeNull();
   });
 
   it("routed-to copy", async () => {

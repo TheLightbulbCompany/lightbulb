@@ -1,6 +1,4 @@
 import type { ActivityItem, CanonicalRoomMessage } from "@lightbulb/shared";
-import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
-import type { AttentionItem } from "@/components/teams/shared/types";
 
 export const growth = { kind: "agent" as const, id: "growth", name: "Growth" };
 export const maya = { kind: "human" as const, id: "user_maya", name: "Maya" };
@@ -63,21 +61,6 @@ export const loginAsk: ActivityItem = {
       input: { kind: "login", label: "Login for supademo.com", required: true, options: null, hint: "Saved to the workspace's website logins." } },
   ],
 };
-
-export function runGroup(key: string, agentId = "friday", runIds = [`run-${key}`], reason = "Timed out") {
-  const runs = runIds.map((id) => ({ id, agentId, status: "failed", failureReason: reason, startedAt: "2026-09-08T08:00:00Z" })) as unknown as FailedRunGroup["runs"];
-  return { key, representative: runs[0], runs, count: runs.length } satisfies FailedRunGroup;
-}
-
-export function attention(id: string, sourceKind: AttentionItem["sourceKind"], agent: string | null = "Finance"): AttentionItem {
-  return {
-    id, sourceKind, whyNow: "Waiting on you", severity: "medium",
-    activityAt: "2026-09-08T09:00:00Z", createdAt: "2026-09-08T09:00:00Z",
-    subject: { kind: sourceKind, id: `subject-${id}`, title: `Subject ${id}`, identifier: null, status: null, href: null },
-    relatedIssue: { kind: "issue", id: `issue-${id}`, title: null, identifier: "LB-1", status: null, href: null },
-    originAgentName: agent,
-  };
-}
 
 export function post(seq: number, over: Partial<CanonicalRoomMessage> = {}): CanonicalRoomMessage {
   return {

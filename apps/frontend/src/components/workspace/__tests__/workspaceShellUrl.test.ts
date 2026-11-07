@@ -223,10 +223,10 @@ describe("retired-alias deep links keep their meaning end to end", () => {
 describe("URL params map onto place + pane", () => {
   it.each([
     ["?panel=activity&focus=paperclip:approval:a1", "activity", "activity"],
-    ["?panel=teams-issues&groupBy=status", "work", "teams-work"],
+    ["?panel=teams-issues&groupBy=status", "activity", "activity"],
     ["?panel=teams-money&section=spend", "settings", "settings"],
     ["?panel=teams-agents&view=chart", "team", "teams-agents"],
-    ["?panel=teams-search", "work", "teams-search"],
+    ["?panel=teams-search", "activity", "activity"],
     ["?panel=teams-artifacts", "canvas", "canvas"],
   ])("%s → the %s place", (search, place, mainId) => {
     navigate(search);
@@ -234,28 +234,27 @@ describe("URL params map onto place + pane", () => {
   });
 
   it.each([
-    ["?panel=teams-issue-detail&detailId=ADM-1", "teams-issue-detail:ADM-1", { teamsKey: "issue-detail", detailId: "ADM-1" }],
-    ["?panel=teams-approval-detail&detailId=ap-1", "teams-approval-detail:ap-1", { teamsKey: "approval-detail", detailId: "ap-1" }],
+    ["?panel=task-detail&taskId=t-1", "task-detail", { taskId: "t-1" }],
     ["?panel=file-viewer&path=/notes.md&agent=a1", "file-viewer", { path: "/notes.md", agent: "a1" }],
     ["?panel=browser", "browser", {}],
     ["?panel=mail&item=mail:k1", "mail", { item: "mail:k1" }],
     ["?panel=agents&agent=a1", "control:agents", { controlKey: "agents", agentId: "a1" }],
     ["?panel=agent-inspector&agent=a1", "agent-inspector", { controlKey: "agent-inspector", agentId: "a1" }],
   ])("%s → the pane shows %s, the place stays", (search, paneId, params) => {
-    navigate("?panel=teams-issues");
+    navigate("?panel=activity");
     navigate(search);
     const { pane, place } = getWorkspaceSnapshot();
-    expect(place).toBe("work");
+    expect(place).toBe("activity");
     expect(pane).toMatchObject({ panelId: paneId, params });
   });
 
   it("a URL naming a place and a pane restores both (a reload or a copied link)", () => {
-    const d = navigate("?panel=teams-issues&agent=a-1&pane=teams-issue-detail&pane.detailId=ADM-1");
-    expect(d.durableParams).toEqual({ agent: "a-1" }); // the pane's params stay off the place
+    const d = navigate("?panel=activity&filter=mentions&pane=task-detail&pane.taskId=t-1");
+    expect(d.durableParams).toEqual({ filter: "mentions" }); // the pane's params stay off the place
     expect(getWorkspaceSnapshot()).toMatchObject({
-      place: "work",
-      main: { params: { teamsKey: "issues", agent: "a-1" } },
-      pane: { panelId: "teams-issue-detail:ADM-1", params: { teamsKey: "issue-detail", detailId: "ADM-1" } },
+      place: "activity",
+      main: { params: { filter: "mentions" } },
+      pane: { panelId: "task-detail", params: { taskId: "t-1" } },
     });
     // A file's own `agent` binding never collides with the place's agent filter.
     navigate("?panel=activity&pane=file-viewer&pane.path=/a.md&pane.agent=a-2");
@@ -276,8 +275,8 @@ describe("URL params map onto place + pane", () => {
 
   it("one pane at a time: a second open replaces the first", () => {
     navigate("?panel=file-viewer&path=/a.md");
-    navigate("?panel=teams-issue-detail&detailId=ADM-2");
-    expect(getWorkspaceSnapshot().pane?.panelId).toBe("teams-issue-detail:ADM-2");
+    navigate("?panel=task-detail&taskId=t-2");
+    expect(getWorkspaceSnapshot().pane?.panelId).toBe("task-detail");
     expect(getWorkspaceSnapshot().openPanelIds).not.toContain("file-viewer");
   });
 

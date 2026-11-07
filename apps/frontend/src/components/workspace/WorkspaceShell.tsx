@@ -4,11 +4,11 @@
 // Activity, Work, Library) and one right pane, plus the URL reconciler and the
 // chrome (rail, sidebar, banners, stepper). Below 600 px the rail and the
 // sidebar become one drawer (workspace.css), opened from the phone bar, and the
-// pane a full-screen sheet. Mounted by page.tsx inside MarketplaceDrawerProvider.
+// pane a full-screen sheet. Mounted by page.tsx.
 import { Menu } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import "./workspace.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { OrganizationList, useAuth, useOrganization } from "@clerk/nextjs";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
@@ -21,11 +21,9 @@ import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
-import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
 import { MessagingWorkspaceProvider } from "@/components/messaging/MessagingWorkspaceContext";
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
-import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { ChatHistorySync } from "./ChatHistorySync";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
@@ -47,24 +45,10 @@ import {
   openChatPanel,
   openMessagePanel,
   openSessionPanel,
-  closeSubjectDeleted,
   useWorkspaceState,
   getWorkspaceSnapshot,
   refreshWorkspaceSnapshot,
 } from "./workspaceController";
-
-// Only a teams DETAIL pane may swap itself for its list via leaveToList —
-// same id grammar as panelRegistry.durableParamsFor.
-const TEAMS_DETAIL_PANEL_ID_RE = /^teams-(issue|routine|project|goal)-detail:/;
-
-// List panel key → its detail panel key, so a self-identifying leaveToList
-// caller (list key + its own detail id) maps to the exact panel id.
-const DETAIL_KEY_BY_LIST_KEY: Readonly<Record<string, string>> = {
-  "teams-issues": "teams-issue-detail",
-  "teams-goals": "teams-goal-detail",
-  "teams-projects": "teams-project-detail",
-  "teams-routines": "teams-routine-detail",
-};
 
 function DesktopMessagingProvider({ children }: { children: React.ReactNode }) {
   const { messagesVisible, browserVisible } = useWorkspaceState();
@@ -292,52 +276,11 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     return () => window.removeEventListener("selectAgent", onSelectAgent);
   }, []);
 
-  // Warm the code-split Teams panel chunks while the browser is idle so the
-  // first open of a Teams panel mounts from the module cache instead of
-  // fetching its chunk on click.
-  useEffect(() => {
-    // Safari has no requestIdleCallback — fall back to a short timer.
-    if (typeof window.requestIdleCallback === "function") {
-      const id = window.requestIdleCallback(() => preloadTeamsPanels(), { timeout: 5000 });
-      return () => window.cancelIdleCallback(id);
-    }
-    const id = window.setTimeout(preloadTeamsPanels, 3000);
-    return () => window.clearTimeout(id);
-  }, []);
-
-  const navValue = useMemo(
-    () => ({
-      // A detail opens in the right pane (openPanel routes it there).
-      openDetail: (panelKey: string, id: string) =>
-        openPanel(`teams-${panelKey}`, { detailId: id }, { pushUrl: true }),
-      leaveToList: (listPanelKey: string, selfDetailId?: string) => {
-        // Prefer the caller's self-identification; the fallback is whichever
-        // detail the pane shows.
-        if (selfDetailId) {
-          const detailKey = Object.prototype.hasOwnProperty.call(DETAIL_KEY_BY_LIST_KEY, listPanelKey)
-            ? DETAIL_KEY_BY_LIST_KEY[listPanelKey]
-            : undefined;
-          if (detailKey) {
-            closeSubjectDeleted(`${detailKey}:${selfDetailId}`, listPanelKey);
-            return;
-          }
-        }
-        // Guard on the id grammar so a stray call from a non-detail surface
-        // can't close an unrelated pane.
-        const selfPanelId = getWorkspaceSnapshot().pane?.panelId;
-        if (!selfPanelId || !TEAMS_DETAIL_PANEL_ID_RE.test(selfPanelId)) return;
-        closeSubjectDeleted(selfPanelId, listPanelKey);
-      },
-    }),
-    [],
-  );
-
   // Shared by both stepper branches: same element → the body never remounts
   // when recoveryTriggered flips (prop-switch ternary, NO key).
   const body = <WorkspaceBody />;
 
   return (
-    <InlineTeamsNavProvider value={navValue}>
       <TeamsEventsProvider>
         <DesktopMessagingProvider>
           <CommandPaletteProvider>
@@ -388,6 +331,5 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
           </CommandPaletteProvider>
         </DesktopMessagingProvider>
       </TeamsEventsProvider>
-    </InlineTeamsNavProvider>
   );
 }

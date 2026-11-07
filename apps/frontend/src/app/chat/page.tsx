@@ -6,7 +6,6 @@ import { LogoMark } from "@/components/Logo";
 import { LiveEventsProvider } from "@/hooks/useLiveEvents";
 import { SharedLiveViewHost } from "@/components/workspace/panels/sharedLiveView";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
-import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { RunNotifications } from "@/components/notifications/RunNotifications";
 import { SettingsRedirect } from "@/components/workspace/SettingsRedirect";
 
@@ -36,7 +35,6 @@ export default function ChatPage() {
   // the pane colour so any suspension reads as the page settling.
   return (
     <Suspense fallback={<div className="h-dvh w-full" style={{ background: "var(--cream)" }} />}>
-      <MarketplaceDrawerProvider>
         <LiveEventsProvider preloadRooms>
           {/* Inside the live provider: a super-agent workspace's old Settings keys open the place in the shell. */}
           <SettingsRedirect>
@@ -49,7 +47,6 @@ export default function ChatPage() {
           <SharedLiveViewHost />
           </SettingsRedirect>
         </LiveEventsProvider>
-      </MarketplaceDrawerProvider>
     </Suspense>
   );
 }

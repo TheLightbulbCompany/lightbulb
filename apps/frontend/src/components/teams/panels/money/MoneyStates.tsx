@@ -18,10 +18,10 @@
 
 import { CreditCard } from "lucide-react";
 import { PanelNotice } from "@/components/teams/shell";
-import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
+import { handleShellLinkClick } from "@/lib/shellNav";
 import type { MoneyView } from "@/hooks/useCompanyMoney";
 
-const ACCOUNTS = teamsPanelUrl("accounts");
+const ACCOUNTS = "/chat?panel=settings&section=connections";
 
 export function MoneyStates({ view, noun }: { view: MoneyView; noun: string }) {
   switch (view.kind) {

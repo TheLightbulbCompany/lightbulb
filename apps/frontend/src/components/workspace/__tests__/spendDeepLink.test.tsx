@@ -18,10 +18,6 @@ import { render, screen } from "@testing-library/react";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
 
-// Stubbed so the mount assertion is about ROUTING, not MoneyPanel's data hooks.
-vi.mock("@/components/teams/panels/MoneyPanel", () => ({
-  MoneyPanel: (p: { section?: string }) => <div data-testid="money-panel" data-section={p.section ?? ""} />,
-}));
 
 import { deriveReconcilerAction } from "../workspaceShellReconciler";
 import { openPanel, attachShell, getWorkspaceSnapshot, _resetControllerForTests } from "../workspaceController";
@@ -62,20 +58,11 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     expect(deriveReconcilerAction("?panel=teams-spend", first.nextSignature)).toBeNull();
   });
 
-  it("the bare `money` key renders Money with no section", async () => {
-    render(<TeamsPanelRouter panel="money" />);
-    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "");
-  });
-
-  it("a junk ?section= never reaches MoneyPanel — it feeds a CSS selector", async () => {
-    render(<TeamsPanelRouter panel="money" panelParams={{ section: "constructor" }} />);
-    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "");
-  });
-
-  it("a prototype-chain key falls through to Unknown panel, not Money", () => {
+  it("any key but Team falls through to the page-gone view", () => {
     render(<TeamsPanelRouter panel="constructor" />);
     expect(screen.getByText(/This page is no longer here/)).toBeInTheDocument();
-    expect(screen.queryByTestId("money-panel")).toBeNull();
+    render(<TeamsPanelRouter panel="money" />);
+    expect(screen.getAllByText(/This page is no longer here/)).toHaveLength(2);
   });
 
   it("?panel=usage opens nothing here — Usage lives on the Settings page", () => {

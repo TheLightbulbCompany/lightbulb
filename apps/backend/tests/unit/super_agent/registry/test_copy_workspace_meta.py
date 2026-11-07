@@ -208,3 +208,9 @@ async def test_reverse_never_overwrites_an_old_row_newer_than_meta(tables):
 async def test_refuses_prod(tables):
     with patch.object(cwm.settings, "ENVIRONMENT", "prod"):
         assert await cwm.main(["--all", "--apply"]) == 2
+
+
+async def test_allow_prod_lifts_only_the_prod_refusal(tables):
+    with patch.object(cwm.settings, "ENVIRONMENT", "prod"):
+        assert await cwm.main(["--all", "--apply", "--allow-prod"]) == 0
+        assert await cwm.main(["--all", "--verify", "--allow-prod"]) == 0

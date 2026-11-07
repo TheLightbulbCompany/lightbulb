@@ -13,7 +13,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { LocalSessionWork } from "./LocalSessionWork";
 import { SessionCommitPr } from "./SessionCommitPr";
 import { SessionOverview } from "./SessionOverview";
 import { SessionPickup } from "./SessionPickup";
@@ -21,7 +20,7 @@ import { SessionShareLink } from "./SessionShareLink";
 import { SessionRenameButton } from "./SessionRenameButton";
 import type { PickupClient } from "./useSessionPickup";
 
-export type SessionDetailsTab = "about" | "changes" | "access" | "work";
+export type SessionDetailsTab = "about" | "changes" | "access";
 
 type Client = SessionControlClient & PickupClient & Parameters<typeof SessionShareLink>[0]["client"] & Parameters<typeof SessionCommitPr>[0]["client"] & { setLocalSessionDisplayTitle?: (sessionId: string, title: string | null) => Promise<LocalSession> };
 
@@ -203,7 +202,6 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
           <TabsTrigger value="about">About</TabsTrigger>
           <TabsTrigger value="changes">Changes</TabsTrigger>
           <TabsTrigger value="access">Access</TabsTrigger>
-          <TabsTrigger value="work">Linked work</TabsTrigger>
         </TabsList>
         <TabsContent value="about" className="session-details-tab"><About session={session} ownerName={ownerName} own={own} /></TabsContent>
         <TabsContent value="changes" className="session-details-tab">
@@ -212,7 +210,6 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
             : <p className="text-muted-foreground">No plan or file changes yet.</p>}
         </TabsContent>
         <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} />{terminalHint}</TabsContent>
-        <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>
       </Tabs>
       {/* One link to copy, under Access ("Who can see this"): a workspace member who opens it lands in the app. */}
       <div className="session-details-actions">

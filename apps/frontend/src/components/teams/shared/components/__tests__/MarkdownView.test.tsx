@@ -8,7 +8,6 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 
 import { MarkdownView } from "../MarkdownView";
 import { AttachmentIssueContext, attachmentPathFromHref } from "@/components/teams/shared/lib/attachments";
-import { TaskMarkdown } from "@/components/teams/shared/components/TaskMarkdown";
 import { roomUrlTransform } from "@/components/messaging/markdown";
 
 describe("attachmentPathFromHref", () => {
@@ -41,7 +40,7 @@ describe("MarkdownView paperclip links", () => {
   it("renders an agent-written issue link as an in-shell anchor", () => {
     render(<MarkdownView>{"See [ISOA-171](/ISOA/issues/ISOA-171)"}</MarkdownView>);
     const anchor = screen.getByRole("link", { name: "ISOA-171" });
-    expect(anchor).toHaveAttribute("href", "/chat?panel=teams-issue-detail&detailId=ISOA-171");
+    expect(anchor).toHaveAttribute("href", "/chat?panel=activity");
     expect(anchor).not.toHaveAttribute("target");
   });
 
@@ -55,7 +54,7 @@ describe("MarkdownView paperclip links", () => {
     expect(push).toHaveBeenCalledWith(
       null,
       "",
-      "/chat?panel=teams-issue-detail&detailId=ISOA-171",
+      "/chat?panel=activity",
     );
     push.mockRestore();
   });
@@ -93,12 +92,6 @@ describe("MarkdownView attachment links", () => {
     render(onIssue(<MarkdownView>{"- Artifact: [ICP rewrite](/api/attachments/att-9/content)"}</MarkdownView>));
     fireEvent.click(screen.getByRole("button", { name: "ICP rewrite" }));
     await waitFor(() => expect(download).toHaveBeenCalledWith("/issues/iss-7/attachments/att-9/content"));
-  });
-
-  it("resolves a task-chat attachment link through the issue-scoped route", async () => {
-    render(onIssue(<TaskMarkdown body={"Done: [report.pdf](/api/attachments/att-3/content?download=1)"} />));
-    fireEvent.click(screen.getByRole("button", { name: "report.pdf" }));
-    await waitFor(() => expect(download).toHaveBeenCalledWith("/issues/iss-7/attachments/att-3/content"));
   });
 
   it("renders an attachment link as plain filename text with no issue context, never fetching", () => {

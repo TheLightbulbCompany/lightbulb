@@ -19,7 +19,7 @@ it("shows author, date and version, and a contents list from headings", async ()
   expect(screen.getByText(/Growth · updated .* · rev 3/)).toBeInTheDocument();
   const contents = screen.getByRole("navigation", { name: "Contents" });
   expect(within(contents).getAllByRole("button").map((b) => b.textContent)).toEqual(["Launch plan", "Goal", "Who", "When", "Risks"]);
-  expect(screen.getByRole("button", { name: /open task/i })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /open task/i })).toBeNull();
 });
 
 it("hides the contents list under four headings", async () => {

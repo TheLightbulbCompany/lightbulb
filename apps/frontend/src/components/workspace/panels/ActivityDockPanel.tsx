@@ -18,14 +18,9 @@ import { pageVisible } from "@/hooks/useRooms";
 import { openPanel, openTaskPane } from "../workspaceController";
 import type { PanelProps } from "../panelComponents";
 
-const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
-  issue: "teams-issue-detail",
-  run: "teams-run-detail",
-  approval: "teams-approval-detail",
-};
-
 /**
- * Opens an item in context: a room or thread in Messages, anything Paperclip in its Teams detail.
+ * Opens an item in context: a room or thread in Messages, a task in its pane. An old Paperclip item
+ * (issue, run, approval) has no page any more: it opens Activity, where it is listed.
  * Rooms and threads go through the `openRoom` event a notification click uses: the Messages
  * provider selects the room, opens the thread on its root and brings the panel forward.
  * (`openPanel("chat", …)` only retargets an agent DM, so a room link through it did nothing.)
@@ -45,8 +40,7 @@ export function openActivityTarget({ kind, id, roomId }: ActivityTarget): void {
     if (room) window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: room, threadId: kind === "thread" ? id : null } }));
     return;
   }
-  const panel = TEAMS_DETAIL[kind];
-  if (panel) openPanel(panel, { detailId: id }, { pushUrl: true });
+  openPanel("activity", {}, { pushUrl: true });
 }
 
 /**

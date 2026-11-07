@@ -1186,7 +1186,6 @@ export function MessagingWorkspaceProvider({
     onSteerSubagent: rooms.steerSubagent,
     onStopSubagent: rooms.stopSubagent,
     onSubagentsVisible: rooms.subagentsPollVisible,
-    onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     frontAgentId: resolveCeoAgentId(agentRoster?.agents ?? []) ?? (rosterLoading ? frontId : undefined),
     runtimeStarting: setupStarting,
     agentReads: rooms.receipts?.agentReads, // absent in older test doubles of useRooms

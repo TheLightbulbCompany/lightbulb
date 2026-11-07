@@ -46,8 +46,14 @@ const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
   prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
 };
 
-// Huddles are prod-only (owner ruling 2026-10-01); "" keeps an env dark.
-const LIVEKIT_URL_BY_ENV: Record<string, string> = { dev: "", prod: "wss://lightbulb-svx3a1rx.livekit.cloud" };
+// One LiveKit project ("Lightbulb") serves both envs; "" keeps an env dark.
+const LIVEKIT_URL_BY_ENV: Record<string, string> = {
+  dev: "wss://lightbulb-svx3a1rx.livekit.cloud",
+  prod: "wss://lightbulb-svx3a1rx.livekit.cloud",
+};
+// Sharing the project, dev must never dispatch to prod's deployed worker (lightbulb-huddle, the
+// backend default): dev's huddles and meetings go to the Mac worker started as lightbulb-meet-dev.
+const LIVEKIT_AGENT_NAME_BY_ENV: Record<string, string> = { dev: "lightbulb-meet-dev" };
 
 // The Lightbulb workspace per environment — the org every customer's shared
 // `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
@@ -296,8 +302,8 @@ export class LightbulbStage extends cdk.Stage {
       // App hostnames live in the root zone (dev and prod share it, so dev gets its own subdomain).
       appsDomain: env === "prod" ? "apps.thelightbulb.company" : "apps.dev.thelightbulb.company",
       appsHostedZoneId: dns.hostedZone.hostedZoneId,
-      // Prod only; dev stays dark.
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
+      livekitAgentName: LIVEKIT_AGENT_NAME_BY_ENV[env],
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

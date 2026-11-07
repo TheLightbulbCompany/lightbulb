@@ -17,12 +17,10 @@ import {
   LINE_DIFF_FALLBACK_MAX_ROWS,
 } from "../lib/lineDiff";
 import { computeAnchor, rangesForText } from "../lib/documentAnnotationSelection";
-import { getRequestConfirmationTargetHref } from "../lib/issue-thread-interactions";
 import { DocumentAnnotationPanel } from "../DocumentAnnotationPanel";
 import { DocumentDiffModal } from "../DocumentDiffModal";
 import { DocumentRow } from "../DocumentRow";
 import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
-import type { RequestConfirmationIssueDocumentTarget } from "@/components/teams/shared/types";
 import type { DocumentAnnotationThread, DocumentRevision } from "../lib/documentReviewTypes";
 
 beforeEach(() => {
@@ -227,48 +225,6 @@ describe("computeAnchor", () => {
       expect(adjMarkdown.slice(pos.markdownStart, pos.markdownEnd)).toBe("word");
       expect(pos.markdownEnd).toBeGreaterThan(pos.markdownStart);
     });
-  });
-});
-
-describe("getRequestConfirmationTargetHref", () => {
-  const target: RequestConfirmationIssueDocumentTarget = {
-    type: "issue_document",
-    key: "plan",
-    revisionId: "rev1",
-    issueId: "iss1",
-  };
-
-  it("returns an in-page hash for a same-issue document target", () => {
-    expect(getRequestConfirmationTargetHref({ issueId: "iss1", target })).toBe("#document-plan");
-  });
-
-  it("falls back to a full path for a cross-issue document target", () => {
-    expect(getRequestConfirmationTargetHref({ issueId: "other", target })).toBe(
-      "/issues/iss1#document-plan",
-    );
-  });
-
-  it("prefers the in-page anchor over an internal href for a same-issue document target", () => {
-    // A same-issue target that ALSO carries an internal href must resolve to the
-    // bare `#document-<key>` anchor (a live in-page link), not the raw href
-    // which the chip would render as a dead span (no `/issues/:id` route).
-    const withHref: RequestConfirmationIssueDocumentTarget = {
-      ...target,
-      href: "/issues/iss1#document-plan",
-    };
-    expect(getRequestConfirmationTargetHref({ issueId: "iss1", target: withHref })).toBe(
-      "#document-plan",
-    );
-  });
-
-  it("keeps a cross-issue document target's internal href as-is", () => {
-    const withHref: RequestConfirmationIssueDocumentTarget = {
-      ...target,
-      href: "/issues/iss1/documents/plan",
-    };
-    expect(getRequestConfirmationTargetHref({ issueId: "other", target: withHref })).toBe(
-      "/issues/iss1/documents/plan",
-    );
   });
 });
 

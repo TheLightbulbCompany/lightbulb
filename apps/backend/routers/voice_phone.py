@@ -244,11 +244,16 @@ def outcome_of(call: dict) -> str:
 @router.post("/internal/voice/calls/{call_id}/end")
 async def end_call(call_id: str, body: EndIn) -> dict:
     who = {"user": "caller", "caller": "caller", "assistant": "assistant"}
-    lines = [
-        {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
-        for t in body.transcript
-        if str(t.get("role") or t.get("who")) in who
-    ]
+    lines = []
+    for t in body.transcript:
+        if str(t.get("role") or t.get("who")) not in who:
+            continue
+        line = {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
+        if isinstance(t.get("t"), (int, float)) and not isinstance(t["t"], bool):
+            line["t"] = round(min(max(float(t["t"]), 0.0), 86400.0), 1)  # seconds since the call started
+        if t.get("assumed") is True:
+            line["assumed"] = True  # the greeting the agent was told to say; its transcription never arrived
+        lines.append(line)
 
     def change(call: dict) -> dict:
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,

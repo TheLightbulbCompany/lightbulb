@@ -48,8 +48,9 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. You already greeted the
-caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
+INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. Your first words on this call
+are exactly, word for word: "{greeting}" Say that once, when the call starts, and never again; after it, answer what
+the caller says. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
 {caller}What you may tell callers about the business: {facts}
 {can}
 
@@ -66,6 +67,33 @@ def e164(number: str) -> str:
     """LiveKit Phone Numbers send the dialed number as digits ("14842079294"); line rows key on E.164."""
     n = number.strip()
     return "+" + n if n.isdigit() else n
+
+
+def clean_transcript(items: list[dict], greeting: str) -> list[dict]:
+    """The call's transcript for the record: final lines only (an interrupted, cut-off reply is dropped), in spoken
+    order (`t`, seconds since the call started), consecutive repeats once. When the plugin never emitted the greeting
+    (it sometimes drops that reply's transcription), the greeting the agent was told to say opens it, marked."""
+    out: list[dict] = []
+    for i in sorted(items, key=lambda i: i["t"]):
+        who = {"user": "caller", "assistant": "assistant"}.get(i["role"])
+        if not who or i.get("interrupted") or not i["text"].strip():
+            continue
+        line = {"who": who, "text": i["text"].strip(), "t": round(max(i["t"], 0.0), 1)}
+        if out and (out[-1]["who"], out[-1]["text"]) == (who, line["text"]):
+            continue
+        out.append(line)
+    if not any(x["who"] == "assistant" and x["text"] == greeting.strip() for x in out):
+        out.insert(
+            0, {"who": "assistant", "text": greeting.strip(), "t": 0.0, "assumed": True}
+        )
+    return out
+
+
+async def greet(session) -> None:
+    """The first reply, from the system instructions alone. generate_reply(instructions=...) on gemini-3.8 puts the
+    text in the Live history as a user turn, which the model answered again on the caller's first turn (live call
+    7 Nov: it re-greeted instead of answering)."""
+    session.generate_reply()
 
 
 class Backend:
@@ -116,6 +144,7 @@ class Receptionist(Agent):
         ]
         super().__init__(instructions=INSTRUCTIONS.format(**{
             "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
+            "greeting": info["greeting"],
             "facts": info.get("facts") or "nothing; take a message for any question about the business.",
             "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
             "can": f"On this line you can't {' or '.join(off)}." if off else "",
@@ -245,13 +274,24 @@ async def entrypoint(ctx: JobContext) -> None:
             model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
         ),
     )
-    transcript: list[dict] = []
+    items: list[dict] = []
+    t0 = time.time()
 
     @session.on("conversation_item_added")
     def _item(ev) -> None:
         text = getattr(ev.item, "text_content", None)
         if text:
-            transcript.append({"role": ev.item.role, "text": text})
+            at = (ev.item.metrics or {}).get(
+                "started_speaking_at"
+            ) or ev.item.created_at
+            items.append(
+                {
+                    "role": ev.item.role,
+                    "text": text,
+                    "t": at - t0,
+                    "interrupted": ev.item.interrupted,
+                }
+            )
 
     async def hang_up() -> None:
         await ctx.delete_room()  # disconnects the SIP caller too
@@ -266,7 +306,7 @@ async def entrypoint(ctx: JobContext) -> None:
             {
                 "durationSec": int(time.monotonic() - started),
                 "summary": "; ".join(agent.did),
-                "transcript": transcript,
+                "transcript": clean_transcript(items, info["greeting"]),
             },
         )
         logger.info(
@@ -284,11 +324,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     # The Live model speaks the compliance greeting. Dev test 7 Nov: a TTS say() and caller audio switched off while it
     # played both stalled the Gemini Live session (the reply never finished), so the caller can talk over it.
-    # The plugin drops this reply's transcription ("no active generation"), so the record gets the line it was told.
-    transcript.append({"role": "assistant", "text": info["greeting"]})
-    session.generate_reply(
-        instructions=f'Greet the caller by saying exactly this, word for word, and nothing else: "{info["greeting"]}"'
-    )
+    await greet(session)
 
 
 if __name__ == "__main__":

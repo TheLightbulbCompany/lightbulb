@@ -123,6 +123,24 @@ async def test_a_custom_greeting_missing_the_disclosures_falls_back_to_ours(clie
         assert got.startswith("Thanks for calling Maya's Nail Studio. This is Nova") and "recorded" in got
 
 
+async def test_the_record_keeps_each_lines_time_and_the_assumed_greeting(client):
+    call = await _start(client)
+    tx = [
+        {"who": "assistant", "text": "Thanks for calling.", "t": 0.0, "assumed": True},
+        {"who": "caller", "text": "Hey, how are you?", "t": 7.4},
+        {"who": "assistant", "text": "Well, thanks!", "t": 9.25},
+        {"who": "caller", "text": "no time", "t": "soon"},
+    ]
+    end = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 12, "transcript": tx},
+                      headers=W).json()  # fmt: skip
+    assert end["transcript"] == [
+        {"who": "assistant", "text": "Thanks for calling.", "t": 0.0, "assumed": True},
+        {"who": "caller", "text": "Hey, how are you?", "t": 7.4},
+        {"who": "assistant", "text": "Well, thanks!", "t": 9.2},
+        {"who": "caller", "text": "no time"},
+    ]
+
+
 async def test_the_agent_pages_checkboxes_gate_the_tools(client):
     call = await _start(client, allow={"book": False, "move": True, "answer": False, "greetByName": False})
     assert call["facts"] == "" and call["can"] == {"book": False, "move": True, "answer": False}

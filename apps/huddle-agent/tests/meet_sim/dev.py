@@ -3,6 +3,7 @@ dev messaging table (AWS profile isol8-admin):
 
     uv run --project ../backend python ../huddle-agent/tests/meet_sim/dev.py seed <tag>   -> dispatch metadata
     uv run --project ../backend python ../huddle-agent/tests/meet_sim/dev.py record <roomId>  -> META.meeting + truth
+    uv run --project ../backend python ../huddle-agent/tests/meet_sim/dev.py end <roomId>  -> the notes run, as call_ended
 
 `seed` makes a hidden meeting room in the "Super Agent Test" workspace the way lane M did (02-meet-dev.md): an
 in-call meeting whose roster has the host member p1 and two guests, p2 and p3. `record` returns what the worker
@@ -27,7 +28,7 @@ from core.config import settings  # noqa: E402
 
 settings.MESSAGING_TABLE = "lightbulb-dev-messaging"
 from core.repositories import messaging_repo  # noqa: E402
-from core.services import livekit_huddles  # noqa: E402
+from core.services import livekit_huddles, meeting_invites, meeting_notes  # noqa: E402
 from routers import voice_meet, voice_phone  # noqa: E402
 
 OWNER, USER = "org_3LgB9twuJbYCjGILfOL5JjgQV0p", "user_3LgB4LPRZ1MOhpg5wSfGrH5jMcA"
@@ -65,7 +66,8 @@ async def record(room_id: str) -> dict:
     meta = await messaging_repo.get_room(room_id) or {}
     m = meta.get("meeting") or {}
     return {
-        "meeting": {k: m.get(k) for k in ("asked", "followUps", "summary", "transcriptAttachedAt", "status")},
+        "meeting": {k: m.get(k) for k in ("asked", "followUps", "summary", "transcriptAttachedAt", "status",
+                                          "notesRunId", "notesSkipped", "notesMailedAt")},
         "truth": {
             "calls_today": await voice_meet._calls(OWNER, 1),
             "calls_week": await voice_meet._calls(OWNER, 7),
@@ -74,6 +76,13 @@ async def record(room_id: str) -> dict:
     }
 
 
+async def end(room_id: str) -> dict:
+    """What Recall's call_ended does for the notes (routers/meetings.py): the meeting is over, its notes run."""
+    await meeting_invites._patch_meeting(room_id, {"status": "ended", "endedAt": int(time.time())})
+    await meeting_notes.on_ended(room_id)
+    return await record(room_id)
+
+
 if __name__ == "__main__":
     op, arg = sys.argv[1], sys.argv[2]
-    print(json.dumps(asyncio.run(seed(arg) if op == "seed" else record(arg)), default=str))
+    print(json.dumps(asyncio.run({"seed": seed, "record": record, "end": end}[op](arg)), default=str))

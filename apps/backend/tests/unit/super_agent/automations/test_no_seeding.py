@@ -12,7 +12,7 @@ def switch(monkeypatch):
     def set_(on: bool):
         flags = AsyncMock(return_value=on)
         monkeypatch.setattr(paperclip_provisioning, "flags_for", flags)
-        monkeypatch.setattr(user_provision, "flags_for", flags)
+        monkeypatch.setattr(user_provision, "flags_for", flags, raising=False)
         return flags
 
     return set_

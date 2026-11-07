@@ -256,7 +256,8 @@ class MeetAgent(Agent):
         answered turn, younger than STALE_S). Every final line from that line on must be one person's: another
         person's line after it, or two askers, and the call cannot be tied to one line, so it is "" (the backend
         treats it as a guest's, needs_member). A partial counts too: Gemini hears the audio and may call the tool
-        before the line's final, so anyone else starting to talk makes it "" (fails closed)."""
+        before the line's final, so anyone else talking -- since the ask, or still mid-line from before it --
+        makes it "" (fails closed)."""
         now = time.monotonic()
         if self.replying and self.reply_turn is not None:
             start = self.reply_turn["seq"]
@@ -266,7 +267,9 @@ class MeetAgent(Agent):
             if not open_asks:
                 return ""
             start = open_asks[0]["seq"]
-        who = {t["who"] for t in self.turns if t["seq"] >= start}
+        # every line from the asking one on, and any line still in progress that began before it
+        who = {t["who"] for t in self.turns
+               if t["seq"] >= start or (not t["final"] and now - t["at"] < STALE_S)}  # fmt: skip
         return next(iter(who)).rsplit(":", 1)[-1] if len(who) == 1 and "" not in who else ""
 
     def _authorize(self, now: float, speech_id: str | None = None) -> tuple[bool | None, str]:

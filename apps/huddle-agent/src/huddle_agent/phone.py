@@ -50,8 +50,8 @@ server = AgentServer(
 )
 
 INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. Your first words on this call
-are exactly, word for word: "{greeting}" Say that once, when the call starts, and never again; after it, answer what
-the caller says. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
+are exactly, word for word: "{greeting}" Say the greeting once, at the start, and don't repeat it. If you are told
+the disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
 {caller}What you may tell callers about the business: {facts}
 {can}
 
@@ -111,27 +111,35 @@ def disclosure_of(items: list[dict], greeting: str, assistant: str) -> str:
 
 
 class DisclosureGuard:
-    """Watches the first lines of the call. If the first assistant line is in and fails the check, `say` is called
-    once with the disclosure sentence, right away. PHONE_TEST_FAIL_DISCLOSURE=1 fails the check (scripted runs)."""
+    """Judges the greeting once it has finished: after the agent's first speaking -> listening change, on final items
+    (the agent adds an assistant item only after its audio played, `interrupted` set when cut off). A failed first
+    line makes `say` speak the disclosure sentence once. PHONE_TEST_FAIL_DISCLOSURE=1 fails it (scripted runs)."""
 
     def __init__(self, greeting: str, assistant: str, say) -> None:
         self.greeting, self.assistant, self._say = greeting, assistant, say
         self.line = f"I'm {assistant}, an AI assistant, and this call is recorded."
-        self.corrected, self._done = False, False
+        self.corrected, self._done, self._greeted, self._spoke = (
+            False,
+            False,
+            False,
+            False,
+        )
+
+    def state(self, old: str, new: str) -> None:
+        if new == "speaking":
+            self._spoke = True
+        elif self._spoke and old == "speaking":
+            self._greeted = True  # the greeting finished (or was cut off) playing
 
     def seen(self, items: list[dict]) -> None:
-        if self._done:
+        if self._done or not self._greeted:
             return
-        if (
-            os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1"
-        ):  # scripted runs: fail on the first assistant line
-            if any(i["role"] == "assistant" for i in items):
-                self._done = self.corrected = True
-                self._say(self.line)
-            return
-        verdict = disclosure_of(items, self.greeting, self.assistant)
-        if verdict == "unknown" and not any(i["role"] == "user" for i in items):
-            return  # nothing to judge yet
+        if os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1":
+            verdict = "missing"
+        else:
+            verdict = disclosure_of(items, self.greeting, self.assistant)
+            if verdict == "unknown" and not any(i["role"] == "user" for i in items):
+                return  # the greeting's line may still be on its way; judge when it (or the caller) lands
         self._done = True
         if verdict == "missing":
             self.corrected = True
@@ -143,8 +151,8 @@ def say_disclosure(session, line: str) -> None:
     Gemini Live can't take a turn back out of its history, so the instruction says it is one-time."""
     logger.info("phone: first line lacked the disclosure; saying it once")
     session.generate_reply(
-        instructions=f'Say exactly this, word for word, and nothing else: "{line}" This is a one-time line: do not '
-        "say it again later in the call."
+        instructions=f'The disclosure was missed. Say exactly this, word for word, and nothing else: "{line}" '
+        "This is a one-time line: do not say it again later in the call."
     )
 
 
@@ -357,6 +365,11 @@ async def entrypoint(ctx: JobContext) -> None:
                 }
             )
             guard.seen(items)
+
+    @session.on("agent_state_changed")
+    def _state(ev) -> None:
+        guard.state(ev.old_state, ev.new_state)
+        guard.seen(items)
 
     async def hang_up() -> None:
         await ctx.delete_room()  # disconnects the SIP caller too

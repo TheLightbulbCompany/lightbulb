@@ -41,7 +41,14 @@ def test_the_greeting_comes_from_the_system_prompt_not_an_injected_turn():
         f'Your first words on this call are exactly, word for word: "{GREETING}"'
         in text
     )
-    assert "never again" in text and "You already greeted" not in text
+    assert (
+        "Say the greeting once, at the start, and don't repeat it." in text
+        and "You already greeted" not in text
+    )
+    assert (
+        "If you are told the disclosure was missed, say the one disclosure sentence exactly as given"
+        in text
+    )
 
     calls = []
 
@@ -96,9 +103,26 @@ def test_the_transcript_keeps_final_lines_in_spoken_order_once():
     assert phone.disclosure_of(items, GREETING, "Lightbulb") == "ok"
 
 
-def _guard():
+def _guard(greeted=True):
     said = []
-    return phone.DisclosureGuard(GREETING, "Lightbulb", said.append), said
+    guard = phone.DisclosureGuard(GREETING, "Lightbulb", said.append)
+    if greeted:  # the greeting played: listening -> speaking -> listening
+        guard.state("listening", "speaking")
+        guard.state("speaking", "listening")
+    return guard, said
+
+
+def test_nothing_is_judged_until_the_greeting_has_finished_playing():
+    paraphrase = [{"role": "assistant", "text": "Hi there, how can I help?", "t": 1.0}]
+    guard, said = _guard(greeted=False)
+    guard.state("initializing", "listening")
+    guard.seen(paraphrase)
+    guard.state("listening", "speaking")  # the greeting is playing
+    guard.seen(paraphrase)
+    assert said == []
+    guard.state("speaking", "listening")
+    guard.seen(paraphrase)
+    assert said == [guard.line]
 
 
 def test_a_paraphrased_greeting_is_missing_and_the_disclosure_is_said_once():
@@ -170,16 +194,15 @@ def test_the_corrective_line_is_one_reply_that_says_never_again():
     assert "do not say it again" in only["instructions"]
 
 
-def test_the_scripted_run_flag_fails_the_first_assistant_line(monkeypatch):
+def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monkeypatch):
     monkeypatch.setenv("PHONE_TEST_FAIL_DISCLOSURE", "1")
-    guard, said = _guard()
-    guard.seen([{"role": "user", "text": "Hi", "t": 6.0}])
-    assert said == []
-    guard.seen(
-        [
-            {"role": "user", "text": "Hi", "t": 6.0},
-            {"role": "assistant", "text": GREETING, "t": 7.0},
-        ]
-    )
-    guard.seen([{"role": "assistant", "text": "Hello again", "t": 9.0}])
-    assert said == [guard.line]
+    guard, said = _guard(greeted=False)
+    guard.state("listening", "speaking")
+    guard.seen([{"role": "assistant", "text": GREETING, "t": 1.0}])
+    assert said == []  # still speaking
+    guard.state("speaking", "listening")
+    guard.seen([{"role": "assistant", "text": GREETING, "t": 1.0}])
+    guard.state("listening", "speaking")
+    guard.state("speaking", "listening")
+    guard.seen([])
+    assert said == [guard.line] and guard.corrected

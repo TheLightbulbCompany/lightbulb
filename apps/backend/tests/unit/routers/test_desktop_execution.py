@@ -382,7 +382,7 @@ def task_rows():
     rows = {
         "task": {"taskId": TASK_ID, "attemptCount": 1, "ownerUserId": "user_1", "triggerId": "chat:m1"},
         "attempt": {"runId": "run_1", "agentId": "agent_1", "runSecret": "secret", "status": "running", "n": 1},
-        "trigger": {"triggerId": "chat:m1", "actorUserId": "user_1", "ref": {}},
+        "trigger": {"triggerId": "chat:m1", "source": "chat", "actorUserId": "user_1", "ref": {}},
     }
 
     async def get_task(ws, task_id):
@@ -456,3 +456,65 @@ async def test_a_task_run_with_no_task_named_is_refused(task_rows):
     for task_id in ("", "../x"):
         with pytest.raises(service.DesktopError, match="run_forbidden"):
             await service.authorize_run("org_1", "run_1", "agent_1", "task", active=True, task_id=task_id)
+
+
+@pytest.mark.parametrize(
+    "source,ref",
+    [
+        ("chat", {}),
+        ("manual", {}),  # Run now: the person who pressed it
+        ("a2a", {}),  # a member's own A2A ask (membership is checked below it)
+        ("voice", {"origin": "owner_voice"}),  # #5010 owner mode: a seated member asked aloud in their DM
+    ],
+)
+async def test_a_task_a_person_asked_for_reaches_their_mac(task_rows, source, ref):
+    task_rows["trigger"].update({"source": source, "ref": ref})
+    auth = await service.authorize_run(
+        "org_1", "run_1", "agent_1", "task", active=True, task_id=TASK_ID, run_secret="secret"
+    )
+    assert auth == TASK_AUTH
+
+
+@pytest.mark.parametrize(
+    "source,ref",
+    [
+        ("schedule", {}),
+        ("webhook", {}),
+        ("mail", {}),
+        ("text", {}),  # SMS and iMessage
+        ("idea", {}),
+        ("watch", {}),
+        ("task_result", {}),
+        ("job_result", {}),
+        ("network", {}),
+        ("answer", {}),
+        ("ask", {}),
+        ("voice", {}),  # a Meet speaker: no owner-mode origin
+        ("voice", {"origin": "phone_contact"}),
+        ("voice", {"origin": "meet_guest"}),
+    ],
+)
+async def test_a_task_nobody_asked_for_gets_no_mac(task_rows, source, ref):
+    # The owner as actor in a personal workspace is exactly how routines and inbound mail look.
+    task_rows["trigger"].update({"source": source, "ref": ref})
+    with pytest.raises(service.DesktopError) as err:
+        await service.authorize_run(
+            "org_1", "run_1", "agent_1", "task", active=True, task_id=TASK_ID, run_secret="secret"
+        )
+    assert err.value.code == "run_member_authority_unavailable"
+
+
+async def test_a_personal_workspace_routine_fired_as_its_owner_gets_no_mac(task_rows):
+    from core.repositories import tasks_repo
+
+    task_rows["task"]["ownerUserId"] = "user_1"
+    task_rows["trigger"].update({"source": "schedule", "actorUserId": "user_1"})
+    task = {**task_rows["task"]}
+    with (
+        patch.object(tasks_repo, "get_task", AsyncMock(return_value=task)),
+        patch.object(tasks_repo, "get_attempt", AsyncMock(return_value=task_rows["attempt"])),
+        pytest.raises(service.DesktopError, match="run_member_authority_unavailable"),
+    ):
+        await service.authorize_run(
+            "user_1", "run_1", "agent_1", "task", active=True, task_id=TASK_ID, run_secret="secret"
+        )

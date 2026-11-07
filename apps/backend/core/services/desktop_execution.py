@@ -962,15 +962,20 @@ async def _authorize_task(owner_id, run_id, agent_id, task_id, run_secret, *, ac
     # A phone caller's task never reaches anyone's Mac (effect_check asks the owner for its every outside action).
     if await tasks_repo.from_contact(owner_id, task):
         raise DesktopError("run_member_authority_unavailable", 403)
-    # The requester is the trigger's acting human (admission: a person's own send, or a CLI/MCP/A2A send on their
-    # behalf); an automation or the org itself is nobody, so no Mac.
+    # The requester is the trigger's acting human, and only on a trigger where a person asked: a chat send (theirs, or
+    # a CLI/MCP send on their behalf), Run now, a member's A2A ask, or the owner-mode voice front. A routine, webhook,
+    # inbound mail/text, idea or watch names the owner as actor with nobody behind it: no Mac.
     member_id = task.get("ownerUserId")
-    trigger = await tasks_repo.get_trigger(owner_id, task.get("triggerId") or "")
+    trigger = await tasks_repo.get_trigger(owner_id, task.get("triggerId") or "") or {}
+    asked = trigger.get("source") in {"chat", "manual", "a2a"} or (
+        trigger.get("source") == "voice" and (trigger.get("ref") or {}).get("origin") == "owner_voice"
+    )
     if (
-        not isinstance(member_id, str)
+        not asked
+        or not isinstance(member_id, str)
         or not _ID.fullmatch(member_id)
         or member_id.startswith("org_")
-        or (trigger or {}).get("actorUserId") != member_id
+        or trigger.get("actorUserId") != member_id
     ):
         raise DesktopError("run_member_authority_unavailable", 403)
     if owner_id != member_id:

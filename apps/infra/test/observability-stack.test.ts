@@ -676,6 +676,27 @@ describe("ObservabilityStack", () => {
     });
   });
 
+  test("W85 warns on ERROR lines from the voice routers", () => {
+    template.hasResourceProperties("AWS::Logs::MetricFilter", {
+      LogGroupName: "/ecs/isol8-dev",
+      FilterPattern: '{ $.level = "ERROR" && $.logger = "routers.voice*" }',
+      MetricTransformations: [
+        Match.objectLike({
+          MetricNamespace: "LightbulbAI/Voice/dev",
+          MetricName: "voice.errors",
+        }),
+      ],
+    });
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-W85-voice-errors",
+      Namespace: "LightbulbAI/Voice/dev",
+      MetricName: "voice.errors",
+      Threshold: 3,
+      TreatMissingData: "notBreaching",
+      AlarmActions: [Match.anyValue()],
+    });
+  });
+
   // -------------------------------------------------------------------
   // Alarm <-> emitter dimension contract
   // -------------------------------------------------------------------

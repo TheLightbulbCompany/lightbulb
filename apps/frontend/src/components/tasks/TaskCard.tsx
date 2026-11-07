@@ -11,7 +11,6 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
-import { RequestApp } from "@/components/canvas/RequestApp";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
 import { DecisionCard } from "./DecisionCard";
 import { actionLabel, useTaskActions } from "./useTaskActions";
@@ -103,7 +102,6 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
     </div>
     {/* One chip per thing it made; an app's chip replaces the old app line. */}
     <TaskOutputs task={task} max={2} onOpenTask={open} />
-    {!task.outputs?.some((o) => o.kind === "app") && <RequestApp taskId={taskId} />}
     {question && <div className="relative z-10 mt-2"><DecisionCard task={task} question={question} compact framed={false} /></div>}
     {inline && <div className="relative z-10 mt-2 flex items-center gap-2">
       <Button type="button" size="sm" variant={view.tone === "waiting" || view.tone === "review" ? "default" : "outline"} disabled={pending}

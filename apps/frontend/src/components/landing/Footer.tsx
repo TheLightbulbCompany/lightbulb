@@ -52,16 +52,10 @@ export function Footer() {
             <div className="lb-foot-col">
               <h4>Product</h4>
               <Link href="/#workspace">The workspace</Link>
-              <Link href="/marketplace">Marketplace</Link>
               <Link href="/network">Free agent network</Link>
               <Link href="/docs">Docs</Link>
               <Link href="/compare">Compare</Link>
               <Link href="/pricing">Pricing</Link>
-              {/* API route 302s to the DMG — must be a hard navigation, not a client <Link>. */}
-              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-              <a href="/api/download/desktop" title="macOS · Apple Silicon">
-                Download for Mac
-              </a>
             </div>
             <div className="lb-foot-col">
               <h4>Company</h4>

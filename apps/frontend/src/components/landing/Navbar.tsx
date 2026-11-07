@@ -123,11 +123,6 @@ export function Navbar() {
         <Link href="/pricing" data-section="pricing" className={initialActive("pricing")}>
           Pricing
         </Link>
-        {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-        <a href="/api/download/desktop" title="macOS · Apple Silicon">
-          Download
-        </a>
         {isLoaded && !isSignedIn && (
           <>
             <Link href="/sign-in" className="nav-mobile-login">

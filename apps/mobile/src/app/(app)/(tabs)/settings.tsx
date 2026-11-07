@@ -682,7 +682,6 @@ export default function Settings() {
         <NavigationRow title="Invite people" icon="person.badge.plus" onPress={() => router.push("/invite")} />
         <NavigationRow title="Control" icon="slider.horizontal.3" onPress={() => router.push("/(app)/control")} />
         <NavigationRow title="Integrations" icon="puzzlepiece.extension" onPress={() => router.push("/(app)/control/integrations")} />
-        <NavigationRow title="Marketplace" icon="bag" onPress={() => router.push("/(app)/control/marketplace")} />
       </Section>
 
       <SessionNotificationsSection api={api} menu={m.MENU} />

@@ -549,7 +549,6 @@ describe("Settings absorbs More", () => {
   it.each([
     ["Control", "/(app)/control"],
     ["Integrations", "/(app)/control/integrations"],
-    ["Marketplace", "/(app)/control/marketplace"],
   ])("links %s", async (label, route) => {
     await render(<Settings />);
     await fireEvent.press(await screen.findByLabelText(label));

@@ -25,6 +25,10 @@ which takes precedence over the (deprecated in livekit-agents 1.8.3) `agent_name
 
 The worker is one LiveKit participant (`agent-ceo`) whatever agent is speaking.
 
+One deployed agent serves every call (`agent.entrypoint`): a room named `phone-*` (the SIP dispatch rules'
+room prefix) goes to the phone receptionist (`phone.entrypoint`), a job with `source: "meet"` to the meeting
+agent (`meet.run`), anything else to the in-app huddle.
+
 - **Backend -> worker (C3):** data topic `call.frame`, sent server-side (no sender; anything a
   participant sends on it is dropped). Packet `{"events": [...]}`, each event a `voice.run.frame`
   (`payload: {roomId, runId, agentId, frame}`) or a `voice.notice` (`kind: renamed | voice_note_saved`).
@@ -57,6 +61,7 @@ The worker reads (LiveKit Cloud agent secrets, set per project):
 - `LIGHTBULB_HUDDLE_SECRET` -- the value of the backend's `lightbulb/{env}/huddle_worker_secret`,
   sent as `X-Lightbulb-Huddle-Secret`
 - `OPENAI_API_KEY` -- transcription and GPT-Live
+- `GOOGLE_API_KEY` -- Gemini Live, for Meet (`meet.py`) and phone calls (`phone.py`)
 
 LiveKit itself injects `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`.
 Nothing a huddle says is stored.
@@ -76,3 +81,45 @@ wrote; prod's is committed as `livekit.prod.toml`, and `huddle-agent.yml` (`depl
 
 Time limits (cost caps): a phone call ends after `PHONE_MAX_S` (default 1200, 20 min), a meeting after
 `MEET_MAX_S` (default 5400, 90 min). At the limit the assistant says a short goodbye and the session ends.
+
+## Prod deploy (LiveKit Cloud agent `CA_HTFFgrTj24NH`, project `lightbulb-svx3a1rx`)
+
+Prerequisites (checked 7 Nov 2026):
+
+- Repo variable `LIVEKIT_PROD_ENABLED=true` and secrets `LIVEKIT_URL_PROD`, `LIVEKIT_API_KEY_PROD`,
+  `LIVEKIT_API_SECRET_PROD`: all set (1 Oct).
+- Agent secrets (`lk agent secrets` with `livekit.prod.toml` as `livekit.toml`): `LIGHTBULB_API_URL`
+  (should be `https://api.thelightbulb.company`), `LIGHTBULB_HUDDLE_SECRET` (= `lightbulb/prod/huddle_worker_secret`),
+  `OPENAI_API_KEY` are set. **`GOOGLE_API_KEY` is missing**: without it every Meet and phone call fails at
+  session start. `lightbulb/prod/gemini_api_key` does not exist in Secrets Manager (only `lightbulb/dev/...`).
+  Add it before the deploy (restarts the agent):
+
+      lk agent update-secrets --secrets "GOOGLE_API_KEY=$(aws secretsmanager get-secret-value \
+        --secret-id lightbulb/prod/gemini_api_key --profile isol8-admin --region us-east-1 \
+        --query SecretString --output text)"
+
+- The prod backend must serve `/internal/voice/*` (routers/voice_phone.py) and `/internal/voice/meet/*`.
+
+Deploy (runs `test`, then `deploy-prod`, which builds this Dockerfile and `lk agent deploy`s it):
+
+    gh workflow run huddle-agent.yml --ref main -R TheLightbulbCompany/lightbulb
+
+Check: `lk agent list` shows a new Version and Deployed At; `lk agent logs` for the start.
+
+## Prod phone line (plan, not done)
+
+The project has one number, `+14842079294`, on the dev rule `lightbulb-phone-dev` (`SDR_tVyCQpx8AgUP`, agent
+`lightbulb-phone-dev`, a Mac worker), and its `PHONE#` line row is in `lightbulb-dev-messaging` only.
+
+1. A number for prod: buy a second LiveKit number, or move `+14842079294` to prod (dev then has no line).
+2. The rule, targeting the deployed agent:
+
+       echo '{"dispatch_rule": {"name": "lightbulb-phone-prod", "trunk_ids": ["<the number's PN_... id>"],
+         "rule": {"dispatchRuleIndividual": {"roomPrefix": "phone-prod-"}},
+         "room_config": {"agents": [{"agentName": "lightbulb-huddle"}]}}}' | lk sip dispatch create -
+
+   (same shape as the dev rule in `lk sip dispatch list --json`; a moved number comes off `SDR_tVyCQpx8AgUP`
+   first, since a number routes to one rule.)
+3. The line row in `lightbulb-prod-messaging`: `assign_number` raises `not_available` outside dev, so either
+   put `{pk: "PHONE#<e164>", sk: "LINE", ownerId: <org id>, ownerUserId: <user id>}` by hand, or make the
+   number a per-env setting in `voice_onboarding.assign_number` so onboarding gives it.

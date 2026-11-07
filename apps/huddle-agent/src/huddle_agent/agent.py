@@ -34,7 +34,7 @@ from openai.types.realtime import (
     ResponseCreateEvent,
 )
 
-from huddle_agent import meet, record
+from huddle_agent import meet, phone, record
 from huddle_agent.backend import Backend
 from huddle_agent.huddle import Huddle, emit_metric, units
 
@@ -641,12 +641,16 @@ async def _on_request(req: JobRequest) -> None:
     await req.accept(identity=AGENT_IDENTITY, name=WORKER_DISPLAY_NAME)
 
 
-# agent_name is deprecated in 1.8.3 (worker.py rtc_session) and LIVEKIT_AGENT_NAME wins over it; the
-# Dockerfile sets LIVEKIT_AGENT_NAME=lightbulb-huddle so both agree. Drop this kwarg once it is removed.
+# In livekit-agents 1.8.11 this kwarg wins over LIVEKIT_AGENT_NAME (worker.py rtc_session); the Dockerfile sets
+# LIVEKIT_AGENT_NAME=lightbulb-huddle too, so both agree.
 # HUDDLE_RIG_AGENT_NAME: the multi-voice test rig runs this worker on a laptop under its own dispatch name, so no
 # real call reaches it. Unset everywhere else.
 @server.rtc_session(agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"), on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
+    # A phone call: the plan allows one deployed agent, so the SIP dispatch rules target this one and name their
+    # rooms `phone-{env}-_<caller>_<random>`. They send no job metadata.
+    if ctx.job.room.name.startswith("phone-"):
+        return await phone.entrypoint(ctx)
     meta = json.loads(ctx.job.metadata)
     # A Google Meet: one listening Gemini Live session (meet.py). MEET_ENGINE=huddle is the old mouths, until
     # the new one has a live meeting behind it.

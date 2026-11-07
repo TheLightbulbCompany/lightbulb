@@ -1,9 +1,10 @@
 """The phone receptionist (voice-agents spec §4.1b, §4.3): one Gemini Live session per inbound call.
 
-Dispatched by the LiveKit SIP dispatch rule to its own agent name (`lightbulb-phone-dev`), never the huddle
-worker's. It greets with the compliance line, then listens and answers; bookings, messages, transfer and
-open-ended work go to the backend's /internal/voice routes (apps/backend/routers/voice_phone.py), which
-also keep the call record. Run: `AGENT_MODULE=huddle_agent.phone uv run python -m huddle_agent.phone dev`.
+Dispatched by a LiveKit SIP dispatch rule: in prod to the one deployed agent, `lightbulb-huddle` (agent.py
+routes `phone-` rooms here); on a dev Mac to its own name (`lightbulb-phone-dev`). It greets with the
+compliance line, then listens and answers; bookings, messages, transfer and open-ended work go to the
+backend's /internal/voice routes (apps/backend/routers/voice_phone.py), which also keep the call record.
+Run: `AGENT_MODULE=huddle_agent.phone uv run python -m huddle_agent.phone dev`.
 """
 
 from __future__ import annotations
@@ -30,10 +31,6 @@ from livekit.plugins import google
 from huddle_agent import end_after
 
 logger = logging.getLogger("phone")
-# LIVEKIT_AGENT_NAME wins over the decorator's kwarg (livekit-agents 1.8); the image's ENV says lightbulb-huddle.
-os.environ["LIVEKIT_AGENT_NAME"] = os.environ.get(
-    "PHONE_AGENT_NAME", "lightbulb-phone-dev"
-)
 MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md §5
 VOICE = os.environ.get(
     "PHONE_VOICE", "Kore"
@@ -200,7 +197,11 @@ class Receptionist(Agent):
         return await self._b.post("start-work", {"title": title, "brief": brief})
 
 
-@server.rtc_session(agent_name=os.environ["LIVEKIT_AGENT_NAME"])
+# Standalone (`python -m huddle_agent.phone dev`, a dev line): its own dispatch name; this kwarg wins over
+# LIVEKIT_AGENT_NAME in livekit-agents 1.8.11. Deployed, the huddle worker's entrypoint routes `phone-` rooms here.
+@server.rtc_session(
+    agent_name=os.environ.get("PHONE_AGENT_NAME", "lightbulb-phone-dev")
+)
 async def entrypoint(ctx: JobContext) -> None:
     started = time.monotonic()
     await ctx.connect()

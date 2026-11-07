@@ -1135,6 +1135,11 @@ from routers import questions as questions_router  # noqa: E402
 
 app.include_router(questions_router.router, prefix="/api/v1", tags=["questions"])
 
+# The owner's voice surfaces (spec 2026-11-07 §5): /voice/timeline, /voice/agent.
+from routers import voice as voice_router  # noqa: E402
+
+app.include_router(voice_router.router, prefix="/api/v1", tags=["voice"])
+
 # Proactive rules (wave2-S): /automations/{id}/mode, /automations/{id}/matches. 404 unless the switch is on.
 from routers import rules as rules_router  # noqa: E402
 

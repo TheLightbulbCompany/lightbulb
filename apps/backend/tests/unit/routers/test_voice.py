@@ -1,0 +1,87 @@
+"""GET /voice/timeline, POST /voice/calls/{id}/done, GET/PUT /voice/agent against the moto messaging table."""
+
+import pytest
+
+from core.repositories import messaging_repo
+from tests.unit.services.conftest import repos  # noqa: F401
+
+WS = "org_test_456"
+
+
+async def _room(room_id: str, kind: str, created: str, owner: str = WS, **extra):
+    t = messaging_repo._table()
+    t.put_item(
+        Item={
+            "pk": messaging_repo.owner_pk(owner),
+            "sk": messaging_repo.room_pk(room_id),
+            "roomId": room_id,
+            "kind": kind,
+            "createdAt": created,
+        }
+    )
+    t.put_item(
+        Item={
+            "pk": messaging_repo.room_pk(room_id),
+            "sk": "META",
+            "roomId": room_id,
+            "ownerId": owner,
+            "kind": kind,
+            "createdAt": created,
+            "revision": 1,
+            **extra,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_timeline_lists_calls_and_meetings_newest_first(repos, async_client_org_admin):  # noqa: F811
+    await _room(
+        "c1",
+        "call",
+        "2026-11-07T10:00:00+00:00",
+        call={"caller": "+14155550133", "outcome": "booked", "startedAt": "2026-11-07T10:00:00+00:00"},
+    )
+    await _room(
+        "m1",
+        "channel",
+        "2026-11-01T00:00:00+00:00",
+        meeting={
+            "title": "Team",
+            "startAt": 1794070800,
+            "ticketNonce": "secret",
+            "recallBotId": "b",
+            "roster": {"p1": {"name": "Ana", "in": True}},
+        },
+    )
+    await _room("ch", "channel", "2026-11-07T11:00:00+00:00")  # an ordinary channel: not on the timeline
+    await _room("x", "call", "2026-11-07T12:00:00+00:00", owner="other")  # another workspace's
+
+    items = (await async_client_org_admin.get("/api/v1/voice/timeline")).json()["items"]
+
+    assert [i["roomId"] for i in items] == ["m1", "c1"]  # by when it happened, not when the room was made
+    assert items[1] | {"type": "call", "outcome": "booked"} == items[1]
+    assert items[0]["people"] == ["Ana"] and "ticketNonce" not in items[0] and "recallBotId" not in items[0]
+
+
+@pytest.mark.asyncio
+async def test_done_marks_the_call_resolved(repos, async_client_org_admin):  # noqa: F811
+    await _room("c1", "call", "2026-11-07T10:00:00+00:00", call={"outcome": "needs_you"})
+    assert (await async_client_org_admin.post("/api/v1/voice/calls/c1/done")).status_code == 200
+    call = (await messaging_repo.get_room("c1"))["call"]
+    assert call["outcome"] == "needs_you" and call["resolvedAt"]
+    assert (await async_client_org_admin.post("/api/v1/voice/calls/nope/done")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_agent_config_round_trip_admin_only(repos, async_client_org_admin):  # noqa: F811
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json() == {"config": None}
+    cfg = {"name": "Nova", "allow": {"book": True}, "hours": [{"day": "Mon", "open": "09:00"}], "price": 4.5}
+    assert (await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})).status_code == 200
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json() == {"config": cfg}
+    big = {"x": "a" * 70_000}
+    assert (await async_client_org_admin.put("/api/v1/voice/agent", json={"config": big})).status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_agent_config_member_cannot_write(repos, async_client_org_member):  # noqa: F811
+    assert (await async_client_org_member.put("/api/v1/voice/agent", json={"config": {}})).status_code == 403

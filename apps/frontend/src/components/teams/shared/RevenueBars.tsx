@@ -12,7 +12,7 @@
 
 import type { RollupDay } from "@/hooks/useCompanyRollup";
 import { formatMicrocents } from "@/components/teams/panels/money/money";
-import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
+import { handleShellLinkClick } from "@/lib/shellNav";
 
 /** Locale AND timezone pinned: `undefined` resolves the HOST default, so the
  *  same date renders "Aug 30" on one machine and "30 Aug" on another — and a
@@ -62,7 +62,7 @@ export function RevenueBars({
         // y=-0.2, outside the viewBox.
         const y = v >= 0 ? Math.max(zeroY - h, 0) : zeroY;
         const label = `${formatShortDay(days[i].day)} · ${formatMicrocents(v)}`;
-        const href = `${teamsPanelUrl("money")}&day=${days[i].day}`;
+        const href = `/chat?panel=teams-money&day=${days[i].day}`;
         const accent = selectedDay ? days[i].day === selectedDay : i === values.length - 1;
         return (
           <a

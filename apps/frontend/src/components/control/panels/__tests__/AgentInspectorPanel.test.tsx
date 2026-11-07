@@ -36,15 +36,6 @@ vi.mock("../AgentMemoryTab", () => ({
   AgentMemoryTab: () => <div data-testid="memory-tab">memory</div>,
 }));
 
-// The Schedule tab mounts the Teams RoutinesPanel scoped to the inspected
-// agent via the agentId prop. Stub it so we can assert the prop without
-// dragging the Teams BFF read into the sandbox.
-vi.mock("@/components/teams/panels/RoutinesPanel", () => ({
-  RoutinesPanel: ({ agentId }: { agentId?: string }) => (
-    <div data-testid="schedule-tab">schedule:{agentId}</div>
-  ),
-}));
-
 // agentId drives which agent the inspector inspects; initialTab deep-links the
 // initial tab (set by the Get Started "Connect a channel" CTA). Both are now
 // props fed by the shell — a small helper renders with the current fixtures.
@@ -149,18 +140,19 @@ describe("AgentInspectorPanel", () => {
     expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the four tab labels", () => {
+  it("renders the tab labels", () => {
     renderInspector();
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Instructions" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tools" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Schedule" })).toBeInTheDocument();
+    // The Paperclip Dashboard, Runs and Schedule tabs are gone (Phase 1 task 7).
+    expect(screen.queryByRole("tab", { name: "Schedule" })).toBeNull();
   });
 
-  it("orders the tabs Overview·Dashboard·Runs·Instructions·Memory·Sessions·Tools·Schedule", () => {
+  it("orders the tabs Overview·Instructions·Memory·Sessions·Tools", () => {
     renderInspector();
     const labels = screen.getAllByRole("tab").map((t) => t.textContent);
-    expect(labels).toEqual(["Overview", "Dashboard", "Runs", "Instructions", "Memory", "Sessions", "Tools", "Schedule"]);
+    expect(labels).toEqual(["Overview", "Instructions", "Memory", "Sessions", "Tools"]);
   });
 
   it("mounts the Instructions tab with the ?agent id when selected", () => {
@@ -230,15 +222,6 @@ describe("AgentInspectorPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Instructions" }));
     expect(screen.getByTestId("instructions-tab")).toHaveTextContent("instructions:agent_42");
     expect(screen.queryByTestId("tools-tab")).not.toBeInTheDocument();
-  });
-
-  it("mounts the RoutinesPanel scoped to the inspected agent on the Schedule tab", () => {
-    renderInspector();
-    fireEvent.click(screen.getByRole("tab", { name: "Schedule" }));
-    expect(screen.getByTestId("schedule-tab")).toHaveTextContent(
-      "schedule:agent_42",
-    );
-    expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
   });
 
   it("marks the active tab with aria-selected for screen readers", () => {

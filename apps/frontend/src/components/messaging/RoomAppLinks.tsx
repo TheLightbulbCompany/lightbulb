@@ -3,9 +3,6 @@
 import { useMemo, type MouseEvent, type ReactNode } from "react";
 import { Hash, MessageSquareQuote, SquareTerminal } from "lucide-react";
 import { roomDisplayName, sessionLabel } from "@lightbulb/shared";
-import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
-import type { Approval } from "@/components/teams/shared/types";
-import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { ConnectButton } from "@/components/settings/ConnectButton";
@@ -18,13 +15,12 @@ import { openInviteDialog } from "@/components/workspace/workspaceController";
 
 /**
  * Links to our own app, shown as the native thing they point at instead of the
- * site's OG card. Issues and documents are rendered by MessageTaskCard and
- * RoomDocumentCards; this covers approvals, connect buttons, agents, rooms,
+ * site's OG card. Documents are rendered by RoomDocumentCards; this covers connect buttons, agents, rooms,
  * messages and sessions. Anything it cannot resolve from data already loaded renders
  * nothing — the link in the text stays a plain (in-app) link.
  */
 export function RoomAppLinks({ text }: { text: string }) {
-  const links = useMemo(() => extractAppLinks(text).filter((l) => !["issue", "document", "other"].includes(l.kind)), [text]);
+  const links = useMemo(() => extractAppLinks(text).filter((l) => !["document", "other"].includes(l.kind)), [text]);
   const ws = useMessagingWorkspaceOptional();
   if (!links.length) return null;
   return <div className="room-link-previews">{links.map((link) => <AppLinkCard key={link.href} link={link} ws={ws} />)}</div>;
@@ -50,7 +46,6 @@ export function openAppLink(event: MouseEvent<HTMLAnchorElement>, link: AppLink,
 }
 
 function AppLinkCard({ link, ws }: { link: AppLink; ws: MessagingWorkspaceValue | null }) {
-  if (link.kind === "approval") return <ApprovalCard id={link.id} />;
   if (link.kind === "connect") return <ConnectCard provider={link.provider} />;
   if (link.kind === "invite") return <RoomInviteCard />;
   if (!ws) return null;
@@ -81,12 +76,6 @@ function AppLinkCard({ link, ws }: { link: AppLink; ws: MessagingWorkspaceValue 
       <span className="room-link-card-meta">{roomName} · Jump to message</span>
     </span>
   </a>;
-}
-
-function ApprovalCard({ id }: { id: string }) {
-  const { read } = useTeamsApi();
-  const { data } = read<Approval>(`/approvals/${encodeURIComponent(id)}`);
-  return data?.id ? <section aria-label="Approval in this message" className="editorial-card max-w-xl"><ApprovalRow approval={data} /></section> : null;
 }
 
 /** An agent's `?panel=connections&provider=x` link: the same Connect button the Connections panel shows. */

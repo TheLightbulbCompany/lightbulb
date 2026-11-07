@@ -160,7 +160,7 @@ describe("RunNotifications in a DM", () => {
 });
 
 describe("RunNotifications failed team run", () => {
-  it("says who, which task and why, and opens the run itself (not the Inbox)", async () => {
+  it("says who, which task and why, and opens Activity (the run page is gone)", async () => {
     render(<RunNotifications />);
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-5", agentId: "agent-1" }));
     await act(async () => emit("teams.heartbeat.run.status", {
@@ -171,8 +171,8 @@ describe("RunNotifications failed team run", () => {
     expect(opts.description).toBe("Couldn't finish: the workspace restarted mid-run");
     opts.action.onClick();
     const params = live.pushSearchParams.mock.calls[0][0] as URLSearchParams;
-    expect(params.get("panel")).toBe("teams-run-detail");
-    expect(params.get("detailId")).toBe("run-5");
+    expect(params.get("panel")).toBe("activity");
+    expect(params.get("detailId")).toBeNull();
   });
 });
 

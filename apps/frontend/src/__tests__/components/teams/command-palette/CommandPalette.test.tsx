@@ -2,7 +2,7 @@ import { test, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, screen } from "@testing-library/react";
 
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
-  useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
+  useFilteredCommandResults: vi.fn(() => ({ agents: [] })),
 }));
 // The Tasks and Files groups read the tasks client; these suites are about navigation and messages.
 vi.mock("@/components/teams/command-palette/useTaskSearch", async (importOriginal) => ({ ...(await importOriginal<object>()), useTaskSearch: () => ({ tasks: [], files: [] }) }));
@@ -18,7 +18,7 @@ import { useFilteredCommandResults } from "@/components/teams/command-palette/us
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(useFilteredCommandResults).mockReturnValue({ agents: [], issues: [], projects: [] });
+  vi.mocked(useFilteredCommandResults).mockReturnValue({ agents: [] });
 });
 
 test("renders 'Navigate' group with the IA nav actions on open with empty query", () => {
@@ -47,9 +47,9 @@ test("ArrowDown moves selection to next row", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   const input = screen.getByPlaceholderText(/search/i);
   fireEvent.keyDown(input, { key: "ArrowDown" });
-  // Search is item 1 (after Activity at 0)
-  const searchRow = screen.getByText("Search").closest("[data-cmd-row]")!;
-  expect(searchRow).toHaveAttribute("aria-selected", "true");
+  // Mail is item 1 (after Activity at 0)
+  const mailRow = screen.getByText("Mail").closest("[data-cmd-row]")!;
+  expect(mailRow).toHaveAttribute("aria-selected", "true");
 });
 
 test("ArrowUp at top stays at 0", () => {
@@ -95,9 +95,7 @@ test("shows 'No results.' when query yields nothing", () => {
 test("dynamic agents render when useFilteredCommandResults provides them", () => {
   vi.mocked(useFilteredCommandResults).mockReturnValue({
     agents: [{ id: "ag_1", name: "Main Agent" }],
-    issues: [],
-    projects: [],
-  });
+  } as unknown as ReturnType<typeof useFilteredCommandResults>);
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   // "Agents" appears both as a nav row label and as a group header — both
   // is what we want when an agent result is also present.

@@ -47,11 +47,11 @@ describe("/join/invite", () => {
     expect(screen.getByRole("link", { name: "Open Lightbulb" })).toHaveAttribute("href", "/chat");
   });
 
-  it("names the decision and sends the new teammate to its card after sign-up", async () => {
+  it("names the decision and sends the new teammate to Activity (Needs you) after sign-up", async () => {
     await renderPage({ inviter: "Ada", approval: "ap-1", decision: "Start outreach?", __clerk_ticket: "tk_1" });
     expect(screen.getByRole("heading")).toHaveTextContent("Ada asked you to decide: Start outreach?");
     const href = screen.getByRole("link", { name: "Sign up to join" }).getAttribute("href")!;
-    expect(new URLSearchParams(href.split("?")[1]).get("redirect_url")).toBe("/chat?panel=teams-approval-detail&detailId=ap-1");
+    expect(new URLSearchParams(href.split("?")[1]).get("redirect_url")).toBe("/chat?panel=activity");
   });
 
   it("ignores an approval id that is not an id", async () => {

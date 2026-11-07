@@ -40,22 +40,6 @@ export function replaceSearchParams(params: URLSearchParams): void {
   window.history.replaceState(null, "", currentUrlWith(params));
 }
 
-// Canonical in-shell URLs for Teams surfaces. These are the ONLY URL forms
-// for Teams content — the retired /teams/* route tree is not supported and
-// has no redirect. Anchors keep one of these as their href so native
-// new-tab / middle-click still works; plain left-clicks should go through
-// handleShellLinkClick so the swap stays client-side.
-export function teamsPanelUrl(panel: string): string {
-  return `/chat?panel=teams-${panel}`;
-}
-
-export function teamsDetailUrl(
-  kind: "issue" | "routine" | "project" | "goal" | "case" | "run" | "approval",
-  id: string,
-): string {
-  return `/chat?panel=teams-${kind}-detail&detailId=${encodeURIComponent(id)}`;
-}
-
 // The bundled paperclip skill ("Company-prefixed URLs (required)") instructs
 // agents to write every internal link as a native Paperclip path —
 // `/ISOA/issues/ISOA-171`, `/ISOA/approvals/<id>`, `/ISOA/agents/<key>/runs/<id>`,
@@ -73,12 +57,6 @@ export function teamsDetailUrl(
 // agent-dropped prefix, and there is no company-scoped list to fall back to
 // safely the way an unprefixed issue/approval id still uniquely resolves.
 //
-// Issue identifiers need no lookup: upstream Paperclip resolves `ISOA-171` for
-// all /issues/:id routes and the Teams BFF passes issue_id straight through.
-// Same for goal/approval/run ids. Agent and project ids can be either the
-// resource's uuid or its upstream `urlKey` (e.g. `cto`, `acme-app`) — the
-// panels that take them resolve a non-uuid id against the loaded roster/
-// project list client-side (AgentInspectorPanel, useProjectDetail).
 const PAPERCLIP_LINK =
   /^\/(?:([A-Z][A-Z0-9]{0,9})\/)?(issues|approvals|projects|agents|goals)\/([^/?#]+)(?:\/runs\/([^/?#]+))?\/?(?:\?[^#]*)?(#[^?]*)?$/;
 
@@ -89,17 +67,12 @@ const RETIRED_TASK_LINK = /^\/teams\/(?:tasks|issues)\//;
 export function shellUrlFromPaperclipPath(href?: string | null): string | null {
   const m = href ? PAPERCLIP_LINK.exec(href.replace(RETIRED_TASK_LINK, "/issues/")) : null;
   if (!m) return null;
-  const [, prefix, section, id, runId, hash = ""] = m;
+  const [, prefix, section, id, runId] = m;
   if (!prefix && section !== "issues" && section !== "approvals") return null;
-  if (runId) return teamsDetailUrl("run", runId);
-  if (section === "issues") return teamsDetailUrl("issue", id) + hash;
-  if (section === "approvals") return teamsDetailUrl("approval", id);
-  if (section === "goals") return teamsDetailUrl("goal", id);
-  if (section === "agents") return agentInspectorUrl(id);
-  if (section === "projects") return teamsDetailUrl("project", id);
-  // Unreachable given the regex's section alternation, but keeps the return
-  // type honest without a non-null assertion.
-  return teamsPanelUrl(section);
+  if (section === "agents" && !runId) return agentInspectorUrl(id);
+  // The Paperclip board is gone (Phase 1 task 7): an old issue, approval, run, goal or project link
+  // opens Activity, where tasks live (the registry aliases every retired teams-* key there).
+  return "/chat?panel=activity";
 }
 
 // Commit an in-shell URL with no anchor to fall through to — a button, or a

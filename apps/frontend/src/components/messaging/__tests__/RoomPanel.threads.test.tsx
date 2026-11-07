@@ -30,7 +30,6 @@ const props: RoomPanelProps = {
   room: { roomId: "r1", kind: "channel", name: "workshop-launch", roomRevision: 1, lastMessageSeq: 1, lastMessageAt: null, unreadCount: 0, updatedAt: message.createdAt, topic: null, starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0 },
   participants: [sam, lightbulb], messages: [message],
   composer: { text: "", onTextChange: vi.fn(), members: [sam, lightbulb], clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
-  onLinkToWork: vi.fn(),
 };
 // Nothing needs the viewer here: the Needs-you read answers empty.
 const nothingNeedsYou = () => apiGet.mockImplementation(async (path: string) => {

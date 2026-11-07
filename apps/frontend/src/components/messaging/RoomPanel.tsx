@@ -55,8 +55,6 @@ import { useRoomThreads } from "@/components/tasks/useRoomThreads";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { PANE_SHEET_QUERY } from "@/components/workspace/paneSheet";
 import { RoomMessageSearch } from "./RoomMessageSearch";
-import { RoomTasks } from "./RoomTasks";
-import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
 import { buildTimeline, collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessageDelegations, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
 import { TypingReveal } from "./TypingReveal";
@@ -150,7 +148,6 @@ export interface RoomPanelProps {
   onSteerSubagent?: (agentId: string, subagentId: string, text: string) => Promise<unknown>;
   onStopSubagent?: (agentId: string, subagentId: string) => Promise<unknown>;
   onSubagentsVisible?: (visible: boolean) => void;
-  onLinkToWork?: () => void;
   /** Super-agent: the one front agent (`@lightbulb`). A DM with any other agent shows the specialist banner. */
   frontAgentId?: string;
   /** The workspace runtime is still being set up: with the switch on, the viewer's unanswered message reads "Queued". */
@@ -169,7 +166,6 @@ export interface RoomPanelProps {
 const ON_IT_MS = 5 * 60_000;
 const READING_MS = 60_000;
 const NO_PINNED_MESSAGES: readonly string[] = [];
-const NO_TASK_IDS: readonly string[] = [];
 /** The project pane's list views (super-agent): the header's three toggles. */
 type PaneView = "tasks" | "files" | "scheduled";
 const NO_RUNS: readonly RoomRunView[] = [];
@@ -353,7 +349,6 @@ function RoomContent({
   onSteerSubagent,
   onStopSubagent,
   onSubagentsVisible,
-  onLinkToWork,
   frontAgentId,
   runtimeStarting = false,
   agentReads,
@@ -457,7 +452,7 @@ function RoomContent({
   const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
   // `from: "about"`: a thread opened from About's Threads tab goes back there, not to the conversation.
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks" | "task"; id: string; from?: "about" } | null>(null);
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "task"; id: string; from?: "about" } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
@@ -606,9 +601,8 @@ function RoomContent({
   // for RoomTimeline -- a thread-scoped result is handled by the effect below.
   const activeSearchTarget = searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
-  const showTasks = selection?.kind === "tasks" && !!onLinkToWork;
   const taskSelection = selection?.kind === "task" ? selection.id : null;
-  const showDetail = !!(parentMessage || showTasks || taskSelection);
+  const showDetail = !!(parentMessage || taskSelection);
   // The list view on screen (or under the item opened from it): folded while something else has the pane (Browser,
   // Ideas, an automation) or Details is open.
   const viewShown = (view: PaneView) => paneView === view && !paneBusy && !visibleRoom?.feed && contextCollapsed && roomOnScreen;
@@ -628,11 +622,6 @@ function RoomContent({
   }
   const showContext = showDetail || !contextCollapsed || requestsShown || filesViewShown || scheduledShown;
   const activeRuns = runs.filter((run) => run.state === "running");
-  // Any author: a human naming ISO-14 references it as much as an agent does.
-  // ponytail: loaded pages only; a task named only in unloaded history is missing until scrolled in.
-  const taskIds = useMemo(() => [...new Set(messages.flatMap((message) =>
-    message.deletedAt || message.author.kind === "system" ? [] : taskIdentifiers(message.text)))], [messages]);
-  const roomTasks = useReferencedTasks(onLinkToWork ? taskIds : NO_TASK_IDS);
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
   const canAddMembers = !!visibleRoom && !!onAddMember && !visibleRoom.shared;
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
@@ -751,7 +740,7 @@ function RoomContent({
   const composerPlaceholder = lightbulbDm ? "Ask Lightbulb…"
     : `Message ${visibleRoom?.kind === "channel" ? `#${roomName}` : roomName}`;
   // The pane's title is the label of what opened it (the room is beside it, so no " · <room>").
-  const sideTitle = showTasks ? "Older tasks" : taskSelection ? "Task" : showDetail ? "Thread" : !contextCollapsed ? "Details"
+  const sideTitle = taskSelection ? "Task" : showDetail ? "Thread" : !contextCollapsed ? "Details"
     : filesViewShown ? "Files" : scheduledShown ? "Scheduled" : "Tasks";
   /** One of the project's views in the pane (the item open over it goes; the pane is taken back from Browser or Ideas). */
   const showView = (view: PaneView) => {
@@ -843,7 +832,7 @@ function RoomContent({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeOverlay, showDetail]);
 
-  const openDetail = useCallback((kind: "thread" | "tasks" | "task", targetId: string, button: HTMLButtonElement, fromThread = false) => {
+  const openDetail = useCallback((kind: "thread" | "task", targetId: string, button: HTMLButtonElement, fromThread = false) => {
     if (!fromThread) trigger.current = button;
     onSelectThread?.(kind === "thread" ? targetId : null);
     setSelection({ kind, id: targetId });
@@ -1093,9 +1082,6 @@ function RoomContent({
             <Lightbulb aria-hidden="true" />Ideas</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => { closeDetail(); setDetailsTab("links"); setContextCollapsed(false); }}>
             <Link aria-hidden="true" />Links</DropdownMenuItem>
-          {/* The Paperclip tasks this room names: older work, offered only when there are any. */}
-          {onLinkToWork && roomTasks.length > 0 && <DropdownMenuItem onSelect={() => { onSelectThread?.(null); setSelection({ kind: "tasks", id: "tasks" }); }}>
-            <ListChecks aria-hidden="true" />Older tasks · {roomTasks.length}</DropdownMenuItem>}
         </>}
  />
       {frontAgentId && visibleRoom?.kind === "dm" && (() => {
@@ -1207,14 +1193,10 @@ function RoomContent({
         }}
         onOpenAutomation={(id) => openPanel("automation", { id }, { pushUrl: true })} /></div>
     </aside>}
-    {showTasks && <aside className="room-context" aria-label="Tasks" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <PaneHeader title="Older tasks" headingRef={detailHeading} onClose={closeDetail} />
-      <div className="room-context-body"><RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork!} /></div>
-    </aside>}
     {/* One task at the item width: "‹ Tasks" goes back to the project's list, ✕ closes the pane. */}
     {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} headingRef={detailHeading}
       onBack={() => showView("tasks")} onClose={closeView} />}
-    {showDetail && !showTasks && !taskSelection && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+    {showDetail && !taskSelection && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <PaneHeader title="Thread" headingRef={detailHeading} onClose={closeDetail} />
       <StickToBottom className="room-context-body" pinToken={threadSendToken}>{parentMessage ? <>{renderMessage(parentMessage, true)}
         {(() => {

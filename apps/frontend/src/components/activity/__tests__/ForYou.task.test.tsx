@@ -5,10 +5,7 @@ import type { ActivityItem } from "@lightbulb/shared";
 import { ForYouAsks, rowTarget } from "../ForYou";
 import { approval } from "./fixtures";
 
-vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({ useAgentWake: () => ({ wakeAgent: vi.fn() }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
-vi.mock("@/components/teams/inbox/AttentionDesk", () => ({ AttentionDesk: () => null }));
-vi.mock("@/components/teams/inbox/DecisionResolver", () => ({ DecisionResolver: () => null }));
 
 /** What `activity.py render_task_question` emits for an open question the viewer can answer. */
 const taskQuestion: ActivityItem = {

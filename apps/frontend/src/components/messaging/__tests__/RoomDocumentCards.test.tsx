@@ -12,7 +12,6 @@ vi.mock("@/components/teams/shared/components/MarkdownView", () => ({
 }));
 
 import { RoomDocumentCards } from "../RoomDocumentCards";
-import { taskIdentifiers } from "../MessageTaskCard";
 
 const ISSUE = { id: "uuid-12", identifier: "HAB-12", title: "Habits 365 research", status: "done" };
 const DOC = {
@@ -57,9 +56,5 @@ describe("RoomDocumentCards", () => {
     const { container } = renderText("/HAB/issues/HAB-99#document-plan");
     await vi.waitFor(() => expect(m.get).toHaveBeenCalled());
     expect(container.querySelector(".room-doc-card")).toBeNull();
-  });
-
-  it("keeps the task row out of a message whose task already has a document card", () => {
-    expect(taskIdentifiers("Done: [plan](/HAB/issues/HAB-12#document-plan), also see HAB-13")).toEqual(["HAB-13"]);
   });
 });

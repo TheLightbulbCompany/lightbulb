@@ -11,15 +11,15 @@ import {
 
 describe("parseCommand", () => {
   it("parses a teams list command", () => {
-    const c = parseCommand("?panel=teams-issues&agent=a-1");
-    expect(c?.descriptor.panelId).toBe("teams-work");
-    expect(c?.descriptor.params).toEqual({ teamsKey: "issues", agent: "a-1" });
+    const c = parseCommand("?panel=teams-agents");
+    expect(c?.descriptor.panelId).toBe("teams-agents");
+    expect(c?.descriptor.params).toEqual({ teamsKey: "agents" });
     expect(c?.oneShots).toEqual({});
   });
 
   it("separates one-shots from durable params", () => {
-    const c = parseCommand("?panel=teams-issues&new=task");
-    expect(c?.descriptor.params).toEqual({ teamsKey: "issues" });
+    const c = parseCommand("?panel=teams-agents&new=task");
+    expect(c?.descriptor.params).toEqual({ teamsKey: "agents" });
     expect(c?.oneShots).toEqual({ new: "task" });
   });
 
@@ -30,7 +30,7 @@ describe("parseCommand", () => {
     // The org chart is a view of the roster now.
     const chartCmd = parseCommand("?panel=teams-org-chart");
     expect(chartCmd?.descriptor.panelId).toBe("teams-agents");
-    expect(chartCmd?.descriptor.params).toEqual({ teamsKey: "agents", view: "chart" });
+    expect(chartCmd?.descriptor.params).toEqual({ teamsKey: "agents" });
   });
 
   it("defines /chat?agent= as open-or-focus that agent's chat (deploy-success link)", () => {
@@ -52,7 +52,7 @@ describe("parseCommand", () => {
     expect(parseCommand("")).toBeNull();
     expect(parseCommand("?checkout=success")).toBeNull();
     expect(parseCommand("?panel=definitely-not-a-panel")).toBeNull();
-    expect(parseCommand("?panel=teams-issue-detail")).toBeNull(); // detail without id
+    expect(parseCommand("?panel=task-detail")).toBeNull(); // detail without id
   });
 
   // Ruling 3 (task-7a): the reconciler delivers chat params straight from
@@ -97,7 +97,7 @@ describe("clearPanelFromUrl", () => {
       clearPanelFromUrl("?panel=agent-inspector&agent=a-1&inspectorTab=channels", "agent-inspector"),
     ).toBe("");
     expect(
-      clearPanelFromUrl("?panel=teams-issue-detail&detailId=ADM-9", "teams-issue-detail:ADM-9"),
+      clearPanelFromUrl("?panel=task-detail&taskId=t-9", "task-detail"),
     ).toBe("");
   });
   it("clears ?agent when the closed panel is the bare-?agent chat command", () => {
@@ -107,9 +107,7 @@ describe("clearPanelFromUrl", () => {
   });
   it("returns null when the closed panel is not the URL-named one", () => {
     expect(clearPanelFromUrl("?panel=teams-artifacts", "teams-issues")).toBeNull();
-    expect(
-      clearPanelFromUrl("?panel=teams-issue-detail&detailId=OTHER", "teams-issue-detail:ADM-9"),
-    ).toBeNull();
+    expect(clearPanelFromUrl("?panel=task-detail&taskId=t-9", "activity")).toBeNull();
   });
   it("clears the explicit ?panel=chat grammar fully (agent OR agentId form)", () => {
     // Both forms are parseable grammar (describePanel accepts agent ?? agentId)
@@ -157,16 +155,16 @@ describe("clearPanelFromUrl (Messages singleton)", () => {
 
 describe("clearDurableParamFromUrl", () => {
   it("strips the param when the URL command names the panel", () => {
-    expect(clearDurableParamFromUrl("?panel=teams-issues&agent=a-1", "teams-work", "agent")).toBe(
-      "panel=teams-issues",
+    expect(clearDurableParamFromUrl("?panel=activity&filter=mentions", "activity", "filter")).toBe(
+      "panel=activity",
     );
   });
   it("returns null when the URL names a different panel", () => {
-    expect(clearDurableParamFromUrl("?panel=teams-artifacts", "teams-issues", "agent")).toBeNull();
-    expect(clearDurableParamFromUrl("", "teams-issues", "agent")).toBeNull();
+    expect(clearDurableParamFromUrl("?panel=teams-artifacts", "activity", "filter")).toBeNull();
+    expect(clearDurableParamFromUrl("", "activity", "filter")).toBeNull();
   });
   it("returns null when the param is absent (no identical replaceState)", () => {
-    expect(clearDurableParamFromUrl("?panel=teams-issues", "teams-issues", "agent")).toBeNull();
+    expect(clearDurableParamFromUrl("?panel=activity", "activity", "filter")).toBeNull();
   });
 });
 

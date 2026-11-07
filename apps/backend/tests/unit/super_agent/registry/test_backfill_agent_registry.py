@@ -137,8 +137,17 @@ async def test_cli_verify_exit_code(tasks_table, paperclip):
     assert await _cli("--all", "--verify") == 1  # nothing seeded: every agent missing
     assert await _cli("--all") == 0  # dry run
     assert await repo.list_agents(WS) == []
-    assert await _cli("--all", "--apply") == 0
+    assert await _cli("--all", "--apply", "--i-know-this-reverts-native-writes") == 0
     assert await _cli("--all", "--verify") == 0
+
+
+@pytest.mark.asyncio
+async def test_cli_apply_refuses_by_default_since_the_registry_is_native(tasks_table, paperclip, capsys):
+    """#5020: agent writes land in the registry, so --apply would undo native renames and deletes."""
+    assert await _cli("--all", "--apply") == 2
+    assert "registry is native since #5020; this would undo renames/deletes" in capsys.readouterr().out
+    assert await repo.list_agents(WS) == []
+    assert await _cli("--all") == 0  # the dry run and --verify stay open
 
 
 async def test_cli_refuses_prod():
@@ -153,5 +162,5 @@ async def test_cli_allow_prod_lifts_only_the_prod_refusal(tasks_table, paperclip
     from scripts import backfill_agent_registry as script
 
     with patch.object(settings, "ENVIRONMENT", "prod"):
-        assert await script.main(["--all", "--apply", "--allow-prod"]) == 0
+        assert await script.main(["--all", "--apply", "--allow-prod", "--i-know-this-reverts-native-writes"]) == 0
         assert await script.main(["--all", "--verify", "--allow-prod"]) == 0

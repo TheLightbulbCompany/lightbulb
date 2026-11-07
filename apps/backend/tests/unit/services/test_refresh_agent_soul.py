@@ -2,7 +2,7 @@
 
 import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -107,20 +107,19 @@ async def test_teams_patch_rename_and_its_undo_reach_the_open_window(world, monk
     from routers.teams import agents as agents_mod
     from routers.teams.schemas import PatchAgentBody
 
-    admin = MagicMock()
+    from core.auth import AuthContext
 
-    async def patch(*, agent_id, body, session_cookie):
-        world.roster[0]["name"] = body["name"]
-        return {"id": agent_id, "name": body["name"]}
+    async def update(ws, agent_id, fields):
+        world.roster[0].update(fields)
+        return dict(world.roster[0])
 
-    admin.patch_agent = AsyncMock(side_effect=patch)
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    ctx = SimpleNamespace(user_id="user_1", owner_id=OWNER, org_id=OWNER, company_id="co", session_cookie="c")
-    monkeypatch.setattr(agents_mod, "_resolve_owner_id", lambda _ctx: OWNER)
+    monkeypatch.setattr("core.services.agent_registry.update", AsyncMock(side_effect=update))
+    auth = AuthContext(user_id="user_1", org_id=OWNER)
+    agent = {"id": AGENT, "role": "general", "reportsTo": None}
 
-    await agents_mod.patch_agent(AGENT, PatchAgentBody(name="Nova"), ctx)
+    await agents_mod.patch_agent(agent, PatchAgentBody(name="Nova"), auth)
     assert world.files[_key("VOICE_NOTES.md")].startswith("Your name is Nova.")
-    await agents_mod.patch_agent(AGENT, PatchAgentBody(name="Ada"), ctx)  # Undo
+    await agents_mod.patch_agent(agent, PatchAgentBody(name="Ada"), auth)  # Undo
     assert world.files[_key("VOICE_NOTES.md")].startswith("Your name is Ada.")
 
     assert [(p["from"], p["to"], p["by"]) for _, p in _notices(world.send_frames)] == [

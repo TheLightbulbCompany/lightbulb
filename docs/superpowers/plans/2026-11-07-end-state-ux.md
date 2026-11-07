@@ -176,6 +176,16 @@ Paths: `VP` = `apps/backend/routers/voice_phone.py`, `V` = `apps/backend/routers
 
 ## Order and lanes
 
+**Priority (founder, 7 Nov, late): the live-answer flow first.** The order is:
+1. Task 20 (read surface).
+2. Task 4 (contact boundary).
+3. Task 24 (orb and Yours).
+4. The phone flow: 2, 3, 34, 35, 36, 5, 6, 7, 9, 10, 11, 12.
+5. Then 15, 19, 21, 26–30.
+
+Task 22 (meeting notes and decisions, #5018) is **parked as a draft**. Nothing depends on it: Task 27's meeting pane shows Decisions only when present, and acceptance step 3.1 ("what did we decide…") leans on memory from earlier meetings, as is.
+
+
 - **Pre:** #5010 is merged. Merge #5007 (in re-review), then #5009, then #5002. Lane B and Task 31 assume them.
 - **First wave (independent, safety and correctness):** 1, 4, 33.
 - **Experts-do and eval (audit):** 34 after 3; 35 and 36 after 1; 37 any time; 38 after #5007; 39 after 34–36 (it is the gate for "sellable").

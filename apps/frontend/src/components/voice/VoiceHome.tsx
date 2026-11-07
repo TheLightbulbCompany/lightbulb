@@ -138,7 +138,7 @@ function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClo
   const { mutate } = useTimeline();
   const tx = call.transcript ?? [];
   const forgetCaller = async () => {
-    if (!call.caller || !window.confirm(`Forget what ${name} remembers about ${call.callerName || "this caller"}? This can't be undone.`)) return;
+    if (!call.caller || !(await window.confirm(`Forget what ${name} remembers about ${call.callerName || "this caller"}? This can't be undone.`))) return;
     setForget("busy");
     try { await api.del(`/voice/callers/${encodeURIComponent(call.caller)}/memory`); setForget("gone"); void mutate(); }
     catch { setForget("error"); }

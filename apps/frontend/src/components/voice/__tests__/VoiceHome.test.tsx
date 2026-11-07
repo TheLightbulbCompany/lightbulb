@@ -120,3 +120,15 @@ it("meeting pane shows follow-up status", () => {
   expect(within(pane).getByText("Pick vendor").closest("li")).toHaveTextContent("Needs you");
   expect(within(pane).getByText("Book room").closest("li")).toHaveTextContent("Working");
 });
+
+it("call pane Forget does nothing when the (async, desktop) confirm resolves false", async () => {
+  items.list = [{ type: "call", roomId: "c1", at: Date.now(), caller: "+14155550100", callerName: "Maya", callerMemory: ["Prefers mornings"] }];
+  const confirm = vi.spyOn(window, "confirm").mockResolvedValue(false as never);
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Maya/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+  await waitFor(() => expect(confirm).toHaveBeenCalled());
+  await Promise.resolve();
+  expect(items.del).not.toHaveBeenCalled();
+  expect(screen.getByText("Prefers mornings")).toBeInTheDocument();
+});

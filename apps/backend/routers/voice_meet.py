@@ -5,10 +5,11 @@ secret and the room token.
 The meeting's record lives on the room META's ``meeting`` map, where the owner's timeline reads it:
 ``asked`` [{t, who, q, a}], ``followUps`` [{text, status, taskId}], ``summary``.
 
-Who may act: only the inviting member's own speech. A Meet speaker is the Recall participant the worker
-heard; it counts as the member only when Recall marks them the Meet's host AND the invite's organizer is the
-member who sent it (Google signs the host in as the organizer). Anyone else is a guest: their asks start
-nothing that spends or sends -- the card waits for the member.
+Who may act: a workspace member's own speech. A Meet speaker is the Recall participant the worker heard; it is a
+member when Recall's email for them is a workspace member's (else a display name that matches exactly one member),
+or when Recall marks them the Meet's host and the invite's organizer is the member who sent it. Anyone else is a
+guest: their asks never read or speak workspace data; one that spends or sends starts as origin=meeting, so the
+card waits for a member.
 """
 
 import asyncio
@@ -23,7 +24,7 @@ from pydantic import AfterValidator, Field
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import integration_reads, meeting_bots, meeting_invites, memory_api
+from core.services import clerk_admin, integration_reads, meeting_bots, meeting_invites, memory_api, questions
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
 from routers.voice_phone import _TZ, _bookings
@@ -80,17 +81,46 @@ async def start(room_id: str, body: StartIn) -> dict:
     return {"assistantName": name, "title": meeting.get("title") or "Meeting"}
 
 
-def member_speaking(meeting: dict, members: list[dict], participant_id: str) -> str | None:
-    """The member whose own speech this is, or None (a guest). See the module docstring."""
-    who = (meeting.get("roster") or {}).get(participant_id) or {}
-    organizer, inviter = (meeting.get("organizer") or "").lower(), (meeting.get("invitedBy") or "").lower()
-    if not (who.get("host") and organizer and organizer == inviter):
-        return None
+async def _is_workspace_member(owner_id: str, who: dict) -> bool:
+    """Recall's participant email is a member's; with no email, a Google display name that is exactly one member's.
+    Unknown, ambiguous or a Clerk error is a guest (fail closed)."""
+    try:
+        if email := (who.get("email") or "").strip().lower():
+            return email in await questions.member_emails(owner_id)
+        name = (who.get("name") or "").strip().lower()
+        if not name or not owner_id.startswith("org_"):
+            return False
+        people = await clerk_admin.list_organization_members(owner_id, strict=True)
+        return [f"{p.get('first_name') or ''} {p.get('last_name') or ''}".strip().lower() for p in people].count(
+            name
+        ) == 1
+    except Exception:  # noqa: BLE001 -- fail closed
+        logger.warning("meet member lookup failed", exc_info=True)
+        return False
+
+
+def _owner(members: list[dict]) -> str | None:
     return next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
 
 
-async def _member_asked(room_id: str, meeting: dict, participant_id: str) -> bool:
-    return member_speaking(meeting, await messaging_repo.list_members(room_id), participant_id) is not None
+def member_speaking(meeting: dict, members: list[dict], participant_id: str, known: bool = False) -> str | None:
+    """The member's id (the room owner's: asks run as the owner) when this is a member's own speech, else None (a
+    guest). `known`: the speaker's email or name matched a workspace member (_is_workspace_member)."""
+    who = (meeting.get("roster") or {}).get(participant_id) or {}
+    organizer, inviter = (meeting.get("organizer") or "").lower(), (meeting.get("invitedBy") or "").lower()
+    if not (known or (who.get("host") and organizer and organizer == inviter)):
+        return None
+    return _owner(members)
+
+
+async def _speaker(owner_id: str, room_id: str, meeting: dict, participant_id: str) -> str | None:
+    who = (meeting.get("roster") or {}).get(participant_id)
+    known = bool(who) and await _is_workspace_member(owner_id, who)
+    return member_speaking(meeting, await messaging_repo.list_members(room_id), participant_id, known)
+
+
+async def _member_asked(owner_id: str, room_id: str, meeting: dict, participant_id: str) -> bool:
+    return await _speaker(owner_id, room_id, meeting, participant_id) is not None
 
 
 class WorkIn(RoomBody):
@@ -103,7 +133,7 @@ class WorkIn(RoomBody):
 @router.post("/internal/voice/meet/{room_id}/start-work", status_code=202)
 async def start_work(room_id: str, body: WorkIn) -> dict:
     """An ask becomes a Worker task and a follow-up on the meeting. One title per occurrence is one task: a
-    repeat ask is "already on it" (the task id is derived from it). A guest's ask starts nothing."""
+    repeat ask is "already on it" (the task id is derived from it). A guest's ask starts the work as origin=meeting: a card for the owner first."""
     room_id, meta, meeting = await _meeting(room_id, body)
     run_id = hashlib.sha256(
         f"{room_id}:{meeting.get('inCallAt', 0)}:{body.title.strip().lower()}".encode()
@@ -111,19 +141,27 @@ async def start_work(room_id: str, body: WorkIn) -> dict:
     if await messaging_repo.get_voice_run(body.ownerId, run_id):
         done = next((f for f in meeting.get("followUps") or [] if f.get("runId") == run_id), {})
         return {"already": True, "taskId": done.get("taskId")}
-    member = member_speaking(meeting, await messaging_repo.list_members(room_id), body.participantId)
-    if member is None:
+    member = await _speaker(body.ownerId, room_id, meeting, body.participantId)
+    requester = member or _owner(await messaging_repo.list_members(room_id))
+    if requester is None:
         return {"started": False, "reason": "needs_member", "note": GUEST_NOTE}
     await messaging_repo.put_voice_run(
-        body.ownerId, run_id, {"roomId": room_id, "requesterUserId": member, "agentId": None}
+        body.ownerId, run_id, {"roomId": room_id, "requesterUserId": requester, "agentId": None}
     )
     brief = f'Asked aloud in the meeting "{meeting.get("title") or "Meeting"}" by {body.speakerName or "a member"}.\n\n{body.brief}'
+    if not member:
+        brief = f"{GUEST_NOTE}\n\n{brief}"
     out = await start_voice_work(
-        body.ownerId, VoiceStartIn(run_id=run_id, call_id=room_id, room_id=room_id, title=body.title, brief=brief)
+        body.ownerId,
+        VoiceStartIn(run_id=run_id, call_id=room_id, room_id=room_id, title=body.title, brief=brief),
+        **({} if member else {"origin": "meeting"}),  # effect_check asks the owner before any outside action
     )
     entry = {"text": body.title, "status": "working", "taskId": out["taskId"], "runId": run_id, "at": utc_now_iso()}
     await meeting_invites._patch_meeting(room_id, lambda m: {"followUps": [*(m.get("followUps") or []), entry]})
-    return {"started": True, **out}
+    if member:
+        return {"started": True, **out}
+    owner = ((await clerk_admin.get_user(requester)) or {}).get("first_name") or "a member"
+    return {"started": True, **out, "needs_ok": True, "say": f"I'll need {owner}'s OK for that."}
 
 
 class ReadIn(RoomBody):
@@ -172,7 +210,7 @@ async def read(room_id: str, body: ReadIn) -> dict:
     counts, and the assistant's own calendar. Memory and the calendar (customers' names) are the member's own speech
     only; call counts stay open."""
     room_id, _meta, meeting = await _meeting(room_id, body)
-    if body.kind != "calls" and not await _member_asked(room_id, meeting, body.participantId):
+    if body.kind != "calls" and not await _member_asked(body.ownerId, room_id, meeting, body.participantId):
         return {"reason": "needs_member", "text": GUEST_ONLY}
     if body.kind == "memory":
         page = await memory_api.recall_page(
@@ -204,7 +242,7 @@ async def integration_read(room_id: str, body: IntegrationIn) -> dict:
     """One bounded read of a connected integration (integration_reads). The member's own speech only: the
     whole meeting hears the answer, and a guest must not read the owner's mail or payments aloud."""
     room_id, _meta, meeting = await _meeting(room_id, body)
-    if not await _member_asked(room_id, meeting, body.participantId):
+    if not await _member_asked(body.ownerId, room_id, meeting, body.participantId):
         return {"text": "Only a member can ask me to read the team's connected apps in a meeting."}
     out = await integration_reads.read(body.ownerId, body.provider, body.query)
     return out if isinstance(out, dict) else {"text": out}
@@ -220,7 +258,7 @@ async def chat(room_id: str, body: ChatIn) -> dict:
     """A short line goes to the Meet's chat as it is; a draft or a long answer is posted to the meeting's room
     and the chat gets its first line and a link. The member's own speech only: guests see the chat."""
     room_id, _meta, meeting = await _meeting(room_id, body)
-    if not await _member_asked(room_id, meeting, body.participantId):
+    if not await _member_asked(body.ownerId, room_id, meeting, body.participantId):
         return {"reason": "needs_member", "text": GUEST_ONLY}
     bot = meeting.get("recallBotId")
     if not bot:

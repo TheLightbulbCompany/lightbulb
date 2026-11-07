@@ -52,9 +52,9 @@ def m():
         yield patched
 
 
-def _work(pid: str, title="Draft the holiday-hours post"):
+def _work(pid: str, title="Draft the holiday-hours post", brief="b"):
     return voice_meet.WorkIn(
-        ownerId="org_1", roomToken="t", title=title, brief="b", participantId=pid, speakerName="Maya"
+        ownerId="org_1", roomToken="t", title=title, brief=brief, participantId=pid, speakerName="Maya"
     )
 
 
@@ -66,11 +66,41 @@ async def test_member_ask_starts_a_task_and_a_follow_up(m):
     assert (f["text"], f["status"], f["taskId"]) == ("Draft the holiday-hours post", "working", "k1")
 
 
-async def test_guest_ask_starts_nothing(m):
-    out = await voice_meet.start_work(ROOM, _work("12"))
-    assert out["started"] is False and out["reason"] == "needs_member"
-    m["sw"].assert_not_awaited()
-    m["put_run"].assert_not_awaited()
+async def test_non_host_member_is_member(m):
+    m["meeting"]["roster"]["13"] = {"name": "Lee", "in": True, "email": "Lee@Salon.com"}
+    with patch.object(
+        voice_meet.questions, "member_emails", AsyncMock(return_value={"maya@salon.com", "lee@salon.com"})
+    ):
+        out = await voice_meet.start_work(ROOM, _work("13"))
+    assert out == {"started": True, "triggerId": "t", "taskId": "k1"}
+    assert m["sw"].await_args.kwargs.get("origin") is None
+
+
+async def test_guest_order_ask_creates_card(m):
+    """A guest's ask starts the work marked origin=meeting, so effect_check puts a card in front of Maya."""
+    with patch.object(voice_meet.clerk_admin, "get_user", AsyncMock(return_value={"first_name": "Maya"})):
+        out = await voice_meet.start_work(ROOM, _work("12", title="Order the gel colours", brief="$212"))
+    assert out["started"] and out["needs_ok"] and out["say"] == "I'll need Maya's OK for that."
+    assert m["sw"].await_args.kwargs["origin"] == "meeting"
+    assert m["put_run"].await_args.args[2]["requesterUserId"] == "user_maya"
+
+
+async def test_unknown_speaker_is_guest(m):
+    for pid in ("99", ""):  # not on the roster, nobody heard
+        body = voice_meet.ReadIn(ownerId="org_1", roomToken="t", kind="memory", participantId=pid)
+        assert (await voice_meet.read(ROOM, body))["reason"] == "needs_member"
+
+
+async def test_display_name_matching_two_members_is_guest(m):
+    m["meeting"]["roster"]["14"] = {"name": "Sam Lee", "in": True}
+    two = [{"first_name": "Sam", "last_name": "Lee"}, {"first_name": "sam", "last_name": "LEE"}]
+    body = voice_meet.ReadIn(ownerId="org_1", roomToken="t", kind="memory", participantId="14")
+    with patch.object(voice_meet.clerk_admin, "list_organization_members", AsyncMock(return_value=two)):
+        assert (await voice_meet.read(ROOM, body))["reason"] == "needs_member"
+    with patch.object(voice_meet.clerk_admin, "list_organization_members", AsyncMock(return_value=two[:1])):
+        page = {"results": []}
+        with patch.object(voice_meet.memory_api, "recall_page", AsyncMock(return_value=page)):
+            assert "reason" not in await voice_meet.read(ROOM, body)  # one match: a member
 
 
 async def test_repeat_ask_is_already_on_it(m):

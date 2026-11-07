@@ -478,7 +478,10 @@ async def from_contact(ws: str, task: dict) -> bool:
     nothing yet."""
     if not task.get("triggerId"):
         return False
-    return (((await get_trigger(ws, task["triggerId"])) or {}).get("ref") or {}).get("origin") == "phone_contact"
+    return (((await get_trigger(ws, task["triggerId"])) or {}).get("ref") or {}).get("origin") in (
+        "phone_contact",
+        "meeting",
+    )
 
 
 # --- Creation (`CAP#`) -----------------------------------------------------------------------------

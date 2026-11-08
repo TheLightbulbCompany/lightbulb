@@ -27,3 +27,21 @@ test('opens the envelope, else reads the legacy secret', async () => {
   delete items['org_a|openrouter/h1'];
   assert.equal(await ownerKey(deps, 'org_a', 'h1', 'old'), 'legacy:old');
 });
+
+// Fixed vector from the backend's integration_secret_store._seal (data key bytes 0..31, nonce 0..11);
+// tests/credentials/test_credential_envelope_store.py pins the same bytes.
+test('decrypts the backend _seal vector', async () => {
+  const hex = h => ({ S: Buffer.from(h, 'hex').toString('base64') });
+  const item = {
+    data_key: { S: 'd3JhcHBlZA==' },
+    nonce: hex('000102030405060708090a0b'),
+    ciphertext: hex('3c20bd7ebcc7f83baf32fca6de9b551be6b5f35b82592267ce4000954ed420ecf3126300b422e3'),
+  };
+  const deps = {
+    env: { CREDENTIAL_ENVELOPES_TABLE: 't' },
+    ddb: { async getItem() { return { Item: item }; } },
+    kms: { async decrypt() { return { Plaintext: Buffer.from([...Array(32).keys()]) }; } },
+    secrets: {},
+  };
+  assert.equal(await ownerKey(deps, 'org_v', 'hv', 'unused'), 'sk-or-vector');
+});

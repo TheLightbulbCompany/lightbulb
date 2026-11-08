@@ -15,12 +15,14 @@ Moves (the envelope's provider is what the readers ask ``integration_secret_stor
 Dead (soft-deleted, nothing written): ``DEAD_PATTERNS``.
 
 Per live secret, ``--apply``: read, seal, write the row (an existing row that opens is newer and is
-kept), open it back and compare, then DeleteSecret with the default 30-day recovery window. Per
-secret ALREADY scheduled for deletion (#5083's sealed ``put`` scheduled the legacy copy): if its
-envelope opens, force-delete it; else restore it and migrate it as above. So a second ``--apply``
-force-deletes what the first soft-deleted, each only once its envelope is checked. The values are
-never printed. ``--verify`` exits 1 while any class b/c secret is still live, a scheduled one has no
-envelope that opens, or any row fails to open. Per-owner Hermes boot secrets and BYOK ``user-keys``
+kept), open it back and compare, then DeleteSecret with the default 30-day recovery window. The write is
+conditional on the row read, so a concurrent live write wins and that secret is kept. A row that
+fails to decrypt for any reason but bad ciphertext (throttling, access) fails that secret untouched.
+Per secret ALREADY scheduled for deletion (#5083's sealed ``put`` scheduled the legacy copy): if its
+envelope opens, force-delete it; else leave it to expire (it may be a disconnected credential). So a
+second ``--apply`` force-deletes what the first soft-deleted, each only once its envelope opens. The
+values are never printed. ``--verify`` exits 1 while any class b/c secret is still live or any row
+fails to open. Per-owner Hermes boot secrets and BYOK ``user-keys``
 are not touched (read outside this store).
 """
 
@@ -33,6 +35,8 @@ import re
 import sys
 
 import boto3
+from botocore.exceptions import ClientError
+from cryptography.exceptions import InvalidTag
 
 from core.config import settings
 from core.services.credentials import integration_secret_store as store
@@ -91,20 +95,43 @@ def _row(owner: str, provider: str) -> dict | None:
 
 
 def _opens(row: dict | None) -> bool:
-    try:
-        return row is not None and store._open(row) is not None
-    except Exception:  # noqa: BLE001 -- a row that does not decrypt is as good as none
+    """Whether the row decrypts. False only for no row or a row KMS / AES-GCM reject as bad
+    ciphertext; any other error (throttling, access, network) raises, so that secret fails untouched."""
+    if row is None:
         return False
+    try:
+        store._open(row)
+    except InvalidTag:
+        return False
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "InvalidCiphertextException":
+            return False
+        raise
+    return True
 
 
 def migrate_one(sm, name: str, owner: str, provider: str) -> str:
-    """Seal the live secret (an existing row that opens is newer and is kept; one that does not is
-    resealed from the secret), open it back, then soft-delete the secret (default 30-day window)."""
+    """Seal the live secret, open it back, then soft-delete the secret (default 30-day window).
+    A row that opens is newer and is kept. The write is conditional on the row read (absent, or the
+    same bad ciphertext), so a live write in between wins: skipped, and the secret is not deleted."""
     payload = _payload(provider, sm.get_secret_value(SecretId=name)["SecretString"])
-    if _opens(_row(owner, provider)):
+    row = _row(owner, provider)
+    if _opens(row):
         outcome = "kept-newer-row"
     else:
-        store._envelope_table().put_item(Item=store._seal(owner, provider, json.dumps(payload)))
+        if row is None:
+            condition = {"ConditionExpression": "attribute_not_exists(owner_id)"}
+        else:
+            condition = {
+                "ConditionExpression": "ciphertext = :read",
+                "ExpressionAttributeValues": {":read": row["ciphertext"]},
+            }
+        try:
+            store._envelope_table().put_item(Item=store._seal(owner, provider, json.dumps(payload)), **condition)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return "skipped (written concurrently; secret kept)"
+            raise
         row = _row(owner, provider)
         if row is None or store._open(row) != payload:
             raise RuntimeError("sealed row does not open to the secret")
@@ -114,17 +141,17 @@ def migrate_one(sm, name: str, owner: str, provider: str) -> str:
 
 
 def retire_scheduled(sm, name: str, owner: str, provider: str) -> str:
-    """A secret already scheduled for deletion: force-delete it when its envelope opens, else
-    restore it and migrate it."""
-    if _opens(_row(owner, provider)):
-        try:
-            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-        except sm.exceptions.InvalidRequestException:  # "scheduled for deletion": restore, then force
-            sm.restore_secret(SecretId=name)
-            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-        return "force-deleted (envelope opens)"
-    sm.restore_secret(SecretId=name)
-    return f"restored, {migrate_one(sm, name, owner, provider)}"
+    """A secret already scheduled for deletion: force-delete it only when its envelope opens. One
+    without such an envelope may be a credential its owner disconnected, so it is left to expire."""
+    if not _opens(_row(owner, provider)):
+        return "scheduled, no envelope: left to expire"
+    try:
+        sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+    except sm.exceptions.InvalidRequestException:
+        # DeleteSecret lists "The secret is scheduled for deletion" as a cause. No restore (that would
+        # make a possibly-disconnected credential readable again): it expires on its own window.
+        return "envelope opens; AWS refused the forced delete, left to expire"
+    return "force-deleted (envelope opens)"
 
 
 def run(mode: str, sm=None) -> int:
@@ -139,16 +166,13 @@ def run(mode: str, sm=None) -> int:
         if mode == "dry-run":
             if scheduled:
                 ok = _opens(_row(owner, provider))
-                print(f"{name} scheduled, would-{'force-delete' if ok else 'restore-and-move'}")
+                print(f"{name} scheduled, would-{'force-delete' if ok else 'leave-to-expire'}")
             else:
                 print(f"{name} would-{'move -> ' + owner + ' ' + provider if kind == 'move' else 'soft-delete'}")
         elif mode == "verify":
             if not scheduled:
                 pending += 1
                 print(f"{name} still-live ({kind})")
-            elif not _opens(_row(owner, provider)):
-                failed += 1
-                print(f"{name} scheduled with no envelope that opens")
         else:
             try:
                 if scheduled:

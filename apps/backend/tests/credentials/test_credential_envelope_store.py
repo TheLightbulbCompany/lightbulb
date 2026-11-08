@@ -7,6 +7,7 @@ import json
 import os
 
 import pytest
+from botocore.exceptions import ClientError
 
 from core import secrets_manager
 from core.config import settings
@@ -59,9 +60,6 @@ class _FakeSM:
         listed = [n for n in names if IncludePlannedDeletion or n not in self.scheduled]
         return {"SecretList": [{"Name": n, **({"DeletedDate": 1} if n in self.scheduled else {})} for n in listed]}
 
-    def restore_secret(self, SecretId):
-        self.scheduled.discard(SecretId)
-
     def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
         self.deletes.append((SecretId, ForceDeleteWithoutRecovery))
         if SecretId not in self.secrets:
@@ -90,7 +88,7 @@ class _FakeKMS:
     def decrypt(self, CiphertextBlob, EncryptionContext):
         ctx, key = CiphertextBlob.split(b"|", 1)
         if ctx != json.dumps(EncryptionContext, sort_keys=True).encode():
-            raise ValueError("InvalidCiphertextException")
+            raise ClientError({"Error": {"Code": "InvalidCiphertextException"}}, "Decrypt")
         return {"Plaintext": key}
 
 
@@ -99,7 +97,13 @@ class _FakeTable:
         self.items = {}
         self.consistent_reads = []
 
-    def put_item(self, Item):
+    def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+        old = self.items.get((Item["owner_id"], Item["provider"]))
+        if (ConditionExpression == "attribute_not_exists(owner_id)" and old) or (
+            ConditionExpression == "ciphertext = :read"
+            and (old or {}).get("ciphertext") != ExpressionAttributeValues[":read"]
+        ):
+            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
         self.items[(Item["owner_id"], Item["provider"])] = Item
 
     def get_item(self, Key, ConsistentRead=False):
@@ -191,7 +195,7 @@ async def test_copied_row_fails_to_decrypt(stores):
     _, _, table = stores
     await store.put("org_a", "github", {"token": "t"})
     table.items[("org_b", "github")] = {**table.items[("org_a", "github")], "owner_id": "org_b"}
-    with pytest.raises(ValueError):
+    with pytest.raises(ClientError):
         await store.get("org_b", "github")
 
 
@@ -303,9 +307,9 @@ def test_migration_refuses_prod_without_allow_prod(stores, monkeypatch):
     assert migrate.main(["--dry-run"]) == 2
 
 
-def test_migration_retires_secrets_already_scheduled_for_deletion(stores, capsys):
+def test_migration_force_deletes_scheduled_secrets_only_when_their_envelope_opens(stores, capsys):
     """#5083's sealed put scheduled the legacy copy. One whose envelope opens is force-deleted; one with
-    no row, or a row that does not open, is restored and migrated (then soft-deleted again)."""
+    no row, or a row that does not open, is left to expire (it may be a disconnected credential)."""
     from scripts import migrate_secrets_to_envelopes as migrate
 
     secrets, _, table = stores
@@ -315,15 +319,69 @@ def test_migration_retires_secrets_already_scheduled_for_deletion(stores, capsys
     )
     table.scheduled.update({sealed, orphan, broken})
     table.put_item(Item=store._seal("org_a", "github", json.dumps({"token": "new"})))
-    table.put_item(Item={**store._seal("org_a", "apollo", json.dumps({"k": "x"})), "nonce": "AAAAAAAAAAAAAAAA"})
+    bad = {**store._seal("org_a", "apollo", json.dumps({"k": "x"})), "nonce": "AAAAAAAAAAAAAAAA"}
+    table.put_item(Item=bad)
     sm = store._client()
 
-    assert migrate.run("verify", sm) == 1  # posthog and apollo have no envelope that opens
     assert migrate.run("apply", sm) == 0
     assert "old" not in capsys.readouterr().out
-    assert sealed not in secrets and (sealed, True) in table.deletes  # forced: its envelope opens
-    assert store._open(table.items[("org_a", "github")]) == {"token": "new"}
-    assert store._open(table.items[("org_a", "posthog")]) == {"k": "o"}
-    assert store._open(table.items[("org_a", "apollo")]) == {"k": "b"}
-    assert {orphan, broken} <= table.scheduled and (orphan, False) in table.deletes  # 30-day window again
-    assert migrate.run("verify", sm) == 0
+    # Only the one whose envelope opens is force-deleted. This fake refuses it while scheduled, as the
+    # DeleteSecret reference allows; with no restore it stays scheduled and expires.
+    assert table.deletes == [(sealed, True)]
+    assert {sealed, orphan, broken} <= table.scheduled and orphan in secrets and broken in secrets
+    assert ("org_a", "posthog") not in table.items and table.items[("org_a", "apollo")] == bad
+    assert migrate.run("verify", sm) == 1  # the apollo row still does not open
+
+
+def test_migration_leaves_a_secret_untouched_on_a_transient_kms_error(stores, monkeypatch):
+    from scripts import migrate_secrets_to_envelopes as migrate
+
+    secrets, kms, table = stores
+    name = "lightbulb/dev/integrations/org_a/github"
+    secrets[name] = json.dumps({"token": "legacy"})
+    newer = store._seal("org_a", "github", json.dumps({"token": "newer"}))
+    table.put_item(Item=newer)
+
+    def throttled(**_):
+        raise ClientError({"Error": {"Code": "ThrottlingException"}}, "Decrypt")
+
+    monkeypatch.setattr(kms, "decrypt", throttled)
+    assert migrate.run("apply", store._client()) == 1
+    assert table.items[("org_a", "github")] == newer and table.deletes == [] and name in secrets
+
+
+def test_migration_skips_a_secret_written_concurrently_and_keeps_it(stores, monkeypatch):
+    from scripts import migrate_secrets_to_envelopes as migrate
+
+    secrets, _, table = stores
+    name = "lightbulb/dev/integrations/org_a/github"
+    secrets[name] = json.dumps({"token": "legacy"})
+    live = store._seal("org_a", "github", json.dumps({"token": "live"}))
+    read = migrate._row
+    # The live write lands between the script's read (no row) and its put.
+    monkeypatch.setattr(migrate, "_row", lambda o, p: (read(o, p), table.put_item(Item=live))[0])
+    assert migrate.run("apply", store._client()) == 0
+    assert table.items[("org_a", "github")] == live and table.deletes == [] and name in secrets
+
+
+# Fixed vector from integration_secret_store._seal (data key bytes 0..31, nonce bytes 0..11): the gate
+# (envelope.test.mjs) and settlement (test_index.py) Lambdas decrypt these exact bytes.
+VECTOR = {
+    "owner_id": "org_v",
+    "provider": "openrouter/hv",
+    "nonce": "000102030405060708090a0b",
+    "ciphertext": "3c20bd7ebcc7f83baf32fca6de9b551be6b5f35b82592267ce4000954ed420ecf3126300b422e3",
+}
+
+
+def test_seal_matches_the_fixed_vector_the_lambdas_decrypt(stores, monkeypatch):
+    import base64
+
+    _, kms, _ = stores
+    monkeypatch.setattr(
+        kms, "generate_data_key", lambda **_: {"Plaintext": bytes(range(32)), "CiphertextBlob": b"wrapped"}
+    )
+    monkeypatch.setattr(store.os, "urandom", lambda n: bytes(range(n)))
+    item = store._seal("org_v", "openrouter/hv", json.dumps({"key": "sk-or-vector"}))
+    assert base64.b64decode(item["nonce"]).hex() == VECTOR["nonce"]
+    assert base64.b64decode(item["ciphertext"]).hex() == VECTOR["ciphertext"]

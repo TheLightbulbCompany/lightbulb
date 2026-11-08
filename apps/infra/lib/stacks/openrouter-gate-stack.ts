@@ -100,12 +100,20 @@ export class OpenRouterGateStack extends cdk.Stack {
       resources: [
         tableArn("bedrock-gate-tokens"), tableArn("billing-accounts"),
         tableArn("metronome-fast-gate"), tableArn("openrouter-keys"),
-        tableArn("openrouter-requests"), tableArn("credential-envelopes"),
+        tableArn("openrouter-requests"),
       ],
     }));
-    // Owner keys are credential-envelopes rows; this decrypt opens their data keys.
-    const openEnvelopes = new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [props.kmsKeyArn] });
-    role.addToPolicy(openEnvelopes);
+    // Owner keys are credential-envelopes rows: read one row, decrypt only an openrouter/* data key.
+    // The gate is a public Function URL, so nothing wider (no other provider, no writes, no scans).
+    const openEnvelopes = () => [
+      new iam.PolicyStatement({ actions: ["dynamodb:GetItem"], resources: [tableArn("credential-envelopes")] }),
+      new iam.PolicyStatement({
+        actions: ["kms:Decrypt"],
+        resources: [props.kmsKeyArn],
+        conditions: { StringLike: { "kms:EncryptionContext:provider": "openrouter/*" } },
+      }),
+    ];
+    openEnvelopes().forEach(statement => role.addToPolicy(statement));
     role.addToPolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],
       resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/openrouter/owners/*`],
@@ -181,9 +189,9 @@ export class OpenRouterGateStack extends cdk.Stack {
     });
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:TransactWriteItems"],
-      resources: [tableArn("openrouter-requests"), `${tableArn("openrouter-requests")}/index/state-created-index`, tableArn("openrouter-keys"), tableArn("metronome-fast-gate"), tableArn("credential-envelopes")],
+      resources: [tableArn("openrouter-requests"), `${tableArn("openrouter-requests")}/index/state-created-index`, tableArn("openrouter-keys"), tableArn("metronome-fast-gate")],
     }));
-    settlementRole.addToPolicy(openEnvelopes);
+    openEnvelopes().forEach(statement => settlementRole.addToPolicy(statement));
     // Settlement only ADDs real OpenRouter cost to the usage counters (inside its transaction).
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["dynamodb:UpdateItem"],

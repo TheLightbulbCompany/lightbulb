@@ -685,5 +685,19 @@ class OwnerKeyTests(unittest.TestCase):
             self.assertEqual(worker._owner_key(row), f"legacy:{row['secret_name']}")
 
 
+    def test_decrypts_the_backend_seal_vector(self):
+        # Fixed vector from integration_secret_store._seal (data key bytes 0..31, nonce 0..11); the backend
+        # test_credential_envelope_store.py and the gate's envelope.test.mjs pin the same bytes.
+        import base64
+        hexb64 = lambda h: {"S": base64.b64encode(bytes.fromhex(h)).decode()}  # noqa: E731
+        item = {"data_key": {"S": "d3JhcHBlZA=="}, "nonce": hexb64("000102030405060708090a0b"),
+                "ciphertext": hexb64("3c20bd7ebcc7f83baf32fca6de9b551be6b5f35b82592267ce4000954ed420ecf3126300b422e3")}
+        clients = {"dynamodb": types.SimpleNamespace(get_item=lambda **_: {"Item": item}),
+                   "kms": types.SimpleNamespace(decrypt=lambda **_: {"Plaintext": bytes(range(32))})}
+        with patch.dict(sys.modules, {"boto3": types.SimpleNamespace(client=clients.__getitem__)}), \
+                patch.dict(os.environ, {"CREDENTIAL_ENVELOPES_TABLE": "t"}):
+            self.assertEqual(worker._owner_key({"owner_id": "org_v", "key_hash": "hv", "secret_name": "x"}), "sk-or-vector")
+
+
 if __name__ == "__main__":
     unittest.main()

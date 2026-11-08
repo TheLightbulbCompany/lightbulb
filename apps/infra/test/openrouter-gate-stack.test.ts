@@ -95,10 +95,20 @@ test("dev settlement runs the daily audit", () => {
     Targets: Match.arrayWith([Match.objectLike({ Input: '{"audit_previous_day":true}' })]),
   });
   template.resourceCountIs("AWS::SQS::Queue", 1);
-  // Both lambdas open owner-key envelopes: the table row, then the stage CMK.
-  template.resourcePropertiesCountIs("AWS::IAM::Policy", {
-    PolicyDocument: { Statement: Match.arrayWith([{ Action: "kms:Decrypt", Effect: "Allow", Resource: KEY }]) },
-  }, 2);
+  // Each lambda reads one envelope row (GetItem only) and decrypts only openrouter/* data keys.
+  const envelopes = "arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-dev-credential-envelopes";
+  const policies = Object.values(template.findResources("AWS::IAM::Policy")) as any[];
+  expect(policies).toHaveLength(2);
+  for (const policy of policies) {
+    const statements: any[] = policy.Properties.PolicyDocument.Statement;
+    const onTable = statements.filter(st => [st.Resource].flat().some((r: any) => JSON.stringify(r).includes("credential-envelopes")));
+    expect(onTable).toEqual([{ Action: "dynamodb:GetItem", Effect: "Allow", Resource: envelopes }]);
+    const onKey = statements.filter(st => [st.Resource].flat().includes(KEY));
+    expect(onKey).toEqual([{
+      Action: "kms:Decrypt", Effect: "Allow", Resource: KEY,
+      Condition: { StringLike: { "kms:EncryptionContext:provider": "openrouter/*" } },
+    }]);
+  }
   template.hasResourceProperties("AWS::Lambda::Function", {
     FunctionName: "lightbulb-dev-openrouter-gate",
     Environment: { Variables: Match.objectLike({ CREDENTIAL_ENVELOPES_TABLE: "lightbulb-dev-credential-envelopes" }) },

@@ -113,14 +113,33 @@ async def ensure_task_room(ws: str, task: dict, *, seat_viewer: str | None = Non
 
 async def gate_input(ws: str, task_id: str, trig: dict) -> str | None:
     """§14.10 for a person's input to a task (a steer, or the attempt it starts): the gate's copy when
-    blocked, else None. Inputs with no person behind them (a delegation result) are not gated."""
+    blocked, else None. Inputs with no person behind them (a delegation result) are not gated. A line from a Meet
+    (`ref.origin: meeting`, anyone there speaks as the inviter) first makes the task `confirmAll`: from then on every
+    spend, send or publish it makes gets a card, as for a task the meeting started."""
     from core.services import chat_gate
 
+    if (trig.get("ref") or {}).get("origin") == "meeting":
+        await _confirm_all(ws, task_id)
     actor = trig.get("actorUserId")
     if not actor:
         return None
     gate = await chat_gate.gate_chat(user_id=actor, owner_id=ws, session_key=f"task:{task_id}")
     return gate["message"] if gate.get("blocked") else None
+
+
+async def _confirm_all(ws: str, task_id: str) -> None:
+    from core.repositories import tasks_repo
+
+    for _ in range(5):
+        task = await tasks_repo.get_task(ws, task_id)
+        if task is None or task.get("confirmAll"):
+            return
+        try:
+            await tasks_repo.update_task_fields(ws, task_id, {"confirmAll": True}, expected_version=task["version"])
+            return
+        except tasks_repo.VersionConflict:
+            continue  # the workflow moved the row: read it again
+    raise RuntimeError(f"task {task_id}: confirmAll not set")  # fail closed: the input is retried, never let through
 
 
 async def post_as_lightbulb(

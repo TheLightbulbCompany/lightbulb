@@ -1,6 +1,6 @@
 "use client";
 
-// Home, "Lightbulb-first" (spec 2026-11-07 §5, mockup D): hold to talk to the assistant, the one Needs-you line, then
+// Home, "Lightbulb-first" (spec 2026-11-07 §5, mockup D): tap to talk to the assistant, the one Needs-you line, then
 // one timeline of every call and meeting with what the assistant did, and the pane with how it did it.
 import { useMemo, useState } from "react";
 import Link from "next/link";

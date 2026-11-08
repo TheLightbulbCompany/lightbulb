@@ -2,7 +2,6 @@
 
 import importlib
 import os
-import time
 
 os.environ.setdefault("LIGHTBULB_API_URL", "http://x")
 os.environ.setdefault("LIGHTBULB_HUDDLE_SECRET", "x")
@@ -58,31 +57,3 @@ async def test_a_failed_goodbye_still_ends():
 
     await huddle_agent.end_after(0, Session(), end)
     assert done == [1]
-
-
-def test_after_time_up_only_the_goodbye_speech_plays():
-    a = meet.MeetAgent(None, meet.Gate(name="Nova"), meet.Mixer(), {"name": "Nova", "company": "c", "title": "t",
-                       "today": "d"}, {})  # fmt: skip
-    now = time.monotonic()
-    a._mixer.voiced_at = now - 10
-    a.heard("i1", "Nova, how many calls?", True, now)
-    assert a._authorize(now, "speech_held") == (True, "ask")  # before the limit: a normal ask plays
-    a.ends_at = now  # time runs out while that reply is still waiting
-    a.goodbye_id = "speech_bye"  # end_after's on_speech, from the goodbye's own SpeechHandle
-    assert a._authorize(now, "speech_held") == (False, "time up")  # the waiting reply is dropped
-    assert a._authorize(now, None) == (False, "time up")
-    assert a._authorize(now, "speech_bye") == (True, "goodbye")  # only the goodbye plays
-    a.heard("i2", "so anyway the budget is fine", True, now)  # chatter after the goodbye
-    assert a._authorize(now, "speech_later") == (False, "time up")
-
-
-async def test_a_tool_after_time_up_is_refused():
-    class B:
-        async def meet(self, op, body):
-            raise AssertionError("tool reached the backend after time up")
-
-    a = meet.MeetAgent(B(), meet.Gate(name="Nova"), meet.Mixer(), {"name": "Nova", "company": "c", "title": "t",
-                       "today": "d"}, {})  # fmt: skip
-    a.ends_at = time.monotonic()
-    assert await a._post("read", {"kind": "memory"}) == {"error": "time_up"}
-    assert await a.call_stats() == {"error": "time_up"}

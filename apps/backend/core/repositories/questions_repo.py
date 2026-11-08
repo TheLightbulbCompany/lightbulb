@@ -217,19 +217,6 @@ async def record_answer(
     return await get_question(ws, task_id, qid)
 
 
-async def set_pending_confirm(ws: str, task_id: str, qid: str, pending: dict) -> None:
-    """A voice "yes" waiting for the member's tap (`voice_approve`). Open cards only; the version is left alone so a
-    tap with the version the card showed still lands."""
-    await run_in_thread(
-        _table().update_item,
-        Key={"pk": ts.ws_pk(ws), "sk": ts.question_sk(task_id, qid)},
-        UpdateExpression="SET pendingConfirm = :p, updatedAt = :now",
-        ConditionExpression="#st = :open",
-        ExpressionAttributeNames={"#st": "state"},
-        ExpressionAttributeValues=ddb_safe({":p": pending, ":now": utc_now_iso(), ":open": "open"}),
-    )
-
-
 async def cancel_open(
     ws: str, task_id: str, *, by: str, reason: str, kinds: tuple[str, ...] | None = None, except_qid: str | None = None
 ) -> list[str]:

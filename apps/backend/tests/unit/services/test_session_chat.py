@@ -269,6 +269,32 @@ async def test_an_agents_unbound_post_in_a_meet_room_still_goes_to_its_output_ro
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "front", "redirected"), [("in_call", CEO_ID, False), ("ended", CEO_ID, True),
+                                                              ("in_call", "someone-else", True)])  # fmt: skip
+async def test_lightbulbs_post_stays_in_the_meet_room_only_during_the_call(monkeypatch, status, front, redirected):
+    """The meeting's voice says the Router's answers from its room while the call is on; after it, Lightbulb's posts
+    go to the organizer's output room again, and another agent's always do."""
+    from core.services import meeting_invites
+
+    meet = {"roomId": ROOM, "ownerId": OWNER, "kind": "channel", "hidden": True,
+            "meeting": {"title": "Standup", "status": status}}  # fmt: skip
+    output_room = AsyncMock(return_value="general")
+    monkeypatch.setattr(meeting_invites, "output_room", output_room)
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meet))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=front))
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[]))
+    request = messaging.AgentMessageRequest(
+        event_id="evt-3", room_id=ROOM, agent_id=CEO_ID, text="We shipped 5095.",
+        reply_to_message_id=None, thread_root_message_id=None,
+    )  # fmt: skip
+    with pytest.raises(ApiProblem):  # nobody seated in these fakes: the post stops after the room is chosen
+        await messaging.create_agent_message(OWNER, request)
+    assert output_room.await_count == (1 if redirected else 0)
+
+
+@pytest.mark.asyncio
 async def test_a_reader_seated_while_sharing_pauses_loses_the_seat(env, monkeypatch):
     """The pause's silence() may list the room before this seat lands: the door reads the session again."""
     env["get_room"].return_value = META

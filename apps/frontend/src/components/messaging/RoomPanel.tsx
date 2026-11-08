@@ -52,6 +52,7 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { PANE_SHEET_QUERY } from "@/components/workspace/paneSheet";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
+import { LiveTranscript } from "./LiveTranscript";
 import { collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessageDelegations, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
 import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
@@ -974,6 +975,7 @@ function RoomContent({
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message opacity-60" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-ui text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
+          <LiveTranscript roomId={roomId} messages={mainMessages} name={viewer?.displayName ?? "You"} />
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
       </div>

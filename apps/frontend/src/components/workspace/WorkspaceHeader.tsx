@@ -46,7 +46,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
       <button type="button" className="workspace-rail__search" aria-label="Search channels, threads, files and messages" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {/* Hold to talk to the assistant, from every place (voice spec §5: owner mode, the Router in the DM). The rail,
+      {/* Talk to the assistant (tap, or hold for push-to-talk), from every place (voice spec §5: owner mode, the Router in the DM). The rail,
           not a floating button: it never covers a composer, and its caption opens beside the rail while a talk is on. */}
       <TalkOrb name={LIGHTBULB} compact />
       {DESTINATIONS.map(({ place, panel, label, Icon }) => {

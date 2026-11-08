@@ -8,10 +8,12 @@ vi.mock("@livekit/components-react", () => ({
   useRemoteParticipant: () => lk.agent,
   useParticipantAttributes: () => ({ attributes: lk.attrs }),
   useTranscriptions: () => lk.lines,
+  useLocalParticipant: () => ({ localParticipant: {}, microphoneTrack: undefined }),
+  useTrackVolume: () => 0,
 }));
 const mic = vi.hoisted(() => vi.fn());
-const connectedRoom = vi.hoisted(() => ({ localParticipant: { setMicrophoneEnabled: mic } }));
-const huddle = vi.hoisted(() => ({ roomId: "dm1" as string | null, joining: null, room: connectedRoom as object | null, error: null, join: vi.fn(), leave: vi.fn() }));
+const connectedRoom = vi.hoisted(() => ({ localParticipant: { setMicrophoneEnabled: mic, isMicrophoneEnabled: true } })); // mounted into an open talk
+const huddle = vi.hoisted(() => ({ roomId: "dm1" as string | null, joining: null, room: connectedRoom as object | null, error: null, join: vi.fn(), leave: vi.fn(), dismissError: vi.fn() }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ CEO_IDENTITY: "agent-ceo", useHuddle: () => huddle }));
 vi.mock("@/components/huddle/useAssistantDm", () => ({
   useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "human", id: "u" }, { kind: "agent", id: "a1" }] }),
@@ -33,10 +35,11 @@ beforeEach(() => {
   huddle.roomId = "dm1"; huddle.room = connectedRoom; mic.mockClear();
 });
 
-it("a keyboard hold survives the room and the assistant connecting", () => {
+it("a keyboard hold (push-to-talk) survives the room and the assistant connecting", () => {
+  let now = 1_000; vi.spyOn(Date, "now").mockImplementation(() => now);
   huddle.roomId = null; huddle.room = null; lk.agent = null;
   const { rerender } = render(<VoiceHome />);
-  const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
+  const orb = screen.getByRole("button", { name: "Talk to Lightbulb" });
   orb.focus();
   fireEvent.keyDown(orb, { key: " " });
   expect(huddle.join).toHaveBeenCalledWith("dm1", "Lightbulb");
@@ -44,31 +47,33 @@ it("a keyboard hold survives the room and the assistant connecting", () => {
   rerender(<VoiceHome />);
   lk.agent = { identity: "agent-ceo" }; lk.attrs = { "lightbulb.agent.a1.status": "listening" };
   rerender(<VoiceHome />);
-  expect(screen.getByRole("button", { name: "Hold to talk to Lightbulb" })).toBe(orb); // the same element, never remounted
+  expect(screen.getByRole("button", { name: "Talk to Lightbulb" })).toBe(orb); // the same element, never remounted
   expect(document.activeElement).toBe(orb);
   expect(mic).not.toHaveBeenCalledWith(false);
+  now += 400; // held past HOLD_MS
   fireEvent.keyUp(orb, { key: " " });
   expect(mic).toHaveBeenCalledWith(false);
+  vi.restoreAllMocks();
 });
 
 it("orb shows thinking then speaking from the agent attribute", () => {
   lk.attrs = { "lightbulb.agent.a1.status": "working" };
   const { rerender } = render(<VoiceHome />);
-  const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
+  const orb = screen.getByRole("button", { name: "Talk to Lightbulb" });
   expect(orb).toHaveAttribute("data-state", "thinking");
-  expect(screen.getByText("Lightbulb is thinking…")).toBeInTheDocument();
+  expect(screen.getByText("Thinking…")).toBeInTheDocument();
   lk.attrs = { "lightbulb.agent.a1.status": "speaking" };
   lk.lines = [{ text: "Priya moved to 11:30." }, { text: "I'm drafting the holiday post now." }];
   rerender(<VoiceHome />);
   expect(orb).toHaveAttribute("data-state", "speaking");
-  expect(screen.getByText("Lightbulb is speaking")).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb is speaking · tap to stop")).toBeInTheDocument();
   expect(screen.getByText("I'm drafting the holiday post now.")).toBeInTheDocument(); // the last line, as a caption
 });
 
 it("orb is connecting until the assistant joins", () => {
   lk.agent = null;
   render(<VoiceHome />);
-  expect(screen.getByRole("button", { name: "Hold to talk to Lightbulb" })).toHaveAttribute("data-state", "connecting");
+  expect(screen.getByRole("button", { name: "Talk to Lightbulb" })).toHaveAttribute("data-state", "connecting");
 });
 
 it("Yours chip lists the in-app talk", () => {

@@ -178,7 +178,9 @@ async def _session_is_warm(owner_id: str) -> bool:
 async def _runtime_arn(owner_id: str) -> str | None:
     from core.repositories import container_repo
 
-    return ((await container_repo.get_by_owner_id(owner_id)) or {}).get("agentcore_runtime_arn")
+    from core.services.runtime_transport import runtime_arn
+
+    return runtime_arn((await container_repo.get_by_owner_id(owner_id)) or {})
 
 
 async def join_network(owner_id: str, ticket: str) -> dict:

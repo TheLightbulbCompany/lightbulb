@@ -107,6 +107,20 @@ class RuntimeResponse:
             return None
 
 
+def runtime_arn(container: dict) -> str | None:
+    """The runtime this workspace's sessions run on: the tier's shared one once the env has it
+    (``HERMES_SHARED_RUNTIME_ARN``) for any provisioned workspace -- one with its own runtime from
+    before, or a ``running`` row -- else the row's own. Session ids stay per owner
+    (:func:`session_id_for`), so each workspace still gets its own microVM. The row's own runtime
+    is kept, unused, until the per-owner cleanup; unsetting the setting moves every workspace back."""
+    from core.config import settings
+
+    own = container.get("agentcore_runtime_arn")
+    if settings.HERMES_SHARED_RUNTIME_ARN and (own or container.get("status") == "running"):
+        return settings.HERMES_SHARED_RUNTIME_ARN
+    return own
+
+
 def session_id_for(owner_id: str, task_id: str | None = None) -> str:
     """The ONE AgentCore session id for this workspace, or for one task of it.
 
@@ -196,9 +210,9 @@ async def _request_agentcore(
     timeout_s: float,
     task_id: str | None = None,
 ) -> RuntimeResponse:
-    arn = container.get("agentcore_runtime_arn")
+    arn = runtime_arn(container)
     if not arn:
-        raise ValueError("agentcore transport requires containers.agentcore_runtime_arn")
+        raise ValueError("agentcore transport requires a runtime (containers.agentcore_runtime_arn)")
     owner_id = container.get("owner_id") or ""
     # Every invoke names its tenant: a shared runtime binds its session to the first one and
     # refuses any other (bridge.bind_tenant); a per-owner runtime checks it against its own.

@@ -558,9 +558,12 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
             raise
         logger.warning("Browser teardown failed for owner=%s", owner_id)
 
-    arn = container_row.get("agentcore_runtime_arn")
+    from core.services.runtime_transport import runtime_arn
+
+    arn = runtime_arn(container_row)
     if arn:
         await stop_runtime_session(owner_id, arn)  # best-effort; never raises
+    # Deletes only the row's OWN runtime (never the shared one, which no row names).
     await _delete_runtime_and_bearer(owner_id, container_row)
 
     try:
@@ -840,8 +843,12 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
     hook_token_reused = hook_token != hook_candidate
     gateway_token_reused = gateway_token != gateway_candidate
 
-    role_arn = await ensure_owner_bedrock_role(owner_id)
-    await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
+    # On the shared runtime no workspace has an execution role or a boot secret of its own: the
+    # backend derives the boot values and sends them on every invoke (runtime_transport._boot_header).
+    shared = bool(settings.HERMES_SHARED_RUNTIME_ARN)
+    if not shared:
+        role_arn = await ensure_owner_bedrock_role(owner_id)
+        await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
     bedrock_bearer = await mint_gate_token(
         owner_id, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
     )
@@ -852,11 +859,17 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         await ensure_owner_key_for_settings(owner_id)
     elif provider_choice == "chatgpt_oauth":
         await _ensure_codex_auth_staged(owner_id)
-    boot_changed = await write_boot_secret(
-        owner_id,
-        hook_token=hook_token,
-        gateway_token=gateway_token,
-        bedrock_bearer=bedrock_bearer,
+    # ponytail: on the shared runtime a bearer rotation (a manual generation bump) reaches a warm
+    # session at its next cold start, not by a restart here; nothing in code bumps it.
+    boot_changed = (
+        False
+        if shared
+        else await write_boot_secret(
+            owner_id,
+            hook_token=hook_token,
+            gateway_token=gateway_token,
+            bedrock_bearer=bedrock_bearer,
+        )
     )
     await _ensure_network_member(owner_id)
 
@@ -1112,12 +1125,33 @@ async def roll_runtime_image(
     env moved and its profile NOT -- it breaks on its next cold start unless re-run."""
     from botocore.exceptions import ClientError
 
+    from core.services.runtime_transport import runtime_arn
+
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    arn = row.get("agentcore_runtime_arn")
+    arn = runtime_arn(row)
     if not arn:
         raise ValueError(f"roll_runtime_image: owner={owner_id} has no provisioned runtime")
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
+    if arn == settings.HERMES_SHARED_RUNTIME_ARN:
+        # CDK owns the shared runtime's spec (the image pin and the tier env), and a deploy moves
+        # it. What is left per owner is the session: a warm one that started before that update
+        # still runs the old version until it is stopped -- the same idle stop as below.
+        current = None
+        drifted = await _session_predates_update(owner_id, arn)
+        if not (drifted or restart_session or respec):
+            return "current"
+        if dry_run:
+            return "would-update"
+        return await _stop_rolled_session(
+            owner_id,
+            arn,
+            respec=respec,
+            env_drifted=False,
+            drifted=drifted,
+            restart_session=restart_session,
+            current=current,
+        )
     from core.billing.bedrock_aip import ensure_owner_bedrock_role
     from core.services.container_provision import resolve_provider_choice
 
@@ -1163,6 +1197,30 @@ async def roll_runtime_image(
         # UPDATING, READY — is left to retry-at-use at first invoke.
         if (await run_in_thread(_runtime_status, arn)) in _TERMINAL_STATUSES:
             raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
+    return await _stop_rolled_session(
+        owner_id,
+        arn,
+        respec=respec,
+        env_drifted=env_drifted,
+        drifted=drifted,
+        restart_session=restart_session,
+        current=current,
+    )
+
+
+async def _session_predates_update(owner_id: str, arn: str) -> bool:
+    """A warm session on ``arn`` that started before the runtime's last update (a new version)."""
+    session = await run_in_thread(container_repo.get_session_sync, owner_id)
+    if not (int(session.get("warm_until") or 0) > int(time.time()) and session.get("arn") == arn):
+        return False  # parked: its next start is on the current version
+    updated = (await run_in_thread(_runtime_description, arn)).get("lastUpdatedAt")
+    return bool(updated) and int(session.get("started_at") or 0) < updated.timestamp()
+
+
+async def _stop_rolled_session(
+    owner_id: str, arn: str, *, respec: bool, env_drifted: bool, drifted: bool, restart_session: bool, current
+) -> str:
+    """``roll_runtime_image``'s tail: the idle stop that moves the session onto the new spec."""
     # Read before the idle probe, which itself wakes a parked session.
     was_warm = await _session_warm(owner_id, arn)
     idle = await _wait_for_idle_session(owner_id)
@@ -1248,7 +1306,9 @@ async def _reconcile_runtime_to_billing(owner_id: str) -> str:
     """``reconcile_runtime``'s runtime half; never raises."""
     try:
         row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-        if not (row.get("agentcore_runtime_arn") and row.get("status") == "running"):
+        from core.services.runtime_transport import runtime_arn
+
+        if not (runtime_arn(row) and row.get("status") == "running"):
             from core.services.provision_dispatch import dispatch_provision
 
             return "dispatched" if await dispatch_provision(owner_id) else "failed"
@@ -1695,6 +1755,8 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         # loud guard as the image, one line up.
         raise RuntimeError("OWNER_STATE_BUCKET is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    if settings.HERMES_SHARED_RUNTIME_ARN:
+        return await _join_shared_runtime(owner_id, row)
     arn = row.get("agentcore_runtime_arn")
     if arn and row.get("status") == "running":
         return arn
@@ -1826,3 +1888,21 @@ async def provision_hermes_runtime(owner_id: str) -> str:
     )
     logger.info("hermes runtime created owner=%s arn=%s", owner_id, arn)
     return arn
+
+
+async def _join_shared_runtime(owner_id: str, row: dict) -> str:
+    """``provision_hermes_runtime`` on the tier's shared runtime: nothing to create. The profiles go
+    to S3 and the browser profile is recorded, then the row is ``running``; its first invoke starts
+    a microVM of its own there (session ids are per owner). No owner role (the session's scoped
+    credentials carry S3, memory and the browser), no CreateAgentRuntime. Idempotent like the
+    per-owner path: a ``running`` row returns as-is, and a workspace that already has its own
+    runtime keeps it (unused while the setting is set) for the per-owner cleanup."""
+    shared = settings.HERMES_SHARED_RUNTIME_ARN
+    if row.get("status") == "running":
+        return shared
+    await _browser_profile_id(owner_id, row)  # records browser_profile_id: the boot header names it
+    if not row.get("agentcore_runtime_arn"):
+        await write_profiles(owner_id)  # as the per-owner path: never over a workspace that has them
+    await container_repo.update_fields(owner_id, {"runtime_host": "agentcore", "status": "running"})
+    logger.info("hermes workspace on the shared runtime owner=%s", owner_id)
+    return shared

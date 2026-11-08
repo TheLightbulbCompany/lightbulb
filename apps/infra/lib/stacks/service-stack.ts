@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
+import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
@@ -1551,6 +1552,122 @@ export class ServiceStack extends cdk.Stack {
     // env.startsWith, not ===, so this stays correct if a prod-prefixed variant is ever
     // introduced.
     const currentHermesTag = env.startsWith("prod") ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
+    const hermesImage = currentHermesTag
+      ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${currentHermesTag}`
+      : "";
+
+    // The tier's ONE pooled Hermes runtime (shared runtime step 3). Every workspace's sessions run
+    // here, each under its own owner session id, so each is still its own microVM; the backend
+    // reaches it through HERMES_SHARED_RUNTIME_ARN. It boots with NO owner: the bridge binds each
+    // session to the first invoke's tenant and takes that owner's boot values from the invoke
+    // (bridge.bind_tenant), and S3, memory and the browser come from the session's scoped
+    // credentials (HermesTenantRole, narrowed per owner). So its execution role has no S3, no
+    // Secrets Manager, no memory and no browser grant: image pull, the platform's own calls,
+    // its own logs and AppSync run frames. Mirrors hermes_provisioning.build_hermes_runtime_request
+    // minus everything per owner. One tier exists today, so one runtime ("pool").
+    // A new hermes-version.json pin updates its image here; roll_hermes_runtimes then moves the warm
+    // sessions that started before the update.
+    const sharedRuntimeName = `lightbulb_${env}_hermes_pool`;
+    const sharedRuntimeRole = new iam.Role(this, "HermesSharedRuntimeRole", {
+      roleName: `lightbulb-${env}-hermes-pool`,
+      assumedBy: new iam.ServicePrincipal("bedrock-agentcore.amazonaws.com", {
+        conditions: {
+          StringEquals: { "aws:SourceAccount": this.account },
+          ArnLike: { "aws:SourceArn": agentcoreArn("*") },
+        },
+      }),
+      description: `Lightbulb ${env} shared Hermes runtime execution role (no tenant data grants)`,
+      inlinePolicies: {
+        runtime: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              sid: "HermesImagePull",
+              actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+              resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/lightbulb/hermes-agent-arm64`],
+            }),
+            new iam.PolicyStatement({ sid: "EcrToken", actions: ["ecr:GetAuthorizationToken"], resources: ["*"] }),
+            new iam.PolicyStatement({
+              sid: "WorkloadToken",
+              actions: [
+                "bedrock-agentcore:GetWorkloadAccessToken",
+                "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+                "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+              ],
+              resources: [
+                agentcoreArn("workload-identity-directory/default"),
+                agentcoreArn("workload-identity-directory/default/workload-identity/*"),
+              ],
+            }),
+            new iam.PolicyStatement({
+              sid: "OwnLogs",
+              actions: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+              resources: [
+                `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/${sharedRuntimeName}-*`,
+              ],
+            }),
+            // Run frames go straight to AppSync Events; tenancy is the ws namespace handler's.
+            new iam.PolicyStatement({
+              sid: "AppSyncWsPublish",
+              actions: ["appsync:EventPublish"],
+              resources: [`arn:aws:appsync:${this.region}:${this.account}:apis/*/channelNamespace/ws`],
+            }),
+            new iam.PolicyStatement({
+              sid: "Telemetry",
+              actions: ["xray:PutTraceSegments", "xray:PutTelemetryRecords", "xray:GetSamplingRules", "xray:GetSamplingTargets"],
+              resources: ["*"],
+            }),
+            new iam.PolicyStatement({
+              sid: "Metrics",
+              actions: ["cloudwatch:PutMetricData"],
+              resources: ["*"],
+              conditions: { StringEquals: { "cloudwatch:namespace": "bedrock-agentcore" } },
+            }),
+          ],
+        }),
+      },
+    });
+    const managedModelId = env === "dev"
+      ? (process.env.OPENROUTER_MANAGED_MODEL_ID_DEV ?? "")
+      : (process.env.OPENROUTER_MANAGED_MODEL_ID_PROD ?? "");
+    const sharedRuntime = hermesImage
+      ? new bedrockagentcore.CfnRuntime(this, "HermesSharedRuntime", {
+          agentRuntimeName: sharedRuntimeName,
+          description: `Lightbulb ${env} Hermes workspaces, one microVM per workspace session`,
+          agentRuntimeArtifact: { containerConfiguration: { containerUri: hermesImage } },
+          roleArn: sharedRuntimeRole.roleArn,
+          networkConfiguration: {
+            networkMode: "VPC",
+            networkModeConfig: {
+              subnets: props.vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds,
+              securityGroups: [props.container.containerSecurityGroup.securityGroupId],
+            },
+          },
+          protocolConfiguration: "HTTP",
+          // agentcore_runtime.IDLE_TIMEOUT_S / MAX_LIFETIME_S
+          lifecycleConfiguration: { idleRuntimeSessionTimeout: 300, maxLifetime: 28800 },
+          // The tier env: build_hermes_runtime_env without the owner, prefix, boot secret, browser
+          // profile, network-workers and turn-cap keys (those ride each session's binding invoke).
+          environmentVariables: {
+            ISOL8_API_URL: env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`, // PUBLIC_API_BASE
+            AWS_REGION: this.region,
+            S3_BUCKET: ownerStateBucket,
+            HERMES_HOME: "/opt/data",
+            HERMES_HEADLESS: "1",
+            PYTHONUNBUFFERED: "1",
+            AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
+            ...(managedModelId
+              ? {
+                  LIGHTBULB_MANAGED_GATE_URL: ssm.StringParameter.valueForStringParameter(
+                    this,
+                    `/lightbulb/${env}/openrouter-gate-url`,
+                  ),
+                  LIGHTBULB_MANAGED_MODEL_ID: managedModelId,
+                }
+              : {}),
+          },
+          tags: { Environment: env, ManagedBy: "cdk", Tier: "pool" },
+        })
+      : undefined;
     const desktopOwner = process.env[`DESKTOP_EXECUTION_OWNER_${env.toUpperCase()}`] ?? "";
     if (desktopOwner && !/^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(desktopOwner)) {
       throw new Error(`Invalid desktop execution owner for ${env}`);
@@ -1577,9 +1694,9 @@ export class ServiceStack extends cdk.Stack {
       // tag from hermes-version.json#dev.tag/#prod.tag (M4-R34). Empty tag (prod today)
       // makes provision_hermes_runtime refuse, so nothing moves a prod workspace until a
       // human flips prod.tag to an already-pushed h-<date>-<sha7> build.
-      AGENTCORE_HERMES_IMAGE: currentHermesTag
-        ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${currentHermesTag}`
-        : "",
+      AGENTCORE_HERMES_IMAGE: hermesImage,
+      // Every workspace's sessions run on the tier's shared runtime (runtime_transport.runtime_arn).
+      HERMES_SHARED_RUNTIME_ARN: sharedRuntime?.attrAgentRuntimeArn ?? "",
       // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
       // provider only when it is set (N-1 safe: an older image ignores it).
       AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
@@ -1760,9 +1877,7 @@ export class ServiceStack extends cdk.Stack {
       OPENROUTER_MARKUP: JSON.parse(
         fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openrouter-pricing.json"), "utf8"),
       ).markup,
-      OPENROUTER_MANAGED_MODEL_ID: env === "dev"
-        ? (process.env.OPENROUTER_MANAGED_MODEL_ID_DEV ?? "")
-        : (process.env.OPENROUTER_MANAGED_MODEL_ID_PROD ?? ""),
+      OPENROUTER_MANAGED_MODEL_ID: managedModelId,
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =
       // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03

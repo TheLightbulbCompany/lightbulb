@@ -30,6 +30,10 @@ field added since the owner was provisioned is written and the idle session is r
 it (a retired field, like ``vaultToken``, is dropped without counting as a change). A dry run
 does not report a pending boot-secret change.
 
+On the tier's shared runtime (``HERMES_SHARED_RUNTIME_ARN``) the runtime itself is CDK's: a deploy
+with a new ``hermes-version.json`` pin updates its image. This script then rolls each owner's warm
+session that started before that update onto it (the same idle stop), and leaves parked ones alone.
+
 ``--dry-run`` is NOT read-only: it still runs the idempotent ensure calls a roll needs to
 compute the desired spec (the owner's Browser profile create-or-adopt, the memory IAM policy).
 It skips only ``UpdateAgentRuntime`` and the session stop, answering ``would-update``.
@@ -48,6 +52,7 @@ import logging
 import sys
 
 from core.repositories import container_repo
+from core.services.runtime_transport import runtime_arn
 from core.services.hermes_provisioning import (
     prepare_hermes_workspace,
     roll_runtime_image,
@@ -61,7 +66,7 @@ async def _targets(args: argparse.Namespace) -> list[str]:
         return [args.owner_id]
     rows = await container_repo.scan_all(consistent=True)
     # A row without a runtime ARN has nothing to roll -- there is no other transport to skip.
-    return sorted(r["owner_id"] for r in rows if r.get("agentcore_runtime_arn") and r.get("owner_id"))
+    return sorted(r["owner_id"] for r in rows if runtime_arn(r) and r.get("owner_id"))
 
 
 async def main(argv: list[str] | None = None) -> int:

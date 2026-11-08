@@ -1401,7 +1401,9 @@ async def recycle_runtime_session(owner_id: str, request: Request):
     8 h maxLifetime SIGTERM that kills a busy microVM mid-turn. The bridge already refuses new
     turns (a TTL'd hold), so the retried work cold-starts a fresh microVM."""
     container = await _require_hook_token(owner_id, request)
-    arn = (container or {}).get("agentcore_runtime_arn")
+    from core.services.runtime_transport import runtime_arn
+
+    arn = runtime_arn(container or {})
     if not arn:
         raise HTTPException(status_code=409, detail="no runtime to recycle")
     from core.services.hermes_provisioning import stop_runtime_session

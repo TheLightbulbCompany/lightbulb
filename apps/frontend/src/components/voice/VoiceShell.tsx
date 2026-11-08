@@ -1,13 +1,14 @@
 "use client";
 
-// The places on web (rail) and phone (bottom tabs): Home · Needs you · Agent · Settings · Workspace (spec 2026-11-07 §5;
-// Workspace is the existing /chat super-agent UI, founder 7 Nov: it stays reachable from the voice shell).
+// The one rail on web (bottom tabs on a phone), top to bottom (founder, 8 Nov 2026): the Lightbulb logo → the orb and
+// the assistant's room (/voice/lightbulb, where /chat lands now) · Home · Agent · Needs you · Settings.
 // Settings is /voice/settings: the existing Settings panels, rendered here beside the rail.
 import "./voice.css";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { OrganizationList, UserButton, useOrganization } from "@clerk/nextjs";
-import { CircleAlert, Home, LayoutGrid, PhoneCall, Settings } from "lucide-react";
+import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
+import { LogoMark } from "@/components/Logo";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
 import { useQuestions } from "./data";
 
@@ -15,13 +16,12 @@ export function useNeedsYouTotal(): number {
   return useQuestions().data?.length ?? 0;
 }
 
+const LIGHTBULB = "/voice/lightbulb";
 const PLACES = [
   { href: "/voice", label: "Home", Icon: Home },
-  { href: "/voice/needs-you", label: "Needs you", Icon: CircleAlert },
   { href: "/voice/agent", label: "Agent", Icon: PhoneCall },
+  { href: "/voice/needs-you", label: "Needs you", Icon: CircleAlert },
   { href: "/voice/settings", label: "Settings", Icon: Settings },
-  // The super-agent workspace (rooms, tasks, Knowledge, connections, approvals) is one place away, not gone.
-  { href: "/chat", label: "Workspace", Icon: LayoutGrid },
 ] as const;
 
 export function VoiceShell({ children }: { children: React.ReactNode }) {
@@ -37,6 +37,7 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
     <HuddleProvider>
       <div className="vx-shell">
         <nav className="vx-rail" aria-label="Places">
+          <Link href={LIGHTBULB} className="vx-logo" aria-label="Lightbulb" aria-current={path === LIGHTBULB ? "page" : undefined}><LogoMark /></Link>
           {PLACES.map(({ href, label, Icon }) => {
             const badge = href === "/voice/needs-you" && needs > 0;
             return <Link key={href} href={href} aria-current={path === href ? "page" : undefined}

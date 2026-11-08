@@ -8,7 +8,12 @@
 .vx-rail a[aria-current="page"] { font-weight: 600; }
 .vx-rail .vx-badge { position: absolute; top: 4px; right: 8px; min-width: 16px; height: 16px; padding: 0 4px; display: grid; place-items: center; border: 1px solid var(--warn-hue); border-radius: 999px; background: var(--plane-rail); color: var(--warn-hue); font-size: var(--text-2xs); font-weight: 600; line-height: 1; }
 .vx-rail .vx-spacer { flex: 1; }
+.vx-rail .vx-logo .brand-mark { height: 28px; }
 .vx-main { min-width: 0; min-height: 0; overflow: auto; }
+
+/* The Lightbulb place: the orb, then the assistant's room taking the rest (the room panel is height: 100%). */
+.vx-lightbulb { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
+.vx-lightbulb > .vx-page { width: 100%; padding-bottom: 12px; }
 
 /* Phone: the four places become the bottom tabs. */
 @media (max-width: 640px) {

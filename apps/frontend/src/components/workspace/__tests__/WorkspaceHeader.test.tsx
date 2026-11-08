@@ -49,6 +49,12 @@ vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessage
 const live = vi.hoisted(() => ({ tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useOptionalLiveEvents: () => (live.tasks ? live : null) }));
 
+// The rail's talk orb: one Live at a time (HuddleProvider), in the assistant's DM.
+const huddle = vi.hoisted(() => ({ roomId: null as string | null, roomName: null as string | null, joining: null, room: null, error: null, join: vi.fn(), leave: vi.fn() }));
+vi.mock("@/components/huddle/HuddleProvider", () => ({ CEO_IDENTITY: "agent-ceo", useHuddle: () => huddle }));
+vi.mock("@/components/huddle/useAssistantDm", () => ({ useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "agent", id: "a1" }] }) }));
+vi.mock("@/components/voice/data", async (orig) => ({ ...(await orig<typeof import("@/components/voice/data")>()), useAgentConfig: () => ({ data: { name: "Nova" } }) }));
+
 import { WorkspaceHeader } from "../WorkspaceHeader";
 import { loginAsk } from "@/components/activity/__tests__/fixtures";
 
@@ -119,5 +125,24 @@ describe("WorkspaceHeader", () => {
       expect(await screen.findByRole("button", { name: "Activity, 3 need you" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Home" })).toBeInTheDocument();
     } finally { live.tasks = null; activityState.attentionCount = 0; activityItems.items = []; }
+  });
+  it("chat layout shows the talk orb", () => {
+    render(<WorkspaceHeader />);
+    const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+    expect(orb).toBeEnabled();
+    fireEvent.keyDown(orb, { key: " " });
+    expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+    fireEvent.keyUp(orb, { key: " " });
+  });
+  it("orb disabled while in another room's Live", () => {
+    huddle.roomId = "c1"; huddle.roomName = "#general"; huddle.join.mockClear();
+    try {
+      render(<WorkspaceHeader />);
+      const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+      expect(orb).toBeDisabled();
+      expect(orb).toHaveAccessibleDescription("You're in a Live in #general. End it to talk to Nova.");
+      fireEvent.pointerDown(orb);
+      expect(huddle.join).not.toHaveBeenCalled(); // never hijacks the other room's Live
+    } finally { huddle.roomId = null; huddle.roomName = null; }
   });
 });

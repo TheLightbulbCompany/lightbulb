@@ -8,7 +8,8 @@ import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
-import { TalkButton } from "@/components/huddle/TalkButton";
+import { TalkOrb } from "@/components/voice/TalkOrb";
+import { nameOf, useAgentConfig } from "@/components/voice/data";
 import { activateMessagesPanel, closePane, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { useNeedsYouCount } from "@/components/tasks/useRoomThreads";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
@@ -39,14 +40,16 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const { place: current } = useWorkspaceState();
   // Activity's badge is needsYouCount, the one count Activity, Home and the tab title read.
   const needsYou = useNeedsYouCount();
+  const assistant = nameOf(useAgentConfig().data);
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
       <button type="button" className="workspace-rail__search" aria-label="Search channels, tasks, files and messages" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {/* Talk to Lightbulb by voice, from every place (voice spec §5: owner mode, the Router in the DM). */}
-      <TalkButton />
+      {/* Hold to talk to the assistant, from every place (voice spec §5: owner mode, the Router in the DM). The rail,
+          not a floating button: it never covers a composer, and its caption opens beside the rail while a talk is on. */}
+      <TalkOrb name={assistant} compact />
       {DESTINATIONS.map(({ place, panel, label, Icon }) => {
         // Activity badges what needs you.
         const badge = place === "activity" ? needsYou : 0;

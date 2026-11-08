@@ -23,7 +23,7 @@
 
 ## Global Constraints
 
-- **One brain, set by capability, not rules.** GPT-Live has no business data and exactly one tool, `delegate` to the Router. It decides when to delegate; no code or prompt classifies questions. Its prompt holds only who it is, that the Router is its brain, speaking style and compliance.
+- **One brain, set by capability, not rules.** GPT-Live has no business data and no tools (client delegation: `GPTLiveModel(delegation="client")`, livekit-plugins-openai 1.8.11 already in uv.lock). Delegation is built into the model and it decides when to delegate; no code or prompt classifies questions. Its prompt holds only who it is, that the Router is its brain, speaking style and compliance.
 - **No scripting.** No hard-coded holding lines, fillers, timers, word lists or cut-and-re-say guards in our code. What to say while waiting is GPT-Live's job.
 - **Phone compliance.** The first utterance names the assistant and says "AI assistant" and "this call is recorded". This is set in GPT-Live's prompt and verified from the transcript by the existing `DisclosureGuard`, which speaks the exact sentence if one is missing.
 - **Approvals are a card tap only.** No voice path approves anything. Meet approvals go to the inviter (#5119).

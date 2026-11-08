@@ -1712,3 +1712,81 @@ describe("ServiceStack — credential envelope store (phase 2 task 5)", () => {
     expect(envNames).toContain("CREDENTIAL_KMS_KEY_ARN");
   });
 });
+
+describe("ServiceStack — Hermes tenant vending role (#5088)", () => {
+  for (const environment of ["dev", "prod"] as const) {
+    const template = environment === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
+    const bucket = `lightbulb-${environment}-openclaw-replicas`;
+    const roles = template.findResources("AWS::IAM::Role", {
+      Properties: { RoleName: `lightbulb-${environment}-hermes-tenant` },
+    });
+    const [[roleId, role]] = Object.entries(roles) as [string, any][];
+    const taskRoleId = Object.keys(
+      template.findResources("AWS::IAM::Role", { Properties: { RoleName: `lightbulb-${environment}-backend-task` } }),
+    )[0];
+
+    test(`${environment}: trusted by the backend task role only, 1 h max`, () => {
+      expect(Object.keys(roles)).toHaveLength(1);
+      expect(role.Properties.MaxSessionDuration).toBe(3600);
+      expect(role.Properties.AssumeRolePolicyDocument.Statement).toEqual([
+        {
+          Action: "sts:AssumeRole",
+          Effect: "Allow",
+          Principal: { AWS: { "Fn::GetAtt": [taskRoleId, "Arn"] } },
+        },
+      ]);
+    });
+
+    test(`${environment}: grants only the owner-data S3 and workspace-memory actions`, () => {
+      expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+      expect(role.Properties.Policies).toHaveLength(1);
+      const statements = role.Properties.Policies[0].PolicyDocument.Statement;
+      expect(statements.map((s: any) => [s.Sid, s.Effect, s.Action])).toEqual([
+        ["OwnerStateBucketList", "Allow", ["s3:GetBucketLocation", "s3:ListBucket"]],
+        ["OwnerStateObjects", "Allow", ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]],
+        [
+          "WorkspaceMemoryUse",
+          "Allow",
+          [
+            "bedrock-agentcore:CreateEvent",
+            "bedrock-agentcore:ListEvents",
+            "bedrock-agentcore:GetEvent",
+            "bedrock-agentcore:ListSessions",
+            "bedrock-agentcore:RetrieveMemoryRecords",
+            "bedrock-agentcore:ListMemoryRecords",
+          ],
+        ],
+      ]);
+      expect(statements[0].Resource).toBe(`arn:aws:s3:::${bucket}`);
+      expect(statements[1].Resource).toBe(`arn:aws:s3:::${bucket}/*`);
+      // The one shared workspace memory, never a memory/* wildcard.
+      expect(JSON.stringify(statements[2].Resource)).toContain(":memory/");
+      expect(JSON.stringify(statements[2].Resource)).not.toContain("memory/*");
+    });
+
+    test(`${environment}: backend may assume it and gets its ARN as HERMES_TENANT_ROLE_ARN`, () => {
+      template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+        ManagedPolicyName: `lightbulb-${environment}-backend-sts`,
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Sid: "StsAssumeHermesTenantRole",
+              Action: "sts:AssumeRole",
+              Resource: { "Fn::GetAtt": [roleId, "Arn"] },
+            }),
+          ]),
+        }),
+      });
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Name: "backend",
+            Environment: Match.arrayWith([
+              { Name: "HERMES_TENANT_ROLE_ARN", Value: { "Fn::GetAtt": [roleId, "Arn"] } },
+            ]),
+          }),
+        ]),
+      });
+    });
+  }
+});

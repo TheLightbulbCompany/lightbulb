@@ -29,7 +29,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services.credentials import integration_secret_store
-from core.services.workspace_name import workspace_name as resolve_company_name  # noqa: F401 -- routers, board_cards
+from core.services.workspace_name import workspace_name as resolve_company_name  # noqa: F401 -- routers
 
 logger = logging.getLogger(__name__)
 

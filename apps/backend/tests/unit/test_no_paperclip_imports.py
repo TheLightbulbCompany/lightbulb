@@ -27,12 +27,13 @@ DELETED = (
     "routers.paperclip_cost",
     "routers.company_board",
     "core.services.paperclip_api_key",
+    "core.services.board_cards",
 )
 
 KEPT = {
     "core/repositories/paperclip_repo.py": "the workspace META store (resolve_owner_row, funnel, members) and the copy_workspace_meta translation",
     "core/services/paperclip_adapter_config.py": "hermes_gateway adapter block for agent create",
-    "core/services/paperclip_admin_client.py": "workspace provisioning (its agent writes mirror into the registry) and purchase cards still write through Paperclip",
+    "core/services/paperclip_admin_client.py": "workspace provisioning (its agent writes mirror into the registry)",
     "core/services/paperclip_admin_session.py": "admin cookie for the client above and for the prod scripts",
     "core/services/paperclip_agent_lifecycle.py": "marketplace deploy only (company_deploy_service, task 6)",
     "core/services/paperclip_credential_rule.py": "catalog agent materializer",
@@ -59,7 +60,6 @@ IMPORTERS = {
     "core/services/agent_mail_owner_send.py",
     "core/services/agent_mail_send.py",
     "core/services/agent_registry.py",
-    "core/services/board_cards.py",
     "core/services/company_agent_materializer.py",
     "core/services/company_deploy_service.py",
     "core/services/company_package.py",
@@ -74,7 +74,6 @@ IMPORTERS = {
     "core/services/onboarding_brief.py",
     "core/services/openclaw_work.py",
     "core/services/owner_facts.py",
-    "core/services/purchases.py",
     "core/services/readiness_state.py",
     "core/services/run_analytics.py",
     "core/services/runtime_rpc.py",

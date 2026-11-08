@@ -33,7 +33,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
-from core.services import questions, task_asks, task_conversation, tasks_access
+from core.services import purchases, questions, task_asks, task_conversation, tasks_access
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.temporal import activities as acts
@@ -307,6 +307,8 @@ async def _mode_allows(ws: str, kind: str, operands: dict) -> str | None:
     """`mode:<mode>` when the workspace's approval mode lets this action go ahead without a card, else None. Read
     here on the server (the VM never sees it). Members and limits are read only when the Auto list needs them; a
     Clerk error fails closed (asks)."""
+    if kind == "purchase" and await purchases.needs_person(ws, str(operands.get("url") or "")):
+        return None  # the Question is the owner's yes: money_moves on, or a merchant not allowlisted
     mode = (await billing_repo.get_capability_policy(ws))["approval_mode"]
     members: set[str] = set()
     if mode == "auto" and kind in ("mail.send", "text.send"):

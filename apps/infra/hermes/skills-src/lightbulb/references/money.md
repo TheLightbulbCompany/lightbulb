@@ -48,11 +48,12 @@ platform's own managed-credit limit, which is separate and always in force.
 ## Buying things (`request_purchase`)
 
 You never hold a card. For a real purchase your task needs, call `request_purchase` (merchant, url,
-amount in dollars, at most $500, why, issue_id): it returns `{requestId, status}`. Normally the owner
-approves it in Lightbulb and then in Link (`needs_owner`). If the owner turned off "ask before moving
-money" and trusts that merchant, the Link request is created at once (`pending_approval`) and only
-Link's approval remains, within 30 minutes or it expires; limits are the owner's (Settings -> Budgets -> Purchases). A refusal
-code (`over_purchase_cap`, `over_project_cap`, `no_limits`, `wallet_disconnected`) means tell the
+amount in dollars, at most $500, why, issue_id = the id of the task you are working on): it returns
+`{requestId, status}`. Normally the call first waits for a person's yes on the task's Needs-you
+question; then the Link request is created (`pending_approval`). If the owner turned off "ask before
+moving money" and trusts that merchant, no question is asked. Either way Link's own approval remains,
+within 30 minutes or it expires; limits are the owner's (Settings -> Budgets -> Purchases). A refusal
+code (`over_purchase_cap`, `over_project_cap`, `no_limits`, `wallet_disconnected`, `issue_required`) means tell the
 owner, never retry with a smaller split. Retrying the same ask returns the same request.
 
 ## A paid service the company does not have

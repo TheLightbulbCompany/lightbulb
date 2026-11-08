@@ -9,7 +9,6 @@ import base64
 import hashlib
 import logging
 import os
-import time
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
@@ -23,8 +22,8 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
 from core.config import settings  # noqa: E402
-from core.repositories import billing_repo, messaging_repo  # noqa: E402
-from core.services import link_wallet, purchases  # noqa: E402
+from core.repositories import billing_repo, messaging_repo, tasks_repo  # noqa: E402
+from core.services import link_wallet, paperclip_admin_client, purchases  # noqa: E402
 from main import app  # noqa: E402
 
 OWNER = "org_a"
@@ -176,22 +175,28 @@ def world(monkeypatch):
     policy = {"money_moves": True}
     monkeypatch.setattr(billing_repo, "get_purchase_limits", AsyncMock(side_effect=lambda o: limits))
     monkeypatch.setattr(billing_repo, "get_capability_policy", AsyncMock(side_effect=lambda o: policy))
-    monkeypatch.setattr(purchases, "_issue_project", AsyncMock(return_value=("proj_1", "Launch")))
-    cards = AsyncMock(return_value="card_1")
-    monkeypatch.setattr(purchases, "file_board_card", cards)
+    tasks = {"iss_1": {"taskId": "iss_1", "projectId": "proj_1"}}
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(side_effect=lambda ws, tid: tasks.get(tid)))
+    monkeypatch.setattr(tasks_repo, "_get", AsyncMock(return_value={"name": "Launch"}))  # the PROJECT# row
+
+    def no_paperclip(*_a, **_k):
+        raise AssertionError("Paperclip must not be called")
+
+    monkeypatch.setattr(paperclip_admin_client.PaperclipAdminClient, "__init__", no_paperclip)
+    monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", no_paperclip)
 
     class W:
         pass
 
     w = W()
-    w.link, w.secrets, w.members, w.table, w.limits, w.policy, w.cards = (
+    w.link, w.secrets, w.members, w.table, w.limits, w.policy, w.tasks = (
         link,
         secrets_store,
         members,
         table,
         limits,
         policy,
-        cards,
+        tasks,
     )
     return w
 
@@ -211,8 +216,32 @@ def ask(**over):
         amount=35,
         why="Buying the annual seat licence the team needs for the launch.",
         issue_id="iss_1",
+        approved=True,  # a person answered the purchase's Question
     )
     return purchases.request_purchase(OWNER, **{**args, **over})
+
+
+def unsent(w, amount=35, why="An ask filed before Questions replaced the card, not sent to Link."):
+    """A ``needs_owner`` row from the card era: it reaches Link only through the owner's ``approval_link`` click."""
+    cents = int(amount * 100)
+    rid = purchases.request_id_for(OWNER, "agent_1", "iss_1", "acme.com", cents, why)
+    w.table.items[(messaging_repo.owner_pk(OWNER), purchases.sk(rid))] = {
+        "pk": messaging_repo.owner_pk(OWNER),
+        "sk": purchases.sk(rid),
+        "requestId": rid,
+        "agentId": "agent_1",
+        "issueId": "iss_1",
+        "projectId": "proj_1",
+        "merchant": "Acme",
+        "merchantUrl": "https://shop.acme.com",
+        "site": "acme.com",
+        "amountCents": cents,
+        "why": why,
+        "status": "needs_owner",
+        "month": purchases._month(),
+        "createdAt": "2026-11-01T00:00:00Z",
+    }
+    return rid
 
 
 # ---- OAuth ---------------------------------------------------------------------------------
@@ -303,19 +332,6 @@ async def test_over_per_purchase_cap(world):
     assert e.value.code == "over_purchase_cap" and not world.table.items
 
 
-async def test_over_project_monthly_cap(world):
-    await connect(world)
-    await ask(amount=100, why="First licence batch for the launch project, ask one.")
-    world.table.items[next(iter(world.table.items))].update(
-        status="pending_approval", linkedAt=time.time()
-    )  # Link holds it
-    await ask(amount=100, why="Second licence batch for the launch project, ask two.")
-    world.table.items[list(world.table.items)[-1]].update(status="pending_approval", linkedAt=time.time())
-    with pytest.raises(purchases.PurchaseRefused) as e:
-        await ask(amount=1, why="One more small thing for the launch project, ask three.")
-    assert e.value.code == "over_project_cap"
-
-
 async def test_no_limits_set_is_fail_closed(world):
     await connect(world)
     world.limits.update(perPurchaseCents=0, projectMonthlyCents=0)
@@ -324,47 +340,83 @@ async def test_no_limits_set_is_fail_closed(world):
     assert e.value.code == "no_limits"
 
 
-async def test_retry_returns_the_same_request_and_files_one_card(world):
+async def test_retry_returns_the_same_request_and_reaches_link_once(world):
     await connect(world)
     first = await ask()
     again = await ask()
-    assert first == again and first["status"] == "needs_owner"
-    assert len(world.table.items) == 1 and world.cards.await_count == 1
+    assert first == again and first["status"] == "pending_approval"
+    assert len(world.table.items) == 1 and len(world.link.bodies("/spend_requests")) == 1
 
 
-async def test_unlisted_merchant_waits_for_the_owner_and_never_reaches_link(world):
+async def test_purchase_on_task_needs_no_paperclip(world):
+    """The Question was the person's yes: the ask goes to Link (its own approval is the floor), tied to the task's
+    project, and Paperclip is never called (the fixture makes any admin client raise)."""
     await connect(world)
-    world.limits["merchants"] = ["https://other.example.com"]
-    world.policy["money_moves"] = False
-    out = await ask()
-    assert out["status"] == "needs_owner" and not world.link.bodies("/spend_requests")
-
-
-async def test_allowlisted_merchant_with_money_moves_on_still_waits_for_the_owner(world):
-    await connect(world)
-    world.limits["merchants"] = ["https://acme.com"]
-    assert (await ask())["status"] == "needs_owner"
-    assert not world.link.bodies("/spend_requests")
-
-
-async def test_allowlisted_with_money_moves_off_goes_to_link_with_our_id_as_idempotency_key(world):
-    await connect(world)
-    world.limits["merchants"] = ["https://acme.com"]
-    world.policy["money_moves"] = False
     out = await ask()
     body = world.link.bodies("/spend_requests")[0]
     assert out["status"] == "pending_approval" and body["idempotency_key"] == out["requestId"]
     assert body["amount"] == 3500 and len(body["context"]) >= 100
     assert body["metadata"] == {"agentId": "agent_1", "issueId": "iss_1", "projectId": "proj_1"}
+    row = world.table.items[next(iter(world.table.items))]
+    assert (row["projectId"], row["projectName"]) == ("proj_1", "Launch")
+
+
+async def test_a_task_with_no_project_counts_under_none(world):
+    await connect(world)
+    world.tasks["iss_2"] = {"taskId": "iss_2"}
+    await ask(issue_id="iss_2")
+    assert world.table.items[next(iter(world.table.items))]["projectId"] == "none"
+
+
+@pytest.mark.parametrize("issue_id", ["", "not-a-task"])
+async def test_purchase_unknown_task_refused(world, issue_id):
+    await connect(world)
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(issue_id=issue_id)
+    assert e.value.code == "issue_required" and not world.table.items and not world.link.bodies("/spend_requests")
+
+
+async def test_caps_still_enforced(world):
+    """Answering the Question never lifts a cap: the per-purchase and monthly caps refuse before Link."""
+    await connect(world)
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(amount=100.01)
+    assert e.value.code == "over_purchase_cap"
+    await ask(amount=100, why="First licence batch for the launch project, ask one.")
+    await ask(amount=100, why="Second licence batch for the launch project, ask two.")
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(amount=1, why="One more small thing for the launch project, ask three.")
+    assert e.value.code == "over_project_cap" and len(world.link.bodies("/spend_requests")) == 2
+
+
+@pytest.mark.parametrize(
+    ("money_moves", "merchants"),
+    [(True, ["https://acme.com"]), (False, ["https://other.example.com"]), (False, [])],
+)
+async def test_without_a_persons_yes_the_ask_is_refused(world, money_moves, merchants):
+    """With "ask before moving money" on, or a merchant off the allowlist, only an answered Question lets it through
+    (the effects route asks for it); a mode-allowed intent row is refused and nothing reaches Link."""
+    await connect(world)
+    world.policy["money_moves"], world.limits["merchants"] = money_moves, merchants
+    with pytest.raises(purchases.PurchaseRefused) as e:
+        await ask(approved=False)
+    assert e.value.code == "needs_approval" and not world.table.items and not world.link.bodies("/spend_requests")
+
+
+async def test_allowlisted_with_money_moves_off_goes_to_link_without_a_question(world):
+    await connect(world)
+    world.limits["merchants"] = ["https://acme.com"]
+    world.policy["money_moves"] = False
+    assert (await ask(approved=False))["status"] == "pending_approval"
 
 
 async def test_owner_click_creates_the_link_request_rechecks_policy_and_mints_the_url(world):
     await connect(world)
-    rid = (await ask())["requestId"]
+    rid = unsent(world)
     out = await purchases.approval_link(OWNER, rid)
     assert out == {"status": "pending_approval", "approvalUrl": "https://app.link.com/activity/approve/lsrq_1"}
     # a not-yet-sent ask is refused when the owner lowers the cap below it
-    rid3 = (await ask(amount=50, why="A different purchase to be checked after the cap moves."))["requestId"]
+    rid3 = unsent(world, amount=50, why="A different purchase to be checked after the cap moves.")
     world.limits["perPurchaseCents"] = 100
     with pytest.raises(purchases.PurchaseRefused) as e:
         await purchases.approval_link(OWNER, rid3)
@@ -373,7 +425,7 @@ async def test_owner_click_creates_the_link_request_rechecks_policy_and_mints_th
 
 async def test_a_stale_ask_is_rebased_to_the_month_it_reaches_link(world):
     await connect(world)
-    rid = (await ask(amount=100, why="Filed late last month, approved after the rollover."))["requestId"]
+    rid = unsent(world, amount=100, why="Filed late last month, approved after the rollover.")
     row = world.table.items[next(iter(world.table.items))]
     row["month"] = "2000-01"  # asked in an earlier month
     await purchases.approval_link(OWNER, rid)
@@ -387,7 +439,7 @@ async def test_a_stale_ask_is_rebased_to_the_month_it_reaches_link(world):
 
 async def test_a_stale_ask_that_no_longer_fits_this_months_cap_is_refused_at_the_click(world):
     await connect(world)
-    rid = (await ask(amount=100, why="Filed late last month, now over the new month's cap."))["requestId"]
+    rid = unsent(world, amount=100, why="Filed late last month, now over the new month's cap.")
     world.table.items[next(iter(world.table.items))]["month"] = "2000-01"
     world.limits["projectMonthlyCents"] = 5000
     with pytest.raises(purchases.PurchaseRefused) as e:
@@ -395,14 +447,15 @@ async def test_a_stale_ask_that_no_longer_fits_this_months_cap_is_refused_at_the
     assert e.value.code in ("over_purchase_cap", "over_project_cap") and not world.link.bodies("/spend_requests")
 
 
-async def test_a_card_failure_leaves_no_ledger_row_so_a_retry_starts_clean(world):
+async def test_a_link_failure_leaves_no_ledger_row_so_a_retry_starts_clean(world, monkeypatch):
     await connect(world)
-    world.cards.side_effect = RuntimeError("board down")
+    real = link_wallet.create_spend_request
+    monkeypatch.setattr(link_wallet, "create_spend_request", AsyncMock(side_effect=RuntimeError("link down")))
     with pytest.raises(RuntimeError):
         await ask()
     assert not world.table.items
-    world.cards.side_effect = None
-    assert (await ask())["status"] == "needs_owner"
+    monkeypatch.setattr(link_wallet, "create_spend_request", real)
+    assert (await ask())["status"] == "pending_approval"
 
 
 async def test_over_links_500_dollar_maximum_is_refused_and_an_admin_cap_is_clamped(world):
@@ -413,7 +466,7 @@ async def test_over_links_500_dollar_maximum_is_refused_and_an_admin_cap_is_clam
     assert e.value.code == "bad_amount" and not world.link.bodies("/spend_requests")
     assert (await ask(amount=500, why="Exactly at Link's per-request maximum for the project."))[
         "status"
-    ] == "needs_owner"
+    ] == "pending_approval"
 
 
 async def _two_holds_then_age_them(world):
@@ -451,27 +504,11 @@ async def test_when_link_cannot_be_reached_a_stale_hold_keeps_counting(world):
     assert {r["status"] for r in world.table.items.values()} == {"pending_approval"}
 
 
-async def test_rejecting_the_card_cancels_the_link_request_and_the_row_is_never_payable(world):
-    world.limits.update(merchants=["https://acme.com"])
-    world.policy["money_moves"] = False
-    await connect(world)
-    rid = (await ask())["requestId"]
-    await purchases.cancel_for_card(OWNER, {"isol8_action": "purchase_request", "request_id": rid})
-    assert any(c.url.path == "/spend_requests/lsrq_1/cancel" for c in world.link.calls)
-    row = world.table.items[next(iter(world.table.items))]
-    assert row["status"] == "canceled"
-    world.link.retrieve_status = "approved"  # Link later says approved: ignored
-    assert await purchases.approval_link(OWNER, rid) == {"status": "canceled", "approvalUrl": None}
-    assert row["status"] == "canceled"
-    await purchases.cancel_for_card(OWNER, {"isol8_action": "something_else", "request_id": rid})  # no-op
-
-
 async def test_concurrent_clicks_cannot_both_take_the_same_headroom(world):
     await connect(world)
     world.limits.update(perPurchaseCents=10000, projectMonthlyCents=15000)
     ids = [
-        (await ask(amount=100, why=f"Licence batch number {n} for the launch project goes here."))["requestId"]
-        for n in range(2)
+        unsent(world, amount=100, why=f"Licence batch number {n} for the launch project goes here.") for n in range(2)
     ]
     results = await asyncio.gather(*(purchases.approval_link(OWNER, i) for i in ids), return_exceptions=True)
     refused = [r for r in results if isinstance(r, purchases.PurchaseRefused)]

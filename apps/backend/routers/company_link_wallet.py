@@ -42,7 +42,7 @@ def _owner(auth: AuthContext) -> str:
 
 
 def _wire(exc: purchases.PurchaseRefused | link_wallet.LinkWalletError) -> HTTPException:
-    status = 503 if getattr(exc, "code", "") in ("link_unavailable", "board_unavailable", "busy") else 409
+    status = 503 if getattr(exc, "code", "") in ("link_unavailable", "busy") else 409
     return HTTPException(status_code=status, detail={"code": exc.code, "message": str(exc)})
 
 
@@ -158,8 +158,8 @@ class PurchaseBody(BaseModel):
 @internal_router.post("/{owner_id}/requests")
 async def agent_request(owner_id: str, body: PurchaseBody, request: Request):
     await _require_hook_token(owner_id, request)
-    try:  # with the switch on, a purchase must be one a person allowed (Lane Q door gating); off is today's path
-        await effect_doors.require_intent(
+    try:  # a purchase must be one a task's effect checkpoint let through (Lane Q door gating)
+        intent = await effect_doors.require_intent(
             owner_id,
             "purchase",
             {"merchant": body.merchant, "url": body.url, "amount": body.amount, "why": body.why},
@@ -182,6 +182,7 @@ async def agent_request(owner_id: str, body: PurchaseBody, request: Request):
             amount=body.amount,
             why=body.why,
             issue_id=body.issueId,
+            approved=not intent.get("allowedBy"),  # no mode or rule let it through: a person answered the Question
         )
     except (purchases.PurchaseRefused, link_wallet.LinkWalletError) as exc:
         raise _wire(exc) from exc

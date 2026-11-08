@@ -187,6 +187,20 @@ async def test_meeting_work_is_never_a_contacts(api, made):
         assert row["origin"] == "meeting" and not await tasks_repo.from_contact(WS, row)
 
 
+async def test_meeting_origin_grandchild_gets_confirm_all(api, made):
+    """A meeting's grandchild started through /voice-start from its child's room resolves origin=meeting from that
+    room's task, and so gets the meeting safeguard (every spend, send or publish is carded)."""
+    child = await _router_child(await made(await _voice_work(api, "meeting", run="m1")), "chat:m-child")
+    room = ts.task_room_id(child["taskId"])
+    api.rows[RUN] = {"runId": RUN, "roomId": room, "agentId": "ceo-1", "requesterUserId": "user_owner"}
+    api.meta.update({"roomId": room, "task": {"taskId": child["taskId"]}})
+    r = _post(api, BODY | {"roomId": room, "callId": "huddle-1"})
+    assert r.status_code == 202, r.text
+    grandchild = await made(r.json()["triggerId"])
+    assert grandchild["origin"] == "meeting" and grandchild["confirmAll"] is True
+    assert not await tasks_repo.from_contact(WS, grandchild)
+
+
 async def test_owner_work_is_not_contact(api, made):
     task = await made(_post(api).json()["triggerId"])
     assert not await tasks_repo.from_contact(WS, task)

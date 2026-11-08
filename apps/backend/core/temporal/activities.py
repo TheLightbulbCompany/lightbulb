@@ -993,15 +993,23 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
             audience["roomId"] = room
     elif kind == "room":
         audience["roomId"] = room
+    parent = fields.get("parentTaskId")
+    origin = await _work_origin(ws, task_id, trig, parent)
+    confirm_all = (
+        ref.get("confirmAll")
+        or origin == "meeting"  # a meeting's work at any depth, also when started from its task room (/voice-start)
+        or (parent and (await tasks_repo.get_task(ws, parent) or {}).get("confirmAll"))
+    )
     row = {
         "taskId": task_id,
         "identifier": await tasks_repo.next_identifier(ws),
-        "origin": await _work_origin(ws, task_id, trig, fields.get("parentTaskId")),
+        "origin": origin,
         "status": status,
         "audience": audience,
         "lane": "private" if private else "shared",
         "ownerUserId": actor,
         "triggerId": trig["triggerId"],
+        "confirmAll": True if confirm_all else None,  # a meeting's task and its sub-tasks
         "a2aTaskId": ref.get("a2aTaskId"),  # lane Q (Q10): an inbound A2A task reports back by this id
         **{k: v for k, v in fields.items() if v is not None},
     }

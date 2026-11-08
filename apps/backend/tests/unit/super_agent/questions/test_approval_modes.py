@@ -233,6 +233,22 @@ async def test_contact_task_cannot_purchase(api, mode, monkeypatch):
     assert resp.json()["decision"] == "needs_approval" and resp.json()["questionId"]
 
 
+async def test_meeting_spend_always_carded_even_in_auto_mode(api, mode):
+    """A task started from a Meet (confirmAll) asks for a spend, an outside send or a publish whatever the mode."""
+    plain, meeting = await _started(), await _task(confirmAll=True)
+    await _running(meeting)
+    mode["approval_mode"] = "never_ask"
+    ops = {"to": "sam@acme.dev"}
+    assert (await api.post(_url(), json=await _body(plain, "c1", "mail.send", ops), headers=H)).json() == {
+        "decision": "proceed"
+    }
+    for n, (kind, o) in enumerate(
+        [("mail.send", ops), ("purchase", {"amount": "$1"}), ("app.publish", {"appId": "a"})]
+    ):
+        resp = await api.post(_url(), json=await _body(meeting, f"m{n}", kind, o), headers=H)
+        assert resp.json()["decision"] == "needs_approval", kind
+
+
 async def test_always_allow_rule_lets_the_second_identical_action_through(api, mode, monkeypatch):
     monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
     tid = await _started()

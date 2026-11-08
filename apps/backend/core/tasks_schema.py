@@ -496,6 +496,7 @@ class Task(_Row):
     # Who the work is for (the trigger ref's `origin`); `phone_contact` is copied onto every sub-task (_ensure_task)
     origin: str | None = None
     previous_run_task_id: str | None = None  # an automation run's previous run (lane A chaining)
+    confirm_all: bool = False  # started from a meeting: every spend, send or publish gets a card, in any mode
     hidden: bool = False  # §18 speculative work
     watch_until: str | None = None  # "Watching" when set
     attempt_count: int = 0

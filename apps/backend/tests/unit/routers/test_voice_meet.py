@@ -42,6 +42,7 @@ def m():
     ):
         patched.update(phase=phase, meeting=meeting, say=say, get_run=get_run, put_run=put_run, sw=sw)
         yield patched
+    voice_meet._clears.clear()
 
 
 def _work(pid: str, title="Draft the holiday-hours post"):
@@ -248,6 +249,7 @@ async def test_meeting_task_done_posts_link_in_chat(m):
         patch.object(activities.tasks_repo, "get_task_tree", AsyncMock(return_value={"task": _meet_task()})),
         patch.object(activities.task_conversation, "ensure_task_room", AsyncMock()),
         patch.object(activities.task_conversation, "post_as_lightbulb", AsyncMock()),
+        patch.object(voice_meet, "_tile_phase", AsyncMock()),  # no real 60 s clear task
     ):
         await activities._announce("org_1", "k1", "idle")
     m["say"].assert_awaited_once()

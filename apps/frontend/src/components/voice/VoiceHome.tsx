@@ -50,6 +50,7 @@ export function VoiceHome() {
   const name = nameOf(config);
   const needs = useNeedsYouTotal();
   const [filter, setFilter] = useState<Filter>("all");
+  const [now] = useState(() => Date.now());  // one clock per render tree: "Upcoming" is judged against this
   const [openId, setOpenId] = useState<string | null>(null);
   const all = useMemo(() => items ?? [], [items]);
   const shown = all.filter(FILTERS.find((f) => f[0] === filter)![2]);
@@ -85,7 +86,7 @@ export function VoiceHome() {
         : "Nothing here yet."}</p>}
       {groups.map(([day, rows]) => <section key={day} aria-label={day}>
         <h2 className="vx-day">{day}</h2>
-        {rows.map((i) => <Row key={i.roomId} item={i} name={name} current={i.roomId === openId} onOpen={() => setOpenId(i.roomId)} />)}
+        {rows.map((i) => <Row key={i.roomId} item={i} name={name} now={now} current={i.roomId === openId} onOpen={() => setOpenId(i.roomId)} />)}
       </section>)}
       {all.length > 0 && <p className="vx-foot">
         Today {today.length} answered · {today.filter((c) => c.type === "call" && c.outcome === "booked").length} booked

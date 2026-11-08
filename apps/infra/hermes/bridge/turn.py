@@ -1749,11 +1749,12 @@ def _post_backend(path: str, body: dict) -> int:
     return last_status
 
 
-def runtime_mcp_env(agent_id: str, principal: str | None = None) -> dict[str, str]:
+def runtime_mcp_env(agent_id: str, principal: str | None = None, task_id: str | None = None) -> dict[str, str]:
     """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile. The same
     vend fills the backend-custodied grants in locally (bridge/credentials.py, spec 13). ``principal``
     "caller": the backend vends the model grant only."""
-    vended = credentials.vend(agent_id, api=API, owner=bridge.OWNER, hook_token=bridge.HOOK_TOKEN, principal=principal)
+    vended = credentials.vend(agent_id, api=API, owner=bridge.OWNER, hook_token=bridge.HOOK_TOKEN, principal=principal,
+                              task_id=task_id)
     return vended.mcp_env() if vended is not None else {}
 
 
@@ -4363,7 +4364,9 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     caller = not paperclip and not router and request.get("principal") == "caller"
     # A caller's thread holds no owner integration token: the vend says principal "caller" (the model grant only),
     # and no renewer re-vends the owner's grants into its scope.
-    mcp_env = runtime_mcp_env(agent_id, principal="caller") if caller else runtime_mcp_env(agent_id)
+    # The task id lets the backend decide the principal itself from the task row (a caller's task vends no owner token).
+    task_scope = {"task_id": identity["taskId"]} if not paperclip and not router and identity.get("taskId") else {}
+    mcp_env = runtime_mcp_env(agent_id, **task_scope, **({"principal": "caller"} if caller else {}))
     with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(mcp_env, None if caller else agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         budget = None
         try:
@@ -4371,8 +4374,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
             if not paperclip:
                 extra["tool_complete_callback"] = task_tool_recorder(run_id)
             memory = {"memory": request["memory"]} if request.get("memory") else {}  # a task's block (spec 07 §5.2)
-            if caller:
-                extra["enabled_toolsets"] = list(CALLER_TOOLSETS)
+            if caller:  # no owner memory either: no MEMORY.md/USER.md, no team recall or task board prefetch
+                extra |= {"enabled_toolsets": list(CALLER_TOOLSETS), "skip_memory": True}
             elif not paperclip and not router and identity.get("taskId") and identity.get("runSecret"):
                 enabled, _ = profile_toolsets()  # a Worker run: its own task room's note tool (task_note)
                 if enabled is not None:

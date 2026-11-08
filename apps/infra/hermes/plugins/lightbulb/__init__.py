@@ -946,8 +946,9 @@ def _front_desk(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if not _task_run(ctx):
         return "front_desk works only on a caller's thread."
-    body = {"taskId": ctx.get("taskId"), "runId": ctx.get("runId"), "attempt": ctx.get("attempt"),
-            "runSecret": ctx.get("runSecret"), **{k: v for k, v in (args or {}).items() if v not in (None, "")}}
+    body = {**{k: v for k, v in (args or {}).items() if v not in (None, "")},  # identity last: never the model's
+            "taskId": ctx.get("taskId"), "runId": ctx.get("runId"), "attempt": ctx.get("attempt"),
+            "runSecret": ctx.get("runSecret")}
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/front-desk"
     try:
         return json.dumps(_post(url, ctx["hookToken"], body))

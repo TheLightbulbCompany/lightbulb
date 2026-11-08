@@ -531,6 +531,7 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
     bookings and honours the Agent page's allow switches. 403 for any task that is not a caller's."""
     from pydantic import ValidationError
 
+    from core.services import business_profile
     from routers import voice_phone as vp
 
     await _gate(owner_id, request)
@@ -548,16 +549,19 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
     try:
         if body.action == "availability":
             return await vp.availability(call_id, vp.DateIn(date=body.date, service=body.service))
-        if body.action == "book":
-            return await vp.book(call_id, vp.BookIn(start=body.start, service=body.service, name=body.name))
         if body.action == "my_bookings":
             return await vp.my_bookings(call_id)
-        if body.action in ("move", "cancel"):
+        if body.action == "message":
+            return await vp.take_message(
+                call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)
+            )
+        try:
+            if body.action == "book":
+                return await vp.book(call_id, vp.BookIn(start=body.start, service=body.service, name=body.name))
             new = body.new_start if body.action == "move" else None
             return await vp.change_booking(call_id, vp.ChangeIn(start=body.start, newStart=new))
-        return await vp.take_message(
-            call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)
-        )
+        finally:  # the caller's batch and thread see the change at once, not after the 60 s cache
+            business_profile.forget(owner_id)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
 

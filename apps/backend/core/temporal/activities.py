@@ -319,6 +319,11 @@ async def _local_now(ws: str, user_id: str | None) -> str:
     return router_prompt.local_now(tz)
 
 
+def _callers(triggers: dict[str, dict]) -> set[str]:
+    """The batch's phone caller triggers (`ref.origin` phone_contact, written by the backend only)."""
+    return {tid for tid, t in triggers.items() if (t.get("ref") or {}).get("origin") == "phone_contact"}
+
+
 async def _caller_profile(ws: str, triggers) -> str | None:
     """The Business profile, for a phone caller's batch only (founder, 8 Nov: the phone front door; owner and member
     chat, the orb and Meet stay without it)."""
@@ -1450,6 +1455,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
                 ts.trigger_room(to_model[tid]),
             ),
             in_scope=_task_in_scope,
+            callers=_callers(to_model),
         )
     elif to_model:
         # A message sent while the workspace is still being set up is admitted and kept: the Router workflow waits
@@ -1499,6 +1505,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
                     ts.trigger_room(to_model[tid]),
                 ),
                 in_scope=_task_in_scope,
+                callers=_callers(to_model),
             )
 
         def settled(status: runtime_runs.RunStatus) -> bool:

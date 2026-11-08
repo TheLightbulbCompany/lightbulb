@@ -65,16 +65,33 @@ async def _build(ws: str, caller: str | None) -> str:
         lines.append(_cap(f"Open start times for a {minutes}-minute appointment: " + "; ".join(days), _SLOTS_MAX))
     if caller:
         try:
-            mine = [
-                b
-                for b in await vp._bookings(ws, "")
-                if b.get("phone") == caller and b["sk"][10:] >= f"{now:%Y-%m-%dT%H:%M}"
-            ]
+            mine = [b for b in await _upcoming(ws, f"{now:%Y-%m-%dT%H:%M}") if b.get("phone") == caller]
             said = "; ".join(f"{b['service']} {vp._pretty(b['sk'][10:])}" for b in mine) or "none"
             lines.append(_cap(f"This caller's upcoming bookings: {said}", _BOOKINGS_MAX))
         except Exception:  # noqa: BLE001 -- the rest of the profile still helps
             logger.warning("caller bookings unavailable ws=%s", ws, exc_info=True)
     return "\n".join(lines)
+
+
+async def _upcoming(ws: str, now: str) -> list[dict]:
+    """`VOICEBOOK#` rows from now on (never the whole history)."""
+    from boto3.dynamodb.conditions import Key
+
+    from core.dynamodb import run_in_thread
+    from core.repositories import messaging_repo
+
+    r = await run_in_thread(
+        messaging_repo._table().query,
+        KeyConditionExpression=Key("pk").eq(messaging_repo.owner_pk(ws))
+        & Key("sk").between(f"VOICEBOOK#{now}", "VOICEBOOK#\uffff"),
+    )
+    return r.get("Items", [])
+
+
+def forget(ws: str) -> None:
+    """Drop the workspace's cached profiles: a booking was made, moved or cancelled."""
+    for key in [k for k in _cache if k[0] == ws]:
+        _cache.pop(key, None)
 
 
 async def business_profile(ws: str, caller: str | None = None) -> str:

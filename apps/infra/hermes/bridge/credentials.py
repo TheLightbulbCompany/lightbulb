@@ -109,14 +109,14 @@ def _post(path: str, body: dict, timeout: float, *, api: str, hook_token: str) -
 
 
 def vend(agent_id: str, *, api: str | None = None, owner: str | None = None, hook_token: str | None = None,
-         principal: str | None = None) -> Vend | None:
+         principal: str | None = None, task_id: str | None = None) -> Vend | None:
     """One vend for a turn: the MCP bearers, with the brokered grants applied locally on the way.
     None when the route is unreachable or answers nonsense (the turn goes on without them)."""
     api, owner, hook_token = api or API, owner or bridge.OWNER, hook_token or bridge.HOOK_TOKEN
     if not api or not owner or not hook_token:
         return None
     try:
-        body = {"agent_id": agent_id, **({"principal": principal} if principal else {})}
+        body = {"agent_id": agent_id, **({"principal": principal} if principal else {}), **({"task_id": task_id} if task_id else {})}
         status, payload = _post(f"/api/v1/runtime/credentials/u/{owner}", body, VEND_TIMEOUT_S, api=api, hook_token=hook_token)
     except Exception:  # noqa: BLE001 -- a missing optional integration must not fail the turn
         log.warning("brokered MCP credentials unavailable for agent=%s", agent_id)

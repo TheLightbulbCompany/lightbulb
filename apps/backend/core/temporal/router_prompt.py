@@ -359,6 +359,7 @@ def validate_decisions(
     open_tasks: dict[str, dict],
     scope: Callable[[str], tuple[str, str | None, str | None]],
     in_scope: Callable[[dict, str, str | None, str | None], bool],
+    callers: set[str] | frozenset[str] = frozenset(),
 ) -> list[ts.RouterDecision]:
     """Drop only what cannot be applied: a malformed decision, trigger ids outside the batch (a decision with none
     left), a start with a specialist not on the roster, a pass_through to a task
@@ -376,7 +377,10 @@ def validate_decisions(
         if isinstance(dec, ts.StartTask) and dec.specialist and dec.specialist not in roster_ids:
             continue
         if isinstance(dec, ts.PassThrough) and (
-            dec.task_id not in open_tasks or not in_scope(open_tasks[dec.task_id], *scope(tids[0]))
+            dec.task_id not in open_tasks
+            or not in_scope(open_tasks[dec.task_id], *scope(tids[0]))
+            # `callers`: phone caller triggers. Their words reach only a caller's own task, never a full-tool run.
+            or (set(tids) & callers and open_tasks[dec.task_id].get("origin") != "phone_contact")
         ):
             continue
         kept.append(dec.model_copy(update={"trigger_ids": tids}))

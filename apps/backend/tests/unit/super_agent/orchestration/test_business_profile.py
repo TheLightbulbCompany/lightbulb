@@ -11,7 +11,6 @@ from core.services import business_profile as bp
 from core.services import clerk_admin, voice_booking
 from core.temporal import activities as acts
 from core.temporal import router_prompt
-from routers import voice_phone as vp
 
 CFG = {
     "services": [{"name": "Pedicure", "price": "$45", "minutes": 45}, {"name": "Gel manicure", "price": "$40"}],
@@ -31,7 +30,7 @@ def sources(monkeypatch):
     )
     rows = [{"sk": "VOICEBOOK#2099-11-12T15:00", "service": "Pedicure", "phone": "+15550001"},
             {"sk": "VOICEBOOK#2099-11-13T10:00", "service": "Pedicure", "phone": "+15550002"}]  # fmt: skip
-    monkeypatch.setattr(vp, "_bookings", AsyncMock(return_value=rows))
+    monkeypatch.setattr(bp, "_upcoming", AsyncMock(return_value=rows))
     yield get
     bp._cache.clear()
 
@@ -56,7 +55,7 @@ async def test_the_profile_is_bounded_and_cached(sources):
 
 async def test_the_profile_degrades_when_sources_fail(sources, monkeypatch):
     monkeypatch.setattr(voice_booking, "free", AsyncMock(side_effect=RuntimeError("google down")))
-    monkeypatch.setattr(vp, "_bookings", AsyncMock(side_effect=RuntimeError("ddb")))
+    monkeypatch.setattr(bp, "_upcoming", AsyncMock(side_effect=RuntimeError("ddb")))
     text = await bp.business_profile("org_x", "+15550001")
     assert "Pedicure $45" in text and "Open start times" not in text and "This caller's" not in text
     bp._cache.clear()
@@ -112,3 +111,32 @@ async def test_a_callers_thread_gets_the_profile_and_the_caller_principal(monkey
     assert req.principal == "caller" and req.to_wire()["principal"] == "caller"
     member = await acts._request("org_x", task | {"origin": "member"}, att, tree)
     assert "## Business profile" not in member.input and "principal" not in member.to_wire()
+
+
+async def test_bookings_are_read_from_now_on_and_a_change_drops_the_cache(sources, monkeypatch):
+    sources_calls = []
+    monkeypatch.setattr(bp, "_upcoming", AsyncMock(side_effect=lambda ws, now: sources_calls.append(now) or []))
+    await bp.business_profile("org_x", "+15550001")
+    assert sources_calls and len(sources_calls[0]) == 16  # "YYYY-MM-DDTHH:MM": the query starts at now
+    bp.forget("org_x")
+    await bp.business_profile("org_x", "+15550001")
+    assert len(sources_calls) == 2  # rebuilt after forget, not served from the 60 s cache
+
+
+def test_a_callers_words_never_pass_through_to_a_full_tool_task():
+    """The later Router lane's guard: a phone caller's trigger reaches only a caller's own task."""
+    member = {"taskId": "00000000-0000-0000-0000-000000000001", "audience": {"kind": "workspace"}}
+    theirs = {"taskId": "00000000-0000-0000-0000-000000000002", "audience": {"kind": "workspace"},
+              "origin": "phone_contact"}  # fmt: skip
+    raw = [{"kind": "pass_through", "triggerIds": ["voice:c"], "taskId": t["taskId"]} for t in (member, theirs)]
+    kept = router_prompt.validate_decisions(
+        raw,
+        trigger_ids={"voice:c"},
+        roster_ids=set(),
+        open_tasks={t["taskId"]: t for t in (member, theirs)},
+        scope=lambda tid: ("shared", None, None),
+        in_scope=lambda *a: True,
+        callers={"voice:c"},
+    )
+    assert [d.task_id for d in kept] == [theirs["taskId"]]
+    assert acts._callers({"voice:c": {"ref": {"origin": "phone_contact"}}, "chat:m": {"ref": {}}}) == {"voice:c"}

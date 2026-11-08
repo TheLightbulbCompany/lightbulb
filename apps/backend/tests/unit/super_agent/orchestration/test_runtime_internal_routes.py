@@ -342,6 +342,10 @@ async def test_front_desk_acts_only_for_a_callers_thread(api, monkeypatch):
     monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
     booked = AsyncMock(return_value={"booked": True})
     monkeypatch.setattr(vp, "book", booked)
+    from core.services import business_profile
+
+    forgotten = []
+    monkeypatch.setattr(business_profile, "forget", forgotten.append)
     tid = await _task(origin="phone_contact", triggerId="voice:c1:r1")
     trig = {"voice:c1:r1": {"ref": {"origin": "phone_contact", "callId": call}}, "chat:m1": {"ref": {"text": "hi"}}}
     monkeypatch.setattr(repo, "get_trigger", AsyncMock(side_effect=lambda _ws, t: trig.get(t)))
@@ -352,6 +356,7 @@ async def test_front_desk_acts_only_for_a_callers_thread(api, monkeypatch):
     r = await api.post(url, json=body, headers=H)
     assert r.status_code == 200 and r.json() == {"booked": True}
     assert booked.await_args.args[0] == call and booked.await_args.args[1].start == "2026-11-14T14:00"
+    assert forgotten == [WS]  # a book drops the cached Business profile
     bad = await api.post(url, json={**body, "start": "Saturday"}, headers=H)
     assert bad.status_code == 422
 

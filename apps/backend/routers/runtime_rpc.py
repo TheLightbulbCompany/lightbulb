@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user
-from core.repositories import integrations_repo
+from core.repositories import integrations_repo, tasks_repo
 from core.services import runtime_rpc as service
 from core.services import messaging, token_custody
 from core.services.owner_lifecycle import OwnerLifecycleBusyError
@@ -29,6 +29,8 @@ class RuntimeCredentialRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     # "caller": a phone caller's thread (governance P2, the caller case): the model grant only, no owner tokens.
     principal: Literal["caller"] | None = None
+    # A task run's id: the backend decides the principal from the task row itself, whatever the bridge declares.
+    task_id: str | None = Field(default=None, max_length=64)
 
 
 class RuntimeModelRequest(RuntimeCredentialRequest):
@@ -76,6 +78,10 @@ async def runtime_credentials(
     and ``model`` -- the ChatGPT access token -- when the workspace's grant is backend-custodied.
     A payload without either is exactly today's."""
     await _authorize_vend(owner_id, body.agent_id, request)
+    caller = body.principal == "caller"
+    if body.task_id and not caller:
+        task = await tasks_repo.get_task(owner_id, body.task_id)
+        caller = task is None or await tasks_repo.from_contact(owner_id, task)  # an unknown task: fail closed
 
     connected = {
         row["provider"]: row
@@ -87,7 +93,7 @@ async def runtime_credentials(
     unavailable: list[str] = []
     for provider in registry.all_providers().values():
         if (
-            body.principal == "caller"
+            caller
             or provider.key not in connected
             or not provider.oauth
             or registry.refresh_owner_for(provider, connected[provider.key]) != "backend"

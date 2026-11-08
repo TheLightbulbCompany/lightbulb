@@ -464,7 +464,7 @@ class PaperclipRepo:
         which silently WIPES a previously written value
         (``onboarding_generation``, ``funnel_state``, members, ...). Every caller MUST carry forward the row's existing fields unless
         it is deliberately establishing them fresh (the G2 mint site in
-        ``paperclip_provisioning.provision_org``). Prefer the conditional
+        ``workspace_provisioning.provision_org``). Prefer the conditional
         ``UpdateItem`` methods below for any single-field write.
 
         ``condition``/``condition_values`` are used ONLY by the G2 mint site

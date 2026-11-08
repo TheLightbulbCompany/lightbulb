@@ -1309,7 +1309,7 @@ def test_workers_deliver_only_what_was_asked():
     """Walk 14 (W14-6): Growth's email opened with "Audience: … Test: … aim for 8%" and its reply led with the 8%
     nobody set. The Worker's instructions keep notes out of the file, forbid invented numbers and open the answer
     with what was made; the Growth persona no longer asks for "one experiment with a success number"."""
-    from core.services.paperclip_provisioning import STARTER_CAPABILITIES
+    from core.services.workspace_provisioning import STARTER_CAPABILITIES
     from core.temporal.activities import WORKER_INSTRUCTIONS
 
     text = " ".join(WORKER_INSTRUCTIONS.split())

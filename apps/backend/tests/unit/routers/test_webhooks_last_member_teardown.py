@@ -69,11 +69,10 @@ async def test_organization_deleted_tears_the_runtime_down(monkeypatch):
         "core.services.billing_service.cancel_subscription_for_owner",
         AsyncMock(return_value={"status": "no_subscription"}),
     )
-    prov = AsyncMock()
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=prov))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    disable = AsyncMock()
+    monkeypatch.setattr("core.services.workspace_provisioning.disable_workspace", disable)
 
     await webhooks._handle_organization_deleted({"id": "org_a"})
 
     teardown.assert_awaited_once_with("org_a")
-    prov.disable_workspace.assert_awaited_once_with(org_id="org_a")
+    disable.assert_awaited_once_with("org_a")

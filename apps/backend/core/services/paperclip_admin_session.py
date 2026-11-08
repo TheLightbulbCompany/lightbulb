@@ -4,7 +4,7 @@ Maintains a long-lived Better Auth session for the Paperclip bootstrap
 admin (``admin+paperclip@isol8.co`` in new envs, ``admin@isol8.co`` in
 legacy envs — the email is read from Secrets Manager, never hardcoded
 here). The bootstrap admin is the only user with the ``instance_admin``
-role on the Paperclip deployment. Used by ``paperclip_provisioning`` to
+role on the Paperclip deployment. Used by the prod data-move scripts to
 call privileged endpoints (``POST /api/companies``,
 ``approve_join_request``, etc.) that regular signed-up users can't reach
 in Paperclip's ``authenticated`` deployment mode.

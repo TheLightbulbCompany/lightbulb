@@ -46,7 +46,7 @@ for them (see the inline notes at those call sites):
 
   spec #1  -> "paperclip_company"     (always "refused" or "skipped": a company is
               the workspace's; each workspace gets
-              "paperclip_membership" -> PaperclipProvisioning.archive_member)
+              "paperclip_membership" -> PaperclipRepo.remove_member)
   spec #2  -> "paperclip_aurora_user" (paperclip_user_delete.delete_paperclip_user)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
   (no spec row) -> "provisioning" (provisioning_workflow_repo.transition -> "cancelled")
@@ -127,7 +127,6 @@ from core.services.owner_secret_sweep import (
     list_owner_agent_key_secret_names,
     list_owner_secret_names,
 )
-from core.services.paperclip_provisioning import build_paperclip_provisioning, close_paperclip_provisioning
 from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
 
 logger = logging.getLogger(__name__)
@@ -444,8 +443,7 @@ def _refused_detail(memberships: list[dict]) -> str:
 #
 # Both PaperclipAdminClient.delete_company and MetronomeClient.archive_customer
 # need an httpx.AsyncClient the caller owns the lifecycle of (mirrors
-# build_paperclip_provisioning / metronome_gate.read_net_balance_microcents
-# elsewhere in this codebase). Wrapping the open/call/close sequence here
+# metronome_gate.read_net_balance_microcents elsewhere in this codebase). Wrapping the open/call/close sequence here
 # keeps the orchestrator's own step list to one call per collaborator.
 
 
@@ -462,14 +460,9 @@ async def _delete_paperclip_company_call(company_id: str) -> None:
 
 
 async def _archive_paperclip_member_call(user_id: str, org_id: str) -> None:
-    """PaperclipProvisioning.archive_member — the same non-destructive removal
-    ``organizationMembership.deleted`` uses: archives only this member's
-    membership in THIS workspace's company (Paperclip reassigns their issues)."""
-    provisioning = await build_paperclip_provisioning()
-    try:
-        await provisioning.archive_member(user_id=user_id, org_id=org_id)
-    finally:
-        await close_paperclip_provisioning(provisioning)
+    """The same removal ``organizationMembership.deleted`` uses: drops only this member from
+    THIS workspace's members (``remove_member``, a no-op once the row is gone)."""
+    await PaperclipRepo(table_name="paperclip-companies").remove_member(org_id, user_id)
 
 
 async def _archive_metronome_customer(customer_id: str) -> None:

@@ -40,7 +40,7 @@ def runner_env(monkeypatch):
 async def test_step_0_still_runs_and_still_refuses_a_non_org_owner(monkeypatch, runner_env):
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _refuses_non_org)
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", _refuses_non_org)
     assert await provision_runner.run("user_a") == 10
     assert "not a workspace" in runner_env.mark_provision_error.await_args.kwargs["last_error"]
 
@@ -75,7 +75,7 @@ async def test_hook_token_exists_before_step_0_seeds_the_roster(monkeypatch, run
 
     monkeypatch.setattr(repo_mod, "get_by_owner_id", _fake_get_by_owner_id)
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", _fake_prepare)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _spy_seed)
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", _spy_seed)
     monkeypatch.setattr(
         provision_runner.hermes_provisioning, "provision_hermes_runtime", AsyncMock(return_value="arn:r1")
     )
@@ -93,7 +93,7 @@ async def test_a_transient_prepare_hermes_workspace_failure_stops_the_run_withou
     monkeypatch.setattr(
         provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock(side_effect=RuntimeError("boom"))
     )
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _explodes_if_called)  # must never be reached
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", _explodes_if_called)  # must never be reached
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
 
     # Transient: the machine retries it, so no error row is written (MarkFailedExhausted is the backstop).

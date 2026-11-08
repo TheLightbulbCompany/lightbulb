@@ -4,6 +4,9 @@
 // exactly as /chat rendered it (composer, messages, tasks with statuses, Workers' results and cards). The room's
 // side column (a thread, its tasks, room details) renders inline: no workspace shell is mounted, so useThreadPane
 // keeps it in the room, and the shell's openPanel calls (an attachment in the right pane) are no-ops here.
+// The room's side column (Tasks, Files, Scheduled, Details) draws its title and ✕ with PaneHeader, whose styles live
+// in workspace.css; no workspace shell is mounted here to load them, so the header fell apart (title over the ✕).
+import "@/components/workspace/workspace.css";
 import { useEffect, useRef } from "react";
 import { TalkOrb } from "./TalkOrb";
 import { LIGHTBULB } from "./data";

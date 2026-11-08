@@ -12,7 +12,6 @@ test("managed OpenRouter owner claims have a durable, encrypted table", () => {
     env,
     environment: "prod",
     kmsKey: new kms.Key(support, "Key"),
-    vpc: new ec2.Vpc(support, "Vpc", { maxAzs: 2 }),
   });
   const template = Template.fromStack(stack);
   template.hasResourceProperties("AWS::DynamoDB::Table", {

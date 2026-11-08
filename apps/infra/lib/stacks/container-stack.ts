@@ -128,9 +128,6 @@ export class ContainerStack extends cdk.Stack {
         description: `Lightbulb ${props.environment} service discovery namespace`,
       },
     );
-    // Paperclip exit, step 1 of 2: the live lightbulb-{env}-paperclip stack (out
-    // of the app, deleted by hand) still imports this id. Step 2 drops the pin.
-    this.exportValue(this.cloudMapNamespace.namespaceId);
 
     this.containerSecurityGroup = new ec2.SecurityGroup(
       this,

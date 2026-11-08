@@ -37,9 +37,10 @@ def m():
         patch.object(voice_meet.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
         patch.object(voice_meet.messaging_repo, "get_voice_run", AsyncMock(return_value=None)) as get_run,
         patch.object(voice_meet.messaging_repo, "put_voice_run", AsyncMock()) as put_run,
+        patch.object(voice_meet.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
         patch.object(voice_meet, "start_voice_work", AsyncMock(return_value={"triggerId": "t", "taskId": "k1"})) as sw,
     ):
-        patched.update(meeting=meeting, say=say, get_run=get_run, put_run=put_run, sw=sw)
+        patched.update(phase=phase, meeting=meeting, say=say, get_run=get_run, put_run=put_run, sw=sw)
         yield patched
 
 
@@ -262,3 +263,24 @@ async def test_ended_meeting_updates_status_only(m):
     await voice_meet.task_moved(_meet_task(), "idle")
     assert m["meeting"]["followUps"][0]["status"] == "done"
     m["say"].assert_not_awaited()
+
+
+async def test_tile_states(m):
+    """Drafting while the follow-up works; page_ready once the link posts, cleared after 60 s."""
+    await voice_meet.start_work(ROOM, _work("11"))
+    m["phase"].assert_awaited_with(ROOM, "drafting")
+    m["meeting"].update(status="in_call", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
+    with patch.object(voice_meet.asyncio, "sleep", AsyncMock()):
+        await voice_meet.task_moved(_meet_task(), "idle")
+        m["phase"].assert_awaited_with(ROOM, "page_ready")
+        await voice_meet._clears[ROOM]
+    m["phase"].assert_awaited_with(ROOM, "")
+
+
+async def test_single_announcement(m):
+    """The Recall join chat is gone (test_meeting_bots), so the chat gets only voice_meet's line, with no opt-out
+    that does not exist."""
+    from core.services import meeting_bots
+
+    assert not hasattr(meeting_bots, "CONSENT_LINE")
+    assert "transcribe" not in voice_meet.ANNOUNCE

@@ -22,9 +22,9 @@ it("puts the speaker on the stage with Speaking", () => {
   expect(container.querySelector("[data-speaker-name]")?.textContent).toBe("Forge");
 });
 
-it("shows Working, with no request text, for an agent that holds the floor as listening", () => {
+it("shows Thinking, with no request text, for an agent that holds the floor as listening", () => {
   tile(A("f", "listening", { working: "open pull requests" }));
-  expect(screen.getByText("Working")).toBeInTheDocument();
+  expect(screen.getByText("Thinking")).toBeInTheDocument();
 });
 
 it("makes the first raised hand the hero, with no topic and no instruction", () => {
@@ -32,7 +32,7 @@ it("makes the first raised hand the hero, with no topic and no instruction", () 
   const hero = container.querySelector("[data-hand]")!;
   expect(hero.textContent).toBe("Bb has an answer"); // its initial, then the one line
   const rows = [...container.querySelectorAll("ul")[0].querySelectorAll("li")].map((li) => li.lastElementChild?.textContent);
-  expect(rows).toEqual(["Hand up", "Working"]);
+  expect(rows).toEqual(["Hand up", "Thinking"]);
   expect(container.textContent).not.toMatch(/news|more|go ahead/i);
 });
 
@@ -103,4 +103,13 @@ it("draws everything inside the middle of the canvas, where no Meet tile crops i
   const safe = container.querySelector<HTMLElement>("[data-safe]");
   expect(safe?.style.transform).toBe("scale(0.8)");
   expect(safe?.textContent).toContain("Lightbulb"); // the label is inside it too
+});
+
+it("MeetTile shows Drafting and Page ready", () => {
+  const phase = (v: string) => ({ ...A("assistant", "listening", { name: "Nova" }), "lightbulb.agent.assistant.phase": v });
+  const a = tile(phase("drafting"));
+  expect(screen.getByText("Drafting…")).toBeInTheDocument();
+  a.unmount();
+  tile(phase("page_ready"));
+  expect(screen.getByText("Page ready")).toBeInTheDocument();
 });

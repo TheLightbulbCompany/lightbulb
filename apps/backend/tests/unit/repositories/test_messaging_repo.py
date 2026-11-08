@@ -1537,3 +1537,31 @@ async def test_paused_ask_keeps_the_latest_and_pops_once(table):
     await repo.put_paused_ask(room, 5, USER_A)
     await repo.put_paused_ask(room, 7, USER_B)
     assert await repo.pop_paused_ask(room, "someone-else") == {"seq": 7, "authorId": USER_B}
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_line_keeps_its_action_on_the_row_and_in_voice_events(table):
+    """transfer_call's line (runtime_internal.transfer_call: post_as_lightbulb attrs={"action": "transfer"}) is
+    stored with `action` on the message row, and agent_lines (/calls/{id}/events) hands it to the phone worker."""
+    from routers.voice_meet import agent_lines
+
+    room_id, _ = await _room()
+    await repo.create_message(
+        room_id=room_id,
+        owner_id=OWNER,
+        idemp_pk=repo.room_pk(room_id),
+        idemp_sk=repo.agent_idemp_sk("call-transfer:voice:c1:turn-0"),
+        req_hash=repo.request_hash("Let me put you through."),
+        author={"kind": "agent", "id": FRIDAY, "displayName": "Lightbulb"},
+        text="Let me put you through.",
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=None,
+        client_message_id=None,
+        attrs={"action": "transfer"},
+    )
+    out = await agent_lines(room_id, 0)
+    assert [(m["text"], m.get("action")) for m in out["messages"]] == [("Let me put you through.", "transfer")]

@@ -347,6 +347,11 @@ async def _caller_profile(ws: str, triggers) -> str | None:
 
 #: A phone caller's task (and every sub-task of it) gets this much Worker time per attempt (end-state Task 4).
 CONTACT_RUN_BUDGET_S = 600
+#: A phone caller's Front desk thread: its answer is read out on the call (8 Nov prod: six slots offered).
+CALLER_THREAD_NOTE = (
+    " This task is for a caller on the phone: your answer is read out to them, so offer up to 3 open times, "
+    "never a longer list."
+)
 
 
 async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.RunRequest:
@@ -392,7 +397,7 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         parts.append(f"Connected apps: {', '.join(sorted(apps)) or 'none'}")
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
-        instructions=WORKER_INSTRUCTIONS,
+        instructions=WORKER_INSTRUCTIONS + (CALLER_THREAD_NOTE if contact else ""),
         memory=memory,
         effects="required",
         run_budget_seconds=CONTACT_RUN_BUDGET_S if contact else None,  # the bridge's own hard stop

@@ -120,8 +120,10 @@ async def test_a_callers_thread_gets_the_profile_and_the_caller_principal(monkey
     req = await acts._request("org_x", task, att, tree)
     assert "## Business profile" in req.input and "Pedicure $45" in req.input
     assert req.principal == "caller" and req.to_wire()["principal"] == "caller"
+    assert "offer up to 3 open times" in req.instructions  # 8 Nov prod: six slots read out to a caller
     member = await acts._request("org_x", task | {"origin": "member"}, att, tree)
     assert "## Business profile" not in member.input and "principal" not in member.to_wire()
+    assert "offer up to 3" not in member.instructions
 
 
 async def test_bookings_are_read_from_now_on_and_a_change_drops_the_cache(sources, monkeypatch):

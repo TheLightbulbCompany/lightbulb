@@ -120,11 +120,75 @@ async def _call(call_id: str) -> tuple[dict, dict]:
     return meta, meta["call"]
 
 
+# A card number: 13-19 digits, spaces or dashes between them, Luhn-valid; then an expiry or CVV said after it.
+_CARD_RUN = re.compile(r"(?<!\d)\d(?:[ -]?\d){12,}(?!\d)")
+_CARD_TAIL = re.compile(
+    r"(?:\W|and|exp(?:iry|ires|iration)?|cvv2?|cvc|security|code|date|is|the|on|back)*"
+    r"(?:\b(?:0?[1-9]|1[0-2])\s*/\s*(?:\d{4}|\d{2})\b|\b\d{3,4}\b)",
+    re.IGNORECASE,
+)
+CARD_REDACTED = "[card number removed]"
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, d in enumerate(int(c) for c in reversed(digits)):
+        total += d if i % 2 == 0 else (d * 2 - 9 if d > 4 else d * 2)
+    return total % 10 == 0
+
+
+def redact_cards(text: str) -> str:
+    """No card capture (8 Nov prod: a message step kept the caller's digits): every Luhn-valid 13-19 digit run is
+    replaced, and up to two expiry or CVV groups said right after it ("exp 12/27, cvv 123"). The call record and
+    the call room's messages are written through this (`_scrub`)."""
+    out, at = [], 0
+    for m in _CARD_RUN.finditer(text):
+        digits = re.sub(r"\D", "", m.group())
+        # the longest Luhn-valid 13-19 digit prefix: a CVV said straight after the number joins its run
+        n = next((n for n in range(min(len(digits), 19), 12, -1) if _luhn(digits[:n])), 0)
+        if not n:
+            continue
+        end = m.start() + [i for i, c in enumerate(m.group()) if c.isdigit()][n - 1] + 1  # after its n-th digit
+        tail_start = end
+        for _ in range(2):
+            t = _CARD_TAIL.match(text, end)
+            if not t:
+                break
+            end = t.end()
+        out += [text[at : m.start()], CARD_REDACTED, " [removed]" if end > tail_start else ""]
+        at = end
+    return "".join(out) + text[at:] if out else text
+
+
+def _scrub(value):
+    """`redact_cards` on every string in a record (lists and maps too)."""
+    if isinstance(value, str):
+        return redact_cards(value)
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _scrub(v) for k, v in value.items()}
+    return value
+
+
+#: What a model writes when it has no name (8 Nov prod: "Unknown" was kept as the caller's name).
+_NO_NAMES = {"unknown", "unknown caller", "caller", "the caller", "anonymous", "anon", "n/a", "na", "none", "null",
+             "no name", "not given", "not provided", "unknown name", "name unknown", "customer", "-", "?"}  # fmt: skip
+
+
+def real_name(name: str | None) -> str:
+    """The caller's name, or "" for a placeholder: never stored as who called."""
+    n = " ".join(str(name or "").split())
+    return "" if n.lower().strip(".") in _NO_NAMES else n
+
+
 async def _patch_call(call_id: str, change) -> dict:
-    """Read-modify-write of META.call under the revision CAS (one worker per call, so a race is rare)."""
+    """Read-modify-write of META.call under the revision CAS (one worker per call, so a race is rare). Every write
+    of the record (steps, transcript, messages, summary) is card-scrubbed and keeps only a real caller name."""
     for attempt in (1, 2, 3):
         meta, call = await _call(call_id)
-        merged = {**call, **change(call)}
+        merged = _scrub({**call, **change(call)})
+        merged["callerName"] = real_name(merged.get("callerName"))
         try:
             await messaging_repo.patch_room_meta(
                 call_id, {"call": merged}, expected_revision=int(meta.get("revision", 0))
@@ -218,7 +282,7 @@ async def start_call(body: StartIn) -> dict:
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     call = {
         "caller": body.callerNumber,
-        "callerName": (seen or {}).get("name", ""),
+        "callerName": real_name((seen or {}).get("name")),
         "returning": bool(seen),
         "startedAt": datetime.now(_TZ).isoformat(),
         "durationSec": 0,
@@ -298,7 +362,7 @@ def greeting(custom: str, business: str, assistant: str) -> str:
     g = custom.strip()
     if all(w.lower() in g.lower() for w in ("AI assistant", "recorded", assistant)):
         return g
-    return f"Thanks for calling {business}. This is {assistant}, {business}'s AI assistant. This call is recorded. How can I help?"
+    return f"Hi, I'm {assistant}, {business}'s AI assistant, and this call is recorded. How can I help?"
 
 
 class EndIn(BaseModel):
@@ -380,8 +444,8 @@ async def end_call(call_id: str, body: EndIn, background: BackgroundTasks) -> di
             item["facts"] = seen.get("facts", [])  # Forgotten during this call: write neither name nor facts
         else:
             item["facts"] = list(dict.fromkeys([*out.get("remembered", [])[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
-            if out.get("callerName") or seen.get("name"):
-                item["name"] = out.get("callerName") or seen["name"]
+            if name := out.get("callerName") or real_name(seen.get("name")):
+                item["name"] = name  # a placeholder kept before this fix is dropped here
         await run_in_thread(messaging_repo._table().put_item, Item=item)
     try:  # best-effort: the one outcome metric must never fail the route
         put_metric("VoiceCallOutcome", dimensions={"outcome": out["outcome"]})
@@ -707,7 +771,7 @@ class MessageIn(BaseModel):
 async def take_message(call_id: str, body: MessageIn) -> dict:
     """Always open, paused or not: a message is what every refused tool falls back to."""
     await _call(call_id)
-    entry = {**body.model_dump(), "at": utc_now_iso()}
+    entry = {**body.model_dump(), "name": real_name(body.name), "at": utc_now_iso()}
     await _patch_call(call_id, lambda c: {"messages": [*c.get("messages", []), entry],
                                           "callerName": c.get("callerName") or body.name,
                                           "steps": _step(c, f"Took a message: {body.text[:160]}")})  # fmt: skip
@@ -722,6 +786,7 @@ class UnknownIn(BaseModel):
 async def didnt_know(call_id: str, body: UnknownIn) -> dict:
     """A question the assistant couldn't answer: the call lands in Needs you."""
     meta, _ = await _call(call_id)
+    body = UnknownIn(question=redact_cards(body.question))  # it also lands in the Agent page's toAdd
     await _patch_call(call_id, lambda c: {"unknown": [*c.get("unknown", []), body.question],
                                           "steps": _step(c, f"Didn't know: {body.question[:160]}")})  # fmt: skip
     cfg = await messaging_repo.get_voice_agent(meta["ownerId"])
@@ -798,7 +863,7 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
 #: Said to the Router with each line: who is speaking, and that the reply is spoken on the phone.
 CALLER_HINT = (
     "(Said by a caller on the business's phone line, an outside contact, not a member. The reply is read out on "
-    "the call: one or two short spoken sentences, no lists, links or markdown.)"
+    "the call: one or two short spoken sentences, no lists, links or markdown. Offer at most three open times.)"
 )
 
 
@@ -813,6 +878,7 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
     row, no memory), and a `phone_contact` trigger for that room, so the Router decides it with the caller's scope
     and the Business profile, and its Front desk threads run as the caller. Keyed on (call, n): a retry is the same."""
     meta, call = await _call(call_id)
+    body = TurnIn(n=body.n, text=redact_cards(body.text))  # the room message and the Router's trigger alike
     ws, requester = meta["ownerId"], meta.get("ownerUserId")
     if not requester:
         raise _err(403, "no_requester")

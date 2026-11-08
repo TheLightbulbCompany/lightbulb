@@ -73,3 +73,30 @@ it("didnt_know offers tel when caller known", () => {
   render(<NeedsYou />);
   expect(screen.queryByRole("link", { name: "I'll call them" })).toBeNull();
 });
+
+const pending = (over: object = {}) => call({ kind: "approval", subkind: null, title: "Order supplies",
+  options: [{ id: "allow_once", label: "Allow once", style: "secondary" }, { id: "request_changes", label: "Change", style: "secondary" },
+    { id: "deny", label: "No", style: "secondary" }],
+  pendingConfirm: { by: "Ada", seat: "meet", roomId: "r1", at: "2026-11-07T15:05:00Z" }, ...over });
+
+it("pending confirm shows approved-by-voice line and Confirm", () => {
+  qs.data = [pending()];
+  const { unmount } = render(<NeedsYou />);
+  expect(screen.getByText(/Approved by voice in a meeting · /)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+  for (const n of ["Change", "No"]) expect(screen.getByRole("button", { name: n })).toBeInTheDocument();
+  unmount();
+  qs.data = [pending({ pendingConfirm: { by: "Ada", seat: "app", at: "2026-11-07T15:05:00Z" } })];
+  render(<NeedsYou />);
+  expect(screen.getByText(/You said yes · /)).toBeInTheDocument();
+});
+
+it("confirm posts the approve option", async () => {
+  api.post.mockClear();
+  qs.data = [pending()];
+  render(<NeedsYou />);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledWith("/tasks/t-1/questions/q-1/answer",
+    expect.objectContaining({ optionId: "allow_once", expectVersion: 1 })));
+});

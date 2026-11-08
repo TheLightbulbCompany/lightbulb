@@ -68,8 +68,9 @@ def test_router_agent_has_exact_tool_surface(quiet_turn, threads, monkeypatch): 
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k) or Agent())
     _post()
     threads[0].run_now()
-    assert built["enabled_toolsets"] == ["lightbulb_router", "memory"]
+    assert built["enabled_toolsets"] == ["lightbulb_router"]
     assert built["disabled_toolsets"] is None
+    assert built["skip_memory"] is True  # founder ruling A: the Router never recalls (no prefetch, no MEMORY.md)
 
 
 def test_router_skips_background_review(quiet_turn, threads, monkeypatch):  # noqa: F811

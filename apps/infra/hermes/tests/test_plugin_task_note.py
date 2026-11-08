@@ -100,7 +100,7 @@ def test_router_run_never_gets_the_task_toolset(quiet_turn, threads, monkeypatch
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k) or Agent())
     assert _post({**ROUTER, "runSecret": "s3"})[0] == 202
     threads[0].run_now()
-    assert built["enabled_toolsets"] == ["lightbulb_router", "memory"]
+    assert built["enabled_toolsets"] == ["lightbulb_router"]
 
 
 def test_paperclip_run_never_gets_the_task_toolset(monkeypatch):

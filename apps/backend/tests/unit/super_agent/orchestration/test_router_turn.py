@@ -1737,3 +1737,52 @@ async def test_a_line_unchanged_for_8_s_reads_still_working(monkeypatch):
     assert labels[-1] == acts.STILL_WORKING
     await line.update(runtime_runs.RunStatus("r", "running", "", None, None, [], [], "reply"))
     assert labels[-1] == "Lightbulb is writing a reply…"
+
+
+def test_router_replies_only_from_the_batch():
+    """One brain (founder ruling A, 8 Nov; DeepSeek shared.md:5, dispatch.md:38,40,47-49): "what have we shipped in the
+    last week?" over a batch of QA tasks was answered from those tasks. reply is only for what the batch shows;
+    a question about the business beyond it is start_task with the person's question verbatim as the brief."""
+    text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert "reply for quick answers and status" not in text
+    assert "reply only when the batch below shows the answer" in text
+    assert "what shipped" in text and "older than the batch" in text
+    assert "brief is the person's question word for word" in text
+    assert "the listed tasks are not a record of what the business did" in text
+
+
+def test_people_see_threads_not_tasks():
+    """Founder, 8 Nov: work people see is a "thread", as in Claude Projects ("Sent to a thread")."""
+    text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert 'a task is a "thread"' in text and 'never a "task" or a "request"' in text
+    assert router_prompt.restates("The thread was recorded for Growth.", {"Growth is drafting it."})
+    assert router_prompt.restates("Growth has the thread and is working on it.", {"Growth is drafting it."})
+
+
+def test_workers_answer_a_question_with_the_answer():
+    """One brain: a question task's result is the main chat's reply, so the Worker's answer is the answer itself,
+    short, facts first, never "Read the merged PRs." (DeepSeek replies.md:27-28: 100 words)."""
+    from core.temporal.activities import WORKER_INSTRUCTIONS
+
+    text = " ".join(WORKER_INSTRUCTIONS.split())
+    assert "When the task is a question" in text and "at most 100 words" in text
+    # Review #5099: a request to make, buy or send is work, however it is phrased.
+    assert 'not a question, even when phrased as one ("Can you build me a booking page?")' in text
+
+
+def test_status_of_a_visible_thread_is_still_a_reply():
+    """Review #5099: the no-lookup rule must not read as forbidding status replies about threads in the batch."""
+    text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert "The status of a thread listed below is a reply" in text
+    assert "never answer it from memory or from the tasks below" not in text
+    assert "question=true" in text
+
+
+@pytest.mark.asyncio
+async def test_a_question_start_is_stored_as_a_question(world):
+    """One brain: start_task with question=true marks the task, so its answer is the chat reply, not an output."""
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1], title="What shipped?", question=True), _start([t1], title="Buy the domain")]
+    await _run([t1])
+    rows = [await repo.get_task(WS, ts.router_task_id(BATCH, i, 0)) for i in (0, 1)]
+    assert rows[0]["question"] is True and rows[1]["question"] is False

@@ -58,6 +58,8 @@ SCHEMAS = {
             **_TASK["properties"],
             "ack": {"type": "string"},
             "visibility": {"type": "string", "enum": ["person", "room", "workspace"]},
+            "question": {"type": "boolean", "description": "True when it is a question a specialist answers by "
+                         "reading the source; its answer is the reply in chat."},
         },
         ["title", "brief", "ack"],
     ),
@@ -68,7 +70,7 @@ SCHEMAS = {
         ["task_id"],
     ),
     "reply": _schema(
-        "reply", "Answer in chat yourself (quick answers, status).", {"text": {"type": "string"}}, ["text"]
+        "reply", "Answer in chat yourself, only from what the batch shows (a thread's status).", {"text": {"type": "string"}}, ["text"]
     ),
     "ask": _schema(
         "ask",
@@ -227,6 +229,8 @@ def _problem(kind: str, args: dict) -> str | None:
         return "task_id must be a task id from the batch"
     if kind == "start_task" and args.get("visibility") not in (None, "person", "room", "workspace"):
         return "visibility is person, room or workspace"
+    if kind == "start_task" and args.get("question") not in (None, True, False):
+        return "question is true or false"
     for field in ("ack", "text", "brief", "title", "reason", "specialist", "fact"):
         if field in args and args[field] is not None and not isinstance(args[field], str):
             return f"{field} must be text"

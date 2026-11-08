@@ -72,8 +72,12 @@ WORKER_INSTRUCTIONS = (
     "success measure the person did not give, in a file or in your answer, not even as a suggestion; if you had "
     'to assume something, say it in one line starting "Assumed: ". Open your answer with one sentence saying what '
     'you made ("Drafted the welcome email."), nothing more in it; when the piece is short (a post, a reply, a '
-    "few lines) and you made no file, put the piece itself after that sentence, ready to paste. Never write a "
-    "placeholder link such as [Book]([BOOKING LINK]): when you don't have the URL, write the call to action as "
+    "few lines) and you made no file, put the piece itself after that sentence, ready to paste. When the task is "
+    "a question (what shipped, a figure, what an email or calendar says), read the source and answer it: your whole "
+    "answer is the answer, facts first, at most 100 words, no opening sentence about what you did; it is posted in "
+    "the chat as the reply. A request to make, buy or send something is not a question, even when phrased as one "
+    '("Can you build me a booking page?"). Never write a placeholder link such as [Book]([BOOKING LINK]): when '
+    "you don't have the URL, write the call to action as "
     'plain text, e.g. "Book your spot: (link to add)". An email is its subject line and its body only: no '
     '"Preview text:", "Preheader:" or other meta lines in it.'
 )
@@ -327,6 +331,10 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         "for today and any date or time)",
         task.get("description") or "",
     ]
+    # A question's own words, never paraphrased. Only a question: one message can start several threads, and the
+    # brief is each one's whole job, so a work thread never sees the message's other asks.
+    if task.get("question") and (asked := await _input_text(ws, task["triggerId"])):
+        parts.append(f"## Asked\n{asked}")
     for tid in att.get("inputTriggerIds") or []:
         text = await _input_text(ws, tid)
         if text:
@@ -579,7 +587,8 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             result_id = await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
         for f in files:  # what it made stays on the task for every status (UX slice 5)
             await tasks_access.record_output(ws, task_id, tasks_access.file_output(task_id, f))  # best effort
-        if tasks_access.short_result(att | {"outcome": outcome}):  # a short text result is what it made (walk 15)
+        # A short text result is what it made (walk 15); a question's answer is a reply, not a creation.
+        if not task.get("question") and tasks_access.short_result(att | {"outcome": outcome}):
             await tasks_access.record_output(ws, task_id, tasks_access.text_output(task, n, result_id, text))
         # A Router conversation gets one line in its main chat (`_announce`), never the whole result in a reply
         # thread (UX slice 3): the result lives in the task. With no Router thread (an automation's room) the
@@ -590,7 +599,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
                 await task_conversation.post_as_lightbulb(
                     ws,
                     room,
-                    text=f"{text}\n\n_(Attached in the task: {names}.)_" if files else text,
+                    text=f"{text}\n\n_(Attached in the thread: {names}.)_" if files else text,
                     event_id=f"task-result:{task_id}:{n}",
                     specialist=task.get("specialist"),
                     task_refs=refs,
@@ -1143,6 +1152,7 @@ async def _apply(
                     description=dec.brief,
                     specialist=dec.specialist,
                     visibility=dec.visibility,
+                    question=dec.question or None,
                     parentTaskId=dec.parent_task_id,
                     policyRef=dec.policy_ref,
                     budgetUsd=dec.budget_usd,

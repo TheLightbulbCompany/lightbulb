@@ -364,4 +364,4 @@ def test_the_inviters_state_is_in_the_meeting_instructions():
     os.environ.setdefault("LIGHTBULB_HUDDLE_SECRET", "s")
     info = {"name": "Nova", "company": "C", "title": "T", "today": "d", "context": "- [k-1] Notes: done"}
     a = meet.MeetAgent(Backend("r", "o", "t"), g(), meet.Mixer(), info, {})
-    assert a.instructions.endswith("- [k-1] Notes: done")
+    assert a.instructions.endswith("- [k-1] Notes: done\n</room-data>")

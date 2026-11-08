@@ -24,7 +24,9 @@ async def _tasks_by_status(ws, status, limit, cursor=None):
 
 
 async def test_context_has_chat_tasks_and_memory_and_keeps_only_what_keep_takes():
-    view = lambda ws, t, viewer, room: {"taskId": t["taskId"], "title": "Post", "status": "working", "result": ""}  # noqa: E731
+    def view(ws, t, viewer, room, people=None):
+        return {"taskId": t["taskId"], "title": "Post", "status": "working", "result": ""}
+
     with (
         patch.object(voice_state.messaging_repo, "list_messages_before", AsyncMock(return_value=_rows(2))) as lm,
         patch.object(voice_state.tasks_repo, "list_tasks_by_status", side_effect=_tasks_by_status),
@@ -33,7 +35,7 @@ async def test_context_has_chat_tasks_and_memory_and_keeps_only_what_keep_takes(
         patch.object(voice_state.memory_api, "recall_page", AsyncMock(return_value={"results": [{"content": "Closed Dec 25"}]})) as rp,
     ):  # fmt: skip
         keep = lambda t: t["audience"]["roomId"] == ROOM  # noqa: E731
-        text = await voice_state.context("org_1", "user_maya", ROOM, keep, "user_maya", ROOM)
+        text = await voice_state.context("org_1", "user_maya", ROOM, keep, "user_maya", ROOM, ["user_maya"])
     assert "P0: hello 0\nP1: hello 1" in text
     assert "- [k-1] Post: working" in text
     assert "k-2" not in text  # another room's task: keep refused it
@@ -48,7 +50,7 @@ async def test_a_failed_part_is_left_out_not_the_talk():
         patch.object(voice_state.tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=RuntimeError("down"))),
         patch.object(voice_state.memory_api, "recall_page", AsyncMock(side_effect=TimeoutError())),
     ):
-        text = await voice_state.context("org_1", "u", ROOM, lambda t: True, None, ROOM)
+        text = await voice_state.context("org_1", "u", ROOM, lambda t: True, None, ROOM, ["u"])
     assert text == "Recent chat, oldest first:\nP0: hello 0"
 
 
@@ -69,3 +71,15 @@ def test_task_status_says_what_the_voice_says():
     assert voice_state.task_status(s("idle", "idle", watching=True)) == "working"
     assert voice_state.task_status(s("failed", "idle")) == "failed"
     assert voice_state.task_status(s("working")) == "working"
+
+
+async def test_a_result_line_is_judged_for_everyone_present():
+    summary = {"taskId": "k-1", "title": "Post", "status": "idle", "shownGroup": "idle", "watching": False}
+    with (
+        patch.object(voice_state.tasks_repo, "get_task_tree", AsyncMock(return_value={"task": {"taskId": "k-1"}})),
+        patch.object(voice_state.tasks_access, "summarize", return_value=summary),
+        patch.object(voice_state.tasks_access, "result_line", return_value="Drafted.") as rl,
+    ):
+        out = await voice_state.task_view("org_1", {"taskId": "k-1"}, "u", ROOM, ["u", "sam"])
+    assert out == {"taskId": "k-1", "title": "Post", "status": "done", "result": "Drafted."}
+    assert rl.call_args.args[1:] == (ROOM, ["u", "sam"])

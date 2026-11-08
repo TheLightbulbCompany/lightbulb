@@ -19,6 +19,7 @@ TASKS = 12
 FACTS = 5
 RECENT = timedelta(days=3)  # a finished task older than this is history, not state
 MEMORY_S = 3.0
+CONTEXT_S = 4.0  # the whole build: the worker's /start gives up after 10 s
 
 Keep = Callable[[dict], bool]
 
@@ -38,15 +39,16 @@ def task_status(summary: dict) -> str:
     return "working"
 
 
-async def task_view(ws: str, task: dict, viewer: str, room: str) -> dict:
-    """{taskId, title, status, result}: the result is the line the room's chat shows (`tasks_access.result_line`)."""
+async def task_view(ws: str, task: dict, viewer: str, room: str, people: list[str] | None = None) -> dict:
+    """{taskId, title, status, result}: the result is the line the room's chat shows (`tasks_access.result_line`),
+    and only when everyone in `people` (default: the viewer) may see it."""
     tree = await tasks_repo.get_task_tree(ws, task["taskId"])
     s = tasks_access.summarize(tree, viewer)
-    line = tasks_access.result_line(tree, room, [viewer]) if tree["task"] else None
+    line = tasks_access.result_line(tree, room, people or [viewer]) if tree["task"] else None
     return {"taskId": s["taskId"], "title": s["title"], "status": task_status(s), "result": line or ""}
 
 
-async def _tasks(ws: str, viewer: str, room: str, keep: Keep) -> list[dict]:
+async def _tasks(ws: str, viewer: str, room: str, keep: Keep, people: list[str]) -> list[dict]:
     from routers.tasks import _search  # the task list's bounded walk, live work first
 
     cutoff = (datetime.now(UTC) - RECENT).isoformat()
@@ -56,7 +58,7 @@ async def _tasks(ws: str, viewer: str, room: str, keep: Keep) -> list[dict]:
         return fresh and keep(t) and await tasks_access.can_view(t, viewer)
 
     found, _ = await _search(ws, TASKS, mine)
-    return list(await asyncio.gather(*(task_view(ws, t, viewer, room) for t in found)))
+    return list(await asyncio.gather(*(task_view(ws, t, viewer, room, people) for t in found)))
 
 
 async def _messages(room: str) -> list[str]:
@@ -113,12 +115,24 @@ def render(messages: list[str], tasks: list[dict], facts: list[str]) -> str:
         messages.pop(0)
 
 
-async def context(ws: str, viewer: str, room: str, keep: Keep, memory_user: str | None, chat_room: str) -> str:
+async def context(
+    ws: str, viewer: str, room: str, keep: Keep, memory_user: str | None, chat_room: str, people: list[str]
+) -> str:
     """`viewer` sees the tasks `keep` takes; `chat_room` gives the recent messages; `memory_user` adds that
-    person's private memory (None: the workspace's, when others hear it)."""
+    person's private memory (None: the workspace's, when others hear it); `people` are everyone who hears it
+    (a result line is said only when all of them may see it)."""
     messages, tasks, facts = await asyncio.gather(
         _soft("messages", _messages(chat_room)),
-        _soft("tasks", _tasks(ws, viewer, room, keep)),
+        _soft("tasks", _tasks(ws, viewer, room, keep, people)),
         _soft("memory", _facts(ws, memory_user, room)),
     )
     return render(messages, tasks, facts)
+
+
+async def bounded(build: Awaitable[str]) -> str:
+    """A context build within `CONTEXT_S`, else none: a talk's start never waits on it."""
+    try:
+        return await asyncio.wait_for(build, CONTEXT_S)
+    except Exception:  # noqa: BLE001 -- a timeout or any failure: the talk starts blank, as before
+        logger.warning("voice context: none", exc_info=True)
+        return ""

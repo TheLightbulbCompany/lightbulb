@@ -55,7 +55,8 @@ async def start(room_id: str, body: OwnerIn) -> dict:
     room, member, agent = await _owner(room_id, body)
     keep = lambda t: (t.get("audience") or {}).get("roomId") == room or t.get("ownerUserId") == member  # noqa: E731
     name, context = await asyncio.gather(
-        assistant_name(body.ownerId), voice_state.context(body.ownerId, member, room, keep, member, room)
+        assistant_name(body.ownerId),
+        voice_state.bounded(voice_state.context(body.ownerId, member, room, keep, member, room, [member])),
     )
     return {"assistantName": name, "agentId": agent, "context": context}
 

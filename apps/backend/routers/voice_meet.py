@@ -85,18 +85,27 @@ async def start(room_id: str, body: StartIn) -> dict:
                 await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
             except Exception as e:  # noqa: BLE001 -- RecallError or a transport error alike
                 logger.warning("meet room %s: announce failed %s", room_id, getattr(e, "code", type(e).__name__))
-    inviter = inviting_member(meeting, await messaging_repo.list_members(room_id))
-    context = ""
-    if inviter:
-
-        def keep(t: dict) -> bool:
-            audience = t.get("audience") or {}
-            return audience.get("roomId") == room_id or (
-                t.get("ownerUserId") == inviter and audience.get("kind") == "workspace"
-            )
-
-        context = await voice_state.context(body.ownerId, inviter, room_id, keep, None, room_id)
+    context = await voice_state.bounded(_context(body.ownerId, room_id, meeting))
     return {"assistantName": name, "title": meeting.get("title") or "Meeting", "context": context}
+
+
+async def _context(owner_id: str, room_id: str, meeting: dict) -> str:
+    """The inviter's state that everyone present may hear: never a person-only task, never private memory."""
+    members = await messaging_repo.list_members(room_id)
+    inviter = inviting_member(meeting, members)
+    if inviter is None:
+        return ""
+    people = [m["id"] for m in members if m.get("kind") == "human"]
+
+    def keep(t: dict) -> bool:
+        audience = t.get("audience") or {}
+        if audience.get("kind") == "person":
+            return False  # one person's task, even one asked in this meeting's room
+        return audience.get("roomId") == room_id or (
+            t.get("ownerUserId") == inviter and audience.get("kind") == "workspace"
+        )
+
+    return await voice_state.context(owner_id, inviter, room_id, keep, None, room_id, people)
 
 
 def inviting_member(meeting: dict, members: list[dict]) -> str | None:

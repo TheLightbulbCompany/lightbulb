@@ -98,8 +98,15 @@ async def test_start_names_the_assistant_its_agent_and_the_routers_state(m):
             ROOM, voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
         )
     assert out == {"assistantName": "Nova", "agentId": "a1", "context": "Recent chat..."}
-    ws, viewer, room, keep, memory_user, chat_room = ctx.await_args.args
-    assert (ws, viewer, room, memory_user, chat_room) == ("org_1", "user_maya", ROOM, "user_maya", ROOM)
+    ws, viewer, room, keep, memory_user, chat_room, people = ctx.await_args.args
+    assert (ws, viewer, room, memory_user, chat_room, people) == (
+        "org_1",
+        "user_maya",
+        ROOM,
+        "user_maya",
+        ROOM,
+        ["user_maya"],
+    )
     assert keep({"audience": {"roomId": ROOM}}) and keep({"ownerUserId": "user_maya", "audience": {"roomId": "x"}})
     assert not keep({"ownerUserId": "user_sam", "audience": {"roomId": "x"}})
 

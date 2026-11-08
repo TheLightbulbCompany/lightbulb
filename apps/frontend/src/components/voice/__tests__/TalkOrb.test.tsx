@@ -157,6 +157,16 @@ it("the Mac app's talk key taps and holds like the orb", () => {
   expect(orb()).toHaveAttribute("aria-pressed", "false");
 });
 
+it("a talk key cancel (Fn was part of a chord) undoes the press", () => {
+  listening();
+  render(<TalkOrb name="Nova" />);
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  expect(mic).toHaveBeenCalledWith(true);
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "cancel" })); });
+  expect(mic).toHaveBeenLastCalledWith(false);
+  expect(orb()).toHaveAttribute("aria-pressed", "false");
+});
+
 it("mounted into an open mic (moving between places), the talk is still on", () => {
   listening(); connectedRoom.localParticipant.isMicrophoneEnabled = true;
   render(<TalkOrb name="Nova" compact />);

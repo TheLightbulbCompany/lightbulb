@@ -18,7 +18,8 @@ import { isTauri } from "@/lib/externalAuth";
 import { useQuestions } from "./data";
 
 export const HOLD_MS = 350; // Raycast's tap/hold rule; Wispr uses 500
-/** The Mac app's talk key (Fn, or ⌃⌥Space until Input Monitoring is granted): detail "down" | "up". */
+/** The Mac app's talk key (Fn, or ⌃⌥Space until Accessibility is granted): detail "down" | "up" | "cancel"
+ *  ("cancel": Fn was part of a chord such as Fn+←, never a talk). */
 export const TALK_KEY = "lightbulb:talk-key";
 
 type Orb = "idle" | "connecting" | "listening" | "thinking" | "working" | "speaking" | "muted" | "needs";
@@ -138,13 +139,19 @@ export function TalkOrb({ name, compact = false }: { name: string; compact?: boo
     if (held) { if (muted) void setMic(false); return; }
     if (agent?.status === "speaking") stopReply(); else end();
   };
+  const cancel = () => { // undo the press: a talk it started ends, a mute it lifted comes back
+    const d = down.current;
+    down.current = null;
+    if (d && !d.was) end(); else if (d && muted) void setMic(false);
+  };
   // The Mac app's key, to the first orb on the page only (two mounted orbs would both start).
-  const keyRef = useRef({ press, release });
-  useEffect(() => { keyRef.current = { press, release }; });
+  const keyRef = useRef({ press, release, cancel });
+  useEffect(() => { keyRef.current = { press, release, cancel }; });
   useEffect(() => {
     const onKey = (e: Event) => {
       if (document.querySelector(".vx-orb") !== orbRef.current) return;
-      if ((e as CustomEvent).detail === "down") keyRef.current.press(); else keyRef.current.release();
+      const detail = (e as CustomEvent).detail, k = keyRef.current;
+      if (detail === "down") k.press(); else if (detail === "cancel") k.cancel(); else k.release();
     };
     window.addEventListener(TALK_KEY, onKey);
     return () => window.removeEventListener(TALK_KEY, onKey);

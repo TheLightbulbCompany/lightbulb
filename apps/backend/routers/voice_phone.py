@@ -934,13 +934,20 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
         await tasks_repo.put_trigger(ws, trig)
         if blocked := await task_conversation.gate_input(ws, task_id, trig):  # §14.10, as admission's pass-through
             await task_conversation.post_as_lightbulb(
-                ws, call_id, text=blocked, event_id=f"task-gate:{task_id}:{trigger.trigger_id}", remember=False
+                ws,
+                call_id,
+                text=blocked,
+                event_id=f"task-gate:{task_id}:{trigger.trigger_id}",
+                remember=False,
+                in_reply_to=msg["messageId"],
+                attrs={"voiceWaiting": False},
             )
+            task_id = None
         else:
             await admission._to_task(ws, task_id, trigger.trigger_id)
     else:
         await admission.enqueue_trigger(ws, trigger, room_id=call_id)
-    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id}
+    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id, **({"taskId": task_id} if task_id else {})}
 
 
 _CLOSED = ("resolved", "failed")

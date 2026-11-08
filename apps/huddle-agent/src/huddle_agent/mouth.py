@@ -149,6 +149,7 @@ class Talker(Agent):
         self.results: dict[str, tuple[list[str], bool]] = {}  # speech id -> (the messages it says, word for word)
         self.free: set[str] = set()  # speech ids never checked (fixed lines, the goodbye)
         self.last: list[str] = []  # the last team result said: "say that again" says it word for word
+        self.held = False  # the holding line was said this turn (since the last result): said once per turn
 
     def post(self, request: str) -> None:
         raise NotImplementedError
@@ -197,9 +198,16 @@ class Talker(Agent):
             self.post(text)
         finally:  # the holding line even when the post failed to start; a closed session says nothing
             try:
-                self.say_fixed(HOLD)
+                if not self.held:  # once per turn: "Let me check. Let me check." (8 Nov prod Meet re-run #3)
+                    self.held = True
+                    self.say_fixed(HOLD).add_done_callback(lambda _h: self.turn_ended())
             except RuntimeError:
                 pass
+
+    def turn_ended(self) -> None:
+        """The voice's turn is over (its holding line played out, or was cut): the next ask says it again, so a
+        result that never comes or is dropped never silences every later "Let me check"."""
+        self.held = False
 
     def take_question(self) -> dict | None:
         """The Worker question last said aloud, once, when it was said within ANSWER_WITHIN_S: the next line
@@ -214,7 +222,7 @@ class Talker(Agent):
         self.free.add(speech.id)
 
     def say(self, texts: list[str], verbatim: bool = False):
-        self.last = texts
+        self.last, self.held = texts, False  # a result ends the turn: the next ask says the holding line again
         rule = verbatim_instructions if verbatim else result_instructions
         speech = self.reply(rule(texts))
         self.results[speech.id] = (texts, verbatim)
@@ -238,8 +246,6 @@ class Talker(Agent):
         if sid in self.results:
             texts, verbatim = self.results[sid]
             source = " ".join(texts)
-            if verbatim:
-                return False
             if any(h in words.lower() and h not in source.lower() for h in HOLDING):
                 metric = "voice.talker.unsaid_result"  # a holding line in place of the message (8 Nov prod Meet)
             elif refuses(words) and not refuses(source):
@@ -248,7 +254,9 @@ class Talker(Agent):
                 metric = "voice.talker.added_fact"
             else:
                 return False
-            again = lambda: self.say(texts, verbatim=True)  # noqa: E731
+            # re-said word for word at most once: a word-for-word retry that is cut too (8 Nov prod Meet re-run #3:
+            # a stale question said in place of the card line) is stopped, never said a third time
+            again = None if verbatim else lambda: self.say(texts, verbatim=True)  # noqa: E731
         elif small_talk(words, self.allow, SAID_TALK):
             return False
         else:
@@ -270,7 +278,7 @@ class Mouth:
     def __init__(self, fetch: Callable[[int, int], Awaitable[dict]], after: int) -> None:
         self._fetch, self.after, self.handled = fetch, after, after
         self.pending: list[dict] = []
-        self._said: set[str] = set()
+        self._said: set[str] = set()  # message ids, and the qid of every Worker question queued: each said once
         self.question: dict | None = None  # {taskId, qid}: the last Worker question said aloud
         self.question_at = 0.0  # when it was said (monotonic)
 
@@ -281,15 +289,18 @@ class Mouth:
             logger.warning("mouth: events failed (%s)", e.code)
             return
         for m in out.get("messages", []):
-            if m["id"] not in self._said and speakable(m.get("text") or ""):
-                self._said.add(m["id"])
+            qid = (m.get("question") or {}).get("qid")
+            if m["id"] not in self._said and qid not in self._said and speakable(m.get("text") or ""):
+                self._said.update(k for k in (m["id"], qid) if k)
                 self.pending.append(m)
         self.after = max(self.after, int(out.get("after") or 0))
         if not self.pending:
             self.handled = self.after
 
     def speak(self, say: Callable[[list[str]], object], *, ready: bool, live: bool) -> int:
-        """How many messages were handed to `say` (0: none pending, not ready, or not live: then they are dropped)."""
+        """How many messages were handed to `say` (0: none pending, not ready, or not live: then they are dropped).
+        One message per speech, oldest first: batched, a result rule of "one or two sentences" said one thread's
+        question and dropped another's (8 Nov prod Meet re-run #3: Vera's question and the card line unheard)."""
         if not self.pending:
             return 0
         if not live:
@@ -297,8 +308,9 @@ class Mouth:
             return 0
         if not ready:
             return 0
-        msgs, self.pending, self.handled = self.pending, [], self.after
-        if q := next((m["question"] for m in reversed(msgs) if m.get("question")), None):
+        msgs, self.pending = self.pending[:1], self.pending[1:]
+        self.handled = self.after if not self.pending else max(self.handled, int(msgs[0].get("seq") or 0))
+        if q := msgs[0].get("question"):
             self.question, self.question_at = q, time.monotonic()
         try:
             say([speakable(m["text"]) for m in msgs])

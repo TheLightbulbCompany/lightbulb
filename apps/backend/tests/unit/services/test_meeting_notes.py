@@ -615,7 +615,9 @@ async def test_notes_with_no_action_items_file_nothing(env, monkeypatch):
 
 async def test_action_items_the_meeting_already_started_are_not_filed_again(env, monkeypatch):
     """8 Nov prod Meet re-run: LB-24 "Finalize and share holiday-hours post" duplicated LB-19, which had finished.
-    A dropped item is still in the notes message, as "Already a thread: ..."."""
+    Re-run #3: a covered item listed as "Already a thread: ..." in the waking message was handed by the Router to
+    the finished LB-28, which ran again. Covered items are left out of the Router's message (they stay in the
+    mailed notes); with nothing new, nothing is posted."""
     env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
     env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
     made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
@@ -625,9 +627,7 @@ async def test_action_items_the_meeting_already_started_are_not_filed_again(env,
              "- Pat: book the venue for the party")  # fmt: skip
     await ended_and_noted(env, notes)
     assert made.await_args.args[2].text == (
-        "Action items from the meeting Weekly sync, one thread each:\n- Pat: book the venue for the party\n\n"
-        "Already a thread: Pulse: Finalize and share holiday-hours post\n"
-        "Already a thread: Vera: order the gel colours"
+        "Action items from the meeting Weekly sync, one thread each:\n- Pat: book the venue for the party"
     )
     assert made.await_args.kwargs == {"via": "meeting_notes"}
     assert env.task_titles.await_args.args == ("org_1", ROOM, 1790972500)  # the meeting room's, since the call
@@ -638,10 +638,7 @@ async def test_action_items_the_meeting_already_started_are_not_filed_again(env,
     ]
     made.reset_mock()
     await mod._file_action_items("org_1", "msg-2", {"roomId": ROOM, "meeting": {"inCallAt": 1790972500}}, notes)
-    text = made.await_args.args[2].text  # all covered: the notes say so, and wake no Router
-    assert text.startswith("Action items from the meeting Weekly sync are already threads:\n")
-    assert "Already a thread: Pat: book the venue for the party" in text and "one thread each" not in text
-    assert made.await_args.kwargs == {"via": "meeting_notes", "wake": False}
+    made.assert_not_awaited()  # all covered: nothing for the Router, nothing posted
 
 
 async def test_without_in_call_at_every_action_item_is_filed(env, monkeypatch):

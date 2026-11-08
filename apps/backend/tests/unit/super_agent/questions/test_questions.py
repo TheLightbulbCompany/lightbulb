@@ -108,6 +108,30 @@ async def test_can_answer_now(clerk, policy):
     assert await questions.can_answer_now(ORG, q, "user_sam")  # the requester is not an admin seat
 
 
+async def test_a_meetings_approval_goes_to_the_inviter_only(clerk, policy):
+    """8 Nov prod Meet re-run #3: Vera's $215.90 purchase card went to the inviter and two other admins. Founder
+    ruling: a meeting's (`confirmAll`) Needs-your-OK card goes to the inviter only, and only the inviter answers it."""
+    meeting = {**TASK, "confirmAll": True}
+    ids, rule, base = await questions.answerers(ORG, meeting, "approval", "purchase")
+    assert (ids, rule, base) == (["user_sam"], "inviter", ["user_sam"])
+    q = {"subkind": "purchase", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
+    assert await questions.can_answer_now(ORG, q, "user_sam")  # a member, not an admin: still the inviter's OK
+    assert not await questions.can_answer_now(ORG, q, "user_ada")
+    # a meeting's plain question keeps its rule; outside a meeting a purchase still goes to the admins
+    assert (await questions.answerers(ORG, meeting, "question", "question"))[0] == ["user_sam"]
+    assert (await questions.answerers(ORG, TASK, "approval", "purchase"))[0] == ["user_ada", "user_bo"]
+
+
+async def test_a_meetings_approval_falls_back_to_the_admins_without_a_member_inviter(clerk, policy):
+    """Review of #5119: an inviter who left the workspace, or a workspace-owned task, must not lock the card."""
+    gone = {**TASK, "ownerUserId": "user_gone", "confirmAll": True}
+    ids, rule, _ = await questions.answerers(ORG, gone, "approval", "purchase")
+    assert (ids, rule) == (["user_ada", "user_bo"], "admins")
+    org = {**TASK, "ownerUserId": ORG, "confirmAll": True}
+    ids, rule, _ = await questions.answerers(ORG, org, "approval", "purchase")
+    assert (ids, rule) == (["user_ada", "user_bo"], "admins")
+
+
 async def test_can_answer_now_promoted_member_not_stored(clerk, policy):
     """Authority gained after the ask doesn't add a person: stored list AND rule (spec 05 §3.3)."""
     ids, rule, base = await questions.answerers(ORG, TASK, "approval", "purchase")

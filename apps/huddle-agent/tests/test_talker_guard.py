@@ -12,10 +12,14 @@ from huddle_agent import mouth, owner
 
 class _Speech:
     def __init__(self, sid):
-        self.id, self.interrupted = sid, 0
+        self.id, self.interrupted, self.callbacks = sid, 0, []
 
     def add_done_callback(self, cb):
-        pass
+        self.callbacks.append(cb)
+
+    def done(self):
+        for cb in self.callbacks:
+            cb(self)
 
     def interrupt(self, force=False):
         self.interrupted += 1
@@ -148,9 +152,9 @@ async def test_a_result_that_adds_a_fact_is_cut_and_said_word_for_word(talker, s
     assert session.current_speech.interrupted == 1
     assert session.replies[-1] == mouth.verbatim_instructions(["We merged 5095 today."])
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["voice.talker.added_fact"] == 1
-    session.current_speech = session.made[-1]  # the word-for-word retelling is not checked again
+    session.current_speech = session.made[-1]  # the word-for-word retelling is checked, and never retried again
     await _speak(talker, "We merged 5095 today. ", "Also 77.")
-    assert session.current_speech.interrupted == 0
+    assert session.current_speech.interrupted == 1 and len(session.replies) == 2
 
 
 async def test_a_swapped_name_in_a_result_is_cut(talker, session):
@@ -283,3 +287,61 @@ async def test_a_repeat_request_says_the_last_result_again_word_for_word(talker,
 async def test_a_repeat_request_with_nothing_said_yet_is_small_talk(talker, session):
     assert talker.line("Maya", "Can you repeat that?") == "chat"
     assert session.replies == [mouth.SMALL_TALK_RULE] and talker.backend.sent == []
+
+
+async def test_the_holding_line_is_said_once_per_turn(talker, session):
+    """8 Nov prod Meet re-run #3: "Let me check. Let me check." in one turn. Once until a result is said."""
+    talker.line("Maya", "What shipped this week?")
+    talker.line("Maya", "And did Acme pay?")
+    assert session.replies == [mouth.HOLD]
+    talker.say(["We shipped phone reception."])
+    talker.line("Maya", "What about Friday?")
+    assert session.replies.count(mouth.HOLD) == 2 and session.replies[-1] == mouth.HOLD
+
+
+async def test_a_cut_result_is_said_again_at_most_once(talker, session, capsys):
+    """8 Nov prod Meet re-run #3: the card line was replaced by a stale question ("Let me check. Pulse asks...").
+    The word-for-word retry is checked too, and cut without a third try."""
+    card = "Vera needs your OK to buy from Beyond Polish for 215.90 dollars."
+    session.current_speech = talker.say([card])
+    await _speak(talker, "Let me check. Pulse asks what exact holiday hours...")
+    assert session.replies[-1] == mouth.verbatim_instructions([card])
+    session.current_speech = session.made[-1]
+    await _speak(talker, "Let me check. Pulse asks what exact holiday hours...")
+    assert session.current_speech.interrupted == 1 and len(session.replies) == 2  # cut, never said a third time
+    session.current_speech = talker.say([card], verbatim=True)
+    await _speak(talker, card)  # a faithful word-for-word line is never cut
+    assert session.current_speech.interrupted == 0
+
+
+async def test_queued_messages_are_said_one_at_a_time_in_order_and_a_question_once():
+    """8 Nov prod Meet re-run #3: Pulse's question was said about 5 times and crowded out Vera's question and the
+    card line. Each message is its own speech, oldest first; a Worker question (by qid) is said once."""
+    pulse = {"id": "q1", "seq": 8, "text": "Pulse asks: what holiday hours?", "question": {"taskId": "t1", "qid": "q-1"}}
+    polls = [
+        {"messages": [pulse, {"id": "q2", "seq": 9, "text": "Vera asks: which brand?",
+                              "question": {"taskId": "t2", "qid": "q-2"}}], "after": 9},
+        {"messages": [{**pulse, "id": "q1-again", "seq": 10}, {"id": "c1", "seq": 11, "text": "Vera needs your OK."}],
+         "after": 11},
+    ]  # fmt: skip
+
+    async def fetch(after, handled):
+        return polls.pop(0) if polls else {"messages": [], "after": after}
+
+    m, said = mouth.Mouth(fetch, 7), []
+    await m.poll()
+    assert m.speak(said.append, ready=True, live=True) == 1 and m.question["qid"] == "q-1"
+    await m.poll()
+    while m.speak(said.append, ready=True, live=True):
+        await m.poll()
+    assert said == [["Pulse asks: what holiday hours?"], ["Vera asks: which brand?"], ["Vera needs your OK."]]
+    assert m.question["qid"] == "q-2" and m.handled == 11
+
+
+async def test_a_dropped_result_never_silences_the_next_holding_line(talker, session):
+    """Review of #5119: `held` reset only on a result, so a result that never came silenced every later hold. The
+    turn ends when the holding line has played: the next ask says it again."""
+    talker.line("Maya", "What shipped this week?")
+    session.made[-1].done()  # the holding line played out; no result ever came
+    talker.line("Maya", "And did Acme pay?")
+    assert session.replies == [mouth.HOLD, mouth.HOLD]

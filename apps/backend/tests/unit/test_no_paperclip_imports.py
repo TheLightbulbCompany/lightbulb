@@ -34,12 +34,13 @@ DELETED = (
     "core.services.paperclip_provisioning",
     "core.services.paperclip_user_delete",
     "core.services.paperclip_sql",
+    "core.services.board_cards",
 )
 
 KEPT = {
     "core/repositories/paperclip_repo.py": "the workspace META store (resolve_owner_row, funnel, members) and the copy_workspace_meta translation",
     "core/services/paperclip_adapter_config.py": "hermes_gateway adapter block for agent create",
-    "core/services/paperclip_admin_client.py": "purchase cards and the Paperclip-run paths (task 6) still write through Paperclip",
+    "core/services/paperclip_admin_client.py": "the Paperclip-run paths (task 6) still write through Paperclip",
     "core/services/paperclip_admin_session.py": "admin cookie for the client above and for the prod scripts",
     "core/services/paperclip_meta.py": "agent create fields",
     "core/services/paperclip_openclaw_pairing.py": "resolve_company_id_for_owner, read by the client callers",
@@ -61,7 +62,6 @@ IMPORTERS = {
     "core/services/agent_mail_owner_send.py",
     "core/services/agent_mail_send.py",
     "core/services/agent_registry.py",
-    "core/services/board_cards.py",
     "core/services/company_package.py",
     "core/services/daily_digest.py",
     "core/services/hermes_provisioning.py",
@@ -71,7 +71,6 @@ IMPORTERS = {
     "core/services/onboarding_brief.py",
     "core/services/openclaw_work.py",
     "core/services/owner_facts.py",
-    "core/services/purchases.py",
     "core/services/readiness_state.py",
     "core/services/runtime_rpc.py",
     "core/services/session_chat.py",

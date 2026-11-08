@@ -302,14 +302,14 @@ def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
 
 
 # request_purchase tool (Link Agent Wallet, dark): the agent can only ASK. The backend checks the
-# owner's purchase limits, files the Needs-you card and, after the owner's click, Link's own
-# approval. The agent and workspace come from the turn; the reply is {requestId, status} and
-# nothing else -- no URL, token or card ever reaches the model.
+# owner's purchase limits after the task's Needs-you question, then Link's own approval. The agent
+# and workspace come from the turn; the reply is {requestId, status} and nothing else -- no URL,
+# token or card ever reaches the model.
 PURCHASE_SCHEMA = {
     "name": "request_purchase",
     "description": "Ask the owner to approve buying something for this company. You do not pay: the "
                    "owner approves it in Lightbulb and in Link first, and you are never given a card. "
-                   "Use it only for a real purchase your task needs, tied to the issue you are working on.",
+                   "Use it only for a real purchase your task needs.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -317,9 +317,9 @@ PURCHASE_SCHEMA = {
             "url": {"type": "string", "description": "The merchant's web address (the page you would buy on)."},
             "amount": {"type": "number", "description": "Total in US dollars, e.g. 35.00."},
             "why": {"type": "string", "description": "What it is and why the company needs it, one or two sentences. The owner reads this."},
-            "issue_id": {"type": "string", "description": "The issue this purchase is for."},
+            "issue_id": {"type": "string", "description": "Optional, ignored: the purchase is tied to your current task."},
         },
-        "required": ["merchant", "url", "amount", "why", "issue_id"],
+        "required": ["merchant", "url", "amount", "why"],
     },
 }
 PURCHASE_NO_TURN = "request_purchase works only inside a Lightbulb turn."

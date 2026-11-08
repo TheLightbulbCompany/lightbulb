@@ -182,6 +182,23 @@ async def test_auto_outsider_mail_asks(api, mode):
     assert resp.json()["decision"] == "needs_approval"
 
 
+async def test_purchase_asks_while_money_moves_is_on_or_the_merchant_is_not_allowlisted(api, mode, monkeypatch):
+    """The Question is the owner's approval the Paperclip card used to be: under the cap it still asks unless "ask
+    before moving money" is off and the merchant is allowlisted (purchases.needs_person)."""
+    limits = {"perPurchaseCents": 10000, "projectMonthlyCents": 20000, "merchants": ["https://acme.com"]}
+    monkeypatch.setattr(billing_repo, "get_purchase_limits", AsyncMock(return_value=limits))
+    tid = await _started()
+    ops = {"merchant": "Acme", "url": "https://shop.acme.com", "amount": 35, "why": "hosting"}
+    resp = await api.post(_url(), json=await _body(tid, "c1", "purchase", ops), headers=H)
+    assert resp.json()["decision"] == "needs_approval"  # money_moves on
+    mode["money_moves"] = False
+    other = {**ops, "url": "https://other.example.com"}
+    resp = await api.post(_url(), json=await _body(tid, "c2", "purchase", other), headers=H)
+    assert resp.json()["decision"] == "needs_approval"  # not allowlisted
+    resp = await api.post(_url(), json=await _body(tid, "c3", "purchase", ops), headers=H)
+    assert resp.json() == {"decision": "proceed"}
+
+
 async def test_ask_mode_asks_for_a_member_mail_and_never_ask_does_not(api, mode):
     tid = await _started()
     mode["approval_mode"] = "ask"

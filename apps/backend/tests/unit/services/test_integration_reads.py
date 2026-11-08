@@ -58,6 +58,8 @@ class _Http:
 def env():
     rows = [{"provider": p, "status": "connected"} for p in ("google", "github", "posthog", "notion", "slack")]
     http = _Http()
+    http.get(url__startswith="https://api.github.com/user").respond(json={"login": "me"})
+    http.get(url__startswith="https://api.github.com/user/orgs").respond(json=[])
     secrets = {"github": {"access_token": "gh"}, "posthog": {"access_token": "ph"}}
 
     async def token(ws, key):
@@ -149,6 +151,26 @@ async def test_github_issue_search(env):
     )
     assert await ir.read(WS, "GitHub", "login") == "Login broken (open, acme/web #7)"
     assert route.calls[0].request.headers["Authorization"] == "Bearer gh"
+
+
+async def test_github_search_is_scoped_to_the_connected_user_and_orgs(env):
+    env["http"].get(url__startswith="https://api.github.com/user").respond(json={"login": "pras"})
+    env["http"].get(url__startswith="https://api.github.com/user/orgs").respond(
+        json=[{"login": f"o{i}"} for i in range(6)]
+    )
+    route = env["http"].get(url__startswith="https://api.github.com/search/issues").respond(json={"items": []})
+    await ir.read(WS, "github", "login bug")
+    q = route.calls[0].request.url.params["q"]
+    assert q.startswith("login bug ") and "user:pras" in q
+    assert [w for w in q.split() if w.startswith("org:")] == ["org:o0", "org:o1", "org:o2", "org:o3"]
+
+
+async def test_github_without_an_account_never_searches_all_of_github(env):
+    env["http"].get(url__startswith="https://api.github.com/user").respond(401)
+    env["http"].get(url__startswith="https://api.github.com/user/orgs").respond(401)
+    route = env["http"].get(url__startswith="https://api.github.com/search/issues").respond(json={"items": []})
+    assert await ir.read(WS, "github", "login") == "I couldn't tell which GitHub account is connected."
+    assert route.calls == []
 
 
 async def test_posthog_counts_and_fences_the_event(env):

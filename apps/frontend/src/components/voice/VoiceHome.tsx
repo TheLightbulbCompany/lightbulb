@@ -50,6 +50,7 @@ export function VoiceHome() {
   const name = nameOf(config);
   const needs = useNeedsYouTotal();
   const [filter, setFilter] = useState<Filter>("all");
+  const [now] = useState(() => Date.now());  // one clock per render tree: "Upcoming" is judged against this
   const [openId, setOpenId] = useState<string | null>(null);
   const all = useMemo(() => items ?? [], [items]);
   const shown = all.filter(FILTERS.find((f) => f[0] === filter)![2]);
@@ -85,7 +86,7 @@ export function VoiceHome() {
         : "Nothing here yet."}</p>}
       {groups.map(([day, rows]) => <section key={day} aria-label={day}>
         <h2 className="vx-day">{day}</h2>
-        {rows.map((i) => <Row key={i.roomId} item={i} name={name} current={i.roomId === openId} onOpen={() => setOpenId(i.roomId)} />)}
+        {rows.map((i) => <Row key={i.roomId} item={i} name={name} now={now} current={i.roomId === openId} onOpen={() => setOpenId(i.roomId)} />)}
       </section>)}
       {all.length > 0 && <p className="vx-foot">
         Today {today.length} answered · {today.filter((c) => c.type === "call" && c.outcome === "booked").length} booked
@@ -98,12 +99,14 @@ export function VoiceHome() {
   </div>;
 }
 
-function Row({ item, name, current, onOpen }: { item: TimelineItem; name: string; current: boolean; onOpen: () => void }) {
+function Row({ item, name, current, now, onOpen }: { item: TimelineItem; name: string; current: boolean; now: number; onOpen: () => void }) {
   if (item.type === "meeting") {
     const mins = item.endAt && item.startAt ? Math.round((item.endAt - item.startAt) / 60) : null;
     const did = item.summary || [item.asked?.length && `Asked ${item.asked.length === 1 ? "once" : `${item.asked.length} times`}`,
       item.followUps?.length && `${item.followUps.length} follow-up${item.followUps.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
-      || `${name} listened.`;
+      || (item.at > now ? `Upcoming. ${name} will join.`
+        : item.endAt && item.endAt * 1000 > now ? `In progress.`  // endAt/startAt are epoch seconds (meeting_invites.py); at is ms
+        : `${name} listened.`);  // a calendar meeting that has not happened is not one Nova listened to
     return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
       <time>{time(item.at)}</time><Video size={16} aria-label="Meeting" />
       <span><span className="vx-who">{item.title || "Meeting"}<small>Google Meet{item.people?.length ? ` · ${item.people.join(", ")}` : ""}</small></span>

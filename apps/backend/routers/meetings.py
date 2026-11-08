@@ -176,6 +176,7 @@ async def _on_status(
             await meeting_invites._patch_meeting(
                 room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
             )
+            # ponytail: warms the room's agents (the default Worker); add the `office` specialist once Task 4 seeds it
             voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id), room_id=room_id)
             await _publish(room_id, "in_call")
         elif target == "ended":

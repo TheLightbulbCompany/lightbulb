@@ -149,3 +149,35 @@ def test_a_runs_heartbeat_keeps_its_session_live_on_its_own_runtime(monkeypatch)
     )
     rt.note_alive("org_a")
     assert extended and extended[0] > 10**9
+
+
+@pytest.mark.asyncio
+async def test_a_missed_heartbeat_inside_the_grace_window_keeps_the_poll_on_its_own_runtime(shared, monkeypatch):
+    """One late or missed heartbeat must not send a live run's poll to the pool (RunLost): the session
+    counts as live on its own runtime for ``LIVE_GRACE_S`` past ``warm_until``."""
+    import time
+
+    from core.services import runtime_runs
+
+    row = {"owner_id": "org_a", "id": "row-1", "agentcore_runtime_arn": OWN, "status": "running", "gateway_token": "g"}
+    now = int(time.time())
+    session = {"arn": OWN, "warm_until": now - 60, "started_at": 1}  # a heartbeat is a minute late
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    sent = []
+
+    class Client:
+        def invoke_agent_runtime(self, **kw):
+            sent.append(kw["agentRuntimeArn"])
+            body = {"run_id": "r1", "status": "running"} if kw["agentRuntimeArn"] == OWN else {"error": "run_not_found"}
+            status = 200 if kw["agentRuntimeArn"] == OWN else 404
+            return {"statusCode": 200, "response": json.dumps({"status": status, "body": body})}
+
+    monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
+    identity = runtime_runs.RunIdentity("r1", "org_a", "t1", 1, "agent-1")
+    with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: session):
+        status = await runtime_runs.get_run("org_a", identity)  # no RunLost
+        assert status.status == "running" and sent == [OWN]
+        session["warm_until"] = now - 151  # past the grace window: idle, the pool takes it
+        with pytest.raises(runtime_runs.RunLost):
+            await runtime_runs.get_run("org_a", identity)
+        assert sent == [OWN, SHARED]

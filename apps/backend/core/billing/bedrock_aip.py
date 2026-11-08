@@ -180,7 +180,7 @@ async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
     from core.dynamodb import run_in_thread
 
     if not profile_id or settings.HERMES_SHARED_RUNTIME_ARN:
-        return  # on the shared runtime the session's scoped credentials carry InvokeBrowser
+        return  # on the shared runtime InvokeBrowser sits on the pool execution role (the bridge calls it)
     region = settings.AWS_REGION
     account_id = await _caller_account_id()
     doc = {

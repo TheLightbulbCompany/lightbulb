@@ -1383,6 +1383,8 @@ async def get_agent_message_receipt(owner_id: str, event_id: str, request: Reque
 @router.post("/internal/messaging/runs/{owner_id}/events", response_model=RunEventResponse)
 async def post_run_event(owner_id: str, body: RunEventRequest, request: Request):
     await _require_hook_token(owner_id, request, run_event_id=str(body.run_id))
+    if body.type == "run.heartbeat":  # a room turn's session is alive: keep it on its runtime at cut-over
+        await run_in_thread(runtime_transport.note_alive, owner_id)
     return await service.handle_run_event(owner_id, body)
 
 

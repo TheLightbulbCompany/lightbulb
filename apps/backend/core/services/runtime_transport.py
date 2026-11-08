@@ -121,12 +121,18 @@ def runtime_arn(container: dict) -> str | None:
     return own
 
 
+#: How long past ``warm_until`` :func:`live_arn` still counts a session live on its own runtime, so
+#: one late or missed heartbeat (every ~2 min) cannot send a live run's poll to the pool (RunLost).
+LIVE_GRACE_S = 150
+
+
 def live_arn(container: dict, task_id: str | None = None) -> str | None:
     """:func:`runtime_arn`, except at the cut-over: a session still live on the workspace's OWN
     runtime stays there until it idles. A run in flight there is unknown to a fresh pool session,
     so a poll, steer or stop sent to the pool would read it as lost (RunLost) and retry it. "Live"
-    is the wake gate's own estimate (``__session__#<owner>``: warm on that ARN), which a running
-    run's heartbeat keeps current (:func:`note_alive`). Sync: a DynamoDB read, on the invoke pool."""
+    is the wake gate's own estimate (``__session__#<owner>``: warm on that ARN, plus
+    ``LIVE_GRACE_S``), which run and room-turn heartbeats keep current (:func:`note_alive`).
+    Sync: a DynamoDB read, on the invoke pool."""
     arn, own = runtime_arn(container), container.get("agentcore_runtime_arn")
     if not own or arn == own:
         return arn
@@ -138,7 +144,7 @@ def live_arn(container: dict, task_id: str | None = None) -> str | None:
         row = repo.get_session_sync(container.get("owner_id") or "", task_id=task_id)
     except (ClientError, BotoCoreError):
         return arn
-    return own if row.get("arn") == own and int(row.get("warm_until") or 0) > time.time() else arn
+    return own if row.get("arn") == own and int(row.get("warm_until") or 0) > time.time() - LIVE_GRACE_S else arn
 
 
 def note_alive(owner_id: str, task_id: str | None = None) -> None:

@@ -137,6 +137,14 @@ export class AuthStack extends cdk.Stack {
       "Required by Paperclip server for cookie/session signing; not consumed by Isol8 backend.",
     );
 
+    // Paperclip exit, step 1 of 2: only the Paperclip server read this. RETAIN
+    // so step 2's removal orphans it (CloudFormation's default secret delete is
+    // ForceDeleteWithoutRecovery); the lead deletes it by hand with a recovery
+    // window. The live lightbulb-{env}-paperclip stack still imports it until
+    // it is deleted, so keep the export too.
+    this.paperclipBetterAuthSecret.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+    this.exportValue(this.paperclipBetterAuthSecret.secretArn);
+
     this.paperclipServiceTokenKey = createSecret(
       "PaperclipServiceTokenKey",
       "paperclip_service_token_key",
@@ -269,6 +277,8 @@ export class AuthStack extends cdk.Stack {
       { passwordLength: 16, excludePunctuation: true },
       "Paperclip bootstrap admin Better Auth credentials (JSON: {email,password}). Populated by bootstrap_paperclip_admin.py - placeholder until then.",
     );
+    // Paperclip exit, step 1 of 2: same RETAIN-before-remove as the Better Auth secret.
+    this.paperclipAdminCredentials.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
 
     // Password the gog CLI's file-keyring backend uses to encrypt/decrypt the
     // owner's Google OAuth keyring on EFS (GOG_KEYRING_BACKEND=file +

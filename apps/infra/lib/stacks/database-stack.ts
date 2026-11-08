@@ -576,6 +576,14 @@ export class DatabaseStack extends cdk.Stack {
       description: "Subnets for Paperclip Aurora cluster",
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
     });
+    const paperclipDbSecret = new rds.DatabaseSecret(this, "PaperclipDbV2Secret", {
+      username: "paperclip_admin",
+      secretName: `lightbulb-${env}-paperclip-db-credentials`,
+    });
+    // Paperclip exit, step 1 of 2: RETAIN so step 2 (which removes the cluster)
+    // orphans this secret instead of CloudFormation force-deleting it with no
+    // recovery window. The lead deletes it by hand afterwards.
+    paperclipDbSecret.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
     this.paperclipDbCluster = new rds.DatabaseClusterFromSnapshot(this, "PaperclipDbV2", {
       engine: rds.DatabaseClusterEngine.auroraPostgres({
         // The live clusters auto-upgraded to 16.11; a restore cannot target an
@@ -586,12 +594,7 @@ export class DatabaseStack extends cdk.Stack {
       // fromSecret (not fromGeneratedSecret): that variant cannot name the
       // secret. CDK still sets the restored cluster's master password from it
       // and attaches it, so `cluster.secret` works exactly as before.
-      snapshotCredentials: rds.SnapshotCredentials.fromSecret(
-        new rds.DatabaseSecret(this, "PaperclipDbV2Secret", {
-          username: "paperclip_admin",
-          secretName: `lightbulb-${env}-paperclip-db-credentials`,
-        }),
-      ),
+      snapshotCredentials: rds.SnapshotCredentials.fromSecret(paperclipDbSecret),
       serverlessV2MinCapacity: 0, // scale-to-zero
       serverlessV2MaxCapacity: 4,
       writer: rds.ClusterInstance.serverlessV2("writer", {
@@ -609,6 +612,18 @@ export class DatabaseStack extends cdk.Stack {
     });
 
     this.paperclipDbSecurityGroup = paperclipDbSecurityGroup;
+
+    // Paperclip exit, step 1 of 2. PaperclipStack is gone from the app, but the
+    // pipeline never deletes a stack, so lightbulb-{env}-paperclip stays live
+    // (until the lead deletes it by hand) and still imports these three. The
+    // observability stack imports the cluster ref until its own update, which
+    // runs after this stack. Without these the auto-exports vanish and this
+    // stack's update fails "export in use". Step 2 removes them with the
+    // cluster (Stack.exportValue docs, "Deployment 1: break the relationship").
+    this.exportValue(this.paperclipDbCluster.clusterIdentifier);
+    this.exportValue(this.paperclipDbCluster.clusterEndpoint.hostname);
+    this.exportValue(this.paperclipDbCluster.secret!.secretArn);
+    this.exportValue(paperclipDbSecurityGroup.securityGroupId);
 
     new cdk.CfnOutput(this, "PaperclipDbEndpoint", {
       value: this.paperclipDbCluster.clusterEndpoint.hostname,

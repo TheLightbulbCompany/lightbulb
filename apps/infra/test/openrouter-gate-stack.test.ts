@@ -9,8 +9,6 @@ test("dev OpenRouter gate is a token-gated streaming Lambda with owner-key acces
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "dev",
-    apiDomain: "api.example.test",
-    wsInternalSecretName: "lightbulb/dev/ws_internal_secret",
   });
   const template = Template.fromStack(stack);
   template.hasResourceProperties("AWS::Lambda::Function", {
@@ -29,8 +27,7 @@ test("dev OpenRouter gate is a token-gated streaming Lambda with owner-key acces
   template.hasResourceProperties("AWS::Lambda::Function", {
     FunctionName: "lightbulb-dev-openrouter-settlement",
     Environment: { Variables: Match.objectLike({
-      BACKEND_INTERNAL_URL: "https://api.example.test",
-      WS_INTERNAL_SECRET_ID: "lightbulb/dev/ws_internal_secret",
+      GATE_ENV: "dev",
     }) },
   });
   template.hasResourceProperties("AWS::Lambda::Url", {
@@ -54,8 +51,6 @@ test("dev gate consumes an explicitly supplied model policy", () => {
     const stack = new OpenRouterGateStack(app, "OpenRouterGatePolicy", {
       env: { account: "877352799272", region: "us-east-1" },
       environment: "dev",
-      apiDomain: "api.example.test",
-      wsInternalSecretName: "lightbulb/dev/ws_internal_secret",
     });
     Template.fromStack(stack).hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "lightbulb-dev-openrouter-gate",
@@ -74,8 +69,6 @@ test("dev settlement runs the daily audit", () => {
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "dev",
-    apiDomain: "api.example.test",
-    wsInternalSecretName: "lightbulb/dev/ws_internal_secret",
   });
   const template = Template.fromStack(stack);
   template.hasResourceProperties("AWS::Lambda::Function", {
@@ -111,8 +104,6 @@ test("prod settlement ingests money and runs the audit", () => {
   const template = Template.fromStack(new OpenRouterGateStack(app, "OpenRouterGateProd", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "prod",
-    apiDomain: "api.example.test",
-    wsInternalSecretName: "lightbulb/prod/ws_internal_secret",
   }));
   template.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "lightbulb-prod-openrouter-settlement" });
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });

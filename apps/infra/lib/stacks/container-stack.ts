@@ -34,8 +34,8 @@ const CONSOLIDATION_PROMPT = promptText("memory-consolidation.md");
  *
  *  - the PLATFORM ECS cluster (the backend Fargate service runs on it; the
  *    provisioner is a Lambda now),
- *  - the Cloud Map private DNS namespace PaperclipStack registers
- *    `paperclip.<namespace>` into,
+ *  - the Cloud Map private DNS namespace (PaperclipStack used to register
+ *    `paperclip.<namespace>`; the backend still derives PAPERCLIP_INTERNAL_URL from it),
  *  - the per-owner Bedrock base policy + permissions boundary, which double as
  *    every workspace's AgentCore Runtime EXECUTION role,
  *  - the per-owner state bucket (`lightbulb-{env}-openclaw-replicas`) every
@@ -128,6 +128,9 @@ export class ContainerStack extends cdk.Stack {
         description: `Lightbulb ${props.environment} service discovery namespace`,
       },
     );
+    // Paperclip exit, step 1 of 2: the live lightbulb-{env}-paperclip stack (out
+    // of the app, deleted by hand) still imports this id. Step 2 drops the pin.
+    this.exportValue(this.cloudMapNamespace.namespaceId);
 
     this.containerSecurityGroup = new ec2.SecurityGroup(
       this,

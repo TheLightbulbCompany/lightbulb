@@ -804,62 +804,8 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Bootstrap admin credentials write (Paperclip service account):
-    // apps/backend/scripts/bootstrap_paperclip_admin.py is invoked via
-    // `aws ecs execute-command` against the backend task. It signs up
-    // the bootstrap admin email (see ADMIN_EMAIL constant in the
-    // script) in Paperclip, then calls PutSecretValue on
-    // isol8/{env}/paperclip_admin_credentials. Without this scoped
-    // grant the put fails with AccessDeniedException after the
-    // Paperclip user is already created — leaves an inconsistent
-    // bootstrap state (user exists but credentials not persisted, so
-    // re-running fails with "user already exists").
-    // Read of this secret is already covered by the wildcard
-    // SecretsAccess + KmsDecryptForSecrets policies.
-    secretsPolicy.addStatements(
-      new iam.PolicyStatement({
-        sid: "PaperclipAdminCredentialsWrite",
-        effect: iam.Effect.ALLOW,
-        actions: ["secretsmanager:PutSecretValue"],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip_admin_credentials-*`,
-        ],
-      }),
-    );
-
-    // Account-wipe (Task 7 fix): the in-backend teardown deletes the owner's
-    // Paperclip Better Auth "user" row directly via the RDS Data API
-    // (core/services/paperclip_user_delete.py) because Paperclip exposes no
-    // user-delete API. Three grants the task role otherwise lacks:
-    //   - rds-data:ExecuteStatement on the paperclip Aurora cluster;
-    //   - secretsmanager:GetSecretValue on the DASH-named DB-credentials secret
-    //     (the wildcard SecretsAccess above only covers SLASH-named isol8/{env}/*
-    //     secrets, NOT isol8-{env}-paperclip-db-credentials);
-    //   - secretsmanager:ListSecrets (metadata only; the helper paginates to find
-    //     that secret's full ARN — ListSecrets has no resource-level scoping, so
-    //     it must be "*").
-    // Without these the Aurora-user step 403s on every real account and orphans
-    // the Better Auth identity (Teams 401 on re-signup with the same email).
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "AccountWipePaperclipAuroraExec",
-        effect: iam.Effect.ALLOW,
-        actions: ["rds-data:ExecuteStatement"],
-        resources: [
-          `arn:aws:rds:${this.region}:${this.account}:cluster:lightbulb-${env}-paperclip-db`,
-        ],
-      }),
-    );
-    secretsPolicy.addStatements(
-      new iam.PolicyStatement({
-        sid: "AccountWipePaperclipDbSecretRead",
-        effect: iam.Effect.ALLOW,
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb-${env}-paperclip-db-credentials-*`,
-        ],
-      }),
-    );
+    // Wipes list the owner's secrets by prefix (core/services/owner_secret_sweep.py).
+    // ListSecrets has no resource-level scoping, so it must be "*" (metadata only).
     secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AccountWipeListSecrets",

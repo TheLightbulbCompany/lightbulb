@@ -68,12 +68,14 @@ jobs:
         run: |
           command -v lk >/dev/null 2>&1 || curl -sSL https://get.livekit.io/cli | bash >/dev/null 2>&1 || true
           if ! command -v lk >/dev/null 2>&1; then echo "::warning::lk not available; skipping the running check"; exit 0; fi
+          bad=0  # the first poll can still show the previous version (status is populated by a scrape shortly after deploy)
           for i in $(seq 1 30); do
             status=$(lk agent status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["agents"][0]["agentDeployments"][0]["status"])' 2>/dev/null || echo unknown)
             echo "agent status: $status"
             case "$status" in
               *unning*|*eady*) exit 0 ;;
-              *rash*|*rror*|*ail*) echo "::error::agent deployment is $status"; exit 1 ;;
+              *rash*|*rror*|*ail*) bad=$((bad+1)); [ "$bad" -ge 3 ] && { echo "::error::agent deployment is $status"; exit 1; } ;;
+              *) bad=0 ;;
             esac
             sleep 10
           done

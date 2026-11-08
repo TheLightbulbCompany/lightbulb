@@ -20,7 +20,7 @@ import asyncio
 import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.billing import voice_billing
 from core.repositories import messaging_repo
 from core.services import voice_onboarding, voice_outbound
 
@@ -97,6 +98,45 @@ async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
     metas = await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows))
     items = [i for m in metas if m and m.get("ownerId") == ws and (i := _item(m))]
     return {"items": sorted(items, key=lambda i: i["at"], reverse=True)}
+
+
+async def month_seconds(ws: str, tz_name: str | None) -> int:
+    """Seconds of calls and held meetings since the 1st of this month in the business's timezone. Calls are made
+    when they start, so last month's are skipped unread; every channel is read (a meeting is booked ahead).
+    ponytail: one META read per room this month, and a series counts only its newest occurrence (history keeps no
+    inCallAt); a per-month counter row written at call end when either matters."""
+    try:
+        tz = ZoneInfo(tz_name or "America/New_York")
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = ZoneInfo("America/New_York")
+    start = datetime.now(tz).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    floor = (start - timedelta(days=1)).strftime("%Y-%m-%d")  # createdAt is UTC ISO: a day of slack for the zone
+    rows = [r for r in await messaging_repo.list_owner_rooms(ws)
+            if r.get("kind") == "channel" or (r.get("kind") == "call" and (r.get("createdAt") or "") >= floor)]  # fmt: skip
+    total, since = 0, start.timestamp()
+    for m in await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows)):
+        if not m or m.get("ownerId") != ws:
+            continue
+        if m.get("kind") == "call":
+            call = m.get("call") or {}
+            if _epoch_ms(call.get("startedAt") or m["createdAt"]) >= since * 1000:
+                total += int(call.get("durationSec") or 0)
+        elif (mt := m.get("meeting") or {}).get("inCallAt") and mt.get("endedAt") and int(mt["inCallAt"]) >= since:
+            total += max(0, int(mt["endedAt"]) - int(mt["inCallAt"]))
+    return total
+
+
+@router.get("/voice/usage")
+async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
+    """The Settings "Billing & minutes" card: this month's minutes, the plan, and what happens when they run out."""
+    ws = resolve_owner_id(auth)
+    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    return {
+        "used": round(await month_seconds(ws, cfg.get("timezone")) / 60),
+        "included": voice_billing.INCLUDED_MINUTES,
+        "overageRate": voice_billing.OVERAGE_USD_PER_MINUTE,
+        "runOut": "forward" if cfg.get("runOut") == "forward" else "keep",
+    }
 
 
 @router.post("/voice/calls/{room_id}/done")

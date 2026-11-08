@@ -9,9 +9,13 @@ a per-workspace daily seconds counter in the containers table (``__voice__#<owne
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
 from typing import Literal
 
+import httpx
+
+from core.billing import metronome_client
 from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
@@ -24,6 +28,9 @@ FREE_KEY_PREFIX = "__voice__#"
 VOICE_PROVIDER_USD_PER_MINUTE = Decimal("0.05")
 _NANODOLLARS_PER_USD = Decimal(10**9)
 _LIVE_STATUSES = {"active", "trialing", "trial_local"}
+#: The voice-agents plan: $250 a month per business with these minutes, then this much a minute.
+INCLUDED_MINUTES = 1500
+OVERAGE_USD_PER_MINUTE = 0.35
 
 
 def _containers():
@@ -86,3 +93,16 @@ async def credit_snapshot(owner_id: str) -> tuple[int, dict]:
     )
     per_minute = charge_microcents(60)
     return max(0, min(math.floor(headroom * 60 / per_minute), MAX_CALL_SECONDS)), row
+
+
+async def report_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int, kind: str) -> None:
+    """One ``voice_minutes`` event per call (transaction_id = the call: Metronome dedupes a retry). Nothing in
+    Metronome prices it yet: that needs a billable metric on this event and the $250 / 1,500-minute plan."""
+    if not settings.METRONOME_API_KEY or seconds <= 0:
+        return
+    at = datetime.fromisoformat(started_at).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
+        await metronome_client.for_settings(http).ingest(
+            [{"transaction_id": transaction_id, "customer_id": owner_id, "event_type": "voice_minutes",
+              "timestamp": at, "properties": {"seconds": str(seconds), "kind": kind}}]
+        )  # fmt: skip

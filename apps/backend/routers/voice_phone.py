@@ -31,11 +31,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.billing import voice_billing
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import clerk_admin, integration_reads, questions, voice_booking, voice_outbound
 from routers.huddles import _Worker
-from routers.voice import _e164
+from routers.voice import _e164, month_seconds
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,10 @@ async def start_call(body: StartIn) -> dict:
         _warming.add(t := asyncio.create_task(integration_reads.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
     seen = await _seen(owner_id, body.callerNumber)
+    # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.
+    forward_to = cfg["handoff"]["number"] if cfg.get("runOut") == "forward" and cfg["handoff"]["number"] else None
+    if forward_to and await month_seconds(owner_id, cfg.get("timezone")) < voice_billing.INCLUDED_MINUTES * 60:
+        forward_to = None
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     call = {
         "caller": body.callerNumber,
@@ -213,7 +218,9 @@ async def start_call(body: StartIn) -> dict:
         "messages": [],
         "work": [],
         "unknown": [],
-    }
+        **({"outcome": "forwarded", "status": "ended", "transferredTo": forward_to,
+            "steps": [{"t": 0, "text": "Minutes used up: forwarded to you", "guessed": False}]} if forward_to else {}),
+    }  # fmt: skip
     name = f"Call · {call['callerName'] or body.callerNumber or 'unknown'}"[:60]
     members = [{"kind": "human", "id": line["ownerUserId"], "displayName": business, "mentionHandle": None,
                 "role": "owner", "listenMode": None}]  # fmt: skip
@@ -247,6 +254,7 @@ async def start_call(body: StartIn) -> dict:
         "callerMemory": call["callerMemory"],
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
+        "forwardTo": forward_to,  # the worker transfers the caller there and does not answer
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
     }
 
@@ -331,6 +339,10 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             if out.get("callerName") or seen.get("name"):
                 item["name"] = out.get("callerName") or seen["name"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
+    try:  # best-effort: a lost event is unbilled minutes, never a failed call end
+        await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], body.durationSec, "phone")
+    except Exception:
+        logger.warning("voice_minutes ingest failed for %s", call_id, exc_info=True)
     try:  # best-effort: the one outcome metric must never fail the route
         put_metric("VoiceCallOutcome", dimensions={"outcome": out["outcome"]})
     except Exception:

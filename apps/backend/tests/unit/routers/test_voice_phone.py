@@ -466,3 +466,33 @@ async def test_inbound_probe_marks_forwarding_ok_and_ends(client):
     # the owner's own test call with no check pending is an ordinary call
     owner = await _start(client, caller="+14155550177", room="phone-dev-_p3", forwardFrom="(415) 555-0177")
     assert owner["mode"] == "live"
+
+
+async def test_minutes_used_up_and_run_out_forward_hands_the_call_to_the_owner(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward")
+    assert call["forwardTo"] == "+14155550199"
+    rec = (await messaging_repo.get_room(call["callId"]))["call"]
+    assert rec["outcome"] == "forwarded" and rec["transferredTo"] == "+14155550199"
+
+
+async def test_minutes_used_up_and_run_out_keep_answers(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="keep")
+    assert call["forwardTo"] is None and call["mode"] == "live"
+
+
+async def test_call_end_reports_minutes_to_metronome(client):
+    from core.billing import voice_billing
+
+    mc = AsyncMock()
+    with (
+        patch.object(voice_billing.settings, "METRONOME_API_KEY", "k"),
+        patch.object(voice_billing.metronome_client, "for_settings", return_value=mc),
+    ):
+        call = await _start(client)
+        client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 160}, headers=W)
+    [event] = mc.ingest.await_args.args[0]
+    assert event["transaction_id"] == call["callId"] and event["customer_id"] == "org_1"
+    assert event["event_type"] == "voice_minutes" and event["properties"] == {"seconds": "160", "kind": "phone"}
+    assert event["timestamp"].endswith("Z")

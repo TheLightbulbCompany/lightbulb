@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from unittest.mock import patch
 
-from core.billing.bedrock_aip import browser_arns, build_owner_session_policy
+from core.billing.bedrock_aip import build_owner_session_policy
 from core.services import runtime_transport as rt
 
 BUCKET = "lightbulb-dev-owner-state"
@@ -35,36 +35,35 @@ def test_the_session_policy_reaches_only_the_owners_prefix():
 def test_the_session_policy_scopes_memory_to_the_owners_actors_and_namespaces():
     policy = build_owner_session_policy("org_a", BUCKET, MEMORY)
     memory = [st for st in policy["Statement"] if st["Resource"] == MEMORY]
-    assert memory and all("Condition" in st for st in memory)
-    keys = [v for st in memory for cond in st["Condition"].values() for v in cond.values()]
-    assert keys == ["org_a", "org_a:user_*", "/owners/org_a/", "/owners/org_a:user_*/"]
+    assert [st["Condition"] for st in memory] == [
+        {"StringLike": {"bedrock-agentcore:actorId": ["org_a", "org_a:user_*"]}},
+        {"StringLike": {"bedrock-agentcore:namespace": ["/owners/org_a/", "/owners/org_a:user_*/"]}},
+    ]
 
 
-BROWSERS = [
-    "arn:aws:bedrock-agentcore:us-east-1:111122223333:browser-custom/lightbulb_prod_workspace_browser-AbCdEf1234",
-]
+#: Real-length names: prod's memory ARN (CDK names it lightbulb_<env>_workspace_memory-<10>), the
+#: real bucket, and the longest owner id there is (a personal workspace, user_ + 27 = 32 characters).
+REAL_MEMORY = "arn:aws:bedrock-agentcore:us-east-1:877352799272:memory/lightbulb_prod_workspace_memory-AbCdEf1234"
+REAL_BUCKET = "lightbulb-prod-openclaw-replicas"
+LONGEST_OWNER = "user_" + "X" * 27
 
 
-def test_the_session_policy_fits_stss_inline_limit():
-    long_owner = "org_" + "x" * 28  # a real Clerk org id is 31 characters
-    policy = build_owner_session_policy(long_owner, BUCKET + "-111122223333", MEMORY, BROWSERS)
-    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
+def test_the_session_policy_fits_stss_inline_limit_with_margin():
+    assert len(LONGEST_OWNER) == 32
+    policy = build_owner_session_policy(LONGEST_OWNER, REAL_BUCKET, REAL_MEMORY)
+    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048 - 300  # room for one more statement
 
 
-def test_the_session_policy_gives_the_screen_driver_only_invoke_browser():
-    policy = build_owner_session_policy("org_a", BUCKET, MEMORY, BROWSERS)
-    browser = [st for st in policy["Statement"] if "browser" in json.dumps(st["Resource"])]
-    assert browser == [{"Effect": "Allow", "Action": ["bedrock-agentcore:InvokeBrowser"], "Resource": BROWSERS}]
+def test_the_session_policy_carries_no_browser_grant():
+    assert "Browser" not in json.dumps(build_owner_session_policy("org_a", REAL_BUCKET, REAL_MEMORY))
 
 
 def test_owner_as_credentials_never_reach_owner_bs_prefix_or_memory():
     """Tenant isolation, as the shared runtime relies on it: A's set names A everywhere, B nowhere."""
-    a = json.dumps(build_owner_session_policy("org_a", BUCKET, MEMORY, BROWSERS))
+    a = json.dumps(build_owner_session_policy("org_a", BUCKET, MEMORY))
     assert "org_b" not in a and f"{BUCKET}/*" not in a
-    b = build_owner_session_policy("org_b", BUCKET, MEMORY, BROWSERS)
-    assert {
-        st["Resource"] for st in b["Statement"] if isinstance(st["Resource"], str) and "/org_" in st["Resource"]
-    } == {f"arn:aws:s3:::{BUCKET}/org_b/*"}
+    b = build_owner_session_policy("org_b", BUCKET, MEMORY)
+    assert {st["Resource"] for st in b["Statement"] if "/org_" in st["Resource"]} == {f"arn:aws:s3:::{BUCKET}/org_b/*"}
 
 
 class _Sts:
@@ -107,8 +106,7 @@ def test_credentials_are_minted_with_the_owners_session_policy_and_cached(sts):
     assert json.loads(header[rt.SESSION_CREDENTIALS_HEADER])["accessKeyId"] == "ASIA1"
     (call,) = sts.calls
     assert call["RoleArn"] == ROLE and call["DurationSeconds"] == 3600
-    browser = browser_arns("us-east-1", "111122223333")[:1]
-    assert json.loads(call["Policy"]) == build_owner_session_policy("org_a", BUCKET, MEMORY, browser)
+    assert json.loads(call["Policy"]) == build_owner_session_policy("org_a", BUCKET, MEMORY)
     assert rt._session_credentials_header("org_a") == header
     assert len(sts.calls) == 1  # cached until 15 min before expiry
     rt._session_credentials_header("org_b")

@@ -357,6 +357,12 @@ def _boot_header(container: dict) -> dict[str, str]:
             logger.warning("network seed for owner %s unavailable: %s", owner_id, type(exc).__name__)
     if seed := _NETWORK_SEEDS.get((owner_id, row_id)):
         boot["networkKey"] = seed
+    from core.config import settings
+
+    if settings.NETWORK_PROOF_KEY:  # PUBLIC: the sidecar verifies members' sign-in proofs (build_hermes_runtime_env)
+        from core.services import network_proof
+
+        boot["issuerKey"] = network_proof.public_key()["env"]
     if container.get("browser_profile_id"):
         boot["browserProfileId"] = container["browser_profile_id"]
     if container.get("network_workers"):
@@ -398,7 +404,7 @@ def _session_credentials_header(owner_id: str) -> dict[str, str]:
     from botocore.config import Config
     from botocore.exceptions import BotoCoreError, ClientError
 
-    from core.billing.bedrock_aip import browser_arns, build_owner_session_policy
+    from core.billing.bedrock_aip import build_owner_session_policy
 
     try:
         account = role.split(":")[4]  # arn:aws:iam::<account>:role/<name>
@@ -407,14 +413,7 @@ def _session_credentials_header(owner_id: str) -> dict[str, str]:
             memory_arn = (
                 f"arn:aws:bedrock-agentcore:{settings.AWS_REGION}:{account}:memory/{settings.AGENTCORE_MEMORY_ID}"
             )
-        policy = build_owner_session_policy(
-            # The workspace browser only: the built-in one browser_arns adds for pre-move sessions
-            # would push the policy past STS's 2,048 characters.
-            owner_id,
-            settings.OWNER_STATE_BUCKET,
-            memory_arn,
-            browser_arns(settings.AWS_REGION, account)[:1],
-        )
+        policy = build_owner_session_policy(owner_id, settings.OWNER_STATE_BUCKET, memory_arn)
         # Short budgets: an STS outage must cost an invoke seconds, not boto's 60 s connect default.
         sts = boto3.client("sts", region_name=settings.AWS_REGION, config=Config(**_STS_CONFIG_KW))
         creds = sts.assume_role(

@@ -1304,13 +1304,6 @@ export class ServiceStack extends cdk.Stack {
               ],
               resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
             }),
-            // The screen driver (bridge browser_control.invoke) on the session the backend started;
-            // the per-owner owner-browser grant's InvokeBrowser, for a runtime with no such grant.
-            new iam.PolicyStatement({
-              sid: "WorkspaceBrowserInvoke",
-              actions: ["bedrock-agentcore:InvokeBrowser"],
-              resources: [agentcoreArn(`browser-custom/${props.container.workspaceBrowserId}`)],
-            }),
           ],
         }),
       },

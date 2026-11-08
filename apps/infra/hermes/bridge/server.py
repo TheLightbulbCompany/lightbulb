@@ -237,6 +237,11 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
         # A shared runtime (no boot secret): the first invoke binds the tenant and brings its
         # tokens, the gateway token included, which the check below then holds every invoke to.
         # Only AgentCore reaches this before any agent runs in the microVM.
+        # Pre-claim denial of service: whoever sends the first invoke picks the session's owner, so a
+        # wrong first tenant would strand that one session (every later invoke 403s until it idles).
+        # Low risk, accepted: only backend IAM may InvokeAgentRuntime, the session id is derived from
+        # the owner the backend names, and the binder gains no data -- its own tokens and its own
+        # owner's scoped credentials are all a bound session ever holds.
         bridge.bind_tenant(_header(headers, bridge.TENANT_HEADER), boot)
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}

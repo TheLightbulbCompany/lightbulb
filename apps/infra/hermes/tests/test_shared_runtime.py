@@ -9,15 +9,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import bridge
-from bridge import browser_control, network, runs, server, sync, turn
+from bridge import browser_control, network, runs, server, sync, task_mode, turn, website_logins
 
 NOPE = "/plugins/lightbulb-channel/nope"  # past every gate, then 404: proves the invoke was let in
 BOOT_A = {"hookToken": "hook-a", "gatewayToken": "gw-a", "networkKey": "net-a", "bedrockBearer": "bearer-a",
+          "issuerKey": "k1:pub-a",
           "browserProfileId": "prof-a", "networkWorkers": True, "maxConcurrentTurns": 6}
 BOOT_B = {"hookToken": "hook-b", "gatewayToken": "gw-b", "networkKey": "net-b", "bedrockBearer": "bearer-b"}
 _ENV = ("ISOL8_OWNER_ID", "OPENCLAW_HOOK_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AGENTCORE_PROFILE_ID",
         "AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_PROVIDER", "BROWSER_CDP_URL", "HERMES_CUA_DRIVER_CMD",
-        "LIGHTBULB_NETWORK_WORKERS", "S3_PREFIX")
+        "LIGHTBULB_NETWORK_WORKERS", "S3_PREFIX", "LIGHTBULB_ISSUER_KEY")
 
 
 def _creds(key, hours=1.0):
@@ -63,6 +64,7 @@ def test_the_binding_invoke_brings_the_owners_boot_values(shared):
     assert os.environ["AGENTCORE_PROFILE_ID"] == "prof-a"
     assert os.environ["BROWSER_CDP_URL"] == "ws://127.0.0.1:9222"
     assert os.environ["LIGHTBULB_NETWORK_WORKERS"] == "1"
+    assert os.environ["LIGHTBULB_ISSUER_KEY"] == "k1:pub-a"  # the sidecar's sign-in proof key
     assert turn.MAX_CONCURRENT_TURNS == 6 and turn._turn_slots._initial_value == 6
     assert "GATEWAY_TOKEN" not in os.environ and "gw-a" not in json.dumps(dict(os.environ))  # the shell never sees it
 
@@ -122,7 +124,7 @@ def test_a_long_runs_heartbeat_asks_for_fresh_credentials(monkeypatch):
     assert posted == [{"kind": "heartbeat", "status": "running", "recentTools": [], "credentialsDue": True}]
 
 
-def test_the_screen_driver_uses_the_scoped_credentials(monkeypatch):
+def test_the_screen_driver_uses_the_execution_role_even_on_a_shared_runtime(shared, monkeypatch):
     built = {}
 
     class Client:
@@ -133,10 +135,9 @@ def test_the_screen_driver_uses_the_scoped_credentials(monkeypatch):
     fake.client = lambda service, **kw: (built.update(kw), Client())[1]
     monkeypatch.setitem(sys.modules, "boto3", fake)
     monkeypatch.setattr(browser_control, "session_ref", lambda: {"browserIdentifier": "b", "sessionId": "s"})
-    monkeypatch.setattr(bridge, "AWS_SESSION", {})
     bridge.set_aws_session(_creds("ASIA-A"))
     browser_control.invoke({"screenshot": {}})
-    assert built["aws_access_key_id"] == "ASIA-A"
+    assert "aws_access_key_id" not in built  # InvokeBrowser is on the pool role, not the scoped set
 
 
 def test_a_shared_runtime_refuses_an_invoke_that_names_no_tenant(shared):
@@ -167,3 +168,19 @@ def test_a_shared_runtime_never_falls_back_to_its_execution_role(shared, monkeyp
 def test_a_per_owner_runtime_still_falls_back_to_its_role(monkeypatch):
     monkeypatch.setattr(bridge, "AWS_SESSION", {})
     assert bridge.SHARED is False and bridge.aws_session_kwargs() == {}
+
+
+def test_every_owner_path_reads_the_bound_owner_at_call_time(shared, monkeypatch):
+    """No module keeps an import-time copy of OWNER: task overlays and website-login calls name the
+    owner the session bound, never the empty boot value."""
+    assert not any(hasattr(m, "OWNER") for m in (task_mode, website_logins, runs, turn, server, browser_control))
+    invoke("org_a", BOOT_A)
+    monkeypatch.setattr(task_mode, "TASK", {"taskId": "t1", "agentId": "a1"})
+    assert task_mode.overlay_prefix().startswith("org_a/")
+    seen = []
+    monkeypatch.setattr(website_logins.urllib.request, "urlopen", lambda req, **k: seen.append(req.full_url) or (_ for _ in ()).throw(OSError()))
+    try:
+        website_logins._call("GET", "/x")
+    except Exception:  # noqa: BLE001 -- only the URL matters
+        pass
+    assert seen and "/website-logins/org_a/" in seen[0]

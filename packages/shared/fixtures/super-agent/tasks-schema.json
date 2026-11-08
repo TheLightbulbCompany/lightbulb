@@ -552,6 +552,11 @@
           "default": null,
           "title": "Previousruntaskid"
         },
+        "confirmAll": {
+          "default": false,
+          "title": "Confirmall",
+          "type": "boolean"
+        },
         "hidden": {
           "default": false,
           "title": "Hidden",

@@ -4,11 +4,14 @@ import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { OpenRouterGateStack } from "../lib/stacks/openrouter-gate-stack";
 
+const KEY = "arn:aws:kms:us-east-1:877352799272:key/general";
+
 test("dev OpenRouter gate is a token-gated streaming Lambda with owner-key access", () => {
   const app = new cdk.App();
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "dev",
+    kmsKeyArn: KEY,
   });
   const template = Template.fromStack(stack);
   template.hasResourceProperties("AWS::Lambda::Function", {
@@ -51,6 +54,7 @@ test("dev gate consumes an explicitly supplied model policy", () => {
     const stack = new OpenRouterGateStack(app, "OpenRouterGatePolicy", {
       env: { account: "877352799272", region: "us-east-1" },
       environment: "dev",
+      kmsKeyArn: KEY,
     });
     Template.fromStack(stack).hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "lightbulb-dev-openrouter-gate",
@@ -69,6 +73,7 @@ test("dev settlement runs the daily audit", () => {
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "dev",
+    kmsKeyArn: KEY,
   });
   const template = Template.fromStack(stack);
   template.hasResourceProperties("AWS::Lambda::Function", {
@@ -90,6 +95,24 @@ test("dev settlement runs the daily audit", () => {
     Targets: Match.arrayWith([Match.objectLike({ Input: '{"audit_previous_day":true}' })]),
   });
   template.resourceCountIs("AWS::SQS::Queue", 1);
+  // Each lambda reads one envelope row (GetItem only) and decrypts only openrouter/* data keys.
+  const envelopes = "arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-dev-credential-envelopes";
+  const policies = Object.values(template.findResources("AWS::IAM::Policy")) as any[];
+  expect(policies).toHaveLength(2);
+  for (const policy of policies) {
+    const statements: any[] = policy.Properties.PolicyDocument.Statement;
+    const onTable = statements.filter(st => [st.Resource].flat().some((r: any) => JSON.stringify(r).includes("credential-envelopes")));
+    expect(onTable).toEqual([{ Action: "dynamodb:GetItem", Effect: "Allow", Resource: envelopes }]);
+    const onKey = statements.filter(st => [st.Resource].flat().includes(KEY));
+    expect(onKey).toEqual([{
+      Action: "kms:Decrypt", Effect: "Allow", Resource: KEY,
+      Condition: { StringLike: { "kms:EncryptionContext:provider": "openrouter/*" } },
+    }]);
+  }
+  template.hasResourceProperties("AWS::Lambda::Function", {
+    FunctionName: "lightbulb-dev-openrouter-gate",
+    Environment: { Variables: Match.objectLike({ CREDENTIAL_ENVELOPES_TABLE: "lightbulb-dev-credential-envelopes" }) },
+  });
   // Ingest reads metronome_api_key, which sits on a CMK: KMS must be reachable via Secrets Manager.
   template.hasResourceProperties("AWS::IAM::Policy", {
     PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
@@ -104,6 +127,7 @@ test("prod settlement ingests money and runs the audit", () => {
   const template = Template.fromStack(new OpenRouterGateStack(app, "OpenRouterGateProd", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "prod",
+    kmsKeyArn: KEY,
   }));
   template.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "lightbulb-prod-openrouter-settlement" });
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });

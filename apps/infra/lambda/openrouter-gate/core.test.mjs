@@ -27,7 +27,7 @@ function fixture({ token = 'good', status = 'active', balance = 1000000, provide
     end() { calls.ended = true; },
     error(err) { calls.errors.push(err); },
   };
-  const deps = { ddb, env, log: line => calls.logs.push(JSON.parse(line)), secrets: { async getSecretValue() { return { SecretString: 'sk-or-secret' }; } }, forwardImpl: async (p) => { calls.forwards.push(p); p.writeHead(200, { 'content-type': 'text/event-stream' }); p.write(Buffer.from('data: {"id":"gen-1","choices":[]}\n\n')); p.end(); return { status: 200, generationId: 'gen-1' }; } };
+  const deps = { ddb, env, log: line => calls.logs.push(JSON.parse(line)), secrets: { async ownerKey() { return 'sk-or-secret'; } }, forwardImpl: async (p) => { calls.forwards.push(p); p.writeHead(200, { 'content-type': 'text/event-stream' }); p.write(Buffer.from('data: {"id":"gen-1","choices":[]}\n\n')); p.end(); return { status: 200, generationId: 'gen-1' }; } };
   const event = (body = { model: policy.models[0], messages: [{ role: 'user', content: 'Hi' }], stream: true }, headers = {}) => ({ rawPath: '/v1/chat/completions', requestContext: { http: { method: 'POST' } }, headers: { authorization: `Bearer ${token}`, ...headers }, body: JSON.stringify(body) });
   return { calls, deps, responder, event };
 }

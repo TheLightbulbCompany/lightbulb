@@ -6,6 +6,7 @@ import boto3
 from moto import mock_aws
 
 from core.repositories import openrouter_key_repo
+from core.services.credentials import integration_secret_store
 from core.services.openrouter_keys import (
     KeyClaimConflict,
     create_completion_key,
@@ -61,7 +62,7 @@ async def test_create_completion_key_rejects_missing_one_time_plaintext():
 
 
 @pytest.mark.asyncio
-async def test_ensure_owner_key_persists_plaintext_only_in_secrets_manager(monkeypatch):
+async def test_ensure_owner_key_persists_plaintext_only_in_the_credential_store(monkeypatch):
     with mock_aws():
         table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
             TableName="lightbulb-dev-openrouter-keys",
@@ -95,9 +96,14 @@ async def test_ensure_owner_key_persists_plaintext_only_in_secrets_manager(monke
                 )
 
         assert creations == 1
-        assert sm.get_secret_value(SecretId="lightbulb/dev/openrouter/owners/owner-123/key-hash")["SecretString"] == (
-            "sk-or-v1-owner-secret"
-        )
+        # The owner key is an integration_secret_store credential (an envelope in every deployed
+        # stage), never an openrouter/owners/* secret.
+        assert await integration_secret_store.get("owner-123", "openrouter/key-hash") == {
+            "key": "sk-or-v1-owner-secret"
+        }
+        assert not sm.list_secrets(Filters=[{"Key": "name", "Values": ["lightbulb/dev/openrouter/owners/"]}])[
+            "SecretList"
+        ]
         row = table.get_item(Key={"owner_id": "owner-123"})["Item"]
         assert row["state"] == "active"
         assert row["key_hash"] == "key-hash"
@@ -117,10 +123,11 @@ async def test_failed_secret_write_disables_new_key_and_releases_claim(monkeypat
         monkeypatch.setattr(openrouter_key_repo, "get_table", lambda _: table)
         sm = boto3.client("secretsmanager", region_name="us-east-1")
         sm.create_secret(Name="lightbulb/dev/openrouter/management", SecretString="management-secret")
-        monkeypatch.setattr(
-            "core.services.openrouter_keys.create_or_update_secret",
-            lambda *_: (_ for _ in ()).throw(OSError("secret write failed")),
-        )
+
+        async def failed_put(*_):
+            raise OSError("secret write failed")
+
+        monkeypatch.setattr(integration_secret_store, "put", failed_put)
         disabled = []
 
         def respond(request: httpx.Request) -> httpx.Response:

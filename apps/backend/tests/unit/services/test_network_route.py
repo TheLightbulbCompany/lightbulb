@@ -322,13 +322,20 @@ def test_a_signed_out_computer_is_refused_and_its_live_link_closes_at_once(door)
 @pytest.fixture
 def wakes(table, monkeypatch):
     secrets: dict[str, str] = {}
-    monkeypatch.setattr("core.secrets_manager.create_or_update_secret", lambda _sm, n, v: secrets.__setitem__(n, v))
-    monkeypatch.setattr(app_wake, "_sm", lambda: None)
+    store = app_wake.integration_secret_store
 
-    async def credential(owner, agent):
-        return json.loads(secrets[app_wake.secret_name(owner, agent)])
+    async def put(owner, provider, cred):
+        secrets[(owner, provider)] = json.dumps(cred)
 
-    monkeypatch.setattr(app_wake, "_credential", credential)
+    async def get(owner, provider):
+        return json.loads(secrets[(owner, provider)]) if (owner, provider) in secrets else None
+
+    async def delete(owner, provider):
+        return secrets.pop((owner, provider), None) is not None
+
+    monkeypatch.setattr(store, "put", put)
+    monkeypatch.setattr(store, "get", get)
+    monkeypatch.setattr(store, "delete", delete)
     monkeypatch.setattr(app_wake, "check_url", lambda url: url)
     post = AsyncMock(return_value=(True, ""))
     monkeypatch.setattr(app_wake, "post", post)
@@ -374,13 +381,6 @@ def test_the_wake_page_routes_serve_a_free_account(wakes, monkeypatch):
         assert [w["app"] for w in client.get("/api/v1/network/wakes").json()["wakes"]] == ["grok"]
         assert client.put("/api/v1/network/wakes/grok", json={"key": "k"}).json()["state"] == "ready"
         assert client.put("/api/v1/network/wakes/nope", json={"key": "k"}).status_code == 404
-        monkeypatch.setattr(
-            app_wake,
-            "_sm",
-            lambda: SimpleNamespace(
-                delete_secret=lambda **_: None, exceptions=SimpleNamespace(ResourceNotFoundException=KeyError)
-            ),
-        )
         assert client.delete("/api/v1/network/wakes/grok").status_code == 204
         assert client.get("/api/v1/network/wakes").json() == {"wakes": []}
 

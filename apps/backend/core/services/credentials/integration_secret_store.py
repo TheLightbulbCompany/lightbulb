@@ -17,7 +17,7 @@ When ``CREDENTIAL_KMS_KEY_ARN`` is set (infra sets it in dev and prod), ``put`` 
 whose encryption context is ``{owner_id, provider}``, so a row copied under another owner fails to
 decrypt. No new secret is created and the legacy secret is left alone, so a revert still reads it.
 ``get`` reads the table (consistently) and falls back to the legacy secret; ``delete`` removes both.
-Legacy secrets are removed by the credential migration script, not here.
+Legacy secrets are removed by ``apps/backend/scripts/migrate_secrets_to_envelopes.py``, not here.
 """
 
 from __future__ import annotations

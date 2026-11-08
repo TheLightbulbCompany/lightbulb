@@ -118,6 +118,7 @@ from core.services.account_wipe import (
     cancel_open_workflows,
 )
 from core.services.billing_service import delete_stripe_customer
+from core.services.credentials import integration_secret_store
 from core.services.hermes_provisioning import delete_workspace_runtime
 from core.services.voice_calls import wipe_owner_voice
 from core.services.oauth_service import revoke_user_oauth
@@ -707,8 +708,11 @@ async def _delete_openrouter_key(owner_id: str) -> None:
 
     def _delete() -> None:
         sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        for name in _list_names_with_prefix(sm, prefix):
+        for name in _list_names_with_prefix(sm, prefix):  # legacy, until migrate_secrets_to_envelopes runs
             sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+        for provider in integration_secret_store.envelope_providers(owner_id):
+            if provider.startswith("openrouter/"):
+                integration_secret_store.delete_envelope(owner_id, provider)
         get_table("openrouter-keys").delete_item(Key={"owner_id": owner_id})
 
     await run_in_thread(_delete)

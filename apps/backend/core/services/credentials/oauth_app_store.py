@@ -1,9 +1,7 @@
-"""Per-owner OAuth-app config (client_id/secret) in AWS Secrets Manager.
-
-Stored at ``lightbulb/<env>/integrations/<owner>/oauth-app/<provider>`` — under the
-``integrations/`` prefix the backend task role has READ-WRITE on
-(``service-stack.ts:453-455``). NOT ``oauth-apps/*`` (that wildcard is read-only
-and a write would AccessDenied).
+"""Per-owner OAuth-app config (client_id/secret), sealed in ``integration_secret_store``
+under provider ``oauth-app/<provider>``. Its legacy Secrets Manager name,
+``lightbulb/<env>/integrations/<owner>/oauth-app/<provider>``, is exactly the store's fallback read,
+so an unmigrated app config still reads; the next ``put`` (or the one-time migration) retires it.
 
 This holds ONLY the app config, never a token — for google the token lives in
 the in-container gog keyring (``refresh_owner: actor``); ``_oauth_client``
@@ -19,27 +17,18 @@ Two writers:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
-import boto3
 from botocore.exceptions import ClientError
 
-from core.config import settings
-from core.dynamodb import run_in_thread
-from core.secrets_manager import create_or_update_secret
+from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
 
-def _secret_name(owner_id: str, provider: str) -> str:
-    env = settings.ENVIRONMENT or "dev"
-    return f"lightbulb/{env}/integrations/{owner_id}/oauth-app/{provider}"
-
-
-def _client():
-    return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+def _provider(provider: str) -> str:
+    return f"oauth-app/{provider}"
 
 
 async def put(
@@ -52,7 +41,6 @@ async def put(
     scope: str | None = None,
     redirect_uri: str | None = None,
 ) -> str:
-    name = _secret_name(owner_id, provider)
     record: dict[str, Any] = {"client_id": client_id, "client_secret": client_secret}
     # Only DCR clients carry the full registration response; a BYO app stores just
     # the id/secret pair, so omit the key entirely when absent.
@@ -70,48 +58,21 @@ async def put(
     # detect the drift — start() compares this to re-register instead.
     if redirect_uri is not None:
         record["redirect_uri"] = redirect_uri
-    payload = json.dumps(record)
-
-    def _put() -> str:
-        sm = _client()
-        create_or_update_secret(sm, name, payload)
-        return sm.describe_secret(SecretId=name)["ARN"]
-
-    return await run_in_thread(_put)
+    return await integration_secret_store.put(owner_id, _provider(provider), record)
 
 
 async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
-    name = _secret_name(owner_id, provider)
-
-    def _get() -> dict[str, Any] | None:
-        sm = _client()
-        try:
-            resp = sm.get_secret_value(SecretId=name)
-        except sm.exceptions.ResourceNotFoundException:
-            return None
-        except ClientError:
-            # Secrets Manager unreachable / unauthorized / throttled: treat the
-            # BYO app as not-configured rather than letting it propagate. A
-            # catalog read calls this per byo-required provider on every
-            # /connections GET, so an unhandled error here would 500 the whole
-            # connections list. byo_configured degrades to false (the owner can
-            # re-store their app), and the dance still fails closed — there is no
-            # shared-app fallback to wrongly slip into.
-            logger.warning("oauth_app_store.get failed for owner=%s provider=%s", owner_id, provider, exc_info=True)
-            return None
-        return json.loads(resp["SecretString"])
-
-    return await run_in_thread(_get)
+    try:
+        return await integration_secret_store.get(owner_id, _provider(provider))
+    except ClientError:
+        # AWS unreachable / unauthorized / throttled: treat the BYO app as not-configured
+        # rather than letting it propagate. A catalog read calls this per byo-required
+        # provider on every /connections GET, so an unhandled error here would 500 the whole
+        # connections list. byo_configured degrades to false (the owner can re-store their
+        # app), and the dance still fails closed — there is no shared-app fallback.
+        logger.warning("oauth_app_store.get failed for owner=%s provider=%s", owner_id, provider, exc_info=True)
+        return None
 
 
 async def delete(owner_id: str, provider: str) -> None:
-    name = _secret_name(owner_id, provider)
-
-    def _delete() -> None:
-        sm = _client()
-        try:
-            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-        except sm.exceptions.ResourceNotFoundException:
-            pass
-
-    await run_in_thread(_delete)
+    await integration_secret_store.delete(owner_id, _provider(provider))

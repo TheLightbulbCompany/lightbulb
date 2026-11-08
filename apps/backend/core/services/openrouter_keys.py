@@ -13,7 +13,7 @@ import uuid
 from core.dynamodb import run_in_thread
 from core.config import settings
 from core.repositories import billing_repo, openrouter_key_repo
-from core.secrets_manager import create_or_update_secret
+from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,19 @@ async def relimit_owner_key(owner_id: str, *, http=None, sm=None) -> bool:
     return True
 
 
+def key_provider(key_hash: str) -> str:
+    """The owner key's ``integration_secret_store`` provider; the gate and settlement Lambdas open the
+    same ``credential-envelopes`` row (``openrouter/<hash>``, so a rotated key's pending rows still settle)."""
+    return f"openrouter/{key_hash}"
+
+
+async def _require_stored_key(owner_id: str, row: dict, sm) -> None:
+    """Raise unless the row's key plaintext is stored: the envelope, else the legacy
+    ``openrouter/owners/*`` secret the row names (until migrate_secrets_to_envelopes runs)."""
+    if await integration_secret_store.get(owner_id, key_provider(row["key_hash"])) is None:
+        await run_in_thread(sm.describe_secret, SecretId=row["secret_name"])
+
+
 async def ensure_owner_key(owner_id, *, http, sm, environment, workspace_id, limit_usd, now_sec):
     if not _SAFE_OWNER_ID.fullmatch(owner_id):
         raise ValueError("Invalid owner ID for OpenRouter key provisioning")
@@ -157,12 +170,12 @@ async def ensure_owner_key(owner_id, *, http, sm, environment, workspace_id, lim
     if row and row.get("state") == "active":
         if row.get("workspace_id") != workspace_id:
             raise RuntimeError("OpenRouter owner key belongs to a different workspace")
-        await run_in_thread(sm.describe_secret, SecretId=row["secret_name"])
+        await _require_stored_key(owner_id, row, sm)
         return row["key_hash"]
     if row and row.get("state") == "retiring":
         if row.get("workspace_id") != workspace_id:
             raise RuntimeError("OpenRouter owner key belongs to a different workspace")
-        await run_in_thread(sm.describe_secret, SecretId=row["secret_name"])
+        await _require_stored_key(owner_id, row, sm)
         if await openrouter_key_repo.cancel_retirement(owner_id, row["key_hash"]):
             return row["key_hash"]
         raise RuntimeError("OpenRouter owner key retirement is in progress")
@@ -201,9 +214,8 @@ async def ensure_owner_key(owner_id, *, http, sm, environment, workspace_id, lim
             limit_usd=limit_usd,
         )
         # A losing stale claim must never overwrite the winner's plaintext.
-        secret_name = f"lightbulb/{environment}/openrouter/owners/{owner_id}/{created['hash']}"
-        await run_in_thread(create_or_update_secret, sm, secret_name, created["key"])
-        if not await openrouter_key_repo.activate(owner_id, claim_id, created["hash"], secret_name, workspace_id):
+        location = await integration_secret_store.put(owner_id, key_provider(created["hash"]), {"key": created["key"]})
+        if not await openrouter_key_repo.activate(owner_id, claim_id, created["hash"], location, workspace_id):
             raise RuntimeError("OpenRouter owner key claim changed during provisioning")
         return created["hash"]
     except Exception:

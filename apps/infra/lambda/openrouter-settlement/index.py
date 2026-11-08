@@ -86,7 +86,7 @@ def settle_one(row, *, get_generation, ingest, commit, now, commit_free, release
         return "unknown_generation"
     if now - int(row["created_at"]) >= 30 * 24 * 3600:
         return "expired_gap"  # outside OpenRouter's 30 completed-day activity window
-    generation = get_generation(row["generation_id"], row["secret_name"])
+    generation = get_generation(row["generation_id"], row)
     if not generation:
         if (int(row["reservation_microcents"]) == 0
                 and now - int(row["created_at"]) >= STALE_METADATA_RELEASE_S):
@@ -540,10 +540,34 @@ def _secret(name):
     return boto3.client("secretsmanager").get_secret_value(SecretId=name)["SecretString"]
 
 
-def _get_generation(generation_id, secret_name):
+def _owner_key(row):
+    """The row's OpenRouter key: the integration_secret_store envelope ``openrouter/<key_hash>``
+    (credential-envelopes, AES-256-GCM under a KMS data key bound to {owner_id, provider}), else the
+    legacy secret the row names (until migrate_secrets_to_envelopes runs)."""
+    import base64
+
+    import boto3
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    owner_id, provider = row["owner_id"], f"openrouter/{row['key_hash']}"
+    item = boto3.client("dynamodb").get_item(
+        TableName=os.environ["CREDENTIAL_ENVELOPES_TABLE"],
+        Key={"owner_id": {"S": owner_id}, "provider": {"S": provider}}, ConsistentRead=True,
+    ).get("Item")
+    if not item:
+        return _secret(row["secret_name"])
+    b64 = lambda name: base64.b64decode(item[name]["S"])  # noqa: E731
+    key = boto3.client("kms").decrypt(
+        CiphertextBlob=b64("data_key"), EncryptionContext={"owner_id": owner_id, "provider": provider},
+    )["Plaintext"]
+    plaintext = AESGCM(key).decrypt(b64("nonce"), b64("ciphertext"), f"{owner_id}\0{provider}".encode())
+    return json.loads(plaintext)["key"]
+
+
+def _get_generation(generation_id, row):
     url = "https://openrouter.ai/api/v1/generation?" + urllib.parse.urlencode({"id": generation_id})
     try:
-        return _http_json(url, _secret(secret_name)).get("data")
+        return _http_json(url, _owner_key(row)).get("data")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:  # OpenRouter generation metadata can lag the stream.
             return None

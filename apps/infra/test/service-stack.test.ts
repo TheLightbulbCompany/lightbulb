@@ -159,7 +159,7 @@ describe("ServiceStack — desktop execution rollout", () => {
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
-  test("backend can write only per-owner OpenRouter secrets", () => {
+  test("backend can only read and retire legacy per-owner OpenRouter secrets", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
       (type) => Object.values(template.findResources(type)).flatMap(
         (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
@@ -170,9 +170,9 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       Effect: "Allow",
       Resource: "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/openrouter/owners/*",
     });
-    expect(grant.Action).toEqual(expect.arrayContaining([
-      "secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret",
-    ]));
+    expect([...grant.Action].sort()).toEqual([
+      "secretsmanager:DeleteSecret", "secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue",
+    ]);
     const gateUrl = statements.find((statement: any) => statement.Sid === "OpenRouterGateUrlParamRead");
     expect(gateUrl).toMatchObject({
       Action: "ssm:GetParameter",

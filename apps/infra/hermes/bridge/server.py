@@ -234,6 +234,8 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    if not bridge.bind_tenant(_header(headers, bridge.TENANT_HEADER)):
+        return 403, {"error": "tenant_mismatch"}
     # A task VM (spec 02 §3.3) runs its task's runs and answers RPC reads, nothing else: no room
     # turn, no Paperclip run, no call -- each would restore and write the specialist profile.
     task_run = path.startswith("/internal/v1/runs")

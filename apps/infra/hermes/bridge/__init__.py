@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +44,38 @@ def default_s3_prefix(owner: str) -> str:
 
 
 S3_PREFIX = os.environ.get("S3_PREFIX", default_s3_prefix(OWNER)).strip("/")
+
+#: The backend names the tenant on every invoke (runtime_transport). A per-owner runtime boots
+#: with ISOL8_OWNER_ID already set; a shared one boots with none and takes the first invoke's.
+TENANT_HEADER = "X-Lightbulb-Tenant"
+_TENANT_LOCK = threading.Lock()
+
+
+def bind_tenant(owner: str | None) -> bool:
+    """Whether an invoke for ``owner`` may run in this session. AgentCore gives every session its
+    own microVM, so this process serves one tenant: the boot env's, or else the first invoke's.
+    Any other tenant is refused. No header (an older backend) runs as before."""
+    global OWNER, S3_PREFIX
+    if not owner:
+        return True
+    with _TENANT_LOCK:
+        if OWNER:
+            return owner == OWNER
+        old_prefix = S3_PREFIX
+        OWNER = owner
+        # Always from the bound owner: a prefix in a shared runtime's env would put every tenant
+        # under one prefix.
+        S3_PREFIX = default_s3_prefix(owner)
+        os.environ["ISOL8_OWNER_ID"] = owner  # the memory plugin and the skill scripts read it
+        # Every bridge module did `from bridge import OWNER` at import, before any invoke, so each
+        # holds the empty boot value: re-point those copies (and sync's prefix) once, here.
+        for name, mod in list(sys.modules.items()):
+            if name.startswith("bridge.") and mod is not None:
+                if getattr(mod, "OWNER", None) == "":
+                    mod.OWNER = owner
+                if getattr(mod, "S3_PREFIX", None) == old_prefix:
+                    mod.S3_PREFIX = S3_PREFIX
+        return True
 STARTED = time.time()
 
 # A workspace with an AgentCore Browser profile browses its shared session through the bridge's

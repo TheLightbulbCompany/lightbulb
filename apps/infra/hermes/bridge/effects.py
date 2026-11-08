@@ -26,7 +26,6 @@ from bridge import API, HOOK_TOKEN, OWNER
 
 log = logging.getLogger("bridge")
 
-EFFECTS_PATH = f"/api/v1/internal/runtime/{OWNER}/effects"
 EXTERNAL_KINDS = ("mail.send", "text.send", "app.publish", "pr.merge", "purchase", "provision", "a2a.send")
 MULTIPLE = "multiple"  # classify(): more than one external action in one command
 SPLIT_THEM = "One external action per command; split them and run each on its own."
@@ -330,7 +329,7 @@ class EffectsCallback:
             "idemKey": idem,
         }
         try:
-            status, data = _post(EFFECTS_PATH, body)
+            status, data = _post(f"/api/v1/internal/runtime/{OWNER}/effects", body)
         except Exception as exc:  # noqa: BLE001 -- fail closed, whatever went wrong
             log.warning("effects check failed run=%s: %s", self.run_id, type(exc).__name__)
             return Decision.refuse(UNAVAILABLE)
@@ -366,7 +365,7 @@ class EffectsCallback:
         final = "done" if disposition == "done" or (disposition is None and not _failed(result)) else "unknown"
         body = {"disposition": final, "resultRef": None, "runSecret": self.run_secret, "runId": self.run_id}
         try:
-            status, _ = _post(f"{EFFECTS_PATH}/{idem}/done", body)
+            status, _ = _post(f"/api/v1/internal/runtime/{OWNER}/effects/{idem}/done", body)
             if status != 200:
                 log.warning("effect done not recorded run=%s idem=%s status=%s", self.run_id, idem, status)
         except Exception as exc:  # noqa: BLE001 -- the intent row stays; the gate refuses a repeat until a person looks

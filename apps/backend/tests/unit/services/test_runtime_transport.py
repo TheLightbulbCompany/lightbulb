@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from unittest.mock import patch
 
 from core.services import runtime_transport as rt
 
@@ -95,9 +96,33 @@ class TestAgentCoreTransport:
         await rt.request(row, "/plugins/lightbulb-channel/rpc", json_body={})
         await rt.request({**row, "id": ""}, "/plugins/lightbulb-channel/rpc", json_body={})
         token = derive_vault_token("org_a", "row-1")
-        assert captured[0]["headers"] == {"Authorization": "Bearer gw", rt.VAULT_HEADER: token}
-        assert captured[1]["headers"] == {rt.VAULT_HEADER: token}
-        assert "headers" not in captured[2]
+        tenant = {rt.TENANT_HEADER: "org_a"}
+        assert captured[0]["headers"] == {"Authorization": "Bearer gw", rt.VAULT_HEADER: token, **tenant}
+        assert captured[1]["headers"] == {rt.VAULT_HEADER: token, **tenant}
+        assert captured[2]["headers"] == tenant
+
+    @pytest.mark.asyncio
+    async def test_every_invoke_names_its_tenant_the_wake_too(self, monkeypatch):
+        """The bridge binds a session to the tenant of its first invoke and refuses any other,
+        so the cold-start health call must carry it as well as the call it wakes for."""
+        captured = []
+
+        class Client:
+            def invoke_agent_runtime(self, **kwargs):
+                captured.append(json.loads(kwargs["payload"].decode()))
+                return {"statusCode": 200, "response": b'{"status":200,"body":{}}'}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
+        # patch.object, not monkeypatch: conftest stubs this with patch.object, and a monkeypatch undo
+        # would put that stub back after conftest restored the real one (leaking it into later files).
+        with patch.object(rt, "_ensure_session", lambda owner_id, arn, deadline, wake: wake()):  # a cold session
+            await rt.request(
+                {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"},
+                "/plugins/lightbulb-channel/rpc",
+                json_body={},
+            )
+        assert len(captured) == 2  # the wake, then the call
+        assert all(e["headers"][rt.TENANT_HEADER] == "org_a" for e in captured)
 
     @pytest.mark.asyncio
     async def test_unwraps_the_contract_server_envelope(self, monkeypatch):

@@ -283,3 +283,19 @@ def test_health_advertises_the_three_way_browser_state_merge(home):
     # The backend writes a paired Mac's sign-ins back only to a runtime that says this.
     _, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
     assert obj["payload"]["browserStateMerge"] == 1
+
+
+def test_a_shared_runtime_provider_takes_the_bound_tenant(mod, monkeypatch):
+    """A shared runtime boots with no owner; the provider is built per turn, after the bridge has
+    bound the session's tenant from its first invoke."""
+    import bridge
+
+    monkeypatch.setenv("ISOL8_OWNER_ID", "")
+    from bridge import sync
+
+    monkeypatch.setattr(bridge, "S3_PREFIX", "hermes")  # the bind re-points these: restored after
+    monkeypatch.setattr(sync, "S3_PREFIX", "hermes")
+    monkeypatch.setattr(bridge, "OWNER", "")
+    assert not mod.AgentCoreMemoryProvider().is_available()
+    assert bridge.bind_tenant("org_pool")
+    assert mod.AgentCoreMemoryProvider()._owner == "org_pool"

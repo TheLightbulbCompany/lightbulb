@@ -171,17 +171,40 @@ async def test_the_ask_after_a_thread_question_answers_it():
 
 async def test_gpt_live_hears_every_meet_person_mixed():
     """RoomIO links one participant; Recall gives one track a person. GPT-Live hears their sum, and silence between;
-    a person's queue holds 3 frames, so nothing old is replayed."""
+    a person's queue holds 3 frames, so nothing old is mixed in late."""
     mix = meet.Mix()
     frame = lambda v: rtc.AudioFrame(np.full(meet.FRAME, v, dtype=np.int16).tobytes(), meet.RATE, 1, meet.FRAME)  # noqa: E731
     for _ in range(10):
         mix.push(MAYA, frame(1000))
     mix.push(SAM, frame(32000))
-    out = np.frombuffer((await mix.__anext__()).data, dtype=np.int16)
-    assert out.tolist() == [32767] * meet.FRAME  # summed, clipped
+    mix.tick()
     assert len(mix._q[MAYA]) == 2
     mix.drop(MAYA)
-    assert not np.frombuffer((await mix.__anext__()).data, dtype=np.int16).any()  # nobody: silence, still a frame
+    mix.tick()
+    first, second = [np.frombuffer((await mix.__anext__()).data, dtype=np.int16) for _ in range(2)]
+    assert first.tolist() == [32767] * meet.FRAME and not second.any()  # summed and clipped; then silence
+
+
+async def test_a_waking_voice_hears_the_pre_roll_first_then_live():
+    """The wake-word pattern: asleep, the mix keeps the newest PREROLL_S; the new session reads it at once (within the
+    service's 5 s burst and the plugin's 4 s pre-start queue), then each live frame as it is mixed."""
+    mix = meet.Mix()
+    frame = lambda v: rtc.AudioFrame(np.full(meet.FRAME, v, dtype=np.int16).tobytes(), meet.RATE, 1, meet.FRAME)  # noqa: E731
+    n = int(meet.PREROLL_S * meet.RATE / meet.FRAME)
+    for i in range(n + 50):  # asleep for 5 s: nobody reads, the oldest second falls off
+        mix.push(SAM, frame(i))
+        mix.tick()
+    assert meet.PREROLL_S <= 4.0 and len(mix.ring) == n
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    got = [int(np.frombuffer((await mix.__anext__()).data, dtype=np.int16)[0]) for _ in range(n)]
+    assert got == list(range(50, n + 50)) and loop.time() - t0 < 0.5  # the newest 4 s, in order, faster than real time
+    nxt = asyncio.create_task(mix.__anext__())
+    await asyncio.sleep(0.01)
+    assert not nxt.done()  # caught up: now live
+    mix.push(SAM, frame(7))
+    mix.tick()
+    assert int(np.frombuffer((await nxt).data, dtype=np.int16)[0]) == 7
 
 
 class _Voice:
@@ -224,16 +247,15 @@ async def test_meet_sleeps_after_5_minutes_without_activity():
 
 
 async def test_meet_wakes_on_the_name_carrying_history():
-    """Asleep, the first interim or final line with the name reopens it, told the recent meeting, the team messages
-    from while it slept (not said again) and the words that named it."""
+    """Asleep, the first interim or final line with the name reopens it, told the recent meeting and the team messages
+    from while it slept (not said again); the words that named it come as the Mix pre-roll's audio."""
     b = _Backend([{"messages": [{"id": "a7", "seq": 7, "text": "Pulse posted the holiday hours."}], "after": 7}])
     m, opened = _sleepy(b)
     m.line(MAYA, "Let's look at the holiday hours.")
     m.heard(SAM, "Lightbulb, are those", final=False)
     await m.opening
     [voice] = opened
-    assert voice.history == [("Maya", "Let's look at the holiday hours."), ("Nova", "Pulse posted the holiday hours."),
-                             ("Sam", "Lightbulb, are those")]  # fmt: skip
+    assert voice.history == [("Maya", "Let's look at the holiday hours."), ("Nova", "Pulse posted the holiday hours.")]
     assert m.after == 7 and "a7" in m.seen
     m.heard(SAM, "Nova, and the other thing?", final=True)  # awake: GPT-Live decides, nothing reopens
     assert m.opening is None and len(opened) == 1
@@ -305,7 +327,7 @@ async def test_meet_runs_asleep_until_named_and_closes_the_voice_with_the_meetin
     [m] = made
     m.heard("meet:r:12", "Nova, what", final=False)
     await m.opening
-    assert started["surface"] == "meet" and "Standup" in started["prompt"] and started["history"] == [("Someone", "Nova, what")]
+    assert started["surface"] == "meet" and "Standup" in started["prompt"] and started["history"] == []
     assert started["room_options"].audio_output.track_name == meet.TRACK
     assert isinstance(Live.session.input.audio, meet.Mix)
     hooks["agent_state_changed"](type("Ev", (), {"old_state": "listening", "new_state": "speaking"})())

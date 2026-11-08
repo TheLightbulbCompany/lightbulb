@@ -14,7 +14,9 @@ as results when the room has paused; a Worker's question carries its qid, and th
 Sleep and wake (founder ruling, 8 Nov 2026): GPT-Live bills every open second, so it opens when someone first says
 the assistant's name (the transcriber's only use of name detection: any interim or final line containing it), and
 sleeps after SLEEP_S with no delegation and no speech of its own. Each open carries the recent meeting transcript as
-`history`, and the team messages from while it slept, so it knows what people refer to. While open, GPT-Live decides.
+`history`, and the team messages from while it slept, so it knows what people refer to; it hears the line that woke
+it from the Mix's pre-roll (the wake-word pattern: the last PREROLL_S of audio first, then live). While open, GPT-Live
+decides.
 The meeting itself ends on Recall's call_ended (it closes the LiveKit room, routers/meetings.py), an hour of silence or
 the 90-minute cap, and the voice is closed with it.
 """
@@ -54,6 +56,9 @@ TRANSCRIPT_FLUSH_S = 10
 POLL_S = 1.0  # how often the meeting asks what the room's agents posted
 RATE = 16000
 FRAME = RATE // 50  # 20 ms
+# The pre-roll a waking voice hears first, at once. Not more: the service rejects an input burst over 5 s of audio and
+# the plugin keeps only the last 4 s queued before session.started (gpt_live.py:52-54, _trim_queued_audio).
+PREROLL_S = 4.0
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
 # ponytail: fixed threshold; tune from a real meeting's levels.
 STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 400}
@@ -132,12 +137,15 @@ def voiced(frame: rtc.AudioFrame) -> bool:
 
 class Mix(AudioInput):
     """Every Meet person's audio as the one stream GPT-Live hears (RoomIO links one participant; Recall gives one
-    track a person): 20 ms frames summed, silence when nobody speaks, paced in real time."""
+    track a person): mixed every 20 ms by `run`, summed and clipped, silence when nobody speaks, into a rolling
+    PREROLL_S ring. Asleep, nobody reads it and it keeps only the newest PREROLL_S; on wake the new session reads that
+    pre-roll at once and then the live mix, so it hears the whole "Nova, what shipped this week?" itself."""
 
     def __init__(self) -> None:
         super().__init__(label="meet-mix")
         self._q: dict[str, deque[np.ndarray]] = {}
-        self._next = 0.0
+        self.ring: deque[rtc.AudioFrame] = deque(maxlen=int(PREROLL_S * RATE / FRAME))
+        self._new = asyncio.Event()
 
     def push(self, who: str, frame: rtc.AudioFrame) -> None:
         self._q.setdefault(who, deque(maxlen=3)).append(np.frombuffer(frame.data, dtype=np.int16))  # 60 ms, no backlog
@@ -145,15 +153,28 @@ class Mix(AudioInput):
     def drop(self, who: str) -> None:
         self._q.pop(who, None)
 
-    async def __anext__(self) -> rtc.AudioFrame:
-        now = asyncio.get_running_loop().time()
-        self._next = max(self._next + FRAME / RATE, now - 0.2)  # ponytail: catch up at most 200 ms behind
-        await asyncio.sleep(self._next - now)
+    def tick(self) -> None:
+        """One 20 ms frame of the room into the ring."""
         out = np.zeros(FRAME, np.int32)
         for q in list(self._q.values()):
             if q and len(f := q.popleft()) == FRAME:
                 out += f
-        return rtc.AudioFrame(np.clip(out, -32768, 32767).astype(np.int16).tobytes(), RATE, 1, FRAME)
+        self.ring.append(rtc.AudioFrame(np.clip(out, -32768, 32767).astype(np.int16).tobytes(), RATE, 1, FRAME))
+        self._new.set()
+
+    async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        at = loop.time()
+        while True:
+            at = max(at + FRAME / RATE, loop.time() - 0.2)  # ponytail: catch up at most 200 ms behind
+            await asyncio.sleep(at - loop.time())
+            self.tick()
+
+    async def __anext__(self) -> rtc.AudioFrame:
+        while not self.ring:
+            self._new.clear()
+            await self._new.wait()
+        return self.ring.popleft()
 
 
 def names_it(name: str, text: str) -> bool:
@@ -194,7 +215,7 @@ class Meeting:
         if not text.strip():
             return
         if self.voice is None and self.opening is None and self._open_voice and names_it(self.name, text):
-            self.opening = asyncio.create_task(self._wake(who, text))
+            self.opening = asyncio.create_task(self._wake())
         if final:
             self.joiner.final(who, text)
         else:
@@ -218,9 +239,9 @@ class Meeting:
         since = time.time() - HISTORY_S
         return [(ln["name"], ln["text"]) for ln in self.lines if ln["at"] >= since][-HISTORY_LINES:]
 
-    async def _wake(self, who: str, text: str) -> None:
-        """Opens the voice with the recent meeting, the team messages from while it slept (in the notes and the
-        history, not said again) and the words that named it so far."""
+    async def _wake(self) -> None:
+        """Opens the voice with the recent meeting and the team messages from while it slept (in the notes and the
+        history, not said again). The words that named it reach it as audio: the Mix pre-roll, then the live mix."""
         try:
             try:
                 out = await self._b.meet("events", {"after": self.after})
@@ -232,7 +253,7 @@ class Meeting:
             except BackendError as e:
                 logger.warning("meet: events failed (%s)", e.code)
             self.activity()
-            self.voice = await self._open_voice([*self.history(), (self.label(who), text)])
+            self.voice = await self._open_voice(self.history())
             self.activity()
             logger.info("meet: voice awake")
         except Exception:  # noqa: BLE001 -- the next line with the name tries again
@@ -322,6 +343,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     name = info["assistantName"]
     heard_at = {"voiced": time.monotonic()}  # when anyone last spoke
     mix = Mix()
+    mixing = asyncio.create_task(mix.run())
     tile = {f"lightbulb.agent.{ASSISTANT_ID}.name": name}
 
     def on_state(ev) -> None:
@@ -424,6 +446,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     async def on_end(_reason: str = "") -> None:
         limit.cancel()
+        mixing.cancel()
         meeting.joiner.close()
         for t in readers.values():
             t.cancel()

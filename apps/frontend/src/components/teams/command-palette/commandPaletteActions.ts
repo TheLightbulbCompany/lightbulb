@@ -20,7 +20,7 @@ export interface CommandPaletteAction {
 export function navActions(admin = true): CommandPaletteAction[] {
   return [
     // Home and the Inbox tab folded into Activity, and the Paperclip task board is gone: their old words land here.
-    { id: "go-activity", label: "Activity", path: "/chat?panel=activity", Icon: Bell, keywords: ["events", "log", "home", "dashboard", "inbox", "mine", "approvals", "tasks", "issues", "tickets"] },
+    { id: "go-activity", label: "Activity", path: "/chat?panel=activity", Icon: Bell, keywords: ["events", "log", "home", "dashboard", "inbox", "mine", "approvals", "threads", "tasks", "issues", "tickets"] },
     { id: "go-mail", label: "Mail", path: "/chat?panel=mail", Icon: Mail, keywords: ["email", "meetings", "transcripts"] },
     // The org chart was a view of this panel, so its search words point here.
     { id: "go-agents", label: "Agents", path: "/chat?panel=teams-agents", Icon: Bot, keywords: ["bot", "roster", "org chart", "network", "hierarchy", "team"] },

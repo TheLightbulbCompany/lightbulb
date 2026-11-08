@@ -21,6 +21,8 @@ if (!(Number(OPENROUTER_MARKUP) >= 1)) throw new Error(`openrouter-pricing.json 
 
 export interface OpenRouterGateStackProps extends cdk.StackProps {
   environment: string;
+  /** The stage CMK that wraps credential-envelopes data keys (owner OpenRouter keys). */
+  kmsKeyArn: string;
 }
 
 /** Managed OpenRouter inference gate + settlement worker, one per env. */
@@ -71,6 +73,7 @@ export class OpenRouterGateStack extends cdk.Stack {
         FAST_GATE_TABLE: `${tablePrefix(env)}metronome-fast-gate`,
         OPENROUTER_KEYS_TABLE: `${tablePrefix(env)}openrouter-keys`,
         REQUESTS_TABLE: `${tablePrefix(env)}openrouter-requests`,
+        CREDENTIAL_ENVELOPES_TABLE: `${tablePrefix(env)}credential-envelopes`,
         MODEL_POLICY_JSON: env === "dev"
           ? (process.env.OPENROUTER_MODEL_POLICY_JSON_DEV ?? "{}")
           : (process.env.OPENROUTER_MODEL_POLICY_JSON_PROD ?? "{}"),
@@ -100,6 +103,17 @@ export class OpenRouterGateStack extends cdk.Stack {
         tableArn("openrouter-requests"),
       ],
     }));
+    // Owner keys are credential-envelopes rows: read one row, decrypt only an openrouter/* data key.
+    // The gate is a public Function URL, so nothing wider (no other provider, no writes, no scans).
+    const openEnvelopes = () => [
+      new iam.PolicyStatement({ actions: ["dynamodb:GetItem"], resources: [tableArn("credential-envelopes")] }),
+      new iam.PolicyStatement({
+        actions: ["kms:Decrypt"],
+        resources: [props.kmsKeyArn],
+        conditions: { StringLike: { "kms:EncryptionContext:provider": "openrouter/*" } },
+      }),
+    ];
+    openEnvelopes().forEach(statement => role.addToPolicy(statement));
     role.addToPolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],
       resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/openrouter/owners/*`],
@@ -115,6 +129,8 @@ export class OpenRouterGateStack extends cdk.Stack {
       stringValue: url.url,
     });
 
+    const settlementSrc = path.join(__dirname, "..", "..", "lambda", "openrouter-settlement");
+    const wheelFlags = "--only-binary=:all: --platform manylinux2014_aarch64 --implementation cp --python-version 3.12";
     const settlementRole = new iam.Role(this, "SettlementRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -125,8 +141,24 @@ export class OpenRouterGateStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
       handler: "index.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "lambda", "openrouter-settlement"), {
+      // cryptography opens owner-key envelopes (AES-256-GCM); arm64 cp312 wheels from any host.
+      code: lambda.Code.fromAsset(settlementSrc, {
         exclude: ["test_*.py"],
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          command: ["bash", "-c", `pip install -r requirements.txt -t /asset-output ${wheelFlags} && cp index.py /asset-output`],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              try {
+                execSync(`pip3 install -r ${settlementSrc}/requirements.txt -t ${outputDir} -q ${wheelFlags}`, { stdio: "inherit" });
+                fs.copyFileSync(path.join(settlementSrc, "index.py"), path.join(outputDir, "index.py"));
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          },
+        },
       }),
       timeout: cdk.Duration.minutes(5),
       memorySize: 512,
@@ -137,6 +169,7 @@ export class OpenRouterGateStack extends cdk.Stack {
         GATE_ENV: env,
         REQUESTS_TABLE: `${tablePrefix(env)}openrouter-requests`,
         OPENROUTER_KEYS_TABLE: `${tablePrefix(env)}openrouter-keys`,
+        CREDENTIAL_ENVELOPES_TABLE: `${tablePrefix(env)}credential-envelopes`,
         FAST_GATE_TABLE: `${tablePrefix(env)}metronome-fast-gate`,
         // Settled OpenRouter cost is added here: the backend's own usage counters price only Bedrock.
         USAGE_COUNTERS_TABLE: `${tablePrefix(env)}usage-counters`,
@@ -158,6 +191,7 @@ export class OpenRouterGateStack extends cdk.Stack {
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:TransactWriteItems"],
       resources: [tableArn("openrouter-requests"), `${tableArn("openrouter-requests")}/index/state-created-index`, tableArn("openrouter-keys"), tableArn("metronome-fast-gate")],
     }));
+    openEnvelopes().forEach(statement => settlementRole.addToPolicy(statement));
     // Settlement only ADDs real OpenRouter cost to the usage counters (inside its transaction).
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["dynamodb:UpdateItem"],

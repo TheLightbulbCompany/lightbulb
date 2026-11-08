@@ -20,7 +20,7 @@ const WORKSPACE: TaskScope = { kind: "workspace" };
 export const RECENT_SHOWN = 3;
 
 /** Lightbulb's one line on its card. */
-export const FRONT_LINE = "Hands your tasks to specialists";
+export const FRONT_LINE = "Hands your threads to specialists";
 
 /** What a specialist does for people, in one line: its persona's first sentence, else its title unless that is just
  *  its name (or a roster role like "CEO"). Null when there is nothing plain to say: never its skill slugs (dev walk W12-8). */
@@ -90,13 +90,13 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
       </DropdownMenu>
     </div>
     {purpose && <p className="text-ui">{purpose}</p>}
-    <section aria-label={`${name}'s recent tasks`} className="grid grid-cols-[minmax(0,1fr)] gap-0.5 border-t border-border pt-2">
+    <section aria-label={`${name}'s recent threads`} className="grid grid-cols-[minmax(0,1fr)] gap-0.5 border-t border-border pt-2">
       {recent.length ? recent.map((t) => <button key={t.taskId} type="button" onClick={() => openTaskPane(t.taskId)}
         aria-label={`Open ${t.title}, ${summaryView(t, viewerId).word}`}
         className="-mx-1 flex items-center gap-2 rounded-xs px-1 py-0.5 text-left text-ui hover:bg-accent">
         {/* The status only when it says something: a recent task is Done, so "• Done" on every row was noise (W14). */}
         <span className="min-w-0 flex-1 truncate">{t.title}</span>{!["Done", "Closed"].includes(summaryView(t, viewerId).word) && <TaskStatus task={t} viewerId={viewerId} />}
-      </button>) : <p className="text-ui text-muted-foreground">{loaded ? "No tasks yet." : "Loading…"}</p>}
+      </button>) : <p className="text-ui text-muted-foreground">{loaded ? "No threads yet." : "Loading…"}</p>}
     </section>
     <div className="mt-auto pt-1">
       <Button type="button" size="sm" variant="outline" onClick={onAsk}

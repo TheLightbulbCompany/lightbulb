@@ -84,3 +84,10 @@ it("explains ownership under About instead of offering a Leave button, when no o
   expect(screen.getByText("You are the only person in this channel. Delete it from the conversation options menu.")).toBeInTheDocument();
 });
 
+
+it("the Lightbulb page's own DM has no Members tab: Files and Details only", () => {
+  render(<RoomDetailsPanel {...props} tab="files" hideMembers />);
+  const tabs = within(screen.getByRole("tablist", { name: "Room details" })).getAllByRole("tab").map((tab) => tab.textContent);
+  expect(tabs).toEqual(["Files", "Details"]);
+  expect(screen.queryByText("Members go here")).toBeNull();
+});

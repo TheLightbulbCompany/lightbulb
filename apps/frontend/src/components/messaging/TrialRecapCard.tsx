@@ -83,7 +83,7 @@ export function TrialRecapCard() {
       <h3 className="font-semibold text-[var(--fg)]">Here&apos;s what your team did in 30 days</h3>
       {nothingFinished ? (
         <p className="mt-1 text-[var(--fg-soft)]">
-          Your agents haven&apos;t finished anything for the team yet. Want help setting up one real task?{" "}
+          Your agents haven&apos;t finished anything for the team yet. Want help setting up one real thread?{" "}
           <Link href="/request-setup" className="text-[var(--link)] underline">
             Book 20 minutes
           </Link>

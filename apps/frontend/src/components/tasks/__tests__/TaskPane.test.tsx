@@ -27,6 +27,11 @@ vi.mock("@/components/messaging/SessionChat", () => ({
   },
 }));
 
+vi.mock("@/components/workspace/panels/BrowserFrameView", () => ({
+  BrowserFrameView: ({ runId, interactive }: { runId?: string; interactive?: boolean }) =>
+    <div data-testid="frames" data-run={runId} data-interactive={String(!!interactive)} />,
+}));
+
 import { TaskPane, clock } from "../TaskPane";
 import { DecisionCard } from "../DecisionCard";
 
@@ -56,7 +61,7 @@ describe("TaskPane", () => {
     const waiting = { ...FIXTURES.step05.tasks[0], output: { idemKey: "e", kind: "app" as const, title: "Signup app preview" } };
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane();
-    const status = await screen.findByRole("region", { name: "Task status" });
+    const status = await screen.findByRole("region", { name: "Thread status" });
     const needs = screen.getByRole("group", { name: /Provision database and Stripe/ });
     const transcript = screen.getByRole("region", { name: "Transcript" });
     expect(screen.queryByRole("region", { name: "Outputs" })).toBeNull();
@@ -73,7 +78,7 @@ describe("TaskPane", () => {
     expect(screen.queryByRole("button", { name: "Mark done" })).toBeNull();
     // Where it runs is plumbing: Details only.
     expect(screen.getByText("Lightbulb cloud").closest("details")).not.toBeNull();
-    expect(within(screen.getByRole("region", { name: "Task status" })).queryByText("Lightbulb cloud")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Thread status" })).queryByText("Lightbulb cloud")).toBeNull();
     unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" } });
     pane();
@@ -147,8 +152,8 @@ describe("TaskPane", () => {
     // The question card shows once, at the top: its copy in the task room is left out of Progress.
     expect(transcript).toHaveAttribute("data-hides", "question");
     // One line, already there: no button that opens a second box.
-    expect(screen.queryByRole("button", { name: "Steer this task" })).toBeNull();
-    await userEvent.type(screen.getByRole("textbox", { name: "Steer this task" }), "Use the blue theme{Enter}");
+    expect(screen.queryByRole("button", { name: "Steer this thread" })).toBeNull();
+    await userEvent.type(screen.getByRole("textbox", { name: "Steer this thread" }), "Use the blue theme{Enter}");
     expect(live.messaging.sendMessage).toHaveBeenCalledWith(step8.taskRoomId, expect.objectContaining({ text: "Use the blue theme", mentions: [] }));
     expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup", source: "note" }));
   });
@@ -184,6 +189,39 @@ describe("TaskPane", () => {
     expect(screen.getByText(/^Started /)).not.toHaveTextContent("Done");
   });
 
+  it("while its run browses, the pane shows that run's tab live and takes the owner's clicks", async () => {
+    withDetail({ ...step8, browserRunId: "run-2" } as TaskDetail);
+    client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "web_search", ok: true }] as unknown[] });
+    const { unmount } = pane();
+    expect(await screen.findByText("Searching the web…")).toBeInTheDocument();
+    expect(screen.queryByTestId("frames")).toBeNull(); // not browsing: no viewing beat (it would start a browser)
+    unmount();
+    client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "browser_navigate", ok: true }, { name: "web_search", ok: true }] as unknown[] });
+    pane();
+    const frames = await screen.findByTestId("frames");
+    expect(frames).toHaveAttribute("data-run", "run-2"); // the run the server says this viewer may drive
+    expect(frames).toHaveAttribute("data-interactive", "true");
+    expect(screen.getByRole("region", { name: "Browser" })).toHaveTextContent("take over");
+  });
+
+  it("a run on its own task VM offers no live browser (no beat to wake the shared VM, no clicks that 409)", async () => {
+    withDetail({ ...step8, browserRunId: null } as TaskDetail);
+    client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "browser_navigate", ok: true }] as unknown[] });
+    pane();
+    expect(await screen.findByText(/^Opening/)).toBeInTheDocument(); // the browsing step is read
+    expect(screen.queryByTestId("frames")).toBeNull();
+    expect(screen.queryByText(/take over/)).toBeNull();
+  });
+
+  it("a Done task shows no live browser, whatever it browsed", async () => {
+    const ended = step8.attempts.map((a) => ({ ...a, status: "ended" as const, endedAt: "2026-11-04T14:05:00Z" }));
+    withDetail({ ...step8, browserRunId: "run-2", attempts: ended, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] } as TaskDetail, []);
+    client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "browser_click", ok: true }] as unknown[] });
+    pane();
+    expect(await screen.findByText(/^Started .+ · Done /)).toBeInTheDocument();
+    expect(screen.queryByTestId("frames")).toBeNull();
+  });
+
   it("a Done task: no live line, Steps folded, one quiet Started · Done line", async () => {
     const ended = step8.attempts.map((a) => ({ ...a, status: "ended" as const, endedAt: "2026-11-04T14:05:00Z" }));
     withDetail({ ...step8, attempts: ended, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
@@ -202,7 +240,7 @@ describe("TaskPane", () => {
 
   it("marks read once on open", async () => {
     pane();
-    await screen.findByRole("region", { name: "Task status" });
+    await screen.findByRole("region", { name: "Thread status" });
     expect(client.markRead.mock.calls).toEqual([["t-signup"]]);
   });
 
@@ -239,22 +277,22 @@ describe("TaskPane", () => {
   it("a failed load (not 403/404) offers Retry", async () => {
     client.get.mockRejectedValueOnce(new Error("503"));
     pane();
-    expect(await screen.findByRole("alert")).toHaveTextContent("This task couldn't load.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("This thread couldn't load.");
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByRole("region", { name: "Task status" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Thread status" })).toBeInTheDocument();
   });
 
   it("names no runtime until the task has one", async () => {
     withDetail({ ...step8, task: { ...step8.task, runsOn: null } });
     pane();
-    await screen.findByRole("region", { name: "Task status" });
+    await screen.findByRole("region", { name: "Thread status" });
     expect(screen.queryByText("Lightbulb cloud")).toBeNull();
   });
 
   it("forbidden task reads as unavailable", async () => {
     client.get.mockRejectedValue(new ApiError(404, null));
     pane();
-    expect(await screen.findByText("This task isn't available to you.")).toBeInTheDocument();
+    expect(await screen.findByText("This thread isn't available to you.")).toBeInTheDocument();
   });
 });
 
@@ -351,7 +389,7 @@ describe("NeedsYouCard", () => {
     // The pending send is the card itself: no second row repeating it below.
     expect(screen.queryByRole("list", { name: "Effects" })).toBeNull();
     // The header follows the same state: ready for review, nothing running, so no Stop.
-    const status = screen.getByRole("region", { name: "Task status" });
+    const status = screen.getByRole("region", { name: "Thread status" });
     // The whole line: the task's title and the reason once; the status word sits once, in the header row.
     expect(status.firstElementChild).toHaveTextContent(/Ready for review$/);
     expect(status.firstElementChild).not.toHaveTextContent(/Needs you|Done by|ready for your review/);
@@ -371,7 +409,7 @@ describe("NeedsYouCard", () => {
     const card = await screen.findByRole("group", { name: /Provision database and Stripe/ });
     expect(within(card).getByText("Closed — not approved")).toBeInTheDocument();
     expect(within(card).queryByRole("button")).toBeNull();
-    expect(screen.getByRole("region", { name: "Task status" })).not.toHaveTextContent("Done by");
+    expect(screen.getByRole("region", { name: "Thread status" })).not.toHaveTextContent("Done by");
   });
 
   it("Request changes asks what should change first, then sends it with the answer (dev walk N-F2)", async () => {
@@ -405,12 +443,12 @@ describe("steering a finished request (dev walk N-F4)", () => {
     const done = { ...step8.task, status: "idle" as const, shownGroup: "idle" as const, watching: false };
     withDetail({ ...step8, task: done, questions: [] }, []);
     pane();
-    const status = await screen.findByRole("region", { name: "Task status" });
+    const status = await screen.findByRole("region", { name: "Thread status" });
     const header = screen.getByRole("banner");
     expect(within(header).getByText("Done")).toBeInTheDocument();
     // Done: one box, the follow-up (W14: "Follow up" is no longer a button beside the steer box).
     expect(screen.queryByRole("button", { name: "Follow up" })).toBeNull();
-    await userEvent.type(screen.getByRole("textbox", { name: "Follow up on this task" }), "Make it one line{Enter}");
+    await userEvent.type(screen.getByRole("textbox", { name: "Follow up on this thread" }), "Make it one line{Enter}");
     await waitFor(() => expect(within(header).getByText("Working")).toBeInTheDocument());
     // The lifecycle buttons sit in the header row (W11-2), not on a line of their own under it.
     expect(within(header).getByRole("button", { name: "Stop" })).toBeInTheDocument();
@@ -427,18 +465,18 @@ describe("action slots (UX audit 2, P0)", () => {
     expect(slots()).toEqual(["stop:Stop", "retry:", "close:"]);
     expect(screen.queryByRole("button", { name: "More for this task" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
-    expect(within(screen.getByRole("banner")).getByRole("group", { name: "Stop this task?" })).toBeInTheDocument();
+    expect(within(screen.getByRole("banner")).getByRole("group", { name: "Stop this thread?" })).toBeInTheDocument();
     expect(slots()).toEqual([]);
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();
-    await userEvent.click(await screen.findByRole("button", { name: "Close task" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Close thread" }));
     await waitFor(() => expect(client.act).toHaveBeenCalledWith("t-signup", "resolve", step8.task.version));
     second.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
     expect(await screen.findByRole("button", { name: "Reopen" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Close task" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close thread" })).toBeNull();
     expect(screen.queryByRole("button", { name: "More for this task" })).toBeNull();
   });
 
@@ -454,7 +492,7 @@ describe("action slots (UX audit 2, P0)", () => {
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
     await screen.findByRole("button", { name: "Reopen" });
-    expect(screen.queryByRole("textbox", { name: /Steer this task|Follow up/ })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /Steer this thread|Follow up/ })).toBeNull();
   });
 });
 
@@ -466,8 +504,8 @@ describe("one status word, the specialist as the title (audit 02 P2)", () => {
     expect(await screen.findByRole("heading", { level: 3, name: step8.task.title })).toBeInTheDocument();
     expect(within(screen.getByRole("banner")).getByText(/Finance/)).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Close pane" })).toHaveLength(1);
-    const status = await screen.findByRole("region", { name: "Task status" });
-    expect(screen.getByRole("complementary", { name: "Task" })).not.toHaveTextContent("Done by");
+    const status = await screen.findByRole("region", { name: "Thread status" });
+    expect(screen.getByRole("complementary", { name: "Thread" })).not.toHaveTextContent("Done by");
     // The word once, in the header row beside the specialist (UX slice 3), not again in the body.
     expect(within(screen.getByRole("banner")).getByText("Done")).toBeInTheDocument();
     expect(status).not.toHaveTextContent("Done");

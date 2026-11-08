@@ -487,13 +487,13 @@
    One header (PaneHeader), the list width (stored) or the item width (computed), and below 1000 px — or wherever the
    main column would drop under 360 — an overlay sheet from the right over a scrim, so it never squeezes the transcript. */
 @media (min-width: 600px) {
-  .workspace-shell[data-super-agent="true"] .workspace-pane { min-width: 360px; }
-  .workspace-shell[data-super-agent="true"] .workspace-body:not([data-full]) > .workspace-pane:not([data-sheet]) {
+  :is(.workspace-shell[data-super-agent="true"], .vx-lightbulb) .workspace-pane { min-width: 360px; }
+  :is(.workspace-shell[data-super-agent="true"], .vx-lightbulb) .workspace-body:not([data-full]) > .workspace-pane:not([data-sheet]) {
     transition: width 200ms var(--ease-drawer);
   }
   /* No item floor here: a list and an item share the one width (RightPane), the dragged one included, so the header
      never shifts going Files → doc (W17: a 503 px list beside a 520 px doc moved it 17 px). */
-  .workspace-shell[data-super-agent="true"] .workspace-pane[data-sheet] {
+  :is(.workspace-shell[data-super-agent="true"], .vx-lightbulb) .workspace-pane[data-sheet] {
     position: absolute;
     inset: 0 0 0 auto;
     z-index: var(--z-overlay);
@@ -513,7 +513,7 @@
 @keyframes pane-sheet-in { from { transform: translateX(24px); opacity: 0; } }
 @media (max-width: 599px) { .workspace-pane-scrim { display: none; } }
 @media (prefers-reduced-motion: reduce) {
-  .workspace-shell[data-super-agent="true"] .workspace-pane { transition: none !important; animation: none !important; }
+  :is(.workspace-shell[data-super-agent="true"], .vx-lightbulb) .workspace-pane { transition: none !important; animation: none !important; }
 }
 .pane-header {
   flex: none;

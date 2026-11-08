@@ -72,7 +72,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
   const blind = !!asks && !views && !!viewsError;
   if (!task) {
     return <div className="mt-1.5 max-w-xl rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground" data-task-card={taskId}>
-      This task isn&apos;t available
+      This thread isn&apos;t available
     </div>;
   }
   const view = summaryView(task, viewerId);
@@ -91,7 +91,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
   return <div className="editorial-card editorial-card-hover relative mt-1.5 max-w-xl px-3 py-2" data-task-card={taskId}>
     <div className="flex items-start gap-3">
       <div className="min-w-0 flex-1">
-        <button type="button" onClick={open} aria-label={`Open ${task.title}, ${view.word}`}
+        <button type="button" onClick={open} aria-label={`${task.title} — View thread — ${view.word}`}
           className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-ring">
           {task.title}
         </button>
@@ -114,7 +114,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
           if (!res.ok) setError(res.message);
         }}>{actionLabel(task, inline)}</Button>
     </div>}
-    {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the task to decide.</p>}
+    {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the thread to decide.</p>}
     {error && <p role="alert" className="relative z-10 mt-1 text-ui text-err">{error}</p>}
   </div>;
 }

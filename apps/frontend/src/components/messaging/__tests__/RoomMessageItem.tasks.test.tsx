@@ -80,11 +80,11 @@ describe("RoomMessageItem tasks", () => {
   it("routed-to copy", async () => {
     const onOpenTask = vi.fn();
     const { unmount } = render(item({ ...ask, routedTo: { taskIds: ["t-signup"], started: 0, passThrough: true } }, { onOpenTask }));
-    await userEvent.click(await screen.findByRole("button", { name: "Sent to Workshop signup app ›" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Sent to a thread: Workshop signup app" }));
     expect(onOpenTask).toHaveBeenCalledWith("t-signup");
     unmount();
     render(item(ask));
-    expect(screen.getByRole("button", { name: "3 tasks started ›" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "3 threads started ›" })).toBeInTheDocument();
   });
 
   it("an automation_confirm card turns the automation on only through its button", async () => {

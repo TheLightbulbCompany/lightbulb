@@ -15,7 +15,7 @@ Source: AWS Well-Architected Agentic AI Lens (10 Jun 2026) and the Prescriptive 
 - [SEC] Put a WAF in front of the public edge — `apps/infra/lib/stacks/network-stack.ts:140` (`AlbWebAcl`) — new public ALBs get the association at `:238`.
 - [SEC] Encrypt tenant data with a customer key — `apps/infra/lib/stacks/api-stack.ts:571` (`messagingKey`) — new PII tables set `encryptionKey`.
 - [SEC] Throttle at the edge per environment — `apps/infra/lib/stacks/api-stack.ts:311` (`THROTTLE_CONFIG`) — new stages inherit it.
-- [SEC] Agent tasks run in private subnets with no public IP — `apps/infra/lib/stacks/service-stack.ts:2614` (`assignPublicIp: false`) — new services copy it.
+- [SEC] Fargate tasks (backend, temporal-worker, watchdog) run in public subnets with a public IP, and their security group admits only the ALB, peer tasks and runtimes — `apps/infra/lib/stacks/service-stack.ts:2493` (`taskNetwork`), ingress at `:304` — new services copy both; never move them to private subnets (no NAT gateway to egress through).
 - [SEC] Voice caller identity is verified, owner mode needs a PIN or OTP, never caller ID alone — not built yet (grep for `X-Twilio` returns nothing) — the voice PR must add the signature check and a test.
 
 ## Reliability
@@ -37,7 +37,7 @@ Source: AWS Well-Architected Agentic AI Lens (10 Jun 2026) and the Prescriptive 
 ## Performance and cost
 - [COST] Dev runs on Spot — `apps/infra/lib/stacks/container-stack.ts:18` (`DEV_SPOT`), used at `service-stack.ts:2604` — prod services stay on-demand, dev ones use it.
 - [COST] Graviton (ARM) is 20% cheaper than x86 — no `cpuArchitecture` anywhere in `apps/infra/lib` — set ARM64 on new Fargate tasks and build arm64 images.
-- [COST] Avoid per-NAT cost; run the fewest NAT gateways — `apps/infra/lib/stacks/network-stack.ts:40` (`natGateways: 1`) — do not raise it.
+- [COST] No managed NAT gateway; private subnets (AgentCore runtimes, workspace browser, VPC Lambdas) egress through one NAT instance with a fixed EIP, a recover alarm and a status alarm — `apps/infra/lib/stacks/network-stack.ts:52` (`NatProvider.instanceV2`), alarms at `:118` — do not add NAT gateways or replace the `NatInstanceEip`.
 - [COST] Use on-demand billing for spiky tables — `apps/infra/lib/stacks/database-stack.ts:100` (`PAY_PER_REQUEST`) — new tables copy it.
 - [COST] Pick the model by task: cheap model for routing and formatting, premium for reasoning — `apps/backend/core/services/hermes_profiles.py:80` (`cheap_model_ref`) — new LLM calls choose a tier on purpose.
 - [COST] Memory has a lifecycle, no unbounded growth — `apps/backend/core/services/memory_api.py:278` (wipe rows with `expiresAt`) — new per-contact memory sets a retention rule.

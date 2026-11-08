@@ -51,7 +51,8 @@ export interface ProjectSettingsProps {
   /** Open the header's own confirm dialogs (this modal closes first). */
   onArchive?: () => void;
   onDelete?: () => void;
-  people: ReactNode;
+  /** Settings › People; absent (the Lightbulb page's own DM), no People section. */
+  people?: ReactNode;
   /** Reads and forgets what Lightbulb noted here; without it the list is not shown. */
   memoryClient?: Pick<MessagingClient, "listRoomMemory" | "forgetRoomMemory">;
   /** Where focus goes once it closes (the trigger it was opened from). */
@@ -95,8 +96,11 @@ export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement
   </Dialog>;
 }
 
-function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush, forgets }: ProjectSettingsProps & { section: SettingsSection; flush: Flush; forgets: Forgets }): ReactElement {
+function SettingsBody({ room, roomName, section: asked, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush, forgets }: ProjectSettingsProps & { section: SettingsSection; flush: Flush; forgets: Forgets }): ReactElement {
   const id = useId();
+  const sections = people ? SECTIONS : SECTIONS.filter((s) => s.id !== "people");
+  // A "people" deep link where there is no People (the Lightbulb page's own DM): the first section instead.
+  const section = sections.some((s) => s.id === asked) ? asked : sections[0].id;
   const { membership } = useOrganization();
   // The backend lets a channel's owner/admin pause it, and a workspace admin too (pause alone); a chat with Lightbulb is
   // its people's (`canEdit`), never an admin's. Never #general or the channel shared with the Lightbulb team.
@@ -151,7 +155,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     {canPause && <div className="project-row">
       <div className="project-row__text">
         <p className="project-row__label">{paused ? "Lightbulb is paused" : "Pause Lightbulb"}</p>
-        <p className="project-row__hint">Lightbulb stops replying and starting tasks or schedules here. People keep chatting. Running tasks finish.</p>
+        <p className="project-row__hint">Lightbulb stops replying and starting threads or schedules here. People keep chatting. Running threads finish.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.pause ?? 0} />
@@ -188,7 +192,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
           <p className="project-row__label mr-auto"><label htmlFor={`${id}-topic`}>Instructions</label></p>
           <Saved token={saved.topic ?? 0} />
         </div>
-        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this {noun}.</p>
+        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every thread in this {noun}.</p>
         <textarea id={`${id}-topic`} className="project-textarea" style={{ minHeight: 120 }} aria-describedby={`${id}-topic-hint`}
           value={topic} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={!editable || !onSetTopic}
           placeholder="What this is for, and how Lightbulb should work here"
@@ -202,11 +206,11 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
 
   return <>
     <nav className="project-settings__nav" aria-label="Settings sections">
-      {SECTIONS.map((s) => <button key={s.id} type="button" aria-current={s.id === section ? "page" : undefined} onClick={() => onSection(s.id)}>{s.label}</button>)}
+      {sections.map((s) => <button key={s.id} type="button" aria-current={s.id === section ? "page" : undefined} onClick={() => onSection(s.id)}>{s.label}</button>)}
     </nav>
     <label className="sr-only" htmlFor={`${id}-section`}>Section</label>
     <select id={`${id}-section`} className="project-settings__select" value={section} onChange={(e) => onSection(e.target.value as SettingsSection)}>
-      {SECTIONS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+      {sections.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
     </select>
     <div className="project-settings__body">
       <DialogDescription className="sr-only">{room.kind === "channel" ? `Settings for the #${roomName} channel.` : `Settings for ${roomName}.`}</DialogDescription>

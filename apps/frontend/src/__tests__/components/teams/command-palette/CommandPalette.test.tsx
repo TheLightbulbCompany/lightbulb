@@ -34,7 +34,7 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
 
 test("typing in search filters nav actions", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
-  const input = screen.getByPlaceholderText(/Search projects, tasks, files and messages/);
+  const input = screen.getByPlaceholderText(/Search projects, threads, files and messages/);
   fireEvent.change(input, { target: { value: "mai" } });
   expect(screen.getByText("Mail")).toBeInTheDocument();
   expect(screen.queryByText("Activity")).not.toBeInTheDocument();

@@ -15,6 +15,7 @@ import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat"
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
+import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
@@ -25,9 +26,9 @@ import { sendToTask, useShowSteered } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
-  label: "Task result", title: "Result",
-  empty: "Each step of this task shows here as it happens.",
-  unavailable: "This task's progress isn't available.", full: "This task's progress is full.", ended: "This task is closed.",
+  label: "Thread result", title: "Result",
+  empty: "Each step of this thread shows here as it happens.",
+  unavailable: "This thread's progress isn't available.", full: "This thread's progress is full.", ended: "This thread is closed.",
 };
 
 
@@ -63,16 +64,16 @@ export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
   // then its lifecycle buttons at the right (W11-2). The body never repeats them; while it runs, the live line under
   // the header ticks the seconds.
   const who = data ? specialistLabel(data.task.specialist, agentNames) : null;
-  return <aside className="room-context" aria-label="Task" data-task-pane={taskId}
+  return <aside className="room-context" aria-label="Thread" data-task-pane={taskId}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); (onBack ?? onClose)(); } }}>
-    <PaneHeader crumb={onBack ? { label: "Tasks", onBack } : undefined} title={data?.task.title ?? "Task"} headingRef={heading} onClose={onClose}
+    <PaneHeader crumb={onBack ? { label: "Threads", onBack } : undefined} title={data?.task.title ?? "Thread"} headingRef={heading} onClose={onClose}
       meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} />
         {summaryView(data.task, viewerId).word === "Working" && <> · <Ticking since={data.task.activity?.startedAt ?? data.task.updatedAt} /></>}</span>}
       actions={data && <TaskActions task={data.task} viewerId={viewerId} onError={setActionError} />} />
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
-        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This task isn&apos;t available to you.</p>
-        : <p role="alert" className="p-4 text-ui text-muted-foreground">This task couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This thread isn&apos;t available to you.</p>
+        : <p role="alert" className="p-4 text-ui text-muted-foreground">This thread couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
       // A doc opened from this task's Progress comes back here ("‹ Task", Escape).
       : <OutputBackContext.Provider value={`task:${taskId}`}><TaskPaneBody detail={data} viewerId={viewerId} actionError={actionError} /></OutputBackContext.Provider>}
   </aside>;
@@ -102,12 +103,16 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
   const live = view.word === "Working";
   const trace = useLatestTrace(detail, live);
   const tools = trace && !("error" in trace) ? trace.recentTools : null;
+  // The live run this viewer may watch and drive: on the workspace VM only, in the viewer's own workspace (GET /tasks/{id}
+  // `browserRunId`; the shared type does not carry it yet). A run on its own task VM has none: its input would 409.
+  const runId = (detail as TaskDetail & { browserRunId?: string | null }).browserRunId;
   // Top to bottom (dev walk 13, W13-5/W13-9): while it runs, its latest step; then what it said and made, once each
   // (the result's file cards are the output chips); one quiet times line; Steps, the one box and Details right under it.
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} error={actionError} />
     {live && <p role="status" aria-live="polite" className="flex items-center gap-2 px-1 text-ui text-muted-foreground">
       <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />{tools ? stepNow(tools, task.title) : "Getting started…"}</p>}
+    {live && runId && tools?.some(isBrowserTool) && <LiveBrowser runId={runId} />}
     {open && <DecisionCard key={open.id} task={task} question={open} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {decided.map((d) => <li key={d.id}>{d.line}</li>)}
@@ -128,6 +133,26 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
     {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} followUp={done} />}
     <TaskDetails detail={detail} />
   </div>;
+}
+
+/** A step in the browser (the bridge's `browser_*` tools, and `computer_use` on its screen). */
+export const isBrowserTool = (tool: unknown): boolean => {
+  const name = typeof tool === "string" ? tool : (tool as { name?: unknown } | null)?.name;
+  return typeof name === "string" && (name.startsWith("browser_") || name === "computer_use");
+};
+
+/** The Worker's browser tab while it browses: its frames are cast to the room the task came from, and a click, scroll
+ *  or keys on the picture go to that tab, so the owner can watch it and take over (the agent waits while they do).
+ *  Only for a run the server says this viewer may drive (`browserRunId`), and only while its recent steps are in the
+ *  browser: the viewing beat starts a stopped browser. ponytail: a run-scoped beat if a lingering pane ever restarts one. */
+function LiveBrowser({ runId }: { runId: string }): ReactElement {
+  return <section aria-label="Browser" className="grid gap-1.5 px-1">
+    <div className="relative aspect-[16/10] overflow-hidden rounded-lg border" style={{ borderColor: "var(--edge)" }}>
+      <BrowserFrameView runId={runId} interactive
+        empty={<p role="status" className="text-ui text-muted-foreground">Waiting for the page…</p>} />
+    </div>
+    <p className="text-caption text-muted-foreground">Live. Click or type on the page to take over; Lightbulb waits while you do.</p>
+  </section>;
 }
 
 /** "Started 3:19 · Done 3:21": one quiet line in place of the transcript's day and lifecycle rules (W12-17). */
@@ -188,7 +213,7 @@ function answerLine(q: QuestionView): string {
  *  who and the word, so nothing here repeats them ("Done by X · Done", audit 02 P2; "Growth · working", W12-17). */
 export function TaskHeader({ task, viewerId, error }: { task: TaskSummary; viewerId: string; error: string | null }): ReactElement {
   const view = summaryView(task, viewerId);
-  return <section aria-label="Task status" className="grid gap-1 px-1 empty:hidden">
+  return <section aria-label="Thread status" className="grid gap-1 px-1 empty:hidden">
     {view.reason && <p className="text-ui text-muted-foreground">{view.reason}</p>}
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </section>;
@@ -239,8 +264,8 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
     onError(res.ok ? null : res.message);
   };
   // Stop is asked once, in place of the buttons; a running task is stopped, never resolved under it.
-  if (live && confirmStop) return <span role="group" aria-label="Stop this task?" className="inline-flex items-center gap-2 text-ui">
-    <span className="whitespace-nowrap">Stop this task?</span>
+  if (live && confirmStop) return <span role="group" aria-label="Stop this thread?" className="inline-flex items-center gap-2 text-ui">
+    <span className="whitespace-nowrap">Stop this thread?</span>
     <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
     <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
   </span>;
@@ -259,7 +284,7 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
     <span data-action-slot="close" className="empty:hidden">
       {(!live || task.status === "resolved") && <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" disabled={busy}
         
-        onClick={() => void press(task.status === "resolved" ? "reopen" : "resolve")}>{task.status === "resolved" ? "Reopen" : "Close task"}</Button>}
+        onClick={() => void press(task.status === "resolved" ? "reopen" : "resolve")}>{task.status === "resolved" ? "Reopen" : "Close thread"}</Button>}
     </span>
   </span>;
 }
@@ -278,7 +303,7 @@ function AddNote({ task, followUp }: { task: TaskSummary; followUp: boolean }): 
     setPending(true);
     sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); showSteered(task); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
   }}>
-    <Input aria-label={followUp ? "Follow up on this task" : "Steer this task"} placeholder={followUp ? "Ask a follow-up…" : "Steer this task…"}
+    <Input aria-label={followUp ? "Follow up on this thread" : "Steer this thread"} placeholder={followUp ? "Ask a follow-up…" : "Steer this thread…"}
       value={text} maxLength={4000} disabled={pending}
       onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}

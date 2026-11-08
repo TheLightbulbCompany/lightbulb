@@ -34,10 +34,11 @@ describe(".workspace-shell viewport", () => {
     expect(narrow).toMatch(/\[data-super-agent="true"\]\[data-sidebar="true"\]\[data-nav-open="true"\] > \.cream-sidebar \{ display: flex; \}/);
   });
 
+  // The Lightbulb page (no shell) draws the same RightPane beside its room, so it shares the sheet.
   it("UX slice 4: below 1000 px the pane is an overlay sheet from the right over a scrim, never squeezing the transcript", () => {
     expect(PANE_SHEET_QUERY).toBe("(max-width: 999px)");
     expect(PANE_MIN_WIDTH).toBe(360);
-    const block = css.slice(css.indexOf('.workspace-shell[data-super-agent="true"] .workspace-pane[data-sheet] {'));
+    const block = css.slice(css.indexOf(':is(.workspace-shell[data-super-agent="true"], .vx-lightbulb) .workspace-pane[data-sheet] {'));
     const sheet = block.slice(0, block.indexOf("}"));
     expect(sheet).toMatch(/position:\s*absolute/);
     expect(sheet).toMatch(/inset:\s*0 0 0 auto/);

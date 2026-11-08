@@ -187,7 +187,7 @@ describe("Team › Message", () => {
       const cards = screen.getAllByRole("listitem").filter((li) => li.closest("[aria-label='Specialists']") && li.querySelector("h3"));
       // Lightbulb leads, with one line: never "Coordinator" or its roster "CEO" (W7-7).
       expect(within(cards[0]).getByRole("heading", { name: "Lightbulb" })).toBeInTheDocument();
-      expect(within(cards[0]).getByText("Hands your tasks to specialists")).toBeInTheDocument();
+      expect(within(cards[0]).getByText("Hands your threads to specialists")).toBeInTheDocument();
       expect(within(cards[0]).queryByText(/Coordinator|CEO/)).toBeNull();
       const fin = cards.find((c) => within(c).queryByRole("heading", { name: "Finance" }))!;
       // No title or persona: no line at all, never its skill slugs (W12-8).
@@ -199,7 +199,7 @@ describe("Team › Message", () => {
       expect(await within(cards[0]).findByRole("button", { name: "Open Plan the week, Working" })).toBeInTheDocument();
       const growth = cards.find((c) => within(c).queryByRole("heading", { name: "Growth" }))!;
       expect(within(growth).getByText("Finds you customers")).toBeInTheDocument();
-      expect(within(growth).getByText("No tasks yet.")).toBeInTheDocument();
+      expect(within(growth).getByText("No threads yet.")).toBeInTheDocument();
       // One verb on every card, Lightbulb's too (W12-8).
       expect(within(cards[0]).getByRole("button", { name: "Ask Lightbulb" })).toHaveTextContent("Ask");
       fireEvent.click(within(fin).getByRole("button", { name: "Ask Finance through Lightbulb" }));

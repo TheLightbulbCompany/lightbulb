@@ -43,7 +43,7 @@ beforeEach(() => {
 describe("command palette search (super-agent)", () => {
   test("finds tasks and files by name and opens each where it lives", async () => {
     render(<CommandPalette open onOpenChange={() => {}} />);
-    const input = screen.getByPlaceholderText("Search projects, tasks, files and messages");
+    const input = screen.getByPlaceholderText("Search projects, threads, files and messages");
     fireEvent.change(input, { target: { value: "bakery" } });
 
     fireEvent.click(await screen.findByText("Bakery taglines"));

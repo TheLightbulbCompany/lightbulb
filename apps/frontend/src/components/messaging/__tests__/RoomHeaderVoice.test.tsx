@@ -23,3 +23,15 @@ it.each(["dm", "group-dm", "channel"] as const)("web has no Talk button, only Go
   expect(screen.queryByRole("button", { name: /Talk/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();
 });
+
+it("one-to-one (the Lightbulb page's DM): no People facepile or menu rows, and no Add people", async () => {
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const { rerender } = render(<RoomHeader {...base} room={room("dm")} counterparts={[agent]} onAddPeople={vi.fn()} />);
+  expect(screen.getByRole("button", { name: "People, 2 here" })).toBeInTheDocument();
+  rerender(<RoomHeader {...base} room={room("dm")} counterparts={[agent]} oneToOne />);
+  expect(screen.queryByRole("button", { name: /^People/ })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Finance" }));
+  expect(screen.getByRole("menuitem", { name: "Details" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "People" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Add people" })).toBeNull();
+});

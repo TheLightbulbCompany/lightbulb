@@ -1,9 +1,13 @@
 import * as cdk from "aws-cdk-lib";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as sns from "aws-cdk-lib/aws-sns";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import { Construct } from "constructs";
+import { alertTopicArn, resourcePrefix } from "../table-names";
 
 export interface NetworkStackProps extends cdk.StackProps {
   environment: string;
@@ -42,9 +46,9 @@ export class NetworkStack extends cdk.Stack {
     const env = props.environment;
     const config = ENV_CONFIG[env] ?? ENV_CONFIG.dev;
 
-    // ponytail: one NAT instance, no auto-recovery -- a dead instance cuts runtime/browser/Lambda
-    // egress until it is replaced (the API and Temporal tasks keep their own public IPs). Add an
-    // ASG of 1 or fck-nat's HA mode if that outage starts to matter.
+    // ponytail: one NAT instance in one AZ. A host failure is auto-recovered and pages (alarms below);
+    // an AZ outage still cuts runtime/browser/Lambda egress (the API and Temporal tasks keep their own
+    // public IPs). Add fck-nat's HA mode or a NAT per AZ if that outage starts to matter.
     const natInstance = ec2.NatProvider.instanceV2({
       // Not t4g.nano: its 512 MB OOM-kills the default user data's `yum install iptables-services`
       // on AL2023, so the instance boots with no MASQUERADE rule and forwards nothing (dev, 8 Nov).
@@ -83,6 +87,43 @@ export class NetworkStack extends cdk.Stack {
       domain: "vpc",
       instanceId: natInstance.gatewayInstances[0].instanceId,
     });
+
+    // Every agent's model and tool calls ride this instance while the backend health checks stay
+    // green, so its failures page. The topic is a constructed ARN (as service-stack does): a real
+    // reference to ObservabilityStack would close a stack cycle.
+    const pageAction = new cloudwatch_actions.SnsAction(
+      sns.Topic.fromTopicArn(this, "AlertsPageImported", alertTopicArn(this.region, this.account, env, "page")),
+    );
+    const natCheck = (name: string, metricName: string, description: string) => {
+      const alarm = new cloudwatch.Alarm(this, name, {
+        alarmName: `${resourcePrefix(env)}${name}`,
+        alarmDescription: description,
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/EC2",
+          metricName,
+          dimensionsMap: { InstanceId: natInstance.gatewayInstances[0].instanceId },
+          statistic: "Maximum",
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.MISSING,
+      });
+      alarm.addAlarmAction(pageAction);
+      return alarm;
+    };
+    // EC2 recover moves the instance to new hardware with the same id, ENI and EIP, so routes survive.
+    natCheck(
+      "nat-instance-system-check",
+      "StatusCheckFailed_System",
+      "PAGE: the NAT instance failed its AWS host check; EC2 is recovering it. Runtimes, the workspace browser and VPC Lambdas have no egress until it is back.",
+    ).addAlarmAction(new cloudwatch_actions.Ec2Action(cloudwatch_actions.Ec2InstanceAction.RECOVER));
+    natCheck(
+      "nat-instance-status-check",
+      "StatusCheckFailed_Instance",
+      "PAGE: the NAT instance failed its guest status check (OS, network or iptables). Reboot it; runtimes, the workspace browser and VPC Lambdas have no egress.",
+    );
 
     // S3 Gateway Endpoint — free, routes S3 traffic (incl. ECR image layers)
     // through AWS instead of the NAT gateway ($0.045/GB data processing)

@@ -275,10 +275,10 @@ const INTERACTION_RESOLVED_ACTIONS = new Set([
 // (ISSUE_THREAD_INTERACTION_KINDS, APPROVAL_TYPES); an unrecognized value falls
 // back to the generic line rather than dropping the notification.
 const INTERACTION_KIND_COPY: Readonly<Record<string, string>> = {
-  request_confirmation: "A task is paused waiting for your confirmation",
-  request_checkbox_confirmation: "A task is paused waiting for you to verify a checklist",
+  request_confirmation: "A thread is paused waiting for your confirmation",
+  request_checkbox_confirmation: "A thread is paused waiting for you to verify a checklist",
   ask_user_questions: "An agent asked you a question and can't continue until you answer",
-  suggest_tasks: "An agent suggested follow-up tasks for your review",
+  suggest_tasks: "An agent suggested follow-up threads for your review",
 };
 const APPROVAL_TYPE_COPY: Readonly<Record<string, string>> = {
   hire_agent: "An agent wants to hire a new agent",
@@ -334,7 +334,7 @@ export function reduceTeamsActivityEvent(
         message: copyFor(
           INTERACTION_KIND_COPY,
           readString(details.interactionKind),
-          "A task is paused waiting for your input",
+          "A thread is paused waiting for your input",
         ),
         issueId: entityId,
         interactionId,

@@ -124,7 +124,7 @@ it("super-agent: a short text result opens as the doc itself, its button line co
     await userEvent.click(header.getByRole("button", { name: "Copy text" }));
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Subject: Story-time\n\nHi parents,\n\nSign up for story-time"));
     expect(screen.getByText("From #walk-16 bookshop")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Open task" }));
+    await userEvent.click(screen.getByRole("button", { name: "View thread" }));
     expect(openTaskPane).toHaveBeenCalledWith("t1");
     host.remove();
   } finally { /* nothing to reset */ }

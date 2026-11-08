@@ -108,7 +108,7 @@ export function DecisionCard({ task, question, ended = false, compact = false, f
             aria-describedby={b.disabledReason ? reasonId : undefined}
             variant={b.style === "primary" ? "default" : "outline"}
             onClick={() => (b.id === "request_changes" ? setChanges("") : void send(b.id))}>{b.label}</Button>)}
-          {compact && onOpen && <button type="button" className="ml-auto text-ui text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onOpen}>Open task</button>}
+          {compact && onOpen && <button type="button" className="ml-auto text-ui text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onOpen}>View thread</button>}
         </div>
         {unavailable && <p id={reasonId} className="mt-1 text-caption text-muted-foreground">{unavailable}</p>}
       </>
@@ -117,10 +117,10 @@ export function DecisionCard({ task, question, ended = false, compact = false, f
         <textarea aria-label="Your answer" value={text} onChange={(event) => setText(event.target.value)} rows={compact ? 2 : 3} maxLength={4000} className={FIELD} />
         <div className="flex items-center gap-2">
           <Button type="submit" size="sm" disabled={pending || !text.trim()}>Send answer</Button>
-          {compact && onOpen && <button type="button" className="ml-auto text-ui text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onOpen}>Open task</button>}
+          {compact && onOpen && <button type="button" className="ml-auto text-ui text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onOpen}>View thread</button>}
         </div>
       </form>)}
-    {!live && compact && onOpen && <button type="button" className="mt-1 text-ui text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onOpen}>Open task</button>}
+    {!live && compact && onOpen && <button type="button" className="mt-1 text-ui text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onOpen}>View thread</button>}
     {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
   </section>;
 }

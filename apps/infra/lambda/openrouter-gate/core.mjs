@@ -185,7 +185,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (billingMode === 'paid' && Buffer.byteLength(raw) > policy.max_prompt_tokens) fail(413, 'Prompt context bound exceeded');
     const keyRow = (await ddb.getItem({ TableName: env.OPENROUTER_KEYS_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     if (S(keyRow, 'state') !== 'active' || !S(keyRow, 'key_hash') || !S(keyRow, 'secret_name')) fail(503, 'Owner key unavailable');
-    const secret = (await secrets.getSecretValue({ SecretId: S(keyRow, 'secret_name') })).SecretString;
+    const secret = await secrets.ownerKey(ownerId, S(keyRow, 'key_hash'), S(keyRow, 'secret_name'));
     if (!secret || !secret.startsWith('sk-or-')) fail(503, 'Owner key unavailable');
     requestId = randomUUID();
     estimate = billingMode === 'paid' ? reservationFor(body, policy, env.OPENROUTER_MARKUP) : 0;

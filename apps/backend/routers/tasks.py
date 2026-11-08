@@ -349,7 +349,21 @@ async def get_task(task_id: str, auth: Auth):
         "effects": effects,
         "subscriptions": tree["subscriptions"],
         "taskRoomId": room_id,
+        "browserRunId": _browser_run_id(ws, tree),
     }
+
+
+def _browser_run_id(ws: str, tree: dict) -> str | None:
+    """The live run whose browser tab this viewer may watch and drive (room.browser.frame, POST /browser/input): only
+    on the workspace VM, whose browser the viewer's beat and input reach. `ws` is the viewer's own workspace (the
+    route reads the task there), so a viewer never beats someone else's browser. A run on its own task VM: none (its
+    input would 409, and the beat would wake the parked shared VM)."""
+    live = [a for a in tree["attempts"] if a.get("status") in ("dispatched", "running") and a.get("runId")]
+    if not live:
+        return None
+    att = max(live, key=lambda a: a["n"])
+    identity = runtime_runs.RunIdentity.for_attempt(ws, tree["task"]["taskId"], att)
+    return att["runId"] if identity.session_kind == "workspace" else None
 
 
 @router.post("/tasks/{task_id}/read", status_code=204)

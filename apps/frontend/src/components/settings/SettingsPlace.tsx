@@ -201,7 +201,7 @@ function WorkspaceExportCard() {
   if (!isWorkspaceAdmin) return null;
   return (
     <div data-testid="workspace-export-card">
-      <SettingRow label="Export workspace" line="A file of every task in this workspace and what it made. Works even when the workspace is read-only.">
+      <SettingRow label="Export workspace" line="A file of every thread in this workspace and what it made. Works even when the workspace is read-only.">
         <Button type="button" size="sm" variant="outline" onClick={handleExport} disabled={busy}>{busy ? "Preparing…" : "Download"}</Button>
       </SettingRow>
       {error && <p role="alert" className="settings-rows__line text-err pt-2">{error}</p>}

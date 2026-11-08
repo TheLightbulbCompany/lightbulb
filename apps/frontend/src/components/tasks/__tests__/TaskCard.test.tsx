@@ -33,7 +33,7 @@ describe("TaskCard", () => {
     const onOpen = vi.fn();
     const outputs = ["Brief.md", "Plan.md", "Notes.md"].map((title, i) => ({ id: `f${i}`, kind: "document" as const, title, ref: {}, createdAt: "2026-11-06T10:00:00Z" }));
     render(<Fresh><TaskCard task={{ ...byId("step02", "t-signup"), status: "resolved", shownGroup: "resolved", outputs }} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
-    const chips = screen.getByRole("list", { name: "Made by this task" });
+    const chips = screen.getByRole("list", { name: "Made by this thread" });
     expect(within(chips).getByRole("button", { name: "Open Brief · MD" })).toBeInTheDocument();
     expect(within(chips).queryByText("Notes.md")).toBeNull();
     await userEvent.click(within(chips).getByRole("button", { name: "+1 more" }));
@@ -85,7 +85,7 @@ describe("TaskCard", () => {
     const onOpen = vi.fn();
     client.questions.mockResolvedValue({ items: [qv()] } as never);
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: "Open Workshop signup app, Needs you" }));
+    await userEvent.click(screen.getByRole("button", { name: "Workshop signup app — View thread — Needs you" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     onOpen.mockClear();
     await userEvent.click(await screen.findByRole("button", { name: "Allow once" }));
@@ -111,9 +111,9 @@ describe("TaskCard", () => {
     const onOpen = vi.fn();
     client.questions.mockRejectedValue(new Error("503"));
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
-    expect(await screen.findByText("The details didn't load. Open the task to decide.")).toBeInTheDocument();
+    expect(await screen.findByText("The details didn't load. Open the thread to decide.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Open Workshop signup app, Needs you" }));
+    await userEvent.click(screen.getByRole("button", { name: "Workshop signup app — View thread — Needs you" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     expect(client.answer).not.toHaveBeenCalled();
   });
@@ -131,7 +131,7 @@ describe("TaskCard", () => {
 
   it("missing task renders unavailable row", () => {
     render(<Fresh><TaskCard task={undefined} taskId="gone" viewerId={SAM} /><TaskCard task={byId("step02", "t-email")} taskId="t-email" viewerId={SAM} /></Fresh>);
-    expect(screen.getByText("This task isn't available")).toBeInTheDocument();
+    expect(screen.getByText("This thread isn't available")).toBeInTheDocument();
     expect(screen.getByText("Launch email draft")).toBeInTheDocument();
   });
 

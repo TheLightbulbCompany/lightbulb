@@ -841,8 +841,6 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:PutSecretValue",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
-          // force_delete_secret restores a secret scheduled for deletion, then force-deletes it (owner wipe, disconnect).
-          "secretsmanager:RestoreSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret",
         ],
@@ -856,9 +854,9 @@ export class ServiceStack extends cdk.Stack {
       new iam.PolicyStatement({
         sid: "OpenRouterOwnerSecretsRW",
         effect: iam.Effect.ALLOW,
+        // Read + retire only: new owner keys are credential-envelopes rows (openrouter_keys.py);
+        // these legacy secrets are read until migrate_secrets_to_envelopes soft-deletes them.
         actions: [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:PutSecretValue",
           "secretsmanager:DeleteSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret",
@@ -882,8 +880,6 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:PutSecretValue",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
-          // force_delete_secret restores a secret scheduled for deletion, then force-deletes it (owner wipe, disconnect).
-          "secretsmanager:RestoreSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret",
         ],

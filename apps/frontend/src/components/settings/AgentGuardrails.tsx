@@ -194,7 +194,7 @@ export function AgentGuardrails() {
                 </label>
               ))}
               <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                Anyone who answers a task can choose Always allow for that recipient, app or repo. Those rules are listed below.
+                Anyone who answers a question in a thread can choose Always allow for that recipient, app or repo. Those rules are listed below.
               </p>
             </fieldset>
           )}

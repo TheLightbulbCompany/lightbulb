@@ -190,8 +190,7 @@ class MeetTalker(Talker):
 
     @function_tool(description=DELEGATE_DOC)
     async def delegate(self, request: str) -> dict:
-        self.delegate_now(request)
-        return {"sent": True}
+        return self.tool_delegate(request)
 
     def post(self, request: str) -> None:
         # a task of its own: "<name>, stop" cuts the talker's reply, never the post
@@ -369,7 +368,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         await backend.leave_meeting()
         ctx.shutdown("meeting max length")
 
-    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up))
+    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up, talker.unchecked))
     speaking = asyncio.create_task(speak_loop())
 
     async def on_end(_reason: str = "") -> None:

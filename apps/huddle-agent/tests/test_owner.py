@@ -138,10 +138,12 @@ def test_a_result_is_said_under_a_rule_that_adds_nothing():
 
 
 @pytest.mark.parametrize(("spoken", "added"), [
-    ("Two things shipped: 5095, tap to talk, and 5094, the browser pane, on Friday.", []),
+    ("We shipped two things: 5095, tap to talk, and 5094, the browser pane, on Friday.", []),
+    ("Acme owes you for 5095.", ["Acme"]),
+    ("Priya merged 5095.", ["Priya"]),
     ("Maya, we shipped tap to talk on Friday.", []),
     ("We shipped 5095 on Monday, and Priya merged 5100.", ["Monday", "Priya", "5100"]),
-    ("Revenue was $4,200 this week.", ["4,200"]),
+    ("The revenue was $4,200 this week.", ["4,200"]),
 ])  # fmt: skip
 def test_what_the_talker_says_is_checked_against_the_message(spoken, added):
     source = "We merged #5095 (tap to talk) and #5094 (browser pane) on Friday."

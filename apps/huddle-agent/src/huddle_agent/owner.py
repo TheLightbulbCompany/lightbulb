@@ -95,8 +95,7 @@ class OwnerAgent(Talker):
 
     @function_tool(description=DELEGATE_DOC)
     async def delegate(self, request: str) -> dict:
-        self.delegate_now(request)
-        return {"sent": True}
+        return self.tool_delegate(request)
 
     def post(self, request: str) -> None:
         # a task of its own: an interruption cancels the talker's reply, never the post
@@ -219,7 +218,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             mouth.speak(say, ready=idle, live=talk["live"])
 
     session.on("close", lambda _ev: ctx.shutdown("session closed"))
-    limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length")))
+    limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length"), agent.unchecked))
     reports = asyncio.create_task(speak_loop(Mouth(fetch, int(info.get("after") or 0))))
     record = lambda: talk_record(member.identity, items, ctx.job.id, time.time() - t0)  # noqa: E731
     ctx.add_shutdown_callback(lambda _reason="": (quiet_timer.cancel(), _close(limit, backend, record, turns, reports))[1])

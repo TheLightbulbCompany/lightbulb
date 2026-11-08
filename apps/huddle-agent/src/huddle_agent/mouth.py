@@ -199,10 +199,15 @@ class Talker(Agent):
         finally:  # the holding line even when the post failed to start; a closed session says nothing
             try:
                 if not self.held:  # once per turn: "Let me check. Let me check." (8 Nov prod Meet re-run #3)
-                    self.say_fixed(HOLD)
                     self.held = True
+                    self.say_fixed(HOLD).add_done_callback(lambda _h: self.turn_ended())
             except RuntimeError:
                 pass
+
+    def turn_ended(self) -> None:
+        """The voice's turn is over (its holding line played out, or was cut): the next ask says it again, so a
+        result that never comes or is dropped never silences every later "Let me check"."""
+        self.held = False
 
     def take_question(self) -> dict | None:
         """The Worker question last said aloud, once, when it was said within ANSWER_WITHIN_S: the next line

@@ -365,9 +365,10 @@ async def answerers(
     so `can_answer_now` can re-check the admin part at answer time. Raises `NoAnswerer` on an empty list.
     """
     inviter = task.get("ownerUserId")
-    if kind == "approval" and task.get("confirmAll") and inviter and inviter != ws:
+    if kind == "approval" and task.get("confirmAll") and inviter and inviter != ws and inviter in await _members(ws):
         # Founder ruling 8 Nov 2026: a meeting's Needs-your-OK card goes to the inviter only (the meeting acts under
-        # the inviter's authority, voice_meet.inviting_member), never to the workspace's other admins.
+        # the inviter's authority, voice_meet.inviting_member), never to the workspace's other admins. An inviter
+        # who left the workspace (or a workspace-owned task) falls through to the rule below: never a locked card.
         return [inviter], "inviter", [inviter]
     rule = await _current_rule(ws, subkind)
     if rule == "holders":

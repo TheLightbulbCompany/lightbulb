@@ -295,7 +295,7 @@ async def test_an_addressed_line_is_posted_by_code_and_only_the_holding_line_is_
     class Session:
         def generate_reply(self, **kw):
             replies.append(kw)
-            return type("S", (), {"id": f"sp_{len(replies)}"})()
+            return type("S", (), {"id": f"sp_{len(replies)}", "add_done_callback": lambda _self, cb: None})()
 
     s = Session()
     monkeypatch.setattr(meet.MeetTalker, "session", property(lambda _self: s))

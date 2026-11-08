@@ -12,10 +12,14 @@ from huddle_agent import mouth, owner
 
 class _Speech:
     def __init__(self, sid):
-        self.id, self.interrupted = sid, 0
+        self.id, self.interrupted, self.callbacks = sid, 0, []
 
     def add_done_callback(self, cb):
-        pass
+        self.callbacks.append(cb)
+
+    def done(self):
+        for cb in self.callbacks:
+            cb(self)
 
     def interrupt(self, force=False):
         self.interrupted += 1
@@ -332,3 +336,12 @@ async def test_queued_messages_are_said_one_at_a_time_in_order_and_a_question_on
         await m.poll()
     assert said == [["Pulse asks: what holiday hours?"], ["Vera asks: which brand?"], ["Vera needs your OK."]]
     assert m.question["qid"] == "q-2" and m.handled == 11
+
+
+async def test_a_dropped_result_never_silences_the_next_holding_line(talker, session):
+    """Review of #5119: `held` reset only on a result, so a result that never came silenced every later hold. The
+    turn ends when the holding line has played: the next ask says it again."""
+    talker.line("Maya", "What shipped this week?")
+    session.made[-1].done()  # the holding line played out; no result ever came
+    talker.line("Maya", "And did Acme pay?")
+    assert session.replies == [mouth.HOLD, mouth.HOLD]

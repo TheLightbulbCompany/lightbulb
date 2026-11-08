@@ -122,6 +122,16 @@ async def test_a_meetings_approval_goes_to_the_inviter_only(clerk, policy):
     assert (await questions.answerers(ORG, TASK, "approval", "purchase"))[0] == ["user_ada", "user_bo"]
 
 
+async def test_a_meetings_approval_falls_back_to_the_admins_without_a_member_inviter(clerk, policy):
+    """Review of #5119: an inviter who left the workspace, or a workspace-owned task, must not lock the card."""
+    gone = {**TASK, "ownerUserId": "user_gone", "confirmAll": True}
+    ids, rule, _ = await questions.answerers(ORG, gone, "approval", "purchase")
+    assert (ids, rule) == (["user_ada", "user_bo"], "admins")
+    org = {**TASK, "ownerUserId": ORG, "confirmAll": True}
+    ids, rule, _ = await questions.answerers(ORG, org, "approval", "purchase")
+    assert (ids, rule) == (["user_ada", "user_bo"], "admins")
+
+
 async def test_can_answer_now_promoted_member_not_stored(clerk, policy):
     """Authority gained after the ask doesn't add a person: stored list AND rule (spec 05 §3.3)."""
     ids, rule, base = await questions.answerers(ORG, TASK, "approval", "purchase")

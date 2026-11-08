@@ -62,6 +62,10 @@ RUN uv run --module livekit.agents download-files
 # This includes source code, configuration files, and dependency specifications
 # (Excludes files specified in .dockerignore)
 COPY . .
+# The first sync ran with an empty src/ (dependency layer cache); finish the project install now so nothing is built,
+# installed or compiled at runtime. LiveKit Cloud runs the container with a read-only root: `uv run` there died on
+# `Failed to initialize cache at .cache/uv` before Python started (CrashLoop with no agent log, 7 Nov).
+RUN uv sync --locked
 
 # --- Production stage ---
 # Build tools (gcc, g++, python3-dev) are not included in the final image
@@ -94,4 +98,6 @@ USER appuser
 # AGENT_MODULE picks the worker: the huddle (default) or the phone receptionist (huddle_agent.phone, set as an
 # agent secret on its own LiveKit agent).
 ENV AGENT_MODULE=huddle_agent.agent
-CMD ["sh", "-c", "exec uv run python -m \"$AGENT_MODULE\" start"]
+# The venv's own interpreter: no uv at runtime, so no cache dir, no re-sync, no network needed to start.
+ENV PATH="/app/.venv/bin:$PATH"
+CMD ["sh", "-c", "exec python -m \"$AGENT_MODULE\" start"]

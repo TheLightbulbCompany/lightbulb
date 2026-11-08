@@ -517,6 +517,7 @@ async def test_call_end_reports_minutes_to_metronome(client):
     with (
         patch.object(voice_billing.settings, "METRONOME_API_KEY", "k"),
         patch.object(voice_billing.metronome_client, "for_settings", return_value=mc),
+        patch.object(voice_billing.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)),
     ):
         call = await _start(client)
         client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 160}, headers=W)

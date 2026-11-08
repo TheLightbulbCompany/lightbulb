@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 import uuid
 
 from boto3.dynamodb.conditions import Attr, Key
@@ -627,6 +627,53 @@ async def set_metronome_ids(
             ":t": utc_now_iso(),
         },
         ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
+async def set_voice_plan(owner_id: str, *, customer_id: str, contract_id: str, usage_key: str) -> None:
+    """Activate only after the explicit enrollment's contract exists; preserve the credits contract."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression=(
+            "SET metronome_customer_id = :m, metronome_voice_contract_id = :c, "
+            "voice_plan_status = :s, voice_plan_usage_key = :k, updated_at = :t"
+        ),
+        ExpressionAttributeValues={
+            ":m": customer_id,
+            ":c": contract_id,
+            ":s": "active",
+            ":k": usage_key,
+            ":t": utc_now_iso(),
+        },
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
+async def begin_voice_plan_cancellation(owner_id: str) -> str:
+    """Freeze the next UTC billing-period boundary before HTTP; retries cannot extend the term."""
+    now = datetime.now(UTC)
+    ending_at = now.replace(
+        year=now.year + (now.month == 12), month=now.month % 12 + 1, day=1, hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+    out = await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET voice_plan_ending_at = if_not_exists(voice_plan_ending_at, :t)",
+        ExpressionAttributeValues={":t": ending_at},
+        ConditionExpression="attribute_exists(metronome_voice_contract_id)",
+        ReturnValues="ALL_NEW",
+    )
+    return out["Attributes"]["voice_plan_ending_at"]
+
+
+async def finish_voice_plan_cancellation(owner_id: str) -> None:
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET voice_plan_status = :s, updated_at = :t",
+        ExpressionAttributeValues={":s": "canceling", ":t": utc_now_iso()},
+        ConditionExpression="attribute_exists(metronome_voice_contract_id)",
     )
 
 

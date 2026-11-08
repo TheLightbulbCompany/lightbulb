@@ -19,6 +19,7 @@ from core.auth import (
     require_org_admin,
 )
 from core.config import settings
+from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.repositories.workspace_repo import customer_ops_agent_id
@@ -42,6 +43,62 @@ from schemas.billing import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class VoicePlanEnrollment(BaseModel):
+    planVersion: Literal["voice-agents-v1"]
+    acceptMonthlyUsd: Literal[250]
+    acceptIncludedMinutes: Literal[1500]
+    acceptOverageUsdPerMinute: Literal[0.35]
+
+
+@router.get("/voice-plan")
+async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
+    account = await billing_repo.get_by_owner_id(resolve_owner_id(auth), consistent_read=True) or {}
+    status = account.get("voice_plan_status") or "not_enrolled"
+    if status == "canceling" and not voice_billing.has_voice_plan(account):
+        status = "canceled"
+    return {
+        "status": status,
+        "endsAt": account.get("voice_plan_ending_at"),
+        "available": bool(
+            settings.METRONOME_VOICE_ENROLLMENT_ENABLED
+            and settings.METRONOME_VOICE_RATE_CARD_ID
+            and settings.METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID
+        ),
+        "planVersion": voice_plan.PLAN_VERSION,
+        "monthlyUsd": 250,
+        "includedMinutes": 1500,
+        "overageUsdPerMinute": 0.35,
+    }
+
+
+@router.post("/voice-plan")
+async def enroll_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Depends(get_current_user)):
+    """Admin acceptance of $250/month plus $0.35/minute after 1,500; may create a real invoice."""
+    require_org_admin(auth)
+    try:
+        return await voice_plan.enroll(resolve_owner_id(auth))
+    except voice_plan.VoicePlanError as exc:
+        code = str(exc)
+        raise HTTPException(
+            status_code=503 if code == "voice_plan_unavailable" else 409, detail={"code": code}
+        ) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("voice enrollment provider failure", exc_info=True)
+        raise HTTPException(status_code=502, detail={"code": "voice_plan_provider_error"}) from exc
+
+
+@router.delete("/voice-plan")
+async def cancel_voice_plan(auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
+    try:
+        return await voice_plan.cancel(resolve_owner_id(auth))
+    except voice_plan.VoicePlanError as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("voice cancellation provider failure", exc_info=True)
+        raise HTTPException(status_code=502, detail={"code": "voice_plan_provider_error"}) from exc
 
 
 async def _resolve_clerk_user(user_id: str) -> dict:

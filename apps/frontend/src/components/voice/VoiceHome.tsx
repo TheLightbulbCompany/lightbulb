@@ -105,7 +105,7 @@ function Row({ item, name, current, now, onOpen }: { item: TimelineItem; name: s
     const did = item.summary || [item.asked?.length && `Asked ${item.asked.length === 1 ? "once" : `${item.asked.length} times`}`,
       item.followUps?.length && `${item.followUps.length} follow-up${item.followUps.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
       || (item.at > now ? `Upcoming. ${name} will join.`
-        : item.endAt && item.endAt > now ? `In progress.`
+        : item.endAt && item.endAt * 1000 > now ? `In progress.`  // endAt/startAt are epoch seconds (meeting_invites.py); at is ms
         : `${name} listened.`);  // a calendar meeting that has not happened is not one Nova listened to
     return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
       <time>{time(item.at)}</time><Video size={16} aria-label="Meeting" />

@@ -23,7 +23,7 @@
 
 ## Global Constraints
 
-- **One brain.** Every substantive answer comes from the Router or a Worker thread. GPT-Live's prompt holds only speaking style, delegation policy and compliance, never business facts.
+- **One brain, set by capability, not rules.** GPT-Live has no business data and exactly one tool, `delegate` to the Router. It decides when to delegate; no code or prompt classifies questions. Its prompt holds only who it is, that the Router is its brain, speaking style and compliance.
 - **No scripting.** No hard-coded holding lines, fillers, timers, word lists or cut-and-re-say guards in our code. What to say while waiting is GPT-Live's job.
 - **Phone compliance.** The first utterance names the assistant and says "AI assistant" and "this call is recorded". This is set in GPT-Live's prompt and verified from the transcript by the existing `DisclosureGuard`, which speaks the exact sentence if one is missing.
 - **Approvals are a card tap only.** No voice path approves anything. Meet approvals go to the inviter (#5119).
@@ -107,7 +107,7 @@
   - `test_orb_has_no_approve_path`
   - `test_orb_prompt_has_no_business_facts`: the prompt only contains the style, delegation and approval-card text.
 - [ ] **Step 2:** Run the tests. Expected: FAIL.
-- [ ] **Step 3:** Switch `owner.py` to `live.start`. The prompt says to delegate every question about the business or its work, to speak results naturally without adding facts, and that approvals happen on the card.
+- [ ] **Step 3:** Switch `owner.py` to `live.start`. The prompt says the Router is its brain and holds everything it knows and can do, to speak results naturally without adding facts, and that approvals happen on the card. No list of which questions to delegate.
 - [ ] **Step 4:** Run the huddle-agent suite with `-n 2`. Expected: PASS.
 - [ ] **Step 5:** Commit.
 

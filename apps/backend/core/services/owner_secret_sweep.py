@@ -16,6 +16,12 @@ Listing by prefix rather than iterating a provider registry is deliberate: a
 provider that has since been removed from the registry still has secrets on
 disk, and those are exactly the ones nobody would think to delete.
 
+Integration credentials written under ``CREDENTIAL_KMS_KEY_ARN`` live in the
+``credential-envelopes`` table instead; both sweeps cover that owner partition too and report
+those rows as ``credential-envelopes/<owner>/<provider>``. The legacy secret such a write retired
+sits scheduled for deletion, so listing includes planned deletions and the sweep force-deletes those
+too.
+
 `force_delete_without_recovery` because the point is removal, not a 30-day
 soft-delete that keeps the plaintext retrievable and — more practically —
 holds the name reserved so the same owner re-signing up collides with their
@@ -30,6 +36,7 @@ import boto3
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +66,8 @@ def _list_names_with_prefix(sm, prefix: str) -> list[str]:
         kwargs: dict = {
             "MaxResults": 100,
             "Filters": [{"Key": "name", "Values": [prefix]}],
+            # A sealed put soft-deletes the legacy secret; a wipe must not leave it recoverable.
+            "IncludePlannedDeletion": True,
         }
         if token:
             kwargs["NextToken"] = token
@@ -70,6 +79,10 @@ def _list_names_with_prefix(sm, prefix: str) -> list[str]:
         token = page.get("NextToken")
         if not token:
             return names
+
+
+def _envelope_name(owner_id: str, provider: str) -> str:
+    return f"{integration_secret_store.ENVELOPE_TABLE}/{owner_id}/{provider}"
 
 
 async def delete_owner_secrets(owner_id: str) -> list[str]:
@@ -87,10 +100,17 @@ async def delete_owner_secrets(owner_id: str) -> list[str]:
         for prefix in owner_secret_prefixes(owner_id):
             for name in _list_names_with_prefix(sm, prefix):
                 try:
-                    sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+                    integration_secret_store.force_delete_secret(sm, name)
                     deleted.append(name)
                 except Exception:
                     logger.exception("owner_secret_sweep: failed to delete %s", name)
+        for provider in integration_secret_store.envelope_providers(owner_id):
+            name = _envelope_name(owner_id, provider)
+            try:
+                integration_secret_store.delete_envelope(owner_id, provider)
+                deleted.append(name)
+            except Exception:
+                logger.exception("owner_secret_sweep: failed to delete %s", name)
         return deleted
 
     return await run_in_thread(_sweep)
@@ -106,6 +126,7 @@ async def list_owner_secret_names(owner_id: str) -> list[str]:
         names: list[str] = []
         for prefix in owner_secret_prefixes(owner_id):
             names.extend(_list_names_with_prefix(sm, prefix))
+        names += [_envelope_name(owner_id, p) for p in integration_secret_store.envelope_providers(owner_id)]
         return names
 
     return await run_in_thread(_list)

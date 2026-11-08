@@ -524,6 +524,15 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
     });
 
+    // Integration credentials under a KMS envelope (integration_secret_store, phase 2 task 5):
+    // one row per owner + provider instead of one $0.40/mo Secrets Manager secret each. The row
+    // holds ciphertext only; the data key is wrapped by the stage CMK with {owner_id, provider}
+    // as encryption context. Covered by the backend wildcard table grant; swept by the owner wipe.
+    createTable("CredentialEnvelopesTable", "credential-envelopes", {
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
+    });
+
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
       value: tablePrefix(env),
       exportName: `${this.stackName}-table-prefix`,

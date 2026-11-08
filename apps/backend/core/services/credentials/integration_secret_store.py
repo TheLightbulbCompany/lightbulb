@@ -11,6 +11,13 @@ DynamoDB.
 
 The payload is the exact ``credential`` dict that ``apply_connection`` consumes,
 so a later re-inject (marketplace slot-fill, reconnect) round-trips it unchanged.
+
+When ``CREDENTIAL_KMS_KEY_ARN`` is set (infra sets it in dev and prod), ``put`` writes the
+``credential-envelopes`` table instead: the JSON sealed with AES-256-GCM under a fresh KMS data key
+whose encryption context is ``{owner_id, provider}``, so a row copied under another owner fails to
+decrypt. No new secret is created, and the legacy secret is scheduled for deletion (default
+recovery window, never forced). ``get`` reads the table (consistently) and falls back to the
+legacy secret, so existing credentials migrate on their next write; ``delete`` removes both.
 """
 
 from __future__ import annotations
@@ -18,10 +25,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import base64
+import os
+
 import boto3
+from botocore.exceptions import ClientError
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from core.config import settings
-from core.dynamodb import run_in_thread
+from core.dynamodb import get_table, run_in_thread
 from core.secrets_manager import create_or_update_secret
 
 
@@ -37,17 +49,90 @@ def _client():
     return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
 
+ENVELOPE_TABLE = "credential-envelopes"
+
+
+def _kms():
+    return boto3.client("kms", region_name=settings.AWS_REGION)
+
+
+def _envelope_table():
+    return get_table(ENVELOPE_TABLE)
+
+
+def _seal(owner_id: str, provider: str, payload: str) -> dict:
+    context = {"owner_id": owner_id, "provider": provider}
+    key = _kms().generate_data_key(KeyId=settings.CREDENTIAL_KMS_KEY_ARN, KeySpec="AES_256", EncryptionContext=context)
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key["Plaintext"]).encrypt(nonce, payload.encode(), f"{owner_id}\0{provider}".encode())
+    b64 = lambda b: base64.b64encode(b).decode()  # noqa: E731
+    return {**context, "data_key": b64(key["CiphertextBlob"]), "nonce": b64(nonce), "ciphertext": b64(ciphertext)}
+
+
+def _open(item: dict) -> dict[str, Any]:
+    owner_id, provider = item["owner_id"], item["provider"]
+    key = _kms().decrypt(
+        CiphertextBlob=base64.b64decode(item["data_key"]),
+        EncryptionContext={"owner_id": owner_id, "provider": provider},
+    )["Plaintext"]
+    plaintext = AESGCM(key).decrypt(
+        base64.b64decode(item["nonce"]), base64.b64decode(item["ciphertext"]), f"{owner_id}\0{provider}".encode()
+    )
+    return json.loads(plaintext)
+
+
+def _envelopes_enabled() -> bool:
+    """Whether this stage has the table and key at all (infra sets the key ARN alongside the table)."""
+    return bool(settings.CREDENTIAL_KMS_KEY_ARN)
+
+
+def force_delete_secret(sm, name: str) -> None:
+    """Delete ``name`` with no recovery window. A secret already scheduled for deletion (the
+    legacy copy a sealed ``put`` retired) may refuse with InvalidRequestException ("The secret is
+    scheduled for deletion", DeleteSecret API reference); RestoreSecret cancels the schedule, then
+    the forced delete goes through. Raises ResourceNotFoundException when absent."""
+    try:
+        sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+    except sm.exceptions.InvalidRequestException:
+        sm.restore_secret(SecretId=name)
+        sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+
+
+def _envelope_op(fn):
+    """``fn(table)``, or None when this stage has no envelope table (no key ARN, or not deployed yet)."""
+    if not _envelopes_enabled():
+        return None
+    try:
+        return fn(_envelope_table())
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+            return None
+        raise
+
+
 async def put(owner_id: str, provider: str, credential: dict[str, Any]) -> str:
-    """Create-or-update the secret with the credential dict. Returns the ARN."""
+    """Create-or-update the credential. Returns where it now lives:
+    ``credential-envelopes/<owner>/<provider>``, or the secret's ARN on a stage without the key."""
     name = _secret_name(owner_id, provider)
     payload = json.dumps(credential)
 
-    def _put() -> str:
+    def _put_envelope() -> str:
+        _envelope_table().put_item(Item=_seal(owner_id, provider, payload))
+        # Retire the legacy secret so a stale read never serves it. Default recovery window,
+        # never force: a bad rollout can still be restored by hand.
+        sm = _client()
+        try:
+            sm.delete_secret(SecretId=name)
+        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+            pass  # absent, or already scheduled for deletion
+        return f"{ENVELOPE_TABLE}/{owner_id}/{provider}"
+
+    def _put_secret() -> str:
         sm = _client()
         create_or_update_secret(sm, name, payload)
         return sm.describe_secret(SecretId=name)["ARN"]
 
-    return await run_in_thread(_put)
+    return await run_in_thread(_put_envelope if _envelopes_enabled() else _put_secret)
 
 
 async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
@@ -55,6 +140,11 @@ async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
     name = _secret_name(owner_id, provider)
 
     def _get() -> dict[str, Any] | None:
+        item = _envelope_op(
+            lambda t: t.get_item(Key={"owner_id": owner_id, "provider": provider}, ConsistentRead=True).get("Item")
+        )
+        if item:
+            return _open(item)
         sm = _client()
         try:
             resp = sm.get_secret_value(SecretId=name)
@@ -82,14 +172,45 @@ async def delete(owner_id: str, provider: str) -> bool:
     name = _secret_name(owner_id, provider)
 
     def _delete() -> bool:
+        had_envelope = bool(
+            _envelope_op(
+                lambda t: t.delete_item(Key={"owner_id": owner_id, "provider": provider}, ReturnValues="ALL_OLD").get(
+                    "Attributes"
+                )
+            )
+        )
         sm = _client()
         try:
-            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+            force_delete_secret(sm, name)
         except sm.exceptions.ResourceNotFoundException:
-            return False
+            return had_envelope
         return True
 
     return await run_in_thread(_delete)
+
+
+def envelope_providers(owner_id: str) -> list[str]:
+    """Every provider this owner has a sealed row for (sync; the owner wipe's sweep)."""
+    from boto3.dynamodb.conditions import Key
+
+    def _query(table) -> list[str]:
+        kwargs: dict[str, Any] = {
+            "KeyConditionExpression": Key("owner_id").eq(owner_id),
+            "ProjectionExpression": "provider",
+        }
+        providers: list[str] = []
+        while True:
+            page = table.query(**kwargs)
+            providers += [i["provider"] for i in page.get("Items", [])]
+            if not page.get("LastEvaluatedKey"):
+                return providers
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    return _envelope_op(_query) or []
+
+
+def delete_envelope(owner_id: str, provider: str) -> None:
+    _envelope_table().delete_item(Key={"owner_id": owner_id, "provider": provider})
 
 
 async def github_token(owner_id: str) -> str | None:

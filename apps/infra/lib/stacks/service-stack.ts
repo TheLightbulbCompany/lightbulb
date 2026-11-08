@@ -840,6 +840,8 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:PutSecretValue",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
+          // force_delete_secret restores a secret scheduled for deletion, then force-deletes it (owner wipe, disconnect).
+          "secretsmanager:RestoreSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret",
         ],
@@ -879,6 +881,8 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:PutSecretValue",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
+          // force_delete_secret restores a secret scheduled for deletion, then force-deletes it (owner wipe, disconnect).
+          "secretsmanager:RestoreSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret",
         ],
@@ -1509,6 +1513,9 @@ export class ServiceStack extends cdk.Stack {
       // <owner>/hermes/. The name is a naming scar from litestream and must NOT be
       // changed: a rename strands every profile.
       OWNER_STATE_BUCKET: `lightbulb-${env}-openclaw-replicas`,
+      // Wraps integration-credential data keys (credential-envelopes table). Set in every stage, so
+      // integration credentials are always written sealed to the table.
+      CREDENTIAL_KMS_KEY_ARN: props.kmsKeyArn,
       // The Hermes bridge image a workspace's AgentCore runtime runs. Per-env promotion
       // tag from hermes-version.json#dev.tag/#prod.tag (M4-R34). Empty tag (prod today)
       // makes provision_hermes_runtime refuse, so nothing moves a prod workspace until a

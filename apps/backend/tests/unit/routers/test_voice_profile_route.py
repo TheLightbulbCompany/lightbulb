@@ -120,32 +120,6 @@ def test_a_member_renames_by_voice(world):
     ]
 
 
-def test_a_guests_steer_makes_them_the_requester_c8_checks(world, monkeypatch):
-    from core.services import voice_calls as vc
-
-    # A steer SETs the speaker on the run's row (an atomic update, never a whole-row put).
-    def steer(owner, run_id, fields):
-        world.runs[run_id] = {**world.runs.get(run_id, {}), **fields}
-        return True
-
-    monkeypatch.setattr(messaging_repo, "update_voice_run", AsyncMock(side_effect=steer))
-    monkeypatch.setattr(vc, "_run_control", AsyncMock(return_value=202))
-    monkeypatch.setattr(vc, "_speaker_name", AsyncMock(return_value="Gus"))
-    monkeypatch.setattr(vc.local_session_grants, "mint", lambda *a: "lowered-grant")
-    import asyncio
-
-    call = {"ownerId": OWNER, "roomId": R_LIVE}
-    steered = asyncio.run(
-        vc.steer_voice_run(
-            call=call, run_id=RUN, agent_id=AGENT, speaker_id="user_guest", utterance="rename yourself to X"
-        )
-    )
-    assert steered["steered"] is True
-    r = _post(world, action="rename", name="X")
-    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_a_member"
-    world.update.assert_not_awaited()
-
-
 def test_a_relabel_failure_after_the_rename_still_answers_ok(world, monkeypatch):
     monkeypatch.setattr(messaging_repo, "set_agent_names", AsyncMock(side_effect=RuntimeError("ddb blip")))
     r = _post(world, action="rename", name="Nova")

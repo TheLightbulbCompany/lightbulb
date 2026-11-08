@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo
+from core.repositories import messaging_repo, tasks_repo
 from core import tasks_schema as ts
 from core.services import (
     admission,
@@ -925,8 +925,36 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
             "text": f"{body.text}\n\n{CALLER_HINT}",
         },
     )
-    await admission.enqueue_trigger(ws, trigger, room_id=call_id)
+    if task_id := await _open_thread(ws, call_id, int(msg["messageSeq"])):
+        # The call's open thread takes the line, as a typed reply in a task's thread does (admission's
+        # pass-through): it already holds the times it offered and the caller's answers (8 Nov prod final smoke:
+        # each line started a new thread, and the "yes" thread asked again and picked a time never offered).
+        trig = {**trigger.model_dump(by_alias=True), "routedTo": {"taskId": task_id}}
+        trig["ref"]["deliverRoomId"] = call_id
+        await tasks_repo.put_trigger(ws, trig)
+        if blocked := await task_conversation.gate_input(ws, task_id, trig):  # §14.10, as admission's pass-through
+            await task_conversation.post_as_lightbulb(
+                ws, call_id, text=blocked, event_id=f"task-gate:{task_id}:{trigger.trigger_id}", remember=False
+            )
+        else:
+            await admission._to_task(ws, task_id, trigger.trigger_id)
+    else:
+        await admission.enqueue_trigger(ws, trigger, room_id=call_id)
     return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id}
+
+
+_CLOSED = ("resolved", "failed")
+
+
+async def _open_thread(ws: str, call_id: str, before_seq: int) -> str | None:
+    """The call's latest caller thread still open (its card on a Lightbulb line in the call room), else None: a
+    call's first line, or a line after its thread failed or was closed, goes to the Router."""
+    for row in reversed(await messaging_repo.list_messages_before(call_id, before_seq, 50)):
+        for ref in reversed(row.get("taskRefs") or []):
+            task = await tasks_repo.get_task(ws, ref.get("taskId") or "")
+            if task and task.get("origin") == "phone_contact" and task.get("status") not in _CLOSED:
+                return task["taskId"]
+    return None
 
 
 async def after_call(room_id: str, item: dict) -> None:
@@ -955,5 +983,21 @@ class CallEventsIn(BaseModel):
 async def call_events(call_id: str, body: CallEventsIn) -> dict:
     """Lightbulb's messages in the call's room after seq `after` (the Router's ack and replies, the Front desk's
     answers), oldest first: the phone voice says each once (huddle-agent mouth.py)."""
-    await _call(call_id)
-    return await agent_lines(call_id, body.after)
+    _meta, call = await _call(call_id)
+    out = await agent_lines(call_id, body.after)
+    if not call.get("bookings"):
+        out["messages"] = [
+            {**m, "text": NOT_BOOKED} if BOOKED.search(m["text"].replace("\u2019", "'")) else m for m in out["messages"]
+        ]
+    return out
+
+
+#: A line that says a booking is made or being made. Only `/book` and `/change` (the Front desk's booking tools)
+#: put one on the call's record; until then such a line is not said (8 Nov prod final smoke: "Vera is booking your
+#: founding team setup for Saturday, November 14 at 12:00 PM" was said, and nothing was ever booked).
+BOOKED = re.compile(
+    r"\b((?<!fully )(?<!already )booked|is booking|are booking|will book|i'?ll book|i'?ve booked|is (now )?confirmed"
+    r"|you'?re (all )?set)\b",
+    re.IGNORECASE,
+)
+NOT_BOOKED = "The team is still working on that and hasn't made the booking yet."

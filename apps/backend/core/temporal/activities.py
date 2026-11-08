@@ -1071,6 +1071,10 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     # a room trigger is that room's or the person's, never the workspace's; workspace only with no room.
     if private:
         kind = "person"
+    elif room and ref.get("origin") == "phone_contact":
+        # A caller's thread is the call room's: the call's next batch (shared lane) lists it and passes the
+        # caller's next line to it (8 Nov prod final smoke: a person-visible LB-37 was never listed again).
+        kind = "room"
     elif room:
         kind = "person" if asked == "person" else "room"
     else:

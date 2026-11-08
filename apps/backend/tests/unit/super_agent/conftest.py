@@ -29,3 +29,13 @@ def _workspace_session_by_default(request, monkeypatch):
     from core.services import token_custody
 
     monkeypatch.setattr(token_custody, "task_vm_allowed", _AsyncMock(return_value=False))
+
+
+@pytest.fixture(autouse=True)
+def _no_connected_apps(monkeypatch):
+    """A Worker brief lists the workspace's connected apps (`integrations_repo`, a table these suites do not create)."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.repositories import integrations_repo
+
+    monkeypatch.setattr(integrations_repo, "list_for_owner", _AsyncMock(return_value=[]))

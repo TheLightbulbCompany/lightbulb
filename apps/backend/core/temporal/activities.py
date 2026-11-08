@@ -28,7 +28,7 @@ from core import tasks_schema as ts
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
-from core.repositories import container_repo, effects_repo, messaging_repo, tasks_repo
+from core.repositories import container_repo, effects_repo, integrations_repo, messaging_repo, tasks_repo
 from core.services import (
     business_profile,
     chat_gate,
@@ -76,7 +76,10 @@ WORKER_INSTRUCTIONS = (
     "few lines) and you made no file, put the piece itself after that sentence, ready to paste. When the task is "
     "a question (what shipped, a figure, what an email or calendar says), read the source and answer it: your whole "
     "answer is the answer, facts first, at most 100 words, no opening sentence about what you did; it is posted in "
-    "the chat as the reply. A request to make, buy or send something is not a question, even when phrased as one "
+    'the chat as the reply. When the source it needs is not in "Connected apps" (GitHub, Stripe, the calendar, …), '
+    "say plainly it isn't connected and that the person can connect it in Settings → Connections; never answer "
+    "from other material instead (other threads, memory, files). A request to make, buy or send something is not a "
+    "question, even when phrased as one "
     '("Can you build me a booking page?"). Never write a placeholder link such as [Book]([BOOKING LINK]): when '
     "you don't have the URL, write the call to action as "
     'plain text, e.g. "Book your spot: (link to add)". An email is its subject line and its body only: no '
@@ -346,6 +349,9 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         "for today and any date or time)",
         task.get("description") or "",
     ]
+    rows = await integrations_repo.list_for_owner(ws)
+    apps = sorted({r["provider"] for r in rows if r.get("provider") and r.get("status", "connected") == "connected"})
+    parts.append(f"Connected apps: {', '.join(apps) or 'none'}")
     # A question's own words, never paraphrased. Only a question: one message can start several threads, and the
     # brief is each one's whole job, so a work thread never sees the message's other asks.
     if task.get("question") and (asked := await _input_text(ws, task["triggerId"])):

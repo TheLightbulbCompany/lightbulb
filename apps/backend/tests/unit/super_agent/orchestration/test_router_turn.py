@@ -1786,3 +1786,8 @@ async def test_a_question_start_is_stored_as_a_question(world):
     await _run([t1])
     rows = [await repo.get_task(WS, ts.router_task_id(BATCH, i, 0)) for i in (0, 1)]
     assert rows[0]["question"] is True and rows[1]["question"] is False
+
+
+def test_a_fact_question_repeated_after_an_hour_gets_a_fresh_thread():
+    rule = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert "A fact question asked again more than 1 hour after the earlier answer is a fresh thread" in rule

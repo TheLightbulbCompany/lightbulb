@@ -242,6 +242,8 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_TRUNK_SID: str = ""
+    # The LiveKit outbound SIP trunk (ST_...) the forwarding check dials on. Empty = the check answers outbound_not_configured.
+    VOICE_OUTBOUND_TRUNK_ID: str = ""
     """The worker huddles and meetings dispatch to. Prod's deployed agent keeps the default; dev's Mac worker is lightbulb-meet-dev."""
     HUDDLE_WORKER_SECRET: str = ""
     # Meetings (Recall.ai bots). See meetings_available(): without LiveKit + a Recall key an invite opens the room only.

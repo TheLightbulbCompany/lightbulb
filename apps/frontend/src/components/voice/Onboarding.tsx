@@ -11,7 +11,7 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
-import { HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
+import { ForwardCheck, HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
 import { FORWARDING_CODES, IPHONE_NOTE, CHARGES_NOTE, forwardingCodes, type Carrier, type ForwardMode } from "./forwarding";
 import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
 
@@ -226,7 +226,7 @@ function NumberStep({ c, set, go, busy, back }: StepProps) {
           </> : <p>{note}</p>}
           <p>{IPHONE_NOTE} {CHARGES_NOTE}</p>
         </div>
-        <p className="vx-sub">We&apos;ll check your forwarding once it&apos;s set.</p>
+        {c.number ? <ForwardCheck c={c} set={set} /> : <p className="vx-sub">You can check your forwarding once your assistant&apos;s number is ready.</p>}
       </> : <>
         <label className="vx-label">Area code
           <input className="vx-field" inputMode="numeric" maxLength={3} value={area} placeholder="415" style={{ width: 120 }} onChange={(e) => setArea(e.target.value.replace(/\D/g, ""))} /></label>

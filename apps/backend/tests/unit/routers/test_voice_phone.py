@@ -444,3 +444,25 @@ async def test_end_emits_outcome_metric(client, monkeypatch):
         ).status_code
         == 200
     )
+
+
+async def test_inbound_probe_marks_forwarding_ok_and_ends(client):
+    """Our own forwarding probe arriving back on the line: marked ok, both legs ended, no greeting, no call record."""
+    from core.dynamodb import utc_now_iso
+    from core.services import voice_outbound
+
+    probe = {"forwardFrom": "(415) 555-0177", "forwardingCheck": {"startedAt": utc_now_iso(), "callId": "abc"}}
+    await voice_phone.put_line(NUMBER, LINE)
+    with patch.object(voice_outbound, "end_probe", AsyncMock()) as end:
+        for caller, room in ((NUMBER, "phone-dev-_p1"), ("+14155550177", "phone-dev-_p2")):  # either caller id
+            await messaging_repo.put_voice_agent("org_1", {**CONFIG, **probe}, "user_owner")
+            r = client.post("/api/v1/internal/voice/calls", headers=W,
+                            json={"calledNumber": NUMBER, "callerNumber": caller, "livekitRoom": room})  # fmt: skip
+            assert r.status_code == 409 and r.json()["detail"]["code"] == "forward_check"
+            cfg = await messaging_repo.get_voice_agent("org_1")
+            assert cfg["forwardingOk"] is True and cfg["forwardingOkAt"] and "forwardingCheck" not in cfg
+            end.assert_awaited_with(room, "abc")
+    assert not await voice_phone.messaging_repo.list_owner_rooms("org_1")  # no call record was made
+    # the owner's own test call with no check pending is an ordinary call
+    owner = await _start(client, caller="+14155550177", room="phone-dev-_p3", forwardFrom="(415) 555-0177")
+    assert owner["mode"] == "live"

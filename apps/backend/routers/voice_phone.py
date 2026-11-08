@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import clerk_admin, integration_reads, questions, voice_booking
+from core.services import clerk_admin, integration_reads, questions, voice_booking, voice_outbound
 from routers.huddles import _Worker
 from routers.voice import _e164
 from routers.internal_automations import VoiceStartIn, start_voice_work
@@ -177,6 +177,15 @@ async def start_call(body: StartIn) -> dict:
         raise _err(404, "line_not_found")
     owner_id = line["ownerId"]
     cfg = await agent_config(owner_id)
+    if _is_probe(cfg, body):
+        # Our own forwarding check came back: no caller is on it, so no greeting (and no disclosure) is owed.
+        raw = await messaging_repo.get_voice_agent(owner_id) or {}
+        raw.pop("forwardingCheck", None)
+        await messaging_repo.put_voice_agent(
+            owner_id, {**raw, "forwardingOk": True, "forwardingOkAt": utc_now_iso()}, "voice"
+        )
+        await voice_outbound.end_probe(body.livekitRoom, cfg["forwardingCheck"]["callId"])
+        raise _err(409, "forward_check")  # the worker leaves without speaking
     org = await clerk_admin.get_organization(owner_id) if owner_id.startswith("org_") else None
     business, assistant = (org or {}).get("name") or "the business", cfg["name"].strip() or "Lightbulb"
     if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
@@ -240,6 +249,14 @@ async def start_call(body: StartIn) -> dict:
         "transfer": bool(cfg["handoff"]["number"]),
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
     }
+
+
+def _is_probe(cfg: dict, body: StartIn) -> bool:
+    """A call arriving within WINDOW_S of a pending forwarding check, from our own line or the business line (the
+    carrier may present either as the caller)."""
+    if body.callerNumber not in (body.calledNumber, _e164(str(cfg.get("forwardFrom") or ""))):
+        return False
+    return 0 <= voice_outbound.age_s(cfg.get("forwardingCheck")) <= voice_outbound.WINDOW_S
 
 
 def greeting(custom: str, business: str, assistant: str) -> str:

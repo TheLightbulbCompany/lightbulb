@@ -3,6 +3,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { name: "Salon" } }) }));
 vi.mock("next/link", () => ({ default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a> }));
+const post = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get: vi.fn() }) }));
 const cfg = vi.hoisted(() => ({ value: {} as Record<string, unknown>, save: vi.fn() }));
 vi.mock("../data", async (orig) => ({
   ...(await orig<typeof import("../data")>()),
@@ -44,4 +46,14 @@ it("a stored square or other shows as the assistant's own calendar", () => {
   render(<AgentPage />);
   expect((screen.getByLabelText(/Bookings go to/) as HTMLSelectElement).value).toBe("own");
   expect(screen.queryByText(/Another booking system/)).toBeNull();
+});
+
+it("agent page shows Check forwarding when keep path", () => {
+  cfg.value = { ...cfg.value, numberChoice: { path: "keep" }, forwardFrom: "(415) 555-0177" };
+  const { unmount } = render(<AgentPage />);
+  expect(screen.getByRole("button", { name: "Check forwarding" })).toBeInTheDocument();
+  unmount();
+  cfg.value = { ...cfg.value, numberChoice: { path: "new" } };
+  render(<AgentPage />);
+  expect(screen.queryByRole("button", { name: "Check forwarding" })).toBeNull();
 });

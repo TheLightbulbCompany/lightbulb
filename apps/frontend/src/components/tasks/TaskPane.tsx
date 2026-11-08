@@ -103,8 +103,9 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
   const live = view.word === "Working";
   const trace = useLatestTrace(detail, live);
   const tools = trace && !("error" in trace) ? trace.recentTools : null;
-  // The latest run's id addresses its live browser frames (GET /tasks/{id} carries it; the shared type does not yet).
-  const runId = (detail.attempts.reduce<TaskDetail["attempts"][number] | null>((a, b) => (!a || b.n > a.n ? b : a), null) as { runId?: string } | null)?.runId;
+  // The live run this viewer may watch and drive: on the workspace VM only, in the viewer's own workspace (GET /tasks/{id}
+  // `browserRunId`; the shared type does not carry it yet). A run on its own task VM has none: its input would 409.
+  const runId = (detail as TaskDetail & { browserRunId?: string | null }).browserRunId;
   // Top to bottom (dev walk 13, W13-5/W13-9): while it runs, its latest step; then what it said and made, once each
   // (the result's file cards are the output chips); one quiet times line; Steps, the one box and Details right under it.
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
@@ -142,8 +143,8 @@ export const isBrowserTool = (tool: unknown): boolean => {
 
 /** The Worker's browser tab while it browses: its frames are cast to the room the task came from, and a click, scroll
  *  or keys on the picture go to that tab, so the owner can watch it and take over (the agent waits while they do).
- *  ponytail: mounted only while the run's recent steps are in the browser, because the viewing beat starts a stopped
- *  browser; a run-scoped beat if a lingering pane ever restarts one. */
+ *  Only for a run the server says this viewer may drive (`browserRunId`), and only while its recent steps are in the
+ *  browser: the viewing beat starts a stopped browser. ponytail: a run-scoped beat if a lingering pane ever restarts one. */
 function LiveBrowser({ runId }: { runId: string }): ReactElement {
   return <section aria-label="Browser" className="grid gap-1.5 px-1">
     <div className="relative aspect-[16/10] overflow-hidden rounded-lg border" style={{ borderColor: "var(--edge)" }}>

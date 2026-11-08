@@ -96,9 +96,11 @@ export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement
   </Dialog>;
 }
 
-function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush, forgets }: ProjectSettingsProps & { section: SettingsSection; flush: Flush; forgets: Forgets }): ReactElement {
+function SettingsBody({ room, roomName, section: asked, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush, forgets }: ProjectSettingsProps & { section: SettingsSection; flush: Flush; forgets: Forgets }): ReactElement {
   const id = useId();
   const sections = people ? SECTIONS : SECTIONS.filter((s) => s.id !== "people");
+  // A "people" deep link where there is no People (the Lightbulb page's own DM): the first section instead.
+  const section = sections.some((s) => s.id === asked) ? asked : sections[0].id;
   const { membership } = useOrganization();
   // The backend lets a channel's owner/admin pause it, and a workspace admin too (pause alone); a chat with Lightbulb is
   // its people's (`canEdit`), never an admin's. Never #general or the channel shared with the Lightbulb team.

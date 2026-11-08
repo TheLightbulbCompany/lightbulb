@@ -106,7 +106,7 @@ async def test_task_detail_seats_viewer_in_task_room(world):
     assert resp.status_code == 200
     body = resp.json()
     assert body["task"]["taskId"] == task and body["taskRoomId"] == "room-x"
-    assert set(body) == {"task", "attempts", "questions", "effects", "subscriptions", "taskRoomId"}
+    assert set(body) == {"task", "attempts", "questions", "effects", "subscriptions", "taskRoomId", "browserRunId"}
     assert world["room"].await_args.kwargs == {"seat_viewer": SAM}
 
 
@@ -454,10 +454,27 @@ async def test_task_detail_attempts_are_allow_listed(world):
     resp = await world["client"].get(f"/api/v1/tasks/{task}")
     assert resp.status_code == 200
     (att,) = resp.json()["attempts"]
-    # runId addresses the run's live browser frames (room.browser.frame); it grants nothing, the runSecret does.
-    assert set(att) == {"n", "runId", "status", "outcome", "startedAt", "endedAt", "usage", "output"}
+    assert set(att) == {"n", "status", "outcome", "startedAt", "endedAt", "usage", "output"}
     assert "runSecret" not in resp.text and "taskToken" not in resp.text
     assert "LEAKCANARY" not in resp.text
+
+
+@pytest.mark.parametrize(
+    ("status", "on_task_vm", "watchable"), [("running", False, True), ("running", True, False), ("ended", False, False)]
+)
+async def test_only_a_live_run_on_the_workspace_vm_is_watchable(world, status, on_task_vm, watchable):
+    # The viewer's beat and clicks reach the workspace VM's browser only: a task-VM run's input would 409 and its beat
+    # would wake the parked shared VM, so it offers no live browser at all.
+    from core.services import runtime_transport
+
+    task = await _task("working")
+    session = runtime_transport.session_id_for(WS, task) if on_task_vm else runtime_transport.session_id_for(WS)
+    await tasks_repo.put_attempt(
+        WS, task, 1, {"agentId": "a-1", "sessionId": session, "status": status, "startedAt": "2026-11-04T00:00:00Z"}
+    )
+    body = (await world["client"].get(f"/api/v1/tasks/{task}")).json()
+    run_id = (await tasks_repo.get_attempt(WS, task, 1))["runId"]
+    assert body["browserRunId"] == (run_id if watchable else None)
 
 
 async def test_no_task_payload_carries_a_credential_like_key(world, monkeypatch):

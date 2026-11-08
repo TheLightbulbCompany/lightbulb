@@ -9,7 +9,7 @@ from temporalio.testing import ActivityEnvironment
 
 from core import tasks_schema as ts
 from core.repositories import tasks_repo as repo
-from core.services import runtime_runs, tasks_access
+from core.services import runtime_runs
 from core.temporal import activities as acts
 from core.temporal.types import AttemptRef, WorkerTurnIn
 
@@ -213,7 +213,29 @@ async def test_worker_turn_casts_its_browser_to_the_origin_room(world, monkeypat
         "channel": f"/ws/ws_1/rooms/{ROOM}/dk1",
         "roomId": ROOM,
     }
-    assert tasks_access.attempt_view(await repo.get_attempt(WS, tid, 1))["runId"] == ref.run_id
+
+
+@pytest.mark.parametrize(("members", "cast"), [(["sam", "guest"], False), (["sam"], True)])
+async def test_a_person_only_tasks_browser_never_reaches_a_room_with_anyone_else(world, monkeypatch, members, cast):
+    # The room's channel reaches every member (a shared room's guests too): a person-only task casts only where its
+    # people are everyone (its own DM), as `_announce` posts its line.
+    async def get_room(room_id):
+        return {"roomId": room_id, "deliveryKey": "dk1", "workspaceId": "ws_1"}
+
+    async def list_members(room_id):
+        return [{"kind": "human", "id": m} for m in members] + [{"kind": "agent", "id": CEO}]
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
+    monkeypatch.setattr(acts.messaging_repo, "list_members", list_members)
+    monkeypatch.setattr(acts.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.example")
+    tid = await _task(audience={"kind": "person", "userIds": ["sam"], "roomId": ROOM})
+    ref = await _attempt(tid)
+    with pytest.raises(activity._CompleteAsyncError):
+        await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    wire = world["runs"][0][0].to_wire()
+    assert ("frames" in wire) is cast
+    if cast:
+        assert wire["frames"]["channel"] == f"/ws/ws_1/rooms/{ROOM}/dk1"
 
 
 async def test_worker_turn_without_a_room_channel_casts_nowhere(world, monkeypatch):

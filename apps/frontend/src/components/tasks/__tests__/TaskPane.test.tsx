@@ -190,8 +190,7 @@ describe("TaskPane", () => {
   });
 
   it("while its run browses, the pane shows that run's tab live and takes the owner's clicks", async () => {
-    const attempts = step8.attempts.map((a) => ({ ...a, runId: `run-${a.n}` }));
-    withDetail({ ...step8, attempts });
+    withDetail({ ...step8, browserRunId: "run-2" } as TaskDetail);
     client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "web_search", ok: true }] as unknown[] });
     const { unmount } = pane();
     expect(await screen.findByText("Searching the web…")).toBeInTheDocument();
@@ -200,14 +199,23 @@ describe("TaskPane", () => {
     client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "browser_navigate", ok: true }, { name: "web_search", ok: true }] as unknown[] });
     pane();
     const frames = await screen.findByTestId("frames");
-    expect(frames).toHaveAttribute("data-run", "run-2"); // the latest attempt's run
+    expect(frames).toHaveAttribute("data-run", "run-2"); // the run the server says this viewer may drive
     expect(frames).toHaveAttribute("data-interactive", "true");
     expect(screen.getByRole("region", { name: "Browser" })).toHaveTextContent("take over");
   });
 
+  it("a run on its own task VM offers no live browser (no beat to wake the shared VM, no clicks that 409)", async () => {
+    withDetail({ ...step8, browserRunId: null } as TaskDetail);
+    client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "browser_navigate", ok: true }] as unknown[] });
+    pane();
+    expect(await screen.findByText(/^Opening/)).toBeInTheDocument(); // the browsing step is read
+    expect(screen.queryByTestId("frames")).toBeNull();
+    expect(screen.queryByText(/take over/)).toBeNull();
+  });
+
   it("a Done task shows no live browser, whatever it browsed", async () => {
-    const ended = step8.attempts.map((a) => ({ ...a, runId: `run-${a.n}`, status: "ended" as const, endedAt: "2026-11-04T14:05:00Z" }));
-    withDetail({ ...step8, attempts: ended, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
+    const ended = step8.attempts.map((a) => ({ ...a, status: "ended" as const, endedAt: "2026-11-04T14:05:00Z" }));
+    withDetail({ ...step8, browserRunId: "run-2", attempts: ended, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] } as TaskDetail, []);
     client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "browser_click", ok: true }] as unknown[] });
     pane();
     expect(await screen.findByText(/^Started .+ · Done /)).toBeInTheDocument();

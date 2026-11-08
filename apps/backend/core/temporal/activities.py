@@ -163,11 +163,19 @@ def _identity(ws: str, task_id: str, att: dict) -> runtime_runs.RunIdentity:
 
 async def _frames_target(tree: dict) -> dict | None:
     """Where a Worker run casts its browser tab: the room the task came from (the one its requester has open), so
-    the task's pane there shows it live (`room.browser.frame`, by the attempt's runId). None: no cast."""
-    room_id = tasks_access._origin_room(tree.get("subscriptions") or [], tree["task"].get("audience") or {})
+    the task's pane there shows it live (`room.browser.frame`, by the attempt's runId). None: no cast. Only when
+    everyone on that room's channel may open the task (`_announce`'s rule): a person-only task's page never reaches
+    a room with anyone else in it (a shared room's guests included)."""
+    task = tree["task"]
+    room_id = tasks_access._origin_room(tree.get("subscriptions") or [], task.get("audience") or {})
     if not room_id or not settings.APPSYNC_EVENTS_HTTP_ENDPOINT:
         return None
     try:
+        humans: list[str] = []
+        if (task.get("audience") or {}).get("kind") == "person":
+            humans = [m["id"] for m in await messaging_repo.list_members(room_id) if m.get("kind") == "human"]
+        if not tasks_access.seen_by_whole_room(task, room_id, humans):
+            return None
         meta = await messaging_repo.get_room(room_id)
         if not meta or not meta.get("deliveryKey"):
             return None

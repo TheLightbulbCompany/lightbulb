@@ -5,6 +5,7 @@ import asyncio
 import inspect
 
 import numpy as np
+import pytest
 from livekit import rtc
 
 from huddle_agent import meet
@@ -210,7 +211,11 @@ async def test_a_waking_voice_hears_the_pre_roll_first_then_live():
 class _Voice:
     def __init__(self, history):
         self.history, self.closed = history, False
+        self.contexts = []
         self.session = type("S", (), {"input": type("I", (), {"audio": "mix"})()})()
+
+    def send_context(self, text):
+        self.contexts.append(text)
 
     async def close(self):
         self.closed = True
@@ -258,6 +263,7 @@ async def test_meet_wakes_on_the_name_carrying_history():
     await m.opening
     [voice] = opened
     assert voice.history == [("Maya", "Let's look at the holiday hours.")]  # the fetch is off the critical path
+    assert voice.contexts == ["Team: Pulse posted the holiday hours."]
     assert m.after == 7 and "a7" in m.seen and m.lines[-1]["text"] == "Pulse posted the holiday hours."
     m.heard(SAM, "Nova, and the other thing?", final=True)  # awake: GPT-Live decides, nothing reopens
     assert m.opening is None and len(opened) == 1
@@ -389,18 +395,85 @@ async def test_a_wake_holds_the_pre_roll_and_paces_what_is_past_the_burst():
     assert len(mix.ring) == n
 
 
-async def test_the_wake_catch_up_records_a_thread_question_and_the_last_answer():
-    """M2: a Worker's question that came while it slept is in the notes, the last ask's answer, and the next ask may
-    answer it (#5112)."""
+async def test_the_wake_catch_up_records_a_question_without_answering_it():
+    """A sleeping Worker's question is silent context, not a question the voice asked the room. An unrelated new
+    delegation must never be submitted as its answer."""
     q = {"id": "q1", "seq": 9, "text": "**Pulse** asks: What holiday hours?", "question": {"taskId": "t1", "qid": "q-1"}}
     b = _Backend([{"messages": [q], "after": 9}])
     m, opened = _sleepy(b)
     m.asked.append({"t": 0, "who": "Sam", "q": "draft it", "a": ""})
     m.heard(SAM, "Nova, any news?", final=True)
     await m.opening
-    assert m.question == {"taskId": "t1", "qid": "q-1"} and m.asked[-1]["a"] == "Pulse asks: What holiday hours?"
-    await m.post("We close at 2.", [])
-    assert b.asks()[-1]["answers"] == {"taskId": "t1", "qid": "q-1"}
+    assert m.question is None and m.asked[-1]["a"] == "Pulse asks: What holiday hours?"
+    assert opened[0].contexts == ["Team: **Pulse** asks: What holiday hours?"]
+    await m.post("What is on my calendar?", [])
+    assert "answers" not in b.asks()[-1]
+
+
+@pytest.mark.parametrize("backlog_first", [True, False])
+async def test_waking_voice_receives_backlog_without_waiting_to_open(backlog_first):
+    """Either order of the fetch and session startup preserves the result in the current voice, without holding
+    startup on a slow backend or speaking old results as fresh replies."""
+    fetched, opened = asyncio.Event(), asyncio.Event()
+    release = asyncio.Event()
+    msg = {"id": "a9", "seq": 9, "text": "We shipped #5095."}
+
+    class B(_Backend):
+        async def meet(self, op, body):
+            if op == "events":
+                if not backlog_first:
+                    await release.wait()
+                fetched.set()
+                return {"messages": [msg], "after": 9}
+            return await super().meet(op, body)
+
+    voices = []
+
+    async def open_voice(history):
+        if backlog_first:
+            await fetched.wait()
+        voices.append(_Voice(history))
+        opened.set()
+        return voices[-1]
+
+    m = _meeting(B(), open_voice=open_voice)
+    m.heard(SAM, "Nova, did it ship?", final=False)
+    opening = m.opening
+    await asyncio.wait_for(opened.wait(), timeout=1)
+    assert voices[0].history == []  # the snapshot preceded this wake's fetch
+    release.set()
+    await opening
+    assert voices[0].contexts == ["Team: We shipped #5095."]
+    assert m.history() == [("Team", "We shipped #5095.")]
+    # The backend may repeat the result; the sleeping catch-up is still one copy.
+    assert await m._backlog() == []
+
+
+async def test_wake_backlog_does_not_append_to_a_voice_that_already_ended():
+    release, opened = asyncio.Event(), asyncio.Event()
+    msg = {"id": "a10", "seq": 10, "text": "The calendar is updated."}
+
+    class B(_Backend):
+        async def meet(self, op, body):
+            await release.wait()
+            return {"messages": [msg], "after": 10}
+
+    voices = []
+
+    async def open_voice(history):
+        voices.append(_Voice(history))
+        opened.set()
+        return voices[-1]
+
+    m = _meeting(B(), open_voice=open_voice)
+    m.heard(SAM, "Nova, any news?", final=False)
+    opening = m.opening
+    await opened.wait()
+    m.ended(voices[0])
+    release.set()
+    await opening
+    assert m.voice is None and voices[0].contexts == []
+    assert m.history() == [("Team", "The calendar is updated.")]
 
 
 async def test_a_voice_that_closed_itself_is_reopened_by_the_name():

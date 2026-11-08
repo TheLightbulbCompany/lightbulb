@@ -259,38 +259,47 @@ class Meeting:
 
     async def _wake(self) -> None:
         """Opens the voice with the recent meeting. The words that named it reach it as audio: the Mix pre-roll, held
-        from this moment, then the live mix. The team messages from while it slept are fetched alongside, into the notes
-        (not said, and not in this history: off the wake's critical path)."""
+        from this moment, then the live mix. Team messages from while it slept are fetched alongside and appended as
+        silent context once open, so they reach this wake without delaying it or replaying old replies aloud."""
         if self.mix is not None:
             self.mix.hold()
         woke = time.monotonic()
+        backlog = None
         try:
             async with self._turn:
                 backlog = asyncio.create_task(self._backlog())
                 self.activity()
-                self.voice = await self._open_voice(self.history())
+                self.voice = voice = await self._open_voice(self.history())
                 self.activity()
                 logger.info("meet: voice awake %.2f s after the name", time.monotonic() - woke)
-                await backlog
+                for text in await backlog:
+                    if self.voice is voice:  # a spontaneous close while the fetch waited: keep only the notes
+                        voice.send_context(text)
         except Exception:  # noqa: BLE001 -- the next line with the name tries again
             logger.exception("meet: voice not opened")
             if self.mix is not None:
                 self.mix.release()
         finally:
+            if backlog is not None and not backlog.done():
+                backlog.cancel()
+                await asyncio.gather(backlog, return_exceptions=True)
             self.opening = None
 
-    async def _backlog(self) -> None:
+    async def _backlog(self) -> list[str]:
+        """Record missed messages and return silent context. A question not said by the voice must not arm the
+        next delegation as its answer; normal live events still carry that binding when presented."""
         try:
             out = await self._b.meet("events", {"after": self.after})
         except BackendError as e:
             logger.warning("meet: events failed (%s)", e.code)
-            return
+            return []
+        context = []
         for m in out.get("messages", []):
             if (text := speakable(m.get("text") or "")) and not self._keys(m) & self.seen:
                 self._record(m, text)
-                if q := m.get("question"):  # in the chat, unsaid: the next ask may still answer it
-                    self.question, self.question_at = q, time.monotonic()
+                context.append(f"Team: {m['text'].strip()}")
         self.after = max(self.after, int(out.get("after") or 0))
+        return context
 
     def ended(self, voice) -> None:
         """The voice's AgentSession closed (on its own, or ours): asleep, so a name opens it again."""

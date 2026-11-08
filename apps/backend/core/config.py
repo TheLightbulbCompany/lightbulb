@@ -400,6 +400,11 @@ class Settings(BaseSettings):
     # The env's shared AgentCore Memory (CDK ContainerStack.workspaceMemory). Empty = no workspace
     # memory: no per-owner grant, no AGENTCORE_MEMORY_ID in the runtime env, no wipe.
     AGENTCORE_MEMORY_ID: str = ""
+    # The role the backend assumes to hand each runtime session credentials scoped to its owner
+    # (runtime_transport._session_credentials_header). Its grant must cover every owner's
+    # ``<owner>/*`` in OWNER_STATE_BUCKET and the workspace memory; the session policy narrows it
+    # to one owner. Empty = no scoped credentials, the bridge uses its execution role (today).
+    HERMES_TENANT_ROLE_ARN: str = ""
     # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): the evaluator's
     # episodes and reflections, apart from the workspace memory. Empty = no evaluator.
     AGENTCORE_SESSIONS_MEMORY_ID: str = ""

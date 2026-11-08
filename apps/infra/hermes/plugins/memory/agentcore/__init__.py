@@ -74,17 +74,26 @@ _HUMAN_ID = re.compile(r"user_[A-Za-z0-9]+")
 # The bridge builds a fresh AIAgent (and so a fresh provider) every turn; the client is cached
 # per process so recall doesn't pay client construction + TLS on each turn.
 _CLIENT = None
+_CLIENT_KEY = ""  # the access key the client was built with: "" = the execution role
 
 
 def _client():
-    global _CLIENT
-    if _CLIENT is None:
+    """On the session's scoped credentials when the backend sent them (bridge.aws_session_kwargs),
+    else the execution role; rebuilt only when that changes."""
+    global _CLIENT, _CLIENT_KEY
+    import bridge
+
+    creds = bridge.aws_session_kwargs()
+    key = creds.get("aws_access_key_id", "")
+    if _CLIENT is None or key != _CLIENT_KEY:
         import boto3
         from botocore.config import Config
 
         _CLIENT = boto3.client(
             "bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or None,
-            config=Config(connect_timeout=1, read_timeout=1.5, retries={"total_max_attempts": 2, "mode": "standard"}))
+            config=Config(connect_timeout=1, read_timeout=1.5, retries={"total_max_attempts": 2, "mode": "standard"}),
+            **creds)
+        _CLIENT_KEY = key
     return _CLIENT
 
 

@@ -33,6 +33,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import bridge
 from bridge import HOME, S3_BUCKET, S3_PREFIX, task_mode
 
 log = logging.getLogger("bridge")
@@ -447,16 +448,22 @@ def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
 #: call -- restore_root_auth/save_root_auth alone now cost 2-3 of these per turn
 #: (_root_auth_revision on both restore and save, plus the actual get/put).
 _S3_CLIENT = None
+_S3_KEY = ""  # the access key the client was built with: "" = the execution role
 
 
 def _s3():
-    global _S3_CLIENT
-    if _S3_CLIENT is None:
+    """The session's scoped credentials when the backend sent them (bridge.aws_session_kwargs),
+    else the execution role; rebuilt only when that changes."""
+    global _S3_CLIENT, _S3_KEY
+    creds = bridge.aws_session_kwargs()
+    key = creds.get("aws_access_key_id", "")
+    if _S3_CLIENT is None or key != _S3_KEY:
         import boto3
         from botocore.config import Config
 
         # botocore pools 10 connections by default; _fan_out runs _SYNC_WORKERS transfers at once.
-        _S3_CLIENT = boto3.client("s3", config=Config(max_pool_connections=_SYNC_WORKERS * 2))
+        _S3_CLIENT = boto3.client("s3", config=Config(max_pool_connections=_SYNC_WORKERS * 2), **creds)
+        _S3_KEY = key
     return _S3_CLIENT
 
 

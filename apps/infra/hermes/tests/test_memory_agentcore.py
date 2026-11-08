@@ -5,6 +5,7 @@ import pathlib
 import re
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -60,6 +61,22 @@ def provider(mod, client, session="room:ceo", **kw):
     p = mod.AgentCoreMemoryProvider()
     p.initialize(session, hermes_home="/tmp", platform="lightbulb", **kw)
     return p
+
+
+def test_memory_events_use_the_sessions_scoped_credentials(mod, monkeypatch):
+    """With credentials from the invoke, the memory client is built on them, not the execution role."""
+    import bridge
+
+    builds = []
+    fake = types.ModuleType("boto3")
+    fake.client = lambda service, **kw: (builds.append((service, kw.get("aws_access_key_id"))), object())[1]
+    monkeypatch.setitem(sys.modules, "boto3", fake)
+    monkeypatch.setattr(bridge, "AWS_SESSION", {})
+    mod._client()
+    monkeypatch.setattr(bridge, "AWS_SESSION", {"keys": ("ASIA1", "s", "t"), "expires": datetime.now(timezone.utc) + timedelta(hours=1)})
+    mod._client()
+    mod._client()
+    assert builds == [("bedrock-agentcore", None), ("bedrock-agentcore", "ASIA1")]
 
 
 MEMBER = "user_2abcXYZ"

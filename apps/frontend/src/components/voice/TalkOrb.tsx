@@ -64,6 +64,7 @@ export function TalkOrb({ name, compact = false }: { name: string; compact?: boo
     started.current = false;
     if (!held.current) void connected.localParticipant.setMicrophoneEnabled(false);
   }, [connected]);
+  useEffect(() => { if (huddle.error) started.current = false; }, [huddle.error]); // a failed join never connects
   const tile = room?.members?.find((m) => m.kind === "agent")?.id ?? "assistant"; // the tile owner.py speaks as
   const error = mine ? huddle.error : null;
   const err = error && ({
@@ -91,7 +92,7 @@ export function TalkOrb({ name, compact = false }: { name: string; compact?: boo
       {compact && <span aria-hidden="true">Talk</span>}
     </button>
     {/* compact: a bubble beside the rail, open while a talk is on; closed it stays in the accessibility tree */}
-    <div className="vx-talk-text" data-open={compact ? state !== "idle" || !!alert : undefined}>
+    <div className="vx-talk-text" data-open={compact ? live || state !== "idle" || !!alert : undefined}>
       <b aria-live="polite">{{ connecting: `Connecting to ${name}…`, listening: `${name} is listening`, thinking: `${name} is thinking…`,
         speaking: `${name} is speaking`, idle: `Hold to talk to ${name}` }[state]}</b>
       {/* one persistent line: an alert, else a polite region with the caption or the suggestions */}

@@ -76,3 +76,22 @@ it("never mutes, nor shows the error of, a Live it did not start", () => {
   expect(mic).not.toHaveBeenCalled();
   expect(screen.queryByRole("alert")).toBeNull();
 });
+
+it("a failed orb join does not mute a later room Live", () => {
+  const { rerender } = render(<TalkOrb name="Nova" compact />);
+  const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+  fireEvent.keyDown(orb, { key: " " });
+  fireEvent.keyUp(orb, { key: " " });
+  huddle.error = { code: "voice_unavailable" }; // join failed: room stays null
+  rerender(<TalkOrb name="Nova" compact />);
+  huddle.error = null; huddle.roomId = "c1"; huddle.roomName = "#general"; huddle.room = connectedRoom; // a room header's Live
+  rerender(<TalkOrb name="Nova" compact />);
+  expect(mic).not.toHaveBeenCalled();
+});
+
+it("compact: End stays visible while Live, also when quiet", () => {
+  live(); lk.attrs = { "lightbulb.agent.a1.status": "idle" };
+  render(<TalkOrb name="Nova" compact />);
+  expect(screen.getByRole("button", { name: "Hold to talk to Nova" })).toHaveAttribute("data-state", "idle");
+  expect(screen.getByRole("button", { name: "End" }).closest("[data-open]")).toHaveAttribute("data-open", "true");
+});

@@ -132,6 +132,17 @@ def added_facts(spoken: str, source: str, allow: tuple[str, ...] = ()) -> list[s
     return out
 
 
+#: Opens the team's message as the conversation's newest line. Only in the response's instructions, the realtime model
+#: answered the caller's last line instead: "OK. Great. I'll pass that along to the team." for "You're booked…",
+#: "Got it… nothing is finalized yet" for the read-back, and Monday's slots cut as a refusal twice, word-for-word retry
+#: too (8 Nov prod booking smoke after #5122: every Front desk line reached the voice and none was heard).
+TEAM = "[The team's message, to tell them now; not said by them]"
+
+
+def team_line(text: str) -> bool:
+    return text.startswith(TEAM)
+
+
 def verbatim_instructions(texts: list[str]) -> str:
     return result_instructions(texts).replace(RESULT_RULE, VERBATIM_RULE)
 
@@ -258,7 +269,7 @@ class Talker(Agent):
     def say(self, texts: list[str], verbatim: bool = False):
         self.last, self.held = texts, False  # a result ends the turn: the next ask says the holding line again
         rule = verbatim_instructions if verbatim else result_instructions
-        speech = self.reply(rule(texts))
+        speech = self.reply(rule(texts), user_input=f"{TEAM}\n" + "\n\n".join(texts))
         self.results[speech.id] = (texts, verbatim)
         speech.add_done_callback(lambda h: self.results.pop(h.id, None))
         return speech

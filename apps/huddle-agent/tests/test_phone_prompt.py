@@ -472,7 +472,14 @@ async def test_holding_lines_fire_on_time_and_stop_when_the_team_speaks():
     await asyncio.sleep(0.15)
     assert said == [phone.HOLD_AGAIN, phone.OFFER_MESSAGE]  # answered before 8 s: nothing more
     assert hold.waiting  # the ack came; a Front desk answer may still: a quiet caller is holding
-    assert "take a message" in phone.OFFER_MESSAGE and "add no facts" in phone.HOLD_AGAIN.lower()
+    assert "take a message" in phone.OFFER_MESSAGE
+
+
+def test_the_holding_lines_are_fixed_words():
+    """Free-form, the model said "I don't have a confirmed booking yet… I can't confirm anything right now" and
+    "nothing is finalized yet" while the Front desk was answering (8 Nov prod booking smoke after #5122), unchecked."""
+    for text in (phone.HOLD_AGAIN, phone.OFFER_MESSAGE):
+        assert text.startswith('Say only "') and not mouth.refuses(text)
 
 
 def test_the_wait_defaults_are_8_and_20_seconds():

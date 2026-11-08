@@ -350,3 +350,24 @@ async def test_after_the_call_the_room_line_still_has_the_link_and_an_answer_get
 async def test_a_thread_outside_a_meeting_keeps_its_line():
     with patch.object(voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"})):
         assert await voice_meet.with_link("dm-1", _made_task(), "Done.") == "Done."
+
+
+async def test_a_caller_threads_lines_are_in_the_call_rooms_main_chat():
+    """8 Nov prod booking smoke after #5122 (call f50ca3da, rows as read from lightbulb-prod-messaging): the Front desk
+    thread's read-back and "you're booked" are main-chat `task_line` rows in the call's room, so `/events` hands both
+    to the voice in order (the caller never heard them: the talker, not the backend, dropped them)."""
+    task = [{"taskId": "fab82a45-7268-5fb3-92ac-cb5a1aa0b0df"}]
+    lb = {"kind": "agent", "id": "lightbulb", "displayName": "Lightbulb"}
+    rows = [
+        {"messageId": "m2", "messageSeq": 2, "author": lb, "taskRefs": task,
+         "text": "Customer Operations is checking Saturday afternoon availability for your founding team setup."},
+        {"messageId": "m3", "messageSeq": 3, "author": {"kind": "human", "displayName": "Caller Taylor Test"},
+         "text": "The first time you said works for me."},
+        {"messageId": "m4", "messageSeq": 4, "author": lb, "kind": "task_line", "taskRefs": task,
+         "text": "Just to confirm, Saturday, November 14 at 12:00 PM for the 45-minute founding team setup—is that right?"},
+        {"messageId": "m6", "messageSeq": 6, "author": lb, "kind": "task_line", "taskRefs": task,
+         "text": "You’re booked for the founding team setup on Saturday, November 14 at 12:00 PM."},
+    ]  # fmt: skip
+    with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
+        out = await voice_meet.agent_lines(ROOM, 1)
+    assert [m["id"] for m in out["messages"]] == ["m2", "m4", "m6"] and out["after"] == 6

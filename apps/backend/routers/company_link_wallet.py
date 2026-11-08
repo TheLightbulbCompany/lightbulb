@@ -152,7 +152,7 @@ class PurchaseBody(BaseModel):
     url: str = Field(max_length=2048)
     amount: float
     why: str = Field(max_length=2000)
-    issueId: str = Field(max_length=128)
+    issueId: str | None = Field(None, max_length=128)  # accepted, ignored: the intent row names the task
 
 
 @internal_router.post("/{owner_id}/requests")
@@ -181,7 +181,7 @@ async def agent_request(owner_id: str, body: PurchaseBody, request: Request):
             url=body.url,
             amount=body.amount,
             why=body.why,
-            issue_id=body.issueId,
+            issue_id=intent["taskId"],  # the Worker never sees its task id; the row it was approved on does
             approved=not intent.get("allowedBy"),  # no mode or rule let it through: a person answered the Question
         )
     except (purchases.PurchaseRefused, link_wallet.LinkWalletError) as exc:

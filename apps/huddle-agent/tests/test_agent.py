@@ -287,7 +287,7 @@ async def test_every_voice_is_driven_in_a_meet_or_in_the_app(monkeypatch):
         made.clear()
         live = await start(speaker)
         assert isinstance(live, agent._DrivenLive) and live.track_name == "agent-forge"
-        assert made[0].llm == {"model": "gpt-realtime", "voice": "cedar", "turn_detection": None}
+        assert made[0].llm == {"model": "gpt-realtime-2.1-mini", "voice": "cedar", "turn_detection": None}
         kw = made[0].started
         assert kw["room_options"].audio_input is False, "a driven voice has no ears"
         assert kw["room_options"].audio_output.track_name == "agent-forge" and kw["record"] is False
@@ -818,3 +818,32 @@ async def test_one_deployed_agent_routes_a_phone_call_a_meet_and_a_huddle(monkey
     except ZeroDivisionError:
         pass
     assert went == ["phone", "meet", "huddle"]
+
+
+def test_no_retiring_openai_models():
+    # developers.openai.com/api/docs/deprecations: gpt-realtime and -mini shut down 20 Jan 2027, gpt-4o-mini-transcribe 26 Feb 2027
+    import pathlib
+    import re
+
+    src = pathlib.Path(agent.__file__).parent
+    bad = re.compile(r"gpt-realtime(?![-\w.])|gpt-realtime-mini|gpt-4o-mini-transcribe|gpt-4o-transcribe")
+    hits = [f"{p.name}:{n}" for p in src.glob("*.py") for n, line in enumerate(p.read_text().splitlines(), 1)
+            if bad.search(line) and not line.lstrip().startswith("#") and "deprecated" not in line and "shut" not in line]
+    assert not hits, hits
+
+
+def test_default_engines_are_openai(monkeypatch):
+    import importlib
+
+    from huddle_agent import meet, phone
+
+    for k in ("PHONE_ENGINE", "MEET_ENGINE", "OWNER_ENGINE", "PHONE_MODEL", "MEET_MODEL", "OWNER_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    importlib.reload(phone)
+    importlib.reload(meet)
+    assert phone.OPENAI and phone.MODEL == "gpt-realtime-2.1-mini"
+    assert meet.OPENAI and meet.MODEL == "gpt-realtime-2.1-mini"
+    from huddle_agent import owner
+
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    assert owner.realtime_model().model == "gpt-realtime-2.1"

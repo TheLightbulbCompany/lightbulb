@@ -17,11 +17,12 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from livekit import rtc
 from livekit.agents import JobContext, room_io
 
+from huddle_agent import live
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.phone import clean_transcript
 
@@ -44,8 +45,6 @@ ROUTER_TOOLS = [
 def prompt() -> str:
     """OpenAI's live-prompting template (developers.openai.com/api/docs/guides/live-prompting), as the contract ran it:
     style, delegation and the approval card only. No fact about the business: every fact comes from the Router."""
-    from huddle_agent import live  # noqa: PLC0415 -- Task 1's module; imported where used so tests stand it in
-
     return f"""You are Lightbulb, a calm, friendly voice assistant for this team, talking in the Lightbulb app.
 Speak warmly and naturally, at an unhurried pace. Be clear and direct, not overly cheerful.
 If the user is frustrated, acknowledge it briefly and focus on the next helpful step.
@@ -100,41 +99,51 @@ class Talk:
         self._n, self._lock = 0, asyncio.Lock()  # asyncio.Lock wakes waiters in order: posts land as asked
         self.question: dict | None = None  # {taskId, qid}: the last Worker question handed to the voice
         self.question_at = 0.0
-        self.asked_at = 0.0  # when the last delegation was posted: the talk waits WAIT_S for its answer
-        self.spoken_seq = after  # the last seq said or passed over: reported, so the next session starts there
-        self._unsaid: dict[str, int] = {}  # message id -> seq, handed to the voice but not yet said
+        self.asked: dict[str, float] = {}  # posted message id -> when: Quiet waits WAIT_S for its reply
+        self.rewake: Callable[[], None] | None = None  # run's recount: once WAIT_S is up, Quiet counts again
+        self.spoken_seq = after  # the last seq handed to the voice: reported, so the next Live starts there
+        self._handing = after  # the seq of the message being handed over now
         self.items: list[dict] = []
         self.t0 = time.time()
 
-    async def post(self, text: str, turns: list[str]) -> str:
-        """live.py's `post`: one delegation, the member's message. Returns its message id ("" if it failed)."""
+    def waiting(self) -> bool:
+        """An ask posted under WAIT_S ago that no message has replied to (`inReplyTo`): its answer is on the way."""
+        now = time.monotonic()
+        return any(now - t < WAIT_S for t in self.asked.values())
+
+    async def post(self, text: str, turns: list[str]) -> str | None:
+        """live.py's `post`: one delegation, the member's message. Returns its message id, or None if it failed."""
         n, self._n = self._n, self._n + 1
-        q, self.question = self.question, None
+        q = self.question
         answers = q if q and time.monotonic() - self.question_at <= ANSWER_WITHIN_S else None
         said = [f"> {t}" for t in turns if t.strip() and t.partition(": ")[2] not in text]  # the ask once
         body = {"speakerUserId": self._speaker, "sessionId": self._sid, "n": n,
                 "text": (text.strip() + ("\n\nSaid in the talk since the last ask:\n" + "\n".join(said) if said else ""))[:4000]}  # fmt: skip
-        self.asked_at = time.monotonic()
         async with self._lock:
             try:
                 out = await self._b.owner("turn", {**body, "answers": answers} if answers else body)
             except BackendError as e:
                 logger.warning("owner: turn %d not posted (%s)", n, e.code)
-                return ""
-        return str(out.get("messageId") or "")
+                return None
+        if answers is not None and self.question is q:
+            self.question = None  # answered: the next line is a new ask
+        if not (mid := out.get("messageId")):
+            return None
+        self.asked[str(mid)] = time.monotonic()
+        if self.rewake:
+            # no reply by then: Quiet re-arms (the lambda: a talk that ended meanwhile cleared `rewake`)
+            asyncio.get_running_loop().call_later(WAIT_S, lambda: self.rewake and self.rewake())
+        return str(mid)
 
-    def spoken(self, event_id: str) -> None:
-        """live.py's `on_spoken`: the voice said the message `event_id`."""
-        if (seq := self._unsaid.pop(event_id, None)) is not None:
-            self.spoken_seq = self.after if not self._unsaid else max(self.spoken_seq, seq)
+    async def spoken(self, event_id: str) -> None:
+        """live.py's `on_spoken`: the voice was handed the message `event_id`."""
+        self.spoken_seq = max(self.spoken_seq, self._handing)
 
     async def results(self) -> AsyncIterator[dict]:
-        """live.py's `events`: each agent message the DM gets while this session is open, once, as
-        {kind: "agent", id, seq, text[, question]}. What landed before the session opened is passed over, as typed
-        replies were (a reply read in the chat is never read out)."""
+        """live.py's `events`: each agent message the DM gets after the room's cursor, once, as
+        {kind: "agent", id, seq, text[, inReplyTo, question]}. The cursor is the room's, across sessions: an answer
+        that landed while the orb was closed is heard on the next open."""
         said: set[str] = set()
-        first = True
-        self._unsaid.clear()  # handed to a closed session and never said: passed over, or `spoken` sticks
         while True:
             try:
                 out = await self._b.owner("events", {"speakerUserId": self._speaker, "after": self.after,
@@ -146,16 +155,12 @@ class Talk:
                 if m["id"] in said:
                     continue
                 said.add(m["id"])
-                if first:
-                    continue
                 if m.get("question"):
                     self.question, self.question_at = m["question"], time.monotonic()
-                self.asked_at = 0.0  # an answer came: Quiet counts again
-                self._unsaid[m["id"]] = int(m.get("seq") or 0)
+                self.asked.pop(m.get("inReplyTo") or "", None)  # only its own reply ends an ask's wait
+                self._handing = int(m.get("seq") or 0)
                 yield {"kind": "agent", **m}
-            self.after, first = max(self.after, int(out.get("after") or 0)), False
-            if not self._unsaid:
-                self.spoken_seq = self.after
+            self.after = max(self.after, int(out.get("after") or 0))
             await asyncio.sleep(POLL_S)
 
 
@@ -168,7 +173,6 @@ def talk_record(speaker: str, items: list[dict], session_id: str, seconds: float
 async def run(ctx: JobContext, meta: dict) -> None:
     """The member's Live in the DM, from the dispatch until they leave, go quiet or the cap. GPT-Live is open only
     while the mic is live (the orb open): the warm room costs nothing, and closing the orb ends the billed session."""
-    from huddle_agent import live  # noqa: PLC0415
 
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     await ctx.connect()
@@ -180,6 +184,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         return ctx.shutdown("refused")
     name, tile = info["assistantName"], info.get("agentId") or "assistant"
     talk = Talk(backend, member.identity, ctx.job.id, int(info.get("after") or 0))
+    talk.rewake = lambda: recount()  # noqa: PLW0108 -- recount is defined below
     state: dict = {"open": None, "quiet": False}  # the GPT-Live session's start task, while the mic is live
     attrs = ctx.room.local_participant.set_attributes
 
@@ -234,6 +239,11 @@ async def run(ctx: JobContext, meta: dict) -> None:
             await (await opening).close()
         except Exception:  # noqa: BLE001 -- a failed start or close: nothing left open to bill
             logger.warning("owner: live session not closed cleanly", exc_info=True)
+        lp = ctx.room.local_participant  # the closed session's track: the strip must find the next one's
+        for pub in list(lp.track_publications.values()):
+            if pub.name == f"agent-{tile}":
+                with contextlib.suppress(Exception):
+                    await lp.unpublish_track(pub.sid)
 
     def recount(*_args) -> None:
         mic = any(p.kind == rtc.TrackKind.KIND_AUDIO and not p.muted for p in member.track_publications.values())
@@ -254,8 +264,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         s = current()
         session = s.session if s else None
         user, agent = (session.user_state, session.agent_state) if session else ("listening", "listening")
-        waiting = time.monotonic() - talk.asked_at < WAIT_S  # an answer is on its way: keep the talk open
-        quiet_timer.update(mic, user, "thinking" if waiting else agent)
+        quiet_timer.update(mic, user, "thinking" if talk.waiting() else agent)  # an answer on its way: stay open
 
     for event in ("track_published", "track_unpublished", "track_muted", "track_unmuted"):
         ctx.room.on(event, recount)
@@ -263,6 +272,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     limit.add_done_callback(lambda t: t.cancelled() or asyncio.create_task(leave("owner max length")))
 
     async def close() -> None:
+        talk.rewake = None
         limit.cancel()
         quiet_timer.cancel()
         await shut(state["open"])

@@ -4,11 +4,11 @@ as the member's woken message; the DM's agent messages come back as results. The
 
 import asyncio
 import inspect
-import sys
 import types
 
 import pytest
 
+from huddle_agent import live as live_module
 from huddle_agent import mouth, owner
 from huddle_agent.backend import BackendError
 
@@ -36,35 +36,23 @@ class _LiveSession:
     def __init__(self, kw):
         self.kw, self.closed, self.session = kw, 0, None
 
-    def on_delegate(self, handler):
-        self.handler = handler
-
-    def send_result(self, delegation_id, text):
-        pass
-
     async def close(self):
         self.closed += 1
 
 
 @pytest.fixture
 def live(monkeypatch):
-    """huddle_agent.live (Task 1) stands in: its interface only."""
-    fake = types.ModuleType("huddle_agent.live")
-    fake.sessions = []
-    fake.delegation_policy = lambda tools: "Delegation policy:\nBackend tools:\n" + "\n".join(f"- {t}" for t in tools)
+    """live.start stands in (no GPT-Live connection): it records each session it was asked to open."""
+    sessions = []
 
     async def start(ctx, *, prompt, surface, post, events, room_options=None, on_spoken=None):
-        fake.sessions.append(_LiveSession({"prompt": prompt, "surface": surface, "post": post, "events": events,
-                                           "room_options": room_options, "on_spoken": on_spoken}))  # fmt: skip
-        return fake.sessions[-1]
+        sessions.append(_LiveSession({"prompt": prompt, "surface": surface, "post": post, "events": events,
+                                      "room_options": room_options, "on_spoken": on_spoken}))  # fmt: skip
+        return sessions[-1]
 
-    fake.start = start
-    import huddle_agent
-
-    monkeypatch.setitem(sys.modules, "huddle_agent.live", fake)
-    monkeypatch.setattr(huddle_agent, "live", fake, raising=False)
+    monkeypatch.setattr(live_module, "start", start)
     monkeypatch.setattr(owner, "POLL_S", 0)
-    return fake
+    return types.SimpleNamespace(sessions=sessions)
 
 
 def _talk(backend, after=2):
@@ -99,32 +87,67 @@ async def test_orb_posts_in_order_and_a_failure_does_not_stop_the_next():
     t = _talk(B())
     out = await asyncio.gather(*(t.post(text, []) for text in ("Draft the post", "On second thought", "Thanks")))
     assert [(b["n"], b["text"]) for b in sent] == [(0, "Draft the post"), (1, "On second thought"), (2, "Thanks")]
-    assert out == ["m", "", "m"]
+    assert out == ["m", None, "m"]
+    assert set(t.asked) == {"m"}  # a failed post waits for nothing
 
 
 async def test_orb_router_reply_sent_as_result(live):
     polls = [
-        {"messages": [{"id": "m0", "seq": 3, "text": "A typed reply before the talk."}], "after": 3},
-        {"messages": [{"id": "m1", "seq": 5, "text": "Checking GitHub."}], "after": 5},
-        {"messages": [{"id": "m1", "seq": 5, "text": "Checking GitHub."},
-                      {"id": "m2", "seq": 7, "text": "We shipped #5095."}], "after": 7},
+        {"messages": [{"id": "m1", "seq": 5, "text": "Checking GitHub.", "inReplyTo": "h1"}], "after": 5},
+        {"messages": [{"id": "m1", "seq": 5, "text": "Checking GitHub.", "inReplyTo": "h1"},
+                      {"id": "m2", "seq": 7, "text": "We shipped #5095.", "inReplyTo": "h1"}], "after": 7},
         {"messages": [], "after": 7},
     ]  # fmt: skip
     b = _Backend(polls=polls)
     t = _talk(b)
     got, gen = [], t.results()
     got.append(await anext(gen))
-    got.append(await anext(gen))  # m1 not said yet: that poll's `spoken` stays at 3
-    t.spoken("m1")  # live.py's on_spoken: the voice said it
-    t.spoken("m2")
+    await t.spoken("m1")  # live.py's on_spoken
+    got.append(await anext(gen))
+    await t.spoken("m2")
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(anext(gen), 0.05)  # polls once more, nothing new
     await gen.aclose()
-    assert got == [{"kind": "agent", "id": "m1", "seq": 5, "text": "Checking GitHub."},
-                   {"kind": "agent", "id": "m2", "seq": 7, "text": "We shipped #5095."}]  # fmt: skip
+    assert got == [{"kind": "agent", "id": "m1", "seq": 5, "text": "Checking GitHub.", "inReplyTo": "h1"},
+                   {"kind": "agent", "id": "m2", "seq": 7, "text": "We shipped #5095.", "inReplyTo": "h1"}]  # fmt: skip
     asked = [(body["after"], body["spoken"]) for op, body in b.sent if op == "events"]
-    # a message handed over but unsaid holds `spoken` back; said, the cursor moves, so the next session starts after it
-    assert asked[:4] == [(2, 2), (3, 3), (5, 3), (7, 7)]
+    assert asked[:3] == [(2, 2), (5, 5), (7, 7)]  # `spoken` is reported, so the next Live starts after it
+
+
+async def test_orb_hears_an_answer_that_landed_while_it_was_closed(live, monkeypatch):
+    monkeypatch.setattr(owner, "POLL_S", 10)  # one poll per open here
+    b = _Backend(polls=[{"messages": [], "after": 3},
+                        {"messages": [{"id": "w1", "seq": 9, "text": "Pulse: the PR is merged."}], "after": 9}])  # fmt: skip
+    t = _talk(b)
+    first = t.results()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(anext(first), 0.01)
+    await first.aclose()  # the orb closed; the Worker answers meanwhile
+    second = t.results()  # the next open
+    assert (await anext(second))["id"] == "w1"
+    await second.aclose()
+    assert [body["after"] for op, body in b.sent if op == "events"][1] == 3  # the room's cursor, not a fresh skip
+
+
+async def test_orb_waits_for_its_own_reply_and_no_longer_than_wait_s(live, monkeypatch):
+    b = _Backend(polls=[{"messages": [{"id": "x", "seq": 4, "text": "Unrelated.", "inReplyTo": "other"}], "after": 4},
+                        {"messages": [{"id": "y", "seq": 5, "text": "Started a thread.", "inReplyTo": "m1"}],
+                         "after": 5}])  # fmt: skip
+    t = _talk(b)
+    woke = []
+    t.rewake = lambda: woke.append(1)
+    monkeypatch.setattr(owner, "WAIT_S", 0.03)
+    assert await t.post("Fix the deploy", []) == "m1" and t.waiting()
+    gen = t.results()
+    await anext(gen)  # another message: still waiting
+    assert t.waiting()
+    await anext(gen)  # its own reply: the wait ends
+    assert not t.waiting()
+    await gen.aclose()
+    await t.post("And the docs?", [])
+    assert t.waiting()
+    await asyncio.sleep(0.05)
+    assert not t.waiting() and woke == [1, 1]  # no reply in WAIT_S: Quiet re-arms
 
 
 async def test_orb_has_no_approve_path(live):
@@ -167,9 +190,10 @@ class _Ctx:
     def __init__(self):
         self.handlers, self.rpc, self.shutdowns, self.data, self.callbacks = {}, {}, [], [], []
         self.member = types.SimpleNamespace(identity="user_maya", name="Maya", track_publications={})
+        self.unpublished = []
         lp = types.SimpleNamespace(
-            set_attributes=self._noop, publish_data=self._data,
-            register_rpc_method=lambda name, fn: self.rpc.__setitem__(name, fn),
+            set_attributes=self._noop, publish_data=self._data, unpublish_track=self._unpublish,
+            register_rpc_method=lambda name, fn: self.rpc.__setitem__(name, fn), track_publications={},
         )  # fmt: skip
         self.room = types.SimpleNamespace(local_participant=lp, on=lambda ev, fn: self.handlers.setdefault(ev, fn))
         self.job = types.SimpleNamespace(id="job_1")
@@ -179,6 +203,10 @@ class _Ctx:
 
     async def _data(self, payload, **_k):
         self.data.append(payload)
+
+    async def _unpublish(self, sid):
+        self.unpublished.append(sid)
+        self.room.local_participant.track_publications.pop(sid)
 
     async def connect(self):
         pass
@@ -218,9 +246,11 @@ async def test_orb_opens_gpt_live_only_while_the_mic_is_live_and_closes_it(live,
     ctx.mic(True)  # a repeat does not open a second session
     await asyncio.sleep(0)
     assert len(live.sessions) == 1
-    ctx.mic(False)  # the orb closed: GPT-Live closes
+    lp = ctx.room.local_participant
+    lp.track_publications["TR_1"] = types.SimpleNamespace(sid="TR_1", name="agent-assistant")
+    ctx.mic(False)  # the orb closed: GPT-Live closes, and its track goes, so the strip finds the next one
     await asyncio.sleep(0.01)
-    assert s.closed == 1
+    assert s.closed == 1 and ctx.unpublished == ["TR_1"]
     ctx.mic(True)
     await asyncio.sleep(0)
     assert len(live.sessions) == 2 and live.sessions[1].kw["on_spoken"] is not None

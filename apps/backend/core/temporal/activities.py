@@ -325,6 +325,12 @@ def _callers(triggers: dict[str, dict]) -> set[str]:
     return {tid for tid, t in triggers.items() if (t.get("ref") or {}).get("origin") == "phone_contact"}
 
 
+def _caller_tasks(tasks: list[dict], rooms: set[str]) -> list[dict]:
+    """What a phone caller's batch may see of the open and closed tasks: only this call's own (origin phone_contact,
+    in the call's room). Owner and member task titles never reach a caller."""
+    return [t for t in tasks if t.get("origin") == "phone_contact" and (t.get("audience") or {}).get("roomId") in rooms]
+
+
 async def _caller_profile(ws: str, triggers) -> str | None:
     """The Business profile, for a phone caller's batch only (founder, 8 Nov: the phone front door; owner and member
     chat, the orb and Meet stay without it)."""
@@ -744,6 +750,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         "text": await _input_text(ws, trig["triggerId"]),
         "who": None,
         "where": None,
+        "caller": ref.get("origin") == "phone_contact",  # a phone caller's line: fenced as data in the batch
     }
     if ref.get("roomId") and ref.get("messageId"):
         msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"]) or {}
@@ -1477,6 +1484,8 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         chat = next((t for t in to_model.values() if {"roomId", "messageId"} <= set(t.get("ref") or {})), None)
         recent = await _recent_lines(ws, chat, set(to_model), inp.lane, user_id) if chat else None
         closed = await _closed_tasks(ws, inp.lane, user_id, rooms)
+        if _callers(to_model):
+            open_tasks, closed = _caller_tasks(open_tasks, rooms), _caller_tasks(closed, rooms)
         prompt = router_prompt.render_batch(
             views,
             roster,
@@ -1489,8 +1498,13 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             instructions=await _project_instructions(room_id),
             profile=await _caller_profile(ws, to_model.values()),
         )
-        memory = memory_tags.block_for_router(
-            "private" if private and user_id else "shared", user_id if private else None, room_id
+        # A phone caller's batch gets no memory block at all: owner memory never reaches a caller through a reply.
+        memory = (
+            None
+            if _callers(to_model)
+            else memory_tags.block_for_router(
+                "private" if private and user_id else "shared", user_id if private else None, room_id
+            )
         )
         scope = ts.trigger_scope(next(iter(to_model.values())))
 

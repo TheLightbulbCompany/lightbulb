@@ -540,3 +540,71 @@ async def test_a_failed_run_out_check_answers_the_call(client):
     with patch.object(voice_phone, "month_seconds", AsyncMock(side_effect=RuntimeError("ddb down"))):
         call = await _start(client, runOut="forward")
     assert call["forwardTo"] is None and call["mode"] == "live"
+
+
+# --- the caller's lines go to the Router (one-brain plan, "Phone, too") ---------------------------------------
+FRONT = {"kind": "agent", "id": "agent_front", "displayName": "Lightbulb", "mentionHandle": "lightbulb",
+         "role": "member", "listenMode": "mentions"}  # fmt: skip
+
+
+@pytest.fixture
+def router_seat():
+    with (
+        patch.object(voice_phone.task_conversation, "_front_agent", AsyncMock(return_value=FRONT)),
+        patch.object(voice_phone.voice_calls, "prewake_owner") as wake,
+        patch.object(voice_phone.admission, "enqueue_trigger", AsyncMock(return_value=True)) as enq,
+    ):
+        yield wake, enq
+
+
+async def test_a_call_seats_lightbulb_and_prewarms_the_router(client, router_seat):
+    wake, _ = router_seat
+    call = await _start(client)
+    members = await messaging_repo.list_members(call["callId"])
+    assert {(m["kind"], m["id"]) for m in members} == {("human", "user_owner"), ("agent", "agent_front")}
+    wake.assert_called_once_with("org_1", team=[FRONT])
+    assert call["after"] == 0
+
+
+async def test_a_run_out_forward_prewarms_nothing(client, router_seat):
+    wake, _ = router_seat
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward")
+    assert call["forwardTo"] == "+14155550199" and not wake.called
+
+
+async def test_a_caller_line_is_a_caller_principal_trigger_for_the_router(client, router_seat):
+    _, enq = router_seat
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/turn"
+    out = client.post(url, json={"n": 0, "text": "How much is a gel manicure?"}, headers=W).json()
+    again = client.post(url, json={"n": 0, "text": "How much is a gel manicure?"}, headers=W).json()
+    assert again["messageId"] == out["messageId"]  # a retried post is the same message
+    msg = await messaging_repo.get_message_by_id(call["callId"], out["messageId"])
+    assert msg["text"] == "How much is a gel manicure?"
+    assert msg["author"] == {"kind": "human", "id": f"caller:{call['callId']}", "displayName": "Caller +14155550133"}
+    ws, trig = enq.await_args.args
+    assert ws == "org_1" and enq.await_args.kwargs == {"room_id": call["callId"]}
+    assert trig.source == "voice" and trig.admission == "respond" and trig.lane == "shared"
+    assert trig.actor_user_id == "user_owner"  # the line's owner user, never the model or the caller
+    assert trig.ref["origin"] == "phone_contact" and trig.ref["callId"] == call["callId"]
+    assert trig.ref["roomId"] == call["callId"] and trig.ref["messageId"] == out["messageId"]
+    assert trig.ref["text"].startswith("How much is a gel manicure?") and "outside contact" in trig.ref["text"]
+
+
+async def test_a_paused_line_sends_no_caller_line_to_the_router(client, router_seat):
+    _, enq = router_seat
+    call = await _start(client, paused=True)
+    r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn", json={"n": 0, "text": "hi"}, headers=W)
+    assert r.status_code == 403 and not enq.called
+
+
+async def test_call_events_are_lightbulbs_lines_only(client, router_seat):
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    client.post(f"{base}/turn", json={"n": 0, "text": "Open Sunday?"}, headers=W)
+    with patch.object(voice_phone, "agent_lines", AsyncMock(return_value={"messages": [], "after": 1})) as lines:
+        assert client.post(f"{base}/events", json={"after": 0}, headers=W).json() == {"messages": [], "after": 1}
+    lines.assert_awaited_once_with(call["callId"], 0)
+    real = client.post(f"{base}/events", json={"after": 0}, headers=W).json()
+    assert real["messages"] == [] and real["after"] == 1  # the caller's own line is never said back

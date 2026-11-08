@@ -1761,3 +1761,12 @@ class TaskChangedTests(unittest.TestCase):
             index.process_record(task_record(sk))
         index.process_record({**task_record(f"TASK#{TASK_ID}"), "eventName": "REMOVE"})
         publish.assert_not_called()
+
+
+class CallRoomTests(unittest.TestCase):
+    def test_lightbulbs_lines_in_a_hidden_call_room_file_no_activity_or_push(self) -> None:
+        """The phone via the Router (#5108): Lightbulb's answers to a caller land in the call's hidden room, where the
+        owner is the one human member. They are not a DM, mention or thread reply, so no Activity, away email or
+        push; the owner sees the call on Home."""
+        self.assertIsNone(index._activity_kind("user_owner", "call", set(), set()))
+        self.assertEqual(index._activity_kind("user_owner", "dm", set(), set()), "dm")  # the rule still holds

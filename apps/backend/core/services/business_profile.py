@@ -113,9 +113,10 @@ def forget(ws: str) -> None:
 
 async def business_profile(ws: str, caller: str | None = None) -> str:
     """The profile text, or "" when there is no Agent page or it could not be read in time. `caller`: the phone
-    caller's number (their own bookings are added); None for a member."""
+    caller's number (their own bookings are added); None for a member. A caller's profile is never cached: the
+    cache is per process, and a front_desk booking (API process) cannot drop the Router's copy (Temporal worker)."""
     key = (ws, caller)
-    hit = _cache.get(key)
+    hit = None if caller else _cache.get(key)
     if hit and time.monotonic() - hit[0] < TTL_S:
         return hit[1]
     try:
@@ -123,7 +124,8 @@ async def business_profile(ws: str, caller: str | None = None) -> str:
     except Exception:  # noqa: BLE001 -- a turn never waits on or fails for the profile
         logger.warning("business profile unavailable ws=%s", ws, exc_info=True)
         return ""
-    _cache[key] = (time.monotonic(), text)
+    if not caller:
+        _cache[key] = (time.monotonic(), text)
     return text
 
 

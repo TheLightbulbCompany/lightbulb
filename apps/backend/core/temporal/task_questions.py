@@ -369,6 +369,7 @@ async def open_asked_question(ws: str, task_id: str, ref: AskRef) -> QuestionRef
                 "answerers": ids,
                 "answererRule": rule,
                 "baseAnswerers": base,
+                **({"preview": ask["preview"]} if ask.get("preview") else {}),
             },
         )
     if ref.kind == "question":

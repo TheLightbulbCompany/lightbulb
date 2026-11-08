@@ -9,7 +9,7 @@ vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: org.current, isLoaded: true }),
 }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ HuddleProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
-vi.mock("../data", () => ({ callNeedsYou: () => false, useQuestions: () => ({ data: [] }), useTimeline: () => ({ data: [] }) }));
+vi.mock("../data", () => ({ useQuestions: () => ({ data: [] }) }));
 
 import { VoiceShell } from "../VoiceShell";
 

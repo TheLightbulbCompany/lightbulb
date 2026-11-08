@@ -8,12 +8,10 @@ import { usePathname } from "next/navigation";
 import { OrganizationList, UserButton, useOrganization } from "@clerk/nextjs";
 import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
-import { callNeedsYou, useQuestions, useTimeline } from "./data";
+import { useQuestions } from "./data";
 
 export function useNeedsYouTotal(): number {
-  const { data: qs } = useQuestions();
-  const { data: items } = useTimeline();
-  return (qs?.length ?? 0) + (items?.filter(callNeedsYou).length ?? 0);
+  return useQuestions().data?.length ?? 0;
 }
 
 const PLACES = [

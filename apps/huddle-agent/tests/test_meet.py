@@ -305,3 +305,18 @@ def test_an_ask_right_after_a_dropped_reply_is_answered():
     assert agent.asking()
     agent.asked = Handle(done=True)  # it was dropped unheard (or cut): the next ask goes ahead
     assert not agent.asking()
+
+
+def test_the_nudge_asks_for_a_reply_room_sound_cannot_cut():
+    """#5025 review: a reply held for quiet was cut by the next voice; only the gate's stop (force) may cut it."""
+    calls = []
+
+    class Session:
+        def generate_reply(self, **kw):
+            calls.append(kw)
+            return "handle"
+
+    agent = _agent()
+    agent.ask(Session(), "Maya: Lightbulb, how many calls today?")
+    assert calls == [{"user_input": "Maya: Lightbulb, how many calls today?", "allow_interruptions": False}]
+    assert agent.asked == "handle"

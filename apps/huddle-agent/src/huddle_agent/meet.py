@@ -309,6 +309,11 @@ class MeetAgent(Agent):
             return True, "tool follow-on"
         return None, "no transcript yet"
 
+    def ask(self, session, line: str) -> None:
+        """The reply to an ask, uninterruptible by room sound: LiveKit cut a reply held for quiet at the next voice
+        or end of turn, and nothing asked again (#5025 review). Only the gate's stop cuts it (force)."""
+        self.asked = session.generate_reply(user_input=line, allow_interruptions=False)
+
     def asking(self) -> bool:
         """A reply asked for is still under way. It ends when it played, was dropped or was cut: a dropped reply
         must not hold up the next ask (#5025 review)."""
@@ -520,7 +525,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             turn_detection=TurnDetection(type="server_vad", threshold=0.5, prefix_padding_ms=600,
                                          silence_duration_ms=400, create_response=False, interrupt_response=False),
             # interrupt_response off too: a voice in the room cancelled the reply asked for, and nothing re-asks
-            # (#5025 review); the gate's stop still cuts it (session.interrupt())
+            # (#5025 review); the gate's stop still cuts it (session.interrupt(force=True))
             input_audio_transcription=None,
         ) if OPENAI else google.realtime.RealtimeModel(
             model=MODEL,
@@ -547,7 +552,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         t = agent.heard(item, text, final, time.monotonic(), who=who)
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", final)
         if t["kind"] == "stop":
-            session.interrupt()
+            session.interrupt(force=True)  # the reply asked for is not interruptible by room noise; "stop" is
         # the nudge, on the strict wake only (no billed reply to "Thanks, Nova."); on OpenAI at once: it answers
         # only when asked to
         if final and t["kind"] in ADDRESSED and wakes(name, text, gate.people):
@@ -569,7 +574,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             return
         logger.info("meet: turn %d nudged", t["seq"])
         try:
-            agent.asked = session.generate_reply(user_input=f'{label(t["who"])}: {text}')
+            agent.ask(session, f'{label(t["who"])}: {text}')
         except RuntimeError:  # the session is closed (Gemini refused it): nothing to nudge
             logger.warning("meet: nudge refused, the session is not running")
 

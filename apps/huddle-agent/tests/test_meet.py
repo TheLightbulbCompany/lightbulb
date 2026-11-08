@@ -330,3 +330,19 @@ def test_the_nudge_asks_for_a_reply_room_sound_cannot_cut():
     agent.ask(Session(), "Maya: Lightbulb, how many calls today?")
     assert calls == [{"user_input": "Maya: Lightbulb, how many calls today?", "allow_interruptions": False}]
     assert agent.asked == "handle"
+
+
+def test_meet_has_approve_tool():
+    assert "approve" in {t.info.name for t in _agent().tools}
+
+
+async def test_meet_approve_posts_route():
+    a, sent = _agent(), []
+
+    async def meet_op(op, body):
+        sent.append((op, body))
+        return {"none": True}
+
+    a._b.meet = meet_op
+    assert await a.approve("no", "") == {"none": True}
+    assert sent[0][0] == "approve" and sent[0][1]["phrase"] == "no" and "participantId" in sent[0][1]

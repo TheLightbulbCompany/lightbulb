@@ -86,17 +86,7 @@ async def test_create_body(recall, caplog):
         "everyone_left_timeout": {"timeout": 300},
     }
     assert "google_meet" not in body  # no login group configured
-    chat = body["chat"]["on_bot_join"]
-    assert (
-        chat["send_to"] == "everyone"
-        and chat["pin"]
-        and chat["message"]
-        == (
-            "Lightbulb agents are in this meeting for Acme. They listen for their names; notes and a "
-            "transcript go to Acme's Lightbulb workspace. Recall.ai relays the call and stores nothing."
-        )
-    )
-    assert len(chat["message"]) <= 500
+    assert "chat" not in body  # one announcement: voice_meet says it (test_single_announcement)
     page = body["output_media"]["camera"]["config"]["url"]
     assert body["output_media"]["camera"]["kind"] == "webpage"
     assert page.startswith("https://app.example/meet-bot#t=")

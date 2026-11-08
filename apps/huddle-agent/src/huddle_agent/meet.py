@@ -28,6 +28,7 @@ import re
 import logging
 import os
 import time
+from typing import Literal
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -428,6 +429,14 @@ class MeetAgent(Agent):
     async def send_to_chat(self, text: str) -> dict:
         """Put text in the meeting chat: drafts, lists, anything longer than a sentence."""
         return await self._post("chat", {"text": text, "participantId": self.asker()})
+
+    @function_tool
+    async def approve(self, phrase: Literal["yes", "no", "undo"], hint: str = "") -> dict:
+        """Call only when the person clearly says yes, no or undo to a pending ask you raised, or one on the
+        Needs-you list; hint is a few words naming it. A yes never approves anything: it sends a one-tap confirm to
+        the owner's phone. On confirm_sent say "I've sent it to <owner>'s phone to confirm"; on none say "There's
+        nothing waiting for an OK"; otherwise say the returned `say`. Never claim something was approved or done."""
+        return await self._post("approve", {"phrase": phrase, "hint": hint, "participantId": self.asker()})
 
     @function_tool
     async def start_work(self, title: str, brief: str) -> dict:

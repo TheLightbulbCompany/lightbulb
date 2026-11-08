@@ -22,7 +22,14 @@ from pydantic import AfterValidator, Field
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import integration_reads, meeting_bots, meeting_invites, memory_api, voice_approve
+from core.services import (
+    integration_reads,
+    livekit_huddles,
+    meeting_bots,
+    meeting_invites,
+    memory_api,
+    voice_approve,
+)
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
 from routers.voice_phone import _TZ, _bookings
@@ -33,7 +40,8 @@ logger = logging.getLogger(__name__)
 CHAT_CHARS = 500  # Meet's chat limit (meeting_bots.say)
 ANNOUNCE = (
     '{name} is in this meeting for {company}. It listens and speaks only when someone says "{name}, ..."; '
-    'say "{name}, stop" to cut it off. Anything that spends, sends or publishes waits for the inviting member\'s OK.'
+    'say "{name}, stop" to cut it off. Anything that spends, sends or publishes waits for the inviting member\'s OK. '
+    "This meeting is recorded and notes are saved to {company}'s workspace."
 )
 
 
@@ -127,6 +135,7 @@ async def start_work(room_id: str, body: WorkIn) -> dict:
         "at": utc_now_iso(),
     }
     await meeting_invites._patch_meeting(room_id, lambda m: {"followUps": [*(m.get("followUps") or []), entry]})
+    await _tile_phase(room_id, "drafting")
     return {"started": True, **out}
 
 
@@ -273,6 +282,24 @@ async def end(room_id: str, body: EndIn) -> dict:
 _FOLLOW_UP = {"working": "working", "waiting": "needs_you", "failed": "needs_you", "idle": "done", "resolved": "done"}
 
 
+_clears: dict[str, asyncio.Task] = {}
+
+
+async def _tile_phase(room_id: str, phase: str) -> None:
+    """Drafting while the task works; page_ready for 60 s once its link is posted. A newer phase cancels the clear."""
+    if old := _clears.pop(room_id, None):
+        old.cancel()
+    await livekit_huddles.set_meet_phase(room_id, phase)
+    if phase == "page_ready":
+
+        async def clear() -> None:
+            await asyncio.sleep(60)
+            _clears.pop(room_id, None)
+            await livekit_huddles.set_meet_phase(room_id, "")
+
+        _clears[room_id] = asyncio.create_task(clear())  # ponytail: lost on a restart; the next phase overwrites it
+
+
 async def task_moved(task: dict, to: str) -> None:
     """A voice task changed status (activities._announce). When it is a meeting's follow-up, the follow-up tracks
     it; a newly done one is said in the Meet's chat with its link while the bot is still in the call. A voice
@@ -291,5 +318,8 @@ async def task_moved(task: dict, to: str) -> None:
         if meeting and status == "done" and meeting.get("status") == "in_call" and meeting.get("recallBotId"):
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task&taskId={task['taskId']}"
             await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
+            await _tile_phase(parts[1], "page_ready")
+        elif meeting and status != "done" and meeting.get("status") == "in_call":
+            await _tile_phase(parts[1], "drafting" if status == "working" else "")
     except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
         logger.warning("meet follow-up not updated task=%s to=%s", task.get("taskId"), to, exc_info=True)

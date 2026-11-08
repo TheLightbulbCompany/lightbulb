@@ -879,9 +879,7 @@ async def upload_profile_files(owner_id: str, agent_id: str, files: dict[str, by
     """Write named files into an agent's Hermes profile prefix, then bump ``.revision`` LAST.
 
     The non-tarball sibling of ``catalog_service.deploy_tarball_to_profile`` (M6-R33): content
-    that already exists as a ``{relpath: bytes}`` map rather than a tar archive -- today, the
-    company-deploy per-agent loop's rendered ``AGENTS.md`` (``company_agent_materializer.
-    render_agent_identity_md``). Same posture as ``upload_profile`` above: one boto3 client,
+    that already exists as a ``{relpath: bytes}`` map rather than a tar archive. Same posture as ``upload_profile`` above: one boto3 client,
     every ``put_object`` off the event loop via ``run_in_thread``, ``.revision`` written only
     after every named file has landed so the bridge never re-pulls a half-written profile.
     """

@@ -6,7 +6,6 @@ import asyncio
 import hmac
 import logging
 import math
-import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -31,7 +30,6 @@ from core.auth import (
 )
 from core.config import settings
 from core.repositories import container_repo, messaging_repo, user_repo
-from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
 from core.services import (
@@ -56,8 +54,6 @@ from core.services import (
 from core.services import local_session_grants
 from core.services import container_rpc, message_search, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
-from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
-from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.messaging import (
     AbortRunResponse,
     AgentMessageReceiptResponse,
@@ -216,8 +212,8 @@ async def agent_reader(
     hosted MCP's find_rooms/read_messages). The person is the turn grant's requester, set by the
     backend from the canonical trigger -- the human author of a typed message, the signed-in speaker
     of a Live run -- never by the agent. A Google Meet's turn reads as the member who invited the agents
-    (the grant's reader, owner ruling 2026-10-13). Neither (a voice run another member steered, a
-    Paperclip run, an agent's message): nothing is readable, since every room is private to its members."""
+    (the grant's reader, owner ruling 2026-10-13). Neither (a voice run another member steered,
+    an agent's message): nothing is readable, since every room is private to its members."""
     person = auth.requester_id or auth.reader_id
     if not person or not auth.room_id:
         raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
@@ -739,19 +735,16 @@ async def presence_snapshot(auth: AuthContext = Depends(get_current_user)) -> di
     return {"online": _online_user_ids(resolve_owner_id(auth), time.monotonic())}
 
 
-def _count_hook_auth_failure(owner_id: str, request: Request) -> None:
-    """A Paperclip agent's hermes_gateway apiKey is a SNAPSHOT of the owner's hook token, so a
-    re-minted token 401s every Paperclip-woken run (nightly CEO, issue runs) while room chat keeps
-    working. Counted so that silence pages; the owner goes to the log (never a metric dimension)."""
-    route = "paperclip_run" if "/internal/paperclip/hermes/" in request.url.path else "other"
-    logger.warning("internal hook auth failed owner=%s route=%s", owner_id, route)
-    put_metric("internal_hook.auth_failed", dimensions={"route": route})
+def _count_hook_auth_failure(owner_id: str) -> None:
+    """Counted so that silence pages; the owner goes to the log (never a metric dimension)."""
+    logger.warning("internal hook auth failed owner=%s", owner_id)
+    put_metric("internal_hook.auth_failed", dimensions={"route": "other"})
 
 
 async def _require_hook_token(owner_id: str, request: Request, *, run_event_id: str | None = None) -> dict:
     authorization = request.headers.get("Authorization", "")
     if not authorization.startswith("Bearer "):
-        _count_hook_auth_failure(owner_id, request)
+        _count_hook_auth_failure(owner_id)
         raise HTTPException(status_code=401, detail="missing hook token")
     presented = authorization.removeprefix("Bearer ")
     container = await container_repo.get_by_owner_id(owner_id, consistent=True)
@@ -763,11 +756,11 @@ async def _require_hook_token(owner_id: str, request: Request, *, run_event_id: 
         try:
             await hook_grants.require_run_event(presented, owner_id, container or {}, run_event_id)
         except HTTPException:
-            _count_hook_auth_failure(owner_id, request)
+            _count_hook_auth_failure(owner_id)
             raise
         put_metric("internal_hook.auth_accepted", dimensions={"source": "run_grant"})
         return container
-    _count_hook_auth_failure(owner_id, request)
+    _count_hook_auth_failure(owner_id)
     # Internal hook auth intentionally remains 401 at the router boundary.
     raise HTTPException(status_code=401, detail="invalid hook token")
 
@@ -1402,16 +1395,6 @@ async def post_follow_up(owner_id: str, body: FollowUpRequest, request: Request,
     return result
 
 
-@router.get("/internal/messaging/rooms/{owner_id}/{room_id}/agents/{agent_id}", status_code=204)
-async def get_agent_room_membership(owner_id: str, room_id: str, agent_id: str, request: Request):
-    """204 when the agent is a current member of a live (not archived, not deleted) room of this
-    owner, else the 404/409 problem. The bridge asks before it runs a Paperclip wake inside the
-    room conversation that owns the issue, and falls back to the issue's own session on a no."""
-    await _require_hook_token(owner_id, request)
-    await service.require_agent_in_live_room(owner_id, room_id, agent_id)
-    return Response(status_code=204)
-
-
 @router.post("/internal/messaging/runtime/{owner_id}/recycle", status_code=202)
 async def recycle_runtime_session(owner_id: str, request: Request):
     """The bridge asks to have its own session stopped: the 7 h recycle, ahead of AgentCore's
@@ -1467,277 +1450,3 @@ async def get_internal_attachment(owner_id: str, room_id: str, attachment_id: st
     await _require_hook_token(owner_id, request)
     attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
     return Response(content=data, media_type=attachment.content_type)
-
-
-@router.post("/internal/paperclip/hermes/{owner_id}/v1/runs")
-async def create_paperclip_hermes_run(owner_id: str, body: dict, request: Request):
-    """Paperclip's deployed ``hermes_gateway`` adapter opens a run here.
-
-    The whole point of this route over the old ``http`` webhook: ``202`` is an ACCEPTANCE
-    RECEIPT, never a result. The adapter holds its Paperclip run open and polls
-    ``GET /v1/runs/{id}`` until this facade reports a terminal status, so the Paperclip run
-    ends when the HERMES TURN ends, carrying its real output. The old route's 202 was read as
-    "completed", which is what produced `HTTP POST ...` issue comments and undispositioned
-    issues while Hermes was still running.
-    """
-    container = await _require_hook_token(owner_id, request)
-    identity = _paperclip_hermes_identity(request, body=body)
-    await _verify_paperclip_hermes_identity(owner_id, identity, full=True)
-    # The run's local-session grant, minted only once the identity checked out (spec
-    # 2026-10-07-agent-session-approval §3.1). It reaches only the sessions of people who let
-    # background work in; an image that predates it ignores the header.
-    try:
-        grant = local_session_grants.mint_paperclip(
-            owner_id, identity["agentId"], identity["sessionId"], identity["runId"], identity.get("issueId")
-        )
-    except (RuntimeError, ApiProblem):
-        grant = None
-        logger.warning("Paperclip local session invocation unavailable")
-    return await _paperclip_hermes_runtime_response(
-        container,
-        "/internal/paperclip/v1/runs",
-        method="POST",
-        json_body={"identity": identity, "request": body},
-        local_session_token=grant,
-    )
-
-
-@router.get("/internal/paperclip/hermes/{owner_id}/v1/runs/{run_id}")
-async def get_paperclip_hermes_run(owner_id: str, run_id: str, request: Request):
-    container = await _require_hook_token(owner_id, request)
-    identity = _paperclip_hermes_identity(request, run_id=run_id)
-    await _verify_paperclip_hermes_identity(owner_id, identity)
-    response = await _paperclip_hermes_runtime_response(
-        container,
-        f"/internal/paperclip/v1/runs/{run_id}",
-        method="GET",
-        json_body={"identity": identity},
-        raw=True,
-    )
-    return _paperclip_hermes_status_or_lost(response, run_id, identity["sessionId"])
-
-
-@router.post("/internal/paperclip/hermes/{owner_id}/v1/runs/{run_id}/stop")
-async def stop_paperclip_hermes_run(owner_id: str, run_id: str, request: Request):
-    container = await _require_hook_token(owner_id, request)
-    identity = _paperclip_hermes_identity(request, run_id=run_id)
-    await _verify_paperclip_hermes_identity(owner_id, identity)
-    response = await _paperclip_hermes_runtime_response(
-        container,
-        f"/internal/paperclip/v1/runs/{run_id}/stop",
-        method="POST",
-        json_body={"identity": identity},
-        raw=True,
-    )
-    return _paperclip_hermes_status_or_lost(response, run_id, identity["sessionId"])
-
-
-async def stop_paperclip_hermes_turn(owner_id: str, run: dict) -> None:
-    """Best-effort stop of the Hermes turn behind Paperclip heartbeat ``run``, through the same
-    runtime route the adapter's own stop uses. The bridge answers only the exact identity the run
-    was launched with, and the run row does not keep it: the adapter's ``issue`` strategy named the
-    session from the launch-time task, but a timer run that checks out an issue later gets that
-    issue in its snapshot. So each candidate scope is tried in turn until the bridge knows one
-    (404 = not this identity)."""
-    snapshot = run.get("contextSnapshot") or {}
-    scopes = dict.fromkeys(
-        [*(f"issue:{i}" for i in (snapshot.get("taskId"), snapshot.get("issueId")) if i), f"run:{run['id']}"]
-    )
-    try:
-        container = await container_repo.get_by_owner_id(owner_id)
-        for scope in scopes:
-            identity = {
-                "runId": run["id"],
-                "companyId": run.get("companyId"),
-                "agentId": run.get("agentId"),
-                "sessionId": f"paperclip:company:{run.get('companyId')}:agent:{run.get('agentId')}:{scope}",
-                "paperclipApiUrl": (settings.PAPERCLIP_INTERNAL_URL or "").rstrip("/"),
-                **({"issueId": scope[6:]} if scope.startswith("issue:") else {}),
-            }
-            response = await _paperclip_hermes_runtime_response(
-                container,
-                f"/internal/paperclip/v1/runs/{run['id']}/stop",
-                method="POST",
-                json_body={"identity": identity},
-                raw=True,
-            )
-            if response.status_code != 404:
-                return
-        logger.warning("hermes turn stop: the runtime knows no identity for run=%s", run.get("id"))
-    except Exception:  # noqa: BLE001 -- the Paperclip cancel already landed; a parked runtime has no turn
-        logger.warning("hermes turn stop failed run=%s", run.get("id"), exc_info=True)
-
-
-_HERMES_SESSION_RE = re.compile(
-    r"\Apaperclip:company:([A-Za-z0-9-]+):agent:([A-Za-z0-9-]+):(issue|run):([A-Za-z0-9-]+)\Z"
-)
-_HERMES_RUN_ID_RE = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
-
-
-def _paperclip_hermes_identity(request: Request, *, body: dict | None = None, run_id: str | None = None) -> dict:
-    idempotency_key = request.headers.get("Idempotency-Key") or ""
-    session_id = request.headers.get("X-Hermes-Session-Key") or ""
-    if not _HERMES_RUN_ID_RE.fullmatch(idempotency_key):
-        raise HTTPException(status_code=400, detail="invalid idempotency key")
-    if run_id is not None and idempotency_key != run_id:
-        raise HTTPException(status_code=400, detail="run id does not match idempotency key")
-    match = _HERMES_SESSION_RE.fullmatch(session_id)
-    if not match:
-        raise HTTPException(status_code=400, detail="invalid Hermes session key")
-    company_id, agent_id, scope_kind, scope_id = match.groups()
-    if scope_kind == "run" and scope_id != idempotency_key:
-        raise HTTPException(status_code=400, detail="run session does not match idempotency key")
-    if body is not None:
-        if not isinstance(body.get("input"), str) or not body["input"]:
-            raise HTTPException(status_code=400, detail="input is required")
-        if not isinstance(body.get("instructions"), str) or not body["instructions"]:
-            raise HTTPException(status_code=400, detail="instructions are required")
-        if body.get("session_id") != session_id:
-            raise HTTPException(status_code=400, detail="body session does not match header")
-    if not settings.PAPERCLIP_INTERNAL_URL:
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE", "Paperclip internal URL is not configured.", retryable=True, retry_after=3
-        )
-    identity = {
-        "runId": idempotency_key,
-        "companyId": company_id,
-        "agentId": agent_id,
-        "sessionId": session_id,
-        "paperclipApiUrl": settings.PAPERCLIP_INTERNAL_URL.rstrip("/"),
-    }
-    if scope_kind == "issue":
-        identity["issueId"] = scope_id
-    return identity
-
-
-async def _verify_paperclip_hermes_identity(owner_id: str, identity: dict, *, full: bool = False) -> None:
-    """The session key is attacker-shaped input, so nothing in it routes until it is checked
-    against OUR canonical rows -- never the other way round.
-
-    The company binding is the security boundary and is re-checked on EVERY call: it pins the
-    session key's ``companyId`` to the Paperclip company this authenticated owner actually
-    owns. It is one DynamoDB read (``resolve_owner_row`` already filters to ``status=active``).
-
-    Agent and issue membership are checked on CREATE only (``full``), because they cost a
-    Paperclip admin round-trip EACH and the adapter polls this facade throughout the run --
-    verifying them per poll would put 2-3 admin calls per poll on the shared BFF for the life
-    of every run. Poll and stop are safe without them: they carry no new routing decision, and
-    the bridge answers them only when the FULL identity tuple matches the registry entry the
-    verified create wrote (``_paperclip_identity_matches``), so a poll cannot address a run it
-    did not open.
-    """
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    if row is None or row.company_id != identity["companyId"]:
-        raise HTTPException(status_code=403, detail="Paperclip company does not belong to owner")
-    if not full:
-        return
-    admin = shared_admin_client()
-    try:
-        cookie = await get_admin_session_cookie(admin._http)
-        agent = await admin.get_agent(session_cookie=cookie, agent_id=identity["agentId"])
-        if (agent or {}).get("companyId") != identity["companyId"]:
-            raise HTTPException(status_code=403, detail="Paperclip agent does not belong to company")
-        issue_id = identity.get("issueId")
-        if issue_id:
-            issue = await admin.get_issue(session_cookie=cookie, issue_id=issue_id)
-            if (issue or {}).get("companyId") != identity["companyId"]:
-                raise HTTPException(status_code=403, detail="Paperclip issue does not belong to company")
-    except HTTPException:
-        raise
-    except PaperclipApiError as exc:
-        if exc.status_code in (403, 404):
-            raise HTTPException(status_code=403, detail="Paperclip identity is invalid") from exc
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE", "Could not validate Paperclip identity.", retryable=True, retry_after=3
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE", "Could not validate Paperclip identity.", retryable=True, retry_after=3
-        ) from exc
-
-
-#: Budget for a Paperclip-originated call, which arrives over the PUBLIC API Gateway — whose
-#: ALB integration is hard-capped at 30 s (`api-stack.ts`'s `timeoutInMillis: 30000`). Anything
-#: longer cannot be waited out: the gateway 504s over us and the caller never sees our answer.
-#: `_AGENTCORE_INGRESS_TIMEOUT_S` (90 s) is right for `openclaw_work`, an SQS consumer with no
-#: gateway in front, and wrong here.
-#:
-#: A cold microVM is 54-57 s (measured, see `runtime_transport`'s module docstring), so the
-#: FIRST call to a parked workspace cannot succeed at any budget under that ceiling. Failing at
-#: 25 s with a retryable 503 is the best available outcome: the adapter treats >=500 as
-#: `transient_upstream` and retries onto the now-warming microVM, instead of the gateway
-#: returning an uninterpretable 504 after 30 s.
-PAPERCLIP_HERMES_TIMEOUT_S = 25.0
-
-
-async def _paperclip_hermes_runtime_response(
-    container: dict,
-    path: str,
-    *,
-    method: str,
-    json_body: dict,
-    raw: bool = False,
-    local_session_token: str | None = None,
-):
-    headers = {"Authorization": f"Bearer {(container or {}).get('gateway_token') or ''}"}
-    if local_session_token is not None:
-        headers["X-Lightbulb-Local-Session-Token"] = local_session_token
-    try:
-        response = await runtime_transport.request(
-            container,
-            path,
-            method=method,
-            json_body=json_body,
-            headers=headers,
-            timeout_s=PAPERCLIP_HERMES_TIMEOUT_S,
-        )
-    # httpx.ReadTimeout is an httpx.HTTPError, so a cold-start timeout already lands here and
-    # answers the same retryable 503 a transport failure does (pinned by a test). ValueError is
-    # what `_request_agentcore` raises for a row that says `runtime_host=agentcore` with no
-    # `agentcore_runtime_arn` — a real, if rare, state that would otherwise surface as a 500.
-    except (httpx.HTTPError, ValueError) as exc:
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not reach the runtime.", retryable=True, retry_after=3) from exc
-    if raw:
-        return response
-    return Response(
-        content=response.text,
-        status_code=response.status_code,
-        media_type=response.headers.get("content-type", "application/json"),
-    )
-
-
-def _paperclip_hermes_status_or_lost(response: runtime_transport.RuntimeResponse, run_id: str, session_id: str):
-    """A run the microVM no longer knows about FAILS; it does not poll forever.
-
-    The bridge's run registry is in-process and bounded, so a run vanishes exactly when the
-    microVM that owned it did (AgentCore recycled the session, the process died). There is no
-    honest way to report that as still-running -- the turn is not coming back -- and the
-    adapter would otherwise poll until its run timeout before giving up. A terminal
-    ``failed`` here ends the Paperclip run promptly and says why.
-
-    A transport failure is NOT this: it raises ``RUNTIME_UNAVAILABLE`` above (503), which the
-    adapter logs and retries on its next poll, so a blip does not kill a live run.
-    """
-    if response.status_code == 404:
-        return {
-            "run_id": run_id,
-            "status": "failed",
-            "session_id": session_id,
-            "error": "runtime_lost",
-        }
-    body = response.json()
-    if (
-        isinstance(body, dict)
-        and body.get("status") == "failed"
-        and body.get("error") == service.PROVIDER_QUOTA_EXHAUSTED
-    ):
-        # Paperclip shows `error` verbatim as the run's errorMessage; give it the sentence the
-        # room note uses instead of the raw code.
-        detail = service.parse_quota_detail(body.pop("error_detail", None) or body.pop("errorDetail", None))
-        body["error"] = service.provider_quota_message(detail)
-        return body
-    return Response(
-        content=response.text,
-        status_code=response.status_code,
-        media_type=response.headers.get("content-type", "application/json"),
-    )

@@ -176,135 +176,6 @@ def render_brief_md(
     )
 
 
-_MAX_GOAL_TITLE = 120
-
-
-def _domain_of(raw: str) -> str:
-    """Best-effort registrable domain from whatever went in the URL field.
-
-    The grow-path input is free text — users type ``ferrosocial.com``,
-    ``https://ferrosocial.com/pricing``, or ``www.ferrosocial.com``. Falls
-    back to the raw string rather than raising: this feeds a provisional
-    title Friday overwrites within one turn, so a scruffy value is a
-    cosmetic problem, not a failure.
-    """
-    value = raw.strip()
-    if "//" in value:
-        value = value.split("//", 1)[1]
-    value = value.split("/", 1)[0].split("?", 1)[0].strip().lower()
-    if value.startswith("www."):
-        value = value[4:]
-    return value or raw.strip()
-
-
-def _cap_title(title: str) -> str:
-    """Bound a provisional title to _MAX_GOAL_TITLE.
-
-    Applies on EVERY path, not just ``new``: the ``grow`` path derives its
-    title from a free-text field (``_domain_of`` falls back to the raw input
-    when it isn't a parseable URL, and the field allows up to 2000 chars), so
-    a user pasting a paragraph into the website box would otherwise produce a
-    ~2000-char title. If Paperclip's goal schema rejects that, the client
-    retries the identical oversized title forever — same input, same reject.
-    """
-    if len(title) <= _MAX_GOAL_TITLE:
-        return title
-    return title[: _MAX_GOAL_TITLE - 1].rstrip() + "…"
-
-
-def derive_goal_title(*, path: str, user_input: str | None) -> str:
-    """Provisional goal title — a real mission statement on every path.
-
-    Friday rewrites this after research. It must never read as filler in
-    the meantime, because the user is watching the board while she works.
-    """
-    if not user_input:
-        # "I don't know yet — you pick". This is an accurate description of
-        # their situation and stops being true the moment Friday chooses.
-        return "Find the right business to build"
-    if path == "grow":
-        return _cap_title(f"Grow {_domain_of(user_input)}")
-    return _cap_title(user_input.strip())
-
-
-def project_name_for(first_name: str) -> str:
-    """The funnel never collects a company name, and the description makes a
-    bad one ("A social media agency for small restaurants" is not a name).
-    The owner's first name is always available and always reads as real.
-    Friday renames it as her first visible action.
-    """
-    return f"{first_name}'s Company"
-
-
-async def seed_goal_and_project(
-    *,
-    admin,
-    session_cookie: str,
-    company_id: str,
-    friday_agent_id: str,
-    goal_title: str,
-    project_name: str,
-) -> tuple[str, str]:
-    """Create the company goal, then the project linked to it.
-
-    Order is load-bearing. The project passes ``goalIds: [goal_id]``, and
-    Paperclip mirrors ``goalIds[0]`` into the legacy ``projects.goalId``
-    column that ``getProjectDefaultGoalId`` reads. A project with a null
-    ``goalId`` is worse than no project at all: ``resolveIssueGoalId``
-    returns ``projectGoalId ?? null`` for any issue that HAS a project and
-    does not fall through to the company default, so every task filed into
-    it would be silently unattributed.
-
-    ``level="company"``, ``status="active"``, no ``parentId`` — anything
-    else and ``getDefaultCompanyGoal`` never selects it.
-
-    Rolls the goal back if the project create fails, so a retry never finds
-    a half-seeded company. That rollback delete is itself best-effort: if
-    ``delete_goal`` also raises, we swallow it rather than let it propagate
-    -- otherwise a cleanup failure would REPLACE the original
-    ``create_project`` error (e.g. a retryable Paperclip 503) with an
-    unrelated one, misclassifying what the caller sees (the router maps
-    ``PaperclipApiError``/``httpx.HTTPError``/``RuntimeError`` to a
-    retryable 409; a masked exception could fall outside that set and
-    surface as a raw 500 instead). The orphaned goal this can leave behind
-    is a lesser problem than losing the original error, and is bounded --
-    it is never linked to a project or the onboarding sentinel.
-    """
-    goal = await admin.create_goal(
-        session_cookie=session_cookie,
-        company_id=company_id,
-        body={
-            "title": goal_title,
-            "level": "company",
-            "status": "active",
-            "ownerAgentId": friday_agent_id,
-        },
-    )
-    goal_id = goal["id"]
-    try:
-        project = await admin.create_project(
-            session_cookie=session_cookie,
-            company_id=company_id,
-            body={
-                "name": project_name,
-                "status": "in_progress",
-                "goalIds": [goal_id],
-                "leadAgentId": friday_agent_id,
-            },
-        )
-    except Exception:
-        try:
-            await admin.delete_goal(session_cookie=session_cookie, goal_id=goal_id)
-        except Exception as cleanup_err:
-            logger.error(
-                "seed_goal_and_project: failed to roll back goal %s after project create failure: %s",
-                goal_id,
-                cleanup_err,
-            )
-        raise
-    return goal_id, project["id"]
-
-
 def first_name_from_email(email: str | None) -> str:
     """ "priya.sharma@acme.co" -> "Priya Sharma". Names the seeded project."""
     local = "" if is_relay_email(email) else (email or "").split("@")[0].strip()
@@ -333,7 +204,7 @@ class DrainOutcome(str, Enum):
 # item to ``brief_state: "failed"``, which re-shows the funnel with the error
 # instead of leaving the user in an empty chat with an agent that never
 # starts. Sized like ``MAX_BOOTSTRAP_ATTEMPTS``: enough to ride out a
-# Paperclip blip, few enough that a deterministic failure surfaces in ~a
+# blip, few enough that a deterministic failure surfaces in ~a
 # minute rather than never.
 MAX_DRAIN_FAILURES = 5
 
@@ -345,23 +216,11 @@ MAX_DRAIN_FAILURES = 5
 # lifetime's worth of background work.
 _RETRY_BACKOFF_S = (2, 5, 10, 20, 30, 60, 60)
 
-# Ceiling on an honoured ``Retry-After``. Paperclip sends 60 on its rate-limited
-# routes, so this never bites in practice -- it is here so a wrong or hostile
-# header value cannot park a background task for hours.
-_MAX_RATE_LIMIT_WAIT_S = max(_RETRY_BACKOFF_S)
-
-# A funnel claim held this long with nothing seeded behind it is not a peer
-# mid-flight (a real drain takes seconds) -- it is a claim whose owner died
-# between the CAS and the seed, e.g. a task killed by a rolling deploy. The
-# generation fence has no stale-steal of its own, so without this the row sits
-# at "submitted" with no goal and no project forever, unclaimable.
+# A funnel claim held this long is not a peer mid-flight (a real drain takes
+# seconds) -- it is a claim whose owner died, e.g. a task killed by a rolling
+# deploy. The generation fence has no stale-steal of its own, so without this
+# the row sits at "submitted" forever, unclaimable.
 STALE_CLAIM_S = 300
-
-# How long after a claim its seeded ids are treated as final. A drain that is
-# going to roll back does so in its own except handler, seconds after
-# recording the ids -- so past this, ids on the row mean the brief really was
-# fulfilled and any pending item still sitting there can be retired.
-SETTLED_CLAIM_S = 60
 
 
 def _claim_age_s(submitted_at) -> float | None:
@@ -382,9 +241,7 @@ def _claim_age_s(submitted_at) -> float | None:
 
 # Owners with a drain already running in THIS process. The poll fires this
 # every ~3s per tab and the endpoint fires it once more; without dedupe each
-# call would independently do a Clerk lookup, a Paperclip sign-in (no cache --
-# see paperclip_user_session) and a list_agents, and on a failing owner would
-# create and delete a goal/project pair every time.
+# call would independently do a Clerk lookup and a registry read.
 _draining: set[str] = set()
 
 
@@ -520,7 +377,7 @@ async def reconcile_pending_brief(owner_id: str) -> None:
 
     ``capture_first_workspace_message`` is intake; it persists the message
     and invokes this function after normal room dispatch. Everything that
-    needs an active Paperclip workspace happens here under one idempotent,
+    needs an active workspace happens here under one idempotent,
     claim-fenced path. The provision executor (``scripts.provision_runner``)
     re-drains pending intake the moment step 0 makes the company active.
 
@@ -551,42 +408,19 @@ async def _drain_until_settled(owner_id: str) -> None:
     NOT_READY costs nothing but a wait -- provisioning taking its time is the
     expected path, not a failure. Only a real FAILED attempt is counted, and
     only against the persisted budget, so attempts survive the process that
-    made them. A Paperclip 429 is in the first category, not the second: it
-    waits (honouring ``Retry-After``) and spends a pass of the ladder, but
-    never a slot of the budget.
+    made them.
     """
     from core.repositories.paperclip_repo import PaperclipRepo
 
     repo = PaperclipRepo(table_name="paperclip-companies")
-
-    from core.services.paperclip_admin_client import PaperclipApiError
 
     for delay in _RETRY_BACKOFF_S:
         reason = ""
         try:
             outcome = await _fulfil_pending_brief(owner_id)
         except Exception as e:  # noqa: BLE001 — a raise IS a failed attempt
-            # ...with ONE exception: a 429 is not an attempt that failed, it is
-            # Paperclip asking us to come back later, and it always clears. It
-            # used to cost a budget slot like any other raise, so five
-            # rate-limit hits -- entirely possible when several brand-new
-            # owners seed goals and projects at once -- permanently failed a
-            # perfectly good brief. Deliberately NARROWER than
-            # ``PaperclipApiError.retryable``, which also covers 5xx: a 5xx may
-            # be an upstream that never recovers, and the budget is exactly
-            # what stops that looping forever (see below). The pass is still
-            # spent, so the ladder stays bounded either way.
-            if isinstance(e, PaperclipApiError) and e.status_code == 429:
-                wait = min(e.retry_after or delay, _MAX_RATE_LIMIT_WAIT_S)
-                logger.info(
-                    "reconcile_brief: rate limited for %s, retrying in %ss (not counted as a failure)",
-                    owner_id,
-                    wait,
-                )
-                await asyncio.sleep(wait)
-                continue
-            # Otherwise deliberately broad. Some of what lands here is transient
-            # (Paperclip warming, a 5xx) and some never resolves (Clerk has no
+            # Deliberately broad. Some of what lands here is transient
+            # (a DynamoDB or S3 blip) and some never resolves (Clerk has no
             # email for a deleted submitter; a TypeError from a real bug). The
             # budget below is what tells them apart in the end -- classifying
             # up front is guesswork, and getting it wrong in the "permanent"
@@ -625,9 +459,8 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     """One fulfilment pass. May raise; ``_drain_until_settled`` counts that as
     a FAILED attempt exactly like a returned FAILED."""
     from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
+    from core.services import agent_registry
     from core.services.clerk_admin import get_primary_email
-    from core.services.paperclip_admin_client import shared_admin_client
-    from core.services.paperclip_user_session import get_user_session_cookie
 
     repo = PaperclipRepo(table_name="paperclip-companies")
     pending = await repo.get_pending_brief(owner_id)
@@ -650,55 +483,24 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     detail = pending.get("detail")
     brief_text = pending.get("brief_text")
 
-    # Everything below the claim has side effects; everything above it is a
-    # read. So do ALL the reads first -- a Paperclip blip then costs nothing,
-    # where the pre-split code claimed first and had to unwind the claim on
-    # the way back out.
+    # Everything below the claim has side effects; everything above it is a read.
     try:
         email = await get_primary_email(submitted_by)
-        # Minted for a CURRENT member of the company — the provisioner while
-        # they still are one, else any other joined member (the session is not
-        # company-scoped, so it must be someone Paperclip still admits). Not
-        # the submitter: they may not have joined yet. Every member reaches the
-        # same company, so the goal/project land identically.
-        members = owner_row.member_user_ids
-        session_user = (
-            owner_row.provisioner_user_id
-            if owner_row.provisioner_user_id in members
-            else next(iter(sorted(members)), owner_row.provisioner_user_id)
-        )
-        session_cookie = await get_user_session_cookie(
-            user_id=session_user,
-            repo=repo,
-            admin_client=shared_admin_client(),
-            clerk_email_resolver=get_primary_email,
-        )
-        admin = shared_admin_client()
-        agents = await admin.list_agents(session_cookie=session_cookie, company_id=owner_row.company_id)
+        if "target_agent_id" in pending:
+            target_agent = await agent_registry.get(owner_id, pending.get("target_agent_id") or "")
+        else:
+            # Briefs persisted by the retired onboarding endpoint predate room dispatch targets:
+            # fulfil those legacy rows through the root CEO.
+            target_agent = next((a for a in await agent_registry.roster(owner_id) if is_root_ceo(a)), None)
     except Exception as e:  # noqa: BLE001 — classified by the caller's budget
-        # Counted as a FAILURE, not as "not ready". Most of what lands here IS
-        # transient (Paperclip warming, a 5xx), but some of it never resolves:
-        # Clerk raising for a submitter whose account was deleted, or an
-        # AttributeError from a genuine bug in these three calls. Treating the
-        # whole class as "retry next poll" is what turned a permanent error
-        # into a silent forever-loop the user could never escape -- the budget
-        # in _drain_until_settled is what ends it now, and exc_info is what
-        # tells the next person which kind it was.
+        # Counted as a FAILURE, not as "not ready": some of it never resolves (Clerk raising for a
+        # deleted submitter); the budget in _drain_until_settled is what ends it.
         logger.warning("reconcile_brief: fulfilment read phase failed for %s: %s", owner_id, e, exc_info=True)
         raise
-    if "target_agent_id" in pending:
-        target_agent_id = pending.get("target_agent_id")
-        target_agent = next((agent for agent in agents if agent.get("id") == target_agent_id), None)
-    else:
-        # Briefs persisted by the retired onboarding endpoint predate room
-        # dispatch targets. Fulfil only those legacy rows through the existing
-        # root CEO; current chat capture always persists an explicit target.
-        target_agent = next((agent for agent in agents if is_root_ceo(agent)), None)
-    if target_agent is None:
-        # The selected dispatch target (or a legacy row's existing root CEO)
-        # has not landed yet.
+    if target_agent is None or target_agent.get("status") == "deleted":
+        # The selected dispatch target (or a legacy row's root CEO) has not landed yet.
         return DrainOutcome.NOT_READY
-    assigned_agent_id = target_agent["id"]
+    assigned_agent_id = target_agent.get("agentId") or target_agent["id"]
 
     claim_result = await repo.claim_funnel_submission(
         owner_id,
@@ -713,31 +515,8 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     if claim_result is FunnelClaimResult.ALREADY_SUBMITTED:
         return await _settle_lost_claim(repo, owner_id, owner_row, generation)
 
-    goal_id: str | None = None
-    project_id: str | None = None
     try:
         first_name = first_name_from_email(email)
-        # Seed before staging BRIEF.md, so the dispatched agent has a project
-        # to work against when it next reads its workspace.
-        goal_id, project_id = await seed_goal_and_project(
-            admin=admin,
-            session_cookie=session_cookie,
-            company_id=owner_row.company_id,
-            friday_agent_id=assigned_agent_id,
-            goal_title=derive_goal_title(path=path, user_input=user_input),
-            project_name=project_name_for(first_name),
-        )
-        # Recorded BEFORE staging the workspace file, not after: this is the
-        # generation-fenced write that decides who wins. Staging is a visible
-        # side effect on the agent's next boot -- if this write raced a
-        # reprovision (generation moved on) and staging ran first anyway, the
-        # agent could boot against dead goal/project ids.
-        await repo.record_onboarding_ids(
-            owner_id,
-            onboarding_generation=generation,
-            goal_id=goal_id,
-            project_id=project_id,
-        )
         await stage_first_run_files(
             owner_id=owner_id,
             friday_agent_id=assigned_agent_id,
@@ -763,24 +542,8 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # fence has no stale-steal safety net, so a stuck claim permanently
         # blocks this generation from ever being re-submitted.
         #
-        # Roll back whatever landed, then release the claim. Each step runs
-        # independently of the others' success, and none may raise past this
-        # block or a cleanup failure would replace the original error.
-        #
-        # The PENDING ITEM IS DELIBERATELY LEFT IN PLACE: it is what makes the
-        # next poll retry the whole thing. It is only deleted on the success
-        # path below.
-        if goal_id is not None and project_id is not None:
-            try:
-                await admin.delete_project(session_cookie=session_cookie, project_id=project_id)
-            except Exception as cleanup_err:
-                logger.error(
-                    "reconcile_brief: failed to roll back project %s for %s: %s", project_id, owner_id, cleanup_err
-                )
-            try:
-                await admin.delete_goal(session_cookie=session_cookie, goal_id=goal_id)
-            except Exception as cleanup_err:
-                logger.error("reconcile_brief: failed to roll back goal %s for %s: %s", goal_id, owner_id, cleanup_err)
+        # Release the claim; a cleanup failure must not replace the original error. The PENDING
+        # ITEM IS DELIBERATELY LEFT IN PLACE: it is what makes the next poll retry the whole thing.
         try:
             await repo.revert_funnel_submission(owner_id, onboarding_generation=generation)
         except Exception as cleanup_err:
@@ -805,22 +568,12 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
 async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) -> DrainOutcome:
     """We lost the funnel claim. Decide what that means for the pending item.
 
-    Three cases, and the distinction is load-bearing:
-
-    * **Fulfilment completed** (``funnel_state == "complete"`` after the
-      initial goal/project and BRIEF.md stage). The brief is done; retire it.
-    * **A peer is mid-flight.** Leave the item alone and stop. It is NOT
-      enough that the row carries ``onboarding_goal_id``: those ids are
-      written by ``record_onboarding_ids`` BEFORE the last fallible step
-      (``stage_first_run_files``), whose failure rolls the goal, the project
-      AND the ids back. Deleting on that evidence loses the brief in exactly
-      the case this mechanism exists to survive -- a winner that reverts.
-    * **The claim is stale.** A drain that won the CAS and then died before
-      seeding (a rolling deploy, a cancelled task) leaves the row at
-      "submitted" with nothing behind it, and the generation fence has no
-      stale-steal of its own -- so the row would sit unclaimable forever
-      while onboarding stays incomplete. Revert the claim so the next pass can
-      win it.
+    * **Fulfilment completed** (``funnel_state == "complete"``): the brief is done; retire it.
+    * **A peer is mid-flight** (a young claim): leave the item alone. The winner can still fail and
+      revert, and the item is the only record of what the user asked for.
+    * **The claim is stale**: a drain that won the CAS and died (a rolling deploy, a cancelled task)
+      leaves the row at "submitted", and the generation fence has no stale-steal of its own. Revert
+      the claim so the next pass can win it.
     """
     fresh = await repo.resolve_owner_row(owner_id, consistent_read=True)
     if fresh is None:
@@ -829,29 +582,10 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
         await repo.delete_pending_brief(owner_id)
         return DrainOutcome.DONE
     age_s = _claim_age_s(getattr(fresh, "funnel_submitted_at", None))
-
-    if fresh.onboarding_goal_id:
-        if age_s is not None and age_s >= SETTLED_CLAIM_S:
-            # Ids present and the winner is long past its own rollback window,
-            # so they are stable: this brief WAS fulfilled, even though the
-            # kickoff has not been observed to deliver yet. Retire the item.
-            # Without this the winner's own delete is the only retirement, and
-            # anything that wrote a second item (a funnel that briefly
-            # re-rendered on a stale read, a racing peer) would leak one
-            # forever -- and a leaked item's put-if-absent key blocks every
-            # future brief for that owner.
-            await repo.delete_pending_brief(owner_id)
-        # Otherwise: seeded moments ago and still inside the window where the
-        # winner could fail and roll the ids back. A peer owns this; leave the
-        # item and let their success path retire it.
-        return DrainOutcome.DONE
-
     if age_s is not None and age_s < STALE_CLAIM_S:
-        # Young claim with no ids yet: a peer really is mid-seed. Wait.
         return DrainOutcome.DONE
-
     logger.warning(
-        "reconcile_brief: reverting a stale funnel claim for %s (age=%ss, no seeded ids)",
+        "reconcile_brief: reverting a stale funnel claim for %s (age=%ss)",
         owner_id,
         int(age_s) if age_s is not None else "unknown",
     )
@@ -868,13 +602,9 @@ async def stage_first_run_files(
 ) -> None:
     """Write BRIEF.md, unconditionally, into the CEO agent's Hermes profile.
 
-    Used to be write-if-missing because its existence WAS the one-shot
-    marker for the flow. The generation-fenced ``funnel_state`` claim on the
-    paperclip-companies owner row is that marker now, and winning it already
-    proves this is the first run — so a BRIEF.md left behind by an attempt
-    that failed partway is stale state to overwrite, not a reason to stop.
-    Stopping there would strand the goal and project the caller seeded
-    moments earlier.
+    The generation-fenced ``funnel_state`` claim on the workspace META row is the one-shot
+    marker, and winning it already proves this is the first run — so a BRIEF.md left behind by
+    an attempt that failed partway is stale state to overwrite, not a reason to stop.
 
     The profile prefix is that workspace's home — the bridge pulls it down beside ``SOUL.md``/
     ``AGENTS.md`` — so the file lands where the agent reads.

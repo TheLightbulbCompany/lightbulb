@@ -61,8 +61,6 @@ LinkKind = Literal["issue", "room", "thread", "run", "approval", "session", "tas
 DEFAULT_LIMIT = 30
 MAX_LIMIT = 100
 UNSEEN_CAP = 99
-# The trial recap (routers/billing.py) never waits on Paperclip longer than this.
-PAPERCLIP_BUDGET_S = 3.0
 TITLE_CHARS = 120
 PREVIEW_TEXT_CHARS = 600
 MAX_FIELDS = 8
@@ -837,18 +835,6 @@ def needs_you(item: ActivityItem) -> bool:
     return False
 
 
-def _rows(value: Any, key: str) -> list[dict]:
-    if isinstance(value, dict):
-        value = value.get(key) or value.get("items") or []
-    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
-
-
-def _admin():
-    from routers.teams import agents as teams_agents
-
-    return teams_agents._admin()
-
-
 def render_task_question(q: dict) -> ActivityItem:
     """An open super-agent Question (contracts-v2 §14.2) for one of its answerers. Copy from `questions.card_copy`.
     ponytail: Open only; the answer buttons arrive with the answer route (wave2-Q Task 4)."""
@@ -900,22 +886,6 @@ async def _live_items(owner_id: str, user_id: str) -> list[ActivityItem]:
 # ---------------------------------------------------------------------------
 # read
 # ---------------------------------------------------------------------------
-
-
-async def teams_context(auth: AuthContext, request: Any, response: Any) -> Any:
-    """The viewer's Paperclip context WITHOUT the Teams self-heal side effect.
-    Raises (202/409/503 HTTPException) when the viewer has no usable session."""
-    from routers.teams import agents as teams_agents
-    from routers.teams import deps as teams_deps
-
-    request.state.teams_user_id = auth.user_id  # the 401 self-heal handler reads it
-    return await teams_deps.resolve_teams_context(
-        auth=auth,
-        repo=teams_agents._repo(),
-        session_factory=teams_agents.get_user_session_cookie_for,
-        cookies=request.cookies,
-        response=response,
-    )
 
 
 def _unseen_message_rows(unseen_rows: list[dict], gates: dict) -> list[dict]:

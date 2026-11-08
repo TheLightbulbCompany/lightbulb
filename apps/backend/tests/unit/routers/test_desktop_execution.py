@@ -239,43 +239,12 @@ async def test_a_spoken_runs_authority_is_its_verified_requester_and_nobody_else
             await service.authorize_run("user_1", "run_1", "agent_1", "call", active=True)
 
 
-async def test_paperclip_rejects_forged_run_and_never_infers_member_authority():
-    from types import SimpleNamespace
-    from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services import paperclip_admin_client, paperclip_admin_session
-
-    admin = SimpleNamespace(
-        _http=None,
-        get_heartbeat_run=AsyncMock(
-            return_value={"id": "run_1", "companyId": "company_1", "agentId": "other", "status": "running"}
-        ),
-        get_agent=AsyncMock(return_value={"id": "agent_1", "companyId": "company_1"}),
+async def test_a_paperclip_run_is_no_longer_a_run_family():
+    with pytest.raises(service.DesktopError, match="unsupported_run_family"):
+        await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
+    assert not service.valid_auth(
+        {"ownerId": "o", "companyId": "c", "runId": "r", "agentId": "a", "family": "paperclip"}
     )
-    ws = SimpleNamespace(org_id="org_1", company_id="company_1", status="active", member_user_ids={"user_1"})
-    resolve = AsyncMock(return_value=ws)
-    with (
-        patch.object(PaperclipRepo, "resolve_owner_row", resolve),
-        patch.object(paperclip_admin_client, "shared_admin_client", lambda: admin),
-        patch.object(paperclip_admin_session, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
-    ):
-        with pytest.raises(service.DesktopError, match="run_forbidden"):
-            await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
-        # The owner's ACTIVE workspace row is read strongly consistent.
-        resolve.assert_awaited_with("org_1", consistent_read=True)
-        admin.get_heartbeat_run.return_value["agentId"] = "agent_1"
-        auth = await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
-        assert auth["companyId"] == "company_1" and "memberId" not in auth
-        # A Paperclip API blip is transient, never a revocation (the Mac door retries it).
-        admin.get_heartbeat_run.side_effect = paperclip_admin_client.PaperclipApiError("GET run -> 502", 502, None)
-        with pytest.raises(service.DesktopError, match="paperclip_unavailable") as blip:
-            await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
-        assert blip.value.status == 503
-        admin.get_heartbeat_run.side_effect = None
-        # No active workspace, or a row for another org, is forbidden.
-        for row in (None, SimpleNamespace(org_id="org_other", company_id="company_1")):
-            resolve.return_value = row
-            with pytest.raises(service.DesktopError, match="run_forbidden"):
-                await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
 
 
 async def test_public_submit_rejects_bypass_fields_and_internal_caller_addresses(app):

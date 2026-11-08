@@ -13,7 +13,7 @@ down — signing mode, provider-side registration, arming, the returned dict —
 is the same code on both paths; only the rollback differs (an attach may
 delete the triggers it added, never the owner's routine). The three shapes
 whose setup writes the routine's own body APPEND it as a delimited block
-instead of composing the description: see ``_append_platform_block``.
+instead of composing the description.
 
 The inbound shapes:
 
@@ -138,7 +138,6 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -146,9 +145,7 @@ import httpx
 from core.observability.product_analytics import capture_product_event
 from core.dynamodb import run_in_thread
 from core.repositories import google_accounts_repo
-from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.credentials import integration_secret_store, registry
-from core.services.paperclip_admin_client import PaperclipAdminClient
 
 logger = logging.getLogger(__name__)
 
@@ -198,36 +195,6 @@ _PUBSUB_TOPIC_RE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/topics/[A
 # clear error instead of an opaque upstream 4xx).
 _NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "none"}
 
-# Three registration shapes WRITE THE ROUTINE'S OWN BODY as part of their
-# setup: auto_google_watch and owner_setup prepend a maintenance clause (their
-# ≤7-day channel only stays alive because the routine's own agent re-arms it),
-# and poll's entire behaviour lives in the starter prompt. On the CREATE path
-# they compose the whole description, so they prepend. On the ATTACH path the
-# routine is somebody's hand-written work, so the same text is APPENDED as a
-# delimited, platform-owned block at the very END — every user-written word
-# survives, and the owner can see exactly what the platform added. Refusing
-# instead (the shape this replaced) left the owner at a dead end with a
-# capability the machinery already supports.
-_PLATFORM_BLOCK_START = "--- Added by Lightbulb when this trigger was armed — leave this block in place ---"
-_PLATFORM_BLOCK_END = "--- end Lightbulb block ---"
-
-# Every delimiter generation, current first. Re-attaching a routine appends a
-# fresh block, so without recognising the retired brands' delimiters an owner
-# who armed a trigger before a rename ends up with two (or three) stacked
-# blocks contradicting each other. Keep the retired pairs verbatim — they are
-# matched against descriptions already stored in Paperclip.
-_PLATFORM_BLOCK_DELIMITERS: tuple[tuple[str, str], ...] = (
-    (_PLATFORM_BLOCK_START, _PLATFORM_BLOCK_END),
-    (
-        "--- Added by Lightbulb AI when this trigger was armed — leave this block in place ---",
-        "--- end Lightbulb AI block ---",
-    ),
-    (
-        "--- Added by Isol8 when this trigger was armed — leave this block in place ---",
-        "--- end Isol8 block ---",
-    ),
-)
-
 # ONE trigger can carry MANY events. A Paperclip webhook trigger has no event
 # filter (its schema is kind/signingMode/replayWindowSec — see the fork's
 # validators/routine.ts), it fires on any signed POST and hands the whole
@@ -259,40 +226,6 @@ def _provider_event_names(events: list[registry.InboundEvent]) -> list[str]:
     ``subscribed_apps`` fields. The curated id is the fallback where the two
     coincide, exactly as it was for a single event."""
     return list(dict.fromkeys(name for e in events for name in (e.provider_events or [e.id])))
-
-
-async def _company_id_for_owner(owner_id: str) -> str | None:
-    """The owner's Paperclip company id, or None."""
-    ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
-    return (ws.company_id or None) if ws is not None else None
-
-
-@lru_cache(maxsize=1)
-def _titles_to_automation() -> dict[str, tuple[str, str]]:
-    """Rendered routine title -> ``(provider_key, event_id)``.
-
-    The exact inverse of what ``seed_trigger_routine`` names a seeded routine
-    and its webhook trigger (``inbound.template.title.format(event_label=…)``).
-    Both halves come from the registry, so the mapping inverts deterministically
-    — which is how the marketplace recovers what automation a captured routine
-    represents, having only its title. Titles are unique across the whole
-    registry (pinned by ``test_automation_titles_are_unique_across_the_registry``);
-    a collision would make this ambiguous, so keep them that way.
-    """
-    out: dict[str, tuple[str, str]] = {}
-    for key, provider in registry.all_providers().items():
-        inbound = provider.inbound
-        if inbound is None:
-            continue
-        for event in inbound.events:
-            out[inbound.template.title.format(event_label=event.label)] = (key, event.id)
-    return out
-
-
-def automation_from_title(title: str) -> tuple[str, str] | None:
-    """``(provider_key, event_id)`` for a title the seed rendered, else None
-    (a hand-made routine, or an event the registry no longer carries)."""
-    return _titles_to_automation().get(title)
 
 
 def automation_requirement(provider_key: str, event_id: str) -> dict[str, Any] | None:
@@ -640,58 +573,6 @@ async def _delete_vercel_webhook(*, token: str, webhook_id: str) -> None:
         resp.raise_for_status()
     except Exception:
         logger.exception("inbound_triggers: rollback delete of Vercel webhook %s failed", webhook_id)
-
-
-def _strip_platform_blocks(description: str) -> str:
-    """Drop every complete platform-owned block, current or retired brand.
-
-    An UNTERMINATED start marker is left alone: the block is always appended
-    at the very end, so a start without its end means somebody edited the
-    body, and cutting from there would delete their work. A duplicate block is
-    the cheaper failure.
-
-    So the scan anchors on the END marker and takes the NEAREST PRECEDING
-    start, not the first start and any end after it. Anchoring the other way
-    round eats everything between an orphaned start and a later complete
-    block — which is exactly the owner prose the stacking bug leaves stranded.
-
-    An orphaned END is skipped rather than ending the scan: it is content now,
-    and a real block can still follow it.
-    """
-    for start, end in _PLATFORM_BLOCK_DELIMITERS:
-        search_from = 0
-        while (close_at := description.find(end, search_from)) >= 0:
-            open_at = description.rfind(start, 0, close_at)
-            if open_at < 0:
-                search_from = close_at + len(end)
-                continue
-            description = description[:open_at] + description[close_at + len(end) :]
-            search_from = open_at
-    return description
-
-
-async def _append_platform_block(admin: PaperclipAdminClient, *, cookie: str, routine_id: str, block: str) -> None:
-    """Replace the delimited, platform-owned block at the END of an existing
-    routine's description, leaving every user-written word intact.
-
-    Reads the CURRENT description with ``get_routine`` rather than trusting
-    the list projection: the list row is not guaranteed to carry a
-    description, and treating a missing one as empty would erase the very
-    instructions this exists to preserve. A failed read raises, and the
-    caller unwinds — better than a patch that destroys the body.
-
-    Any block already there is stripped first, across every delimiter
-    generation. Re-arming a trigger otherwise stacks blocks — silently, and
-    worst across a rename, where the old delimiters no longer match the new
-    ones and the owner is left with two sets of platform instructions."""
-    detail = await admin.get_routine(session_cookie=cookie, routine_id=routine_id)
-    existing = _strip_platform_blocks((detail.get("description") if isinstance(detail, dict) else None) or "")
-    appended = f"{_PLATFORM_BLOCK_START}\n{block}\n{_PLATFORM_BLOCK_END}"
-    await admin.patch_routine(
-        session_cookie=cookie,
-        routine_id=routine_id,
-        body={"description": f"{existing.rstrip()}\n\n{appended}" if existing.strip() else appended},
-    )
 
 
 def _guided_instructions(

@@ -393,11 +393,6 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
     monkeypatch.setattr(bedrock_gate_tokens_mod, "mint_gate_token", AsyncMock(return_value="bearer-plaintext"))
     monkeypatch.setattr(hermes_provisioning, "ensure_agentcore_trust", AsyncMock(return_value=True))
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(existing_row))
-    # A minted hook_token triggers the adapter resync; no company by default makes it a no-op.
-    import core.services.paperclip_agent_lifecycle as lifecycle
-
-    monkeypatch.setattr(lifecycle, "resolve_company_id_for_owner", AsyncMock(return_value=None))
-
     # The row as DynamoDB holds it: ensure_owner_tokens is `SET x = if_not_exists(x, :x)`.
     state = dict(existing_row or {})
 

@@ -9,7 +9,7 @@ import pytest
 from core.config import settings
 from core.services import mac_cdp
 from core.services.connection_service import DesktopTargetStale
-from core.services.desktop_execution import DesktopError, valid_auth
+from core.services.desktop_execution import DesktopError
 
 ADDRESS = "http://10.0.3.7:8000"
 TARGET = {
@@ -23,7 +23,6 @@ TARGET = {
     "commands": ["browser.cdp.v1"],
 }
 ROOM = {"ownerId": "org_1", "memberId": "user_1", "runId": "r1", "agentId": "a1", "family": "room", "roomId": "rm1"}
-PAPERCLIP = {"ownerId": "org_1", "companyId": "c1", "runId": "r1", "agentId": "a1", "family": "paperclip"}
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +41,6 @@ def test_ticket_round_trip_claims():
         "family": "room",
         "ownerId": "org_1",
         "memberId": "user_1",
-        "companyId": "",
         "deviceId": "mac1",
         "generation": "g1",
         "address": ADDRESS,
@@ -107,13 +105,6 @@ def test_agent_ticket_requires_auth():
         mac_cdp.mint(target=TARGET, profile_id="p1", auth={})
     with pytest.raises(ValueError):
         mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM | {"ownerId": "org_2"})
-
-
-def test_paperclip_ticket_rebuilds_paperclip_auth():
-    claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=PAPERCLIP))
-    assert claims["memberId"] == "" and claims["roomId"] == ""
-    auth = mac_cdp.auth_from_claims(claims)
-    assert auth == PAPERCLIP and valid_auth(auth)
 
 
 def test_door_url_uses_task_host_and_port():
@@ -212,9 +203,6 @@ async def test_serve_starts_mac_live_and_its_end_does_not_close_the_door(monkeyp
     monkeypatch.setattr(mac_cdp.mac_live, "run", live_run)
     monkeypatch.setattr(mac_cdp, "check", AsyncMock(return_value=TARGET))
     monkeypatch.setattr(mac_cdp.desktop_execution, "_session", lambda target: session)
-    from core.services import mac_browser
-
-    monkeypatch.setattr(mac_browser, "notice", AsyncMock(return_value=None))
     ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)
     door = asyncio.create_task(mac_cdp.serve(socket, ticket))
     for _ in range(50):

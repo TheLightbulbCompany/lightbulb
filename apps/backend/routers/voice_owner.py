@@ -19,7 +19,8 @@ from pydantic import AfterValidator, BaseModel, Field
 
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import integration_reads, memory_api
+from core.services import integration_reads, memory_api, voice_approve
+from core.services.messaging import human_display_name
 from core.services.voice_calls import _voice_requester
 from routers.huddles import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
@@ -128,6 +129,19 @@ async def integration_read(room_id: str, body: IntegrationIn) -> dict:
     await _owner(room_id, body)
     out = await integration_reads.read(body.ownerId, body.provider, body.query, instructions=True)
     return out if isinstance(out, dict) else {"text": out}
+
+
+class ApproveIn(OwnerIn):
+    phrase: Literal["yes", "no", "undo"]
+    hint: str = Field(default="", max_length=300)
+
+
+@router.post("/internal/voice/owner/{room_id}/approve")
+async def approve(room_id: str, body: ApproveIn) -> dict:
+    """The member's spoken yes queues a one-tap confirm on their card (voice_approve); it never answers it."""
+    room_id, member, _agent = await _owner(room_id, body)
+    speaker = {"user_id": member, "name": await human_display_name(member), "where": ""}
+    return await voice_approve.approve(body.ownerId, "app", speaker, body.phrase, body.hint, room_id=room_id)
 
 
 class WorkRef(BaseModel):

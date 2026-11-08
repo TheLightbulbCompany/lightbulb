@@ -221,6 +221,18 @@ async def test_a_phone_callers_task_asks_even_where_the_mode_would_go_ahead(api,
         assert resp.json()["decision"] == "needs_approval", kind
 
 
+async def test_contact_task_cannot_purchase(api, mode, monkeypatch):
+    """End-state Task 4: a sub-task of a caller's task carries `origin` on its own row (its trigger is a plain chat
+    line), and even on Never ask its purchase waits for the owner's card."""
+    mode["approval_mode"] = "never_ask"
+    sub = await _task(origin="phone_contact")
+    await _running(sub)
+    resp = await api.post(
+        _url(), json=await _body(sub, "c1", "purchase", {"merchant": "Acme", "amount": "1"}), headers=H
+    )
+    assert resp.json()["decision"] == "needs_approval" and resp.json()["questionId"]
+
+
 async def test_meeting_spend_always_carded_even_in_auto_mode(api, mode):
     """A task started from a Meet (confirmAll) asks for a spend, an outside send or a publish whatever the mode."""
     plain, meeting = await _started(), await _task(confirmAll=True)

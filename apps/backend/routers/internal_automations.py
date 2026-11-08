@@ -219,10 +219,15 @@ async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> di
 
 
 async def start_voice_work(
-    owner_id: str, body: VoiceStartIn, origin: str | None = None, confirm_all: bool = False
+    owner_id: str,
+    body: VoiceStartIn,
+    origin: str | None = None,
+    confirm_all: bool = False,
+    ask: dict | None = None,
 ) -> dict:
     """The task behind voice-start, for callers already authorized another way (the phone worker). `origin`
-    (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task."""
+    (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task.
+    `ask` (`task_asks.open_ask`'s arguments): the Router opens that Question on the new task instead of starting it."""
     run = await messaging_repo.get_voice_run(owner_id, body.run_id)
     if run is None or run.get("roomId") != body.room_id:
         raise _err(404, "unknown_run")
@@ -262,6 +267,7 @@ async def start_voice_work(
             "start": start.model_dump(by_alias=True),
             **({"origin": origin} if origin else {}),
             **({"confirmAll": True} if confirm_all else {}),  # a meeting's task: every effect gets a card
+            **({"ask": ask} if ask else {}),
         },
     )
     created = await admission.enqueue_trigger(owner_id, trigger, room_id=body.room_id)

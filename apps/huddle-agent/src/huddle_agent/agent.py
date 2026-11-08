@@ -546,7 +546,7 @@ async def _start_driven(room, huddle: Huddle, agent_id, persona, voice, speaker,
     agent = _Mouth(instructions=f"{persona}\n\n{DRIVEN}", chat_ctx=_seeded(seed))
     # turn_detection=None and no audio input: nothing but an order makes it speak. No vad: nothing to detect.
     session = AgentSession(
-        llm=_DrivenModel(model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None)
+        llm=_DrivenModel(model="gpt-realtime-2.1-mini", voice=realtime_voice(voice), turn_detection=None)
     )
     await _open(session, agent, room, huddle, agent_id, speaker)
     live = _DrivenLive(
@@ -665,7 +665,7 @@ async def entrypoint(ctx: JobContext) -> None:
     recorder = record.start(meta["roomId"])  # HUDDLE_RECORD_DIR: this call's inputs, for an offline replay
     backend = recorder.backend(Backend(meta["roomId"], meta["ownerId"], meta["roomToken"]))
     # streaming: interims tell a listening sound from words as they come (huddle `_only_listening`)
-    stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=MEET_VAD)
+    stt_engine = openai.STT(model="gpt-live-transcribe", use_realtime=True, turn_detection=MEET_VAD)
 
     @stt_engine.on("metrics_collected")
     def _stt_metrics(m) -> None:

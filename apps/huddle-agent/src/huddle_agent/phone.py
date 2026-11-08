@@ -85,13 +85,18 @@ SERVER_TURNS = TurnDetection(type="server_vad", silence_duration_ms=500, create_
 # that the call is recorded. The owner's greeting is its style, not a script. DisclosureGuard checks the result.
 # One short sentence and its question, then silence (8 Nov prod calls: up to 20 s of run-on and spoken planning,
 # "Okay, let me think about how to respond…", "Game plan: it's Sunday…", buried the caller's first line).
-INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. You speak first. Your opening
-is one short sentence, in your own words, that says all three: your name, {assistant}; that you are an AI assistant;
+#: The opening, said once: handed to the greeting's own reply (OpenAI), never in the session prompt. Every reply
+#: carries the session prompt, so an opening script there re-greeted mid-call (8 Nov prod re-run #3, move-102705:
+#: the holding line "Let me check." came out as the whole opening first). Gemini keeps it in the prompt (`greet`).
+OPENING = """You speak first. Your opening is one short sentence, in your own words, that says all three: your name, {assistant}; that you are an AI assistant;
 and that this call is recorded. Then ask "How can I help?" and stop: say nothing else until the caller speaks. It is
 your very first words: no preamble before it. Take its tone from the owner's greeting, which is a guide, not a
 script: "{greeting}" Greet once and never again; after it, answer what the caller says. If you are told the
 disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller.
-Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:"): every word you speak is
+"""
+
+INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}.
+{opening}Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:"): every word you speak is
 for the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk.
 {caller}The front desk team behind you answers every question, booking and change; each caller line goes to them
 before you hear it, and a holding line is said for you.
@@ -264,12 +269,14 @@ def line(session, instructions: str):
     return session.generate_reply(instructions=instructions, tool_choice="none")
 
 
-def greet(session):
+def greet(session, opening: str = ""):
     """The opening turn: the model speaks first, from the prompt (docs.livekit.io/agents/build/audio, "generate_reply"
     greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov).
     Not interruptible until its disclosure has played (`firm`; Receptionist.transcription_node frees it): a caller's
     "hi" over it cut the disclosure off (8 Nov evals), and a whole opening held firm dropped the caller's first line
     (8 Nov prod). Tools off: the opening is spoken, never a delegate call."""
+    if OPENAI and opening:  # OpenAI: the opening is this reply's own instructions, never in the session prompt
+        return firm(session.generate_reply(instructions=opening, tool_choice="none"))
     return firm(session.generate_reply(tool_choice="none"))
 
 
@@ -388,9 +395,10 @@ class Receptionist(Talker):
     where = "phone"
 
     def __init__(self, backend: Backend, info: dict, transfer, hold: Hold | None = None) -> None:
+        self.opening_rule = OPENING.format(assistant=info["assistantName"], greeting=info["greeting"])
         super().__init__(INSTRUCTIONS.format(**{
             "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
-            "greeting": info["greeting"],
+            "opening": "" if OPENAI else self.opening_rule,
             "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
             "can": (
                 "This line is not taking bookings or questions right now: it only takes messages, and the owner will "
@@ -581,6 +589,9 @@ async def entrypoint(ctx: JobContext) -> None:
     agent = Receptionist(backend, info, transfer, hold)
     session = AgentSession(
         user_away_timeout=AWAY_S,
+        # the realtime model's own turns, explicitly: left unset, AgentSession builds its default TurnDetector, which
+        # with vad=None only logs "TurnDetector requires a VAD model" and is dropped (every re-run #3 call, audio or not)
+        turn_handling={"turn_detection": "realtime_llm"},
         **(
             # vad=None (as owner.py): user_state comes from the realtime model's own speech_started/stopped.
             # server_vad, not semantic_vad: the plugin's semantic_vad took 5-7 s to answer (book eval, 7 Nov).
@@ -762,7 +773,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    opening = greet(session)  # the opening: DisclosureGuard judges it
+    opening = greet(session, agent.opening_rule)  # the opening: DisclosureGuard judges it
     agent.unchecked(opening)
     agent.opening = opening.id
 

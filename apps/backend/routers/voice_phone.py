@@ -929,6 +929,24 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
     return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id}
 
 
+async def after_call(room_id: str, item: dict) -> None:
+    """A team answer that lands in a call's room after the caller hung up (8 Nov prod re-run #3: the booking
+    confirmation and the card answer, 8-10 s after hang-up): kept on the call record (`afterCall`, and a step the
+    Home row shows) so the owner sees what the caller never heard. Thread and progress lines are not answers."""
+    if item.get("progress") or item.get("threadRootMessageId") or not (text := (item.get("text") or "").strip()):
+        return
+    meta = await messaging_repo.get_room(room_id)
+    if not meta or meta.get("kind") != "call" or (meta.get("call") or {}).get("status") != "ended":
+        return
+    await _patch_call(
+        room_id,
+        lambda c: {
+            "afterCall": [*c.get("afterCall", []), {"messageId": item.get("messageId"), "text": text[:2000]}],
+            "steps": _step(c, f"After the call, not heard by the caller: {text[:160]}"),
+        },
+    )
+
+
 class CallEventsIn(BaseModel):
     after: int = Field(ge=0)
 

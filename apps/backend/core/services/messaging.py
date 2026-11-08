@@ -5712,6 +5712,13 @@ async def create_agent_message(
             await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
         if trigger and (run or {}).get("eventKind") == "room_event":
             await _emit_reply_after_human_answer(room_id, meta, trigger, item, room_kind)
+        if meta.get("kind") == "call" and not request.progress:
+            from routers import voice_phone
+
+            try:  # best-effort: the answer is posted either way
+                await voice_phone.after_call(room_id, item)
+            except Exception:
+                logger.warning("call %s: late answer not kept on the record", room_id, exc_info=True)
         if capped:
             put_metric("messaging.agent_chain.capped", dimensions={"room_kind": room_kind})
             await _post_chain_paused_notice(owner_id, item, agent["name"], (trigger or {}).get("author"))

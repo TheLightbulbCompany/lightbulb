@@ -40,14 +40,19 @@ def test_the_opening_is_one_short_sentence_with_the_three_disclosures_and_no_nar
     """Founder, 8 Nov: no script. The prompt names what the opening must say; the owner's greeting is a style.
     8 Nov prod: the opening ran on for up to 20 s and spoke the model's planning aloud."""
     text = " ".join(phone.Receptionist(phone.Backend(), INFO, None).instructions.split())
+    r = phone.Receptionist(phone.Backend(), INFO, None)
+    rule = " ".join(r.opening_rule.split())
     assert ("You speak first. Your opening is one short sentence, in your own words, that says all three: your "
-            "name, Lightbulb; that you are an AI assistant; and that this call is recorded.") in text
-    assert 'Then ask "How can I help?" and stop: say nothing else until the caller speaks.' in text
-    assert "It is your very first words: no preamble before it." in text  # gpt-realtime-2 preambles by default
+            "name, Lightbulb; that you are an AI assistant; and that this call is recorded.") in rule
+    assert 'Then ask "How can I help?" and stop: say nothing else until the caller speaks.' in rule
+    assert "It is your very first words: no preamble before it." in rule  # gpt-realtime-2 preambles by default
+    assert f'a guide, not a script: "{GREETING}"' in rule
+    # 8 Nov prod re-run #3 (move-102705, 86 s): every reply carries the session prompt, so the opening script there
+    # made the holding line "Let me check." come out as the whole opening again. It is only the greeting's own.
+    assert "You speak first" not in text and "Greet once" not in text
     assert 'Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:")' in text
     assert "Today is" not in text  # the date set off "it's Sunday, so we're closed" run-ons; the team has it
-    assert f'a guide, not a script: "{GREETING}"' in text
-    assert "If you are told the disclosure was missed, say the one disclosure sentence exactly as given" in text
+    assert "If you are told the disclosure was missed, say the one disclosure sentence exactly as given" in rule
     replies = []
 
     class Session:
@@ -55,9 +60,9 @@ def test_the_opening_is_one_short_sentence_with_the_three_disclosures_and_no_nar
             replies.append(kw)
             return _Speech()
 
-    opening = phone.greet(Session())
-    # no instructions (Gemini keeps them); tools off: the opening is never a delegate call
-    assert replies == [{"tool_choice": "none"}]
+    opening = phone.greet(Session(), r.opening_rule)
+    # the opening is this reply's own instructions; tools off: the opening is never a delegate call
+    assert replies == [{"instructions": r.opening_rule, "tool_choice": "none"}]
     # firm on the handle: generate_reply drops allow_interruptions=False under server-side turns
     assert opening.allow_interruptions is False
 
@@ -536,3 +541,16 @@ async def test_what_was_that_while_taking_a_message_asks_for_it_again(monkeypatc
     assert r.line("Caller", "Sorry, what was that?") == "ask_message"
     await _settle(r)
     assert b.calls == [] and r.taking and replies[-1]["instructions"] == mouth.fixed(phone.ASK_MESSAGE)
+
+
+def test_a_ui_choice_question_is_said_with_its_options():
+    """8 Nov prod re-run #3, move-102705 seq 6, the exact row: the Monday times were only on the card."""
+    row = ("Which time works for you on Monday, November 9?\n\n```openui-lang\nroot = Stack([q])\n"
+           'q = Choice("Choose a time:", ["1:00 PM", "2:30 PM", "4:00 PM"])\n```')
+    assert mouth.speakable(row) == "Which time works for you on Monday, November 9? 1:00 PM, 2:30 PM or 4:00 PM."
+    assert mouth.speakable("Done.\n```python\nx = 1\n```") == "Done."  # other code blocks stay unsaid
+
+
+def test_the_result_rule_never_lets_the_voice_say_there_is_no_update():
+    """8 Nov prod re-run #3: each team result came out as "I don't have a new team update yet" and was cut."""
+    assert "never say there is no update yet" in mouth.result_instructions(["Moved it."])

@@ -481,6 +481,13 @@ class Settings(BaseSettings):
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = ""
 
+    # Phase 2 task 5: integration credentials (website logins, API keys, OAuth blobs) go to the
+    # credential-envelopes table under a KMS data key instead of one Secrets Manager secret each
+    # ($0.40/mo). Off = today's Secrets Manager path. Reads try the table first either way.
+    CREDENTIAL_ENVELOPE_STORE: bool = False
+    # The CMK that wraps each data key (the stage's KMS key). Empty keeps writes on Secrets Manager.
+    CREDENTIAL_KMS_KEY_ARN: str = ""
+
     # HMAC key for bedrock_gate_tokens.derive_gate_bearer (secret
     # lightbulb/{env}/gate_bearer_hmac_key). Dedicated, never ENCRYPTION_KEY; empty makes the
     # derivation refuse rather than fall back.

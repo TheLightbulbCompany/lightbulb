@@ -412,3 +412,17 @@ describe("DatabaseStack — containers table", () => {
     expect(prod.Properties.TimeToLiveSpecification).toEqual({ AttributeName: "session_ttl", Enabled: true });
   });
 });
+
+describe("DatabaseStack — credential-envelopes table (phase 2 task 5)", () => {
+  test("owner_id + provider, CMK, PITR", () => {
+    buildStack("dev").hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-credential-envelopes",
+      KeySchema: [
+        { AttributeName: "owner_id", KeyType: "HASH" },
+        { AttributeName: "provider", KeyType: "RANGE" },
+      ],
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      SSESpecification: Match.objectLike({ SSEEnabled: true, SSEType: "KMS" }),
+    });
+  });
+});

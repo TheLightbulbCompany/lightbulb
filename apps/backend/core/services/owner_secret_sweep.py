@@ -16,6 +16,10 @@ Listing by prefix rather than iterating a provider registry is deliberate: a
 provider that has since been removed from the registry still has secrets on
 disk, and those are exactly the ones nobody would think to delete.
 
+Integration credentials written with ``CREDENTIAL_ENVELOPE_STORE`` on live in the
+``credential-envelopes`` table instead; both sweeps cover that owner partition too and report
+those rows as ``credential-envelopes/<owner>/<provider>``.
+
 `force_delete_without_recovery` because the point is removal, not a 30-day
 soft-delete that keeps the plaintext retrievable and — more practically —
 holds the name reserved so the same owner re-signing up collides with their
@@ -30,6 +34,7 @@ import boto3
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +77,10 @@ def _list_names_with_prefix(sm, prefix: str) -> list[str]:
             return names
 
 
+def _envelope_name(owner_id: str, provider: str) -> str:
+    return f"{integration_secret_store.ENVELOPE_TABLE}/{owner_id}/{provider}"
+
+
 async def delete_owner_secrets(owner_id: str) -> list[str]:
     """Delete every secret under this owner's prefixes. Returns the names.
 
@@ -91,6 +100,13 @@ async def delete_owner_secrets(owner_id: str) -> list[str]:
                     deleted.append(name)
                 except Exception:
                     logger.exception("owner_secret_sweep: failed to delete %s", name)
+        for provider in integration_secret_store.envelope_providers(owner_id):
+            name = _envelope_name(owner_id, provider)
+            try:
+                integration_secret_store.delete_envelope(owner_id, provider)
+                deleted.append(name)
+            except Exception:
+                logger.exception("owner_secret_sweep: failed to delete %s", name)
         return deleted
 
     return await run_in_thread(_sweep)
@@ -106,6 +122,7 @@ async def list_owner_secret_names(owner_id: str) -> list[str]:
         names: list[str] = []
         for prefix in owner_secret_prefixes(owner_id):
             names.extend(_list_names_with_prefix(sm, prefix))
+        names += [_envelope_name(owner_id, p) for p in integration_secret_store.envelope_providers(owner_id)]
         return names
 
     return await run_in_thread(_list)

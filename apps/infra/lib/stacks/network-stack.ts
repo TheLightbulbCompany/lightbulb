@@ -18,7 +18,7 @@ const ENV_CONFIG: Record<string, { maxAzs: number; cidr: string }> = {
 /**
  * No managed NAT gateway ($32.85/mo + $0.045/GB each). Fargate tasks get a public IP in the
  * public subnets (ECS: "When using a public subnet, you can assign a public IP address to the
- * task ENI"); the private subnets keep egress through one t4g.nano NAT instance, because the
+ * task ENI"); the private subnets keep egress through one t4g.micro NAT instance, because the
  * AgentCore runtimes, the workspace browser and the VPC Lambdas cannot hold a public IP.
  * Same shape in dev and prod.
  */
@@ -46,7 +46,9 @@ export class NetworkStack extends cdk.Stack {
     // egress until it is replaced (the API and Temporal tasks keep their own public IPs). Add an
     // ASG of 1 or fck-nat's HA mode if that outage starts to matter.
     const natInstance = ec2.NatProvider.instanceV2({
-      instanceType: new ec2.InstanceType("t4g.nano"),
+      // Not t4g.nano: its 512 MB OOM-kills the default user data's `yum install iptables-services`
+      // on AL2023, so the instance boots with no MASQUERADE rule and forwards nothing (dev, 8 Nov).
+      instanceType: new ec2.InstanceType("t4g.micro"),
       // CDK's default admits 0.0.0.0/0 on every port; only the VPC routes through it.
       defaultAllowedTraffic: ec2.NatTrafficDirection.OUTBOUND_ONLY,
     });
@@ -71,6 +73,9 @@ export class NetworkStack extends cdk.Stack {
       restrictDefaultSecurityGroup: true,
     });
 
+    // User data runs only on an instance's first boot, and CDK's NAT Instance does not replace on a
+    // user-data or type change, so bump this id to force a fresh instance when either changes.
+    (natInstance.gatewayInstances[0].node.defaultChild as ec2.CfnInstance).overrideLogicalId("NatInstanceV2");
     natInstance.connections.allowFrom(ec2.Peer.ipv4(config.cidr), ec2.Port.allTraffic(), "VPC egress via NAT instance");
     // A fixed address: the workspace browser leaves from it (sites that bind a sign-in to an IP),
     // and it survives the instance being replaced on an AMI update.

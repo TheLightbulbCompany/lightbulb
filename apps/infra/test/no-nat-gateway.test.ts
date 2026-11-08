@@ -5,7 +5,7 @@ import { HOSTED_ZONE_CONTEXT } from "./helpers";
 
 /**
  * Phase 2 task 6: no managed NAT gateway. Fargate tasks sit in public subnets with a public IP;
- * the private subnets keep egress through one t4g.nano NAT instance with a fixed EIP, because
+ * the private subnets keep egress through one t4g.micro NAT instance with a fixed EIP, because
  * AgentCore runtimes, the workspace browser and the VPC Lambdas get no public IP of their own.
  * Dev and prod have the same shape.
  */
@@ -25,9 +25,11 @@ const BACKEND_SERVICES = ["backend", "temporal-worker", "temporal-watchdog"];
 function assertNoNat(t: { network: Template; service: Template }) {
   t.network.resourceCountIs("AWS::EC2::NatGateway", 0);
   t.network.hasResourceProperties("AWS::EC2::Instance", {
-    InstanceType: "t4g.nano",
+    InstanceType: "t4g.micro",
     SourceDestCheck: false,
   });
+  // A fresh logical id forces a new instance, so the first-boot user data (iptables MASQUERADE) runs.
+  expect(Object.keys(t.network.findResources("AWS::EC2::Instance"))).toEqual(["NatInstanceV2"]);
   t.network.resourceCountIs("AWS::EC2::EIP", 1);
   // The NAT instance admits the VPC only; CDK's default would open it to 0.0.0.0/0.
   const natSgs = Object.values(

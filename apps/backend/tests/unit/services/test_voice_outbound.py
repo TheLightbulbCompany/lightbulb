@@ -57,3 +57,34 @@ async def test_forward_check_owner_only(repos, async_client_org_member, monkeypa
     await messaging_repo.put_voice_agent(WS, CFG, "u")
     assert (await async_client_org_member.post("/api/v1/voice/forward-check")).status_code == 403
     lk.sip.create_sip_participant.assert_not_called()
+
+
+async def _ready(monkeypatch, **cfg) -> MagicMock:
+    lk = fake_livekit(monkeypatch)
+    monkeypatch.setattr(settings, "VOICE_OUTBOUND_TRUNK_ID", "ST_out")
+    await voice_phone.put_line("+14155550100", {"ownerId": WS, "ownerUserId": "u"})
+    await messaging_repo.put_voice_agent(WS, {**CFG, **cfg}, "u")
+    return lk
+
+
+async def test_second_check_inside_window_does_not_dial(repos, monkeypatch):  # noqa: F811
+    lk = await _ready(monkeypatch)
+    assert await voice_outbound.forward_check(WS, await messaging_repo.get_voice_agent(WS)) == {"ok": True}
+    again = await voice_outbound.forward_check(WS, await messaging_repo.get_voice_agent(WS))
+    assert again == {"ok": False, "reason": "check_in_progress"}
+    assert lk.sip.create_sip_participant.await_count == 1
+
+
+async def test_non_us_business_line_refused(repos, monkeypatch):  # noqa: F811
+    lk = await _ready(monkeypatch, forwardFrom="+442071234567")
+    out = await voice_outbound.forward_check(WS, await messaging_repo.get_voice_agent(WS))
+    assert out == {"ok": False, "reason": "us_only"}
+    lk.sip.create_sip_participant.assert_not_called()
+
+
+async def test_failed_dial_keeps_the_old_tick(repos, monkeypatch):  # noqa: F811
+    lk = await _ready(monkeypatch, forwardingOk=True)
+    lk.sip.create_sip_participant.side_effect = RuntimeError("twirp")
+    out = await voice_outbound.forward_check(WS, await messaging_repo.get_voice_agent(WS))
+    assert out == {"ok": False, "reason": "dial_failed"}
+    assert (await messaging_repo.get_voice_agent(WS))["forwardingOk"] is True

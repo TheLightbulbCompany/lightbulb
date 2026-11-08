@@ -254,11 +254,9 @@ async def start_call(body: StartIn) -> dict:
 def _is_probe(cfg: dict, body: StartIn) -> bool:
     """A call arriving within WINDOW_S of a pending forwarding check, from our own line or the business line (the
     carrier may present either as the caller)."""
-    check, caller = cfg.get("forwardingCheck"), body.callerNumber
-    if not (isinstance(check, dict) and caller in (body.calledNumber, _e164(str(cfg.get("forwardFrom") or "")))):
+    if body.callerNumber not in (body.calledNumber, _e164(str(cfg.get("forwardFrom") or ""))):
         return False
-    age = (datetime.now(_TZ) - datetime.fromisoformat(check["startedAt"])).total_seconds()
-    return 0 <= age <= voice_outbound.WINDOW_S
+    return 0 <= voice_outbound.age_s(cfg.get("forwardingCheck")) <= voice_outbound.WINDOW_S
 
 
 def greeting(custom: str, business: str, assistant: str) -> str:

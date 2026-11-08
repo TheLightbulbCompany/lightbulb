@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from google.protobuf.duration_pb2 import Duration
 from livekit import api
@@ -36,13 +37,17 @@ async def forward_check(ws: str, cfg: dict) -> dict:
     line = str(cfg.get("number") or "") or settings.VOICE_LINE_NUMBER
     if not to:
         return {"ok": False, "reason": "no_business_line"}
+    if not to.startswith("+1"):
+        return {"ok": False, "reason": "us_only"}  # US-only product: never dial abroad or premium international
     if not line or ((await messaging_repo._get(f"PHONE#{line}", "LINE")) or {}).get("ownerId") != ws:
         return {"ok": False, "reason": "no_line"}  # the call coming back must reach this workspace's line
+    if age_s(cfg.get("forwardingCheck")) <= WINDOW_S:
+        return {"ok": False, "reason": "check_in_progress"}  # one dial per window per workspace, server-side
     call_id = uuid.uuid4().hex
-    # Written before the dial so the call coming back always finds it; a new check clears the old tick.
-    rest = {k: v for k, v in cfg.items() if k not in ("forwardingOk", "forwardingOkAt")}
+    # Written before the dial so the call coming back always finds it. A failed dial leaves it, so a retry waits out
+    # the window too. ponytail: two POSTs in the same instant can both dial; a conditional write if that matters.
     await messaging_repo.put_voice_agent(
-        ws, {**rest, "forwardingCheck": {"startedAt": utc_now_iso(), "callId": call_id}}, "voice"
+        ws, {**cfg, "forwardingCheck": {"startedAt": utc_now_iso(), "callId": call_id}}, "voice"
     )
     try:
         async with livekit_huddles._api() as lk:
@@ -54,7 +59,21 @@ async def forward_check(ws: str, cfg: dict) -> dict:
     except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike
         logger.warning("forward check dial failed ws=%s", ws, exc_info=True)
         return {"ok": False, "reason": "dial_failed"}
+    # The dial started: only now does the old tick go (unless this check already came back and set a new one).
+    now = await messaging_repo.get_voice_agent(ws) or {}
+    if (now.get("forwardingCheck") or {}).get("callId") == call_id:
+        for k in ("forwardingOk", "forwardingOkAt"):
+            now.pop(k, None)
+        await messaging_repo.put_voice_agent(ws, now, "voice")
     return {"ok": True}
+
+
+def age_s(check) -> float:
+    """Seconds since a forwardingCheck started; infinite when there is none (or it is unreadable)."""
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(check["startedAt"])).total_seconds()
+    except (TypeError, KeyError, ValueError):
+        return float("inf")
 
 
 async def end_probe(inbound_room: str, call_id: str) -> None:

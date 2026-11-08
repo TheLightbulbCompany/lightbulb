@@ -81,3 +81,13 @@ it("check forwarding says when it is not switched on, and when the call never ca
   expect(get).toHaveBeenCalledTimes(23);
   expect(await screen.findByText(/didn't see the call arrive/)).toBeInTheDocument();
 });
+
+it("check forwarding says when a check is running or the number is not US", async () => {
+  render(<Onboarding config={at(4, { number: "+14842079294", forwardFrom: "+44 20 7123 4567" })} save={vi.fn()} />);
+  post.mockResolvedValue({ ok: false, reason: "check_in_progress" });
+  fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
+  expect(await screen.findByText("A check is already running")).toBeInTheDocument();
+  post.mockResolvedValue({ ok: false, reason: "us_only" });
+  fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
+  expect(await screen.findByText("Forwarding checks work for US numbers for now")).toBeInTheDocument();
+});

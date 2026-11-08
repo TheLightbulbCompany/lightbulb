@@ -208,17 +208,23 @@ export function ToAdd({ c, set, name, why }: Edit & { name: string; why?: string
   </>;
 }
 
+/** What the server's refusals say; any other refusal reads as a missed call. */
+const REFUSED: Record<string, string> = {
+  outbound_not_configured: "Forwarding check isn't switched on yet",
+  check_in_progress: "A check is already running",
+  us_only: "Forwarding checks work for US numbers for now",
+};
 const POLL_MS = 3000, POLL_FOR_MS = 70_000;  // as long as the server counts a call as the probe (voice_outbound.WINDOW_S)
 
 /** Rings the business line once from the assistant's number; forwarding sends it back, and the server marks it. */
 export function ForwardCheck({ c, set }: { c: AgentConfig; set: (patch: Partial<AgentConfig>) => void }) {
   const api = useApi();
-  const [state, setState] = useState<"" | "checking" | "ok" | "missed" | "off">(c.forwardingOk ? "ok" : "");
+  const [state, setState] = useState<string>(c.forwardingOk ? "ok" : "");
   const check = async () => {
     setState("checking");
     try {
       const r = (await api.post("/voice/forward-check", { forwardFrom: c.forwardFrom })) as { ok: boolean; reason?: string };
-      if (!r.ok) return setState(r.reason === "outbound_not_configured" ? "off" : "missed");
+      if (!r.ok) return setState(r.reason && r.reason in REFUSED ? r.reason : "missed");
       for (let t = POLL_MS; t <= POLL_FOR_MS; t += POLL_MS) {  // every 3 s, for up to 70 s
         await new Promise((done) => setTimeout(done, POLL_MS));
         const { config } = (await api.get("/voice/agent")) as { config: AgentConfig | null };
@@ -233,7 +239,7 @@ export function ForwardCheck({ c, set }: { c: AgentConfig; set: (patch: Partial<
     <p className="vx-sub" role="status">
       {state === "ok" && <><Tick size={16} aria-hidden style={{ verticalAlign: "-3px" }} /> Forwarding works. Calls to your line reach your assistant.</>}
       {state === "missed" && "We didn't see the call arrive. Check the code for your carrier and try again."}
-      {state === "off" && "Forwarding check isn't switched on yet"}
+      {REFUSED[state]}
     </p>
   </div>;
 }

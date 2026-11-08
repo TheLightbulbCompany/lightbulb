@@ -68,7 +68,7 @@ def test_router_agent_has_exact_tool_surface(quiet_turn, threads, monkeypatch): 
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k) or Agent())
     _post()
     threads[0].run_now()
-    assert built["enabled_toolsets"] == ["lightbulb_router", "memory"]
+    assert built["enabled_toolsets"] == ["lightbulb_router"]
     assert built["disabled_toolsets"] is None
 
 

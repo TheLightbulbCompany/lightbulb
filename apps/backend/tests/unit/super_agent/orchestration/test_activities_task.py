@@ -761,7 +761,10 @@ async def test_a_question_tasks_answer_is_the_main_chat_reply(world):
     """One brain (founder ruling A, 8 Nov): "what have we shipped in the last week?" is a task the Router starts with
     the question verbatim; its Worker's answer (short text, no file) is the reply in the main chat, the card under it."""
     tid = await _task(
-        root=ROOT, title="What have we shipped in the last week?", description="What have we shipped in the last week?"
+        root=ROOT,
+        question=True,
+        title="What have we shipped in the last week?",
+        description="What have we shipped in the last week?",
     )
     await _attempt(tid)
     answer = "Three PRs merged since 1 Nov: #5061 voice worker fix, #5069 Paperclip exit, #5093 credential envelopes."
@@ -769,6 +772,37 @@ async def test_a_question_tasks_answer_is_the_main_chat_reply(world):
     _room, origin = world["posts"]
     assert origin["room"] == ROOM and "thread_root" not in origin and origin["text"] == answer
     assert origin["kind"] == "task_line" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
+    assert not (await repo.get_task(WS, tid)).get("outputs")  # Q&A never fills Files and Creations
+
+
+async def test_a_long_question_answer_points_to_the_thread(world):
+    tid = await _task(root=ROOT, question=True)
+    await _attempt(tid)
+    await _ended(tid, "completed", output="Twelve PRs merged since 1 Nov. " + "- #50xx a change\n" * 200)
+    assert world["posts"][-1]["text"] == "Twelve PRs merged since 1 Nov. Full answer in the thread."
+
+
+async def test_the_worker_reads_what_was_asked_word_for_word(monkeypatch):
+    """Review #5099: the brief is the Router's words; the Worker also gets the trigger's own text under "## Asked"."""
+    from unittest.mock import AsyncMock
+
+    from core.services import room_memory
+
+    monkeypatch.setattr(acts, "_local_now", AsyncMock(return_value="now"))
+    monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        repo, "get_trigger", AsyncMock(return_value={"ref": {"text": "what have we shipped in the last week?"}})
+    )
+    task = {
+        "taskId": ts.new_task_id(),
+        "title": "Check what shipped",
+        "description": "Check what shipped",
+        "triggerId": "chat:m1",
+        "audience": {"kind": "workspace"},
+        "lane": "shared",
+    }
+    req = await acts._request(WS, task, {"n": 1, "inputTriggerIds": []}, {"attempts": []})
+    assert "## Asked\nwhat have we shipped in the last week?" in req.input
 
 
 async def test_a_task_of_another_room_says_only_done(world):

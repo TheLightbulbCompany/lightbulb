@@ -131,17 +131,21 @@ def test_router_tool_validates_fields(router_turn, kind, args):
     assert "decisions" not in turn.RUNS[RUN]
 
 
-def test_router_memory_is_read_only():
+def test_router_never_looks_things_up():
+    """Founder ruling A (8 Nov 2026, DeepSeek shared.md:5): the Router never reads memory; a Worker does."""
+    assert turn.ROUTER_RUN_LIMITS["enabled_toolsets"] == [turn.ROUTER_TOOLSET]
     token = turn._ROUTER_TURN.set(True)
     try:
-        blocked = turn.memory_pre_tool_call("memory", {"action": "add", "content": "x"})
-        assert blocked["action"] == "block"
-        assert turn.memory_pre_tool_call("memory", {"action": "read"}) is None
-        assert turn.memory_pre_tool_call("remember", {"text": "x"})["action"] == "block"
-        assert turn.memory_pre_tool_call("workspace_memory_search", {"query": "x"}) is None
+        for tool in ("memory", "remember", "workspace_memory_search"):
+            assert turn.memory_pre_tool_call(tool, {"query": "x"})["action"] == "block"
     finally:
         turn._ROUTER_TURN.reset(token)
-    assert turn.memory_pre_tool_call("memory", {"action": "add", "content": "x"}) is None
+    assert turn.memory_pre_tool_call("workspace_memory_search", {"query": "x"}) is None
+
+
+def test_start_task_records_a_question(router_turn):
+    assert _call("start_task", trigger_ids=["chat:m1"], title="t", brief="b", ack="a", question=True) == "recorded"
+    assert turn.RUNS[RUN]["decisions"][-1]["question"] is True
 
 
 def test_router_remember_is_open_outside_a_router_turn():

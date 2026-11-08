@@ -1748,7 +1748,7 @@ def test_router_replies_only_from_the_batch():
     assert "reply only when the batch below shows the answer" in text
     assert "what shipped" in text and "older than the batch" in text
     assert "brief is the person's question word for word" in text
-    assert "never answer it from memory or from the tasks below" in text
+    assert "the listed tasks are not a record of what the business did" in text
 
 
 def test_people_see_threads_not_tasks():
@@ -1766,3 +1766,23 @@ def test_workers_answer_a_question_with_the_answer():
 
     text = " ".join(WORKER_INSTRUCTIONS.split())
     assert "When the task is a question" in text and "at most 100 words" in text
+    # Review #5099: a request to make, buy or send is work, however it is phrased.
+    assert 'not a question, even when phrased as one ("Can you build me a booking page?")' in text
+
+
+def test_status_of_a_visible_thread_is_still_a_reply():
+    """Review #5099: the no-lookup rule must not read as forbidding status replies about threads in the batch."""
+    text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert "The status of a thread listed below is a reply" in text
+    assert "never answer it from memory or from the tasks below" not in text
+    assert "question=true" in text
+
+
+@pytest.mark.asyncio
+async def test_a_question_start_is_stored_as_a_question(world):
+    """One brain: start_task with question=true marks the task, so its answer is the chat reply, not an output."""
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1], title="What shipped?", question=True), _start([t1], title="Buy the domain")]
+    await _run([t1])
+    rows = [await repo.get_task(WS, ts.router_task_id(BATCH, i, 0)) for i in (0, 1)]
+    assert rows[0]["question"] is True and rows[1]["question"] is False

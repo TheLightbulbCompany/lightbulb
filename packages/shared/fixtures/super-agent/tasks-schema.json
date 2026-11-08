@@ -557,6 +557,11 @@
           "title": "Confirmall",
           "type": "boolean"
         },
+        "question": {
+          "default": false,
+          "title": "Question",
+          "type": "boolean"
+        },
         "hidden": {
           "default": false,
           "title": "Hidden",
@@ -3867,6 +3872,18 @@
             ],
             "default": null,
             "title": "Visibility"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
           },
           "parentTaskId": {
             "anyOf": [

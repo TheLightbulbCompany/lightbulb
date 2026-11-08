@@ -300,7 +300,9 @@ def result_text(tree: dict, room: str | None, humans: Collection[str] = ()) -> s
     if line is None or tree["task"].get("status") != "idle":
         return line
     att = max(tree.get("attempts") or [], key=lambda a: a.get("n", 0), default=None)
-    return short_result(att) or line
+    if short := short_result(att):
+        return short
+    return f"{line} Full answer in the thread." if tree["task"].get("question") else line
 
 
 #: What a client reads of an Attempt (web TaskPane, mobile TaskDetailsSheet, `TaskAttempt` in packages/shared). An

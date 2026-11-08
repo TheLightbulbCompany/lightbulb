@@ -838,10 +838,10 @@ ROUTER_TOOLSET = "lightbulb_router"
 VOICE_WORK_TOOLSET = "lightbulb_voice_work"
 # task_note: only a super-agent Worker run re-adds it (_run_durable_turn); every other turn strips it.
 TASK_TOOLSET = "lightbulb_task"
-ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_toolsets": None,
+ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET], "disabled_toolsets": None,
                      "skip_background_review": True}
 MAX_DECISIONS = 40
-#: Router turns read memory but never write it (founder ruling: durable learning happens in Workers).
+#: A Router turn never reads or writes memory (founder ruling A, 8 Nov 2026): a Worker reads the source.
 _ROUTER_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_router_turn", default=False)
 def install_router_tool_search() -> bool:
     """A Router turn sees its decision tools up front, never behind Hermes's tool_search.
@@ -871,8 +871,8 @@ def install_router_tool_search() -> bool:
     return True
 
 
-ROUTER_NOTES_READ_ONLY = ("Lightbulb's coordinator reads notes but does not write them: the specialist doing "
-                          "the work records what should be remembered.")
+ROUTER_NO_LOOKUPS = ("Lightbulb's coordinator never looks things up: start a task and its specialist reads "
+                     "the source.")
 
 
 def record_decision(run_id: str, decision: dict) -> bool:
@@ -3892,17 +3892,17 @@ PRIVATE_DM_NOTES = ("Not saved: this is a private DM. What this person tells you
 
 def memory_pre_tool_call(tool_name: str = "", args: dict | None = None, **_kw):
     """Hermes pre_tool_call hook (registered by the lightbulb plugin): refuse a shared-notes write
-    in a private DM turn."""
-    if _ROUTER_TURN.get() and tool_name == "remember":  # the agentcore provider's write (search stays open)
-        return {"action": "block", "message": ROUTER_NOTES_READ_ONLY}
-    if tool_name != "memory" or not (_PRIVATE_DM.get() or _ROUTER_TURN.get()):
+    in a private DM turn, and every memory tool on a Router turn."""
+    # The Router's toolsets no longer name memory; the agentcore provider's tools ride on the provider, not the
+    # toolset, in pinned Hermes 0.21.3 (unverified either way), so they are refused here too.
+    if _ROUTER_TURN.get() and tool_name in ("memory", "remember", "workspace_memory_search"):
+        return {"action": "block", "message": ROUTER_NO_LOOKUPS}
+    if tool_name != "memory" or not _PRIVATE_DM.get():
         return None
     args = args if isinstance(args, dict) else {}
     ops = args.get("operations")
     actions = [op.get("action") for op in ops if isinstance(op, dict)] if isinstance(ops, list) and ops \
         else [args.get("action")]
-    if _ROUTER_TURN.get() and any(action in ("add", "replace", "remove") for action in actions):
-        return {"action": "block", "message": ROUTER_NOTES_READ_ONLY}
     if any(action in ("add", "replace") for action in actions):
         return {"action": "block", "message": PRIVATE_DM_NOTES}
     return None

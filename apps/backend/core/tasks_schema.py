@@ -497,6 +497,7 @@ class Task(_Row):
     origin: str | None = None
     previous_run_task_id: str | None = None  # an automation run's previous run (lane A chaining)
     confirm_all: bool = False  # started from a meeting: every spend, send or publish gets a card, in any mode
+    question: bool = False  # a question a Worker answers from the source: its answer is the chat reply, not an output
     hidden: bool = False  # §18 speculative work
     watch_until: str | None = None  # "Watching" when set
     attempt_count: int = 0
@@ -971,6 +972,7 @@ class StartTask(_Decision):
     specialist: str | None = None
     ack: str
     visibility: AudienceKind | None = None
+    question: bool | None = None  # one brain (8 Nov 2026): a question for a Worker to answer from the source
     parent_task_id: TaskId | None = None
     policy_ref: str | None = None
     budget_usd: float | None = None

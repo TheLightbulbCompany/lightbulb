@@ -36,6 +36,7 @@ def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
     """Founder, 8 Nov: no script. The prompt names what the opening must say; the owner's greeting is a style."""
     text = " ".join(phone.Receptionist(phone.Backend(), INFO, None).instructions.split())
     assert "You speak first. Your opening line, in your own words, must say all three: your name, Lightbulb; that you are an AI assistant; and that this call is recorded." in text
+    assert "It is your very first words: no preamble before it." in text  # gpt-realtime-2 preambles by default
     assert f'a guide, not a script: "{GREETING}"' in text
     assert "If you are told the disclosure was missed, say the one disclosure sentence exactly as given" in text
     replies = []

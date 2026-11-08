@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timezone
 
-from core.repositories.paperclip_repo import PaperclipWorkspace
+from core.repositories.workspace_repo import Workspace
 from routers.teams.deps import (
     TeamsContext,
     envelope_list,
@@ -52,7 +52,7 @@ def auth_ctx():
 
 @pytest.fixture
 def active_ws():
-    return PaperclipWorkspace(
+    return Workspace(
         org_id="o1",
         company_id="",  # a natively provisioned workspace has no Paperclip company
         status="active",

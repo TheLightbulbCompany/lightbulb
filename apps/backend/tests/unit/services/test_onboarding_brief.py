@@ -52,7 +52,7 @@ async def test_first_canonical_human_message_captures_eligible_specialist():
         "dispatchTargets": [{"agentId": starter_ids["engineering"], "eventKind": "user_request"}],
     }
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", reconcile),
         patch(
             "core.repositories.messaging_repo.list_messages_between",
@@ -99,7 +99,7 @@ async def test_deleted_specialist_does_not_block_capture_for_remaining_target():
         "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "room_event"}],
     }
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
         patch(
             "core.repositories.messaging_repo.list_messages_between",
@@ -147,7 +147,7 @@ async def test_the_first_run_is_captured_where_the_welcome_is(room, history, cap
     }
     close = AsyncMock()
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
         patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=earlier)),
         patch("core.services.messaging.close_first_run", new=close),
@@ -200,7 +200,7 @@ async def test_first_human_message_without_dispatch_target_does_not_seed_onboard
         "dispatchTargets": [],
     }
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch(
             "core.repositories.messaging_repo.list_messages_between",
             new=AsyncMock(return_value=[{"messageSeq": 1, "author": {"kind": "agent"}}]),
@@ -381,7 +381,7 @@ async def test_a_url_in_the_first_message_lands_as_grow_with_the_url_as_input():
         "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
     }
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
         patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
     ):
@@ -408,7 +408,7 @@ async def test_a_not_sure_yet_message_keeps_the_owners_words_as_detail():
         "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
     }
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
         patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
     ):
@@ -434,7 +434,7 @@ async def test_a_new_path_message_lands_with_no_detail():
         "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
     }
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
         patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
     ):
@@ -463,7 +463,7 @@ async def test_start_dms_customer_operations_with_the_prompt():
     dm = AsyncMock(return_value="room-dm")
     with (
         patch(
-            "core.repositories.paperclip_repo.PaperclipRepo", return_value=_desk_repo({"customer_operations": "co-1"})
+            "core.repositories.workspace_repo.WorkspaceRepo", return_value=_desk_repo({"customer_operations": "co-1"})
         ),
         patch("core.services.messaging.create_human_message", post),
         patch("core.services.messaging._agent_dm_room_id", dm),
@@ -489,7 +489,7 @@ async def test_start_is_idempotent_per_url():
     for brief in briefs:
         with (
             patch(
-                "core.repositories.paperclip_repo.PaperclipRepo",
+                "core.repositories.workspace_repo.WorkspaceRepo",
                 return_value=_desk_repo({"customer_operations": "co-1"}, pending=brief),
             ),
             patch("core.services.messaging.create_human_message", post),
@@ -506,7 +506,7 @@ async def test_no_customer_operations_is_a_noop():
 
     post = AsyncMock()
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=_desk_repo({"ceo": "x"})),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=_desk_repo({"ceo": "x"})),
         patch("core.services.messaging.create_human_message", post),
     ):
         assert await start_front_desk_build_for_line(OWNER) is False
@@ -528,7 +528,7 @@ def _website_capture(start):
         "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
     }
     return message, (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
         patch("core.services.onboarding_brief.start_front_desk_build_for_line", start),
         patch(
@@ -574,7 +574,7 @@ async def test_the_build_reads_the_website_from_the_brief(pending, row, expected
     post = AsyncMock(return_value=SimpleNamespace(message_id="m1"))
     dm = AsyncMock(return_value="r")
     with (
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         patch("core.services.messaging.create_human_message", post),
         patch("core.services.messaging._agent_dm_room_id", dm),
     ):

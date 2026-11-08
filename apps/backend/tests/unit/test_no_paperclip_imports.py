@@ -3,9 +3,8 @@
 Every file there that still says "paperclip" (any case) is listed below, so the list can only
 shrink: a new mention fails, and so does a listed file that no longer has one (delete its line).
 
-``KEPT`` is the part of inventory §4e Group 1 still on the live path; each line says why. The rest
-import a kept module or only carry a data name (the ``paperclip-companies`` table, a
-``PAPERCLIP_*`` setting or secret, the ``paperclip.event`` live-event name) or a comment.
+``KEPT`` and ``IMPORTERS`` are empty since task 9: no Paperclip module is left. ``MENTIONS`` only carry a
+data name or a comment.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ import re
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[2]
-MARK = "# ponytail: delete after the prod data move (task 3)"
 
 #: Deleted in this task; nothing may import them again.
 DELETED = (
@@ -37,115 +35,81 @@ DELETED = (
     "core.services.board_cards",
     "core.services.paperclip_session_cookie",
     "core.services.paperclip_user_session",
+    "core.services.paperclip_admin_client",
+    "core.services.paperclip_admin_session",
+    "core.services.paperclip_adapter_config",
+    "core.services.paperclip_meta",
+    "core.services.paperclip_openclaw_pairing",
+    "core.services.paperclip_owner_email",
+    "core.repositories.paperclip_repo",
 )
 
-KEPT = {
-    "core/repositories/paperclip_repo.py": "the workspace META store (resolve_owner_row, funnel, members) and the copy_workspace_meta translation",
-    "core/services/paperclip_adapter_config.py": "hermes_gateway adapter block for agent create",
-    "core/services/paperclip_admin_client.py": "the Paperclip-run paths (task 6) still write through Paperclip",
-    "core/services/paperclip_admin_session.py": "admin cookie for the client above and for the prod scripts",
-    "core/services/paperclip_meta.py": "agent create fields",
-    "core/services/paperclip_openclaw_pairing.py": "resolve_company_id_for_owner, read by the client callers",
-    "core/services/paperclip_owner_email.py": "agent mail sender identity",
-    "routers/teams/schemas.py": "request bodies for agents.py and settings.py",
-}
+KEPT: dict[str, str] = {}
 
-#: Import a ``KEPT`` module (a Paperclip call on a live path).
-IMPORTERS = {
-    "core/repositories/container_repo.py",
-    "core/services/account_wipe.py",
-    "core/services/activity.py",
-    "core/services/admin_service.py",
-    "core/services/agent_lifecycle.py",
-    "core/services/agent_mail_owner_send.py",
-    "core/services/agent_mail_send.py",
-    "core/services/agent_registry.py",
-    "core/services/company_package.py",
-    "core/services/daily_digest.py",
-    "core/services/hermes_provisioning.py",
-    "core/services/ideas.py",
-    "core/services/link_wallet.py",
-    "core/services/messaging.py",
-    "core/services/onboarding_brief.py",
-    "core/services/openclaw_work.py",
-    "core/services/owner_facts.py",
-    "core/services/readiness_state.py",
-    "core/services/runtime_rpc.py",
-    "core/services/session_chat.py",
-    "core/services/text_lines.py",
-    "core/services/update_service.py",
-    "core/services/voice_calls.py",
-    "core/services/website_logins.py",
-    "core/services/week4_active.py",
-    "core/services/workspace_name.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
-    "core/services/workspace_provisioning.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
-    "core/services/workspace_wipe.py",
-    "routers/admin.py",
-    "routers/billing.py",
-    "routers/company_context.py",
-    "routers/debug.py",
-    "routers/ses_inbound.py",
-    "routers/teams/agents.py",
-    "routers/teams/deps.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
-    "routers/teams/settings.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
-    "routers/webhooks.py",
-}
+IMPORTERS: set[str] = set()
 
-#: Data names and comments only.
+#: Data names (the ``paperclip-companies`` table, ``PAPERCLIP_*`` env names, the ``params.paperclip`` wire
+#: key, the ``paperclipUserId`` field, the ``paperclip.event`` live-event name, wipe step names) and comments.
 MENTIONS = {
     "core/config.py",
     "core/repositories/integrations_repo.py",
     "core/repositories/update_repo.py",
     "core/repositories/user_repo.py",
+    "core/repositories/workspace_repo.py",
+    "core/services/account_wipe.py",
+    "core/services/activity.py",
+    "core/services/admin_service.py",
     "core/services/agent_mail_thread.py",
+    "core/services/agent_meta.py",
     "core/services/agent_provenance.py",
     "core/services/automation_hooks.py",
     "core/services/clerk_admin.py",
+    "core/services/company_package.py",
     "core/services/connection_service.py",
     "core/services/credentials/providers.yaml",
     "core/services/credentials/registry.py",
+    "core/services/daily_digest.py",
     "core/services/entitlement_guards.py",
     "core/services/google_watch.py",
     "core/services/heartbeat_checklist.py",
     "core/services/hermes_profiles.py",
+    "core/services/hermes_provisioning.py",
     "core/services/hook_signatures.py",
     "core/services/inbound_triggers.py",
     "core/services/local_sessions.py",
     "core/services/meeting_notes.py",
+    "core/services/messaging.py",
     "core/services/needs_you_email.py",
     "core/services/node_broker.py",
     "core/services/notification_copy.py",
+    "core/services/onboarding_brief.py",
     "core/services/owner_secret_sweep.py",
+    "core/services/readiness_state.py",
+    "core/services/runtime_rpc.py",
     "core/services/service_token.py",
     "core/services/session_keys.py",
     "core/services/stripe_webhook_handlers.py",
     "core/services/task_conversation.py",
     "core/services/trigger_fire_url.py",
+    "core/services/update_service.py",
+    "core/services/voice_calls.py",
+    "core/services/workspace_wipe.py",
     "core/tasks_schema.py",
     "core/temporal/activities.py",
     "routers/automations.py",
     "routers/container.py",
+    "routers/debug.py",
     "routers/gateway_relay.py",
     "routers/lifecycle_operations.py",
     "routers/memory.py",
     "routers/meta_webhook.py",
     "routers/orgs.py",
     "routers/sessions.py",
+    "routers/teams/agents.py",
+    "routers/webhooks.py",
     "routers/websocket_chat.py",
     "routers/workspace_files.py",
 }
-
-#: The prod data-move scripts and the code only they need.
-FOR_SCRIPTS = (
-    "scripts/copy_workspace_meta.py",
-    "scripts/copy_workspace_names.py",
-    "scripts/backfill_agent_registry.py",
-    "scripts/cancel_paperclip_approvals.py",
-    "scripts/list_paperclip_webhook_triggers.py",
-    "core/services/agent_registry.py",
-    "core/repositories/paperclip_repo.py",
-    "core/services/paperclip_admin_client.py",
-)
 
 
 def _mentions() -> set[str]:
@@ -176,7 +140,3 @@ def test_deleted_modules_stay_deleted():
         if pattern.search(p.read_text())
     ]
     assert hits == []
-
-
-def test_kept_for_the_prod_scripts_is_marked():
-    assert [f for f in FOR_SCRIPTS if MARK not in (BACKEND / f).read_text()] == []

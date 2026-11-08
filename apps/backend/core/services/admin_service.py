@@ -277,15 +277,15 @@ async def get_overview(user_id: str) -> dict:
     }
 
 
-def _paperclip_repo():
-    """Local import so ``patch("core.repositories.paperclip_repo.PaperclipRepo", ...)``
+def _workspace_repo():
+    """Local import so ``patch("core.repositories.workspace_repo.WorkspaceRepo", ...)``
     (the pattern every existing test double in this codebase already uses)
     keeps working -- mirrors ``core.services.readiness_state``'s own
     local-import idiom (``readiness_state.py:102-110``).
     """
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    return PaperclipRepo(table_name="paperclip-companies")
+    return WorkspaceRepo()
 
 
 _CONTAINER_PROVISION_FIELDS = (
@@ -304,7 +304,7 @@ _CONTAINER_PROVISION_FIELDS = (
     "updated_at",
 )
 
-# ALLOWLIST — every name verified against the PaperclipWorkspace dataclass
+# ALLOWLIST — every name verified against the Workspace dataclass
 # (the workspace row carries no credential at all; those live on identity
 # rows, which this surface never reads). Narrowing through an allowlist means
 # a future field is excluded by default, not leaked by default.
@@ -333,7 +333,7 @@ _PAPERCLIP_PROVISION_FIELDS = (
 def _iso(value: Any) -> Any:
     """``datetime`` -> ISO string; every other value passes through unchanged.
 
-    Shared by ``_narrow_paperclip`` (the PaperclipWorkspace dataclass stores
+    Shared by ``_narrow_paperclip`` (the Workspace dataclass stores
     real ``datetime`` objects) and ``_narrow_execution`` (boto3's
     ListExecutions item does the same for start/stop dates) so both
     narrowers hand back a JSON-safe dict rather than leaking a bare datetime
@@ -369,7 +369,7 @@ def _narrow_container(row: dict | None) -> dict | None:
 
 
 def _narrow_paperclip(company: Any) -> dict | None:
-    """PaperclipWorkspace -> allowlisted onboarding/teams fields."""
+    """Workspace -> allowlisted onboarding/teams fields."""
     if company is None:
         return None
     fields = {k: _iso(getattr(company, k, None)) for k in _PAPERCLIP_PROVISION_FIELDS}
@@ -428,7 +428,7 @@ async def get_provisioning(user_id: str) -> dict:
     status_contract, paperclip_row, gate = await asyncio.gather(
         _with_timeout(compute_status(owner_id, container=container), "readiness_status"),
         _with_timeout(
-            _paperclip_repo().resolve_owner_row(owner_id, include_inactive=True),
+            _workspace_repo().resolve_owner_row(owner_id, include_inactive=True),
             "ddb_paperclip",
         ),
         _with_timeout(probe_provision_gate(owner_id=owner_id), "provision_gate"),

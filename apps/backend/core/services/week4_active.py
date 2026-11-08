@@ -101,11 +101,11 @@ async def check_workspace(org_id: str, now: float) -> bool:
 
 
 async def run_once(now: float | None = None) -> int:
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     now = now if now is not None else time.time()
     emitted = 0
-    for org_id in await PaperclipRepo(table_name="paperclip-companies").list_active_workspace_members():
+    for org_id in await WorkspaceRepo().list_active_workspace_members():
         if not org_id.startswith("org_"):
             continue
         try:

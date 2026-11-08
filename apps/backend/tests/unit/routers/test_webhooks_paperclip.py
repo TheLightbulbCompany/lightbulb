@@ -1,6 +1,6 @@
 """Tests for the Clerk webhook handlers' workspace membership writes.
 
-``PaperclipRepo.remove_member`` (the META store) is patched by the autouse
+``WorkspaceRepo.remove_member`` (the META store) is patched by the autouse
 ``remove_member`` fixture so no test touches DynamoDB.
 
 Svix signature verification is bypassed via monkeypatch on the
@@ -49,7 +49,7 @@ def lifecycle_io(monkeypatch):
 @pytest.fixture(autouse=True)
 def remove_member(monkeypatch):
     mock = AsyncMock()
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", mock)
+    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo.remove_member", mock)
     return mock
 
 
@@ -423,7 +423,7 @@ async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
 
     with (
         patch("core.services.workspace_memory.delete_person_memory", new=person_wipe),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.delete", new=repo_delete),
+        patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=repo_delete),
         patch(
             "core.repositories.channel_link_repo.sweep_by_member",
             new=sweep,
@@ -838,7 +838,7 @@ async def test_user_deleted_fails_the_event_when_the_person_wipe_fails(async_cli
     payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
     with (
         patch("core.services.workspace_memory.delete_person_memory", new=AsyncMock(side_effect=RuntimeError("down"))),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.delete", new=AsyncMock()),
+        patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=AsyncMock()),
         patch("core.repositories.channel_link_repo.sweep_by_member", new=AsyncMock(return_value=0)),
         pytest.raises(RuntimeError, match="down"),  # the app error reaches the client: no 200 to ack
     ):

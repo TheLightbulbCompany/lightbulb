@@ -24,7 +24,7 @@ from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import (
     container_rpc,
     hermes_profiles,
@@ -369,7 +369,7 @@ def _problem(status: int, **detail) -> HTTPException:
 
 
 async def _owner_row(owner_id: str):
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    row = await WorkspaceRepo().resolve_owner_row(owner_id)
     if row is None:
         raise _problem(409, code="workspace_not_ready")
     return row
@@ -666,7 +666,7 @@ async def _owned_room(owner_id: str, room_id: str) -> dict:
 
 
 async def _starter_ids(owner_id: str) -> dict:
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    row = await WorkspaceRepo().resolve_owner_row(owner_id)
     return dict(getattr(row, "starter_agent_ids", None) or {})
 
 

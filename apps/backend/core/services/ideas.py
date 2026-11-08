@@ -30,7 +30,7 @@ from pydantic.alias_generators import to_camel
 from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ def _norm(title: str) -> str:
 async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dict[str, str]]:
     """The workspace row, role -> {id, name} for the starter roster's live agents only (a removed
     one has no roster row), and agent id -> name for the whole roster: one roster read."""
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    row = await WorkspaceRepo().resolve_owner_row(owner_id)
     names = await _roster(owner_id)
     starters = (row.starter_agent_ids if row else None) or {}
     agents = {role: {"id": aid, "name": names[aid]} for role, aid in starters.items() if aid in names}
@@ -342,7 +342,7 @@ async def list_ideas(auth: AuthContext) -> dict:
 
 async def _started(auth: AuthContext, rows: list[dict]) -> set[str]:
     """Ideas hidden because someone started them: while the start's request is open, or for
-    QUICK_HIDDEN after a quick one (answered in one go). A Paperclip-era start (a Work project or
+    QUICK_HIDDEN after a quick one (answered in one go). An older start (a Work project or
     task) is finished: that Work no longer runs."""
     now = datetime.now(timezone.utc)
     started = set()
@@ -445,7 +445,7 @@ def _ids(start: dict) -> dict:
 
 async def _start_request(auth: AuthContext, owner_id: str, idea_id: str, job: Job) -> dict:
     """Let's do it: a Router request in the person's DM with Lightbulb, done by the idea's
-    specialist (Lightbulb itself for the top agent's ideas). No Paperclip. Idempotent per (idea, person) while
+    specialist (Lightbulb itself for the top agent's ideas). Idempotent per (idea, person) while
     the request is open; once it ends the idea can be started again."""
     from core.services import proactive, task_conversation
 

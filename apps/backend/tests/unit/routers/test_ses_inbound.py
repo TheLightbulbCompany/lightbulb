@@ -1181,13 +1181,13 @@ async def test_a_legacy_roster_without_a_starter_ceo_delivers_to_its_first_seede
     row = SimpleNamespace(starter_agent_ids=None, seeded_agent_ids=["friday", "atlas"])
 
     class Repo:
-        def __init__(self, table_name):
+        def __init__(self, table_name="paperclip-companies"):
             pass
 
         async def resolve_owner_row(self, owner_id):
             return row
 
-    monkeypatch.setattr(ses_inbound, "PaperclipRepo", Repo)
+    monkeypatch.setattr(ses_inbound, "WorkspaceRepo", Repo)
 
     assert await _REAL_CEO("org_founder") == "friday"
     row.starter_agent_ids = {"ceo": "ceo-1"}

@@ -21,7 +21,7 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.repositories.paperclip_repo import customer_ops_agent_id
+from core.repositories.workspace_repo import customer_ops_agent_id
 from core.services import apple_iap, billing_service, openrouter_keys, photon, text_lines, trial_cap
 from core.services.billing_service import SEATS_INCLUDED, BillingService
 from core.services.chat_gate import budget_block_reason

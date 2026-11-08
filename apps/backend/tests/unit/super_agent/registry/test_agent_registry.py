@@ -4,6 +4,7 @@ import pytest
 
 from core.repositories import agent_registry_repo as repo
 from core.services import agent_registry
+from tests.unit.super_agent.registry.conftest import registry_row
 
 # The keys roster consumers read (wave1-R Global Constraints), icon/appearance included.
 KEYS = ("id", "name", "role", "title", "status", "reportsTo", "capabilities", "icon", "appearance", "companyId")
@@ -12,7 +13,7 @@ KEYS = ("id", "name", "role", "title", "status", "reportsTo", "capabilities", "i
 async def _seed(ws, agents):
     for a in agents:
         if a["status"] != "terminated":
-            await repo.put_new(ws, agent_registry.row_from_paperclip(a))
+            await repo.put_new(ws, registry_row(a))
 
 
 def _project(row):

@@ -257,7 +257,7 @@ async def test_an_agent_delete_republishes_sessions(monkeypatch, published):
     monkeypatch.setattr(agent_registry, "roster", AsyncMock(return_value=[]))
     monkeypatch.setattr(agent_registry, "delete", AsyncMock())
     monkeypatch.setattr(
-        "core.repositories.paperclip_repo.PaperclipRepo",
+        "core.repositories.workspace_repo.WorkspaceRepo",
         MagicMock(return_value=MagicMock(remove_starter_agent_id=AsyncMock())),
     )
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())

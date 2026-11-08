@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import run_in_thread
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import context_import
 
 router = APIRouter()
@@ -35,8 +35,8 @@ class ContextBody(BaseModel):
 
 async def _ceo_agent_id(owner_id: str) -> str:
     """``starter_agent_ids["ceo"]``, else the legacy roster's first seeded agent (the same
-    fallback ``paperclip_repo`` uses for first-contact mail)."""
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    fallback ``WorkspaceRepo`` uses for first-contact mail)."""
+    company = await WorkspaceRepo().resolve_owner_row(owner_id)
     ceo = company and ((company.starter_agent_ids or {}).get("ceo") or (company.seeded_agent_ids or [None])[0])
     if not ceo:
         raise HTTPException(

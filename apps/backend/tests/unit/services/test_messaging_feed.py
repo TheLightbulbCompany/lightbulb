@@ -59,7 +59,7 @@ def test_the_summary_flags_the_feed_so_clients_hide_it():
 
 @pytest.fixture
 def workspace(table, monkeypatch):  # noqa: F811
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     async def owner_row(*_args, **_kwargs):
         return SimpleNamespace(
@@ -67,7 +67,7 @@ def workspace(table, monkeypatch):  # noqa: F811
         )
 
     roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
-    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", owner_row)
+    monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", owner_row)
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     monkeypatch.setattr(messaging, "human_display_name", lambda user: asyncio.sleep(0, result=f"Name {user}"))
     monkeypatch.setattr(messaging, "_validate_human_in_owner", AsyncMock())
@@ -210,9 +210,9 @@ async def test_humans_are_never_added_or_removed_in_the_feed_by_hand(workspace):
 
 @pytest.mark.asyncio
 async def test_ensure_waits_for_an_active_company(table, monkeypatch):  # noqa: F811
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", lambda *_a, **_k: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", lambda *_a, **_k: asyncio.sleep(0, result=None))
     assert await messaging.ensure_feed_room(OWNER, "user_A") is None
     assert await repo.get_room(FEED) is None
 

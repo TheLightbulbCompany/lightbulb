@@ -1,4 +1,4 @@
-"""Tests for paperclip_repo using moto's DynamoDB mock.
+"""Tests for workspace_repo using moto's DynamoDB mock.
 
 The repo is async (matches the pattern of other repos in
 ``core/repositories/``); ``asyncio_mode = "auto"`` in pyproject.toml means
@@ -15,11 +15,10 @@ import pytest
 from moto import mock_aws
 
 from core import tasks_schema as ts
-from core.repositories.paperclip_repo import (
+from core.repositories.workspace_repo import (
     FunnelClaimResult,
-    PaperclipIdentity,
-    PaperclipRepo,
-    PaperclipWorkspace,
+    WorkspaceRepo,
+    Workspace,
     from_meta_item,
 )
 
@@ -98,16 +97,14 @@ def create_tasks_table(resource):
 
 
 def raw_workspace(repo, org_id: str) -> dict | None:
-    """The stored workspace row in snake_case, from whichever store the repo writes."""
-    if repo._meta_on_tasks():
-        item = repo._ws_table().get_item(Key=repo._ws_key(org_id)).get("Item")
-        return from_meta_item(item) if item else None
-    return repo._table().get_item(Key={"user_id": org_id}).get("Item")
+    """The stored META row in snake_case."""
+    item = repo._ws_table().get_item(Key=repo._ws_key(org_id)).get("Item")
+    return from_meta_item(item) if item else None
 
 
-@pytest.fixture(params=["paperclip", "tasks"])
-def repo(request):
-    """Every test runs against both META stores (wave1-R Task 6): the old table, and `tasks`."""
+@pytest.fixture
+def repo():
+    """A moto `tasks` table (the META store) and the legacy table."""
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
         create_tasks_table(resource)
@@ -117,16 +114,15 @@ def repo(request):
         with (
             patch("core.dynamodb._table_prefix", ""),
             patch("core.dynamodb._dynamodb_resource", resource),
-            patch.object(PaperclipRepo, "_meta_on_tasks", lambda self: request.param == "tasks"),
         ):
-            yield PaperclipRepo(table_name=TABLE_NAME, region="us-east-1")
+            yield WorkspaceRepo(table_name=TABLE_NAME, region="us-east-1")
 
 
 def _make_company(user_id="u1", status="active", **kwargs):
     """A WORKSPACE row keyed ``user_id`` (the key an org row carries under the
     ``user_id`` attribute)."""
     now = datetime.now(timezone.utc)
-    return PaperclipWorkspace(
+    return Workspace(
         org_id=kwargs.get("org_id", user_id),
         company_id=kwargs.get("company_id", f"co_{user_id}"),
         status=status,
@@ -197,8 +193,7 @@ async def test_put_condition_raises_when_a_different_generation_already_won(repo
         )
     assert exc_info.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
     won = await repo.get_workspace("user_race")
-    # On `tasks` both rows are one transaction: the failed META write moved no old-row attribute.
-    assert (won.onboarding_generation, won.company_id) == ("gen-winner", "co_user_race")
+    assert won.onboarding_generation == "gen-winner"
 
 
 async def test_starter_agent_ids_round_trip(repo):
@@ -267,6 +262,15 @@ async def test_update_status_not_if_status_applies_when_not_guarded(repo):
     assert retrieved.last_error == "boom"
 
 
+async def test_legacy_company_id_is_read_from_the_old_row_and_never_written(repo):
+    """A workspace provisioned before the native store keeps its company id on the legacy table."""
+    repo._table().put_item(Item={"user_id": "org_old", "company_id": "co_old", "status": "active"})
+    await repo.put_workspace(_make_company(user_id="org_old", company_id="co_ignored"))
+    assert (await repo.get_workspace("org_old")).company_id == "co_old"
+    assert "company_id" not in raw_workspace(repo, "org_old")
+    assert repo._table().get_item(Key={"user_id": "org_old"})["Item"]["company_id"] == "co_old"
+
+
 async def test_delete_removes_row(repo):
     await repo.put_workspace(_make_company(user_id="user_789"))
     await repo.delete("user_789")
@@ -291,25 +295,6 @@ async def test_scan_purge_due_returns_overdue_disabled(repo):
 # ---------------------------------------------------------------------------
 # Per-owner seed claim (provision_org's cross-instance fresh-create fence)
 # ---------------------------------------------------------------------------
-
-
-async def test_seed_claim_fresh_wins_then_second_caller_loses(repo):
-    """First caller wins the put-if-absent; a concurrent second caller loses
-    while the claim is non-stale — the fence that stops two backend
-    instances from both running the full Paperclip seed."""
-    assert await repo.try_acquire_seed_claim("u1", claim_id="a") is True
-    assert await repo.try_acquire_seed_claim("u1", claim_id="b") is False
-
-
-async def test_seed_claim_steals_only_when_stale(repo):
-    """A holder that crashed hard before any durable progress leaves a bare
-    seeding row; once claimed_at is past the stale window it is re-claimable
-    so the owner isn't stranded forever."""
-    assert await repo.try_acquire_seed_claim("u1", claim_id="a") is True
-    # Non-stale → loses.
-    assert await repo.try_acquire_seed_claim("u1", claim_id="b", stale_after_seconds=120) is False
-    # stale_after_seconds=0 → any existing claim is stale → steal succeeds.
-    assert await repo.try_acquire_seed_claim("u1", claim_id="b", stale_after_seconds=0) is True
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +357,7 @@ async def test_workspace_round_trips_with_members_and_provisioner(repo):
         _make_company(user_id="org_acme", provisioner_user_id="user_a", member_user_ids={"user_a", "user_b"})
     )
     ws = await repo.get_workspace("org_acme")
-    assert ws.org_id == "org_acme" and ws.company_id == "co_org_acme"
+    assert ws.org_id == "org_acme" and ws.company_id == ""
     assert ws.provisioner_user_id == "user_a"
     assert ws.member_user_ids == {"user_a", "user_b"}
     raw = raw_workspace(repo, "org_acme")
@@ -411,81 +396,6 @@ async def test_member_writes_never_create_a_workspace_row(repo):
         await repo.add_member("org_ghost", "user_a")
     await repo.remove_member("org_ghost", "user_a")  # no-op, no raise
     assert await repo.get_workspace("org_ghost") is None
-
-
-async def test_company_lookups_resolve_the_active_workspace(repo):
-    await repo.put_workspace(_make_company(user_id="org_acme", company_id="co_1", member_user_ids={"user_b", "user_a"}))
-    await repo.put_workspace(_make_company(user_id="org_gone", company_id="co_2", status="disabled"))
-    assert (await repo.find_workspace_by_company("co_1")).org_id == "org_acme"
-    assert await repo.get_user_ids_for_company("co_1") == ["user_a", "user_b"]
-    assert await repo.find_workspace_by_company("co_2") is None
-    assert await repo.get_user_ids_for_company("co_2") == []
-    assert await repo.org_company_ids("org_acme") == {"co_1"}
-    # Sentinels carry no org_id and never show up.
-    await repo.put_pending_brief("org_new", path="p", user_input=None, detail=None, brief_text=None, submitted_by="u")
-    assert await repo.org_company_ids("org_new") == set()
-
-
-async def test_identity_round_trips_and_names_no_company(repo):
-    await repo.put_identity(
-        PaperclipIdentity(
-            user_id="user_a",
-            paperclip_user_id="pc_a",
-            paperclip_password_encrypted="enc",
-            paperclip_email="alice@example.com",
-        )
-    )
-    identity = await repo.get_identity("user_a")
-    assert (identity.paperclip_user_id, identity.paperclip_email, identity.status) == (
-        "pc_a",
-        "alice@example.com",
-        None,
-    )
-    raw = repo._table().get_item(Key={"user_id": "user_a"})["Item"]
-    assert not {"company_id", "org_id", "status", "service_token_encrypted"} & set(raw)
-    assert await repo.get_identity("user_missing") is None
-    # An identity row is never mistaken for a workspace.
-    assert await repo.get_workspace("user_a") is None
-
-
-async def test_put_identity_settles_a_seed_claim(repo):
-    assert await repo.try_acquire_seed_claim("user_a", claim_id="c1")
-    assert (await repo.get_identity("user_a")).status == "seeding"
-    await repo.put_identity(PaperclipIdentity(user_id="user_a", paperclip_user_id="pc_a", paperclip_email="a@x"))
-    raw = repo._table().get_item(Key={"user_id": "user_a"})["Item"]
-    assert "status" not in raw and "seeding_claim_id" not in raw
-
-
-async def test_seed_claim_is_identity_only(repo):
-    """The claim names no org and no company, so it never enters the by-org-id
-    or by-company-id indexes."""
-    assert await repo.try_acquire_seed_claim("user_a", claim_id="c1")
-    raw = repo._table().get_item(Key={"user_id": "user_a"}, ConsistentRead=True)["Item"]
-    assert raw["status"] == "seeding" and "org_id" not in raw and "company_id" not in raw
-
-
-async def test_seed_claim_never_overwrites_a_confirmed_identity(repo):
-    await repo.put_identity(PaperclipIdentity(user_id="user_a", paperclip_user_id="pc_a", paperclip_email="a@x"))
-    assert not await repo.try_acquire_seed_claim("user_a", claim_id="x", stale_after_seconds=0)
-    assert (await repo.get_identity("user_a")).paperclip_user_id == "pc_a"
-
-
-async def test_fail_signup_claim_is_fenced_on_the_holder(repo):
-    """A stale holder must not downgrade a NEWER holder's stolen claim."""
-    assert await repo.try_acquire_seed_claim("u_seed", claim_id="old")
-    assert await repo.try_acquire_seed_claim("u_seed", claim_id="new", stale_after_seconds=0)
-    assert not await repo.fail_signup_claim("u_seed", reason="late", claim_id="old")
-    assert (await repo.get_identity("u_seed")).status == "seeding"
-    assert await repo.fail_signup_claim("u_seed", reason="gave up", claim_id="new")
-    assert (await repo.get_identity("u_seed")).status == "failed"
-    # ...and the credential-less failed claim is reclaimable.
-    assert await repo.try_acquire_seed_claim("u_seed", claim_id="retry")
-
-
-async def test_fail_signup_claim_never_touches_a_confirmed_identity(repo):
-    await repo.put_identity(PaperclipIdentity(user_id="user_a", paperclip_user_id="pc_a", paperclip_email="a@x"))
-    assert not await repo.fail_signup_claim("user_a", reason="boom", claim_id=None)
-    assert (await repo.get_identity("user_a")).status is None
 
 
 async def test_failed_marker_is_a_company_less_workspace_row(repo):
@@ -718,23 +628,6 @@ async def test_claim_funnel_submission_missing_row_is_stale_generation(repo):
         "user_never_provisioned", onboarding_generation="01G", submitted_by="member_1"
     )
     assert result is FunnelClaimResult.STALE_GENERATION
-
-
-async def test_record_onboarding_ids_then_read_back(repo):
-    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
-    await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
-    await repo.record_onboarding_ids("u1", onboarding_generation="01G", goal_id="goal-1", project_id="proj-1")
-    fetched = await repo.get_workspace("u1")
-    assert fetched.onboarding_goal_id == "goal-1"
-    assert fetched.onboarding_project_id == "proj-1"
-
-
-async def test_record_onboarding_ids_without_claim_raises(repo):
-    """record_onboarding_ids requires funnel_state=="submitted" -- calling it
-    against a still-not_started row must fail loudly, not fabricate state."""
-    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
-    with pytest.raises(repo._table().meta.client.exceptions.ConditionalCheckFailedException):
-        await repo.record_onboarding_ids("u1", onboarding_generation="01G", goal_id="goal-1", project_id="proj-1")
 
 
 async def test_revert_funnel_submission_allows_reclaim(repo):
@@ -1098,125 +991,9 @@ async def test_fail_pending_brief_on_a_deleted_item_is_a_noop(repo):
     assert await repo.get_pending_brief("user_abc") is None
 
 
-async def test_seed_claim_reclaims_legacy_failed_marker_with_empty_paperclip_user_id(repo):
-    """Older failed markers stored ``paperclip_user_id = ""`` explicitly.
-    ``attribute_not_exists`` is FALSE for an attribute that exists as "", so
-    the reclaim condition must accept "" too — otherwise the Python pre-check
-    calls the row credential-less, the conditional put fails, and every retry
-    is wedged in the loser wait."""
-    from datetime import datetime, timezone
-
-    now = datetime.now(timezone.utc).isoformat()
-    repo._table().put_item(
-        Item={
-            "user_id": "user_legacy",
-            "org_id": "org_alpha",
-            "status": "failed",
-            "paperclip_user_id": "",
-            "created_at": now,
-            "updated_at": now,
-        }
-    )
-    assert await repo.try_acquire_seed_claim("user_legacy", claim_id="c1")
-    raw = repo._table().get_item(Key={"user_id": "user_legacy"}, ConsistentRead=True)["Item"]
-    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"
-
-
-async def test_signup_credentials_converge_regardless_of_which_claim_stages_them(repo):
-    """No more leases: two concurrent provision runs (the original claim holder
-    and whoever won a later takeover) must both succeed and converge on the
-    SAME staged email/password, rather than the loser hitting a
-    ConditionalCheckFailedException. ``if_not_exists`` + read-back is the
-    convergence primitive — first writer's values win, every caller reads
-    them back regardless of which claim_id is doing the staging."""
-    await repo.try_acquire_seed_claim("user_new", claim_id="first")
-    assert await repo.stage_signup_credentials(
-        "user_new", email="first@example.com", password_encrypted="first-secret"
-    ) == ("first@example.com", "first-secret")
-    await repo.try_acquire_seed_claim("user_new", claim_id="second", stale_after_seconds=0)
-    # The ORIGINAL claim staging again (e.g. a slow holder that wasn't really
-    # dead) must still succeed and read back the converged values.
-    assert await repo.stage_signup_credentials(
-        "user_new", email="stale@example.com", password_encrypted="stale-secret"
-    ) == ("first@example.com", "first-secret")
-    assert await repo.stage_signup_credentials(
-        "user_new", email="new@example.com", password_encrypted="new-secret"
-    ) == ("first@example.com", "first-secret")
-
-
-async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(repo, monkeypatch):
-    import core.repositories.paperclip_repo as mod
-
-    await repo.try_acquire_seed_claim("user_race", claim_id="original")
-    run_in_thread = mod.run_in_thread
-    staged = False
-
-    async def stage_before_takeover_write(func, *args, **kwargs):
-        nonlocal staged
-        if not staged and ":prev" in kwargs.get("ConditionExpression", ""):
-            staged = True
-            await repo.stage_signup_credentials(
-                "user_race", email="original@example.com", password_encrypted="original-secret"
-            )
-        return await run_in_thread(func, *args, **kwargs)
-
-    monkeypatch.setattr(mod, "run_in_thread", stage_before_takeover_write)
-    won = await repo.try_acquire_seed_claim("user_race", claim_id="takeover", stale_after_seconds=0)
-    assert staged
-    # A credential CAS may defer this takeover; its next read must keep the
-    # original secret just as an atomic in-place takeover would.
-    if not won:
-        assert await repo.try_acquire_seed_claim("user_race", claim_id="takeover", stale_after_seconds=0)
-    assert await repo.stage_signup_credentials(
-        "user_race", email="replacement@example.com", password_encrypted="replacement-secret"
-    ) == ("original@example.com", "original-secret")
-
-
-async def test_paused_automation_record_survives_a_whole_item_put_and_clears_per_id(repo):
-    await repo.put_workspace(_make_company(user_id="org_pause"))
-    assert await repo.record_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1", "r2"], token="t")
-    ws = await repo.get_workspace("org_pause")
-    assert ws.automation_paused_at and ws.automation_paused_agent_ids == {"a1"}
-    assert ws.automation_paused_routine_versions == {} and ws.automation_pause_token == "t"
-    await repo.put_workspace(ws)  # a carried-forward put must keep the record AND the empty map
-    assert await repo.record_routine_version("org_pause", token="t", routine_id="r1", updated_at="v1")
-    assert await repo.pause_token_current("org_pause", "t")
-    assert await repo.mark_pause_complete("org_pause", token="t")
-    ws = await repo.get_workspace("org_pause")
-    assert ws.automation_paused_routine_ids == {"r1", "r2"}
-    assert ws.automation_paused_routine_versions == {"r1": "v1"} and ws.automation_pause_complete_at
-
-    # A newer pause takes the fence: the old token can no longer write.
-    assert await repo.record_paused_automation("org_pause", agent_ids=[], routine_ids=[], token="t2")
-    assert (await repo.get_workspace("org_pause")).automation_pause_complete_at is None
-    assert not await repo.record_routine_version("org_pause", token="t", routine_id="r2", updated_at="v2")
-    assert not await repo.mark_pause_complete("org_pause", token="t")
-
-    # The resume's clear drops the fence: the running pause sees it gone.
-    await repo.clear_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1"])
-    assert not await repo.pause_token_current("org_pause", "t2")
-    ws = await repo.get_workspace("org_pause")
-    assert ws.automation_paused_at is None and ws.automation_paused_agent_ids is None
-    assert ws.automation_paused_routine_versions is None
-    assert ws.automation_paused_routine_ids == {"r2"}
-    # Never resurrects a deleted row.
-    assert not await repo.record_paused_automation("org_gone", agent_ids=["a"], routine_ids=[], token="t")
-    assert await repo.get_workspace("org_gone") is None
-
-
 # ---------------------------------------------------------------------------
 # Old per-agent Paperclip API keys (agent_keys map; delete only)
 # ---------------------------------------------------------------------------
-
-
-async def test_delete_agent_key_drops_an_old_key_idempotently(repo):
-    await repo.put_workspace(_make_company("org_k"))
-    repo._table().update_item(
-        Key={"user_id": "org_k"}, UpdateExpression="SET agent_keys = :m", ExpressionAttributeValues={":m": {"a1": "x"}}
-    )
-    await repo.delete_agent_key("org_k", "a1")
-    assert repo._table().get_item(Key={"user_id": "org_k"})["Item"]["agent_keys"] == {}
-    await repo.delete_agent_key("org_k", "a1")  # idempotent
 
 
 async def test_put_workspace_still_clears_fields_the_snapshot_does_not_carry(repo):

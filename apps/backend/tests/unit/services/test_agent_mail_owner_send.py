@@ -117,16 +117,11 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(mod.container_repo, "try_consume_daily_email_send", _cap)
 
-    # Signature MUST mirror the real PaperclipRepo (table_name is required).
-    # This fake previously took zero args, which meant the suite passed only
-    # while the production call was `PaperclipRepo()` — a TypeError that
-    # crashed every send in prod and could not be caught here, because the
-    # mock had encoded the wrong arity as the contract.
-    def _repo_factory(*, table_name):
-        assert table_name == "paperclip-companies"
+    # Signature mirrors the real WorkspaceRepo (table_name defaults).
+    def _repo_factory(*, table_name="paperclip-companies"):
         return _Repo()
 
-    monkeypatch.setattr(mod, "PaperclipRepo", _repo_factory)
+    monkeypatch.setattr(mod, "WorkspaceRepo", _repo_factory)
     monkeypatch.setattr(mod, "lookup_owner_email", _owner_email)
     monkeypatch.setattr(mod, "ensure_team_address", _ensure)
     monkeypatch.setattr(mod, "from_header", _from)

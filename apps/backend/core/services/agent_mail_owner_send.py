@@ -31,7 +31,7 @@ from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, agent_mail_inbox_repo, container_repo
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import agent_registry, ses_email
 from core.services.agent_email import (
     append_agent_mail_footer,
@@ -42,7 +42,7 @@ from core.services.agent_email import (
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 from core.services.agent_mail_tenant import ensure_tenant
 from core.services.owner_facts import write_owner_facts
-from core.services.paperclip_owner_email import lookup_owner_email
+from core.services.owner_email import lookup_owner_email
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ async def send_to_owner(
         if not (settings.AGENT_EMAIL_DOMAIN or "").strip():
             return "disabled"
 
-        repo = PaperclipRepo(table_name="paperclip-companies")
+        repo = WorkspaceRepo()
         onboarding = await repo.get_onboarding_state(owner_id) or {}
         generation = onboarding.get("onboarding_generation") or ""
         provisioned = onboarding.get("teams_state") == "active"
@@ -270,7 +270,7 @@ async def send_to_member(*, owner_id: str, user_id: str, email: str, subject: st
             result = "disabled"
             return result
         email = (email or "").strip().lower()
-        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
+        onboarding = await WorkspaceRepo().get_onboarding_state(owner_id) or {}
         agent_id = await resolve_apex_ceo_agent_id(owner_id=owner_id) or onboarding.get("friday_agent_id")
         if not email or onboarding.get("teams_state") != "active" or not agent_id:
             return result

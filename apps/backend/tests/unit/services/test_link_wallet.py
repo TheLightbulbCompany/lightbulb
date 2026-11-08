@@ -23,7 +23,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.auth import AuthContext, get_current_user  # noqa: E402
 from core.config import settings  # noqa: E402
 from core.repositories import billing_repo, messaging_repo, tasks_repo  # noqa: E402
-from core.services import link_wallet, paperclip_admin_client, purchases  # noqa: E402
+from core.services import link_wallet, purchases  # noqa: E402
 from main import app  # noqa: E402
 
 OWNER = "org_a"
@@ -178,12 +178,6 @@ def world(monkeypatch):
     tasks = {"iss_1": {"taskId": "iss_1", "projectId": "proj_1"}}
     monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(side_effect=lambda ws, tid: tasks.get(tid)))
     monkeypatch.setattr(tasks_repo, "_get", AsyncMock(return_value={"name": "Launch"}))  # the PROJECT# row
-
-    def no_paperclip(*_a, **_k):
-        raise AssertionError("Paperclip must not be called")
-
-    monkeypatch.setattr(paperclip_admin_client.PaperclipAdminClient, "__init__", no_paperclip)
-    monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", no_paperclip)
 
     class W:
         pass

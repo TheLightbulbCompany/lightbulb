@@ -18,7 +18,7 @@ DM = "lightbulb-dm"
 def fx(monkeypatch):
     company = MagicMock(starter_agent_ids={"ceo": CEO})
     repo = MagicMock(resolve_owner_row=AsyncMock(return_value=company))
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo", MagicMock(return_value=repo))
     claimed: set[str] = set()
 
     async def claim(room_id, name):

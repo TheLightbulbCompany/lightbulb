@@ -27,16 +27,6 @@ def ddb(monkeypatch):
 
 
 @pytest.fixture
-def no_paperclip(monkeypatch):
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-
-    def boom(*a, **k):
-        raise AssertionError("Paperclip called")
-
-    monkeypatch.setattr(PaperclipAdminClient, "__init__", boom)
-
-
-@pytest.fixture
 def side_effects(monkeypatch):
     """Everything an agent write touches besides the registry: the S3 profile, facts, network, META."""
     from core.services import hermes_profiles, hermes_provisioning, network_member, owner_facts, voice_calls
@@ -56,7 +46,7 @@ def side_effects(monkeypatch):
     monkeypatch.setattr(voice_calls, "send_note_saved", AsyncMock())
     monkeypatch.setattr(owner_facts, "write_owner_facts", AsyncMock())
     monkeypatch.setattr(network_member, "publish_sessions", AsyncMock())
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=fx.meta))
+    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo", MagicMock(return_value=fx.meta))
     monkeypatch.setattr(agents_mod, "_repo", lambda: fx.meta)
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
     monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value=set()))
@@ -66,7 +56,7 @@ def side_effects(monkeypatch):
 
 
 @pytest.fixture
-def client(ddb, no_paperclip, side_effects):
+def client(ddb, side_effects):
     from main import app
 
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", org_id=WS)
@@ -180,7 +170,7 @@ def test_teams_agent_of_another_workspace_is_404(client):
 
 
 @pytest.mark.asyncio
-async def test_runtime_rpc_agents_create_update_delete_native(ddb, no_paperclip, side_effects, monkeypatch):
+async def test_runtime_rpc_agents_create_update_delete_native(ddb, side_effects, monkeypatch):
     from core.services import runtime_rpc as rpc
 
     monkeypatch.setattr(rpc, "_invalidate", AsyncMock())
@@ -207,7 +197,7 @@ async def test_runtime_rpc_create_rolls_back_when_profile_write_fails(ddb, side_
 
 
 @pytest.mark.asyncio
-async def test_voice_profile_rename_updates_registry(ddb, no_paperclip, side_effects, monkeypatch):
+async def test_voice_profile_rename_updates_registry(ddb, side_effects, monkeypatch):
     from core.repositories import messaging_repo
     from core.services import voice_calls
 

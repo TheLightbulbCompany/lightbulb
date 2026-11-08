@@ -253,7 +253,7 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     """Turn the owner's first answer in the first-run room into onboarding intake: the first human message in the
     canonical #general, or (super-agent) the first human message after the welcome in the owner's Lightbulb DM.
     That answer also closes the DM's first run (``messaging.close_first_run``), captured or not."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
     from core.services.messaging import FIRST_RUN_KIND, TEAM_WELCOME_KIND, close_first_run, default_room_id
 
     author = message.get("author") or {}
@@ -294,7 +294,7 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         put_metric("OnboardingBriefTooLong")
         return False
 
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
     owner_row = await repo.resolve_owner_row(owner_id, consistent_read=True)
     if getattr(owner_row, "status", None) != "active" or getattr(owner_row, "funnel_state", None) != "not_started":
         return False
@@ -337,10 +337,10 @@ async def start_front_desk_build_for_line(owner_id: str) -> bool:
     import uuid
 
     from core.auth import AuthContext
-    from core.repositories.paperclip_repo import PaperclipRepo, customer_ops_agent_id
+    from core.repositories.workspace_repo import WorkspaceRepo, customer_ops_agent_id
     from core.services import messaging
 
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
     pending = await repo.get_pending_brief(owner_id)
     if pending:
         path, url, by = pending.get("path"), pending.get("input"), pending.get("submitted_by")
@@ -410,9 +410,9 @@ async def _drain_until_settled(owner_id: str) -> None:
     only against the persisted budget, so attempts survive the process that
     made them.
     """
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
 
     for delay in _RETRY_BACKOFF_S:
         reason = ""
@@ -458,11 +458,11 @@ async def _drain_until_settled(owner_id: str) -> None:
 async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     """One fulfilment pass. May raise; ``_drain_until_settled`` counts that as
     a FAILED attempt exactly like a returned FAILED."""
-    from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
+    from core.repositories.workspace_repo import FunnelClaimResult, WorkspaceRepo
     from core.services import agent_registry
     from core.services.clerk_admin import get_primary_email
 
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
     pending = await repo.get_pending_brief(owner_id)
     if pending is None or pending.get("brief_state") == "failed":
         # Nothing pending, or we already gave up and handed it back to the

@@ -63,10 +63,6 @@ def _account(plan="standard"):
 async def _drive(event, *, account, agents=None, set_plan_side_effect=None):
     with (
         patch.object(handlers, "billing_repo") as repo,
-        patch(
-            "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
-            AsyncMock(return_value=list(agents or [])),
-        ),
         patch.object(handlers, "stripe") as mock_stripe,
     ):
         repo.get_by_owner_id = AsyncMock(return_value=account)

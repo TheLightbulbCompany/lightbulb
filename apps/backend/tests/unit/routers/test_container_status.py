@@ -83,8 +83,8 @@ def _stub_workspace_trial_default():
 def _onboarding_state_stub(status: str | None = None) -> dict:
     """The all-defaults `get_onboarding_state` return shape, with `teams_state`
     overridable -- mirrors readiness_state.compute_status's ONE paperclip-
-    companies read (core.repositories.paperclip_repo.PaperclipRepo.
-    get_onboarding_state). Every PaperclipRepo test double in this file must
+    companies read (core.repositories.workspace_repo.WorkspaceRepo.
+    get_onboarding_state). Every WorkspaceRepo test double in this file must
     configure BOTH `.get` (legacy callers) and `.get_onboarding_state`
     (compute_status's own accessor) -- patching the whole class replaces the
     instance with a bare MagicMock, so `.get_onboarding_state` is never the
@@ -112,7 +112,7 @@ def _onboarding_state_stub(status: str | None = None) -> dict:
 
 
 def _paperclip_repo_stub(status: str | None = None) -> MagicMock:
-    """A PaperclipRepo test double with BOTH `.get` (legacy direct readers)
+    """A WorkspaceRepo test double with BOTH `.get` (legacy direct readers)
     and `.get_onboarding_state` (compute_status) configured consistently
     off the same `status`."""
     repo = MagicMock()
@@ -120,7 +120,7 @@ def _paperclip_repo_stub(status: str | None = None) -> MagicMock:
     repo.get_onboarding_state = AsyncMock(return_value=_onboarding_state_stub(status))
     # resolve_owner_row is the canonical owner-row resolver compute_status
     # (via get_onboarding_state) delegates to. Kept on the stub so any test
-    # that patches PaperclipRepo directly gets a coherent double even though
+    # that patches WorkspaceRepo directly gets a coherent double even though
     # the router itself no longer calls it (it goes through get_onboarding_state).
     repo.resolve_owner_row = AsyncMock(
         return_value=SimpleNamespace(status=status, funnel_state=None) if status is not None else None
@@ -134,12 +134,12 @@ def _stub_teams_status_repo():
     state (via readiness_state.compute_status) to surface a NON-BLOCKING
     teams_status AND the company-scoped `onboarded` fact (funnel_state ==
     "complete"), both composed inside compute_status/get_onboarding_state.
-    Stub PaperclipRepo to an empty read by default so this file's tests
+    Stub WorkspaceRepo to an empty read by default so this file's tests
     exercise the real composition without hitting DynamoDB; the tests that
-    care re-patch PaperclipRepo inline (an active/failed row, a
+    care re-patch WorkspaceRepo inline (an active/failed row, a
     funnel_state=="complete" row, or a raising read)."""
     repo = _paperclip_repo_stub(None)
-    with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
+    with patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo):
         yield repo
 
 
@@ -441,7 +441,7 @@ class TestContainerStatusGate:
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close() or c),
         ):
             result = await container_status(auth=_workspace_auth())
@@ -672,7 +672,7 @@ class TestContainerStatusTeamsStatus:
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
             ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=failed_repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_workspace_auth())
@@ -695,7 +695,7 @@ class TestContainerStatusTeamsStatus:
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
             ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=active_repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_workspace_auth())
@@ -723,7 +723,7 @@ class TestContainerStatusTeamsStatus:
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
             ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
         ):
             result = await container_status(_workspace_auth())
 
@@ -764,7 +764,7 @@ class TestContainerStatusOnboarded:
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_RUNNING_ROW)),
             patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             return await container_status(_workspace_auth())

@@ -26,11 +26,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import core.repositories.paperclip_repo as repo_mod
+import core.repositories.workspace_repo as repo_mod
 import core.services.onboarding_brief as brief_mod
 import core.services.clerk_admin as clerk_mod
 import core.services.agent_registry as registry_mod
-from core.repositories.paperclip_repo import FunnelClaimResult
+from core.repositories.workspace_repo import FunnelClaimResult
 from core.services.onboarding_brief import reconcile_pending_brief
 
 FRIDAY = {"id": "friday-uuid", "role": "ceo", "name": "Friday"}
@@ -81,11 +81,10 @@ def env(monkeypatch):
     repo.get_pending_brief = AsyncMock(return_value=dict(PENDING))
     repo.resolve_owner_row = AsyncMock(return_value=_owner_row())
     repo.claim_funnel_submission = AsyncMock(return_value=FunnelClaimResult.WON)
-    repo.record_onboarding_ids = AsyncMock()
     repo.complete_funnel_submission = AsyncMock(return_value=True)
     repo.revert_funnel_submission = AsyncMock()
     repo.delete_pending_brief = AsyncMock()
-    monkeypatch.setattr(repo_mod, "PaperclipRepo", lambda **kwargs: repo)
+    monkeypatch.setattr(repo_mod, "WorkspaceRepo", lambda **kwargs: repo)
 
     # The workspace's agents as agent_registry holds them (roster rows carry `id`, get rows `agentId`).
     agents = [FRIDAY, ATLAS]
@@ -259,7 +258,6 @@ async def test_brief_staged_without_paperclip(env, monkeypatch):
     env.repo.put_pending_brief.assert_awaited_once()
     env.stage.assert_awaited_once()
     assert env.stage.await_args.args[:3] == ("org_abc", "friday-uuid", "BRIEF.md")
-    env.repo.record_onboarding_ids.assert_not_awaited()
 
 
 async def test_brief_goes_to_captured_dispatch_target_not_starter_ceo(env):

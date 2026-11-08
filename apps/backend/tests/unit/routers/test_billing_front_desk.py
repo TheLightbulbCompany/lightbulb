@@ -16,7 +16,7 @@ def has_front_desk_agent(monkeypatch):
     """The precheck reads the Paperclip row; default to a workspace that has the agent."""
     row = MagicMock(starter_agent_ids={"customer_operations": "agent_co"})
     resolve = AsyncMock(return_value=row)
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.resolve_owner_row", resolve)
+    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo.resolve_owner_row", resolve)
     return resolve
 
 

@@ -27,11 +27,11 @@ AUTH = AuthContext(user_id="user_A", org_id=OWNER, org_role="org:member")
 @pytest.fixture
 def workspace(table, monkeypatch):  # noqa: F811
     """An active workspace with the six starters on the roster; people resolve by id."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     row = SimpleNamespace(status="active", starter_agent_ids=STARTERS, onboarding_goal_id=None, company_id="company-1")
     roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
-    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=row))
+    monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", AsyncMock(return_value=row))
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     monkeypatch.setattr(messaging, "human_display_name", lambda user: asyncio.sleep(0, result=f"Name {user}"))
     monkeypatch.setattr(messaging, "_validate_human_in_owner", AsyncMock())
@@ -265,14 +265,14 @@ ATLAS = "20000000-0000-4000-8000-000000000002"
 @pytest.fixture
 def founder_workspace(table, monkeypatch):  # noqa: F811
     """No starter roster: Friday leads, Atlas reports to Friday."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     row = SimpleNamespace(status="active", starter_agent_ids=None, onboarding_goal_id=None)
     roster = [
         {"id": ATLAS, "name": "Atlas", "role": "general", "reportsTo": FRIDAY},
         {"id": FRIDAY, "name": "Friday", "role": "general", "reportsTo": None},
     ]
-    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=row))
+    monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", AsyncMock(return_value=row))
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
 
 

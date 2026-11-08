@@ -56,9 +56,9 @@ def _ceo_member(company: Any, roster: list[dict]) -> list[dict]:
 
 
 async def _default_agents(owner_id: str) -> list[dict]:
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    company = await WorkspaceRepo().resolve_owner_row(owner_id, consistent_read=True)
     if getattr(company, "status", None) != "active":
         return []
     return _ceo_member(company, await messaging.load_agent_roster(owner_id))

@@ -47,7 +47,7 @@ def env(table):
         patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": FRIDAY, "name": "Friday"}])),
         patch("core.services.live_events.publish_owner_users", AsyncMock()),
         patch("core.config.settings.ENCRYPTION_KEY", "k" * 40),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.get_workspace", AsyncMock(return_value=None)),
+        patch("core.repositories.workspace_repo.WorkspaceRepo.get_workspace", AsyncMock(return_value=None)),
     ):
         yield resource
 

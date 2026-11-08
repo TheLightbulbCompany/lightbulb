@@ -541,7 +541,7 @@ async def release_owner_lifecycle_claim(owner_id: str, *, token: str) -> None:
 # 720 is kept at its ECS-era value. The pairing RPCs it was sized against
 # (``pair_with_openclaw``, ~546s worst case) are gone with the OpenClaw gateway,
 # so what the lease now fences is strictly shorter: the S3 artifact GET, the
-# profile write, the Paperclip mint, routine recreation and the integration
+# profile write, routine recreation and the integration
 # reconcile. It stays a generous ceiling rather than being re-derived downward —
 # the failure mode of a too-SHORT lease is a concurrent-write incident, and of a
 # too-long one is a wedged claim the owner waits out.
@@ -570,7 +570,7 @@ async def try_claim_owner_deploy(
     incident).
 
     ``marketplace_hire.create_hire_approval`` also takes this claim before its
-    Paperclip pre-create and approval reconciliation. It installs no workspace,
+    pre-create and approval reconciliation. It installs no workspace,
     but must serialize with those paths so concurrent recommendations cannot
     file duplicate approvals for one logical hire.
 
@@ -641,7 +641,7 @@ async def try_claim_owner_deploy(
     **Never raises.** Workspace installs use the default ``fail_open=True``:
     any fault admits the deploy with a token that fences nothing. The brief
     approval-precreation critical section passes ``fail_open=False`` because a
-    duplicate Paperclip approval is durable user-visible state and the caller
+    duplicate approval is durable user-visible state and the caller
     can safely degrade to no recommendation until DynamoDB recovers. The handler
     is deliberately ``Exception``-wide so ``BotoCoreError`` subclasses without
     an AWS error code cannot escape either policy.
@@ -765,7 +765,7 @@ async def release_owner_deploy_claim(
     OpenClaw runtime; every step a deploy has left swallows its own errors or
     raises ``httpx.TimeoutException`` (NOT a builtin ``TimeoutError``), and the
     whole sequence under the claim — the S3 artifact GET, the ~15s-timeout
-    Paperclip mint, the profile write — is tens of seconds against a 720s lease.
+    mint, the profile write — is tens of seconds against a 720s lease.
     The sidecar cross-check in ``_live_install_of`` is the belt to this brace: if
     the deploy did land, the next hire resolves to it as ``already_installed``
     rather than minting a duplicate.
@@ -920,12 +920,11 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     ``retryable`` answers whether re-running the identical provision could
     plausibly succeed: a transient infra failure (ECS Spot-reclamation,
     throttling, 5xx, ENI-attach) self-heals on the poll's next ~3s auto-retry,
-    while a deterministic one (a 4xx Paperclip / config / validation error)
+    while a deterministic one (a 4xx / config / validation error)
     fails identically forever and must be surfaced instead of looped.
 
     - An exception's own ``retryable`` self-classification takes precedence
-      over everything below — ``PaperclipApiError`` sets it off its status
-      code (5xx/429 transient, 4xx deterministic) and is reused verbatim.
+      over everything below and is reused verbatim.
     - ``ValueError`` / ``TypeError`` / ``KeyError`` are deterministic
       config/shape bugs — a retry can't fix a malformed value.
     - An AWS ``ClientError`` whose code is ``ValidationException`` is a
@@ -939,14 +938,7 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
       failure — defaults to retryable: a needless retry is cheaper than a
       wrongly-surfaced permanent error.
     """
-    # Lazy import: keep this repository module free of the paperclip client's
-    # import graph at load time (matches the function-local import style used
-    # for cross-layer references elsewhere in the provision path).
-    from core.services.paperclip_admin_client import PaperclipApiError
-
     cause = f"{type(exc).__name__}: {exc}"
-    if isinstance(exc, PaperclipApiError):
-        return f"Paperclip {exc.status_code}: {exc}", exc.retryable
     retryable_attr = getattr(exc, "retryable", None)
     if retryable_attr is not None:
         return cause, bool(retryable_attr)
@@ -1032,7 +1024,7 @@ async def ensure_owner_tokens(owner_id: str, *, hook_token: str, gateway_token: 
 
     ONE ``if_not_exists`` UpdateItem, so concurrent provision runs each offering fresh
     tokens converge on the first writer's pair, and an owner that already has tokens keeps
-    them (they are snapshotted into Paperclip adapters, so rotating one silently breaks
+    them (they are snapshotted into agent configs, so rotating one silently breaks
     every run). Callers use the RETURNED values, never their own candidates.
 
     Raises when there is no row (dispatch creates it; a teardown deleted it mid-provision):

@@ -395,7 +395,7 @@ async def _humans_to_ask(owner_id: str, room_id: str | None) -> list[str]:
     """The room's own-workspace humans plus every workspace member. Only admins can answer and
     roles live in Clerk, not here, so the whole workspace is asked: a DM between a member and an
     agent must still reach an admin. Guests from another workspace (a shared room) are not."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     humans: set[str] = set()
     if room_id:
@@ -404,7 +404,7 @@ async def _humans_to_ask(owner_id: str, room_id: str | None) -> list[str]:
             for m in await messaging_repo.list_members(room_id)
             if m.get("kind") == "human" and messaging_repo.member_home(m, owner_id) == owner_id
         }
-    workspace = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
+    workspace = await WorkspaceRepo().get_workspace(owner_id)
     humans |= set((workspace.member_user_ids if workspace else None) or [])
     return sorted(humans)
 

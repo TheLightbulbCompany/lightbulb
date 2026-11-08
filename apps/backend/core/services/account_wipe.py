@@ -41,7 +41,7 @@ this orchestrator emits one ``WipeStep`` per row EXCEPT rows 5 and 11,
 which fold into sibling steps because no standalone collaborator exists
 for them (see the inline notes at those call sites):
 
-  spec #1  -> "paperclip_membership" (PaperclipRepo.remove_member, per workspace)
+  spec #1  -> "paperclip_membership" (WorkspaceRepo.remove_member, per workspace)
   spec #2  -> gone (the Better Auth user lived in Paperclip's Aurora)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
   (no spec row) -> "provisioning" (provisioning_workflow_repo.transition -> "cancelled")
@@ -104,7 +104,7 @@ from core.repositories import (
     usage_repo,
     user_repo,
 )
-from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
+from core.repositories.workspace_repo import Identity, WorkspaceRepo
 from core.services import clerk_admin, company_stripe, message_search, text_lines, voice_onboarding
 from core.services.billing_service import delete_stripe_customer
 from core.services.oauth_service import revoke_user_oauth
@@ -258,7 +258,7 @@ class _Identifiers:
 
     user_row: dict | None
     container: dict | None
-    paperclip: PaperclipIdentity | None
+    paperclip: Identity | None
     """The human's identity row in paperclip-companies."""
     workspaces: list[str]
     """Every workspace (Clerk org id) the human belongs to — read strict, so a
@@ -275,9 +275,9 @@ class _Identifiers:
 async def _read_identifiers(owner_id: str) -> _Identifiers:
     user_row = await user_repo.get(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
-    paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
-    paperclip = await paperclip_repo.get_identity(owner_id)
-    pending_brief = await paperclip_repo.get_pending_brief(owner_id)
+    workspace_repo = WorkspaceRepo()
+    paperclip = await workspace_repo.get_identity(owner_id)
+    pending_brief = await workspace_repo.get_pending_brief(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
     workspaces = await _workspaces_of(owner_id)
     return _Identifiers(
@@ -343,7 +343,7 @@ async def _workspace_memberships(workspaces: list[str], owner_id: str) -> list[d
 
     "Last" is Clerk's roster, read STRICT (the same read that decides the teardown):
     a Clerk blip raises and stops the preview or wipe, rather than hiding a teardown."""
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
     out: list[dict] = []
     for org_id in workspaces:
         ws = await repo.get_workspace(org_id)
@@ -383,7 +383,7 @@ async def resolve_workspace_memberships(owner_id: str) -> list[dict]:
 async def _archive_paperclip_member_call(user_id: str, org_id: str) -> None:
     """The same removal ``organizationMembership.deleted`` uses: drops only this member from
     THIS workspace's members (``remove_member``, a no-op once the row is gone)."""
-    await PaperclipRepo(table_name="paperclip-companies").remove_member(org_id, user_id)
+    await WorkspaceRepo().remove_member(org_id, user_id)
 
 
 async def _archive_metronome_customer(customer_id: str) -> None:
@@ -954,7 +954,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     # Both of this owner's items in paperclip-companies, not just the company
     # row: the funnel answer lives in the SAME table under the prefixed key
     # ``__pending_brief__:{owner_id}``, and it deliberately outlives a
-    # reprovision (see PaperclipRepo's "LIFETIME" note). It is the user's own
+    # reprovision (see WorkspaceRepo's "LIFETIME" note). It is the user's own
     # typed words — "a social media agency for small restaurants" was one of
     # the two found stranded in prod — so a wipe that leaves it behind retains
     # content for an account we just deleted, in a row nothing will ever read
@@ -972,7 +972,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     # idempotent, so it is simply always attempted, and the step reports what
     # DynamoDB says it actually removed rather than what the snapshot predicted.
     async def _s9b() -> str:
-        repo = PaperclipRepo(table_name="paperclip-companies")
+        repo = WorkspaceRepo()
         deleted: list[str] = []
         if ids.paperclip is not None:
             await repo.delete(owner_id)

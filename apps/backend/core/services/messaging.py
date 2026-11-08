@@ -2349,14 +2349,14 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
 
 async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     """Create the starter general room once, never reconcile it afterward."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     room_id = default_room_id(owner_id)
     existing_room = await messaging_repo.get_room(room_id)
     if existing_room is not None and int(existing_room.get("lastSeq") or 0) > 0:
         return room_id
 
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    company = await WorkspaceRepo().resolve_owner_row(owner_id, consistent_read=True)
     starter_ids = getattr(company, "starter_agent_ids", None) if company else None
     if (
         getattr(company, "status", None) != "active"
@@ -2504,7 +2504,7 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
     as a last resort): the create receipt is per creator, so one identity lets racing callers
     converge. Returns None until the company is active; raises ``ROOM_NOT_FOUND`` (404) for a
     workspace with no active human, and a retryable 503 while Clerk cannot be read."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
     from core.services.user_provision import ceo_agent_id
 
     room_id = messaging_repo.feed_room_id(owner_id)
@@ -2512,7 +2512,7 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
     if existing_room is not None and int(existing_room.get("lastSeq") or 0) > 0:
         return room_id
 
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    company = await WorkspaceRepo().resolve_owner_row(owner_id, consistent_read=True)
     if getattr(company, "status", None) != "active":
         return None
     ceo_id = ceo_agent_id(company)
@@ -2725,10 +2725,10 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
     if await messaging_repo.get_room(room_id) is not None:
         return room_id
 
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
     from core.services.clerk_admin import get_organization, list_organization_members
 
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    company = await WorkspaceRepo().resolve_owner_row(owner_id, consistent_read=True)
     if getattr(company, "status", None) != "active":
         return None
     org = await get_organization(owner_id)
@@ -5363,9 +5363,9 @@ async def ask_who_should_see(owner_id: str, row: dict, outcome: str) -> None:
         return
     if org["members_count"] != 1:
         return
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    company = await WorkspaceRepo().resolve_owner_row(owner_id)
     ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
     if not ceo_id or await messaging_repo.get_member(room_id, "agent", ceo_id) is None:
         return  # a legacy roster or a CEO removed from #general: nobody to ask in its voice

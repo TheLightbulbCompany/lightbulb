@@ -314,8 +314,8 @@ def _seed_env(
     from types import SimpleNamespace
 
     company = SimpleNamespace(status=company_status, starter_agent_ids={"ceo": CEO} if starter is None else starter)
-    repo_cls = lambda table_name: SimpleNamespace(resolve_owner_row=AsyncMock(return_value=company))  # noqa: E731
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", repo_cls)
+    repo_cls = lambda *_a, **_k: SimpleNamespace(resolve_owner_row=AsyncMock(return_value=company))  # noqa: E731
+    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo", repo_cls)
     monkeypatch.setattr(
         messaging.messaging_repo, "get_room", AsyncMock(return_value={"roomId": "x"} if room_exists else None)
     )

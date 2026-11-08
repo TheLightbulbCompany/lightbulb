@@ -34,12 +34,12 @@ def test_settings_get_patch_roundtrip_no_paperclip(client, monkeypatch):
         ws.name = name if name is not None else ws.name
         ws.description = description if description is not None else ws.description
 
-    monkeypatch.setattr(mod.PaperclipRepo, "get_workspace", AsyncMock(return_value=ws))
-    monkeypatch.setattr(mod.PaperclipRepo, "set_profile", set_profile)
+    monkeypatch.setattr(mod.WorkspaceRepo, "get_workspace", AsyncMock(return_value=ws))
+    monkeypatch.setattr(mod.WorkspaceRepo, "set_profile", set_profile)
     monkeypatch.setattr(
         mod.workspace_name.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Clerk Co"})
     )
-    monkeypatch.setattr(mod.workspace_name.PaperclipRepo, "get_workspace", AsyncMock(return_value=ws))
+    monkeypatch.setattr(mod.workspace_name.WorkspaceRepo, "get_workspace", AsyncMock(return_value=ws))
     h = {"Authorization": "Bearer x"}
 
     assert client.get("/api/v1/teams/settings", headers=h).json() == {"name": "Clerk Co", "description": ""}

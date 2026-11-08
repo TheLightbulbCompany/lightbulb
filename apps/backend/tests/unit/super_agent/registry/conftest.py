@@ -52,3 +52,27 @@ def tasks_table(ddb):
 @pytest.fixture
 def paperclip_roster():
     return json.loads((Path(__file__).parent / "paperclip_roster.json").read_text())
+
+
+def registry_row(agent: dict) -> dict:
+    """A `paperclip_roster.json` agent as its `AGENT#` row fields."""
+    meta = agent.get("metadata") or {}
+    listing = {
+        k: v
+        for k, v in (("listingId", meta.get("isol8_listing_id")), ("listingSlug", meta.get("isol8_listing_slug")))
+        if v
+    }
+    return {
+        "agentId": agent["id"],
+        "name": str(agent.get("name") or agent["id"])[:256],
+        "role": agent.get("role"),
+        "title": agent.get("title"),
+        "persona": agent.get("capabilities"),
+        "icon": agent.get("icon"),
+        "appearance": agent.get("appearance"),
+        "reportsTo": agent.get("reportsTo"),
+        "status": "paused" if agent.get("status") == "paused" else "active",
+        "listing": listing or None,
+        "budgetMonthlyCents": int(agent.get("budgetMonthlyCents") or 0),
+        "companyId": agent.get("companyId"),
+    }

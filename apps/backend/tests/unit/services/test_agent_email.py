@@ -167,7 +167,7 @@ async def test_team_address_minted_for_workspace_without_company_id(monkeypatch)
     monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
     from core.services import workspace_name as wn
 
-    monkeypatch.setattr(wn.PaperclipRepo, "get_workspace", AsyncMock(return_value=None))
+    monkeypatch.setattr(wn.WorkspaceRepo, "get_workspace", AsyncMock(return_value=None))
     monkeypatch.setattr(wn.clerk_admin, "get_organization", AsyncMock(return_value=None))
     slug = AsyncMock(return_value="org-1")
     monkeypatch.setattr(ae, "allocate_company_slug", slug)

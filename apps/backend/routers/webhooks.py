@@ -38,7 +38,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import network_member
 from core.services.webhook_dedup import MembershipLifecycleSuperseded
 
@@ -257,7 +257,7 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
     """Pull the org owner's email so ``provision_member`` can sign them in.
 
     Thin delegator to the shared resolver in
-    ``core.services.paperclip_owner_email``. The retry worker
+    ``core.services.owner_email``. The retry worker
     (``update_service``) needs the same behaviour and routers can't
     safely import from services without re-introducing a cycle, so
     the helper lives in a shared module — this in-module name is
@@ -265,7 +265,7 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
     remain stable. See the shared module docstring for the full
     resolution chain.
     """
-    from core.services.paperclip_owner_email import lookup_owner_email
+    from core.services.owner_email import lookup_owner_email
 
     return await lookup_owner_email(org_id=org_id, fallback_user_id=fallback_user_id)
 
@@ -485,7 +485,7 @@ async def _handle_organization_membership_deleted(
     # so the redelivery retries it.
     try:
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-        await PaperclipRepo(table_name="paperclip-companies").remove_member(org_id, user_id)
+        await WorkspaceRepo().remove_member(org_id, user_id)
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         put_metric("workspace.webhook.remove_member", dimensions={"result": "ok"})
     except MembershipLifecycleSuperseded:
@@ -617,10 +617,10 @@ async def _handle_organization_deleted(data: dict) -> None:
 async def _handle_user_deleted_paperclip(user_id: str) -> None:
     """Forget a deleted Clerk user's Paperclip identity row. Their company
     memberships go with each org's ``organizationMembership.deleted``."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     try:
-        await PaperclipRepo(table_name="paperclip-companies").delete(user_id)
+        await WorkspaceRepo().delete(user_id)
         put_metric("paperclip.webhook.disable", dimensions={"trigger": "user_deleted"})
     except Exception:
         logger.exception("identity delete on user_deleted failed for user=%s", user_id)

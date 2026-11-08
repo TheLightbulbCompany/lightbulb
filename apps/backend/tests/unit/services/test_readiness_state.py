@@ -77,7 +77,7 @@ async def _compute(
     with (
         patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=account)),
         patch("core.services.container_rpc.call", new=AsyncMock(side_effect=_health)),
-        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+        patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=paperclip_repo),
         patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=parked)),
     ):
         return await readiness_state.compute_status(owner_id, container=container)
@@ -322,7 +322,7 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(side_effect=RuntimeError("ddb down"))
             ),
             patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=paperclip_repo),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
         ):
             contract = await readiness_state.compute_status("user_x", container=container)
@@ -394,9 +394,9 @@ def _repo_from_get(get_mock_repo: MagicMock) -> MagicMock:
     (resolve_owner_row + getattr-defensive projection) against whatever
     `.get_workspace` returns. The pending-brief lookup is stubbed so no test
     reaches DynamoDB."""
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    real = PaperclipRepo(table_name="paperclip-companies")
+    real = WorkspaceRepo()
     real.get_workspace = get_mock_repo.get_workspace
     real._has_pending_brief = AsyncMock(return_value=False)
     return real
@@ -436,7 +436,7 @@ class TestResolveOnboardingStateThreading:
         with (
             patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
             patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=paperclip_repo),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
         ):
             contract = await readiness_state.compute_status("user_x", container=container, onboarding=onboarding)
@@ -475,7 +475,7 @@ class TestResolveOnboardingStateThreading:
         with (
             patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
             patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
+            patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=paperclip_repo),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
         ):
             contract = await readiness_state.compute_status("user_x", container=container)
@@ -486,7 +486,7 @@ class TestResolveOnboardingStateThreading:
     async def test_resolve_onboarding_state_delegates_to_the_repo(self):
         paperclip_repo = MagicMock()
         paperclip_repo.get_onboarding_state = AsyncMock(return_value={"onboarding_generation": "01G"})
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo):
+        with patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=paperclip_repo):
             result = await readiness_state.resolve_onboarding_state("user_x")
         assert result == {"onboarding_generation": "01G"}
         paperclip_repo.get_onboarding_state.assert_awaited_once_with("user_x")
@@ -497,7 +497,7 @@ class TestResolveOnboardingStateThreading:
         own degrade-to-defaults posture for every other input."""
         paperclip_repo = MagicMock()
         paperclip_repo.get_onboarding_state = AsyncMock(side_effect=RuntimeError("ddb down"))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo):
+        with patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=paperclip_repo):
             result = await readiness_state.resolve_onboarding_state("user_x")
         assert result["onboarding_generation"] is None
         assert result["funnel_state"] == "not_started"
@@ -538,7 +538,7 @@ class TestResolveOnboardingStateThreading:
         """paperclip_repo.ONBOARDING_STATE_DEFAULTS must carry exactly the
         literal key set above -- fails if a key is added or removed there
         without updating this literal (or vice versa)."""
-        from core.repositories import paperclip_repo as paperclip_repo_module
+        from core.repositories import workspace_repo as paperclip_repo_module
 
         assert set(paperclip_repo_module.ONBOARDING_STATE_DEFAULTS.keys()) == self._EXPECTED_ONBOARDING_STATE_KEYS
 
@@ -551,7 +551,7 @@ class TestResolveOnboardingStateThreading:
         hand-copied."""
         paperclip_repo = MagicMock()
         paperclip_repo.get_onboarding_state = AsyncMock(side_effect=RuntimeError("ddb down"))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo):
+        with patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=paperclip_repo):
             result = await readiness_state.resolve_onboarding_state("user_x")
         assert set(result.keys()) == self._EXPECTED_ONBOARDING_STATE_KEYS
 
@@ -559,7 +559,7 @@ class TestResolveOnboardingStateThreading:
         # one that actually catches drift -- this alone is tautological
         # (it compares resolve_onboarding_state's output to the exact
         # object it's a shallow copy of).
-        from core.repositories import paperclip_repo as paperclip_repo_module
+        from core.repositories import workspace_repo as paperclip_repo_module
 
         assert set(result.keys()) == set(paperclip_repo_module.ONBOARDING_STATE_DEFAULTS.keys())
 

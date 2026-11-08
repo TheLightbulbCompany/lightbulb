@@ -805,7 +805,8 @@ def write_agent_profile(
         byo_api_key=byo_api_key,
         gate_bearer=gate_bearer,
     )
-    # The lightbulb-*.sh scripts' default sender. PAPERCLIP_AGENT_ID (same value) is for images not yet rolled.
+    # The lightbulb-*.sh scripts' default sender. PAPERCLIP_AGENT_ID (same value) stays: skills-src
+    # surfaces.md and heartbeat_checklist.py still tell agents to send $PAPERCLIP_AGENT_ID.
     env["LIGHTBULB_AGENT_ID"] = env["PAPERCLIP_AGENT_ID"] = agent["id"]
     return ProfileFiles(
         config_yaml=yaml.safe_dump(config, sort_keys=False),

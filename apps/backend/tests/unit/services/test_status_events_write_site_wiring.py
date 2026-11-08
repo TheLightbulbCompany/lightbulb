@@ -3,7 +3,7 @@ spec PR-7): every repository write that can move a fact compute_status
 composes must fire the realtime nudge right after the write commits.
 
 Exercised against real DynamoDB engines (moto) for the conditional-write
-repos (container_repo, PaperclipRepo) and a patched table for the plain
+repos (container_repo, WorkspaceRepo) and a patched table for the plain
 put-based billing_repo writers, with publish_status_changed itself mocked
 at each repo module's imported name -- this file only pins THAT it is
 called (and with the right owner_id), not its own internals (covered by
@@ -135,13 +135,13 @@ async def test_set_provider_choice_publishes_status_changed(billing_table):
 
 
 # ---------------------------------------------------------------------------
-# paperclip-companies table -- PaperclipRepo workspace / identity writes
+# paperclip-companies table -- WorkspaceRepo workspace / identity writes
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def paperclip_repo():
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
@@ -155,11 +155,11 @@ def paperclip_repo():
             patch("core.dynamodb._table_prefix", ""),
             patch("core.dynamodb._dynamodb_resource", resource),
         ):
-            yield PaperclipRepo(table_name="test-paperclip-companies", region="us-east-1")
+            yield WorkspaceRepo(table_name="test-paperclip-companies", region="us-east-1")
 
 
 def _make_workspace(**overrides):
-    from core.repositories.paperclip_repo import PaperclipWorkspace
+    from core.repositories.workspace_repo import Workspace
 
     now = datetime.now(timezone.utc)
     fields = dict(
@@ -172,7 +172,7 @@ def _make_workspace(**overrides):
         member_user_ids={"creator_1"},
     )
     fields.update(overrides)
-    return PaperclipWorkspace(**fields)
+    return Workspace(**fields)
 
 
 # The WORKSPACE row is keyed by the org id, and the org id is also where the
@@ -181,28 +181,15 @@ def _make_workspace(**overrides):
 
 @pytest.mark.asyncio
 async def test_paperclip_put_workspace_publishes_org_id(paperclip_repo):
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         await paperclip_repo.put_workspace(_make_workspace())
     mocked.assert_called_once_with("org_acme")
 
 
 @pytest.mark.asyncio
-async def test_paperclip_put_identity_does_not_publish(paperclip_repo):
-    """An identity row (keyed by the Clerk user id) is not a status fact --
-    no tab registers under a user id, so it never nudges."""
-    from core.repositories.paperclip_repo import PaperclipIdentity
-
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.put_identity(
-            PaperclipIdentity(user_id="creator_1", paperclip_user_id="pc_1", paperclip_password_encrypted="enc")
-        )
-    mocked.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_paperclip_add_member_publishes_org_id(paperclip_repo):
     await paperclip_repo.put_workspace(_make_workspace())
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         await paperclip_repo.add_member("org_acme", "member_2")
     mocked.assert_called_once_with("org_acme")
 
@@ -210,7 +197,7 @@ async def test_paperclip_add_member_publishes_org_id(paperclip_repo):
 @pytest.mark.asyncio
 async def test_paperclip_update_status_publishes_on_success(paperclip_repo):
     await paperclip_repo.put_workspace(_make_workspace(status="provisioning"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         landed = await paperclip_repo.update_status("org_acme", status="active")
     assert landed is True
     mocked.assert_called_once_with("org_acme")
@@ -219,7 +206,7 @@ async def test_paperclip_update_status_publishes_on_success(paperclip_repo):
 @pytest.mark.asyncio
 async def test_paperclip_update_status_does_not_publish_on_guard_failure(paperclip_repo):
     await paperclip_repo.put_workspace(_make_workspace(status="active"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         landed = await paperclip_repo.update_status("org_acme", status="failed", not_if_status="active")
     assert landed is False
     mocked.assert_not_called()
@@ -227,10 +214,10 @@ async def test_paperclip_update_status_does_not_publish_on_guard_failure(papercl
 
 @pytest.mark.asyncio
 async def test_claim_funnel_submission_publishes_on_win(paperclip_repo):
-    from core.repositories.paperclip_repo import FunnelClaimResult
+    from core.repositories.workspace_repo import FunnelClaimResult
 
     await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="not_started"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         result = await paperclip_repo.claim_funnel_submission(
             "org_acme", onboarding_generation="01G", submitted_by="creator_1"
         )
@@ -240,10 +227,10 @@ async def test_claim_funnel_submission_publishes_on_win(paperclip_repo):
 
 @pytest.mark.asyncio
 async def test_claim_funnel_submission_does_not_publish_when_already_submitted(paperclip_repo):
-    from core.repositories.paperclip_repo import FunnelClaimResult
+    from core.repositories.workspace_repo import FunnelClaimResult
 
     await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="submitted"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         result = await paperclip_repo.claim_funnel_submission(
             "org_acme", onboarding_generation="01G", submitted_by="creator_1"
         )
@@ -252,26 +239,12 @@ async def test_claim_funnel_submission_does_not_publish_when_already_submitted(p
 
 
 @pytest.mark.asyncio
-async def test_record_onboarding_ids_publishes_status_changed(paperclip_repo):
-    """The goal/project ids land AFTER claim_funnel_submission's nudge and are
-    themselves composed by compute_status -- so this later write must nudge
-    again, or a tab that revalidated off the early 'submitted' event sits on a
-    contract missing the ids."""
-    await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="submitted"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.record_onboarding_ids(
-            "org_acme", onboarding_generation="01G", goal_id="goal_1", project_id="proj_1"
-        )
-    mocked.assert_called_once_with("org_acme")
-
-
-@pytest.mark.asyncio
 async def test_revert_funnel_submission_publishes_on_landed_revert(paperclip_repo):
     """A landed rollback moves funnel_state back and drops the ids -- all
     composed facts -- so the tab that saw the optimistic 'submitted' gets a
     nudge to re-fetch the reverted contract."""
     await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="submitted"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         await paperclip_repo.revert_funnel_submission("org_acme", onboarding_generation="01G")
     mocked.assert_called_once_with("org_acme")
 
@@ -281,6 +254,6 @@ async def test_revert_funnel_submission_does_not_publish_on_guard_failure(paperc
     """No standing claim (funnel already advanced/reverted) -> swallowed guard
     failure -> no write -> no nudge."""
     await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="complete"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+    with patch("core.repositories.workspace_repo.publish_status_changed") as mocked:
         await paperclip_repo.revert_funnel_submission("org_acme", onboarding_generation="01G")
     mocked.assert_not_called()

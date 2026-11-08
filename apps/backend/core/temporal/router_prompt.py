@@ -48,7 +48,8 @@ policies, and whether a time is open: reply from it, in its words, and never add
 request to book, move or cancel an appointment is work: start_task, never a reply, even when the profile shows \
 the slot. A question about the business beyond \
 that is start_task with question=true, never a reply: what shipped, revenue, bookings, an email, a calendar, a \
-customer, anything in a connected app, or anything older than the batch. Its brief is the person's question word \
+customer, anything in a connected app, or anything older than the batch. A fact question asked again more than 1 hour \
+after the earlier answer is a fresh thread too, never the old answer. Its brief is the person's question word \
 for word, never paraphrased; its ack says who is checking ("Engineering is checking what shipped this week."). You \
 see none of those sources and have no memory to search: the listed tasks are not a record of what the business did. \
 A request to make, buy or send something is work, not a question, however it is phrased. On a trigger you also start tasks for, add a reply only for a \

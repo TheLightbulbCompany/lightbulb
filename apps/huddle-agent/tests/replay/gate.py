@@ -134,7 +134,7 @@ def main() -> int:
     print(
         f"\n{total['PASS']} passed, {total['FAIL']} failed (gate only; model behaviour unverified offline)"
     )
-    return 0
+    return 1 if total["FAIL"] else 0
 
 
 if __name__ == "__main__":

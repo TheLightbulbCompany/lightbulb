@@ -228,3 +228,46 @@ async def test_meet_approve_counts_as_the_inviters_yes(m):
     assert ap.await_args.args == ("org_1", "meet", {"user_id": "user_maya", "name": "Sam", "where": "Monday"}, "yes",
                                   "supplies")  # fmt: skip
     assert ap.await_args.kwargs == {"room_id": ROOM}
+
+
+# --- Task 21: a meeting's task answers back in the Meet ------------------------------------------------------
+
+
+def _meet_task(status="idle"):
+    return {"taskId": "k1", "title": "Draft the holiday-hours post", "status": status,
+            "triggerId": f"voice:{ROOM}:run1", "attemptCount": 1}  # fmt: skip
+
+
+async def test_meeting_task_done_posts_link_in_chat(m):
+    """Through the lifecycle hook every status change runs (activities._announce)."""
+    from core.temporal import activities
+
+    m["meeting"].update(status="in_call", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
+    with (
+        patch.object(activities.tasks_repo, "get_task_tree", AsyncMock(return_value={"task": _meet_task()})),
+        patch.object(activities.task_conversation, "ensure_task_room", AsyncMock()),
+        patch.object(activities.task_conversation, "post_as_lightbulb", AsyncMock()),
+    ):
+        await activities._announce("org_1", "k1", "idle")
+    m["say"].assert_awaited_once()
+    line = m["say"].await_args.args[1]
+    assert m["say"].await_args.args[0] == "bot_1"
+    assert line.startswith("Draft ready: Draft the holiday-hours post — ") and line.endswith("panel=task&taskId=k1")
+    assert m["meeting"]["followUps"][0]["status"] == "done"
+    await voice_meet.task_moved(_meet_task(), "idle")  # a retried Activity: said once
+    m["say"].assert_awaited_once()
+
+
+@pytest.mark.parametrize(("to", "status"), [("waiting", "needs_you"), ("working", "working"), ("idle", "done")])
+async def test_followup_status_follows_task(m, to, status):
+    other = {"text": "Other", "status": "working", "taskId": "k2"}
+    m["meeting"].update(status="ended", followUps=[{"text": "Draft", "status": "x", "taskId": "k1"}, other])
+    await voice_meet.task_moved(_meet_task(to), to)
+    assert [f["status"] for f in m["meeting"]["followUps"]] == [status, "working"]
+
+
+async def test_ended_meeting_updates_status_only(m):
+    m["meeting"].update(status="ended", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
+    await voice_meet.task_moved(_meet_task(), "idle")
+    assert m["meeting"]["followUps"][0]["status"] == "done"
+    m["say"].assert_not_awaited()

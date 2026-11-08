@@ -36,6 +36,7 @@ import sys
 
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
+from core.services.runtime_transport import runtime_arn
 from core.services.hermes_profiles import (
     AUX_VISION_UNSET,
     SKILLS_EXTERNAL_DIRS,
@@ -53,7 +54,7 @@ async def _targets(args: argparse.Namespace) -> list[str]:
         return [args.owner_id]
     rows = await container_repo.scan_all(consistent=True)
     # A row without a runtime ARN has nothing to roll -- there is no other transport to skip.
-    return sorted(r["owner_id"] for r in rows if r.get("agentcore_runtime_arn") and r.get("owner_id"))
+    return sorted(r["owner_id"] for r in rows if runtime_arn(r) and r.get("owner_id"))
 
 
 def _apply_one(owner_id: str, agent_id: str, *, dry_run: bool) -> str:

@@ -405,6 +405,10 @@ class Settings(BaseSettings):
     # ``<owner>/*`` in OWNER_STATE_BUCKET and the workspace memory; the session policy narrows it
     # to one owner. Empty = no scoped credentials, the bridge uses its execution role (today).
     HERMES_TENANT_ROLE_ARN: str = ""
+    # The tier's ONE pooled Hermes runtime (CDK ServiceStack HermesSharedRuntime). Set: every
+    # workspace's sessions run there (runtime_transport.runtime_arn), each its own microVM, and a
+    # new workspace gets no runtime, role or boot secret of its own. Names infra, not a flag.
+    HERMES_SHARED_RUNTIME_ARN: str = ""
     # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): the evaluator's
     # episodes and reflections, apart from the workspace memory. Empty = no evaluator.
     AGENTCORE_SESSIONS_MEMORY_ID: str = ""

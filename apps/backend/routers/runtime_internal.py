@@ -32,9 +32,17 @@ from temporalio.client import AsyncActivityCancelledError
 from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
-from core.dynamodb import utc_now_iso
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
-from core.services import purchases, questions, runtime_runs, task_asks, task_conversation, tasks_access
+from core.services import (
+    purchases,
+    questions,
+    runtime_runs,
+    runtime_transport,
+    task_asks,
+    task_conversation,
+    tasks_access,
+)
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.temporal import activities as acts
@@ -155,6 +163,10 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
             )
         if label:
             await _progress_line(owner_id, body.task_id, body.attempt, label)
+        identity = runtime_runs.RunIdentity.for_attempt(owner_id, body.task_id, att)
+        await run_in_thread(
+            runtime_transport.note_alive, owner_id, body.task_id if identity.session_kind == "task" else None
+        )
         if body.credentials_due:
             _refresh_credentials(owner_id, body.task_id, att)
         try:

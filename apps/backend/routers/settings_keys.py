@@ -67,7 +67,7 @@ async def set_key(
     # A key for an inactive provider is not in any profile; the provider switch reconciles.
     if await _is_active_byo_key(owner_id, tool_id):
         row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-        if row.get("agentcore_runtime_arn") and row.get("status") == "running":
+        if row.get("status") == "running":  # provisioned (the shared runtime's rows carry no ARN)
             from core.services.hermes_provisioning import write_profiles
 
             try:

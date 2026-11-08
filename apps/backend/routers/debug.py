@@ -126,7 +126,9 @@ async def redeploy_container(
     from core.services import hermes_provisioning
 
     await hermes_provisioning.write_profiles(owner_id)
-    runtime_arn = container.get("agentcore_runtime_arn")
+    from core.services import runtime_transport
+
+    runtime_arn = runtime_transport.runtime_arn(container)
     if runtime_arn:
         await hermes_provisioning.stop_runtime_session(owner_id, runtime_arn)  # never raises
     return {

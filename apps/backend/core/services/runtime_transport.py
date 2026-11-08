@@ -108,6 +108,60 @@ class RuntimeResponse:
             return None
 
 
+def runtime_arn(container: dict) -> str | None:
+    """The runtime this workspace's sessions run on: the tier's shared one once the env has it
+    (``HERMES_SHARED_RUNTIME_ARN``) for any provisioned workspace -- one with its own runtime from
+    before, or a ``running`` row -- else the row's own. Session ids stay per owner
+    (:func:`session_id_for`), so each workspace still gets its own microVM. The row's own runtime
+    is kept, unused, until the per-owner cleanup; unsetting the setting moves every workspace back."""
+    from core.config import settings
+
+    own = container.get("agentcore_runtime_arn")
+    if settings.HERMES_SHARED_RUNTIME_ARN and (own or container.get("status") == "running"):
+        return settings.HERMES_SHARED_RUNTIME_ARN
+    return own
+
+
+#: How long past ``warm_until`` :func:`live_arn` still counts a session live on its own runtime, so
+#: one late or missed heartbeat (every ~2 min) cannot send a live run's poll to the pool (RunLost).
+LIVE_GRACE_S = 150
+
+
+def live_arn(container: dict, task_id: str | None = None) -> str | None:
+    """:func:`runtime_arn`, except at the cut-over: a session still live on the workspace's OWN
+    runtime stays there until it idles. A run in flight there is unknown to a fresh pool session,
+    so a poll, steer or stop sent to the pool would read it as lost (RunLost) and retry it. "Live"
+    is the wake gate's own estimate (``__session__#<owner>``: warm on that ARN, plus
+    ``LIVE_GRACE_S``), which run and room-turn heartbeats keep current (:func:`note_alive`).
+    Sync: a DynamoDB read, on the invoke pool."""
+    arn, own = runtime_arn(container), container.get("agentcore_runtime_arn")
+    if not own or arn == own:
+        return arn
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    from core.repositories import container_repo as repo
+
+    try:
+        row = repo.get_session_sync(container.get("owner_id") or "", task_id=task_id)
+    except (ClientError, BotoCoreError):
+        return arn
+    return own if row.get("arn") == own and int(row.get("warm_until") or 0) > time.time() - LIVE_GRACE_S else arn
+
+
+def note_alive(owner_id: str, task_id: str | None = None) -> None:
+    """A run's heartbeat: its session is alive, so slide its warm estimate as an invoke would.
+    Without this a Worker run that sends no invoke reads as idle after 200 s, and at the cut-over
+    its polls would leave its own runtime for the pool. Sync; never raises."""
+    from core.repositories import container_repo as repo
+
+    try:
+        row = repo.get_session_sync(owner_id, task_id=task_id)
+        if row.get("arn"):
+            _note_invoked(owner_id, row, task_id)
+    except Exception:  # noqa: BLE001 -- the next heartbeat tries again
+        logger.warning("session alive mark failed for owner %s", owner_id, exc_info=True)
+
+
 def session_id_for(owner_id: str, task_id: str | None = None) -> str:
     """The ONE AgentCore session id for this workspace, or for one task of it.
 
@@ -197,9 +251,9 @@ async def _request_agentcore(
     timeout_s: float,
     task_id: str | None = None,
 ) -> RuntimeResponse:
-    arn = container.get("agentcore_runtime_arn")
+    arn = runtime_arn(container)
     if not arn:
-        raise ValueError("agentcore transport requires containers.agentcore_runtime_arn")
+        raise ValueError("agentcore transport requires a runtime (containers.agentcore_runtime_arn)")
     owner_id = container.get("owner_id") or ""
     # Every invoke names its tenant: a shared runtime binds its session to the first one and
     # refuses any other (bridge.bind_tenant); a per-owner runtime checks it against its own.
@@ -248,6 +302,8 @@ async def _request_agentcore(
         )
 
     def _invoke() -> RuntimeResponse:
+        nonlocal arn  # the wake below uses the same one
+        arn = live_arn(container, task_id)  # a DynamoDB read at the cut-over: here on the pool
         # Keyword only for a task session: the workspace call keeps its exact pre-task shape.
         session = _ensure_session(
             owner_id, arn, deadline, _wake, **({"task_id": task_id} if task_id is not None else {})

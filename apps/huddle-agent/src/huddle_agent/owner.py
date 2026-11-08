@@ -130,6 +130,14 @@ class Turns:
             await asyncio.gather(self._last, return_exceptions=True)
 
 
+def talk_session() -> AgentSession:
+    """vad=None: no separate VAD (1.8.11 builds a silero one unless told not to, but leaves it unwired under server
+    turn detection), so user_state comes from the realtime model's own speech_started/stopped: speaking -> listening is
+    the end of the turn it answers, before its transcript (Talker.turn_ended depends on that order). Quiet ends the
+    talk, not user_away_timeout."""
+    return AgentSession(llm=realtime_model(), vad=None, user_away_timeout=None)
+
+
 def interrupt(session) -> str:
     """A tap on the orb while the voice speaks: the speech stops; delegated work runs on."""
     session.interrupt()
@@ -155,7 +163,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     name, tile, who = info["assistantName"], info.get("agentId") or "assistant", member.name or "the owner"
     turns = Turns(backend, member.identity, ctx.job.id)
     agent = OwnerAgent(turns, {"name": name, "who": who, "today": time.strftime("%A %Y-%m-%d")})
-    session = AgentSession(llm=realtime_model(), user_away_timeout=None)  # Quiet below
+    session = talk_session()
     items: list[dict] = []
     t0 = time.time()
     talk = {"live": False}  # the mic is open: only then is anything said

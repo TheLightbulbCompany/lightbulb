@@ -183,3 +183,24 @@ async def test_a_late_transcript_while_idle_is_not_delegated_by_the_next_cut(tal
     talker.heard("Maya", "Did Acme pay?")
     await talker._turns.flush()
     assert talker.backend.sent == ["What shipped this week?", "Did Acme pay?"]
+
+
+async def test_a_pending_cut_does_not_post_the_next_line_twice(talker, session):
+    talker.turn_ended()  # a noise turn: the reply is cut before any transcript lands
+    await _speak(talker, "Acme paid 300 dollars.")
+    assert session.replies == [mouth.HOLD]
+    talker.turn_ended()  # turn B, delegated by the model, then its transcript lands
+    await talker.delegate("Did Acme pay?")
+    talker.heard("Maya", "Did Acme pay?")
+    await talker._turns.flush()
+    assert talker.backend.sent == ["Did Acme pay?"]
+
+
+async def test_sorry_i_didnt_catch_that_is_not_cut(talker, session):
+    talker.heard("Maya", "Mmhm")
+    await _speak(talker, "Sorry, I didn't catch that. Could you say it again, please?")
+    assert session.current_speech.interrupted == 0
+
+
+async def test_the_owner_session_has_no_separate_vad():
+    assert owner.talk_session().vad is None  # the turn order Talker.turn_ended relies on

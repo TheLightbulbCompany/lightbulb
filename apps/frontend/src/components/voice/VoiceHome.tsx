@@ -103,7 +103,9 @@ function Row({ item, name, current, onOpen }: { item: TimelineItem; name: string
     const mins = item.endAt && item.startAt ? Math.round((item.endAt - item.startAt) / 60) : null;
     const did = item.summary || [item.asked?.length && `Asked ${item.asked.length === 1 ? "once" : `${item.asked.length} times`}`,
       item.followUps?.length && `${item.followUps.length} follow-up${item.followUps.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
-      || `${name} listened.`;
+      || (item.at > Date.now() ? `Upcoming. ${name} will join.`
+        : item.endAt && item.endAt > Date.now() ? `In progress.`
+        : `${name} listened.`);  // a calendar meeting that has not happened is not one Nova listened to
     return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
       <time>{time(item.at)}</time><Video size={16} aria-label="Meeting" />
       <span><span className="vx-who">{item.title || "Meeting"}<small>Google Meet{item.people?.length ? ` · ${item.people.join(", ")}` : ""}</small></span>

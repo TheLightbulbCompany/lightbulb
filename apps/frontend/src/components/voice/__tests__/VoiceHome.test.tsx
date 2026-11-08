@@ -132,3 +132,11 @@ it("call pane Forget does nothing when the (async, desktop) confirm resolves fal
   expect(items.del).not.toHaveBeenCalled();
   expect(screen.getByText("Prefers mornings")).toBeInTheDocument();
 });
+
+it("a meeting still ahead on the calendar says Upcoming, not listened", () => {
+  items.list = [{ type: "meeting", roomId: "m2", at: Date.now() + 3 * 3600e3, endAt: Date.now() + 3.5 * 3600e3, title: "Daily Stand up" }];
+  render(<VoiceHome />);
+  const row = screen.getByRole("button", { name: /Daily Stand up/ });
+  expect(row).toHaveTextContent("Upcoming");
+  expect(row).not.toHaveTextContent("listened");
+});

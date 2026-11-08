@@ -130,6 +130,15 @@ change them.
 
 ## Voice calls
 
+The separate voice-agents plan, where enrollment is available, is $250/month
+per business with 1,500 phone and meeting minutes, then $0.35/minute. An admin
+explicitly accepts it in billing; Go live does not enroll a business. Existing
+workspaces keep their billing until they opt in. This is separate from the
+Front desk texting add-on. Cancellation keeps the voice plan through the end
+date shown in billing and stops its next renewal. The plan's billing period
+uses UTC. Read the workspace's billing state before claiming it is enrolled;
+plan changes belong to the admin in Settings.
+
 Members talk by voice with "Go live" (web and desktop; iPhone is coming).
 Live is in every room's header: channels, DMs and group chats. There is no
 separate "Talk" on web.
@@ -145,6 +154,8 @@ separate "Talk" on web.
   plain voice room for people.
 - Only the agents' speaking time is billed, like a call. Live leaves no
   recording, and nothing said in Live is posted to the room.
+
+For workspaces without the separate voice-agents plan:
 
 - Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
   per-minute cost times the same markup as AI usage).

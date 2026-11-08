@@ -26,7 +26,7 @@ def env(table):
     rpc = AsyncMock(return_value={})
     with (
         patch(
-            "core.repositories.paperclip_repo.PaperclipRepo.get_workspace",
+            "core.repositories.workspace_repo.WorkspaceRepo.get_workspace",
             AsyncMock(return_value=SimpleNamespace(member_user_ids=[USER_A, USER_B])),
         ),
         patch("core.services.network_member._invalidate_activity", AsyncMock()),

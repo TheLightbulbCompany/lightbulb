@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import workspace_name
 
 from . import agents as _agents
@@ -19,8 +19,8 @@ router = APIRouter()
 _ctx = _agents._ctx
 
 
-def _repo() -> PaperclipRepo:
-    return PaperclipRepo(table_name="paperclip-companies")
+def _repo() -> WorkspaceRepo:
+    return WorkspaceRepo()
 
 
 @router.get("/settings")

@@ -77,7 +77,7 @@ from core.repositories.agent_email_repo import (
 )
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import agent_email, meeting_invites
 from core.services.agent_email import ensure_team_address, sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
@@ -140,7 +140,7 @@ async def _ceo(owner_id: str) -> str | None:
     """The starter CEO, else a legacy roster's first seeded agent — the same resolution every
     other CEO door uses. Reading only ``starter_agent_ids`` dropped every first-contact mail to
     the founder workspace (no starter roster) as ``dropped_unknown_recipient`` (prod 2026-10-07)."""
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    row = await WorkspaceRepo().resolve_owner_row(owner_id)
     return ceo_agent_id(row) if row else None
 
 

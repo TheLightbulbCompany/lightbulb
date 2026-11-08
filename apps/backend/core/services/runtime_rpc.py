@@ -32,7 +32,7 @@ from core.services.agent_lifecycle import (
     delete_agent_everywhere,
     ensure_root_ceo_survives,
 )
-from core.services.paperclip_meta import read_from_agent_entry, resolve_create_agent_fields
+from core.services.agent_meta import read_from_agent_entry, resolve_create_agent_fields
 
 logger = logging.getLogger(__name__)
 
@@ -228,10 +228,7 @@ def _sanitize_agent_create(params: dict[str, Any]) -> dict[str, Any]:
                     raise ApiProblem("INVALID_REQUEST", "Invalid Paperclip agent metadata.")
                 sanitized[key] = value.strip()
             clean["params"] = {"paperclip": sanitized}
-    # `workspace` is never required or derived here: an ECS agent's EFS path is
-    # assigned downstream from the Paperclip agent's own id (see
-    # paperclip_openclaw_pairing's `workspace=f"/home/node/.openclaw/workspace-{pc_uuid}"`),
-    # and a Hermes/AgentCore agent has no EFS path at all. `clean` is built
+    # `workspace` is never required or derived here: a Hermes/AgentCore agent has no EFS path. `clean` is built
     # from an explicit allowlist above, so a client-supplied `workspace` (or
     # any other unrecognized key) is already dropped, not merely ignored —
     # this is never trusted or forwarded.
@@ -788,7 +785,7 @@ async def _mirror_agent_update(
         ) from exc
     if agentcore:
         # Row #2 (Q9a fix round 1): an AgentCore row has no openclaw.json for
-        # apply_paperclip_meta to write. name/role/title/capabilities/icon already landed on
+        # a config write. name/role/title/capabilities/icon already landed on
         # the registry row above; any identity-shaped change refreshes SOUL.md (I2) -- never a
         # full write_profile_for_agent, which would clobber the owner's own config.yaml/.env
         # edits.

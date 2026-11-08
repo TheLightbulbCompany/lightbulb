@@ -33,7 +33,7 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
     The profile goes first: if it fails, the row stays visible and a retry finishes the job.
     """
     from core.dynamodb import run_in_thread
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
     from core.services import hermes_profiles, network_member
     from core.services.owner_facts import write_owner_facts
 
@@ -43,7 +43,7 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
         ensure_root_ceo_survives(target=target, agents=roster)
     await run_in_thread(hermes_profiles.delete_profile, owner_id, agent_id)
     await agent_registry.delete(owner_id, agent_id)
-    await PaperclipRepo(table_name="paperclip-companies").remove_starter_agent_id(owner_id, agent_id)
+    await WorkspaceRepo().remove_starter_agent_id(owner_id, agent_id)
     await write_owner_facts(owner_id)  # never raises; no survivor keeps a ghost teammate
     await network_member.publish_sessions(owner_id)  # and no network address for a deleted agent
     return {"deleted": True, "agent_id": agent_id}

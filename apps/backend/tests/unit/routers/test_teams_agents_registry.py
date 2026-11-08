@@ -9,7 +9,6 @@ from fastapi import FastAPI
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import agent_registry_repo
-from core.services import paperclip_admin_client
 from routers.teams import agents as agents_mod
 
 WS = "org_1"
@@ -26,7 +25,6 @@ def client(monkeypatch):
     def paperclip_down(*_a, **_k):
         raise AssertionError("the roster must not call Paperclip")
 
-    monkeypatch.setattr(paperclip_admin_client.PaperclipAdminClient, "__init__", paperclip_down)
     monkeypatch.setattr(agents_mod, "_ctx", paperclip_down)
     monkeypatch.setattr(agent_registry_repo, "list_agents", AsyncMock(return_value=ROWS))
     repo = MagicMock()

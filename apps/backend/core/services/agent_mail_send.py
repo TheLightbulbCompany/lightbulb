@@ -33,7 +33,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, agent_mail_inbox_repo, container_repo
 from core.repositories.agent_mail_inbox_repo import get_message, parse_reply_key
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import ses_email
 from core.services.agent_email import (
     EMAIL_ADDRESS_RE,
@@ -47,7 +47,7 @@ from core.services.agent_email import (
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS, send_reply
 from core.services.agent_mail_tenant import ensure_tenant
-from core.services.paperclip_owner_email import lookup_owner_email
+from core.services.owner_email import lookup_owner_email
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ async def consume_cap(owner_id: str) -> bool:
 
 
 async def _owner_email(owner_id: str) -> str | None:
-    onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
+    onboarding = await WorkspaceRepo().get_onboarding_state(owner_id) or {}
     return await lookup_owner_email(
         org_id=owner_id if is_org_owner_id(owner_id) else None,
         fallback_user_id=onboarding.get("user_id") or owner_id,

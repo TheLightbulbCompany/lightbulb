@@ -7,13 +7,13 @@ Never empty, so a workspace whose name was never set still gets an account and a
 from __future__ import annotations
 
 from core.auth import is_org_owner_id
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import clerk_admin
 
 
 async def saved_name(owner_id: str) -> str | None:
     """META ``name``, else the Clerk org name, else None."""
-    ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
+    ws = await WorkspaceRepo().get_workspace(owner_id)
     if ws and (ws.name or "").strip():
         return ws.name.strip()
     org = await clerk_admin.get_organization(owner_id) if is_org_owner_id(owner_id) else None

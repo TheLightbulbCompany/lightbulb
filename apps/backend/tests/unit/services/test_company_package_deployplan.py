@@ -67,17 +67,17 @@ def test_every_planned_role_is_one_paperclip_accepts():
     gstack fixture sets it on none of its five agents), so the fallback has
     to land inside the enum.
     """
-    from core.services.paperclip_meta import PAPERCLIP_AGENT_ROLES
+    from core.services.agent_meta import AGENT_ROLES
 
     plan = parse_deploy_plan(FIXTURES / "gstack")
     assert len(plan.agents) > 1, "need a non-CEO agent to exercise the fallback"
-    bad = [(a.slug, a.role) for a in plan.agents if a.role not in PAPERCLIP_AGENT_ROLES]
+    bad = [(a.slug, a.role) for a in plan.agents if a.role not in AGENT_ROLES]
     assert not bad, f"roles Paperclip would reject: {bad}"
 
 
 def test_free_text_role_is_coerced(tmp_path):
     """Author-written frontmatter carries prose like 'Head of Growth'."""
-    from core.services.paperclip_meta import PAPERCLIP_AGENT_ROLES
+    from core.services.agent_meta import AGENT_ROLES
 
     (tmp_path / "COMPANY.md").write_text("---\nslug: acme\n---\nAcme\n")
     for slug, role in (("boss", "ceo"), ("growth", "Head of Growth"), ("eng", "CTO")):
@@ -88,7 +88,7 @@ def test_free_text_role_is_coerced(tmp_path):
 
     plan = parse_deploy_plan(tmp_path)
     roles = {a.slug: a.role for a in plan.agents}
-    assert all(r in PAPERCLIP_AGENT_ROLES for r in roles.values()), roles
+    assert all(r in AGENT_ROLES for r in roles.values()), roles
     assert roles["boss"] == "ceo"
     assert roles["eng"] == "cto"  # case-normalized, not dropped
     assert roles["growth"] == "general"  # unmappable prose falls back

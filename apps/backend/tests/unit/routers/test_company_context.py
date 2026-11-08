@@ -35,7 +35,7 @@ def member():
 def _company(starter=None, seeded=None):
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(starter_agent_ids=starter, seeded_agent_ids=seeded))
-    return patch.object(mod, "PaperclipRepo", return_value=repo)
+    return patch.object(mod, "WorkspaceRepo", return_value=repo)
 
 
 def test_post_merges_into_the_ceo_profile(admin):

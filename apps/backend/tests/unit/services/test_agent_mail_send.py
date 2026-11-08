@@ -55,7 +55,7 @@ def wired(monkeypatch):
     st.put_sent = AsyncMock()
     monkeypatch.setattr(
         mod,
-        "PaperclipRepo",
+        "WorkspaceRepo",
         lambda **_: types.SimpleNamespace(get_onboarding_state=AsyncMock(return_value={"company_id": "co_1"})),
     )
     monkeypatch.setattr(mod, "resolve_agent_name", AsyncMock(return_value="Atlas"))

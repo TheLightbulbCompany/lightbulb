@@ -32,7 +32,7 @@ def _seed_fixture(monkeypatch):
     company = MagicMock(status="active", starter_agent_ids=starter_ids)
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=company)
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo", MagicMock(return_value=repo))
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=None))
     monkeypatch.setattr(
         messaging,

@@ -22,7 +22,7 @@ from core.repositories import (
     usage_repo,
     user_repo,
 )
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import connection_service, workspace_memory
 from core.services.provision_dispatch import dispatch_provision
 from core.services.credentials import integration_secret_store
@@ -287,7 +287,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             # only password, and this endpoint deletes no Better Auth user.
             (
                 "paperclip-companies",
-                lambda: PaperclipRepo(table_name="paperclip-companies").delete(owner_id),
+                lambda: WorkspaceRepo().delete(owner_id),
             ),
             # The pending-brief sentinel lives in the SAME table under a
             # synthetic PK, so the row delete above does not reach it.
@@ -300,7 +300,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             # comment above exists to prevent.
             (
                 "paperclip-companies:pending-brief",
-                lambda: PaperclipRepo(table_name="paperclip-companies").delete_pending_brief(owner_id),
+                lambda: WorkspaceRepo().delete_pending_brief(owner_id),
             ),
         ]
     )

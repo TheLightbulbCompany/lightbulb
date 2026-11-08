@@ -103,7 +103,7 @@ from core.repositories import (
     user_repo,
     workspace_join_repo,
 )
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import clerk_admin, company_stripe, message_search, voice_onboarding
 from core.services.account_wipe import (
     release_text_lines,
@@ -254,7 +254,7 @@ def deletable_member_ids(snapshot: WorkspaceSnapshot) -> list[str]:
     return [m["user_id"] for m in snapshot.members if snapshot.delete_shared_members or not m["other_orgs"]]
 
 
-async def _read_members(org_id: str, repo: PaperclipRepo, joined: set[str]) -> list[dict]:
+async def _read_members(org_id: str, repo: WorkspaceRepo, joined: set[str]) -> list[dict]:
     clerk = {
         m["user_id"]: m for m in await clerk_admin.list_organization_members(org_id, strict=True) if m.get("user_id")
     }
@@ -299,10 +299,10 @@ async def _read_workspace_snapshot(
 ) -> WorkspaceSnapshot:
     container = await container_repo.get_by_owner_id(org_id)
     billing = await billing_repo.get_by_owner_id(org_id)
-    paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
+    workspace_repo = WorkspaceRepo()
     # Before any step: a read failure here stops preview/execute with nothing deleted.
-    workspace = await paperclip_repo.get_workspace(org_id)
-    members = await _read_members(org_id, paperclip_repo, workspace.member_user_ids if workspace else set())
+    workspace = await workspace_repo.get_workspace(org_id)
+    members = await _read_members(org_id, workspace_repo, workspace.member_user_ids if workspace else set())
     room_ids = await messaging_repo.list_owner_room_ids(org_id)
     secret_names = await list_owner_secret_names(org_id)
     agent_key_names = await list_owner_agent_key_secret_names(org_id)
@@ -572,7 +572,7 @@ def _paperclip_rows_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 
 
 async def _paperclip_rows_run(snap: WorkspaceSnapshot) -> str:
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
     deleted: list[str] = []
     await repo.delete(snap.org_id)
     deleted.append(f"{snap.org_id}: workspace row")

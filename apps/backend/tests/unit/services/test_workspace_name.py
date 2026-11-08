@@ -9,7 +9,7 @@ from core.services import workspace_name as mod
 @pytest.fixture
 def sources(monkeypatch):
     ws = SimpleNamespace(name=None)
-    monkeypatch.setattr(mod.PaperclipRepo, "get_workspace", AsyncMock(return_value=ws))
+    monkeypatch.setattr(mod.WorkspaceRepo, "get_workspace", AsyncMock(return_value=ws))
     clerk = AsyncMock(return_value=None)
     monkeypatch.setattr(mod.clerk_admin, "get_organization", clerk)
     return ws, clerk

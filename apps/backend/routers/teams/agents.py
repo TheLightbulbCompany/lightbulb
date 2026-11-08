@@ -22,15 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import run_in_thread
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import agent_registry, hermes_profiles, voice_calls
 from core.services.voice_persona import agent_voice
 from core.services.agent_provenance import _load_agent_sidecars, stamp_agent_provenance
 from core.services.agent_redaction import strip_agent_secrets
-from core.services.paperclip_openclaw_pairing import (
-    get_seeded_agent_ids,
-    get_starter_agent_ids,
-)
 from core.services.agent_lifecycle import (
     AgentLifecycleConflict,
     delete_agent_everywhere,
@@ -141,13 +137,27 @@ def _redact_agent(agent):
 # (adapter synthesis) easy to mock in isolation.
 
 
-def _repo() -> PaperclipRepo:
-    """Build the paperclip-companies DDB repo.
+def _repo() -> WorkspaceRepo:
+    return WorkspaceRepo()
 
-    Short table name — ``core.dynamodb.get_table`` prepends the
-    ``isol8-{env}-`` prefix.
-    """
-    return PaperclipRepo(table_name="paperclip-companies")
+
+async def get_seeded_agent_ids(*, owner_id: str, repo: WorkspaceRepo) -> set[str]:
+    """The legacy Friday/Atlas seed ids on the workspace row, for the ``seeded`` stamp. Empty on any
+    lookup failure: a cosmetic stamp never breaks an agent read."""
+    try:
+        ws = await repo.get_workspace(owner_id)
+    except Exception:  # noqa: BLE001
+        return set()
+    return set(ws.seeded_agent_ids) if ws is not None and ws.seeded_agent_ids else set()
+
+
+async def get_starter_agent_ids(*, owner_id: str, repo: WorkspaceRepo) -> set[str]:
+    """The starter agent ids on the active workspace row. Empty on any lookup failure."""
+    try:
+        row = await repo.resolve_owner_row(owner_id)
+    except Exception:  # noqa: BLE001
+        return set()
+    return set(row.starter_agent_ids.values()) if row and row.starter_agent_ids else set()
 
 
 def _resolve_owner_id(ctx) -> str:

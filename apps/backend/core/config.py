@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
     # Public-facing base URL for this API. Used to build absolute URLs in
-    # responses (e.g., the Paperclip trigger fire URLs, /hooks/t/...).
+    # responses (e.g., the trigger fire URLs, /hooks/t/...).
     # Per env: https://api-dev.thelightbulb.company, https://api.thelightbulb.company,
     # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
     # CDK service-stack environment block per environment.
@@ -185,8 +185,7 @@ class Settings(BaseSettings):
     # the Management API, so it stays there). Wired by CDK service-stack from
     # api-stack's WebSocket stage URL.
     WS_GATEWAY_URL: str = "wss://ws-dev.thelightbulb.company"
-    # Raw WebSocket relay for machine clients (desktop node hosts, Paperclip
-    # operators): one backend task pipes both sockets for the connection's
+    # Raw WebSocket relay for machine clients (desktop node hosts): one backend task pipes both sockets for the connection's
     # life instead of the API Gateway relay above. Same `bv-` CloudFront/ALB
     # door as the browser-view live view, path-capped to /api/v1/gateway/*.
     # Wired by CDK service-stack from api-stack's gateway-relay-url output.
@@ -495,26 +494,13 @@ class Settings(BaseSettings):
     # secret — must stay stable forever or existing keyrings become unreadable.
     GOG_KEYRING_PASSWORD: str = ""
 
-    # --- Paperclip integration ---
-    # Internal URL the backend uses to reach Paperclip's REST API (private subnet).
-    # e.g. ``http://paperclip.internal.isol8.local`` — set by CDK in deployed envs.
+    # Legacy env names (data names; the values are still configured by infra).
+    # Read by nothing since the Meta webhook stopped firing Paperclip routine triggers.
     PAPERCLIP_INTERNAL_URL: str = ""
-    # Public-facing URL for browsers (used by the proxy router for cookie scope
-    # and origin checks; T14/T15 introduce the actual proxy). e.g.
-    # ``https://company.isol8.co``.
-    PAPERCLIP_PUBLIC_URL: str = ""
-    # HMAC key for the OpenClaw service-token JWTs the backend mints for
-    # seeded Paperclip agents (see core/services/service_token.py). Populated
-    # from Secrets Manager + KMS by the CDK service stack at deploy time.
-    # Re-used by paperclip_proxy to sign the proxy's own session cookie.
+    # HMAC key for service-token JWTs (``service_token.py``), the digest/Needs-you email links and
+    # the session-share signature.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""
-    # Shared bearer token the isol8.notifications Paperclip plugin sends on
-    # POST /webhooks/paperclip-events. Empty disables the receiver (404).
-    # Populated from Secrets Manager by the CDK service stack; the same secret
-    # is injected into the Paperclip task as PAPERCLIP_ISOL8_NOTIFY_TOKEN by
-    # paperclip-stack (the plugin worker reads it via an env passthrough —
-    # plugin configJson is per-company on the deployed fork line, so env is
-    # the only instance-wide channel).
+    # Shared bearer secret for ``routers/lifecycle_operations.py``.
     PAPERCLIP_EVENTS_WEBHOOK_SECRET: str = ""
     # The `hub.verify_token` Meta echoes back on the one-time subscribe
     # handshake for the APP-LEVEL webhook callback (routers/meta_webhook.py).
@@ -524,12 +510,7 @@ class Settings(BaseSettings):
     # route 503s, so a half-configured environment can never complete a
     # handshake and start receiving events it cannot verify.
     META_WEBHOOK_VERIFY_TOKEN: str = ""
-    # Public URL of the frontend (e.g. https://dev.thelightbulb.company). Used by
-    # the paperclip-proxy to redirect users back to /chat when they land on
-    # company.isol8.co without prerequisites (no container, no Clerk
-    # session, no Paperclip company row). Same value as CORS_ORIGINS in
-    # most envs but kept separate so the proxy doesn't need to parse a
-    # comma-separated list.
+    # Public URL of the frontend (e.g. https://dev.thelightbulb.company).
     FRONTEND_URL: str = "https://dev.thelightbulb.company"
 
     # --- Transactional email ---

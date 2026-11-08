@@ -496,19 +496,17 @@ async def test_member_revocation_writes_spare_a_re_paired_device(dynamodb_table)
     assert set(row["paired_devices"]) == {"dev_b", "dev_c"}
 
 
-def test_classify_provision_error_paperclip_reuses_retryable():
-    """PaperclipApiError already auto-classifies retryability off its status
-    code — the classifier reuses .retryable verbatim (4xx deterministic, 5xx/429
-    transient)."""
+def test_classify_provision_error_reuses_retryable_attr():
+    """An exception's own ``.retryable`` is reused verbatim."""
     from core.repositories import container_repo
-    from core.services.paperclip_admin_client import PaperclipApiError
 
-    det_cause, det_retryable = container_repo.classify_provision_error(PaperclipApiError("bad slug", 400, {}))
-    assert det_retryable is False
-    assert "400" in det_cause
+    class Err(Exception):
+        def __init__(self, msg, retryable):
+            super().__init__(msg)
+            self.retryable = retryable
 
-    _, transient_retryable = container_repo.classify_provision_error(PaperclipApiError("down", 503, {}))
-    assert transient_retryable is True
+    assert container_repo.classify_provision_error(Err("bad slug", False))[1] is False
+    assert container_repo.classify_provision_error(Err("down", True))[1] is True
 
 
 def test_classify_provision_error_validation_is_deterministic():

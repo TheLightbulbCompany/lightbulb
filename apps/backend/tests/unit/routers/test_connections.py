@@ -888,11 +888,7 @@ class TestConnectPaste:
     async def test_resume_after_connect_no_signin(
         self, mock_validate, mock_repo, mock_store, mock_apply, async_client, monkeypatch
     ):
-        """A connect never signs in to Paperclip (it did on every connect, to wake Paperclip-era idea starts)."""
-        from core.services import paperclip_admin_session
-
-        signin = AsyncMock()
-        monkeypatch.setattr(paperclip_admin_session, "get_admin_session_cookie", signin)
+        """A connect applies, stores the status, then rewrites owner facts."""
         mock_validate.return_value = True
         order: list[str] = []
         mock_store.put = AsyncMock()
@@ -903,7 +899,6 @@ class TestConnectPaste:
         response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
         assert response.status_code == 200
         assert order == ["apply", "put_status", "facts"]
-        signin.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")

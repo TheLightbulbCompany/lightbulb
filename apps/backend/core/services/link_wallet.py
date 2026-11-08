@@ -29,7 +29,7 @@ import httpx
 
 from core.config import settings
 from core.repositories import oauth_state_repo
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import owner_lifecycle
 from core.services.credentials import integration_secret_store
 
@@ -197,7 +197,7 @@ async def disconnect(owner_id: str) -> bool:
 
 
 async def _connector_is_member(owner_id: str, user_id: str) -> bool:
-    workspace = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
+    workspace = await WorkspaceRepo().get_workspace(owner_id)
     return bool(user_id) and user_id in ((workspace.member_user_ids if workspace else None) or [])
 
 

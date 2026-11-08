@@ -5,7 +5,7 @@ readiness inputs into one ``StatusContract``:
 
   1. the ``containers`` row              (``core.repositories.container_repo``)
   2. the ``billing-accounts`` row        (``core.repositories.billing_repo``)
-  3. the ``paperclip-companies`` owner row (``core.repositories.paperclip_repo``
+  3. the ``paperclip-companies`` owner row (``core.repositories.workspace_repo``
                                            -- carries BOTH ``teams_state`` and
                                            the generation-fenced onboarding
                                            fields, so this is ONE physical
@@ -36,7 +36,7 @@ import logging
 from typing import Any, Literal, Optional
 
 from core.repositories import billing_repo, container_repo
-from core.repositories.paperclip_repo import ONBOARDING_STATE_DEFAULTS
+from core.repositories.workspace_repo import ONBOARDING_STATE_DEFAULTS
 from core.services.provision_gate import is_subscription_active
 
 logger = logging.getLogger(__name__)
@@ -79,19 +79,19 @@ def resolve_runtime_phase(container: Optional[dict]) -> RuntimePhase:
     return "ready" if (container or {}).get("status") == "running" else "provisioning"
 
 
-def _paperclip_repo():
-    """Local import so ``patch("core.repositories.paperclip_repo.PaperclipRepo", ...)``
+def _workspace_repo():
+    """Local import so ``patch("core.repositories.workspace_repo.WorkspaceRepo", ...)``
     (the pattern every existing test double in this codebase already uses)
     keeps working -- mirrors the pre-COMPOSER ``_resolve_teams_status``'s
     own local-import idiom in ``routers/container.py``.
     """
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    return PaperclipRepo(table_name="paperclip-companies")
+    return WorkspaceRepo()
 
 
 async def resolve_onboarding_state(owner_id: str) -> dict:
-    """Best-effort wrapper over ``paperclip_repo.get_onboarding_state``.
+    """Best-effort wrapper over ``WorkspaceRepo.get_onboarding_state``.
 
     A read failure here must never break ``/container/status`` -- mirrors
     the pre-COMPOSER ``_resolve_teams_status``'s degrade-to-None posture.
@@ -108,7 +108,7 @@ async def resolve_onboarding_state(owner_id: str) -> dict:
     store's raw facts untouched.
     """
     try:
-        return await _paperclip_repo().get_onboarding_state(owner_id)
+        return await _workspace_repo().get_onboarding_state(owner_id)
     except Exception:  # noqa: BLE001 — a degraded read must never break /status
         logger.info("readiness_state: paperclip-companies read failed for owner %s", owner_id, exc_info=True)
         return dict(ONBOARDING_STATE_DEFAULTS)

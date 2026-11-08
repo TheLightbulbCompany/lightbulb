@@ -13,14 +13,13 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 from fastapi import HTTPException
 
 from core.auth import AuthContext, resolve_owner_id
-from core.repositories.paperclip_repo import PaperclipWorkspace
+from core.repositories.workspace_repo import Workspace
 
 
 def envelope_list(upstream: Any, key: str) -> dict[str, list[dict]]:
     """Wrap an upstream list response in a ``{key: [...]}`` envelope.
 
-    Upstream Paperclip's ``GET /api/companies/:co/<resource>`` endpoints
-    return bare JSON arrays (``res.json(result)``). The Teams frontend
+    Some upstream reads return bare JSON arrays. The Teams frontend
     panels read ``data?.<resource>`` (envelope shape) so without
     server-side wrapping each panel silently renders empty.
 
@@ -52,7 +51,7 @@ class TeamsContext:
 
 
 class _Repo(Protocol):
-    async def get_workspace(self, org_id: str) -> PaperclipWorkspace | None: ...
+    async def get_workspace(self, org_id: str) -> Workspace | None: ...
 
 
 # Reconcile drives provisioning for a visitor who is not a member yet.
@@ -85,7 +84,7 @@ async def resolve_teams_context(
     Pure unit tests that don't supply it keep the 409 (no side effect).
 
     Membership is the workspace META row's member set only; there is no
-    Paperclip identity or session behind it any more.
+    other identity or session behind it.
     """
     owner_id = resolve_owner_id(auth)
     ws = await repo.get_workspace(owner_id)

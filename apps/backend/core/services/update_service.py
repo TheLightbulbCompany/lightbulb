@@ -48,9 +48,9 @@ async def _paperclip_purge_pass() -> None:
 
     Per-row failures are logged and swallowed so one bad row doesn't break the whole pass.
     """
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
     try:
         due = await repo.scan_purge_due(datetime.now(timezone.utc))
     except Exception:

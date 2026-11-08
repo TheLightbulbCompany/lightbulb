@@ -444,7 +444,7 @@ async def test_write_owner_facts_writes_the_manifest_to_every_profile():
             AsyncMock(return_value=[{"provider": "github", "rail": "cli"}]),
         ),
         patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster)),
-        patch("core.repositories.paperclip_repo.PaperclipRepo.resolve_owner_row", AsyncMock(return_value=company)),
+        patch("core.repositories.workspace_repo.WorkspaceRepo.resolve_owner_row", AsyncMock(return_value=company)),
         patch(
             "core.services.hermes_profiles.write_facts_to_profiles",
             side_effect=lambda o, ids, body: written.update(ids=ids, body=body),
@@ -465,7 +465,7 @@ async def test_delete_agent_everywhere_refreshes_facts_for_every_caller():
         patch.object(agent_registry, "roster", AsyncMock(return_value=[])),
         patch.object(agent_registry, "delete", AsyncMock()),
         patch(
-            "core.repositories.paperclip_repo.PaperclipRepo",
+            "core.repositories.workspace_repo.WorkspaceRepo",
             MagicMock(return_value=MagicMock(remove_starter_agent_id=AsyncMock())),
         ),
         patch("core.services.network_member.publish_sessions", AsyncMock()),

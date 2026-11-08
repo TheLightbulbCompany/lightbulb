@@ -6,7 +6,7 @@
 * ``disable_workspace`` marks a deleted Clerk org's row ``disabled`` with a purge timer; the
   cleanup cron (``update_service._workspace_purge_pass``) deletes it afterwards.
 
-Leaving a workspace is ``PaperclipRepo.remove_member`` (the class keeps its name until task 9).
+Leaving a workspace is ``WorkspaceRepo.remove_member`` (the class keeps its name until task 9).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from core.repositories.paperclip_repo import PaperclipRepo, PaperclipWorkspace
+from core.repositories.workspace_repo import WorkspaceRepo, Workspace
 from core.services import agent_registry
 
 logger = logging.getLogger(__name__)
@@ -104,15 +104,15 @@ STARTER_CAPABILITIES = {
 _STARTER_NAMESPACE = uuid.UUID("3b1f0c52-8a8e-4f8e-9d0f-6c2f4d7e9a11")
 
 
-def _repo() -> PaperclipRepo:
-    return PaperclipRepo(table_name="paperclip-companies")
+def _repo() -> WorkspaceRepo:
+    return WorkspaceRepo()
 
 
 def starter_agent_id(org_id: str, starter_key: str) -> str:
     return str(uuid.uuid5(_STARTER_NAMESPACE, f"{org_id}:{starter_key}"))
 
 
-async def provision_org(owner_id: str, *, provisioner: str) -> PaperclipWorkspace:
+async def provision_org(owner_id: str, *, provisioner: str) -> Workspace:
     """Make ``owner_id``'s workspace active with the full starter roster. Idempotent.
 
     An active row with the full starter set returns as is. Otherwise each missing starter is created in the registry
@@ -152,7 +152,7 @@ async def provision_org(owner_id: str, *, provisioner: str) -> PaperclipWorkspac
         if ws is not None:
             row = dataclasses.replace(ws, **fields)
         else:
-            row = PaperclipWorkspace(org_id=owner_id, company_id="", created_at=now, **fields)
+            row = Workspace(org_id=owner_id, company_id="", created_at=now, **fields)
         if not row.onboarding_generation:
             row.onboarding_generation = str(ULID())
             row.funnel_state = "not_started"
@@ -178,7 +178,7 @@ async def provision_org(owner_id: str, *, provisioner: str) -> PaperclipWorkspac
     return row
 
 
-async def provision_member(owner_id: str, user_id: str) -> PaperclipWorkspace | None:
+async def provision_member(owner_id: str, user_id: str) -> Workspace | None:
     """Record ``user_id`` as a member of the active workspace. None while it is not active yet."""
     repo = _repo()
     ws = await repo.resolve_owner_row(owner_id)
@@ -198,7 +198,7 @@ async def disable_workspace(org_id: str, *, grace_days: int = 30) -> None:
     logger.info("workspace_provisioning.disable_workspace: %s scheduled for purge at %s", org_id, purge_at.isoformat())
 
 
-async def _mark_failed(repo: PaperclipRepo, org_id: str, reason: str) -> None:
+async def _mark_failed(repo: WorkspaceRepo, org_id: str, reason: str) -> None:
     """Leave the failure visible (``/teams`` answers 503, not an endless 202), never over ``active``."""
     if await repo.get_workspace(org_id, consistent_read=True) is not None:
         await repo.update_status(org_id, status="failed", last_error=reason, not_if_status="active")

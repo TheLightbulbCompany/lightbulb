@@ -1,39 +1,12 @@
-"""DynamoDB repository for the paperclip-companies table.
+"""The workspace store: one META row per workspace (Clerk org) on the ``tasks`` table
+(``WS#{org}/META``, camelCase attributes) plus its pending-brief sentinel (``WS#{org}/PENDING_BRIEF``).
 
-PK attribute: ``user_id`` (S). Despite the attribute name, the table holds
-two kinds of row (plus the pending-brief sentinels below):
+Methods write snake_case expressions; ``_ws_call`` rewrites them to camelCase, so ``Workspace`` reads
+like a plain row.
 
-* **Workspace row** — keyed by the Clerk ORG id itself (``org_…``). ONE per
-  workspace: one workspace = one Paperclip company. Carries every COMPANY
-  fact — ``company_id``, ``status``, the starter/seeded roster ids, the
-  onboarding funnel, the purge timer, who provisioned it
-  (``provisioner_user_id``) and which humans have joined the company
-  (``member_user_ids``). Org ids can never collide with ``user_…`` keys.
-* **Identity row** — keyed by a Clerk USER id. ONLY that human's Better Auth
-  identity (``paperclip_user_id`` / ``paperclip_email`` /
-  ``paperclip_password_encrypted``). A human has one Better Auth account no
-  matter how many workspaces they belong to, so the row names no company and
-  no org. Deleting it can never delete a company — the 2026-09-15 wipe of the
-  founder's shared company came from the old shape, where every member's row
-  also carried the company.
-
-An identity row carries ``status`` only while its sign-up is unsettled: the
-``seeding`` claim that fences a concurrent duplicate sign-up, or ``failed``
-when that sign-up failed before an identity was confirmed. ``put_identity``
-writes the settled row without it.
-
-Async repository following the peer repos in ``core/repositories/``: every
-DynamoDB call is wrapped in ``run_in_thread``.
-
-Workspace META store (spec 03 §4.4, wave1-R Task 6): ``_meta_on_tasks()``
-moves workspace rows and pending-brief sentinels to the ``tasks`` table
-(``WS#{org}/META`` and ``WS#{org}/PENDING_BRIEF``, camelCase attributes,
-translated here so ``PaperclipWorkspace`` and every public method are
-unchanged). Identity rows, ``org_company_ids`` and ``find_workspace_by_company``
-stay on this table, and so do the Paperclip-only workspace attributes
-(``company_id``, ``agent_keys``, ``agent_cost_remainder``, the
-``automation_pause*`` fence): they are never copied to META and are read
-back from the old row.
+The legacy ``paperclip-companies`` table (a data name; retiring it is a later data task) is still read
+for two things: the ``company_id`` of a workspace provisioned before the native store, and the per-user
+identity rows the wipes and ``/teams/members`` read. ``delete`` removes both.
 """
 
 from __future__ import annotations
@@ -42,12 +15,11 @@ import logging
 import dataclasses
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
 from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
@@ -86,7 +58,7 @@ class FunnelClaimResult(str, Enum):
     this as a duplicate submit."""
 
 
-PaperclipCompanyStatus = Literal["seeding", "provisioning", "active", "failed", "disabled"]
+WorkspaceStatus = Literal["seeding", "provisioning", "active", "failed", "disabled"]
 FunnelState = Literal["not_started", "submitted", "complete"]
 
 
@@ -102,16 +74,10 @@ def _pending_brief_key(owner_id: str) -> str:
     return f"{_PENDING_BRIEF_PREFIX}{owner_id}"
 
 
-# ponytail: delete after the prod data move (task 3)
-# --- tasks-table META translation (spec 03 §6.2) ---------------------------
+# --- snake_case <-> tasks-table camelCase ------------------------------------
+# Methods below write snake_case attribute names; ``_ws_call`` rewrites them for the ``tasks`` table.
 
-_OLD_ROW_ONLY = frozenset({"company_id", "agent_keys", "agent_cost_remainder"})
 _META_ONLY = frozenset({"sk", "metaKind", "workBackend"})
-
-
-def old_row_only(name: str) -> bool:
-    """Paperclip-only workspace attributes: never copied to META, kept on the old row."""
-    return name in _OLD_ROW_ONLY or name.startswith("automation_pause")
 
 
 def _camel(name: str) -> str:
@@ -125,13 +91,13 @@ def _snake(name: str) -> str:
     return re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower()
 
 
-def to_meta_item(item: dict, owner_id: str, sk: str) -> dict:
-    """An old-table workspace row (``sk=META``) or pending-brief sentinel (``sk=PENDING_BRIEF``)
-    as its tasks-table row. Drops the Paperclip-only attributes."""
-    out = {_camel(k): v for k, v in item.items() if k != "user_id" and not old_row_only(k)}
+def _meta_item(item: dict, owner_id: str, sk: str) -> dict:
+    """A snake_case workspace row (``sk=META``) or pending-brief sentinel (``sk=PENDING_BRIEF``) as its
+    tasks-table item."""
+    out = {_camel(k): v for k, v in item.items() if k != "user_id"}
     out.update(pk=ts.ws_pk(owner_id), sk=sk)
     if sk == ts.META_SK:
-        out.update(metaKind="workspace", workBackend=out.get("workBackend", "paperclip"))
+        out["metaKind"] = "workspace"
     return out
 
 
@@ -200,16 +166,17 @@ def _iso_or_none(item: dict, key: str) -> Optional[datetime]:
 
 
 @dataclass
-class PaperclipWorkspace:
+class Workspace:
     """The ONE row of a workspace (Clerk org), keyed by the org id itself."""
 
     org_id: str
     """Clerk org id — also this row's key."""
 
     company_id: str
-    """The workspace's Paperclip company. "" on a pre-company ``failed`` marker."""
+    """Legacy company id, read from the old table for workspaces provisioned before the native store; "" otherwise.
+    Never written."""
 
-    status: PaperclipCompanyStatus
+    status: WorkspaceStatus
     created_at: datetime
     updated_at: datetime
 
@@ -217,7 +184,7 @@ class PaperclipWorkspace:
     """The Clerk user whose ``provision_org`` created the company."""
 
     member_user_ids: set[str] = dataclasses.field(default_factory=set)
-    """Clerk users who have JOINED this workspace's Paperclip company
+    """Clerk users who have JOINED this workspace
     (``provision_org`` for the provisioner, ``provision_member`` for everyone
     else). ``archive_member`` removes one. This is the Teams authorization
     fence and ``provision_member``'s idempotency record."""
@@ -225,17 +192,15 @@ class PaperclipWorkspace:
     last_error: Optional[str] = None
     scheduled_purge_at: Optional[datetime] = None
     seeded_agent_ids: Optional[list[str]] = None
-    """Legacy Paperclip agent IDs from the Friday/Atlas founder seed.
+    """Legacy agent IDs from the Friday/Atlas founder seed.
 
-    Retained only for those pre-starter-roster companies. It marks agents
-    protected by that historical provisioning contract and is used by
-    ``paperclip_openclaw_pairing.is_seeded_agent`` and the Teams BFF
+    Retained only for those pre-starter-roster workspaces; read for the Teams
     ``seeded`` flag. Matching on persisted IDs (rather than role/name) means a
     user-created agent that happens to use role ``ceo`` or the name ``Atlas``
     is never mistaken for a legacy-seeded one."""
 
     starter_agent_ids: Optional[dict[str, str]] = None
-    """Starter role key -> Paperclip agent UUID for fresh workspaces.
+    """Starter role key -> agent id for fresh workspaces.
 
     The keys are ``ceo``, ``engineering``, ``finance``, ``growth``,
     ``analytics``, and ``customer_operations``. Unlike ``seeded_agent_ids``,
@@ -251,7 +216,7 @@ class PaperclipWorkspace:
     onboarding_generation: Optional[str] = None
     """ULID fence for onboarding facts (the company-incarnation fence, G2).
     Minted exactly once, in ``provision_org``'s fresh-create branch, AFTER a
-    genuinely-new Paperclip company is confirmed — never on reconcile-adopt
+    genuinely-new workspace is confirmed — never on reconcile-adopt
     of an existing ``company_id``, never on ``provision_member`` (INV-3). A
     write against a superseded generation is a silent no-op (INV-4)."""
 
@@ -292,51 +257,14 @@ class PaperclipWorkspace:
     """The workspace's display name and description (``/teams/settings``). Written only by
     ``set_profile``; ``put_workspace`` never sets or removes them."""
 
-    automation_paused_at: Optional[str] = None
-    """Set by ``paperclip_agent_lifecycle.pause_owner_automation`` when the owner stopped
-    being live; removed by ``resume_owner_automation``. The two sets below name exactly
-    what WE paused, so a resume never re-enables a routine or heartbeat the owner turned
-    off themselves (the starter routines are seeded paused)."""
-    automation_paused_agent_ids: Optional[set[str]] = None
-    automation_paused_routine_ids: Optional[set[str]] = None
-    automation_pause_complete_at: Optional[str] = None
-    automation_paused_routine_versions: Optional[dict[str, str]] = None
-    automation_pause_token: Optional[str] = None
-    """The running pause's fence: written with the record, removed by the resume. A pause
-    re-checks it before every PATCH and stops once it no longer owns the row."""
-    """routine id -> its ``updatedAt`` right after our pause PATCH; resume re-activates a
-    routine only if it still matches (nobody touched it since)."""
-    """Set only after a pause's Paperclip PATCHes ALL landed; every new pause removes it
-    first. The expired-trial sweep re-runs the (idempotent) pause until this is set."""
-
 
 @dataclass
-class PaperclipIdentity:
-    """One human's Better Auth identity, keyed by their Clerk user id."""
+class Identity:
+    """One human's legacy identity row, keyed by their Clerk user id."""
 
     user_id: str
     paperclip_user_id: str = ""
-    """Better Auth user ID. "" until the sign-up is confirmed."""
-
-    paperclip_password_encrypted: str = ""
-    """Fernet-encrypted random password for the Better Auth account."""
-
     paperclip_email: str = ""
-    """The address Better Auth actually holds for ``paperclip_user_id``.
-
-    Better Auth's ``user.email`` is written once at sign-up and NEVER
-    updated, so it is NOT interchangeable with the user's live Clerk primary
-    email: signing in with a moved Clerk address 401s, falls through to
-    sign-UP, and mints a DUPLICATE Better Auth account. Every sign-in door
-    reads this first and falls back to the live Clerk address only when it
-    is empty."""
-
-    status: Optional[str] = None
-    """Only on an unsettled sign-up: ``seeding`` (the claim) or ``failed``
-    (sign-up failed before an identity was confirmed). None once settled."""
-
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
 
 
 _WORKSPACE_ISO_FIELDS = ("scheduled_purge_at", "funnel_submitted_at", "funnel_completed_at")
@@ -351,15 +279,8 @@ _WORKSPACE_PLAIN_FIELDS = (
     "first_contact_state",
     "first_contact_attempts",
     "first_contact_reason",
-    "automation_paused_at",
-    "automation_paused_agent_ids",
-    "automation_paused_routine_ids",
-    "automation_pause_complete_at",
-    "automation_paused_routine_versions",
-    "automation_pause_token",
 )
 _WORKSPACE_OPTIONAL_FIELDS = (
-    "company_id",
     "provisioner_user_id",
     "member_user_ids",
     "seeded_agent_ids",
@@ -369,8 +290,8 @@ _WORKSPACE_OPTIONAL_FIELDS = (
 )
 
 
-class PaperclipRepo:
-    """Async repository for the paperclip-companies DynamoDB table.
+class WorkspaceRepo:
+    """Async repository for the workspace META store (and the legacy table above).
 
     The table name is injected so the same repo class is usable for the
     real per-environment table and for moto-backed unit tests. Internally we
@@ -378,66 +299,31 @@ class PaperclipRepo:
     in tests Just Works.
     """
 
-    def __init__(self, table_name: str, region: str | None = None):  # noqa: ARG002 - region kept for back-compat
+    def __init__(self, table_name: str = "paperclip-companies", region: str | None = None):  # noqa: ARG002 - region kept for back-compat
         self._table_name = table_name
 
     def _table(self):
         return get_table(self._table_name)
 
-    def _meta_on_tasks(self) -> bool:
-        """Whether workspace rows and pending briefs live on the ``tasks`` table (spec 03 §4.4).
-        Always, since the switch was retired (``copy_workspace_meta --all --verify`` ran first)."""
-        return True
-
     def _ws_table(self):
-        return get_table("tasks") if self._meta_on_tasks() else self._table()
+        return get_table("tasks")
 
     def _ws_key(self, org_id: str) -> dict:
-        if self._meta_on_tasks():
-            return {"pk": ts.ws_pk(org_id), "sk": ts.META_SK}
-        return {"user_id": org_id}
+        return {"pk": ts.ws_pk(org_id), "sk": ts.META_SK}
 
     def _pending_key(self, owner_id: str) -> dict:
-        if self._meta_on_tasks():
-            return {"pk": ts.ws_pk(owner_id), "sk": ts.PENDING_BRIEF_SK}
-        return {"user_id": _pending_brief_key(owner_id)}
-
-    def _ws_item(self, item: dict, owner_id: str, sk: str) -> dict:
-        return to_meta_item(item, owner_id, sk) if self._meta_on_tasks() else item
+        return {"pk": ts.ws_pk(owner_id), "sk": ts.PENDING_BRIEF_SK}
 
     async def _ws_call(self, method: str, key: dict | None = None, **kwargs) -> dict:
-        """One call on the META store. Callers write snake_case expressions; on ``tasks`` they are
-        rewritten to camelCase and the returned ``Item``/``Attributes`` come back snake_case."""
+        """One call on the META store. Callers write snake_case expressions; they are rewritten to
+        camelCase and the returned ``Item``/``Attributes`` come back snake_case."""
         if key is not None:
             kwargs["Key"] = key
-        on_tasks = self._meta_on_tasks()
-        if on_tasks:
-            kwargs = _tasks_expressions(kwargs)
-        resp = await run_in_thread(getattr(self._ws_table(), method), **kwargs)
-        if on_tasks:
-            for k in ("Item", "Attributes"):
-                if resp.get(k):
-                    resp[k] = from_meta_item(resp[k])
+        resp = await run_in_thread(getattr(self._ws_table(), method), **_tasks_expressions(kwargs))
+        for k in ("Item", "Attributes"):
+            if resp.get(k):
+                resp[k] = from_meta_item(resp[k])
         return resp
-
-    def _old_row_update(self, org_id: str, status: str, attrs: dict, absent: list[str]) -> dict:
-        """On ``tasks``: the old-row half of ``put_workspace``, keeping the Paperclip-only
-        attributes there. ``org_id`` keeps the by-org-id guard working; ``status`` (first write
-        only) is what the agent-key writes condition on."""
-        values = {f":o{i}": v for i, v in enumerate(attrs.values())}
-        names = {f"#o{i}": k for i, k in enumerate(attrs)}
-        sets = ["org_id = :org", "#s = if_not_exists(#s, :s)"] + [f"#o{i} = :o{i}" for i in range(len(attrs))]
-        expr = "SET " + ", ".join(sets)
-        if absent:
-            names.update({f"#x{i}": k for i, k in enumerate(absent)})
-            expr += " REMOVE " + ", ".join(f"#x{i}" for i in range(len(absent)))
-        return {
-            "TableName": self._table().name,
-            "Key": {"user_id": org_id},
-            "UpdateExpression": expr,
-            "ExpressionAttributeNames": {"#s": "status", **names},
-            "ExpressionAttributeValues": {":org": org_id, ":s": status, **values},
-        }
 
     # ------------------------------------------------------------------
     # Workspace rows
@@ -445,20 +331,16 @@ class PaperclipRepo:
 
     async def put_workspace(
         self,
-        ws: PaperclipWorkspace,
+        ws: Workspace,
         *,
         condition: str | None = None,
         condition_values: dict | None = None,
     ) -> None:
-        """Write every ``PaperclipWorkspace`` field of a workspace row.
+        """Write every ``Workspace`` field of a workspace row.
 
         One ``UpdateItem`` that SETs each field ``ws`` carries and REMOVEs each
         one it does not, so it replaces the dataclass's fields exactly like a
-        whole-item put did. Attributes the dataclass does not model (the
-        per-agent ``agent_keys`` map, ``agent_cost_remainder``) are never
-        written here: they change only through their own nested
-        ``SET``/``REMOVE`` paths, so a stale snapshot cannot erase a concurrent
-        write to them.
+        whole-item put did. ``company_id``, ``name`` and ``description`` are never written here.
 
         ⚠️ WRITER-SAFETY: any dataclass field NOT set on ``ws`` is REMOVED,
         which silently WIPES a previously written value
@@ -473,16 +355,11 @@ class PaperclipRepo:
         mismatch boto3 raises ``ClientError`` (uncaught here).
         """
         item: dict = {
-            "user_id": ws.org_id,
             "org_id": ws.org_id,
             "status": ws.status,
             "created_at": ws.created_at.isoformat(),
             "updated_at": ws.updated_at.isoformat(),
         }
-        # "" must be OMITTED, never written: company_id keys the by-company-id
-        # GSI and DynamoDB rejects the whole PutItem on an empty index key.
-        if ws.company_id:
-            item["company_id"] = ws.company_id
         if ws.provisioner_user_id:
             item["provisioner_user_id"] = ws.provisioner_user_id
         if ws.member_user_ids:
@@ -499,21 +376,14 @@ class PaperclipRepo:
             value = getattr(ws, name)
             if value is not None:
                 item[name] = value.isoformat()
-        del item["user_id"]
-        on_tasks = self._meta_on_tasks()
-        fields = [k for k in _WORKSPACE_OPTIONAL_FIELDS if not (on_tasks and old_row_only(k))]
-        old_attrs = {k: item.pop(k) for k in list(item) if on_tasks and old_row_only(k)}
-        attr = _camel if on_tasks else str
-        names = {f"#f{i}": attr(k) for i, k in enumerate(item)}
+        names = {f"#f{i}": _camel(k) for i, k in enumerate(item)}
         values = {f":f{i}": v for i, v in enumerate(item.values())}
-        expr = "SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(item)))
-        if on_tasks:
-            expr += ", #mk = :mk, #wb = if_not_exists(#wb, :wb)"
-            names.update({"#mk": "metaKind", "#wb": "workBackend"})
-            values.update({":mk": "workspace", ":wb": "paperclip"})
-        absent = [k for k in fields if k not in item]
+        expr = "SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(item))) + ", #mk = :mk"
+        names["#mk"] = "metaKind"
+        values[":mk"] = "workspace"
+        absent = [k for k in _WORKSPACE_OPTIONAL_FIELDS if k not in item]
         if absent:
-            names.update({f"#r{i}": attr(k) for i, k in enumerate(absent)})
+            names.update({f"#r{i}": _camel(k) for i, k in enumerate(absent)})
             expr += " REMOVE " + ", ".join(f"#r{i}" for i in range(len(absent)))
         kwargs: dict = {
             "UpdateExpression": expr,
@@ -522,45 +392,25 @@ class PaperclipRepo:
         }
         if condition:
             kwargs["ConditionExpression"] = condition
-        if not on_tasks:
-            await self._ws_call("update_item", self._ws_key(ws.org_id), **kwargs)
-        else:
-            # Both rows in one transaction, so META never lands without company_id on the old row.
-            old_fields = [k for k in _WORKSPACE_OPTIONAL_FIELDS if old_row_only(k) and k not in old_attrs]
-            meta = {"TableName": self._ws_table().name, "Key": self._ws_key(ws.org_id), **_tasks_expressions(kwargs)}
-            old = self._old_row_update(ws.org_id, ws.status, old_attrs, old_fields)
-            try:
-                await run_in_thread(
-                    self._table().meta.client.transact_write_items,
-                    TransactItems=[{"Update": meta}, {"Update": old}],
-                )
-            except ClientError as e:
-                reasons = e.response.get("CancellationReasons") or []
-                if any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
-                    # Same error the single-table path raises, for the G2 mint site's handler.
-                    raise ClientError(
-                        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "put_workspace condition"}},
-                        "UpdateItem",
-                    ) from e
-                raise
+        await self._ws_call("update_item", self._ws_key(ws.org_id), **kwargs)
         publish_status_changed(ws.org_id)
 
-    async def get_workspace(self, org_id: str, *, consistent_read: bool = False) -> Optional[PaperclipWorkspace]:
+    async def get_workspace(self, org_id: str, *, consistent_read: bool = False) -> Optional[Workspace]:
         resp = await self._ws_call("get_item", self._ws_key(org_id), ConsistentRead=consistent_read)
         item = resp.get("Item")
         # A missing ``status`` means the key names something other than a
         # workspace row (a pre-migration human row, a sentinel): not a workspace.
         if not item or "status" not in item:
             return None
-        if self._meta_on_tasks():
-            # company_id and the automation pause fence never leave the old row.
-            old = await run_in_thread(self._table().get_item, Key={"user_id": org_id}, ConsistentRead=consistent_read)
-            item.update({k: v for k, v in (old.get("Item") or {}).items() if old_row_only(k)})
+        # A workspace provisioned before the native store keeps its legacy ``company_id`` on the old row.
+        old = await run_in_thread(self._table().get_item, Key={"user_id": org_id}, ConsistentRead=consistent_read)
+        if (old.get("Item") or {}).get("company_id"):
+            item["company_id"] = old["Item"]["company_id"]
         return self._item_to_workspace(item)
 
     @staticmethod
-    def _item_to_workspace(item: dict) -> PaperclipWorkspace:
-        return PaperclipWorkspace(
+    def _item_to_workspace(item: dict) -> Workspace:
+        return Workspace(
             org_id=item["user_id"],
             company_id=item.get("company_id", ""),
             status=item["status"],
@@ -587,25 +437,11 @@ class PaperclipRepo:
             first_contact_reason=item.get("first_contact_reason"),
             name=item.get("name"),
             description=item.get("description"),
-            automation_paused_at=item.get("automation_paused_at"),
-            automation_pause_complete_at=item.get("automation_pause_complete_at"),
-            # Keep an EMPTY map as {}: a carried-forward put must not drop it, or the
-            # pause's per-routine nested SET has no parent to write into.
-            automation_paused_routine_versions=dict(item["automation_paused_routine_versions"])
-            if "automation_paused_routine_versions" in item
-            else None,
-            automation_pause_token=item.get("automation_pause_token"),
-            automation_paused_agent_ids=set(item["automation_paused_agent_ids"])
-            if item.get("automation_paused_agent_ids")
-            else None,
-            automation_paused_routine_ids=set(item["automation_paused_routine_ids"])
-            if item.get("automation_paused_routine_ids")
-            else None,
         )
 
     async def resolve_owner_row(
         self, owner_id: str, *, consistent_read: bool = False, include_inactive: bool = False
-    ) -> Optional[PaperclipWorkspace]:
+    ) -> Optional[Workspace]:
         """The workspace row for ``owner_id`` (a Clerk org id): one GetItem.
 
         Returns None when there is none, or — unless ``include_inactive`` —
@@ -620,7 +456,7 @@ class PaperclipRepo:
         return ws
 
     async def add_member(self, org_id: str, user_id: str) -> None:
-        """Record that ``user_id`` joined this workspace's Paperclip company.
+        """Record that ``user_id`` joined this workspace.
         Conditional on the workspace row existing (never resurrects a partial)."""
         await self._ws_call(
             "update_item",
@@ -662,41 +498,6 @@ class PaperclipRepo:
             return
         publish_status_changed(org_id)
 
-    async def org_company_ids(self, org_id: str) -> set[str]:
-        """Every ``company_id`` any row indexed under ``org_id`` names (the
-        by-org-id GSI, projection ALL). Workspace rows carry ``org_id``; so do
-        pre-migration per-member rows — which is what makes this the guard
-        against minting a SECOND company for an org whose rows still await
-        the one-off migration (PR #3097; the script lives outside the repo)."""
-        ids: set[str] = set()
-        async for page in self._query_pages(IndexName="by-org-id", KeyConditionExpression=Key("org_id").eq(org_id)):
-            ids.update(item["company_id"] for item in page.get("Items", []) if item.get("company_id"))
-        return ids
-
-    async def find_workspace_by_company(self, company_id: str) -> Optional[PaperclipWorkspace]:
-        """The ACTIVE workspace whose company is ``company_id``, via the
-        ``by-company-id`` GSI (only workspace rows carry ``company_id``; the
-        index projects ``status`` only, so the hit is re-read)."""
-        async for page in self._query_pages(
-            IndexName="by-company-id",
-            KeyConditionExpression=Key("company_id").eq(company_id),
-        ):
-            for item in page.get("Items", []):
-                # On tasks the old row's status is stale; the re-read below checks META's.
-                if not self._meta_on_tasks() and item.get("status") != "active":
-                    continue
-                ws = await self.get_workspace(item["user_id"])
-                if ws is not None and ws.status == "active":
-                    return ws
-        return None
-
-    async def get_user_ids_for_company(self, company_id: str) -> list[str]:
-        """The Clerk user ids who joined the active workspace owning
-        ``company_id`` — the push audience for inbound Paperclip plugin
-        events (``routers/paperclip_events.py``)."""
-        ws = await self.find_workspace_by_company(company_id)
-        return sorted(ws.member_user_ids) if ws is not None else []
-
     async def _query_pages(self, table=None, **kwargs):
         """Yield each raw Query response page, following ``LastEvaluatedKey``."""
         while True:
@@ -711,10 +512,10 @@ class PaperclipRepo:
         self,
         key: str,
         *,
-        status: PaperclipCompanyStatus,
+        status: WorkspaceStatus,
         last_error: Optional[str] = None,
         scheduled_purge_at: Optional[datetime] = None,
-        not_if_status: Optional[PaperclipCompanyStatus] = None,
+        not_if_status: Optional[WorkspaceStatus] = None,
     ) -> bool:
         """Update a workspace row's status. Returns True iff the write landed.
 
@@ -753,112 +554,6 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
 
-    async def record_paused_automation(
-        self, org_id: str, *, agent_ids: list[str], routine_ids: list[str], token: str
-    ) -> bool:
-        """Stamp ``automation_paused_at`` (first pause wins), ADD what is about to be paused,
-        and take the fence (``automation_pause_token``). Written BEFORE the Paperclip PATCHes,
-        so a pause that dies halfway still leaves the resume a full list. Returns False when
-        the row is gone (never resurrects a deleted workspace)."""
-        expr = (
-            "SET automation_paused_at = if_not_exists(automation_paused_at, :t), automation_pause_token = :k, "
-            "automation_paused_routine_versions = if_not_exists(automation_paused_routine_versions, :empty)"
-        )
-        values: dict = {":t": utc_now_iso(), ":k": token, ":empty": {}}
-        adds = []
-        if agent_ids:
-            adds.append("automation_paused_agent_ids :a")
-            values[":a"] = set(agent_ids)
-        if routine_ids:
-            adds.append("automation_paused_routine_ids :r")
-            values[":r"] = set(routine_ids)
-        if adds:
-            expr += " ADD " + ", ".join(adds)
-        expr += " REMOVE automation_pause_complete_at"  # a new pause is incomplete until it finishes
-        table = self._table()
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
-                UpdateExpression=expr,
-                ConditionExpression="attribute_exists(user_id)",
-                ExpressionAttributeValues=values,
-            )
-            return True
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return False
-
-    async def pause_token_current(self, org_id: str, token: str) -> bool:
-        """Whether the pause holding ``token`` still owns the row (no resume cleared it, no
-        newer pause took it). Strongly consistent."""
-        ws = await self.get_workspace(org_id, consistent_read=True)
-        return ws is not None and ws.automation_pause_token == token
-
-    async def _fenced_set(self, org_id: str, token: str, expr: str, names: dict, values: dict) -> bool:
-        table = self._table()
-        kwargs: dict = {
-            "Key": {"user_id": org_id},
-            "UpdateExpression": expr,
-            "ConditionExpression": "automation_pause_token = :k",
-            "ExpressionAttributeValues": {**values, ":k": token},
-        }
-        if names:
-            kwargs["ExpressionAttributeNames"] = names
-        try:
-            await run_in_thread(table.update_item, **kwargs)
-            return True
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return False
-
-    async def record_routine_version(self, org_id: str, *, token: str, routine_id: str, updated_at: str) -> bool:
-        """Persist one paused routine's ``updatedAt`` the moment it is paused, so a pause
-        that fails later still leaves resume the versions of what it already paused."""
-        return await self._fenced_set(
-            org_id,
-            token,
-            "SET automation_paused_routine_versions.#r = :v",
-            {"#r": routine_id},
-            {":v": updated_at},
-        )
-
-    async def mark_pause_complete(self, org_id: str, *, token: str) -> bool:
-        """Every PATCH of this pause landed: the expired-trial sweep may stop retrying.
-        Fenced: a pause a resume superseded never marks itself complete."""
-        return await self._fenced_set(org_id, token, "SET automation_pause_complete_at = :t", {}, {":t": utc_now_iso()})
-
-    async def clear_paused_automation(self, org_id: str, *, agent_ids: list[str], routine_ids: list[str]) -> None:
-        """Undo ``record_paused_automation`` for exactly the ids a resume handled. DELETE
-        (not REMOVE) on the sets, so ids a racing pause added after our read survive."""
-        # ponytail: drops every version, not just these ids; a pause racing a resume then
-        # falls back to the plain "still paused" check for its routines.
-        # Removing the token is the fence: a pause still running sees it gone and stops.
-        expr = (
-            "REMOVE automation_paused_at, automation_pause_complete_at, automation_paused_routine_versions, "
-            "automation_pause_token"
-        )
-        values: dict = {}
-        deletes = []
-        if agent_ids:
-            deletes.append("automation_paused_agent_ids :a")
-            values[":a"] = set(agent_ids)
-        if routine_ids:
-            deletes.append("automation_paused_routine_ids :r")
-            values[":r"] = set(routine_ids)
-        if deletes:
-            expr += " DELETE " + ", ".join(deletes)
-        kwargs: dict = {
-            "Key": {"user_id": org_id},
-            "UpdateExpression": expr,
-            "ConditionExpression": "attribute_exists(user_id)",
-        }
-        if values:
-            kwargs["ExpressionAttributeValues"] = values
-        table = self._table()
-        try:
-            await run_in_thread(table.update_item, **kwargs)
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return
-
     async def put_failed_marker_if_absent(self, *, org_id: str, reason: str) -> bool:
         """Durably record "this workspace's seed failed" when NO workspace row
         exists yet, via a CONDITIONAL put-if-absent. Returns True iff it landed.
@@ -881,7 +576,7 @@ class PaperclipRepo:
         try:
             await self._ws_call(
                 "put_item",
-                Item=self._ws_item(item, org_id, ts.META_SK),
+                Item=_meta_item(item, org_id, ts.META_SK),
                 ConditionExpression="attribute_not_exists(user_id)",
             )
             publish_status_changed(org_id)
@@ -890,32 +585,15 @@ class PaperclipRepo:
             return False
 
     async def delete(self, key: str) -> None:
-        await run_in_thread(
-            self._table().delete_item,
-            Key={"user_id": key},
-        )
-        if self._meta_on_tasks():
-            await run_in_thread(self._ws_table().delete_item, Key=self._ws_key(key))
+        """Delete ``key``'s old-table row (identity or legacy workspace) and its META row."""
+        await run_in_thread(self._table().delete_item, Key={"user_id": key})
+        await run_in_thread(self._ws_table().delete_item, Key=self._ws_key(key))
 
     # ------------------------------------------------------------------
     # Identity rows
     # ------------------------------------------------------------------
 
-    async def put_identity(self, identity: PaperclipIdentity) -> None:
-        """Whole-item put of a SETTLED identity row (no status, no claim
-        attributes) — the write that confirms a sign-up."""
-        now = datetime.now(timezone.utc)
-        item = {
-            "user_id": identity.user_id,
-            "paperclip_user_id": identity.paperclip_user_id,
-            "paperclip_password_encrypted": identity.paperclip_password_encrypted,
-            "paperclip_email": identity.paperclip_email,
-            "created_at": (identity.created_at or now).isoformat(),
-            "updated_at": now.isoformat(),
-        }
-        await run_in_thread(self._table().put_item, Item=item)
-
-    async def get_identity(self, user_id: str, *, consistent_read: bool = False) -> Optional[PaperclipIdentity]:
+    async def get_identity(self, user_id: str, *, consistent_read: bool = False) -> Optional[Identity]:
         resp = await run_in_thread(
             self._table().get_item,
             Key={"user_id": user_id},
@@ -924,226 +602,11 @@ class PaperclipRepo:
         item = resp.get("Item")
         if not item:
             return None
-        return PaperclipIdentity(
+        return Identity(
             user_id=item["user_id"],
             paperclip_user_id=item.get("paperclip_user_id", ""),
-            paperclip_password_encrypted=item.get("paperclip_password_encrypted", ""),
             paperclip_email=item.get("paperclip_email", ""),
-            status=item.get("status"),
-            created_at=_iso_or_none(item, "created_at"),
-            updated_at=_iso_or_none(item, "updated_at"),
         )
-
-    async def fail_signup_claim(self, user_id: str, *, reason: str, claim_id: str | None) -> bool:
-        """Downgrade an UNCONFIRMED sign-up claim to ``failed`` so the next
-        attempt can reclaim it. Never touches a confirmed identity
-        (``paperclip_user_id`` set), and — when ``claim_id`` is given — never
-        a newer holder's stolen claim. Returns True iff it landed."""
-        condition = (
-            "attribute_exists(user_id) AND (attribute_not_exists(paperclip_user_id) OR paperclip_user_id = :empty)"
-        )
-        values: dict = {":f": "failed", ":e": reason, ":u": utc_now_iso(), ":empty": ""}
-        if claim_id is not None:
-            condition += " AND (attribute_not_exists(seeding_claim_id) OR seeding_claim_id = :cid)"
-            values[":cid"] = claim_id
-        table = self._table()
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": user_id},
-                UpdateExpression="SET #s = :f, last_error = :e, updated_at = :u",
-                ConditionExpression=condition,
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues=values,
-            )
-            return True
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return False
-
-    async def try_acquire_seed_claim(
-        self,
-        user_id: str,
-        *,
-        claim_id: str,
-        stale_after_seconds: int = 300,
-    ) -> bool:
-        """Strongly-consistent "I am signing this human up" claim on their
-        IDENTITY row — the fence against a duplicate Better Auth sign-up, taken
-        by ``provision_org`` (the provisioner) and ``provision_member``.
-
-        Returns True iff THIS caller now holds the claim — by winning a fresh
-        put-if-absent, or by stealing a bare ``status="seeding"`` claim whose
-        holder went silent for longer than ``stale_after_seconds``. Returns
-        False when the row exists in any other state (a peer's seed is in
-        flight, already landed, or already failed — the caller decides what
-        to do by re-reading).
-
-        Why this exists: ``provision_org``'s idempotency used to be
-        check-then-act on this row — two concurrent calls on DIFFERENT
-        backend instances could both read "no row" and both run the full
-        Paperclip seed (Better-Auth sign-up, company create, starter roster),
-        minting duplicate same-email users + duplicate companies (observed
-        live on dev 2026-07-24, twice, 102ms and 358ms apart). This is a PK
-        conditional write, so
-        it is strongly consistent and cross-instance-safe, and it lives on the
-        identity row so the loser can simply poll it.
-
-        Claims retain staged encrypted signup credentials across retries and
-        stale-lease takeover. No Paperclip user ID exists until signup or
-        authenticated recovery returns. The claim names no org and no company:
-        it is identity only, so it never enters the by-org-id or
-        by-company-id indexes.
-
-        Steal threshold rationale:
-        a live ``provision_org`` chain is ~9 awaited Paperclip HTTP calls,
-        each bounded by the provisioning client's 15s timeout, and any
-        timeout RAISES — which downgrades the row via ``_mark_failed``. So a
-        row still ``seeding`` past ~300s can only be a holder that crashed
-        hard (SIGKILL) between the claim and its first durable write; the
-        steal is fenced on ``seeding_claimed_at`` being unchanged since our
-        read so two concurrent stealers can't both win.
-        """
-        now = datetime.now(timezone.utc)
-        item = {
-            "user_id": user_id,
-            "status": "seeding",
-            "seeding_claim_id": claim_id,
-            "seeding_claimed_at": now.isoformat(),
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-        }
-        table = self._table()
-
-        # 1. Fresh claim — wins iff no row exists yet.
-        try:
-            await run_in_thread(
-                table.put_item,
-                Item=item,
-                ConditionExpression="attribute_not_exists(user_id)",
-            )
-            return True
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
-
-        # 2. Reclaim a failed signup without a confirmed identity, or a stale
-        #    seeding claim, retaining its staged credentials. Other rows are
-        #    handled by the caller rather than overwritten here.
-        resp = await run_in_thread(table.get_item, Key={"user_id": user_id}, ConsistentRead=True)
-        existing = resp.get("Item")
-        if existing is None:
-            # Deleted between our put and get — try one fresh claim.
-            try:
-                await run_in_thread(
-                    table.put_item,
-                    Item=item,
-                    ConditionExpression="attribute_not_exists(user_id)",
-                )
-                return True
-            except table.meta.client.exceptions.ConditionalCheckFailedException:
-                return False
-
-        # An interrupted signup may already have created the remote account.
-        # Its exact password/email must survive reclaim; generating another
-        # password would make that account permanently unadoptable.
-        credential_conditions = []
-        credential_values = {}
-        for field in ("paperclip_password_encrypted", "paperclip_email"):
-            if field in existing:
-                credential_conditions.append(f"{field} = :{field}")
-                credential_values[f":{field}"] = existing[field]
-                if existing[field]:
-                    item[field] = existing[field]
-            else:
-                credential_conditions.append(f"attribute_not_exists({field})")
-        # Staging can land after this read without changing the lease timestamp.
-        # Defer takeover if either credential changed instead of erasing it.
-        credential_condition = " AND ".join(credential_conditions)
-
-        status = existing.get("status")
-        if status == "failed" and not existing.get("paperclip_user_id"):
-            # No confirmed identity yet: signup failed or its response was
-            # lost. Retain any staged password for authenticated recovery.
-            # The next attempt re-runs the sign-up — and
-            # two concurrent retries would each sign up, reopening the exact
-            # duplicate-account race this claim exists to close. Reclaim it
-            # atomically, fenced on it still being credential-less: a failed
-            # row that DOES carry ``paperclip_user_id`` is adopted (signed in
-            # with its stored password), never re-signed-up, so it needs no
-            # fence and is left alone. "Credential-less" must match the
-            # Python pre-check above (absent OR empty): older markers stored
-            # ``paperclip_user_id = ""`` explicitly, and ``attribute_not_exists``
-            # is FALSE for an attribute that exists as "" — without the OR, a
-            # legacy marker would pass the pre-check, fail this condition,
-            # and wedge every retry in the loser wait forever.
-            try:
-                await run_in_thread(
-                    table.put_item,
-                    Item=item,
-                    ConditionExpression=(
-                        "#s = :failed AND (attribute_not_exists(paperclip_user_id) OR paperclip_user_id = :empty) "
-                        f"AND {credential_condition}"
-                    ),
-                    ExpressionAttributeNames={"#s": "status"},
-                    ExpressionAttributeValues={":failed": "failed", ":empty": "", **credential_values},
-                )
-                return True
-            except table.meta.client.exceptions.ConditionalCheckFailedException:
-                return False
-
-        if status != "seeding":
-            return False
-
-        prev_claimed_at = existing.get("seeding_claimed_at", "")
-        try:
-            age = (now - datetime.fromisoformat(prev_claimed_at)).total_seconds()
-        except (ValueError, TypeError):
-            age = float("inf")  # unparseable timestamp → treat as stale
-        if age < stale_after_seconds:
-            return False
-
-        # Steal — fenced on BOTH the status (still a bare claim) and the
-        # claimed_at we read, so a concurrent winner's progress or a rival
-        # stealer's win makes this a clean loss.
-        try:
-            await run_in_thread(
-                table.put_item,
-                Item=item,
-                ConditionExpression=f"#s = :seeding AND seeding_claimed_at = :prev AND {credential_condition}",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":seeding": "seeding", ":prev": prev_claimed_at, **credential_values},
-            )
-            return True
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return False
-
-    async def stage_signup_credentials(self, user_id: str, *, email: str, password_encrypted: str) -> tuple[str, str]:
-        """Persist the signup secret before sending it.
-
-        NOT fenced on any claim — two concurrent provision runs must both
-        succeed and converge. ``if_not_exists`` is the convergence primitive:
-        whichever run's write lands first fixes the value, and
-        ``ReturnValues=ALL_NEW`` hands every caller that same converged
-        (email, password) pair, so a retry never mints a second random
-        password for an account that may already have signed up with the
-        first one."""
-        response = await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": user_id},
-            UpdateExpression=(
-                "SET paperclip_email = if_not_exists(paperclip_email, :email), "
-                "paperclip_password_encrypted = if_not_exists(paperclip_password_encrypted, :password)"
-            ),
-            ConditionExpression="#s = :seeding",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":seeding": "seeding",
-                ":email": email,
-                ":password": password_encrypted,
-            },
-            ReturnValues="ALL_NEW",
-        )
-        item = response["Attributes"]
-        return item["paperclip_email"], item["paperclip_password_encrypted"]
 
     async def get_onboarding_state(self, owner_id: str) -> dict:
         """RECONCILE-WITH-ONBOARD: read-only accessor for the
@@ -1247,75 +710,6 @@ class PaperclipRepo:
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return
-
-    async def delete_agent_key(self, org_id: str, agent_id: str) -> None:
-        """Drop ``agent_id``'s old Paperclip key (agent delete; no key is written any more). Idempotent."""
-        table = self._table()
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
-                UpdateExpression="REMOVE agent_keys.#a",
-                ConditionExpression="attribute_exists(agent_keys)",
-                ExpressionAttributeNames={"#a": agent_id},
-            )
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return
-
-    async def add_agent_cost_remainder(self, org_id: str, key: str, delta: int, *, need: int = 0) -> dict | None:
-        """Atomically add ``delta`` microcents to ``agent_cost_remainder[key]``; return the whole map.
-
-        Internal sub-cent carry for Paperclip cost events (Paperclip owns the budget and stores
-        integer cents). ``need`` > 0 makes the write conditional on the bucket holding at least
-        that much (the claim before a post, with a negative ``delta``). None when the row is missing
-        or the condition fails.
-
-        Uses ``SET #k = if_not_exists(#k, :zero) + :d``, NOT ``ADD``: DynamoDB's ``ADD`` action does
-        not operate on a nested document path, so ``ADD agent_cost_remainder.#k`` throws a
-        ValidationException on real DynamoDB (moto does not enforce this). The SET form is the
-        supported atomic nested increment.
-        """
-        table = self._table()
-        exc = table.meta.client.exceptions.ConditionalCheckFailedException
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
-                UpdateExpression="SET agent_cost_remainder = :empty",
-                ConditionExpression="attribute_exists(user_id) AND attribute_not_exists(agent_cost_remainder)",
-                ExpressionAttributeValues={":empty": {}},
-            )
-        except exc:
-            pass
-        cond = "attribute_exists(user_id)"
-        values: dict = {":d": delta, ":zero": 0}
-        if need:
-            cond += " AND agent_cost_remainder.#k >= :need"
-            values[":need"] = need
-        try:
-            resp = await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
-                UpdateExpression="SET agent_cost_remainder.#k = if_not_exists(agent_cost_remainder.#k, :zero) + :d",
-                ConditionExpression=cond,
-                ExpressionAttributeNames={"#k": key},
-                ExpressionAttributeValues=values,
-                ReturnValues="ALL_NEW",
-            )
-        except exc:
-            return None
-        return resp["Attributes"]["agent_cost_remainder"]
-
-    async def prune_agent_cost_remainder(self, org_id: str, keys: list[str]) -> None:
-        if not keys:
-            return
-        names = {f"#k{i}": k for i, k in enumerate(keys)}
-        await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": org_id},
-            UpdateExpression="REMOVE " + ", ".join(f"agent_cost_remainder.{n}" for n in names),
-            ExpressionAttributeNames=names,
-        )
 
     async def claim_first_contact(self, org_id: str, *, onboarding_generation: str) -> bool:
         """Conditional ``first_contact_state -> sending``, generation-fenced.
@@ -1504,48 +898,6 @@ class PaperclipRepo:
         # strand the client on an empty company.
         return FunnelClaimResult.STALE_GENERATION
 
-    async def record_onboarding_ids(
-        self,
-        org_id: str,
-        *,
-        onboarding_generation: str,
-        goal_id: str,
-        project_id: str,
-    ) -> None:
-        """Record the seeded goal/project ids on the row. Written LAST (same
-        ordering rationale as the old sentinel's ``record_onboarding_ids``):
-        the initial goal and project must be linked before fulfilment stages
-        the dispatched agent's ``BRIEF.md``.
-
-        Guarded on ``onboarding_generation = :gen AND funnel_state =
-        :submitted`` -- this can only ever land against the SAME claim this
-        caller just won via ``claim_funnel_submission``; a company that has
-        since been reprovisioned (new generation) or whose funnel somehow
-        moved on cannot be clobbered by a stale caller. Raises
-        ``ConditionalCheckFailedException`` on a guard failure, propagating
-        through the fulfiller's recovery path.
-        """
-        await self._ws_call(
-            "update_item",
-            self._ws_key(org_id),
-            UpdateExpression="SET onboarding_goal_id = :g, onboarding_project_id = :p, updated_at = :u",
-            ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
-            ExpressionAttributeValues={
-                ":g": goal_id,
-                ":p": project_id,
-                ":u": utc_now_iso(),
-                ":gen": onboarding_generation,
-                ":submitted": "submitted",
-            },
-        )
-        # These ids are the LAST onboarding fields to land, and compute_status
-        # returns them. claim_funnel_submission already nudged on funnel_state ->
-        # submitted, but a tab that revalidated off that early event read a
-        # contract missing goal/project; without this second nudge nothing
-        # repairs it promptly (ready-state polling is no longer frequent). See
-        # publish_status_changed's module docstring (INV-1: nudge only).
-        publish_status_changed(org_id)
-
     async def revert_funnel_submission(self, org_id: str, *, onboarding_generation: str) -> None:
         """Best-effort rollback: ``funnel_state: submitted -> not_started``,
         so a caller that won the claim but then failed mid-seed doesn't
@@ -1614,7 +966,7 @@ class PaperclipRepo:
     #
     # The first canonical-room human message is intake: it records what the
     # user said, then normal dispatch continues. Everything that needs
-    # Paperclip to be up (the claim, goal/project seed, and BRIEF.md staging)
+    # the workspace to be ready (the claim, goal/project seed, and BRIEF.md staging)
     # happens in ``onboarding_brief.reconcile_pending_brief``. These methods
     # are that hand-off's storage.
     #
@@ -1713,7 +1065,7 @@ class PaperclipRepo:
             item["target_agent_id"] = target_agent_id
 
         table = self._ws_table()
-        item = self._ws_item(item, owner_id, ts.PENDING_BRIEF_SK)
+        item = _meta_item(item, owner_id, ts.PENDING_BRIEF_SK)
         if overwrite:
             await self._ws_call("put_item", Item=item)
             return True
@@ -1754,7 +1106,7 @@ class PaperclipRepo:
         try:
             item = await self.get_pending_brief(owner_id)
         except Exception:  # noqa: BLE001 — a degraded read must not break /status
-            logger.info("paperclip_repo: pending-brief read failed for owner %s", owner_id, exc_info=True)
+            logger.info("workspace_repo: pending-brief read failed for owner %s", owner_id, exc_info=True)
             return False
         return item is not None and item.get("brief_state") != "failed"
 
@@ -1857,67 +1209,42 @@ class PaperclipRepo:
         return bool(resp.get("Attributes"))
 
     async def list_active_workspace_members(self) -> dict[str, set[str]]:
-        """``{org_id: member_user_ids}`` for every ACTIVE workspace row (a scan).
-
-        ponytail: a full-table scan per call; fine while the daily-digest pass
-        is its only caller at a few per hour. Add a GSI if the table grows past
-        a few thousand rows.
-        """
+        """``{org_id: member_user_ids}`` for every ACTIVE workspace (the ``ws-meta`` index)."""
         from boto3.dynamodb.conditions import Attr
 
         out: dict[str, set[str]] = {}
-        if self._meta_on_tasks():
-            async for page in self._query_pages(
-                self._ws_table(),
-                IndexName="ws-meta",
-                KeyConditionExpression=Key("metaKind").eq("workspace"),
-                FilterExpression=Attr("status").eq("active"),
-                ProjectionExpression="pk, memberUserIds",
-            ):
-                for item in page.get("Items", []):
-                    out[item["pk"].removeprefix("WS#")] = set(item.get("memberUserIds") or ())
-            return out
-        kwargs: dict = {
-            "FilterExpression": Attr("user_id").begins_with("org_") & Attr("status").eq("active"),
-            "ProjectionExpression": "user_id, member_user_ids",
-        }
-        while True:
-            resp = await run_in_thread(self._table().scan, **kwargs)
-            for item in resp.get("Items", []):
-                out[item["user_id"]] = set(item.get("member_user_ids") or ())
-            last_key = resp.get("LastEvaluatedKey")
-            if not last_key:
-                return out
-            kwargs["ExclusiveStartKey"] = last_key
+        async for page in self._query_pages(
+            self._ws_table(),
+            IndexName="ws-meta",
+            KeyConditionExpression=Key("metaKind").eq("workspace"),
+            FilterExpression=Attr("status").eq("active"),
+            ProjectionExpression="pk, memberUserIds",
+        ):
+            for item in page.get("Items", []):
+                out[item["pk"].removeprefix("WS#")] = set(item.get("memberUserIds") or ())
+        return out
 
-    async def scan_purge_due(self, now: datetime) -> list[PaperclipWorkspace]:
-        """Disabled workspace rows whose ``scheduled_purge_at <= now``, via the
-        by-status-purge-at GSI (KEYS_ONLY, so each hit is re-read)."""
+    async def scan_purge_due(self, now: datetime) -> list[Workspace]:
+        """Disabled workspaces whose ``scheduled_purge_at <= now`` (the ``ws-meta`` index; each hit is re-read)."""
         from boto3.dynamodb.conditions import Attr
 
-        out: list[PaperclipWorkspace] = []
-        if self._meta_on_tasks():
-            pages = self._query_pages(
-                self._ws_table(),
-                IndexName="ws-meta",
-                KeyConditionExpression=Key("metaKind").eq("workspace"),
-                FilterExpression=Attr("status").eq("disabled") & Attr("scheduledPurgeAt").lte(now.isoformat()),
-                ProjectionExpression="pk",
-            )
-        else:
-            pages = self._query_pages(
-                IndexName="by-status-purge-at",
-                KeyConditionExpression=(Key("status").eq("disabled") & Key("scheduled_purge_at").lte(now.isoformat())),
-            )
+        out: list[Workspace] = []
+        pages = self._query_pages(
+            self._ws_table(),
+            IndexName="ws-meta",
+            KeyConditionExpression=Key("metaKind").eq("workspace"),
+            FilterExpression=Attr("status").eq("disabled") & Attr("scheduledPurgeAt").lte(now.isoformat()),
+            ProjectionExpression="pk",
+        )
         async for page in pages:
             for item in page.get("Items", []):
-                org_id = item["pk"].removeprefix("WS#") if "pk" in item else item["user_id"]
+                org_id = item["pk"].removeprefix("WS#")
                 ws = await self.get_workspace(org_id)
                 if ws is not None:
                     out.append(ws)
                 else:
                     logger.warning(
-                        "paperclip_repo.scan_purge_due: GSI returned %s but base item missing",
+                        "workspace_repo.scan_purge_due: GSI returned %s but base item missing",
                         org_id,
                     )
         return out
@@ -1925,5 +1252,5 @@ class PaperclipRepo:
 
 async def customer_ops_agent_id(owner_id: str) -> str | None:
     """The workspace's Customer Operations starter agent (the front desk), or None when the roster has none."""
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    row = await WorkspaceRepo().resolve_owner_row(owner_id)
     return (getattr(row, "starter_agent_ids", None) or {}).get("customer_operations")

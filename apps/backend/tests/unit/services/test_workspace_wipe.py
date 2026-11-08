@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo, PaperclipWorkspace
+from core.repositories.workspace_repo import Identity, WorkspaceRepo, Workspace
 from core.services.workspace_wipe import (
     AmbiguousWorkspaceError,
     BillingPreservedError,
@@ -50,7 +50,7 @@ def _container_row(**overrides) -> dict:
     return defaults
 
 
-def _workspace(**overrides) -> PaperclipWorkspace:
+def _workspace(**overrides) -> Workspace:
     now = datetime.now(timezone.utc)
     defaults = dict(
         org_id=ORG_ID,
@@ -62,13 +62,13 @@ def _workspace(**overrides) -> PaperclipWorkspace:
         member_user_ids={MEMBER_A, MEMBER_B},
     )
     defaults.update(overrides)
-    return PaperclipWorkspace(**defaults)
+    return Workspace(**defaults)
 
 
-def _identities() -> dict[str, PaperclipIdentity]:
+def _identities() -> dict[str, Identity]:
     return {
-        MEMBER_A: PaperclipIdentity(user_id=MEMBER_A, paperclip_user_id="pc_a", paperclip_email="a@example.com"),
-        MEMBER_B: PaperclipIdentity(user_id=MEMBER_B, paperclip_user_id="pc_b", paperclip_email="b@example.com"),
+        MEMBER_A: Identity(user_id=MEMBER_A, paperclip_user_id="pc_a", paperclip_email="a@example.com"),
+        MEMBER_B: Identity(user_id=MEMBER_B, paperclip_user_id="pc_b", paperclip_email="b@example.com"),
     }
 
 
@@ -95,7 +95,7 @@ def ws_mocks():
     # these dicts rather than re-stubbing the repo.
     workspaces = {ORG_ID: _workspace()}
     identities = _identities()
-    paperclip_instance = MagicMock(spec=PaperclipRepo)
+    paperclip_instance = MagicMock(spec=WorkspaceRepo)
     paperclip_instance.get_workspace = AsyncMock(side_effect=lambda oid, **_: workspaces.get(oid))
     paperclip_instance.get_identity = AsyncMock(side_effect=lambda uid, **_: identities.get(uid))
     paperclip_instance.delete = AsyncMock(return_value=None)
@@ -153,7 +153,7 @@ def ws_mocks():
         ("core.services.workspace_wipe.container_repo.get_by_owner_id", container_get),
         ("core.services.workspace_wipe.billing_repo.get_by_owner_id", billing_get),
         ("core.services.workspace_wipe.billing_repo.delete", billing_delete),
-        ("core.services.workspace_wipe.PaperclipRepo", paperclip_repo_cls),
+        ("core.services.workspace_wipe.WorkspaceRepo", paperclip_repo_cls),
         ("core.services.workspace_wipe.user_repo.get", user_get),
         ("core.services.workspace_wipe.user_repo.delete", user_delete),
         ("core.services.workspace_wipe.messaging_repo.list_owner_room_ids", messaging_list_rooms),
@@ -718,7 +718,7 @@ async def test_user_wipe_names_workspace_when_container_missing():
 
     from core.services import account_wipe as _mod
 
-    paperclip_instance = _MagicMock(spec=PaperclipRepo)
+    paperclip_instance = _MagicMock(spec=WorkspaceRepo)
     paperclip_instance.get_identity = _AsyncMock(return_value=_identities()[MEMBER_A])
     paperclip_instance.get_workspace = _AsyncMock(return_value=_workspace())
     paperclip_instance.get_pending_brief = _AsyncMock(return_value=None)
@@ -727,7 +727,7 @@ async def test_user_wipe_names_workspace_when_container_missing():
     with ExitStack() as stack:
         stack.enter_context(_patch.object(_mod.user_repo, "get", new=_AsyncMock(return_value=None)))
         stack.enter_context(_patch.object(_mod.container_repo, "get_by_owner_id", new=_AsyncMock(return_value=None)))
-        stack.enter_context(_patch.object(_mod, "PaperclipRepo", new=_MagicMock(return_value=paperclip_instance)))
+        stack.enter_context(_patch.object(_mod, "WorkspaceRepo", new=_MagicMock(return_value=paperclip_instance)))
         stack.enter_context(_patch.object(_mod.billing_repo, "get_by_owner_id", new=_AsyncMock(return_value=None)))
         stack.enter_context(_patch.object(_mod.clerk_admin, "get_user", new=_AsyncMock(return_value=None)))
         stack.enter_context(

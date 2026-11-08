@@ -54,7 +54,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _STORE_MODULES = {
     "container_repo": "core.repositories.container_repo",
     "billing_repo": "core.repositories.billing_repo",
-    "paperclip_repo": "core.repositories.paperclip_repo",
+    "paperclip_repo": "core.repositories.workspace_repo",
 }
 
 

@@ -23,7 +23,8 @@ from core import tasks_schema as ts
 from moto import mock_aws
 
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows as real_delete_gate_token_rows
-from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo, PaperclipWorkspace
+from core.repositories import workspace_repo
+from core.repositories.workspace_repo import Identity, WorkspaceRepo, Workspace
 from core.services.account_wipe import (
     OrgWipeUnsupportedError,
     WipeReport,
@@ -103,18 +104,17 @@ def _container_row(**overrides) -> dict:
     return defaults
 
 
-def _identity(**overrides) -> PaperclipIdentity:
+def _identity(**overrides) -> Identity:
     defaults = dict(
         user_id=OWNER_ID,
         paperclip_user_id="pc_user_abc",
-        paperclip_password_encrypted="enc-pw",
         paperclip_email="owner@example.com",
     )
     defaults.update(overrides)
-    return PaperclipIdentity(**defaults)
+    return Identity(**defaults)
 
 
-def _workspace(**overrides) -> PaperclipWorkspace:
+def _workspace(**overrides) -> Workspace:
     now = datetime.now(timezone.utc)
     defaults = dict(
         org_id=ORG_ID,
@@ -126,7 +126,7 @@ def _workspace(**overrides) -> PaperclipWorkspace:
         member_user_ids={OWNER_ID, "user_owner", "user_b", "user_c"},
     )
     defaults.update(overrides)
-    return PaperclipWorkspace(**defaults)
+    return Workspace(**defaults)
 
 
 def _billing_row(**overrides) -> dict:
@@ -177,7 +177,7 @@ def wipe_mocks():
     paperclip_row_delete = AsyncMock(return_value=None)
     pending_brief_get = AsyncMock(return_value=None)
     pending_brief_delete = AsyncMock(return_value=None)
-    paperclip_repo_instance = MagicMock(spec=PaperclipRepo)
+    paperclip_repo_instance = MagicMock(spec=WorkspaceRepo)
     paperclip_repo_instance.get_identity = paperclip_get_identity
     paperclip_repo_instance.get_workspace = paperclip_get_workspace
     paperclip_repo_instance.delete = paperclip_row_delete
@@ -247,7 +247,7 @@ def wipe_mocks():
         ("core.services.account_wipe.user_repo.delete", user_delete),
         ("core.services.account_wipe.clerk_admin.get_user", clerk_get_user),
         ("core.services.account_wipe.container_repo.get_by_owner_id", container_get),
-        ("core.services.account_wipe.PaperclipRepo", paperclip_repo_cls),
+        ("core.services.account_wipe.WorkspaceRepo", paperclip_repo_cls),
         ("core.services.account_wipe.billing_repo.get_by_owner_id", billing_get),
         ("core.services.account_wipe.billing_repo.delete", billing_delete),
         ("core.services.account_wipe._archive_paperclip_member_call", paperclip_archive_member),
@@ -1093,14 +1093,14 @@ def real_ddb(wipe_mocks, monkeypatch):
             AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        # PaperclipRepo resolves its table via core.dynamodb.get_table (prefix
+        # WorkspaceRepo resolves its table via core.dynamodb.get_table (prefix
         # applied at call time); bedrock_gate_tokens takes the explicit env
         # override. Same wiring as tests/unit/billing/test_bedrock_gate_tokens.py.
         monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
         monkeypatch.setattr("core.dynamodb._dynamodb_resource", None)
         monkeypatch.setenv("BEDROCK_GATE_TOKENS_TABLE", "test-gate-tokens")
         wipe_mocks.gate_tokens_delete.side_effect = real_delete_gate_token_rows
-        real_repo = PaperclipRepo(table_name="paperclip-companies")
+        real_repo = WorkspaceRepo()
         wipe_mocks.paperclip_repo_cls.side_effect = lambda *a, **k: real_repo
         yield client
 
@@ -1118,10 +1118,10 @@ def _gate_rows(client) -> set[str]:
 
 def _put_pending_brief(client, owner_id: str) -> None:
     """A pending brief where it lives since the switch retired: the owner's tasks-table PENDING_BRIEF row."""
-    repo = PaperclipRepo(table_name="paperclip-companies")
+    repo = WorkspaceRepo()
     item = {"user_id": owner_id, "kind": "pending_brief", "brief_state": "pending", "owner_id": owner_id}
     repo._ws_table().put_item(
-        Item={**repo._ws_item(item, owner_id, ts.PENDING_BRIEF_SK), **repo._pending_key(owner_id)}
+        Item={**workspace_repo._meta_item(item, owner_id, ts.PENDING_BRIEF_SK), **repo._pending_key(owner_id)}
     )
 
 
@@ -1460,12 +1460,6 @@ def _paperclip_and_aurora_gone():
 
     stack = ExitStack()
     stack.enter_context(patch("boto3.client", side_effect=_client))
-    stack.enter_context(
-        patch(
-            "core.services.paperclip_admin_client.PaperclipAdminClient.__init__",
-            side_effect=RuntimeError("paperclip is gone"),
-        )
-    )
     return stack
 
 

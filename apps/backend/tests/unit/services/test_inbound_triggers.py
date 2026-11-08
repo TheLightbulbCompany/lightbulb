@@ -1,6 +1,6 @@
 """Tests for the Automations Phase 2 trigger-seed service.
 
-Patches ``PaperclipRepo`` (company
+Patches ``WorkspaceRepo`` (company
 resolution), ``get_admin_session_cookie``, and ``PaperclipAdminClient`` so
 nothing here touches a real Paperclip deployment.
 """

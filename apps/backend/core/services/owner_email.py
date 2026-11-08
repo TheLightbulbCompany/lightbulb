@@ -1,14 +1,4 @@
-"""Owner-email resolver shared between Clerk webhooks and the
-Paperclip retry worker.
-
-Originally lived in ``routers/webhooks.py`` as ``_lookup_owner_email``
-but the retry worker (``core/services/update_service.py``) needs the
-same Clerk-fallback behaviour to avoid trusting a stale ``owner_email``
-cached in the retry payload. Routers can't be safely imported from
-services (back-edge through ``update_service.PAPERCLIP_RETRY_KIND``
-already creates a forward edge from webhooks to update_service), so
-the helper lives here as the single source of truth.
-"""
+"""The workspace owner's email (users repo, then Clerk): the agent mail sender identity."""
 
 from __future__ import annotations
 

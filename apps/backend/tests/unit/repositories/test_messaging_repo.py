@@ -1441,7 +1441,7 @@ async def test_away_checks_ride_the_deadline_index_and_leave_it(table):
 
 
 def _switch_on(monkeypatch, org_name="Acme"):
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
     from core.services import messaging, task_conversation
 
     starter_ids = {key: f"10000000-0000-4000-8000-00000000000{i}" for i, key in enumerate(messaging._STARTER_KEYS, 1)}
@@ -1450,7 +1450,7 @@ def _switch_on(monkeypatch, org_name="Acme"):
     async def owner_row(*_args, **_kwargs):
         return SimpleNamespace(status="active", starter_agent_ids=starter_ids)
 
-    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", owner_row)
+    monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", owner_row)
     roster = [{"id": agent_id, "name": key} for key, agent_id in starter_ids.items()]
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))

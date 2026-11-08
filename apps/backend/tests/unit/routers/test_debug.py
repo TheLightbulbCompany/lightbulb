@@ -89,7 +89,7 @@ class TestDeleteUserData:
             yield
 
     @pytest.mark.asyncio
-    @patch("routers.debug.PaperclipRepo")
+    @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -166,7 +166,7 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
-    @patch("routers.debug.PaperclipRepo")
+    @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -234,7 +234,7 @@ class TestDeleteUserData:
         assert res.status_code == 403
 
     @pytest.mark.asyncio
-    @patch("routers.debug.PaperclipRepo")
+    @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -291,7 +291,7 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
-    @patch("routers.debug.PaperclipRepo")
+    @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -347,7 +347,7 @@ class TestDeleteUserData:
         assert body["deleted"]["runtime"] is False  # the teardown step did NOT complete
 
     @pytest.mark.asyncio
-    @patch("routers.debug.PaperclipRepo")
+    @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")

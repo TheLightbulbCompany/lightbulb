@@ -221,7 +221,7 @@ async def test_get_overview_reads_current_month_usage_period():
 
 
 def _paperclip_repo_returning(company) -> MagicMock:
-    """A fake ``_paperclip_repo()`` resolving to ``company``."""
+    """A fake ``_workspace_repo()`` resolving to ``company``."""
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=company)
     return repo
@@ -233,7 +233,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
     never reach the composed payload, and the paperclip panel is narrowed
     through an ALLOWLIST — an attribute outside it (here a credential stuck
     onto the row object) is excluded by default, not leaked by default."""
-    from core.repositories.paperclip_repo import PaperclipWorkspace
+    from core.repositories.workspace_repo import Workspace
     from core.services import admin_service
 
     now = datetime.now(timezone.utc)
@@ -249,7 +249,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
     }
-    paperclip_company = PaperclipWorkspace(
+    paperclip_company = Workspace(
         org_id="owner_1",
         company_id="company_1",
         status="active",
@@ -277,7 +277,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
             new=AsyncMock(return_value={"lifecycle": "error"}),
         ),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=_paperclip_repo_returning(paperclip_company),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
@@ -304,11 +304,11 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
 @pytest.mark.parametrize("status", ["failed", "provisioning"])
 async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
     """Diagnostics retain failure details while the org row is not active."""
-    from core.repositories.paperclip_repo import PaperclipWorkspace
+    from core.repositories.workspace_repo import Workspace
     from core.services import admin_service
 
     now = datetime.now(timezone.utc)
-    paperclip_company = PaperclipWorkspace(
+    paperclip_company = Workspace(
         org_id="org_acme",
         company_id="company_1",
         provisioner_user_id="owner_user",
@@ -338,7 +338,7 @@ async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
             "core.services.admin_service.compute_status",
             new=AsyncMock(return_value={"lifecycle": "provisioning"}),
         ),
-        patch("core.services.admin_service._paperclip_repo", return_value=repo),
+        patch("core.services.admin_service._workspace_repo", return_value=repo),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
@@ -370,7 +370,7 @@ async def test_get_provisioning_no_rows_degrades_to_nones():
             new=AsyncMock(return_value={"lifecycle": "needs_signup"}),
         ),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
@@ -412,7 +412,7 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
         ),
         patch("core.services.admin_service.compute_status", new=compute_status_mock),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
@@ -431,7 +431,7 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
 async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_row():
     """A failing/timed-out owner-row lookup flows through _with_timeout
     as an {"error", "source"} sentinel -- not None, and not a real
-    PaperclipWorkspace. _narrow_paperclip only special-cases `company is None`;
+    Workspace. _narrow_paperclip only special-cases `company is None`;
     threading the sentinel through it unnarrowed would silently fabricate a
     present-but-all-None paperclip row (every allowlisted field None) instead
     of surfacing that the read itself failed -- the admin UI would then
@@ -457,7 +457,7 @@ async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_ro
             new=AsyncMock(return_value={"lifecycle": "needs_signup"}),
         ),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=failing_repo,
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
@@ -501,7 +501,7 @@ async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution()
             new=AsyncMock(return_value={"lifecycle": "provisioning"}),
         ),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
@@ -554,7 +554,7 @@ async def test_get_provisioning_narrows_sfn_response():
             new=AsyncMock(return_value={"lifecycle": "provisioning"}),
         ),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
@@ -602,7 +602,7 @@ async def test_get_provisioning_gate_payload_shape():
             new=AsyncMock(return_value={"lifecycle": "blocked"}),
         ),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=gate)),
@@ -637,7 +637,7 @@ async def test_get_provisioning_gate_probe_failure_degrades_to_none_not_crash():
             new=AsyncMock(return_value={"lifecycle": "needs_signup"}),
         ),
         patch(
-            "core.services.admin_service._paperclip_repo",
+            "core.services.admin_service._workspace_repo",
             return_value=_paperclip_repo_returning(None),
         ),
         patch(

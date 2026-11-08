@@ -9,10 +9,10 @@ import pytest
 from moto import mock_aws
 
 from core import dynamodb
-from core.repositories.paperclip_repo import PaperclipRepo, PaperclipWorkspace
+from core.repositories.workspace_repo import WorkspaceRepo, Workspace
 from core.services import agent_registry, workspace_provisioning
 from core.services.workspace_provisioning import STARTER_ROLE_KEYS, provision_member, provision_org
-from tests.unit.repositories.test_paperclip_repo import create_companies_table
+from tests.unit.repositories.test_workspace_repo import create_companies_table
 from tests.unit.super_agent.registry.conftest import _create_tasks_table
 
 ORG = "org_1"
@@ -28,18 +28,8 @@ def ddb(monkeypatch):
         yield
 
 
-@pytest.fixture(autouse=True)
-def no_paperclip(monkeypatch):
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-
-    def boom(*a, **k):
-        raise AssertionError("Paperclip called")
-
-    monkeypatch.setattr(PaperclipAdminClient, "__init__", boom)
-
-
-def _repo() -> PaperclipRepo:
-    return PaperclipRepo(table_name="paperclip-companies")
+def _repo() -> WorkspaceRepo:
+    return WorkspaceRepo()
 
 
 async def test_provision_org_native():
@@ -86,8 +76,9 @@ async def test_active_row_with_a_missing_starter_is_reseeded():
 async def test_old_failed_row_keeps_company_and_fields():
     """A workspace provisioned before this change keeps its company_id and onboarding fields."""
     now = datetime.now(timezone.utc)
+    _repo()._table().put_item(Item={"user_id": ORG, "company_id": "co_1"})  # the legacy row
     await _repo().put_workspace(
-        PaperclipWorkspace(
+        Workspace(
             org_id=ORG,
             company_id="co_1",
             status="failed",

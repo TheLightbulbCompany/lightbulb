@@ -60,16 +60,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-def _paperclip_repo():
-    """Local import so ``patch("core.repositories.paperclip_repo.PaperclipRepo", ...)``
+def _workspace_repo():
+    """Local import so ``patch("core.repositories.workspace_repo.WorkspaceRepo", ...)``
     (the pattern every existing test double in this codebase already uses)
     keeps working -- mirrors ``admin_service``'s own local-import idiom
     (``core/services/admin_service.py:264-273``, itself mirroring
     ``readiness_state.py:102-110``).
     """
-    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.repositories.workspace_repo import WorkspaceRepo
 
-    return PaperclipRepo(table_name="paperclip-companies")
+    return WorkspaceRepo()
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +355,7 @@ async def admin_container_reprovision(
     "/users/{user_id}/provisioning",
     description=(
         "Provisioning truth for one owner: readiness contract "
-        "(compute_status), containers-row error/lease fields, Paperclip "
+        "(compute_status), containers-row error/lease fields, workspace "
         "company + funnel/bootstrap state, provision-gate decision "
         "(metric-free probe), and the SFN execution status. Read-only."
     ),

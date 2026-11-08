@@ -212,7 +212,7 @@ async def run_once(now: datetime | None = None) -> int:
     if not due:
         return 0
     sent = 0
-    # ponytail: sequential, a few seconds per due human at worst (Paperclip budget);
+    # ponytail: sequential, a few seconds per due human at worst (cost budget);
     # fan out with a semaphore if one 08:00 hour ever holds thousands of humans.
     for owner_id, members in (await teams_agents._repo().list_active_workspace_members()).items():
         for user_id in sorted(members & due.keys()):

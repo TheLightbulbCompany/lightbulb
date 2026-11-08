@@ -1318,12 +1318,6 @@ async def test_write_profiles_facts_staging_is_best_effort(monkeypatch):
 async def test_write_profile_for_new_agent_never_mints_key(monkeypatch):
     """Paperclip exit (task 8b.2): the write needs no Paperclip key, so a dead admin client cannot fail it."""
     from core.services.hermes_provisioning import ProfileInputs
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-
-    def _no_paperclip(*a, **k):
-        raise AssertionError("no Paperclip call")
-
-    monkeypatch.setattr(PaperclipAdminClient, "__init__", _no_paperclip)
 
     inputs = ProfileInputs(
         provider_choice="chatgpt_oauth",

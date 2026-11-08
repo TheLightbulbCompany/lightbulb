@@ -1,6 +1,6 @@
 """Tests for the update_service scheduled worker's workspace purge pass and loop cadence.
 
-``PaperclipRepo`` (the META store) is patched so no test needs moto. ``asyncio_mode = "auto"``.
+``WorkspaceRepo`` (the META store) is patched so no test needs moto. ``asyncio_mode = "auto"``.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ def _repo(due_rows=None, **kw) -> MagicMock:
 
 
 def _patched(repo):
-    return patch("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+    return patch("core.repositories.workspace_repo.WorkspaceRepo", MagicMock(return_value=repo))
 
 
 async def test_purge_pass_no_due_rows_is_noop():

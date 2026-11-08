@@ -129,7 +129,7 @@ def build_owner_facts(
         # lands on the owner's morning. Refreshed on every facts write (provision/reconcile).
         "owner_timezone": owner_timezone,
         # Declared manifest of the workspace, so agents read it instead of inferring:
-        # every live agent (ids are what Paperclip assignments use) and the connected
+        # every live agent (ids are what assignments use) and the connected
         # integrations (provider + rail, NAMES only).
         "teammates": list(teammates or []),
         "connected_integrations": list(connected_integrations or []),
@@ -231,7 +231,7 @@ async def _lookup_provisioning(owner_id: str) -> list[dict]:
 
 def _teammates_from_roster(roster: list[dict], starter_ids: dict[str, str] | None) -> list[dict]:
     """``[{id, name, role, is_ceo}]``. ``role`` is the starter role key where the agent is a
-    starter, else Paperclip's own role string. The CEO is the starter ``ceo`` id, else a legacy
+    starter, else its own role string. The CEO is the starter ``ceo`` id, else a legacy
     root agent (role ``ceo`` reporting to nobody)."""
     by_id = {v: k for k, v in (starter_ids or {}).items()}
     ceo_id = (starter_ids or {}).get("ceo")
@@ -246,14 +246,12 @@ def _teammates_from_roster(roster: list[dict], starter_ids: dict[str, str] | Non
 async def _lookup_teammates(owner_id: str, roster: list[dict] | None = None) -> list[dict]:
     """Never raises; a failed lookup is an empty list."""
     try:
-        from core.repositories.paperclip_repo import PaperclipRepo
+        from core.repositories.workspace_repo import WorkspaceRepo
         from core.services.messaging import load_agent_roster
 
         if roster is None:
             roster = await load_agent_roster(owner_id)
-        company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(
-            owner_id, consistent_read=True
-        )
+        company = await WorkspaceRepo().resolve_owner_row(owner_id, consistent_read=True)
         return _teammates_from_roster(roster, getattr(company, "starter_agent_ids", None))
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("owner_facts: teammates lookup failed for %s: %s", owner_id, e)

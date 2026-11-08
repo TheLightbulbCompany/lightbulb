@@ -20,10 +20,8 @@ else's asset arriving here is not our failure.
 token. The real authentication is ``X-Hub-Signature-256``: HMAC-SHA256 over the
 RAW body keyed by the Meta APP SECRET (``client_secret`` of the platform OAuth
 app in Secrets Manager). That is verified HERE, at the edge, because it is not
-a per-trigger secret and Paperclip cannot check it. On success the trigger's
-OWN bearer secret — recorded with the binding — is injected as the
-Authorization, so Paperclip's native ``bearer`` mode still does the final
-timing-safe compare.
+a per-trigger secret. On success the raw body goes to the owner's ``HOOK#`` trigger
+(``hooks.fire_verified``); a binding with no hook row is logged and skipped.
 
 **Delivery contract.** Meta expects a fast 2xx and retries otherwise. Once the
 signature verifies we answer 200 regardless of what happens downstream; a
@@ -45,7 +43,6 @@ import logging
 import time
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
@@ -53,7 +50,7 @@ from core.repositories import automations_repo, billing_repo, integrations_repo
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.super_agent_flags import flags_for
 from routers import hooks
-from routers._public_ingress import _check_rate_limit, _client_factory, _extract_caller_ip
+from routers._public_ingress import _check_rate_limit, _extract_caller_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -168,30 +165,6 @@ def _entry_fields(entry: dict[str, Any]) -> set[str]:
     return {c["field"] for c in entry.get("changes") or [] if isinstance(c, dict) and c.get("field")}
 
 
-async def _fire(binding: dict[str, Any], body: bytes, idempotency_key: str) -> None:
-    """Fire one bound trigger with the raw body. Failures are logged, never
-    raised — the route owes Meta a 200 (see the module docstring)."""
-    base = settings.PAPERCLIP_INTERNAL_URL.rstrip("/")
-    target = f"{base}/api/routine-triggers/public/{binding['trigger_public_id']}/fire"
-    headers = {
-        "Authorization": f"Bearer {binding['trigger_secret']}",
-        "Content-Type": "application/json",
-        "Idempotency-Key": idempotency_key,
-        "X-Forwarded-Proto": "https",
-    }
-    try:
-        async with _client_factory() as client:
-            resp = await client.post(target, headers=headers, content=body)
-        if resp.status_code >= 400:
-            logger.warning(
-                "meta webhook fire rejected trigger=%s status=%s",
-                binding["trigger_public_id"],
-                resp.status_code,
-            )
-    except httpx.RequestError as exc:
-        logger.warning("meta webhook fire upstream error trigger=%s err=%s", binding["trigger_public_id"], exc)
-
-
 @router.get("/meta")
 async def verify_meta_subscription(request: Request) -> Response:
     """Meta's one-time subscribe handshake: echo ``hub.challenge`` as plain
@@ -218,15 +191,12 @@ async def receive_meta_event(request: Request) -> Response:
     if not settings.META_WEBHOOK_VERIFY_TOKEN:
         raise HTTPException(status_code=503, detail="meta_webhook_not_configured")
 
-    # Raw bytes: the signature is over the exact body, and Paperclip receives
+    # Raw bytes: the signature is over the exact body, and the hook receives
     # that same body verbatim.
     body = await request.body()
     if not await _signature_valid(body, request.headers.get("X-Hub-Signature-256")):
         logger.warning("meta webhook rejected unsigned delivery from %s", _extract_caller_ip(request))
         raise HTTPException(status_code=401, detail="invalid_signature")
-
-    if not settings.PAPERCLIP_INTERNAL_URL:
-        return Response(status_code=503, content=b'{"detail":"paperclip_unavailable"}', media_type="application/json")
 
     try:
         payload = await request.json()
@@ -270,20 +240,24 @@ async def receive_meta_event(request: Request) -> Response:
             if not has_always_on_entitlement(billing):
                 logger.info("meta webhook: owner %s not entitled, dropping asset=%s", binding["owner_id"], asset_id)
                 continue
-            if await flags_for(binding["owner_id"]) and await automations_repo.get_hook(
-                binding["owner_id"], binding["trigger_public_id"]
+            if not (
+                await flags_for(binding["owner_id"])
+                and await automations_repo.get_hook(binding["owner_id"], binding["trigger_public_id"])
             ):
-                resp = await hooks.fire_verified(
-                    binding["owner_id"], binding["trigger_public_id"], body, dedupe_key=idempotency_key
+                # An older binding with no `HOOK#` row has nothing to fire any more.
+                logger.info(
+                    "meta webhook: no hook for owner=%s trigger=%s", binding["owner_id"], binding["trigger_public_id"]
                 )
-                if resp.status_code >= 500:  # Meta still gets its 200 (module docstring); say what was lost
-                    logger.warning(
-                        "meta webhook backend fire unavailable owner=%s trigger=%s status=%s",
-                        binding["owner_id"],
-                        binding["trigger_public_id"],
-                        resp.status_code,
-                    )
                 continue
-            await _fire(binding, body, idempotency_key)
+            resp = await hooks.fire_verified(
+                binding["owner_id"], binding["trigger_public_id"], body, dedupe_key=idempotency_key
+            )
+            if resp.status_code >= 500:  # Meta still gets its 200 (module docstring); say what was lost
+                logger.warning(
+                    "meta webhook backend fire unavailable owner=%s trigger=%s status=%s",
+                    binding["owner_id"],
+                    binding["trigger_public_id"],
+                    resp.status_code,
+                )
 
     return Response(status_code=200)

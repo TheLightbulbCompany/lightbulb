@@ -9,7 +9,7 @@ import stripe
 
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, billing_repo
-from core.repositories.paperclip_repo import customer_ops_agent_id
+from core.repositories.workspace_repo import customer_ops_agent_id
 from core.services import onboarding_brief, photon
 from core.services.agent_email import mail_changed
 from core.services.billing_service import BillingServiceError, _is_front_desk_item

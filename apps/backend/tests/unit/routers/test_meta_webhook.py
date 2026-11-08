@@ -13,11 +13,11 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from fastapi import Response
 from fastapi.testclient import TestClient
 
 from main import app
 
-UPSTREAM = "http://paperclip.internal:3100"
 VERIFY_TOKEN = "vtok_abc"
 APP_SECRET = "appsecret_1"
 PAGE_ID = "1112223334"
@@ -42,7 +42,6 @@ def _reset_shared_state():
 def _settings(monkeypatch):
     from core.config import settings
 
-    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", UPSTREAM)
     monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", VERIFY_TOKEN)
 
 
@@ -92,20 +91,14 @@ def _billing(status: str | None = "active"):
     )
 
 
-class _CaptureTransport(httpx.AsyncBaseTransport):
-    def __init__(self, sink: list[dict]):
-        self.sink = sink
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.sink.append({"url": str(request.url), "body": request.content, "headers": dict(request.headers)})
-        return httpx.Response(202, content=b'{"status":"queued"}')
-
-
 def _capture(sink: list[dict]):
-    return patch(
-        "routers.meta_webhook._client_factory",
-        lambda: httpx.AsyncClient(transport=_CaptureTransport(sink)),
-    )
+    """Record every ``hooks.fire_verified`` call (the only thing a verified delivery fires)."""
+
+    async def fire(owner_id, public_id, body, *, dedupe_key):
+        sink.append({"owner_id": owner_id, "public_id": public_id, "body": body, "dedupe_key": dedupe_key})
+        return Response(status_code=202)
+
+    return patch("routers.meta_webhook.hooks.fire_verified", fire)
 
 
 def _payload(*entries, object_type="page"):
@@ -200,15 +193,8 @@ def test_verified_delivery_fires_the_bound_trigger(client):
         resp = client.post("/api/v1/hooks/meta", content=body, headers=_signed(body))
 
     assert resp.status_code == 200
-    assert len(sink) == 1
-    call = sink[0]
-    assert call["url"] == f"{UPSTREAM}/api/routine-triggers/public/pub_1/fire"
-    # Byte-verbatim: Paperclip's run context is the payload Meta sent.
-    assert call["body"] == body
-    # The trigger's OWN secret, injected after the app-secret verification —
-    # Paperclip's bearer mode does the final compare.
-    assert call["headers"]["authorization"] == "Bearer trigsec_1"
-    assert call["headers"]["idempotency-key"] == f"{PAGE_ID}:1700000000:0"
+    # Byte-verbatim: the hook's run context is the payload Meta sent.
+    assert sink == [{"owner_id": "user_1", "public_id": "pub_1", "body": body, "dedupe_key": f"{PAGE_ID}:1700000000:0"}]
 
 
 def test_unknown_asset_is_200_and_forwards_nothing(client):
@@ -245,10 +231,10 @@ def test_multi_entry_payload_fires_once_per_bound_entry(client):
 
     assert resp.status_code == 200
     # The middle entry names an unbound asset — skipped, the others still fire.
-    assert [c["url"].rsplit("/", 2)[-2] for c in sink] == ["pub_a", "pub_b"]
+    assert [c["public_id"] for c in sink] == ["pub_a", "pub_b"]
     # Idempotency keys carry the entry's own position, so two entries in one
     # delivery never dedupe into a single run.
-    assert [c["headers"]["idempotency-key"] for c in sink] == [f"{PAGE_ID}:111:0", f"{OTHER_PAGE_ID}:333:2"]
+    assert [c["dedupe_key"] for c in sink] == [f"{PAGE_ID}:111:0", f"{OTHER_PAGE_ID}:333:2"]
 
 
 def test_same_asset_two_events_routes_by_field(client):
@@ -263,7 +249,7 @@ def test_same_asset_two_events_routes_by_field(client):
         resp = client.post("/api/v1/hooks/meta", content=body, headers=_signed(body))
 
     assert resp.status_code == 200
-    assert [c["headers"]["authorization"] for c in sink] == ["Bearer trigsec_2"]
+    assert [c["public_id"] for c in sink] == ["pub_posts"]
 
 
 def test_entry_without_declared_fields_fans_out(client):
@@ -294,20 +280,39 @@ def test_post_503s_when_verify_token_unset(client, monkeypatch):
 def test_downstream_failure_still_answers_200(client):
     """Meta redelivers the whole batch on a non-2xx and eventually disables the
     callback for the entire fleet, so a failed fire is logged, not surfaced."""
-
-    class _Broken(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("paperclip down")
-
     body = _payload(_entry())
     with (
         _app_secret(),
         _rows(_binding()),
         _billing(),
-        patch("routers.meta_webhook._client_factory", lambda: httpx.AsyncClient(transport=_Broken())),
+        patch("routers.meta_webhook.hooks.fire_verified", AsyncMock(return_value=Response(status_code=503))),
     ):
         resp = client.post("/api/v1/hooks/meta", content=body, headers=_signed(body))
     assert resp.status_code == 200
+
+
+def test_binding_without_a_hook_row_fires_nothing_and_calls_no_one(client, monkeypatch):
+    """An older binding with no ``HOOK#`` row is skipped: no fire, and no outbound HTTP at all
+    (it used to POST to a Paperclip routine trigger)."""
+    from core.repositories import automations_repo
+
+    monkeypatch.setattr(automations_repo, "get_hook", AsyncMock(return_value=None))
+    sink: list[dict] = []
+    body = _payload(_entry())
+
+    def no_http(*_a, **_k):
+        raise AssertionError("outbound HTTP")
+
+    with (
+        _app_secret(),
+        _rows(_binding()),
+        _billing(),
+        _capture(sink),
+        patch.object(httpx.AsyncClient, "send", no_http),
+    ):
+        resp = client.post("/api/v1/hooks/meta", content=body, headers=_signed(body))
+    assert resp.status_code == 200
+    assert sink == []
 
 
 def test_signature_accepts_the_instagram_app_secret(client):
@@ -332,14 +337,13 @@ def test_signature_accepts_the_instagram_app_secret(client):
         )
 
     assert resp.status_code == 200
-    assert [c["headers"]["authorization"] for c in sink] == ["Bearer trigsec_ig"]
+    assert [c["public_id"] for c in sink] == ["pub_ig"]
 
 
 @pytest.fixture(autouse=True)
-def _no_hook_row(monkeypatch):
-    """These pin the Paperclip fallback: a binding whose trigger has no `HOOK#` row."""
-    from unittest.mock import AsyncMock as _AsyncMock
-
+def _hook_row(monkeypatch):
+    """Every binding's trigger has a ``HOOK#`` row and the owner is on the super-agent path."""
     from core.repositories import automations_repo
 
-    monkeypatch.setattr(automations_repo, "get_hook", _AsyncMock(return_value=None))
+    monkeypatch.setattr(automations_repo, "get_hook", AsyncMock(return_value={"publicId": "pub"}))
+    monkeypatch.setattr("routers.meta_webhook.flags_for", AsyncMock(return_value=True))

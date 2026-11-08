@@ -7,6 +7,7 @@ import os
 
 import pytest
 
+from core import secrets_manager
 from core.config import settings
 from core.services import owner_secret_sweep
 from core.services.credentials import integration_secret_store as store
@@ -22,28 +23,47 @@ class _FakeSM:
         ResourceNotFoundException = _NotFound
         InvalidRequestException = type("InvalidRequest", (Exception,), {})
 
-    def __init__(self, secrets):
+    def __init__(self, secrets, deletes=None, scheduled=None):
         self.secrets = secrets
+        self.deletes = [] if deletes is None else deletes
+        # Secrets in their recovery window: unreadable and unwritable until restored, like AWS.
+        self.scheduled = set() if scheduled is None else scheduled
+
+    def _writable(self, name):
+        if name in self.scheduled:
+            raise self.exceptions.InvalidRequestException("secret is scheduled for deletion")
 
     def create_secret(self, Name, SecretString):
+        self._writable(Name)
         if Name in self.secrets:
             raise self.exceptions.ResourceExistsException()
         self.secrets[Name] = SecretString
 
     def put_secret_value(self, SecretId, SecretString):
+        self._writable(SecretId)
         self.secrets[SecretId] = SecretString
+
+    def restore_secret(self, SecretId):
+        self.scheduled.discard(SecretId)
 
     def describe_secret(self, SecretId):
         return {"ARN": f"arn:sm:{SecretId}"}
 
     def get_secret_value(self, SecretId):
+        self._writable(SecretId)
         if SecretId not in self.secrets:
             raise _NotFound()
         return {"SecretString": self.secrets[SecretId]}
 
-    def delete_secret(self, SecretId, ForceDeleteWithoutRecovery):
-        if self.secrets.pop(SecretId, None) is None:
+    def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
+        self.deletes.append((SecretId, ForceDeleteWithoutRecovery))
+        if SecretId not in self.secrets:
             raise _NotFound()
+        if ForceDeleteWithoutRecovery:
+            self.secrets.pop(SecretId)
+            self.scheduled.discard(SecretId)
+        else:
+            self.scheduled.add(SecretId)
 
 
 class _FakeKMS:
@@ -68,11 +88,13 @@ class _FakeKMS:
 class _FakeTable:
     def __init__(self):
         self.items = {}
+        self.consistent_reads = []
 
     def put_item(self, Item):
         self.items[(Item["owner_id"], Item["provider"])] = Item
 
     def get_item(self, Key, ConsistentRead=False):
+        self.consistent_reads.append(ConsistentRead)
         item = self.items.get((Key["owner_id"], Key["provider"]))
         return {"Item": item} if item else {}
 
@@ -87,8 +109,10 @@ class _FakeTable:
 
 @pytest.fixture
 def stores(monkeypatch):
-    secrets, kms, table = {}, _FakeKMS(), _FakeTable()
-    monkeypatch.setattr(store, "_client", lambda: _FakeSM(secrets))
+    secrets, kms, table, deletes, scheduled = {}, _FakeKMS(), _FakeTable(), [], set()
+    monkeypatch.setattr(store, "_client", lambda: _FakeSM(secrets, deletes, scheduled))
+    monkeypatch.setattr(secrets_manager, "_RETRY_BACKOFFS", ())
+    table.deletes, table.scheduled = deletes, scheduled
     monkeypatch.setattr(store, "_kms", lambda: kms)
     monkeypatch.setattr(store, "_envelope_table", lambda: table)
     monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
@@ -172,3 +196,38 @@ async def test_owner_wipe_sweeps_envelopes(stores, flag_on, monkeypatch):
     assert await owner_secret_sweep.list_owner_secret_names("org_a") == ["credential-envelopes/org_a/github"]
     assert await owner_secret_sweep.delete_owner_secrets("org_a") == ["credential-envelopes/org_a/github"]
     assert list(table.items) == [("org_b", "github")]
+
+
+@pytest.mark.asyncio
+async def test_flag_off_after_on_is_not_shadowed_by_the_sealed_row(stores, monkeypatch):
+    _, _, table = stores
+    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", True)
+    await store.put("org_a", "github", {"token": "v1"})
+    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", False)
+    await store.put("org_a", "github", {"token": "v2"})
+    assert table.items == {}
+    assert await store.get("org_a", "github") == {"token": "v2"}
+
+
+@pytest.mark.asyncio
+async def test_flag_on_after_off_retires_the_legacy_secret(stores, monkeypatch):
+    _, _, table = stores
+    name = "lightbulb/dev/integrations/org_a/github"
+    await store.put("org_a", "github", {"token": "v1"})
+    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", True)
+    await store.put("org_a", "github", {"token": "v2"})
+    assert await store.get("org_a", "github") == {"token": "v2"}
+    assert table.deletes == [(name, False)]  # default recovery window, never forced
+    # Rolling back again restores the scheduled secret and writes the new value into it.
+    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", False)
+    await store.put("org_a", "github", {"token": "v3"})
+    assert name not in table.scheduled
+    assert await store.get("org_a", "github") == {"token": "v3"}
+
+
+@pytest.mark.asyncio
+async def test_envelope_read_is_consistent(stores, flag_on):
+    _, _, table = stores
+    await store.put("org_a", "github", {"token": "t"})
+    await store.get("org_a", "github")
+    assert table.consistent_reads == [True]

@@ -15,7 +15,9 @@ so a later re-inject (marketplace slot-fill, reconnect) round-trips it unchanged
 With ``CREDENTIAL_ENVELOPE_STORE`` on, ``put`` writes the ``credential-envelopes`` table instead:
 the JSON sealed with AES-256-GCM under a fresh KMS data key whose encryption context is
 ``{owner_id, provider}``, so a row copied under another owner fails to decrypt. No new secret is
-created. ``get`` reads the table first and falls back to the legacy secret; ``delete`` removes both.
+created and the legacy secret is scheduled for deletion; a flag-off ``put`` removes the sealed row, so
+either direction of the flag leaves one live copy. ``get`` reads the table (consistently) first and
+falls back to the legacy secret; ``delete`` removes both.
 """
 
 from __future__ import annotations
@@ -108,13 +110,27 @@ async def put(owner_id: str, provider: str, credential: dict[str, Any]) -> str:
 
         def _put_envelope() -> str:
             _envelope_table().put_item(Item=_seal(owner_id, provider, payload))
+            # Retire the legacy secret so a flag-off rollback or a stale read never serves it.
+            # Default recovery window, never force: a bad rollout can still be restored.
+            sm = _client()
+            try:
+                sm.delete_secret(SecretId=name)
+            except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+                pass  # absent, or already scheduled for deletion
             return f"{ENVELOPE_TABLE}/{owner_id}/{provider}"
 
         return await run_in_thread(_put_envelope)
 
     def _put() -> str:
         sm = _client()
-        create_or_update_secret(sm, name, payload)
+        try:
+            create_or_update_secret(sm, name, payload)
+        except sm.exceptions.InvalidRequestException:
+            # A flag-on put scheduled this secret for deletion; a flag-off write takes it back.
+            sm.restore_secret(SecretId=name)
+            sm.put_secret_value(SecretId=name, SecretString=payload)
+        # get() reads the table first, so a sealed row left from flag-on would shadow this write.
+        _envelope_op(lambda t: t.delete_item(Key={"owner_id": owner_id, "provider": provider}))
         return sm.describe_secret(SecretId=name)["ARN"]
 
     return await run_in_thread(_put)
@@ -125,7 +141,9 @@ async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
     name = _secret_name(owner_id, provider)
 
     def _get() -> dict[str, Any] | None:
-        item = _envelope_op(lambda t: t.get_item(Key={"owner_id": owner_id, "provider": provider}).get("Item"))
+        item = _envelope_op(
+            lambda t: t.get_item(Key={"owner_id": owner_id, "provider": provider}, ConsistentRead=True).get("Item")
+        )
         if item:
             return _open(item)
         sm = _client()

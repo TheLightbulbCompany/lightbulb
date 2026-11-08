@@ -7,11 +7,11 @@
 // consent screen) resumes where the owner was. Shapes: routers/voice.py, core/services/voice_onboarding.py.
 import { useEffect, useState } from "react";
 import { useOrganization } from "@clerk/nextjs";
-import { ArrowLeft, Check } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
-import { HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
+import { ForwardCheck, HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
 import { FORWARDING_CODES, IPHONE_NOTE, CHARGES_NOTE, forwardingCodes, type Carrier, type ForwardMode } from "./forwarding";
 import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
 
@@ -236,36 +236,6 @@ function NumberStep({ c, set, go, busy, back }: StepProps) {
     </div>
     <Foot back={back}><Button disabled={busy || (path === "new" && !areaOk)} onClick={next}>Continue</Button></Foot>
   </>;
-}
-
-const POLL_MS = 3000, POLL_FOR_MS = 40_000;
-
-/** Rings the business line once from the assistant's number; forwarding sends it back, and the server marks it. */
-function ForwardCheck({ c, set }: Pick<StepProps, "c" | "set">) {
-  const api = useApi();
-  const [state, setState] = useState<"" | "checking" | "ok" | "missed" | "off">(c.forwardingOk ? "ok" : "");
-  const check = async () => {
-    setState("checking");
-    try {
-      const r = (await api.post("/voice/forward-check", { forwardFrom: c.forwardFrom })) as { ok: boolean; reason?: string };
-      if (!r.ok) return setState(r.reason === "outbound_not_configured" ? "off" : "missed");
-      for (let t = POLL_MS; t <= POLL_FOR_MS; t += POLL_MS) {  // every 3 s, for up to 40 s
-        await new Promise((done) => setTimeout(done, POLL_MS));
-        const { config } = (await api.get("/voice/agent")) as { config: AgentConfig | null };
-        if (config?.forwardingOk) { set({ forwardingOk: true }); return setState("ok"); }  // kept by the next save
-      }
-      setState("missed");
-    } catch { setState("missed"); }
-  };
-  return <div style={{ display: "grid", gap: 8, justifyItems: "start" }}>
-    <Button variant="outline" disabled={!c.forwardFrom.trim() || state === "checking"} onClick={check}>
-      {state === "checking" ? "Checking forwarding…" : "Check forwarding"}</Button>
-    <p className="vx-sub" role="status">
-      {state === "ok" && <><Check size={16} aria-hidden style={{ verticalAlign: "-3px" }} /> Forwarding works. Calls to your line reach your assistant.</>}
-      {state === "missed" && "We didn't see the call arrive. Check the code for your carrier and try again."}
-      {state === "off" && "Forwarding check isn't switched on yet"}
-    </p>
-  </div>;
 }
 
 function NameStep({ c, set, go, busy, back }: StepProps) {

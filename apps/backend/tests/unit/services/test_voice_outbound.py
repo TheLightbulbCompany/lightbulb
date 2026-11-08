@@ -44,8 +44,8 @@ async def test_forward_check_dials_business_line(repos, monkeypatch):  # noqa: F
     assert await voice_outbound.forward_check(WS, {**CFG, "forwardingOk": True}) == {"ok": True}
     req = lk.sip.create_sip_participant.call_args.args[0]
     assert (req.sip_trunk_id, req.sip_call_to, req.sip_number) == ("ST_out", "+14155550177", "+14155550100")
-    assert req.room_name.startswith("phone-out-") and req.ringing_timeout.seconds == 25
-    assert req.max_call_duration.seconds == 25
+    assert req.room_name.startswith("phone-out-") and req.ringing_timeout.seconds == 60
+    assert req.max_call_duration.seconds == 60
     cfg = await messaging_repo.get_voice_agent(WS)
     assert cfg["forwardingCheck"]["callId"] == req.room_name.removeprefix("phone-out-")
     assert cfg["forwardingCheck"]["startedAt"] and "forwardingOk" not in cfg  # a new check clears the old tick

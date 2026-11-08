@@ -76,8 +76,8 @@ it("check forwarding says when it is not switched on, and when the call never ca
   post.mockResolvedValue({ ok: true });
   get.mockResolvedValue({ config: {} });
   fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
-  await vi.advanceTimersByTimeAsync(41_000);
+  await vi.advanceTimersByTimeAsync(71_000);
   vi.useRealTimers();
-  expect(get).toHaveBeenCalledTimes(13);
+  expect(get).toHaveBeenCalledTimes(23);
   expect(await screen.findByText(/didn't see the call arrive/)).toBeInTheDocument();
 });

@@ -5,8 +5,9 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useOrganization } from "@clerk/nextjs";
-import { Plus, X } from "lucide-react";
+import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useApi } from "@/lib/api";
 import { DAYS, nameOf, useAgentConfig, type AgentConfig } from "./data";
 
 type Save = "idle" | "saving" | "saved" | "error" | "forbidden";
@@ -109,6 +110,7 @@ export function AgentPage() {
         <input className="vx-field" type="tel" value={c.forwardFrom} placeholder="(415) 555-0199" onChange={(e) => set({ forwardFrom: e.target.value })} /></label>
       <p className="vx-hint" style={{ fontSize: "var(--text-caption)", color: "var(--fg-mute)" }}>
         To forward it, dial <span className="vx-code">*72</span> then {name}&apos;s number from your business line. Dial <span className="vx-code">*73</span> to stop.</p>
+      {c.number && (c.numberChoice ? c.numberChoice.path === "keep" : !!c.forwardFrom) && <ForwardCheck c={c} set={set} />}
     </Sec>
 
     <Sec title="Hand-off to a person" hint="When a caller asks for a person. Otherwise it takes a message.">
@@ -204,4 +206,34 @@ export function ToAdd({ c, set, name, why }: Edit & { name: string; why?: string
     </li>)}</ul>
   </div>}
   </>;
+}
+
+const POLL_MS = 3000, POLL_FOR_MS = 70_000;  // as long as the server counts a call as the probe (voice_outbound.WINDOW_S)
+
+/** Rings the business line once from the assistant's number; forwarding sends it back, and the server marks it. */
+export function ForwardCheck({ c, set }: { c: AgentConfig; set: (patch: Partial<AgentConfig>) => void }) {
+  const api = useApi();
+  const [state, setState] = useState<"" | "checking" | "ok" | "missed" | "off">(c.forwardingOk ? "ok" : "");
+  const check = async () => {
+    setState("checking");
+    try {
+      const r = (await api.post("/voice/forward-check", { forwardFrom: c.forwardFrom })) as { ok: boolean; reason?: string };
+      if (!r.ok) return setState(r.reason === "outbound_not_configured" ? "off" : "missed");
+      for (let t = POLL_MS; t <= POLL_FOR_MS; t += POLL_MS) {  // every 3 s, for up to 70 s
+        await new Promise((done) => setTimeout(done, POLL_MS));
+        const { config } = (await api.get("/voice/agent")) as { config: AgentConfig | null };
+        if (config?.forwardingOk) { set({ forwardingOk: true }); return setState("ok"); }  // kept by the next save
+      }
+      setState("missed");
+    } catch { setState("missed"); }
+  };
+  return <div style={{ display: "grid", gap: 8, justifyItems: "start" }}>
+    <Button variant="outline" disabled={!c.forwardFrom.trim() || state === "checking"} onClick={check}>
+      {state === "checking" ? "Checking forwarding…" : "Check forwarding"}</Button>
+    <p className="vx-sub" role="status">
+      {state === "ok" && <><Tick size={16} aria-hidden style={{ verticalAlign: "-3px" }} /> Forwarding works. Calls to your line reach your assistant.</>}
+      {state === "missed" && "We didn't see the call arrive. Check the code for your carrier and try again."}
+      {state === "off" && "Forwarding check isn't switched on yet"}
+    </p>
+  </div>;
 }

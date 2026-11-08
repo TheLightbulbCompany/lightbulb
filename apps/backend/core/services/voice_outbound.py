@@ -23,8 +23,8 @@ from core.services import livekit_huddles
 
 logger = logging.getLogger(__name__)
 
-PROBE_S = 25  # the outbound leg rings and lives at most this long
-WINDOW_S = 30  # how long after the dial an arriving call counts as the probe
+PROBE_S = 60  # the outbound leg rings and lives at most this long ("missed" forwarding waits ~20-30 s; LiveKit max 80)
+WINDOW_S = 70  # how long after the dial an arriving call counts as the probe
 
 
 async def forward_check(ws: str, cfg: dict) -> dict:

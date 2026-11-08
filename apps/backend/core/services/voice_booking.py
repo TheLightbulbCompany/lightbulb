@@ -132,11 +132,32 @@ async def free(ws: str, cfg: dict, call_id: str | None, date: str, minutes: int)
         tz = vp._tz(cfg)
         body = {"timeMin": window[0].replace(tzinfo=tz).isoformat(), "timeMax": window[1].replace(tzinfo=tz).isoformat(),
                 "timeZone": tz.key, "items": [{"id": "primary"}]}  # fmt: skip
-        primary = ((await _try(ws, cfg, call_id, "POST", f"{API}/freeBusy", body)) or {}).get("calendars", {}).get("primary", {})  # fmt: skip
-        for b in primary.get("busy", []):
-            s, e = (datetime.fromisoformat(b[k]).astimezone(tz).replace(tzinfo=None) for k in ("start", "end"))
-            taken.append((s, e))
+        taken += _blocks(await _try(ws, cfg, call_id, "POST", f"{API}/freeBusy", body), tz)
     return vp.free_slots(cfg, date, taken, vp._now(cfg), minutes)
+
+
+def _blocks(answer: dict | None, tz) -> list[tuple[datetime, datetime]]:
+    """A freeBusy answer's primary-calendar busy blocks, in the business's local time."""
+    busy = (answer or {}).get("calendars", {}).get("primary", {}).get("busy", [])
+    return [tuple(datetime.fromisoformat(b[k]).astimezone(tz).replace(tzinfo=None) for k in ("start", "end")) for b in busy]  # fmt: skip
+
+
+async def busy_across(ws: str, cfg: dict, dates: list[str], bound: float) -> list[tuple[datetime, datetime]]:
+    """The primary calendar's busy blocks over `dates`' opening hours: one freeBusy for all of them, `bound` s at
+    most. [] when bookings do not go to Google, or Google is slow, refused or not signed in: the open slots are
+    then the hours minus Nova's own bookings, as before Google (google_grant warns once that it needs reconnecting)."""
+    vp = _vp()
+    windows = [w for d in dates if (w := vp._open_window(cfg, d))] if _google(cfg) else []
+    if not windows:
+        return []
+    tz = vp._tz(cfg)
+    body = {"timeMin": windows[0][0].replace(tzinfo=tz).isoformat(), "timeMax": windows[-1][1].replace(tzinfo=tz).isoformat(),
+            "timeZone": tz.key, "items": [{"id": "primary"}]}  # fmt: skip
+    try:
+        return _blocks(await asyncio.wait_for(_request(ws, "POST", f"{API}/freeBusy", body), bound), tz)
+    except Exception as exc:  # noqa: BLE001 -- the profile still offers Nova's own slots
+        logger.info("google freeBusy skipped for the profile ws=%s (%s)", ws, type(exc).__name__)
+        return []
 
 
 async def _busy(ws: str, cfg: dict, start: str, minutes: int) -> bool:

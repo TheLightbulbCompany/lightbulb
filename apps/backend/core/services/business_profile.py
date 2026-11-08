@@ -3,8 +3,12 @@ because only the phone code could read them). A caller's Router batch and its Fr
 owner and member chat, the orb and Meet never do (founder, 8 Nov).
 
 It reuses the phone's readers: the Agent page (`voice_phone.agent_config`, `_facts`: services, prices, durations,
-hours, the Knowledge answers that hold the policies), open slots (`voice_booking.free`) and the caller's own
+hours, the Knowledge answers that hold the policies), open slots (`voice_phone.free_slots`) and the caller's own
 bookings (`VOICEBOOK#` rows with their number). Best-effort: bounded to ~2k characters, cached 60 s, 2 s at most.
+
+The facts never wait on Google (8 Nov prod: an expired grant timed the whole profile out on every phone turn, so the
+Router decided with no facts, hours or slots): the open slots are the hours minus Nova's own bookings, less Google's
+busy blocks only when one freeBusy answers within GOOGLE_S.
 """
 
 from __future__ import annotations
@@ -18,9 +22,12 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT_S = 2.0
 TTL_S = 60.0
+GOOGLE_S = 1.0  # the week's freeBusy; past it the slots are Nova's own
+ORG_S, ORG_TTL_S = 1.0, 3600.0  # the business's name (Clerk): bounded, and cached once read
 DAYS = 7
 _FACTS_MAX, _SLOTS_MAX, _BOOKINGS_MAX = 1200, 600, 200
 _cache: dict[tuple[str, str | None], tuple[float, str]] = {}
+_names: dict[str, tuple[float, str]] = {}
 
 
 def _cap(text: str, limit: int) -> str:
@@ -51,43 +58,73 @@ async def facts_text(ws: str, cfg: dict | None = None) -> str:
         if not await messaging_repo.get_voice_agent(ws):
             return ""
         cfg = await vp.agent_config(ws)
-    org = await clerk_admin.get_organization(ws) if ws.startswith("org_") else None
-    head = f"Business: {(org or {}).get('name') or 'not named'}. Time zone: {vp._tz(cfg).key}."
+    head = f"Business: {await _org_name(ws, clerk_admin) or 'not named'}. Time zone: {vp._tz(cfg).key}."
     if not cfg["allow"].get("answer") or cfg.get("paused"):
         return head
     return f"{head}\n{_cap(vp._facts(cfg), _FACTS_MAX)}"
 
 
+async def _org_name(ws: str, clerk_admin) -> str:
+    """The workspace's name from Clerk, ORG_S at most and cached ORG_TTL_S; "" when unknown or slow."""
+    if not ws.startswith("org_"):
+        return ""
+    hit = _names.get(ws)
+    if hit and time.monotonic() - hit[0] < ORG_TTL_S:
+        return hit[1]
+    try:
+        org = await asyncio.wait_for(clerk_admin.get_organization(ws), ORG_S)
+    except Exception:  # noqa: BLE001 -- the facts go out without the name rather than not at all
+        logger.warning("business name unavailable ws=%s", ws, exc_info=True)
+        return hit[1] if hit else ""
+    name = (org or {}).get("name") or ""
+    if name:
+        _names[ws] = (time.monotonic(), name)
+    return name
+
+
+async def _open_days(ws: str, cfg: dict, now: datetime, minutes: int) -> str:
+    """The week's open start times: the hours minus Nova's own bookings (all days at once), less Google's busy
+    blocks when one bounded freeBusy answers (voice_booking.busy_across)."""
+    from core.services import voice_booking
+    from routers import voice_phone as vp
+
+    dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(DAYS)]
+    *taken, busy = await asyncio.gather(
+        *(vp._taken(ws, d) for d in dates), voice_booking.busy_across(ws, cfg, dates, GOOGLE_S)
+    )
+    days = [
+        f"{datetime.strptime(d, '%Y-%m-%d'):%a %-d %b}: {_ranges(s) if (s := vp.free_slots(cfg, d, t + busy, now, minutes)) else 'none'}"  # fmt: skip
+        for d, t in zip(dates, taken, strict=True)
+    ]
+    return _cap(f"Open start times for a {minutes}-minute appointment: " + "; ".join(days), _SLOTS_MAX)
+
+
+async def _callers_bookings(ws: str, caller: str, now: datetime) -> str:
+    from routers import voice_phone as vp
+
+    mine = [b for b in await _upcoming(ws, f"{now:%Y-%m-%dT%H:%M}") if b.get("phone") == caller]
+    said = "; ".join(f"{b['service']} {vp._pretty(b['sk'][10:])}" for b in mine) or "none"
+    return _cap(f"This caller's upcoming bookings: {said}", _BOOKINGS_MAX)
+
+
 async def _build(ws: str, caller: str | None) -> str:
     from core.repositories import messaging_repo
-    from core.services import voice_booking
     from routers import voice_phone as vp
 
     if not await messaging_repo.get_voice_agent(ws):
         return ""  # no saved Agent page: nothing is known, and the phone's defaults are not facts
     cfg = await vp.agent_config(ws)
-    lines = [await facts_text(ws, cfg)]
     now, minutes = vp._now(cfg), vp._minutes(cfg, "")
-    dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(DAYS)]
-    # call_id None: a failed Google check here raises no Line problem (that is the call's own job)
-    slots = await asyncio.gather(
-        *(voice_booking.free(ws, cfg, None, d, minutes) for d in dates), return_exceptions=True
-    )
-    days = [
-        f"{datetime.strptime(d, '%Y-%m-%d'):%a %-d %b}: {_ranges(s) if s else 'none'}"
-        for d, s in zip(dates, slots, strict=True)
-        if not isinstance(s, BaseException)
-    ]
-    if days:
-        lines.append(_cap(f"Open start times for a {minutes}-minute appointment: " + "; ".join(days), _SLOTS_MAX))
+    parts = [facts_text(ws, cfg), _open_days(ws, cfg, now, minutes)]
     if caller:
-        try:
-            mine = [b for b in await _upcoming(ws, f"{now:%Y-%m-%dT%H:%M}") if b.get("phone") == caller]
-            said = "; ".join(f"{b['service']} {vp._pretty(b['sk'][10:])}" for b in mine) or "none"
-            lines.append(_cap(f"This caller's upcoming bookings: {said}", _BOOKINGS_MAX))
-        except Exception:  # noqa: BLE001 -- the rest of the profile still helps
-            logger.warning("caller bookings unavailable ws=%s", ws, exc_info=True)
-    return "\n".join(lines)
+        parts.append(_callers_bookings(ws, caller, now))
+    facts, *rest = await asyncio.gather(*parts, return_exceptions=True)
+    if isinstance(facts, BaseException):
+        raise facts
+    for r in rest:  # the rest of the profile still helps
+        if isinstance(r, BaseException):
+            logger.warning("business profile part unavailable ws=%s", ws, exc_info=r)
+    return "\n".join([facts, *(r for r in rest if not isinstance(r, BaseException))])
 
 
 async def _upcoming(ws: str, now: str) -> list[dict]:

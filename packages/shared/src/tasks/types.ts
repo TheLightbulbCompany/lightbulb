@@ -104,8 +104,6 @@ export interface QuestionView {
   answer: { optionId?: string | null; text?: string | null } | null;
   answeredBy: { id: string; name: string } | null;
   answeredAt: string | null;
-  /** A voice "yes" waiting for this member's tap (open cards only). */
-  pendingConfirm?: { by: string; seat: "app" | "meet" | "phone_owner"; roomId: string | null; at: string } | null;
   createdAt: string;
   version: number;
 }

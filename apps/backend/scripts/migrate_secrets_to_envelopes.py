@@ -1,7 +1,8 @@
 """One-time: move every per-owner Secrets Manager credential into ``credential-envelopes`` and
 soft-delete the dead secrets nothing on main reads.
 
-Runs INSIDE the backend task (ECS exec), after the image that reads envelopes for every class is
+``apps/backend/scripts/migrate_secrets_to_envelopes.py``. Runs INSIDE the backend task (ECS exec), from
+``apps/backend``, after the image that reads envelopes for every class is
 deployed (gate + settlement Lambdas included):
 
     uv run python -m scripts.migrate_secrets_to_envelopes --dry-run
@@ -13,11 +14,14 @@ Moves (the envelope's provider is what the readers ask ``integration_secret_stor
     lightbulb/<env>/openrouter/owners/<owner>/<hash>     -> (<owner>, openrouter/<hash>) {"key": <plaintext>}
 Dead (soft-deleted, nothing written): ``DEAD_PATTERNS``.
 
-Per secret, ``--apply``: read, seal, write the row (an existing row is newer and is kept), open it
-back and compare, then DeleteSecret with the default 30-day recovery window (never forced). The
-values are never printed. ``--verify`` exits 1 while any class b/c secret is still live or any row
-fails to open. Per-owner Hermes boot secrets and BYOK ``user-keys`` are not touched (read outside
-this store).
+Per live secret, ``--apply``: read, seal, write the row (an existing row that opens is newer and is
+kept), open it back and compare, then DeleteSecret with the default 30-day recovery window. Per
+secret ALREADY scheduled for deletion (#5083's sealed ``put`` scheduled the legacy copy): if its
+envelope opens, force-delete it; else restore it and migrate it as above. So a second ``--apply``
+force-deletes what the first soft-deleted, each only once its envelope is checked. The values are
+never printed. ``--verify`` exits 1 while any class b/c secret is still live, a scheduled one has no
+envelope that opens, or any row fails to open. Per-owner Hermes boot secrets and BYOK ``user-keys``
+are not touched (read outside this store).
 """
 
 from __future__ import annotations
@@ -61,14 +65,20 @@ def _payload(provider: str, secret: str) -> dict:
     return {"key": secret} if provider.startswith("openrouter/") else json.loads(secret)
 
 
-def _live_names(sm) -> list[str]:
+def _names(sm) -> list[tuple[str, bool]]:
+    """(name, scheduled for deletion) for every secret under this stage, planned deletions included:
+    #5083's sealed ``put`` scheduled the legacy copy, and those still need their envelope checked."""
     names, kwargs = (
         [],
-        {"MaxResults": 100, "Filters": [{"Key": "name", "Values": [f"lightbulb/{settings.ENVIRONMENT}/"]}]},
+        {
+            "MaxResults": 100,
+            "IncludePlannedDeletion": True,
+            "Filters": [{"Key": "name", "Values": [f"lightbulb/{settings.ENVIRONMENT}/"]}],
+        },
     )
     while True:
         page = sm.list_secrets(**kwargs)
-        names += [s["Name"] for s in page.get("SecretList", []) if not s.get("DeletedDate")]
+        names += [(s["Name"], bool(s.get("DeletedDate"))) for s in page.get("SecretList", [])]
         if not page.get("NextToken"):
             return names
         kwargs["NextToken"] = page["NextToken"]
@@ -80,39 +90,70 @@ def _row(owner: str, provider: str) -> dict | None:
     )
 
 
+def _opens(row: dict | None) -> bool:
+    try:
+        return row is not None and store._open(row) is not None
+    except Exception:  # noqa: BLE001 -- a row that does not decrypt is as good as none
+        return False
+
+
 def migrate_one(sm, name: str, owner: str, provider: str) -> str:
+    """Seal the live secret (an existing row that opens is newer and is kept; one that does not is
+    resealed from the secret), open it back, then soft-delete the secret (default 30-day window)."""
     payload = _payload(provider, sm.get_secret_value(SecretId=name)["SecretString"])
-    row = _row(owner, provider)
-    if row is None:
+    if _opens(_row(owner, provider)):
+        outcome = "kept-newer-row"
+    else:
         store._envelope_table().put_item(Item=store._seal(owner, provider, json.dumps(payload)))
         row = _row(owner, provider)
         if row is None or store._open(row) != payload:
             raise RuntimeError("sealed row does not open to the secret")
         outcome = "moved"
-    else:
-        store._open(row)  # a newer write already sealed it; it must still open
-        outcome = "kept-newer-row"
-    sm.delete_secret(SecretId=name)  # default 30-day recovery window
+    sm.delete_secret(SecretId=name)
     return outcome
+
+
+def retire_scheduled(sm, name: str, owner: str, provider: str) -> str:
+    """A secret already scheduled for deletion: force-delete it when its envelope opens, else
+    restore it and migrate it."""
+    if _opens(_row(owner, provider)):
+        try:
+            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+        except sm.exceptions.InvalidRequestException:  # "scheduled for deletion": restore, then force
+            sm.restore_secret(SecretId=name)
+            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+        return "force-deleted (envelope opens)"
+    sm.restore_secret(SecretId=name)
+    return f"restored, {migrate_one(sm, name, owner, provider)}"
 
 
 def run(mode: str, sm=None) -> int:
     sm = sm or boto3.client("secretsmanager", region_name=settings.AWS_REGION)
     env = settings.ENVIRONMENT
     failed = pending = 0
-    for name in sorted(_live_names(sm)):
+    for name, scheduled in sorted(_names(sm)):
         cls = classify(name, env)
-        if cls is None:
+        if cls is None or (scheduled and cls[0] == "dead"):
             continue
         kind, owner, provider = cls
         if mode == "dry-run":
-            print(f"{name} would-{'move -> ' + owner + ' ' + provider if kind == 'move' else 'soft-delete'}")
+            if scheduled:
+                ok = _opens(_row(owner, provider))
+                print(f"{name} scheduled, would-{'force-delete' if ok else 'restore-and-move'}")
+            else:
+                print(f"{name} would-{'move -> ' + owner + ' ' + provider if kind == 'move' else 'soft-delete'}")
         elif mode == "verify":
-            pending += 1
-            print(f"{name} still-live ({kind})")
+            if not scheduled:
+                pending += 1
+                print(f"{name} still-live ({kind})")
+            elif not _opens(_row(owner, provider)):
+                failed += 1
+                print(f"{name} scheduled with no envelope that opens")
         else:
             try:
-                if kind == "move":
+                if scheduled:
+                    print(f"{name} {retire_scheduled(sm, name, owner, provider)}")
+                elif kind == "move":
                     print(f"{name} {migrate_one(sm, name, owner, provider)}")
                 else:
                     sm.delete_secret(SecretId=name)

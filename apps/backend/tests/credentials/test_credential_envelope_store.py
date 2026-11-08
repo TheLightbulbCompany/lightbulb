@@ -53,10 +53,14 @@ class _FakeSM:
             raise _NotFound()
         return {"SecretString": self.secrets[SecretId]}
 
-    def list_secrets(self, Filters, **kwargs):
+    def list_secrets(self, Filters, IncludePlannedDeletion=False, **kwargs):
         prefix = Filters[0]["Values"][0]
         names = [n for n in self.secrets if n.startswith(prefix)]
-        return {"SecretList": [{"Name": n} for n in names if n not in self.scheduled]}
+        listed = [n for n in names if IncludePlannedDeletion or n not in self.scheduled]
+        return {"SecretList": [{"Name": n, **({"DeletedDate": 1} if n in self.scheduled else {})} for n in listed]}
+
+    def restore_secret(self, SecretId):
+        self.scheduled.discard(SecretId)
 
     def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
         self.deletes.append((SecretId, ForceDeleteWithoutRecovery))
@@ -245,7 +249,7 @@ async def test_oauth_app_config_is_sealed_and_its_legacy_secret_still_reads(stor
     secrets[legacy] = json.dumps({"client_id": "old", "client_secret": "s"})
     assert (await oauth_app_store.get("org_a", "google"))["client_id"] == "old"
     await oauth_app_store.put("org_a", "google", client_id="cid", client_secret="csec")
-    assert ("org_a", "oauth-app/google") in table.items and legacy in table.scheduled
+    assert ("org_a", "oauth-app/google") in table.items and legacy in secrets  # left for the migration
     assert await oauth_app_store.get("org_a", "google") == {"client_id": "cid", "client_secret": "csec"}
     await oauth_app_store.delete("org_a", "google")
     assert await oauth_app_store.get("org_a", "google") is None
@@ -297,3 +301,29 @@ def test_migration_refuses_prod_without_allow_prod(stores, monkeypatch):
     assert migrate.main(["--apply", "--allow-prod"]) == 0
     monkeypatch.setattr(settings, "CREDENTIAL_KMS_KEY_ARN", "")
     assert migrate.main(["--dry-run"]) == 2
+
+
+def test_migration_retires_secrets_already_scheduled_for_deletion(stores, capsys):
+    """#5083's sealed put scheduled the legacy copy. One whose envelope opens is force-deleted; one with
+    no row, or a row that does not open, is restored and migrated (then soft-deleted again)."""
+    from scripts import migrate_secrets_to_envelopes as migrate
+
+    secrets, _, table = stores
+    sealed, orphan, broken = (f"lightbulb/dev/integrations/org_a/{p}" for p in ("github", "posthog", "apollo"))
+    secrets.update(
+        {sealed: json.dumps({"token": "old"}), orphan: json.dumps({"k": "o"}), broken: json.dumps({"k": "b"})}
+    )
+    table.scheduled.update({sealed, orphan, broken})
+    table.put_item(Item=store._seal("org_a", "github", json.dumps({"token": "new"})))
+    table.put_item(Item={**store._seal("org_a", "apollo", json.dumps({"k": "x"})), "nonce": "AAAAAAAAAAAAAAAA"})
+    sm = store._client()
+
+    assert migrate.run("verify", sm) == 1  # posthog and apollo have no envelope that opens
+    assert migrate.run("apply", sm) == 0
+    assert "old" not in capsys.readouterr().out
+    assert sealed not in secrets and (sealed, True) in table.deletes  # forced: its envelope opens
+    assert store._open(table.items[("org_a", "github")]) == {"token": "new"}
+    assert store._open(table.items[("org_a", "posthog")]) == {"k": "o"}
+    assert store._open(table.items[("org_a", "apollo")]) == {"k": "b"}
+    assert {orphan, broken} <= table.scheduled and (orphan, False) in table.deletes  # 30-day window again
+    assert migrate.run("verify", sm) == 0

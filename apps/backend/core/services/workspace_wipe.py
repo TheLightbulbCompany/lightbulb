@@ -709,7 +709,7 @@ async def _delete_openrouter_key(owner_id: str) -> None:
     def _delete() -> None:
         sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
         for name in _list_names_with_prefix(sm, prefix):  # legacy, until migrate_secrets_to_envelopes runs
-            integration_secret_store.force_delete_secret(sm, name)
+            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
         for provider in integration_secret_store.envelope_providers(owner_id):
             if provider.startswith("openrouter/"):
                 integration_secret_store.delete_envelope(owner_id, provider)

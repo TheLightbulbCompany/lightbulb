@@ -22,7 +22,6 @@ import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { superAgentEnabled } from "../super-agent";
-import { noNatGateway } from "./network-stack";
 import {
   allTableArns,
   alertTopicArn,
@@ -2436,11 +2435,9 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Fargate Service
     // -------------------------------------------------------------------------
-    // Without a NAT gateway the backend and Temporal tasks reach the internet on their own public
-    // IP; serviceSg still admits only the ALB, peers and the runtimes (noNatGateway, network-stack).
-    const taskNetwork = noNatGateway(env)
-      ? { vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC }, assignPublicIp: true }
-      : { vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }, assignPublicIp: false };
+    // No NAT gateway: the backend and Temporal tasks reach the internet on their own public IP;
+    // serviceSg still admits only the ALB, peers and the runtimes (see network-stack).
+    const taskNetwork = { vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC }, assignPublicIp: true };
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `lightbulb-${env}-backend`,
       cluster: props.container.cluster,

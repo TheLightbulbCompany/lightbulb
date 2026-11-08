@@ -1,6 +1,5 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { afterEach, vi } from "vitest";
 import { LightbulbStage } from "../lib/lightbulb-stage";
 import { HOSTED_ZONE_CONTEXT } from "./helpers";
 
@@ -8,7 +7,7 @@ import { HOSTED_ZONE_CONTEXT } from "./helpers";
  * Phase 2 task 6: no managed NAT gateway. Fargate tasks sit in public subnets with a public IP;
  * the private subnets keep egress through one t4g.nano NAT instance with a fixed EIP, because
  * AgentCore runtimes, the workspace browser and the VPC Lambdas get no public IP of their own.
- * Prod stays on the NAT gateway until NO_NAT_GATEWAY_PROD=true (a repo variable).
+ * Dev and prod have the same shape.
  */
 function synthStage(env: "dev" | "prod") {
   const app = new cdk.App({ context: HOSTED_ZONE_CONTEXT });
@@ -20,8 +19,6 @@ function synthStage(env: "dev" | "prod") {
   const get = (suffix: string) => Template.fromStack(stacks.find((s) => s.stackName.endsWith(suffix))!);
   return { network: get("-network"), service: get("-service") };
 }
-
-afterEach(() => vi.unstubAllEnvs());
 
 const BACKEND_SERVICES = ["backend", "temporal-worker", "temporal-watchdog"];
 
@@ -53,24 +50,7 @@ function assertNoNat(t: { network: Template; service: Template }) {
 }
 
 describe("no NAT gateway (phase 2 task 6)", () => {
-  test("dev: 0 NAT gateways, backend + Temporal tasks get a public IP", () => {
-    assertNoNat(synthStage("dev"));
-  });
-
-  test("prod: unchanged by default (NAT gateway, private tasks)", () => {
-    const t = synthStage("prod");
-    t.network.resourceCountIs("AWS::EC2::NatGateway", 1);
-    t.network.resourceCountIs("AWS::EC2::Instance", 0);
-    t.service.hasResourceProperties("AWS::ECS::Service", {
-      ServiceName: "lightbulb-prod-backend",
-      NetworkConfiguration: {
-        AwsvpcConfiguration: Match.objectLike({ AssignPublicIp: "DISABLED" }),
-      },
-    });
-  });
-
-  test("prod: NO_NAT_GATEWAY_PROD=true gives the dev shape", () => {
-    vi.stubEnv("NO_NAT_GATEWAY_PROD", "true");
-    assertNoNat(synthStage("prod"));
+  test.each(["dev", "prod"] as const)("%s: 0 NAT gateways, backend + Temporal tasks get a public IP", (env) => {
+    assertNoNat(synthStage(env));
   });
 });

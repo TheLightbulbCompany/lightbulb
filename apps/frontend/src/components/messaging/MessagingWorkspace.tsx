@@ -44,7 +44,7 @@ export function MessagingDirectory({ onOpenRoom, onNavigate }: { onOpenRoom?: (r
   />;
 }
 
-export function MessagingConversation() {
+export function MessagingConversation({ voiceControls }: { voiceControls?: boolean } = {}) {
   const { roomProps, sessionFocus, openSession, closeSession, setSessionChat, setSessionChatRoomId, sessionSource, resolveSessionOwner, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
   if (sessionFocus?.all) {
     return <AllSessionsView key={scope} entries={directoryProps.sessionRows ?? []} loading={workspaceSessions.loading}
@@ -64,7 +64,7 @@ export function MessagingConversation() {
         directoryProps.participants.find((p) => p.kind === "human" && p.id === id) ?? { kind: "human", id, displayName, mentionHandle: null })} />;
   }
   return roomProps
-    ? <RoomPanel {...roomProps} />
+    ? <RoomPanel {...roomProps} voiceControls={voiceControls} />
     : <section className="room-panel room-blocked" aria-label="No chat selected">
         <p role="status">{directoryProps.state === "ready" && directoryProps.rooms.length === 0
           // No rooms at all only happens before setup seeds #general.

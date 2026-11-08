@@ -128,19 +128,19 @@ describe("WorkspaceHeader", () => {
   });
   it("chat layout shows the talk orb", () => {
     render(<WorkspaceHeader />);
-    const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+    const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
     expect(orb).toBeEnabled();
     fireEvent.keyDown(orb, { key: " " });
-    expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+    expect(huddle.join).toHaveBeenCalledWith("dm1", "Lightbulb");
     fireEvent.keyUp(orb, { key: " " });
   });
   it("orb disabled while in another room's Live", () => {
     huddle.roomId = "c1"; huddle.roomName = "#general"; huddle.join.mockClear();
     try {
       render(<WorkspaceHeader />);
-      const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+      const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
       expect(orb).toBeDisabled();
-      expect(orb).toHaveAccessibleDescription("You're in a Live in #general. End it to talk to Nova.");
+      expect(orb).toHaveAccessibleDescription("You're in a Live in #general. End it to talk to Lightbulb.");
       fireEvent.pointerDown(orb);
       expect(huddle.join).not.toHaveBeenCalled(); // never hijacks the other room's Live
     } finally { huddle.roomId = null; huddle.roomName = null; }

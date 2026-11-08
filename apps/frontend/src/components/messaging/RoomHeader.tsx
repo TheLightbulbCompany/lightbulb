@@ -51,6 +51,8 @@ interface RoomHeaderProps {
   /** Open Settings now (a sidebar row's or Home card's ⋯ › Settings), then `onSettingsOpened`. */
   openSettings?: SettingsFrom | null;
   onSettingsOpened?: () => void;
+  /** False on /voice/lightbulb, where the orb above is the room's only voice control: no Live marker, strip or Go live. */
+  voiceControls?: boolean;
 }
 
 function liveNames(userIds: readonly string[], participants: readonly RoomParticipant[]) {
@@ -83,6 +85,7 @@ export function RoomHeader({
   memoryClient,
   openSettings = null,
   onSettingsOpened,
+  voiceControls = true,
 }: RoomHeaderProps) {
   const id = useId();
   const huddle = useHuddle();
@@ -162,7 +165,7 @@ export function RoomHeader({
   const Icon = room?.kind === "channel" ? Hash : room?.kind === "group-dm" ? Users : MessageCircle;
   const faces = counterparts.slice(0, FACES);
 
-  const live = huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId)
+  const live = voiceControls && huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId)
     ? <span className="room-topic room-live" role="status"><span aria-hidden="true" className="room-live-dot" />{liveMarker(liveNames(huddlers, participants))}</span> : null;
   const topicForm = editingTopic && <form className="room-topic-form" onSubmit={(event) => {
     event.preventDefault();
@@ -176,7 +179,7 @@ export function RoomHeader({
     <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={cancelTopicEdit}>Cancel</Button>
   </form>;
   // Agent voice lives only in the DM with the assistant (the backend 409s voice_in_dm_only elsewhere).
-  const goLive = !huddle.room && room && huddlesOn && !room.guest && (room.kind === "dm" || !hasAgents);
+  const goLive = voiceControls && !huddle.room && room && huddlesOn && !room.guest && (room.kind === "dm" || !hasAgents);
   const dialogs = <>
     <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) { setRenaming(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
@@ -310,7 +313,7 @@ export function RoomHeader({
     <div className="room-audience">
       {/* The dialog only; its trigger is the search icon in `views` (and ⌘F). */}
       {search}
-      <LiveStrip roomId={room?.roomId} members={participants} />
+      {voiceControls && <LiveStrip roomId={room?.roomId} members={participants} />}
       {views}
       {goLive && <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={Boolean(huddle.joining)}
         aria-label={huddle.joining === room.roomId ? "Joining…" : "Go live"} title="Go live"

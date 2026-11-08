@@ -36,15 +36,15 @@ beforeEach(() => {
 it("a keyboard hold survives the room and the assistant connecting", () => {
   huddle.roomId = null; huddle.room = null; lk.agent = null;
   const { rerender } = render(<VoiceHome />);
-  const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+  const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
   orb.focus();
   fireEvent.keyDown(orb, { key: " " });
-  expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+  expect(huddle.join).toHaveBeenCalledWith("dm1", "Lightbulb");
   huddle.roomId = "dm1"; huddle.room = connectedRoom;
   rerender(<VoiceHome />);
   lk.agent = { identity: "agent-ceo" }; lk.attrs = { "lightbulb.agent.a1.status": "listening" };
   rerender(<VoiceHome />);
-  expect(screen.getByRole("button", { name: "Hold to talk to Nova" })).toBe(orb); // the same element, never remounted
+  expect(screen.getByRole("button", { name: "Hold to talk to Lightbulb" })).toBe(orb); // the same element, never remounted
   expect(document.activeElement).toBe(orb);
   expect(mic).not.toHaveBeenCalledWith(false);
   fireEvent.keyUp(orb, { key: " " });
@@ -54,21 +54,21 @@ it("a keyboard hold survives the room and the assistant connecting", () => {
 it("orb shows thinking then speaking from the agent attribute", () => {
   lk.attrs = { "lightbulb.agent.a1.status": "working" };
   const { rerender } = render(<VoiceHome />);
-  const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+  const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
   expect(orb).toHaveAttribute("data-state", "thinking");
-  expect(screen.getByText("Nova is thinking…")).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb is thinking…")).toBeInTheDocument();
   lk.attrs = { "lightbulb.agent.a1.status": "speaking" };
   lk.lines = [{ text: "Priya moved to 11:30." }, { text: "I'm drafting the holiday post now." }];
   rerender(<VoiceHome />);
   expect(orb).toHaveAttribute("data-state", "speaking");
-  expect(screen.getByText("Nova is speaking")).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb is speaking")).toBeInTheDocument();
   expect(screen.getByText("I'm drafting the holiday post now.")).toBeInTheDocument(); // the last line, as a caption
 });
 
 it("orb is connecting until the assistant joins", () => {
   lk.agent = null;
   render(<VoiceHome />);
-  expect(screen.getByRole("button", { name: "Hold to talk to Nova" })).toHaveAttribute("data-state", "connecting");
+  expect(screen.getByRole("button", { name: "Hold to talk to Lightbulb" })).toHaveAttribute("data-state", "connecting");
 });
 
 it("Yours chip lists the in-app talk", () => {
@@ -80,10 +80,10 @@ it("Yours chip lists the in-app talk", () => {
   render(<VoiceHome />);
   fireEvent.click(screen.getByRole("button", { name: /^Yours/ }));
   expect(screen.queryByText("Booked a manicure")).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: /You and Nova/ }));
+  fireEvent.click(screen.getByRole("button", { name: /You and Lightbulb/ }));
   const pane = screen.getByRole("complementary", { name: "Details" });
   expect(within(pane).getByText("Anything I need to handle?").closest("p")).toHaveTextContent("You: Anything I need to handle?");
-  expect(within(pane).getByText("One thing: the post.").closest("p")).toHaveTextContent("Nova: One thing: the post.");
+  expect(within(pane).getByText("One thing: the post.").closest("p")).toHaveTextContent("Lightbulb: One thing: the post.");
 });
 
 it("call pane Forget clears memory", async () => {

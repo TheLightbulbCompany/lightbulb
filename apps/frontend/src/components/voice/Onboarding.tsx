@@ -15,7 +15,7 @@ import { ForwardCheck, HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } 
 import { FORWARDING_CODES, IPHONE_NOTE, CHARGES_NOTE, forwardingCodes, type Carrier, type ForwardMode } from "./forwarding";
 import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
 
-const NAMES = ["Nova", "Sol", "Remy", "Juno"];
+const NAMES = ["Lightbulb", "Nova", "Sol", "Remy"];
 
 interface Draft {
   read: boolean; hours: AgentConfig["hours"]; services: AgentConfig["services"]; staff: string[];
@@ -239,13 +239,13 @@ function NumberStep({ c, set, go, busy, back }: StepProps) {
 }
 
 function NameStep({ c, set, go, busy, back }: StepProps) {
-  const name = c.name.trim() || "Nova";
+  const name = nameOf(c);
   return <>
     <h1 className="vx-title">Name it, then try it</h1>
     <p className="vx-sub">Callers hear this name. In a meeting you say &ldquo;{name}, …&rdquo;.</p>
     <div className="vx-body">
       <label className="vx-label">What should callers call your assistant?
-        <input className="vx-field" maxLength={40} value={c.name} placeholder="Nova" onChange={(e) => set({ name: e.target.value })} /></label>
+        <input className="vx-field" maxLength={40} value={c.name} placeholder="Lightbulb" onChange={(e) => set({ name: e.target.value })} /></label>
       <div className="vx-chips" style={{ margin: 0 }} role="group" aria-label="Suggestions">
         {NAMES.map((n) => <button key={n} type="button" className="vx-chip" aria-pressed={name === n} onClick={() => set({ name: n })}>{n}</button>)}
       </div>

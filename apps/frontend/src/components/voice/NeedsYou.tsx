@@ -7,7 +7,7 @@ import Link from "next/link";
 import type { QuestionView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { nameOf, useAgentConfig, useQuestions, useTimeline } from "./data";
+import { LIGHTBULB, useAgentConfig, useQuestions, useTimeline } from "./data";
 
 // #5043: GET /needs-you adds pendingConfirm when a voice yes is waiting for the tap. Local type: packages/shared is not touched (mobile OTA).
 type Q = QuestionView & { pendingConfirm?: { by: string; seat: "meet" | "app" | "phone_owner"; roomId?: string; at: string } | null };
@@ -18,8 +18,7 @@ const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeri
 export function NeedsYou() {
   const { data: qs, error: qErr } = useQuestions();
   const { data: items, error: tErr } = useTimeline();
-  const { data: config } = useAgentConfig();
-  const name = nameOf(config);
+  const name = LIGHTBULB;
   const total = qs?.length ?? 0;
   const today = (items ?? []).filter((i) => new Date(i.at).toDateString() === new Date().toDateString());
   const loading = !qs && !qErr || !items && !tErr;

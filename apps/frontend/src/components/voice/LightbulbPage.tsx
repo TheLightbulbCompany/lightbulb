@@ -6,16 +6,15 @@
 // keeps it in the room, and the shell's openPanel calls (an attachment in the right pane) are no-ops here.
 import { useEffect, useRef } from "react";
 import { TalkOrb } from "./TalkOrb";
-import { nameOf, useAgentConfig } from "./data";
+import { LIGHTBULB } from "./data";
 import { useAssistantDm } from "@/components/huddle/useAssistantDm";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
 import { MessagingConversation } from "@/components/messaging/MessagingWorkspace";
 import { InvitePeopleDialog } from "@/components/workspace/InvitePeopleDialog";
 
 export function LightbulbPage() {
-  const { data: config } = useAgentConfig();
   return <div className="vx-lightbulb">
-    <div className="vx-page"><TalkOrb name={nameOf(config)} /></div>
+    <div className="vx-page"><TalkOrb name={LIGHTBULB} /></div>
     <MessagingWorkspaceProvider>
       <AssistantRoom />
       {/* The welcome's "Invite people" (RoomPanel) and the onboarding band open this; WorkspaceShell mounted it before. */}
@@ -37,5 +36,6 @@ function AssistantRoom() {
     openMessage(roomId, null);
   }, [roomId, openMessage]);
   if (dm === undefined || (roomId && activeRoomId !== roomId)) return <p className="vx-empty" role="status">Loading chat…</p>;
-  return <MessagingConversation />;
+  // The orb's pre-connect is a real Live in this room, so the header's Live strip and Go live would be a second control.
+  return <MessagingConversation voiceControls={false} />;
 }

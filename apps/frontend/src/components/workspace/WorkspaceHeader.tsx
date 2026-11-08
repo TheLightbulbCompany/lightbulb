@@ -9,7 +9,7 @@ import { useCommandPalette } from "@/components/teams/command-palette/CommandPal
 import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
 import { TalkOrb } from "@/components/voice/TalkOrb";
-import { nameOf, useAgentConfig } from "@/components/voice/data";
+import { LIGHTBULB } from "@/components/voice/data";
 import { activateMessagesPanel, closePane, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { useNeedsYouCount } from "@/components/tasks/useRoomThreads";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
@@ -40,7 +40,6 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const { place: current } = useWorkspaceState();
   // Activity's badge is needsYouCount, the one count Activity, Home and the tab title read.
   const needsYou = useNeedsYouCount();
-  const assistant = nameOf(useAgentConfig().data);
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
@@ -49,7 +48,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
       </button>
       {/* Hold to talk to the assistant, from every place (voice spec §5: owner mode, the Router in the DM). The rail,
           not a floating button: it never covers a composer, and its caption opens beside the rail while a talk is on. */}
-      <TalkOrb name={assistant} compact />
+      <TalkOrb name={LIGHTBULB} compact />
       {DESTINATIONS.map(({ place, panel, label, Icon }) => {
         // Activity badges what needs you.
         const badge = place === "activity" ? needsYou : 0;

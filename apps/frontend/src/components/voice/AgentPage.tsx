@@ -57,7 +57,7 @@ export function AgentPage() {
 
     <Sec title="Name & greeting">
       <label className="vx-label">Name (callers hear it; in a meeting you say &ldquo;{name}, …&rdquo;)
-        <input className="vx-field" value={c.name} maxLength={40} placeholder="Nova" onChange={(e) => set({ name: e.target.value })} /></label>
+        <input className="vx-field" value={c.name} maxLength={40} placeholder="Lightbulb" onChange={(e) => set({ name: e.target.value })} /></label>
       <label className="vx-label">Greeting style
         <textarea className="vx-field" rows={3} maxLength={400} value={c.greeting} placeholder={`How ${name} should open: tone, what to mention`} onChange={(e) => set({ greeting: e.target.value })} /></label>
       <p className="vx-hint" style={{ color: "var(--fg-mute)", fontSize: "var(--text-caption)" }}>

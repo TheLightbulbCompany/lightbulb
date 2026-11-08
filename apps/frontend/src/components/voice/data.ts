@@ -81,8 +81,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
   reminders: { dayBefore: true, missedCallers: false, waitlist: false },
 };
 
+/** In the app the assistant is always Lightbulb (founder, 8 Nov 2026); the Agent-page name is only what callers hear. */
+export const LIGHTBULB = "Lightbulb";
+
 /** The name callers hear; "Lightbulb" until the owner picks one. */
-export const nameOf = (c?: Partial<AgentConfig> | null) => c?.name?.trim() || "Lightbulb";
+export const nameOf = (c?: Partial<AgentConfig> | null) => c?.name?.trim() || LIGHTBULB;
 
 /** The Agent page document, defaults filled in. `isNew`: the workspace has no document yet (first run). */
 export function useAgentConfig() {

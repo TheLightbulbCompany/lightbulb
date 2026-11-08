@@ -104,7 +104,19 @@ async def _drive(c, ws, query):
 
 async def _github(c, ws, query):
     token = await _token(ws, "github")
-    items = (await _get(c, "https://api.github.com/search/issues", token, q=query, per_page=5)).get("items", [])
+    # Unscoped, search/issues is all of public GitHub: scope it to the connected user and their orgs.
+    me, orgs = await asyncio.gather(
+        _get(c, "https://api.github.com/user", token),
+        _get(c, "https://api.github.com/user/orgs", token),
+        return_exceptions=True,
+    )
+    owners = [f"user:{me['login']}"] if isinstance(me, dict) and me.get("login") else []
+    if isinstance(orgs, list):  # first 4: GitHub caps a search at 256 chars and 5 AND/OR/NOT operators
+        owners += [f"org:{o['login']}" for o in orgs[:4] if o.get("login")]
+    if not owners:
+        return ["I couldn't tell which GitHub account is connected."]
+    q = " ".join([query, *owners]).strip()
+    items = (await _get(c, "https://api.github.com/search/issues", token, q=q, per_page=5)).get("items", [])
     repo = lambda i: "/".join(i.get("repository_url", "").split("/")[-2:])  # noqa: E731
     return [f"{i['title']} ({i.get('state')}, {repo(i)} #{i.get('number')})" for i in items]
 

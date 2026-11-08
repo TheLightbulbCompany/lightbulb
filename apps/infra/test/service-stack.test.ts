@@ -1821,10 +1821,11 @@ describe("ServiceStack — the tier's shared Hermes runtime (shared runtime step
 
     test(`${environment}: its execution role reaches no tenant data`, () => {
       const actions = JSON.stringify(role.Properties.Policies);
-      for (const denied of ["s3:", "secretsmanager:", "CreateEvent", "RetrieveMemoryRecords", "InvokeBrowser", "kms:"]) {
+      for (const denied of ["s3:", "secretsmanager:", "CreateEvent", "RetrieveMemoryRecords", "BrowserProfile", "BrowserSession", "kms:"]) {
         expect(actions).not.toContain(denied);
       }
       expect(actions).toContain("appsync:EventPublish");
+      expect(actions).toContain("bedrock-agentcore:InvokeBrowser"); // the screen driver, as each owner role has it
       expect(role.Properties.ManagedPolicyArns).toBeUndefined();
     });
 

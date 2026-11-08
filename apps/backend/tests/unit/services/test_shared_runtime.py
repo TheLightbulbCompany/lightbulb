@@ -108,3 +108,44 @@ async def test_a_roll_moves_only_a_warm_session_that_predates_the_update(shared,
         assert await hp.roll_runtime_image("org_a", dry_run=True) == "would-update"
         assert await hp.roll_runtime_image("org_a") == "updated"
     assert stops == [(SHARED, rt.session_id_for("org_a"))]
+
+
+@pytest.mark.asyncio
+async def test_at_the_cut_over_a_run_still_live_on_its_own_runtime_is_never_polled_on_the_pool(shared, monkeypatch):
+    """The drain: a workspace whose session is live on its own runtime stays there until it idles.
+    The run is unknown to a pool session, so a poll there would be a 404, RunLost, and a retry."""
+    from core.services import runtime_runs
+
+    row = {"owner_id": "org_a", "id": "row-1", "agentcore_runtime_arn": OWN, "status": "running", "gateway_token": "g"}
+    session = {"arn": OWN, "warm_until": 10**10, "started_at": 1}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    sent = []
+
+    class Client:
+        def invoke_agent_runtime(self, **kw):
+            sent.append(kw["agentRuntimeArn"])
+            body = {"run_id": "r1", "status": "running"} if kw["agentRuntimeArn"] == OWN else {"error": "run_not_found"}
+            status = 200 if kw["agentRuntimeArn"] == OWN else 404
+            return {"statusCode": 200, "response": json.dumps({"status": status, "body": body})}
+
+    monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
+    identity = runtime_runs.RunIdentity("r1", "org_a", "t1", 1, "agent-1")
+    with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: session):
+        status = await runtime_runs.get_run("org_a", identity)  # no RunLost: it went to its own runtime
+        assert status.status == "running" and sent == [OWN]
+        session["warm_until"] = 0  # idled out (no heartbeat): the next session starts on the pool
+        with pytest.raises(runtime_runs.RunLost):
+            await runtime_runs.get_run("org_a", identity)
+        assert sent == [OWN, SHARED]
+
+
+def test_a_runs_heartbeat_keeps_its_session_live_on_its_own_runtime(monkeypatch):
+    """A Worker run sends no invoke; its heartbeat is what keeps the drain estimate current."""
+    session = {"arn": OWN, "warm_until": 0, "started_at": 10**9}
+    extended = []
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda owner_id, **k: session)
+    monkeypatch.setattr(
+        hp.container_repo, "extend_session_warm_sync", lambda owner_id, *, warm_until, **k: extended.append(warm_until)
+    )
+    rt.note_alive("org_a")
+    assert extended and extended[0] > 10**9

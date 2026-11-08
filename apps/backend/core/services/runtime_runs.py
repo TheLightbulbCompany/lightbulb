@@ -237,8 +237,10 @@ async def stop_task_session(owner_id: str, task_id: str, run_id: str | None = No
     stopped mid-tool never released it; the next task's run would wait out the lease)."""
     from core.services import browser_control, hermes_provisioning
 
+    from core.dynamodb import run_in_thread
+
     container = await container_repo.get_by_owner_id(owner_id) or {}
-    arn = runtime_transport.runtime_arn(container)
+    arn = await run_in_thread(runtime_transport.live_arn, container, task_id)  # where the task session runs
     if not arn:
         return False
     stopped = await hermes_provisioning.stop_runtime_session(owner_id, arn, task_id=task_id)

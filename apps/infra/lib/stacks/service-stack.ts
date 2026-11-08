@@ -1555,8 +1555,9 @@ export class ServiceStack extends cdk.Stack {
     // session to the first invoke's tenant and takes that owner's boot values from the invoke
     // (bridge.bind_tenant), and S3, memory and the browser come from the session's scoped
     // credentials (HermesTenantRole, narrowed per owner). So its execution role has no S3, no
-    // Secrets Manager, no memory and no browser grant: image pull, the platform's own calls,
-    // its own logs and AppSync run frames. Mirrors hermes_provisioning.build_hermes_runtime_request
+    // Secrets Manager and no memory grant: image pull, the platform's own calls, its own logs,
+    // AppSync run frames, and the screen driver's InvokeBrowser (it authorizes on the browser,
+    // never a profile, exactly as each owner role's owner-browser grant has it). Mirrors hermes_provisioning.build_hermes_runtime_request
     // minus everything per owner. One tier exists today, so one runtime ("pool").
     // A new hermes-version.json pin updates its image here; roll_hermes_runtimes then moves the warm
     // sessions that started before the update.
@@ -1597,6 +1598,13 @@ export class ServiceStack extends cdk.Stack {
               resources: [
                 `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/${sharedRuntimeName}-*`,
               ],
+            }),
+            // Sessions are found only by id and only the backend lists them, so no tenant reaches
+            // another's session through this; no profile action (the backend starts and saves).
+            new iam.PolicyStatement({
+              sid: "ScreenDriver",
+              actions: ["bedrock-agentcore:InvokeBrowser"],
+              resources: browserArns,
             }),
             // Run frames go straight to AppSync Events; tenancy is the ws namespace handler's.
             new iam.PolicyStatement({

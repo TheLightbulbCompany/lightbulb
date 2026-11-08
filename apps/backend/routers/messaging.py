@@ -1401,9 +1401,10 @@ async def recycle_runtime_session(owner_id: str, request: Request):
     8 h maxLifetime SIGTERM that kills a busy microVM mid-turn. The bridge already refuses new
     turns (a TTL'd hold), so the retried work cold-starts a fresh microVM."""
     container = await _require_hook_token(owner_id, request)
-    from core.services.runtime_transport import runtime_arn
+    from core.dynamodb import run_in_thread
+    from core.services.runtime_transport import live_arn
 
-    arn = runtime_arn(container or {})
+    arn = await run_in_thread(live_arn, container or {})  # the session asking: its own runtime at cut-over
     if not arn:
         raise HTTPException(status_code=409, detail="no runtime to recycle")
     from core.services.hermes_provisioning import stop_runtime_session

@@ -5477,10 +5477,12 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
 
 
 async def create_agent_message(
-    owner_id: str, request: AgentMessageRequest, *, attrs: dict | None = None
+    owner_id: str, request: AgentMessageRequest, *, attrs: dict | None = None, in_reply_to: str | None = None
 ) -> AgentMessageReceiptResponse:
     """``attrs``: super-agent message attrs by stored name (`_ATTR_FIELDS`), passed only by backend code
-    (`task_conversation.post_as_lightbulb`); never part of the runtime's request body."""
+    (`task_conversation.post_as_lightbulb`); never part of the runtime's request body. ``in_reply_to``: the human
+    message this answers when no run names its trigger (the Router's reply, a thread's answer line): the voice
+    matches a spoken ask's answer by it (`agent_lines`' `inReplyTo`)."""
     late_run = request.event_id.removeprefix("live-late:") if request.event_id.startswith("live-late:") else None
     if late_run:
         # Conversation engine §3.6: "don't post that". Both late-answer doors (the worker's /late-answer
@@ -5655,7 +5657,7 @@ async def create_agent_message(
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             agent_hop=hop,
-            in_reply_to=(trigger or {}).get("messageId"),
+            in_reply_to=(trigger or {}).get("messageId") or in_reply_to,
             extra_conditions=[messaging_repo.voice_run_may_post(owner_id, late_run)] if late_run else None,
             # The projector files no Activity and sends no push for a silent row: the reply
             # that ends the run is the one that notifies.

@@ -801,6 +801,7 @@ async def test_a_question_tasks_answer_is_the_main_chat_reply(world):
     _room, origin = world["posts"]
     assert origin["room"] == ROOM and "thread_root" not in origin and origin["text"] == answer
     assert origin["kind"] == "task_line" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
+    assert origin["in_reply_to"] == ROOT  # the asking message: the voice says it as that ask's answer
     assert not (await repo.get_task(WS, tid)).get("outputs")  # Q&A never fills Files and Creations
 
 

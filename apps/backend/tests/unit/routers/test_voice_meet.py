@@ -173,7 +173,13 @@ async def test_no_inviter_posts_nothing(m):
 async def test_the_voice_says_only_the_rooms_new_agent_lines():
     rows = [
         {"messageId": "h1", "messageSeq": 5, "author": {"kind": "human"}, "text": "What shipped?"},
-        {"messageId": "a1", "messageSeq": 6, "author": {"kind": "agent"}, "text": "Checking GitHub."},
+        {
+            "messageId": "a1",
+            "messageSeq": 6,
+            "author": {"kind": "agent"},
+            "text": "Checking GitHub.",
+            "inReplyTo": "h1",
+        },
         {"messageId": "a2", "messageSeq": 7, "author": {"kind": "agent"}, "text": "...", "progress": True},
         {"messageId": "a3", "messageSeq": 8, "author": {"kind": "agent"}, "text": "x", "threadRootMessageId": "t"},
         {
@@ -184,12 +190,22 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
             "editedText": "We shipped #5095.",
         },
         {"messageId": "s1", "messageSeq": 10, "author": {"kind": "system"}, "text": "Notes posted."},
+        {
+            "messageId": "a5",
+            "messageSeq": 11,
+            "author": {"kind": "agent"},
+            "text": "Putting you through.",
+            "action": "transfer",
+        },  # fmt: skip
     ]
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))) as lm:
         out = await voice_meet.agent_lines(ROOM, 4)
     lm.assert_awaited_once_with(ROOM, 4, 100)
-    assert out == {"messages": [{"id": "a1", "seq": 6, "text": "Checking GitHub."}, {"id": "a4", "seq": 9, "text": "We shipped #5095."}],
-                   "after": 10}  # fmt: skip
+    # inReplyTo: the human message a line answers, so the voice matches it to that spoken ask; action: the phone's
+    assert out == {"messages": [{"id": "a1", "seq": 6, "text": "Checking GitHub.", "inReplyTo": "h1"},
+                                {"id": "a4", "seq": 9, "text": "We shipped #5095."},
+                                {"id": "a5", "seq": 11, "text": "Putting you through.", "action": "transfer"}],
+                   "after": 11}  # fmt: skip
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=([], None))):
         assert await voice_meet.agent_lines(ROOM, 10) == {"messages": [], "after": 10}
 

@@ -747,6 +747,7 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
                 specialist=task.get("specialist"),  # the specialist is the actor ("Lightbulb · Growth")
                 task_refs=[{"taskId": task_id, "role": "started"}],
                 kind="task_line",
+                in_reply_to=root,  # the asking message (`_thread_key`): a spoken ask's answer is matched by it
             )
     except Exception:  # noqa: BLE001 -- a status change never fails over its line
         logger.warning("lifecycle line not posted task=%s to=%s", task_id, to, exc_info=True)
@@ -1042,7 +1043,14 @@ async def _deliver(
         logger.warning("trigger %s has nowhere to answer (source %s)", trig["triggerId"], trig["source"])
         return None
     return await task_conversation.post_as_lightbulb(
-        ws, room, text=text, event_id=event_id, thread_root=ref.get("threadRoot"), task_refs=refs, remember=remember
+        ws,
+        room,
+        text=text,
+        event_id=event_id,
+        thread_root=ref.get("threadRoot"),
+        task_refs=refs,
+        remember=remember,
+        **({"in_reply_to": ref["messageId"]} if ref.get("messageId") else {}),  # the voice matches its answer by it
     )
 
 

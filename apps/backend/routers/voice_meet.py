@@ -67,7 +67,9 @@ async def agent_lines(room_id: str, after: int) -> dict:
     """The agent messages in the room's main chat after seq `after`, oldest first, and the next cursor. A thread's
     lines and progress lines are not said, except a Worker's question in a thread this room started (with its
     `question` ref: the next line said to the voice answers it, `answer_said_question`); the meeting never heard
-    one and the task waited on it (8 Nov prod Meet). The voice says these word for word (huddle-agent mouth.py)."""
+    one and the task waited on it (8 Nov prod Meet). The voice says these word for word (huddle-agent mouth.py).
+    `inReplyTo`: the human message a line answers (the voice matches it to that spoken ask); `action`: what the voice
+    does with it (the phone's "transfer")."""
     from core.repositories import questions_repo
 
     rows, _ = await messaging_repo.list_messages(room_id, after, 100)
@@ -83,7 +85,8 @@ async def agent_lines(room_id: str, after: int) -> dict:
                 continue
         if text.strip() and (question or not r.get("threadRootMessageId")):
             said.append({"id": r["messageId"], "seq": int(r["messageSeq"]), "text": text,
-                         **({"question": question} if question else {})})  # fmt: skip
+                         **({"question": question} if question else {}),
+                         **{k: r[k] for k in ("inReplyTo", "action") if r.get(k)}})  # fmt: skip
     return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
 
 

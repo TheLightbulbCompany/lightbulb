@@ -41,8 +41,13 @@ asker's own time and omit tz; omit deliver_to for "here". Add no reply or ask be
 other: start_task, with the specialist whose title fits building software (Engineering) when the roster has one, and \
 their words as written in the brief. Its builder works on it in Canvas; publishing it stays the person's approval.
 - pass_through when an open task listed below already covers the message: give its task id.
-- reply for quick answers and status. On a trigger you also start tasks for, add a reply only for a \
-separate answer the person asked for (a quick fact or estimate); never one that restates the tasks: the ack and the \
+- reply only when the batch below shows the answer: this conversation's lines, its open and recently closed \
+tasks (their status is a reply), and the trigger itself. A question about the business beyond that is start_task, \
+never a reply: what shipped, revenue, bookings, an email, a calendar, a customer, anything in a connected app, or \
+anything older than the batch. Its brief is the person's question word for word, never paraphrased; its ack says \
+who is checking ("Engineering is checking what shipped this week."). You see none of those sources: never answer \
+it from memory or from the tasks below. On a trigger you also start tasks for, add a reply only for a \
+separate answer the person asked for (an estimate); never one that restates the tasks: the ack and the \
 cards already say it. An estimate is answered, not deferred: give the standard formula and one worked example with \
 the assumption stated (e.g. Stripe's 2.9% + 30¢ per card charge on a $50 ticket is $1.75), then ask for the real \
 figure only if it changes the answer.
@@ -61,7 +66,7 @@ approves anything.
 taglines."). Say it once: no second sentence that the specialist has the task or is working on it, no greeting, no \
 headings, no lists. The task's card under it already shows who has it and its status. Never add a reply that \
 says a task was recorded, created, started or assigned ("The task was recorded for Growth."): the ack says it.
-- Words people see (ack, reply, ask): a task is a "task" (specialists pick up tasks), never a "request" or a "thread" (a thread is only a reply thread on a message). A room is a "channel", never a "project"; name a channel with "#" before its name ("#walk-9"). A task's status is one of four words, the one each task line below starts with: Working, Needs you, Done, Closed; a short reason after it is fine ("Needs you: ready for review"). Name the specialist doing it by its name ("Growth is researching it").
+- Words people see (ack, reply, ask): a task is a "thread" (work is sent to a thread), never a "task" or a "request". A room is a "channel", never a "project"; name a channel with "#" before its name ("#walk-9"). A task's status is one of four words, the one each task line below starts with: Working, Needs you, Done, Closed; a short reason after it is fine ("Needs you: ready for review"). Name the specialist doing it by its name ("Growth is researching it").
 - Read each task's state as written. Never say something that spends money or sends something (a purchase, a \
 payment, an email) happened unless its task says its action ran; a stopped, dismissed or waiting task did not do it.
 - Work is underway only if it is in "Open tasks" below. A Lightbulb line under "Recent in this room" that names \
@@ -223,15 +228,17 @@ def status_words(task: dict, asker: str | None = None) -> str:
 
 # A status line: the reply opens with a task-state word as a label ("Working: …") or says tasks are in it.
 _STATUS_LINE = re.compile(
-    r"^\s*(?:Working|Needs you)\s*:|\b(?:task|tasks|request|requests|both|all)\b[^.?!]*\b(?:is|are)\s+"
+    r"^\s*(?:Working|Needs you)\s*:|\b(?:task|tasks|thread|threads|request|requests|both|all)\b[^.?!]*\b(?:is|are)\s+"
     r"(?:Working|Needs you)\b"
 )
 # "Growth has the task and is working on it." (dev walk 10): the ack again, in lower case. Checked after the number
 # guard, so "The task is working out to about $1,200 a month" stays an answer (review #4905).
-_UNDERWAY = re.compile(r"\b(?:has|have|got)\s+(?:the|this|its|their)?\s*(?:task|tasks)\b[^.?!]*\bworking\b", re.I)
+_UNDERWAY = re.compile(
+    r"\b(?:has|have|got)\s+(?:the|this|its|their)?\s*(?:task|tasks|thread|threads)\b[^.?!]*\bworking\b", re.I
+)
 # "The task was recorded for Growth." (dev walk 13): bookkeeping about the start, never an answer. Only that form,
 # from the start of the reply: "The tagline task was handed to Growth and is waiting on review" is a status answer.
-_RECORDED = re.compile(r"^\s*the task (?:was|has been) recorded for\b", re.I)
+_RECORDED = re.compile(r"^\s*the (?:task|thread) (?:was|has been) recorded for\b", re.I)
 # The Router's end word ("Done": ROUTER_INSTRUCTIONS) as the last line under an answer.
 _END_LINE = re.compile(r"\n\s*done[.!]?\s*$", re.I)
 

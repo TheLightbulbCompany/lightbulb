@@ -72,7 +72,10 @@ WORKER_INSTRUCTIONS = (
     "success measure the person did not give, in a file or in your answer, not even as a suggestion; if you had "
     'to assume something, say it in one line starting "Assumed: ". Open your answer with one sentence saying what '
     'you made ("Drafted the welcome email."), nothing more in it; when the piece is short (a post, a reply, a '
-    "few lines) and you made no file, put the piece itself after that sentence, ready to paste. Never write a "
+    "few lines) and you made no file, put the piece itself after that sentence, ready to paste. When the task is "
+    "a question (what shipped, a figure, what an email or calendar says), read the source and answer it: your whole "
+    "answer is the answer, facts first, at most 100 words, no opening sentence about what you did; it is posted in "
+    "the chat as the reply. Never write a "
     "placeholder link such as [Book]([BOOKING LINK]): when you don't have the URL, write the call to action as "
     'plain text, e.g. "Book your spot: (link to add)". An email is its subject line and its body only: no '
     '"Preview text:", "Preheader:" or other meta lines in it.'
@@ -590,7 +593,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
                 await task_conversation.post_as_lightbulb(
                     ws,
                     room,
-                    text=f"{text}\n\n_(Attached in the task: {names}.)_" if files else text,
+                    text=f"{text}\n\n_(Attached in the thread: {names}.)_" if files else text,
                     event_id=f"task-result:{task_id}:{n}",
                     specialist=task.get("specialist"),
                     task_refs=refs,

@@ -757,6 +757,20 @@ async def test_a_short_text_result_shows_whole_and_is_kept(world):
     assert len((await repo.get_task(WS, tid))["outputs"]) == 1
 
 
+async def test_a_question_tasks_answer_is_the_main_chat_reply(world):
+    """One brain (founder ruling A, 8 Nov): "what have we shipped in the last week?" is a task the Router starts with
+    the question verbatim; its Worker's answer (short text, no file) is the reply in the main chat, the card under it."""
+    tid = await _task(
+        root=ROOT, title="What have we shipped in the last week?", description="What have we shipped in the last week?"
+    )
+    await _attempt(tid)
+    answer = "Three PRs merged since 1 Nov: #5061 voice worker fix, #5069 Paperclip exit, #5093 credential envelopes."
+    await _ended(tid, "completed", output=answer)
+    _room, origin = world["posts"]
+    assert origin["room"] == ROOM and "thread_root" not in origin and origin["text"] == answer
+    assert origin["kind"] == "task_line" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
+
+
 async def test_a_task_of_another_room_says_only_done(world):
     tid = await _task(audience={"kind": "room", "roomId": str(uuid.uuid4())})
     await _attempt(tid)

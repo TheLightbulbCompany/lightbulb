@@ -20,13 +20,13 @@ import os
 import time
 
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io
+from livekit.agents import AgentSession, JobContext, function_tool, room_io
 from livekit.plugins import openai
 from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVad
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import DELEGATE_DOC, Context, Mouth, check_said, result_instructions
+from huddle_agent.mouth import DELEGATE_DOC, Mouth, Talker
 from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
@@ -83,21 +83,24 @@ class Quiet:
         self._timer = self._key = None
 
 
-class OwnerAgent(Agent):
+class OwnerAgent(Talker):
     """The talker: no tool but `delegate`."""
 
+    where = "owner"
+
     def __init__(self, turns: "Turns", info: dict) -> None:
-        super().__init__(instructions=INSTRUCTIONS.format(**info))
-        self._turns = turns
-        self.context = Context()
+        super().__init__(INSTRUCTIONS.format(**info))
+        self._turns, self.allow = turns, (info["name"], info["who"])
         self.delegated_at = 0.0  # when the last request went to the Router (the talk waits for its answer)
 
     @function_tool(description=DELEGATE_DOC)
     async def delegate(self, request: str) -> dict:
+        return self.tool_delegate(request)
+
+    def post(self, request: str) -> None:
         # a task of its own: an interruption cancels the talker's reply, never the post
         self._turns.add(self.context.take(request))
         self.delegated_at = time.monotonic()
-        return {"sent": True}
 
 
 class Turns:
@@ -127,6 +130,14 @@ class Turns:
             await asyncio.gather(self._last, return_exceptions=True)
 
 
+def talk_session() -> AgentSession:
+    """vad=None: no separate VAD (1.8.11 builds a silero one unless told not to, but leaves it unwired under server
+    turn detection), so user_state comes from the realtime model's own speech_started/stopped: speaking -> listening is
+    the end of the turn it answers, before its transcript (Talker.turn_ended depends on that order). Quiet ends the
+    talk, not user_away_timeout."""
+    return AgentSession(llm=realtime_model(), vad=None, user_away_timeout=None)
+
+
 def interrupt(session) -> str:
     """A tap on the orb while the voice speaks: the speech stops; delegated work runs on."""
     session.interrupt()
@@ -152,7 +163,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     name, tile, who = info["assistantName"], info.get("agentId") or "assistant", member.name or "the owner"
     turns = Turns(backend, member.identity, ctx.job.id)
     agent = OwnerAgent(turns, {"name": name, "who": who, "today": time.strftime("%A %Y-%m-%d")})
-    session = AgentSession(llm=realtime_model(), user_away_timeout=None)  # Quiet below
+    session = talk_session()
     items: list[dict] = []
     t0 = time.time()
     talk = {"live": False}  # the mic is open: only then is anything said
@@ -162,8 +173,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if (text := getattr(ev.item, "text_content", None)) and ev.item.role in ("user", "assistant"):
             at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
             items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
-            if not ev.item.interrupted:
-                agent.context.add(who if ev.item.role == "user" else name, text)
+            if ev.item.role == "user":
+                agent.heard(who, text)
+            elif not ev.item.interrupted:
+                agent.context.add(name, text)
 
     attrs = ctx.room.local_participant.set_attributes
 
@@ -194,6 +207,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         quiet_timer.update(talk["live"], session.user_state, "thinking" if waiting else session.agent_state)
 
     session.on("user_state_changed", recount)
+    session.on("user_state_changed", lambda ev: ev.old_state == "speaking" and agent.turn_ended())
     for event in ("track_published", "track_unpublished", "track_muted", "track_unmuted"):
         ctx.room.on(event, recount)
 
@@ -202,10 +216,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     def say(texts: list[str]) -> None:
         agent.delegated_at = 0.0  # the answer came: Quiet counts again
-        speech = session.generate_reply(instructions=result_instructions(texts))
-        speech.add_done_callback(lambda h: check_said(
-            " ".join(t for i in h.chat_items if getattr(i, "role", None) == "assistant"
-                     and (t := getattr(i, "text_content", None))), texts, (name, who), "owner"))  # fmt: skip
+        agent.say(texts)
 
     async def speak_loop(mouth: Mouth) -> None:
         while True:
@@ -216,7 +227,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             mouth.speak(say, ready=idle, live=talk["live"])
 
     session.on("close", lambda _ev: ctx.shutdown("session closed"))
-    limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length")))
+    limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length"), agent.unchecked))
     reports = asyncio.create_task(speak_loop(Mouth(fetch, int(info.get("after") or 0))))
     record = lambda: talk_record(member.identity, items, ctx.job.id, time.time() - t0)  # noqa: E731
     ctx.add_shutdown_callback(lambda _reason="": (quiet_timer.cancel(), _close(limit, backend, record, turns, reports))[1])

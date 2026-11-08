@@ -1704,12 +1704,11 @@ describe("ServiceStack — super-agent temporal-worker (dev + prod, contracts-v2
 });
 
 describe("ServiceStack — credential envelope store (phase 2 task 5)", () => {
-  test("backend gets the stage KMS key and the write flag stays off", () => {
+  test("backend gets the stage KMS key", () => {
     const backend = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition"))
       .flatMap((td: any) => td.Properties.ContainerDefinitions)
       .find((c: any) => c.Name === "backend");
     const envNames = backend.Environment.map((e: any) => e.Name);
     expect(envNames).toContain("CREDENTIAL_KMS_KEY_ARN");
-    expect(envNames).not.toContain("CREDENTIAL_ENVELOPE_STORE");
   });
 });

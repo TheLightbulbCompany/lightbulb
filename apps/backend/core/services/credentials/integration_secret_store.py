@@ -12,12 +12,12 @@ DynamoDB.
 The payload is the exact ``credential`` dict that ``apply_connection`` consumes,
 so a later re-inject (marketplace slot-fill, reconnect) round-trips it unchanged.
 
-With ``CREDENTIAL_ENVELOPE_STORE`` on, ``put`` writes the ``credential-envelopes`` table instead:
-the JSON sealed with AES-256-GCM under a fresh KMS data key whose encryption context is
-``{owner_id, provider}``, so a row copied under another owner fails to decrypt. No new secret is
-created and the legacy secret is scheduled for deletion; a flag-off ``put`` removes the sealed row, so
-either direction of the flag leaves one live copy. ``get`` reads the table (consistently) first and
-falls back to the legacy secret; ``delete`` removes both.
+When ``CREDENTIAL_KMS_KEY_ARN`` is set (infra sets it in dev and prod), ``put`` writes the
+``credential-envelopes`` table instead: the JSON sealed with AES-256-GCM under a fresh KMS data key
+whose encryption context is ``{owner_id, provider}``, so a row copied under another owner fails to
+decrypt. No new secret is created, and the legacy secret is scheduled for deletion (default
+recovery window, never forced). ``get`` reads the table (consistently) and falls back to the
+legacy secret, so existing credentials migrate on their next write; ``delete`` removes both.
 """
 
 from __future__ import annotations
@@ -82,10 +82,20 @@ def _open(item: dict) -> dict[str, Any]:
 
 
 def _envelopes_enabled() -> bool:
-    """Whether this stage has the table and key at all (infra sets the key ARN alongside the table).
-    Reads and deletes check the table whenever it exists, so turning the write flag off again
-    never strands a sealed row."""
+    """Whether this stage has the table and key at all (infra sets the key ARN alongside the table)."""
     return bool(settings.CREDENTIAL_KMS_KEY_ARN)
+
+
+def force_delete_secret(sm, name: str) -> None:
+    """Delete ``name`` with no recovery window. A secret already scheduled for deletion (the
+    legacy copy a sealed ``put`` retired) may refuse with InvalidRequestException ("The secret is
+    scheduled for deletion", DeleteSecret API reference); RestoreSecret cancels the schedule, then
+    the forced delete goes through. Raises ResourceNotFoundException when absent."""
+    try:
+        sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+    except sm.exceptions.InvalidRequestException:
+        sm.restore_secret(SecretId=name)
+        sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
 
 
 def _envelope_op(fn):
@@ -101,39 +111,28 @@ def _envelope_op(fn):
 
 
 async def put(owner_id: str, provider: str, credential: dict[str, Any]) -> str:
-    """Create-or-update the credential. Returns where it now lives: the secret's ARN, or
-    ``credential-envelopes/<owner>/<provider>`` when the envelope store is on."""
+    """Create-or-update the credential. Returns where it now lives:
+    ``credential-envelopes/<owner>/<provider>``, or the secret's ARN on a stage without the key."""
     name = _secret_name(owner_id, provider)
     payload = json.dumps(credential)
 
-    if settings.CREDENTIAL_ENVELOPE_STORE and _envelopes_enabled():
-
-        def _put_envelope() -> str:
-            _envelope_table().put_item(Item=_seal(owner_id, provider, payload))
-            # Retire the legacy secret so a flag-off rollback or a stale read never serves it.
-            # Default recovery window, never force: a bad rollout can still be restored.
-            sm = _client()
-            try:
-                sm.delete_secret(SecretId=name)
-            except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
-                pass  # absent, or already scheduled for deletion
-            return f"{ENVELOPE_TABLE}/{owner_id}/{provider}"
-
-        return await run_in_thread(_put_envelope)
-
-    def _put() -> str:
+    def _put_envelope() -> str:
+        _envelope_table().put_item(Item=_seal(owner_id, provider, payload))
+        # Retire the legacy secret so a stale read never serves it. Default recovery window,
+        # never force: a bad rollout can still be restored by hand.
         sm = _client()
         try:
-            create_or_update_secret(sm, name, payload)
-        except sm.exceptions.InvalidRequestException:
-            # A flag-on put scheduled this secret for deletion; a flag-off write takes it back.
-            sm.restore_secret(SecretId=name)
-            sm.put_secret_value(SecretId=name, SecretString=payload)
-        # get() reads the table first, so a sealed row left from flag-on would shadow this write.
-        _envelope_op(lambda t: t.delete_item(Key={"owner_id": owner_id, "provider": provider}))
+            sm.delete_secret(SecretId=name)
+        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+            pass  # absent, or already scheduled for deletion
+        return f"{ENVELOPE_TABLE}/{owner_id}/{provider}"
+
+    def _put_secret() -> str:
+        sm = _client()
+        create_or_update_secret(sm, name, payload)
         return sm.describe_secret(SecretId=name)["ARN"]
 
-    return await run_in_thread(_put)
+    return await run_in_thread(_put_envelope if _envelopes_enabled() else _put_secret)
 
 
 async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
@@ -182,7 +181,7 @@ async def delete(owner_id: str, provider: str) -> bool:
         )
         sm = _client()
         try:
-            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+            force_delete_secret(sm, name)
         except sm.exceptions.ResourceNotFoundException:
             return had_envelope
         return True

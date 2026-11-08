@@ -16,9 +16,11 @@ Listing by prefix rather than iterating a provider registry is deliberate: a
 provider that has since been removed from the registry still has secrets on
 disk, and those are exactly the ones nobody would think to delete.
 
-Integration credentials written with ``CREDENTIAL_ENVELOPE_STORE`` on live in the
+Integration credentials written under ``CREDENTIAL_KMS_KEY_ARN`` live in the
 ``credential-envelopes`` table instead; both sweeps cover that owner partition too and report
-those rows as ``credential-envelopes/<owner>/<provider>``.
+those rows as ``credential-envelopes/<owner>/<provider>``. The legacy secret such a write retired
+sits scheduled for deletion, so listing includes planned deletions and the sweep force-deletes those
+too.
 
 `force_delete_without_recovery` because the point is removal, not a 30-day
 soft-delete that keeps the plaintext retrievable and — more practically —
@@ -64,6 +66,8 @@ def _list_names_with_prefix(sm, prefix: str) -> list[str]:
         kwargs: dict = {
             "MaxResults": 100,
             "Filters": [{"Key": "name", "Values": [prefix]}],
+            # A sealed put soft-deletes the legacy secret; a wipe must not leave it recoverable.
+            "IncludePlannedDeletion": True,
         }
         if token:
             kwargs["NextToken"] = token
@@ -96,7 +100,7 @@ async def delete_owner_secrets(owner_id: str) -> list[str]:
         for prefix in owner_secret_prefixes(owner_id):
             for name in _list_names_with_prefix(sm, prefix):
                 try:
-                    sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+                    integration_secret_store.force_delete_secret(sm, name)
                     deleted.append(name)
                 except Exception:
                     logger.exception("owner_secret_sweep: failed to delete %s", name)

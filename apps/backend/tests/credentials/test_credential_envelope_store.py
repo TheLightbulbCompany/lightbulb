@@ -1,6 +1,6 @@
-"""Phase 2 task 5: with CREDENTIAL_ENVELOPE_STORE on, integration credentials go to DynamoDB under
-a KMS envelope and no new per-owner Secrets Manager secret is created. Off (the default) is
-byte-for-byte today's Secrets Manager path."""
+"""Phase 2 task 5: with the stage KMS key set (every deployed stage), integration credentials go to
+DynamoDB under a KMS envelope and no new per-owner Secrets Manager secret is created. Legacy secrets
+stay readable until the next write retires them."""
 
 import json
 import os
@@ -55,10 +55,17 @@ class _FakeSM:
             raise _NotFound()
         return {"SecretString": self.secrets[SecretId]}
 
+    def list_secrets(self, Filters, IncludePlannedDeletion=False, **kwargs):
+        prefix = Filters[0]["Values"][0]
+        names = [n for n in self.secrets if n.startswith(prefix)]
+        return {"SecretList": [{"Name": n} for n in names if IncludePlannedDeletion or n not in self.scheduled]}
+
     def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
         self.deletes.append((SecretId, ForceDeleteWithoutRecovery))
         if SecretId not in self.secrets:
             raise _NotFound()
+        # DeleteSecret lists "The secret is scheduled for deletion" as an InvalidRequestException cause.
+        self._writable(SecretId)
         if ForceDeleteWithoutRecovery:
             self.secrets.pop(SecretId)
             self.scheduled.discard(SecretId)
@@ -120,25 +127,11 @@ def stores(monkeypatch):
     return secrets, kms, table
 
 
-@pytest.fixture
-def flag_on(monkeypatch):
-    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", True)
-
-
-def test_flag_defaults_off():
-    assert settings.CREDENTIAL_ENVELOPE_STORE is False
+LEGACY = "lightbulb/dev/integrations/org_a/github"
 
 
 @pytest.mark.asyncio
-async def test_off_writes_secrets_manager_only(stores):
-    secrets, kms, table = stores
-    await store.put("org_a", "github", {"token": "t"})
-    assert list(secrets) == ["lightbulb/dev/integrations/org_a/github"]
-    assert table.items == {} and kms.calls == []
-
-
-@pytest.mark.asyncio
-async def test_on_creates_no_secret_and_stores_no_plaintext(stores, flag_on):
+async def test_put_get_round_trip_creates_no_secret_and_stores_no_plaintext(stores):
     secrets, kms, table = stores
     await store.put("org_a", "website-login/vault_1", {"password": "hunter2"})
     assert secrets == {}
@@ -150,15 +143,34 @@ async def test_on_creates_no_secret_and_stores_no_plaintext(stores, flag_on):
 
 
 @pytest.mark.asyncio
-async def test_on_without_key_falls_back_to_secrets_manager(stores, flag_on, monkeypatch):
+async def test_without_key_writes_secrets_manager(stores, monkeypatch):
     secrets, _, table = stores
     monkeypatch.setattr(settings, "CREDENTIAL_KMS_KEY_ARN", "")
     await store.put("org_a", "github", {"token": "t"})
-    assert "lightbulb/dev/integrations/org_a/github" in secrets and table.items == {}
+    assert LEGACY in secrets and table.items == {}
 
 
 @pytest.mark.asyncio
-async def test_envelope_cannot_be_read_as_another_owner(stores, flag_on):
+async def test_legacy_only_credential_is_still_readable(stores):
+    secrets, _, _ = stores
+    secrets[LEGACY] = json.dumps({"token": "old"})
+    assert await store.get("org_a", "github") == {"token": "old"}
+
+
+@pytest.mark.asyncio
+async def test_put_retires_the_legacy_secret(stores):
+    secrets, _, table = stores
+    secrets[LEGACY] = json.dumps({"token": "old"})
+    await store.put("org_a", "github", {"token": "new"})
+    assert table.deletes == [(LEGACY, False)]  # default recovery window, never forced
+    assert LEGACY in table.scheduled
+    assert await store.get("org_a", "github") == {"token": "new"}
+    await store.put("org_a", "github", {"token": "newer"})  # already scheduled: still fine
+    assert await store.get("org_a", "github") == {"token": "newer"}
+
+
+@pytest.mark.asyncio
+async def test_copied_row_fails_to_decrypt(stores):
     _, _, table = stores
     await store.put("org_a", "github", {"token": "t"})
     table.items[("org_b", "github")] = {**table.items[("org_a", "github")], "owner_id": "org_b"}
@@ -167,67 +179,34 @@ async def test_envelope_cannot_be_read_as_another_owner(stores, flag_on):
 
 
 @pytest.mark.asyncio
-async def test_get_prefers_envelope_then_legacy_secret(stores, flag_on):
-    secrets, _, _ = stores
-    secrets["lightbulb/dev/integrations/org_a/github"] = json.dumps({"token": "old"})
-    assert await store.get("org_a", "github") == {"token": "old"}  # legacy still readable
-    await store.put("org_a", "github", {"token": "new"})
-    assert await store.get("org_a", "github") == {"token": "new"}
+async def test_envelope_read_is_consistent(stores):
+    _, _, table = stores
+    await store.put("org_a", "github", {"token": "t"})
+    await store.get("org_a", "github")
+    assert table.consistent_reads == [True]
 
 
 @pytest.mark.asyncio
-async def test_delete_removes_both_copies(stores, flag_on):
+async def test_delete_removes_both_copies_even_when_legacy_is_scheduled(stores):
     secrets, _, table = stores
-    secrets["lightbulb/dev/integrations/org_a/github"] = json.dumps({"token": "old"})
-    await store.put("org_a", "github", {"token": "new"})
+    secrets[LEGACY] = json.dumps({"token": "old"})
+    await store.put("org_a", "github", {"token": "new"})  # schedules the legacy secret
     assert await store.delete("org_a", "github") is True
-    assert secrets == {} and table.items == {}
+    assert secrets == {} and table.items == {} and table.scheduled == set()
     assert await store.get("org_a", "github") is None
     assert await store.delete("org_a", "github") is False
 
 
 @pytest.mark.asyncio
-async def test_owner_wipe_sweeps_envelopes(stores, flag_on, monkeypatch):
-    _, _, table = stores
-    await store.put("org_a", "github", {"token": "a"})
+async def test_owner_wipe_sweeps_envelopes_and_scheduled_legacy_secrets(stores, monkeypatch):
+    secrets, _, table = stores
+    secrets[LEGACY] = json.dumps({"token": "old"})
+    await store.put("org_a", "github", {"token": "a"})  # legacy now scheduled for deletion
     await store.put("org_b", "github", {"token": "b"})
-    monkeypatch.setattr(owner_secret_sweep, "_list_names_with_prefix", lambda sm, prefix: [])
-    monkeypatch.setattr(owner_secret_sweep.boto3, "client", lambda *a, **k: _FakeSM({}))
-    assert await owner_secret_sweep.list_owner_secret_names("org_a") == ["credential-envelopes/org_a/github"]
-    assert await owner_secret_sweep.delete_owner_secrets("org_a") == ["credential-envelopes/org_a/github"]
+    sm = _FakeSM(secrets, table.deletes, table.scheduled)
+    monkeypatch.setattr(owner_secret_sweep.boto3, "client", lambda *a, **k: sm)
+    expected = [LEGACY, "credential-envelopes/org_a/github"]
+    assert await owner_secret_sweep.list_owner_secret_names("org_a") == expected
+    assert await owner_secret_sweep.delete_owner_secrets("org_a") == expected
+    assert secrets == {} and table.scheduled == set()  # force-deleted, not left recoverable
     assert list(table.items) == [("org_b", "github")]
-
-
-@pytest.mark.asyncio
-async def test_flag_off_after_on_is_not_shadowed_by_the_sealed_row(stores, monkeypatch):
-    _, _, table = stores
-    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", True)
-    await store.put("org_a", "github", {"token": "v1"})
-    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", False)
-    await store.put("org_a", "github", {"token": "v2"})
-    assert table.items == {}
-    assert await store.get("org_a", "github") == {"token": "v2"}
-
-
-@pytest.mark.asyncio
-async def test_flag_on_after_off_retires_the_legacy_secret(stores, monkeypatch):
-    _, _, table = stores
-    name = "lightbulb/dev/integrations/org_a/github"
-    await store.put("org_a", "github", {"token": "v1"})
-    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", True)
-    await store.put("org_a", "github", {"token": "v2"})
-    assert await store.get("org_a", "github") == {"token": "v2"}
-    assert table.deletes == [(name, False)]  # default recovery window, never forced
-    # Rolling back again restores the scheduled secret and writes the new value into it.
-    monkeypatch.setattr(settings, "CREDENTIAL_ENVELOPE_STORE", False)
-    await store.put("org_a", "github", {"token": "v3"})
-    assert name not in table.scheduled
-    assert await store.get("org_a", "github") == {"token": "v3"}
-
-
-@pytest.mark.asyncio
-async def test_envelope_read_is_consistent(stores, flag_on):
-    _, _, table = stores
-    await store.put("org_a", "github", {"token": "t"})
-    await store.get("org_a", "github")
-    assert table.consistent_reads == [True]

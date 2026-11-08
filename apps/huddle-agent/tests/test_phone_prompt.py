@@ -244,3 +244,4 @@ def test_booking_tools_say_to_act_only_after_the_yes_and_once():
         doc = " ".join(tool.__doc__.split()) if tool.__doc__ else " ".join(tool.info.description.split())
         assert "only after the caller has said yes to your read-back" in doc
         assert "never call it again for the same booking" in doc
+    assert "to move one the caller has, use reschedule_or_cancel" in " ".join(phone.Receptionist.book.__doc__.split())

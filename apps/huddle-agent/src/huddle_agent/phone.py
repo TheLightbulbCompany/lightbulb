@@ -251,8 +251,9 @@ class Receptionist(Agent):
     @function_tool
     async def book(self, start: str, service: str, name: str) -> dict:
         """Book the caller. Call it only after the caller has said yes to your read-back, never in the same turn as
-        the read-back. It books at once: never call it again for the same booking. start: local "YYYY-MM-DDTHH:MM"
-        from check_availability; service; the caller's name."""
+        the read-back. It books at once: never call it again for the same booking. A new booking only: to move one
+        the caller has, use reschedule_or_cancel. start: local "YYYY-MM-DDTHH:MM" from check_availability; service;
+        the caller's name."""
         out = await self._b.post(
             "book", {"start": start, "service": service, "name": name}
         )

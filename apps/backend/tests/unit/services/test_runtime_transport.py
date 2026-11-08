@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from unittest.mock import patch
 
 from core.services import runtime_transport as rt
 
@@ -112,12 +113,14 @@ class TestAgentCoreTransport:
                 return {"statusCode": 200, "response": b'{"status":200,"body":{}}'}
 
         monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
-        monkeypatch.setattr(rt, "_ensure_session", lambda owner_id, arn, deadline, wake: wake())  # a cold session
-        await rt.request(
-            {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"},
-            "/plugins/lightbulb-channel/rpc",
-            json_body={},
-        )
+        # patch.object, not monkeypatch: conftest stubs this with patch.object, and a monkeypatch undo
+        # would put that stub back after conftest restored the real one (leaking it into later files).
+        with patch.object(rt, "_ensure_session", lambda owner_id, arn, deadline, wake: wake()):  # a cold session
+            await rt.request(
+                {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"},
+                "/plugins/lightbulb-channel/rpc",
+                json_body={},
+            )
         assert len(captured) == 2  # the wake, then the call
         assert all(e["headers"][rt.TENANT_HEADER] == "org_a" for e in captured)
 

@@ -56,8 +56,9 @@ def bind_tenant(owner: str | None) -> bool:
             return owner == OWNER
         old_prefix = S3_PREFIX
         OWNER = owner
-        if "S3_PREFIX" not in os.environ:
-            S3_PREFIX = default_s3_prefix(owner)
+        # Always from the bound owner: a prefix in a shared runtime's env would put every tenant
+        # under one prefix.
+        S3_PREFIX = default_s3_prefix(owner)
         os.environ["ISOL8_OWNER_ID"] = owner  # the memory plugin and the skill scripts read it
         # Every bridge module did `from bridge import OWNER` at import, before any invoke, so each
         # holds the empty boot value: re-point those copies (and sync's prefix) once, here.

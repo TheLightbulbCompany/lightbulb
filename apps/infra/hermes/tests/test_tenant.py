@@ -66,3 +66,9 @@ def test_a_run_for_another_owner_is_refused_after_binding(shared):
             "sessionKey": "agent:33333333-3333-3333-3333-333333333333:lightbulb:task:22222222-2222-2222-2222-222222222222",
         })
     assert refused.value.reply == (403, {"error": "owner_mismatch"})
+
+
+def test_a_shared_runtime_never_keeps_a_prefix_from_its_env(shared, monkeypatch):
+    monkeypatch.setenv("S3_PREFIX", "everyone/hermes")
+    invoke("org_a")
+    assert sync.S3_PREFIX == bridge.S3_PREFIX == "org_a/hermes"

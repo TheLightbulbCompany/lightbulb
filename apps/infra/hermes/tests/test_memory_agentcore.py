@@ -274,7 +274,10 @@ def test_a_shared_runtime_provider_takes_the_bound_tenant(mod, monkeypatch):
     import bridge
 
     monkeypatch.setenv("ISOL8_OWNER_ID", "")
-    monkeypatch.setenv("S3_PREFIX", "org_pool/hermes")  # keeps the bind from re-pointing sync's prefix
+    from bridge import sync
+
+    monkeypatch.setattr(bridge, "S3_PREFIX", "hermes")  # the bind re-points these: restored after
+    monkeypatch.setattr(sync, "S3_PREFIX", "hermes")
     monkeypatch.setattr(bridge, "OWNER", "")
     assert not mod.AgentCoreMemoryProvider().is_available()
     assert bridge.bind_tenant("org_pool")

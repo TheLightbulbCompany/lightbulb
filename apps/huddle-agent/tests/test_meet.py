@@ -157,8 +157,8 @@ async def test_a_meeting_delegation_posts_the_ask_with_its_speaker_and_context()
             sent.append((op, body))
             return {}
 
-    t = meet.MeetTalker.__new__(meet.MeetTalker)  # no session: only the tool's own state
-    t._b, t.context, t.asker, t._posts = B(), meet.Context(), ("12", "Sam"), set()
+    t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
+    t.asker = ("12", "Sam")
     t.context.add("Sam", "Nova, what shipped this week?")
     out = await t.delegate("what shipped this week")
     assert out == {"sent": True} and sent == []  # it returns at once; the post runs on its own

@@ -20,13 +20,13 @@ import os
 import time
 
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io
+from livekit.agents import AgentSession, JobContext, function_tool, room_io
 from livekit.plugins import openai
 from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVad
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import DELEGATE_DOC, Context, Mouth, check_said, result_instructions
+from huddle_agent.mouth import DELEGATE_DOC, Mouth, Talker
 from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
@@ -83,21 +83,25 @@ class Quiet:
         self._timer = self._key = None
 
 
-class OwnerAgent(Agent):
+class OwnerAgent(Talker):
     """The talker: no tool but `delegate`."""
 
+    where = "owner"
+
     def __init__(self, turns: "Turns", info: dict) -> None:
-        super().__init__(instructions=INSTRUCTIONS.format(**info))
-        self._turns = turns
-        self.context = Context()
+        super().__init__(INSTRUCTIONS.format(**info))
+        self._turns, self.allow = turns, (info["name"], info["who"])
         self.delegated_at = 0.0  # when the last request went to the Router (the talk waits for its answer)
 
     @function_tool(description=DELEGATE_DOC)
     async def delegate(self, request: str) -> dict:
+        self.delegate_now(request)
+        return {"sent": True}
+
+    def post(self, request: str) -> None:
         # a task of its own: an interruption cancels the talker's reply, never the post
         self._turns.add(self.context.take(request))
         self.delegated_at = time.monotonic()
-        return {"sent": True}
 
 
 class Turns:
@@ -162,8 +166,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if (text := getattr(ev.item, "text_content", None)) and ev.item.role in ("user", "assistant"):
             at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
             items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
-            if not ev.item.interrupted:
-                agent.context.add(who if ev.item.role == "user" else name, text)
+            if ev.item.role == "user":
+                agent.heard(who, text)
+            elif not ev.item.interrupted:
+                agent.context.add(name, text)
 
     attrs = ctx.room.local_participant.set_attributes
 
@@ -202,10 +208,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     def say(texts: list[str]) -> None:
         agent.delegated_at = 0.0  # the answer came: Quiet counts again
-        speech = session.generate_reply(instructions=result_instructions(texts))
-        speech.add_done_callback(lambda h: check_said(
-            " ".join(t for i in h.chat_items if getattr(i, "role", None) == "assistant"
-                     and (t := getattr(i, "text_content", None))), texts, (name, who), "owner"))  # fmt: skip
+        agent.say(texts)
 
     async def speak_loop(mouth: Mouth) -> None:
         while True:

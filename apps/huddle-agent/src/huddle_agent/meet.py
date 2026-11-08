@@ -26,13 +26,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io, stt
+from livekit.agents import AgentSession, JobContext, function_tool, room_io, stt
 from livekit.plugins import noise_cancellation, openai
 from openai.types.beta.realtime.session import TurnDetection
 
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import DELEGATE_DOC, Context, Mouth, check_said, result_instructions
+from huddle_agent.mouth import DELEGATE_DOC, Mouth, Talker
 from huddle_agent.transcript import (
     _LEADS,
     _LIGHTBULB,
@@ -177,23 +177,27 @@ def realtime_model():
     )  # fmt: skip
 
 
-class MeetTalker(Agent):
+class MeetTalker(Talker):
     """The talker: no tool but `delegate`. `asker` is the addressed line it is answering (participant id, name)."""
 
+    where = "meet"
+
     def __init__(self, backend: Backend, info: dict) -> None:
-        super().__init__(instructions=INSTRUCTIONS.format(**info))
-        self._b = backend
-        self.context = Context()
+        super().__init__(INSTRUCTIONS.format(**info))
+        self._b, self.allow = backend, (info["name"],)
         self.asker = ("", "")
         self._posts: set[asyncio.Task] = set()
 
     @function_tool(description=DELEGATE_DOC)
     async def delegate(self, request: str) -> dict:
+        self.delegate_now(request)
+        return {"sent": True}
+
+    def post(self, request: str) -> None:
         # a task of its own: "<name>, stop" cuts the talker's reply, never the post
         t = asyncio.create_task(self._ask(self.context.take(request), *self.asker))
         self._posts.add(t)
         t.add_done_callback(self._posts.discard)
-        return {"sent": True}
 
     async def _ask(self, text: str, pid: str, who: str) -> None:
         try:
@@ -269,7 +273,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
         elif kind == "ask":
             asked.append({"t": int(time.monotonic() - started), "who": label(who), "q": text, "a": ""})
             talker.asker = (who.rsplit(":", 1)[-1], label(who))
-            talker.context.add(label(who), text)
+            talker.allow = (name, label(who))
+            talker.heard(label(who), text)
             try:
                 session.generate_reply(user_input=f"{label(who)}: {text}")
             except RuntimeError:  # the session is closed: nothing to answer with
@@ -330,10 +335,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             asked[-1]["a"] = f"{asked[-1]['a']} {text}".strip()[:2000]
 
     def say(texts: list[str]) -> None:
-        speech = session.generate_reply(instructions=result_instructions(texts))
-        speech.add_done_callback(lambda h: check_said(
-            " ".join(t for i in h.chat_items if getattr(i, "role", None) == "assistant"
-                     and (t := getattr(i, "text_content", None))), texts, (name,), "meet"))  # fmt: skip
+        talker.say(texts)
 
     async def fetch(after: int, _handled: int) -> dict:
         return await backend.meet("events", {"after": after})

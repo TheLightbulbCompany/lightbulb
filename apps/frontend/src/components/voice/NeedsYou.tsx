@@ -9,6 +9,9 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { nameOf, useAgentConfig, useQuestions, useTimeline } from "./data";
 
+// #5043: GET /needs-you adds pendingConfirm when a voice yes is waiting for the tap. Local type: packages/shared is not touched (mobile OTA).
+type Q = QuestionView & { pendingConfirm?: { by: string; seat: "meet" | "app" | "phone_owner"; roomId?: string; at: string } | null };
+
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
@@ -44,7 +47,7 @@ function useKnowledge() {
   };
 }
 
-function QuestionCard({ q, name }: { q: QuestionView; name: string }) {
+function QuestionCard({ q, name }: { q: Q; name: string }) {
   const api = useApi();
   const { mutate } = useQuestions();
   const remember = useKnowledge();
@@ -72,13 +75,17 @@ function QuestionCard({ q, name }: { q: QuestionView; name: string }) {
       setErr(code === "not_open" ? "Someone already answered this." : code === "not_answerer" ? "This one is waiting on someone else." : "Couldn't send. Try again.");
     } finally { setBusy(false); }
   };
+  // An approval card's first option is the approve one; with a voice yes waiting it becomes the primary "Confirm".
+  const pc = ok ? q.pendingConfirm : null;
   const option = (o: QuestionView["options"][number]) => o.id === "call_myself" && caller
     ? <Button key={o.id} asChild size="sm" variant="outline"><a href={`tel:${caller}`}>{o.label}</a></Button>
     : <Button key={o.id} type="button" size="sm" disabled={busy}
-      variant={o.style === "primary" ? "default" : "outline"} onClick={() => void send(o.id)}>{o.label}</Button>;
+      variant={o.style === "primary" || pc && o === q.options[0] ? "default" : "outline"}
+      onClick={() => void send(o.id)}>{pc && o === q.options[0] ? "Confirm" : o.label}</Button>;
   return <article className="vx-card" data-done={done}>
     <p className="vx-kind"><b>{label}</b> · {time(Date.parse(q.createdAt))}</p>
     <h2>{q.title}</h2>
+    {pc && <p className="vx-kind">{pc.seat === "meet" ? "Approved by voice in a meeting" : "You said yes"} · {time(Date.parse(pc.at))}</p>}
     {q.text && q.text !== q.title && <p style={{ whiteSpace: "pre-wrap" }}>{q.text}</p>}
     {done ? <p>Done.</p> : !q.canAnswer ? <p>{q.waitingLabel}</p> : q.options.length && !answers
       ? <div className="vx-actions">

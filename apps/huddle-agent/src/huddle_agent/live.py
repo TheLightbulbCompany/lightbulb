@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from livekit.agents import Agent, AgentSession, JobContext, room_io
+from livekit.agents import Agent, AgentSession, JobContext, llm, room_io
 from livekit.plugins.openai.realtime import GPTLiveModel
 
 from huddle_agent.metrics import emit_metric
@@ -36,6 +36,9 @@ Events = Callable[[], AsyncIterator[dict]]
 #: One append is capped at 500 tokens (contract §2); at ~4 characters a token this stays well under it.
 APPEND_CHARS = 1600
 EVENTS_RETRY_S, EVENTS_RETRY_MAX_S = 0.5, 30.0  # the events loop restarts after a failure, backing off
+#: GPT-Live's startup history cap (contract §1; gpt_live.py:42-44): 128 items and 8192 tokens. The plugin drops items
+#: past 128 but has no tokenizer, so the token cap is held here, at a conservative 3 characters a token.
+HISTORY_ITEMS, HISTORY_CHARS = 128, 8192 * 3
 CLOSE_WAIT_S = 10.0  # how long close() lets posts in flight finish: each is a request the member made
 
 
@@ -57,6 +60,24 @@ Do not generate <|SpawnThinking|> when:
 
 Generate <|SpawnThinking|> before giving an answer that depends on backend work.
 Do not guess the result while waiting."""
+
+
+def startup_context(history: list[tuple[str, str]]) -> llm.ChatContext:
+    """(speaker, text) pairs as the session's startup chat context: user items named by speaker, the newest that fit
+    the startup cap (a reopened Meet session hears the recent transcript)."""
+    kept: list[str] = []
+    size = 0
+    for speaker, text in reversed(history):
+        if not (line := " ".join(f"{speaker}: {text}".split())) or not text.strip():
+            continue
+        if len(kept) >= HISTORY_ITEMS or size + len(line) > HISTORY_CHARS:
+            break
+        kept.append(line)
+        size += len(line)
+    ctx = llm.ChatContext.empty()
+    for line in reversed(kept):
+        ctx.add_message(role="user", content=line)
+    return ctx
 
 
 class Transport(Protocol):
@@ -248,21 +269,25 @@ async def start(
     on_spoken: Spoken | None = None,
     record: bool = False,
     user_away_timeout: float | None = None,
+    history: list[tuple[str, str]] | None = None,
 ) -> LiveSession:
     """GPT-Live in `ctx.room` with `prompt` (OpenAI's live-prompting template; `delegation_policy` renders its
     delegation section), every delegation posted with `post(text, context_turns)`, every agent message from `events`
     sent back as a result. `room_options`: the surface's participant and track. `on_spoken(event id)`: called once a
     result was appended, so the surface reports it spoken to the backend (Mouth's `spoken` cursor). `record`: LiveKit's
     session recording (the phone kept it on). `user_away_timeout`: seconds of silence before LiveKit marks the user
-    away (its `user_state_changed`); None: never."""
+    away (its `user_state_changed`); None: never. `history`: (speaker, text) pairs the session starts with
+    (`startup_context`); never sent to the Router as an ask's context."""
     model = GPTLiveModel(delegation="client")
-    agent = Agent(instructions=prompt)  # no tools: client delegation refuses them
+    # no tools: client delegation refuses them. The agent's chat context is the plugin's startup history (session.start)
+    agent = Agent(instructions=prompt, **({"chat_ctx": startup_context(history)} if history else {}))
     session = AgentSession(llm=model, vad=None, user_away_timeout=user_away_timeout)
     await session.start(
         agent=agent, room=ctx.room, record=record, **({"room_options": room_options} if room_options else {})
     )
     live = LiveSession(_GPTLive(session, agent, model), surface, post, events, on_spoken)
     live.session, live.agent = session, agent
+    live._seen.update(i for i, _r, _t in live.transport.history())  # the startup history was never asked
     live.transport.live.on("delegation_created", live.on_delegate)
     live.transport.live.on("session_reconnected", live.reconnected)
     session.on("close", live.ended)

@@ -328,9 +328,9 @@ class StubDuplex(rtc.EventEmitter):
 
 
 class StubAgent:
-    def __init__(self, instructions):
+    def __init__(self, instructions, chat_ctx=None):
         self.instructions, self.duplex_session = instructions, StubDuplex()
-        self.chat_ctx = SimpleNamespace(items=[])
+        self.chat_ctx = chat_ctx or SimpleNamespace(items=[])
 
 
 class StubSession(rtc.EventEmitter):
@@ -402,6 +402,29 @@ async def test_start_passes_record(monkeypatch):
 async def test_start_passes_user_away_timeout(monkeypatch):
     s = await _start(monkeypatch, Router(delay=0), user_away_timeout=15.0)
     assert s.session.kw == {"llm": s.transport.model, "vad": None, "user_away_timeout": 15.0}
+    await s.close()
+
+
+def test_startup_context_names_speakers_and_keeps_the_newest_under_the_cap():
+    ctx = live.startup_context([("Maya", "Let's ship Friday."), ("Sam", "  "), ("Raj", "Agreed.")])
+    assert [(i.role, i.text_content) for i in ctx.items] == [("user", "Maya: Let's ship Friday."),
+                                                               ("user", "Raj: Agreed.")]  # fmt: skip
+    many = [("Maya", f"line {i}") for i in range(300)]
+    ctx = live.startup_context(many)
+    assert len(ctx.items) == live.HISTORY_ITEMS and ctx.items[-1].text_content == "Maya: line 299"
+    long = [("Sam", "x" * 5000) for _ in range(10)]
+    ctx = live.startup_context(long)
+    assert sum(len(i.text_content) for i in ctx.items) <= live.HISTORY_CHARS and len(ctx.items) == 4
+
+
+async def test_start_loads_history_as_startup_context_and_never_posts_it(monkeypatch):
+    r = Router(delay=0)
+    s = await _start(monkeypatch, r, history=[("Maya", "We moved the launch."), ("Raj", "To Friday.")])
+    assert [i.text_content for i in s.agent.chat_ctx.items] == ["Maya: We moved the launch.", "Raj: To Friday."]
+    s.agent.chat_ctx.add_message(role="user", content="Nova, when is the launch?")
+    s.agent.duplex_session.emit("delegation_created", SimpleNamespace(id="item_1", pending_transcript=""))
+    await asyncio.sleep(0.01)
+    assert r.posts == [("Nova, when is the launch?", ["user: Nova, when is the launch?"])]
     await s.close()
 
 

@@ -171,7 +171,7 @@ it("applies the URL's command on mount: a retired alias opens Activity, a detail
   window.history.replaceState(null, "", "/chat?panel=task-detail&taskId=t-9");
   renderReady();
   expect(screen.getByTestId("panel-task")).toHaveTextContent("task-detail");
-  expect(screen.getByRole("region", { name: "Task" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Thread" })).toBeInTheDocument();
 });
 
 it("restores the room and Mail beside it from ?panel=chat&room=…&pane=mail on reload", () => {
@@ -473,7 +473,7 @@ it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Esca
     const fromUrl = parseCommand(window.location.search)?.pane;
     expect(fromUrl?.params.back).toBe("task:t-1");
     act(() => openPanel(fromUrl!.key, fromUrl!.params));
-    expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to thread" })).toBeInTheDocument();
     const pane = view.container.querySelector<HTMLElement>(".workspace-pane")!;
     // W13-7: the doc keeps the task's width, and reads by a name (then its first heading), never its file name.
     expect(pane.style.width).toBe("clamp(520px, 50%, 60%)");
@@ -488,9 +488,9 @@ it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Esca
     // Opened again from elsewhere (no way back): no crumb, and Escape closes.
     act(() => openPanel("artifact", { ...doc, back: "task:t-1" }, { pushUrl: true }));
     act(() => openPanel("artifact", { ...doc, id: "a2" }, { pushUrl: true }));
-    expect(screen.queryByRole("button", { name: "Back to task" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to thread" })).toBeNull();
     act(() => openPanel("artifact", { ...doc, back: "task:t-1" }, { pushUrl: true }));
-    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to thread" }));
     expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });
   } finally { }
 });

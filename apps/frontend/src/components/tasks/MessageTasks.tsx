@@ -35,9 +35,9 @@ export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
   if (!data) {
     return error
       ? <p role="alert" className="mt-1.5 max-w-xl text-ui text-muted-foreground">
-        Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
+        Threads couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
       </p>
-      : <div aria-busy="true" aria-label="Loading tasks">
+      : <div aria-busy="true" aria-label="Loading threads">
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
@@ -45,7 +45,7 @@ export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
   // One chip per task (dev walk 13, W13-1/W12-1): the Router's ack carries it with a live dot, ✓ Done once finished;
   // the finish post carries only what it made. A question keeps the full card.
   const Ref = !message.kind || finish ? RefChip : RefCard;
-  return <div aria-label="Tasks in this message">
+  return <div aria-label="Threads in this message">
     {copy}
     {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen}
       withOutputs={finish} acked={ackedTasks?.has(`${message.threadRootMessageId ?? ""}|${r.taskId}`) ?? false} />)}
@@ -128,7 +128,7 @@ function RefCard({ taskId, listed, viewerId, onOpen }: {
   return <TaskCard task={listed ?? data?.task} taskId={taskId} viewerId={viewerId} onOpen={onOpen} />;
 }
 
-/** "Sent to Workshop signup app ›" (one request, opens it) or "2 requests started ›" (scrolls to the reply). */
+/** "Sent to a thread ›" (one thread, opens it) or "2 threads started ›" (scrolls to the reply). */
 export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
   routedTo: NonNullable<CanonicalRoomMessage["routedTo"]>;
   taskTitle?: (taskId: string) => string | undefined;
@@ -138,10 +138,11 @@ export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
   const { taskIds, started, passThrough } = routedTo;
   if (!taskIds.length) return null;
   const single = passThrough || taskIds.length === 1;
-  const label = single
-    ? `Sent to ${taskTitle?.(taskIds[0]) ?? "a task"}`
-    : `${started} ${started === 1 ? "task" : "tasks"} started`;
+  // Claude Projects: "Sent to a thread ›", the title only in the accessible name ("Sent to a thread: [title]").
+  const title = single ? taskTitle?.(taskIds[0]) : undefined;
+  const label = single ? "Sent to a thread" : `${started} ${started === 1 ? "thread" : "threads"} started`;
   return <button type="button" className="mt-0.5 text-ui text-muted-foreground hover:text-foreground hover:underline"
+    aria-label={title ? `Sent to a thread: ${title}` : undefined}
     onClick={() => (single ? onOpen?.(taskIds[0]) : onShowReply?.(taskIds[0]))}>{label} ›</button>;
 }
 

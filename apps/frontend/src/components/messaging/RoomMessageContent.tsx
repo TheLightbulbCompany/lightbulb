@@ -96,7 +96,7 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
         onFocus={(event) => { const end = event.currentTarget.value.length; event.currentTarget.setSelectionRange(end, end); }}
         onChange={(event) => setRequest({ ...request!, operationId: crypto.randomUUID(), text: event.target.value })}
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelEdit(); } }} /></>}
-      <p className="text-ui text-muted-foreground">Edits do not change tasks already sent to specialists or undo their work.</p>
+      <p className="text-ui text-muted-foreground">Edits do not change threads already sent to specialists or undo their work.</p>
       {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
       <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); onEditingClosed?.(); }}>Cancel edit</Button>
         <Button type="submit" disabled={!actionable || pending || (!request!.text!.trim() && !message.attachments?.length)}>{pending ? "Saving…" : "Save changes"}</Button></div>
@@ -120,7 +120,7 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
         onEscapeKeyDown={(event) => { event.stopPropagation(); if (pending) event.preventDefault(); }}
         onOpenAutoFocus={(event) => { event.preventDefault(); cancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreFocus(); }}>
-        <DialogHeader><DialogTitle>Delete message?</DialogTitle><DialogDescription>This removes the message and its attachments. It does not change tasks already sent to specialists or undo their work. Thread replies stay available.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Delete message?</DialogTitle><DialogDescription>This removes the message and its attachments. It does not change threads already sent to specialists or undo their work. Replies stay available.</DialogDescription></DialogHeader>
         {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
         <DialogFooter className="gap-2"><Button ref={cancel} type="button" variant="outline" disabled={pending} onClick={() => setRequest(null)}>Cancel</Button>
           <Button type="button" variant="destructive" disabled={!actionable || pending} onClick={() => void save()}>{pending ? "Deleting…" : "Delete message"}</Button></DialogFooter>

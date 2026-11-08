@@ -167,7 +167,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   const escapes = sheet || drawsHeader;
   // A file opened from inside the pane (a task's output, Made here, Files) goes back there: "‹ Task", and Escape.
   const back = pane.params.back || null;
-  const crumb = back ? { label: back.startsWith("task:") ? "Task" : back[0].toUpperCase() + back.slice(1), onBack: () => leavePane(back) } : undefined;
+  const crumb = back ? { label: back.startsWith("task:") ? "Thread" : back[0].toUpperCase() + back.slice(1), onBack: () => leavePane(back) } : undefined;
   // One Escape stack (doc → task → list → closed) at every width: Escape with focus outside the pane (on the page body,
   // or still on the tile / chip that opened it, W17-1) is Escape in the pane's innermost column, so it pops one level
   // there instead of doing nothing. Text fields, menus and dialogs keep their own Escape.

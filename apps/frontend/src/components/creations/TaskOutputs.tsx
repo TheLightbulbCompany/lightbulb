@@ -25,7 +25,7 @@ export function TaskOutputs({ task, max, onOpenTask }: {
   if (!outputs.length) return null;
   const shown = max === undefined ? outputs : outputs.slice(0, max);
   const rest = outputs.length - shown.length;
-  return <ul className="task-outputs" aria-label="Made by this task">
+  return <ul className="task-outputs" aria-label="Made by this thread">
     {shown.map((o) => {
       const opensTask = o.kind === "mail" || o.kind === "capability";
       // Its readable name, not the file's slug, and its type, so a PDF and a Word copy of one sheet differ (W18).

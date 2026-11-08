@@ -50,7 +50,7 @@ export function DailySummaryCard({ rows = false }: { rows?: boolean }) {
   if (rows) return (
     <>
       <SettingRow label="Daily summary" htmlFor="pref-daily-summary"
-        line={`A notification and email at 8am (${prefs.timezone}) when approvals, tasks or mentions are waiting on you.`}>
+        line={`A notification and email at 8am (${prefs.timezone}) when approvals, threads or mentions are waiting on you.`}>
         <Switch id="pref-daily-summary" checked={prefs.dailySummary} disabled={busy} onCheckedChange={(on) => void toggle("dailySummary", on)} />
       </SettingRow>
       <SettingRow label="Email me when I'm away" htmlFor="pref-away-email"
@@ -66,7 +66,7 @@ export function DailySummaryCard({ rows = false }: { rows?: boolean }) {
           <div>
             <div className="settings-card-title">Daily summary</div>
             <div className="settings-card-desc">
-              A notification and email at 8am ({prefs.timezone}) when approvals, tasks or mentions are
+              A notification and email at 8am ({prefs.timezone}) when approvals, threads or mentions are
               waiting on you.
             </div>
           </div>

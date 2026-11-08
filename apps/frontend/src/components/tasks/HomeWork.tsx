@@ -53,7 +53,7 @@ export function HomeWork({ viewerId, onOpen, asks, askCount = 0, scheduledOpen =
     }} />;
   const failed = error || needs.error;
   const status = failed
-    ? <p role="alert" className="text-ui text-muted-foreground">Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => { void mutate(); needs.retry(); }}>Retry</button></p>
+    ? <p role="alert" className="text-ui text-muted-foreground">Threads couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => { void mutate(); needs.retry(); }}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
   const needsYou = needs.tasks;
   const groups = overviewGroups([...(data?.tasks ?? []), ...older]);

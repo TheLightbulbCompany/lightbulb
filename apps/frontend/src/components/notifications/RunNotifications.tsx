@@ -120,7 +120,7 @@ async function needsYouCopy(
   const items = await refreshActivity().catch(() => [] as ActivityItem[]);
   const item = items.find((entry) => entry.id === focusId);
   if (item) return approvalNotificationCopy(item);
-  if (!action.approvalId) return { title: "Waiting on you", body: action.message };
+  if (!action.approvalId) return { title: "Needs you", body: action.message };
   const agent = action.agentId ? agents.find((a) => a.id === action.agentId) : undefined;
   return { title: `${agent ? agentDisplayName(agent) : "An agent"} needs your approval`, body: action.message };
 }

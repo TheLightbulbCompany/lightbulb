@@ -43,7 +43,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
-      <button type="button" className="workspace-rail__search" aria-label="Search channels, tasks, files and messages" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
+      <button type="button" className="workspace-rail__search" aria-label="Search channels, threads, files and messages" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
       {/* Hold to talk to the assistant, from every place (voice spec §5: owner mode, the Router in the DM). The rail,

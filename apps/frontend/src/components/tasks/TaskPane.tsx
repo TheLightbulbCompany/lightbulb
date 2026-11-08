@@ -26,9 +26,9 @@ import { sendToTask, useShowSteered } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
-  label: "Task result", title: "Result",
-  empty: "Each step of this task shows here as it happens.",
-  unavailable: "This task's progress isn't available.", full: "This task's progress is full.", ended: "This task is closed.",
+  label: "Thread result", title: "Result",
+  empty: "Each step of this thread shows here as it happens.",
+  unavailable: "This thread's progress isn't available.", full: "This thread's progress is full.", ended: "This thread is closed.",
 };
 
 
@@ -64,16 +64,16 @@ export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
   // then its lifecycle buttons at the right (W11-2). The body never repeats them; while it runs, the live line under
   // the header ticks the seconds.
   const who = data ? specialistLabel(data.task.specialist, agentNames) : null;
-  return <aside className="room-context" aria-label="Task" data-task-pane={taskId}
+  return <aside className="room-context" aria-label="Thread" data-task-pane={taskId}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); (onBack ?? onClose)(); } }}>
-    <PaneHeader crumb={onBack ? { label: "Tasks", onBack } : undefined} title={data?.task.title ?? "Task"} headingRef={heading} onClose={onClose}
+    <PaneHeader crumb={onBack ? { label: "Threads", onBack } : undefined} title={data?.task.title ?? "Thread"} headingRef={heading} onClose={onClose}
       meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} />
         {summaryView(data.task, viewerId).word === "Working" && <> · <Ticking since={data.task.activity?.startedAt ?? data.task.updatedAt} /></>}</span>}
       actions={data && <TaskActions task={data.task} viewerId={viewerId} onError={setActionError} />} />
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
-        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This task isn&apos;t available to you.</p>
-        : <p role="alert" className="p-4 text-ui text-muted-foreground">This task couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This thread isn&apos;t available to you.</p>
+        : <p role="alert" className="p-4 text-ui text-muted-foreground">This thread couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
       // A doc opened from this task's Progress comes back here ("‹ Task", Escape).
       : <OutputBackContext.Provider value={`task:${taskId}`}><TaskPaneBody detail={data} viewerId={viewerId} actionError={actionError} /></OutputBackContext.Provider>}
   </aside>;
@@ -213,7 +213,7 @@ function answerLine(q: QuestionView): string {
  *  who and the word, so nothing here repeats them ("Done by X · Done", audit 02 P2; "Growth · working", W12-17). */
 export function TaskHeader({ task, viewerId, error }: { task: TaskSummary; viewerId: string; error: string | null }): ReactElement {
   const view = summaryView(task, viewerId);
-  return <section aria-label="Task status" className="grid gap-1 px-1 empty:hidden">
+  return <section aria-label="Thread status" className="grid gap-1 px-1 empty:hidden">
     {view.reason && <p className="text-ui text-muted-foreground">{view.reason}</p>}
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </section>;
@@ -264,8 +264,8 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
     onError(res.ok ? null : res.message);
   };
   // Stop is asked once, in place of the buttons; a running task is stopped, never resolved under it.
-  if (live && confirmStop) return <span role="group" aria-label="Stop this task?" className="inline-flex items-center gap-2 text-ui">
-    <span className="whitespace-nowrap">Stop this task?</span>
+  if (live && confirmStop) return <span role="group" aria-label="Stop this thread?" className="inline-flex items-center gap-2 text-ui">
+    <span className="whitespace-nowrap">Stop this thread?</span>
     <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
     <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
   </span>;
@@ -284,7 +284,7 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
     <span data-action-slot="close" className="empty:hidden">
       {(!live || task.status === "resolved") && <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" disabled={busy}
         
-        onClick={() => void press(task.status === "resolved" ? "reopen" : "resolve")}>{task.status === "resolved" ? "Reopen" : "Close task"}</Button>}
+        onClick={() => void press(task.status === "resolved" ? "reopen" : "resolve")}>{task.status === "resolved" ? "Reopen" : "Close thread"}</Button>}
     </span>
   </span>;
 }
@@ -303,7 +303,7 @@ function AddNote({ task, followUp }: { task: TaskSummary; followUp: boolean }): 
     setPending(true);
     sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); showSteered(task); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
   }}>
-    <Input aria-label={followUp ? "Follow up on this task" : "Steer this task"} placeholder={followUp ? "Ask a follow-up…" : "Steer this task…"}
+    <Input aria-label={followUp ? "Follow up on this thread" : "Steer this thread"} placeholder={followUp ? "Ask a follow-up…" : "Steer this thread…"}
       value={text} maxLength={4000} disabled={pending}
       onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}

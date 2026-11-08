@@ -155,7 +155,7 @@ function SettingsBody({ room, roomName, section: asked, onSection, canEdit, acti
     {canPause && <div className="project-row">
       <div className="project-row__text">
         <p className="project-row__label">{paused ? "Lightbulb is paused" : "Pause Lightbulb"}</p>
-        <p className="project-row__hint">Lightbulb stops replying and starting tasks or schedules here. People keep chatting. Running tasks finish.</p>
+        <p className="project-row__hint">Lightbulb stops replying and starting threads or schedules here. People keep chatting. Running threads finish.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.pause ?? 0} />
@@ -192,7 +192,7 @@ function SettingsBody({ room, roomName, section: asked, onSection, canEdit, acti
           <p className="project-row__label mr-auto"><label htmlFor={`${id}-topic`}>Instructions</label></p>
           <Saved token={saved.topic ?? 0} />
         </div>
-        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this {noun}.</p>
+        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every thread in this {noun}.</p>
         <textarea id={`${id}-topic`} className="project-textarea" style={{ minHeight: 120 }} aria-describedby={`${id}-topic-hint`}
           value={topic} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={!editable || !onSetTopic}
           placeholder="What this is for, and how Lightbulb should work here"

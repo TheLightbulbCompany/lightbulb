@@ -88,7 +88,7 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
                   <MoreHorizontal size={16} aria-hidden="true" /></button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem onSelect={open}>Open</DropdownMenuItem>
-                  {!row.shared && <DropdownMenuItem onSelect={() => onOpenTask(row.output.taskId)}>Open its task</DropdownMenuItem>}
+                  {!row.shared && <DropdownMenuItem onSelect={() => onOpenTask(row.output.taskId)}>Open its thread</DropdownMenuItem>}
                   <DropdownMenuItem onSelect={() => void copy(row)}>Copy link</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -99,7 +99,7 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
     {hasMore && !loading && !error && <Button type="button" variant="ghost" size="sm" className="justify-self-start" disabled={loadingMore}
       onClick={loadMore}>{loadingMore ? "Loading…" : "Load more"}</Button>}
     {nothingMade && !tipGone && <aside className="project-files__tip" aria-label="Tip">
-      <p>Ask for a doc, an app or a file in any task. It lands here.</p>
+      <p>Ask for a doc, an app or a file in any thread. It lands here.</p>
       <button type="button" className="project-files__tip-close" aria-label="Dismiss tip" onClick={() => {
         setTipGone(true);
         try { window.localStorage.setItem(tipKey(viewerId), "1"); } catch { /* private window: dismissed for this visit */ }

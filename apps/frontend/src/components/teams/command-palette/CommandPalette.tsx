@@ -167,7 +167,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
         />
         <input
           autoFocus
-          placeholder="Search projects, tasks, files and messages"
+          placeholder="Search projects, threads, files and messages"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -207,11 +207,11 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
                 </Group>
               )}
               {found.tasks.length > 0 && (
-                <Group label="Tasks">
+                <Group label="Threads">
                   {found.tasks.map((t) => {
                     const idx = flatItems.findIndex((it) => it.kind === "task" && it.id === t.taskId);
                     return (
-                      <Row key={t.taskId} label={t.title} sublabel="Task" selected={selectedIndex === idx}
+                      <Row key={t.taskId} label={t.title} sublabel="Thread" selected={selectedIndex === idx}
                         onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}

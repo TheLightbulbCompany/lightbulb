@@ -39,7 +39,7 @@ it("confirms deletion with Cancel focused, and never renders deleted content", a
   await user.click(screen.getByRole("menuitem", { name: "Delete message" }));
   const dialog = screen.getByRole("dialog", { name: "Delete message?" });
   expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
-  expect(dialog).toHaveTextContent("does not change tasks already sent to specialists");
+  expect(dialog).toHaveTextContent("does not change threads already sent to specialists");
   await user.click(within(dialog).getByRole("button", { name: "Delete message" }));
   expect(update).toHaveBeenCalledWith("one", expect.objectContaining({ expectedRevision: 0, text: null }));
   rerender(<RoomMessageContent message={{ ...message, deletedAt: "now", messageRevision: 1 }} currentUserId="me" actionable onUpdate={update}>Original</RoomMessageContent>);

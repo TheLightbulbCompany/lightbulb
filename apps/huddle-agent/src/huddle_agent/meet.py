@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections import deque
 
@@ -61,7 +62,12 @@ FRAME = RATE // 50  # 20 ms
 PREROLL_S = 4.0
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
 # ponytail: fixed threshold; tune from a real meeting's levels.
-STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 400}
+STT_VAD = {
+    "type": "server_vad",
+    "threshold": 0.5,
+    "prefix_padding_ms": 600,
+    "silence_duration_ms": 400,
+}
 # STT_VAD's 400 ms silence splits a line at normal pace ("Nova." + "what have we shipped...?", 8 Nov prod Meet): a
 # person's finals are one line until they stay quiet this long after one
 JOIN_S = 1.5
@@ -95,6 +101,25 @@ Do not generate <|SpawnThinking|> when:
 Anything that spends, sends or publishes waits for the inviting member's OK on a card in the chat. Never approve, confirm or promise one by voice."""
 
 
+_ME = r"(?:me|myself|my (?:voice|speech|words|audio))\b"
+_OPT_OUT = re.compile(
+    rf"\b(?:don'?t|do not|not|stop|quit|no longer|no more)\s+(?:transcrib\w*|record\w*)\s+{_ME}"
+    rf"|\b(?:turn off|switch off|stop|disable|pause)\s+(?:the\s+)?(?:transcription|transcript|transcribing|recording)"
+    rf"\s+(?:for|of)\s+{_ME}"
+    r"|\bopt me out\b|\bleave me out of the (?:transcript|transcription|recording)\b",
+    re.I,
+)
+
+
+def opts_out(name: str, text: str) -> bool:
+    """Only a request addressed to the assistant, about this speaker's own voice."""
+    tokens = _tokens(text)
+    while tokens and tokens[0] in {"hey", "hi", "hello", "please"}:
+        tokens = tokens[1:]
+    addressed = any(n and tuple(tokens[: len(n)]) == n for n in (tuple(_tokens(name)), *_LIGHTBULB))
+    return addressed and bool(_OPT_OUT.search(text))
+
+
 class Joiner:
     """One person's consecutive final transcripts as one line: each final waits JOIN_S for the next, and an interim
     (`speaking`: they are talking again) holds it until that next final lands. `on_line(who, text)` gets the whole
@@ -123,6 +148,10 @@ class Joiner:
         if parts := self._parts.pop(who, None):
             self._on_line(who, " ".join(parts))
 
+    def discard(self, who: str) -> None:
+        self._hold(who)
+        self._parts.pop(who, None)
+
     def close(self) -> None:
         for t in self._timers.values():
             t.cancel()
@@ -144,6 +173,7 @@ class Mix(AudioInput):
     def __init__(self) -> None:
         super().__init__(label="meet-mix")
         self._q: dict[str, deque[np.ndarray]] = {}
+        self.excluded: set[str] = set()
         self.ring: deque[rtc.AudioFrame] = deque(maxlen=int(PREROLL_S * RATE / FRAME))
         self._new = asyncio.Event()
         self._read_s, self._attached_at = 0.0, None  # audio read since attach, and when
@@ -154,13 +184,24 @@ class Mix(AudioInput):
 
     def release(self) -> None:
         """Asleep again: the ring rolls, and the next attach starts its own pacing."""
-        self.ring, self._read_s, self._attached_at = deque(self.ring, maxlen=self.ring.maxlen or int(PREROLL_S * RATE / FRAME)), 0.0, None
+        self.ring, self._read_s, self._attached_at = (
+            deque(self.ring, maxlen=self.ring.maxlen or int(PREROLL_S * RATE / FRAME)),
+            0.0,
+            None,
+        )
 
     def push(self, who: str, frame: rtc.AudioFrame) -> None:
+        if who in self.excluded:
+            return
         self._q.setdefault(who, deque(maxlen=3)).append(np.frombuffer(frame.data, dtype=np.int16))  # 60 ms, no backlog
 
     def drop(self, who: str) -> None:
         self._q.pop(who, None)
+
+    def exclude(self, who: str) -> None:
+        self.excluded.add(who)
+        self.drop(who)
+        self.ring.clear()  # already mixed pre-roll cannot be separated by speaker
 
     def tick(self) -> None:
         """One 20 ms frame of the room into the ring."""
@@ -196,7 +237,9 @@ class Mix(AudioInput):
 def names_it(name: str, text: str) -> bool:
     """The line contains the assistant's name (or "Lightbulb") anywhere: what wakes a sleeping voice."""
     tok = _tokens(text)
-    return any(n and tuple(tok[i : i + len(n)]) == n for n in (tuple(_tokens(name)), *_LIGHTBULB) for i in range(len(tok)))
+    return any(
+        n and tuple(tok[i : i + len(n)]) == n for n in (tuple(_tokens(name)), *_LIGHTBULB) for i in range(len(tok))
+    )
 
 
 class Meeting:
@@ -204,9 +247,21 @@ class Meeting:
     delegation posted (`post`) and the team's messages (`events`)."""
 
     def __init__(self, backend, name: str, after: int = 0, quiet=lambda: True, poll_s: float = POLL_S,
-                 open_voice=None, mix: Mix | None = None) -> None:  # fmt: skip
-        self._b, self.name, self.after, self.quiet, self.poll_s = backend, name, after, quiet, poll_s
-        self._open_voice, self.mix = open_voice, mix  # open_voice: async (history) -> LiveSession
+                 open_voice=None, mix: Mix | None = None, not_transcribed=(), on_opt_out=None) -> None:  # fmt: skip
+        self._b, self.name, self.after, self.quiet, self.poll_s = (
+            backend,
+            name,
+            after,
+            quiet,
+            poll_s,
+        )
+        self.not_transcribed = list(not_transcribed)
+        self._privacy_saves: set[asyncio.Task] = set()
+        self.on_opt_out = on_opt_out
+        self._open_voice, self.mix = (
+            open_voice,
+            mix,
+        )  # open_voice: async (history) -> LiveSession
         self._turn = asyncio.Lock()  # a wake waits for a sleep's close in flight
         self._caught_up = asyncio.Event()  # the live reader starts only after this wake's silent catch-up
         self._caught_up.set()
@@ -230,8 +285,48 @@ class Meeting:
     def label(self, identity: str) -> str:
         return self.names.get(identity, "Someone") if identity else "Several people"
 
+    def excluded(self, who: str, name: str | None = None) -> bool:
+        pid, name = (
+            who.rsplit(":", 1)[-1],
+            (name if name is not None else self.names.get(who, "")).strip().casefold(),
+        )
+        return any(
+            (e.get("id") and e["id"] == pid) or (name and (e.get("name") or "").strip().casefold() == name)
+            for e in self.not_transcribed
+        )
+
+    async def _save_opt_out(self, body: dict) -> None:
+        try:
+            await self._b.meet("transcription", body)
+        except Exception:  # noqa: BLE001 -- local exclusion stands if persistence is unavailable
+            logger.exception("meet: opt-out not saved")
+
     def heard(self, who: str, text: str, final: bool) -> None:
-        if not text.strip():
+        if not text.strip() or self.excluded(who):
+            return
+        combined = " ".join([*self.joiner._parts.get(who, []), text])
+        if final and opts_out(self.name, combined):
+            entry = {
+                "id": who.rsplit(":", 1)[-1],
+                "name": self.names.get(who, "")[:200],
+            }
+            self.not_transcribed.append(entry)
+            self.joiner.discard(who)
+            if self.mix is not None:
+                self.mix.exclude(who)
+            if self.on_opt_out:
+                self.on_opt_out(who)
+            task = asyncio.create_task(
+                self._save_opt_out(
+                    {
+                        "participantId": entry["id"],
+                        "name": entry["name"],
+                        "optOut": True,
+                    }
+                )
+            )
+            self._privacy_saves.add(task)
+            task.add_done_callback(self._privacy_saves.discard)
             return
         if self.voice is None and self.opening is None and self._open_voice and names_it(self.name, text):
             self.opening = asyncio.create_task(self._wake())
@@ -242,6 +337,8 @@ class Meeting:
 
     def line(self, who: str, text: str) -> None:
         """A person's whole line (Joiner): the notes and the talk sent with the next ask."""
+        if self.excluded(who):
+            return
         self.last = (time.monotonic(), who)
         self.context.add(self.label(who), text)
         self.lines.append({"mark": len(self.lines), "kind": "person", "name": self.label(who)[:200],
@@ -328,6 +425,8 @@ class Meeting:
                 await self._close()
 
     async def close(self) -> None:
+        if self._privacy_saves:
+            await asyncio.gather(*self._privacy_saves, return_exceptions=True)
         if self.opening is not None:
             await asyncio.gather(self.opening, return_exceptions=True)
         if self.voice is not None:
@@ -422,8 +521,14 @@ async def run(ctx: JobContext, meta: dict) -> None:
     async def open_voice(history: list[tuple[str, str]]):
         voice = await live.start(
             ctx,
-            prompt=prompt({"name": name, "company": meta.get("company") or "the team", "title": info["title"],
-                           "today": time.strftime("%A %Y-%m-%d")}),  # fmt: skip
+            prompt=prompt(
+                {
+                    "name": name,
+                    "company": meta.get("company") or "the team",
+                    "title": info["title"],
+                    "today": time.strftime("%A %Y-%m-%d"),
+                }
+            ),  # fmt: skip
             surface="meet",
             post=meeting.post,
             events=meeting.events,
@@ -441,9 +546,15 @@ async def run(ctx: JobContext, meta: dict) -> None:
             voice.session.on("close", lambda *_: meeting.ended(voice))
         return voice
 
-    meeting = Meeting(backend, name, int(info.get("after") or 0), open_voice=open_voice, mix=mix,
+    meeting = Meeting(backend, name, int(info.get("after") or 0), open_voice=open_voice, mix=mix, not_transcribed=info.get("notTranscribed") or [],
                       quiet=lambda: time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
+
+    def stop_transcribing(who: str) -> None:
+        if (task := readers.pop(who, None)) is not None:
+            task.cancel()
+
+    meeting.on_opt_out = stop_transcribing
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
         model=TRANSCRIBE, use_realtime=True, turn_detection=STT_VAD, language=STT_LANGUAGE,
@@ -460,12 +571,21 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
         async def listen() -> None:
             async for ev in words:
-                if ev.alternatives and ev.type in (stt.SpeechEventType.INTERIM_TRANSCRIPT, stt.SpeechEventType.FINAL_TRANSCRIPT):
-                    meeting.heard(identity, ev.alternatives[0].text, ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT)
+                if ev.alternatives and ev.type in (
+                    stt.SpeechEventType.INTERIM_TRANSCRIPT,
+                    stt.SpeechEventType.FINAL_TRANSCRIPT,
+                ):
+                    meeting.heard(
+                        identity,
+                        ev.alternatives[0].text,
+                        ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT,
+                    )
 
         listener = asyncio.create_task(listen())
         try:
             async for ev in stream:
+                if meeting.excluded(identity):
+                    break
                 if voiced(ev.frame):
                     heard_at["voiced"] = time.monotonic()
                 words.push_frame(ev.frame)
@@ -477,7 +597,11 @@ async def run(ctx: JobContext, meta: dict) -> None:
             await stream.aclose()
 
     def on_track(track: rtc.Track, _pub, p: rtc.RemoteParticipant) -> None:
-        if track.kind == rtc.TrackKind.KIND_AUDIO and p.identity.startswith("meet:"):
+        if (
+            track.kind == rtc.TrackKind.KIND_AUDIO
+            and p.identity.startswith("meet:")
+            and not meeting.excluded(p.identity, p.name)
+        ):
             meeting.person(p.identity, p.name)
             if (old := readers.pop(p.identity, None)) is not None:
                 old.cancel()
@@ -518,7 +642,11 @@ async def run(ctx: JobContext, meta: dict) -> None:
             t.cancel()
         asked = meeting.asked
         summary = f"Asked {len(asked)} time{'s' if len(asked) != 1 else ''}"
-        for step in (meeting.close(), flush(final=True), backend.meet("end", {"asked": asked, "summary": summary})):
+        for step in (
+            meeting.close(),
+            flush(final=True),
+            backend.meet("end", {"asked": asked, "summary": summary}),
+        ):
             try:
                 await step
             except Exception:  # noqa: BLE001 -- one lost write must not cost the others

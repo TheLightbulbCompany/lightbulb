@@ -131,8 +131,7 @@ async def test_ended_meeting_updates_status_only(m):
 
 
 async def test_single_announcement(m):
-    """The Recall join chat is gone (test_meeting_bots), so the chat gets only voice_meet's line, with no opt-out
-    that does not exist."""
+    """The Recall join chat is gone (test_meeting_bots), so the chat gets only voice_meet's line, including its per-person opt-out."""
     from core.services import meeting_bots
 
     assert not hasattr(meeting_bots, "CONSENT_LINE")
@@ -213,12 +212,12 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
 async def test_start_gives_the_first_cursor(m):
     with patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")):
         out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
-    assert out == {"assistantName": "Nova", "title": "Monday", "after": 41}
+    assert out == {"assistantName": "Nova", "title": "Monday", "after": 41, "notTranscribed": []}
 
 
 def test_the_meeting_has_no_tool_routes():
     paths = {r.path.rsplit("/", 1)[-1] for r in voice_meet.router.routes}
-    assert paths == {"start", "ask", "events", "end"}
+    assert paths == {"start", "ask", "events", "end", "transcription"}
 
 
 QROW = {"messageId": "q1", "messageSeq": 8, "author": {"kind": "agent"}, "kind": "question",
@@ -387,3 +386,31 @@ async def test_a_caller_threads_lines_are_in_the_call_rooms_main_chat():
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
         out = await voice_meet.agent_lines(ROOM, 1)
     assert [m["id"] for m in out["messages"]] == ["m2", "m4", "m6"] and out["after"] == 6
+
+
+def _tx(pid: str, name: str, opt_out: bool = True):
+    return voice_meet.TranscriptionIn(ownerId="org_1", roomToken="t", participantId=pid, name=name, optOut=opt_out)
+
+
+async def test_opt_out_persists_by_id_and_name_through_rejoin_and_worker_restart(m):
+    await voice_meet.transcription(ROOM, _tx("12", "Sam"))
+    await voice_meet.transcription(ROOM, _tx("11", "Maya"))
+    assert "nothing more you say is transcribed" in m["say"].await_args.args[1]
+    await voice_meet.transcription(ROOM, _tx("19", "sam"))
+    assert m["meeting"]["notTranscribed"] == [{"id": "11", "name": "Maya"}, {"id": "19", "name": "sam"}]
+    with patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")):
+        started = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+    assert started["notTranscribed"] == m["meeting"]["notTranscribed"]
+    out = await voice_meet.transcription(ROOM, _tx("19", "sam", opt_out=False))
+    assert out["notTranscribed"] == [{"id": "11", "name": "Maya"}]
+
+
+async def test_opt_out_survives_chat_confirmation_failure(m):
+    m["say"].side_effect = RuntimeError("chat unavailable")
+    out = await voice_meet.transcription(ROOM, _tx("12", "Sam"))
+    assert out["notTranscribed"] == [{"id": "12", "name": "Sam"}]
+
+
+async def test_opt_out_needs_a_participant(m):
+    with pytest.raises(Exception):
+        await voice_meet.transcription(ROOM, _tx("", ""))

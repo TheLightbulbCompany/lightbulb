@@ -29,9 +29,10 @@ router = APIRouter(dependencies=[_Worker])
 logger = logging.getLogger(__name__)
 
 ANNOUNCE = (
-    '{name} is in this meeting for {company}. It listens and speaks only when someone says "{name}, ..."; '
+    '{name} is here for {company}. It listens and speaks only when someone says "{name}, ..."; '
     'say "{name}, stop" to cut it off. Anything that spends, sends or publishes waits for the inviting member\'s OK. '
-    "This meeting is recorded and notes are saved to {company}'s workspace."
+    "This meeting is recorded and notes are saved to {company}'s workspace. "
+    'Say "{name}, stop transcribing me" to opt out.'
 )
 
 
@@ -137,7 +138,12 @@ async def start(room_id: str, body: StartIn) -> dict:
                 await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
             except Exception as e:  # noqa: BLE001 -- RecallError or a transport error alike
                 logger.warning("meet room %s: announce failed %s", room_id, getattr(e, "code", type(e).__name__))
-    return {"assistantName": name, "title": meeting.get("title") or "Meeting", "after": await latest_seq(room_id)}
+    return {
+        "assistantName": name,
+        "title": meeting.get("title") or "Meeting",
+        "after": await latest_seq(room_id),
+        "notTranscribed": meeting.get("notTranscribed") or [],
+    }
 
 
 def inviting_member(meeting: dict, members: list[dict]) -> str | None:
@@ -293,3 +299,38 @@ async def with_link(room_id: str, task: dict, line: str) -> str:
     except Exception:  # noqa: BLE001 -- a lost read, CAS race or RecallError: the room line still posts
         logger.warning("meet room %s: result link not said task=%s", room_id, tid, exc_info=True)
     return linked
+
+
+class TranscriptionIn(RoomBody):
+    participantId: str = Field(default="", max_length=128)
+    name: str = Field(default="", max_length=200)
+    optOut: bool = True
+
+
+def _same(entry: dict, pid: str, name: str) -> bool:
+    return bool((pid and entry.get("id") == pid) or (name and entry.get("name", "").lower() == name.lower()))
+
+
+@router.post("/internal/voice/meet/{room_id}/transcription")
+async def transcription(room_id: str, body: TranscriptionIn) -> dict:
+    """A person asked (by voice, addressing the assistant) not to be transcribed, or to be again. Kept on the
+    meeting so a worker restart or a rejoin keeps it; the Meet chat gets one line saying so (best-effort)."""
+    room_id, _meta, meeting = await _meeting(room_id, body)
+    pid, name = body.participantId, body.name.strip()
+    if not (pid or name):
+        raise _problem(400, "no_participant")
+
+    def change(m: dict) -> dict:
+        rest = [e for e in m.get("notTranscribed") or [] if not _same(e, pid, name)]
+        return {"notTranscribed": [*rest, {"id": pid, "name": name}] if body.optOut else rest}
+
+    meeting = await meeting_invites._patch_meeting(room_id, change) or meeting
+    if bot := meeting.get("recallBotId"):
+        who = name or "you"
+        line = (f"OK {who}: nothing more you say is transcribed or heard by the assistant." if body.optOut
+                else f"OK {who}: you are transcribed again.")  # fmt: skip
+        try:
+            await meeting_bots.say(bot, line)
+        except Exception as e:  # noqa: BLE001 -- the opt-out stands without the chat line
+            logger.warning("meet room %s: opt-out chat failed %s", room_id, getattr(e, "code", type(e).__name__))
+    return {"notTranscribed": meeting.get("notTranscribed") or []}

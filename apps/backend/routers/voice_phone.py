@@ -952,7 +952,12 @@ async def _open_thread(ws: str, call_id: str, before_seq: int) -> str | None:
     for row in reversed(await messaging_repo.list_messages_before(call_id, before_seq, 50)):
         for ref in reversed(row.get("taskRefs") or []):
             task = await tasks_repo.get_task(ws, ref.get("taskId") or "")
-            if task and task.get("origin") == "phone_contact" and task.get("status") not in _CLOSED:
+            if (
+                task
+                and task.get("origin") == "phone_contact"
+                and (task.get("audience") or {}).get("roomId") == call_id  # this call's, never another call's
+                and task.get("status") not in _CLOSED
+            ):
                 return task["taskId"]
     return None
 
@@ -983,21 +988,37 @@ class CallEventsIn(BaseModel):
 async def call_events(call_id: str, body: CallEventsIn) -> dict:
     """Lightbulb's messages in the call's room after seq `after` (the Router's ack and replies, the Front desk's
     answers), oldest first: the phone voice says each once (huddle-agent mouth.py)."""
-    _meta, call = await _call(call_id)
+    meta, call = await _call(call_id)
     out = await agent_lines(call_id, body.after)
-    if not call.get("bookings"):
-        out["messages"] = [
-            {**m, "text": NOT_BOOKED} if BOOKED.search(m["text"].replace("\u2019", "'")) else m for m in out["messages"]
-        ]
+    claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
+    if claimed and not call.get("bookings") and not await _has_upcoming(meta["ownerId"], call.get("caller") or ""):
+        for m in claimed:
+            m["text"] = " ".join(
+                NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])
+            )
     return out
 
 
-#: A line that says a booking is made or being made. Only `/book` and `/change` (the Front desk's booking tools)
-#: put one on the call's record; until then such a line is not said (8 Nov prod final smoke: "Vera is booking your
-#: founding team setup for Saturday, November 14 at 12:00 PM" was said, and nothing was ever booked).
-BOOKED = re.compile(
-    r"\b((?<!fully )(?<!already )booked|is booking|are booking|will book|i'?ll book|i'?ve booked|is (now )?confirmed"
-    r"|you'?re (all )?set)\b",
-    re.IGNORECASE,
-)
+#: A line that says a booking is being made right now. Only `/book` and `/change` (the Front desk's booking tools)
+#: put one on the call's record; until then, and when the caller has no upcoming booking, that sentence is not said
+#: (8 Nov prod final smoke: "Vera is booking your founding team setup for Saturday, November 14 at 12:00 PM" was
+#: said, and nothing was ever booked). "You're booked Tuesday at 3 PM" (a booking from an earlier call, being moved)
+#: and "That 2 PM slot is booked" are not claims of this kind.
+BOOKING_NOW = re.compile(r"\b(is booking|are booking|will book|i'?ll book|i'?ve booked|you'?re (all )?set)\b", re.I)
+
+
+def _plain(text: str) -> str:
+    return text.replace("\u2019", "'")
+
+
+async def _has_upcoming(ws: str, caller: str) -> bool:
+    """The caller has a booking from now on (the one `business_profile` lists for them)."""
+    if not caller:
+        return False
+    from core.services import business_profile
+
+    now = f"{_now(await agent_config(ws)):%Y-%m-%dT%H:%M}"
+    return any(b.get("phone") == caller for b in await business_profile._upcoming(ws, now))
+
+
 NOT_BOOKED = "The team is still working on that and hasn't made the booking yet."

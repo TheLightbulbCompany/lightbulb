@@ -645,25 +645,49 @@ async def test_a_callers_line_after_the_thread_closed_goes_to_the_router(client,
     assert enq.await_count == 1
 
 
-async def test_a_booking_is_said_only_once_the_call_has_one(client, router_seat):
+async def test_a_booking_under_way_is_said_only_once_the_call_has_one(client, router_seat):
     """8 Nov prod final smoke: "Vera is booking your founding team setup for Saturday, November 14 at 12:00 PM" was
-    said while nothing was booked. Until the call's record has a booking, a line that says one is replaced."""
+    said while nothing was booked. Until the call's record (or the caller) has a booking, that sentence is replaced;
+    the rest of the line, and lines about bookings that exist, are said as written."""
     call = await _start(client)
     cid, base = call["callId"], f"/api/v1/internal/voice/calls/{call['callId']}"
     lines = [
         "Vera is booking your setup for Saturday at 12:00 PM.",
-        "You\u2019re all set for Saturday at 1 PM.",
+        "Thanks, Taylor. You\u2019re all set for Saturday at 1 PM. Anything else?",
+        "You're booked Tuesday at 3 PM. Which new time works?",  # a booking from an earlier call, being moved
+        "That 2 PM slot is booked. We have 3:00 or 5:00 PM.",
         "We have 1:00, 3:00 or 5:00 PM. Which works? Should I book it?",
-        "Taylor has no bookings, so there was nothing to cancel.",
-        "Saturday is fully booked; Sunday at 2 PM is open.",
     ]
     for i, text in enumerate(lines):
         await _agent_line(cid, text, f"l{i}")
     said = [m["text"] for m in client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]]
-    assert said == [voice_phone.NOT_BOOKED, voice_phone.NOT_BOOKED, *lines[2:]]
+    nb = voice_phone.NOT_BOOKED
+    assert said == [nb, f"Thanks, Taylor. {nb} Anything else?", *lines[2:]]
     await voice_phone._patch_call(cid, lambda c: {"bookings": [{"start": "2026-11-14T13:00"}]})
     said = [m["text"] for m in client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]]
     assert said == lines
+
+
+async def test_a_callers_upcoming_booking_keeps_the_line(client, router_seat):
+    call = await _start(client)
+    cid, base = call["callId"], f"/api/v1/internal/voice/calls/{call['callId']}"
+    await _agent_line(cid, "Vera is booking the move to Sunday.", "l0")
+    with patch.object(voice_phone, "_has_upcoming", AsyncMock(return_value=True)) as has:
+        said = client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]
+    assert said[0]["text"] == "Vera is booking the move to Sunday."
+    has.assert_awaited_once_with("org_1", "+14155550133")
+
+
+async def test_another_calls_caller_thread_is_never_picked(client, router_seat):
+    _, enq = router_seat
+    call = await _start(client)
+    task = {**await _thread_in_call(call["callId"], "idle"), "audience": {"kind": "room", "roomId": "other-call"}}
+    with (
+        patch.object(voice_phone.tasks_repo, "get_task", AsyncMock(return_value=task)),
+        patch.object(voice_phone.admission, "_to_task", AsyncMock()) as to_task,
+    ):
+        client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn", json={"n": 1, "text": "Yes."}, headers=W)
+    assert enq.await_count == 1 and not to_task.called
 
 
 async def test_a_paused_line_sends_no_caller_line_to_the_router(client, router_seat):

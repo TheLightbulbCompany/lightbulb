@@ -38,6 +38,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import passk
+
 HERE = Path(__file__).parent
 OUT = HERE / "out"
 AGENT = os.environ.get("PHONE_QA_AGENT", "lightbulb-phone-qa")
@@ -621,13 +623,13 @@ def write(results: list[dict]) -> Path:
     return path
 
 
-async def main(names: list[str]) -> None:
+async def main(names: list[str], k: int = 3, check: bool = False) -> None:
     os.environ.setdefault("OPENAI_API_KEY", secret("lightbulb/dev/openai_api_key"))
     if os.environ.get("PHONE_ENGINE") == "gemini":
         os.environ.setdefault("GOOGLE_API_KEY", secret("lightbulb/dev/gemini_api_key"))
     lk = livekit_env()
     chosen = [s for s in SCENARIOS if not names or s["name"] in names]
-    chosen = [s for s in chosen for _ in range(s.get("repeat", 1) if names else 1)]  # repeats only when asked by name
+    chosen = [s for s in chosen for _ in range(max(s.get("repeat", 1) if names else 1, k))]  # k runs each: pass^k
     seed()
     worker = start_worker({**lk})  # the keys ride in os.environ
     results = []
@@ -653,6 +655,14 @@ async def main(names: list[str]) -> None:
             worker.wait(30)
         except subprocess.TimeoutExpired:
             worker.kill()
+    by_name: dict[str, list[bool]] = {}
+    for r in results:
+        by_name.setdefault(r["name"], []).append(r["pass"])
+    v = passk.score(by_name, k)
+    print(f"pass^{k}: {v['scenarios']} aggregate {v['rate']:.0%}")
+    print(passk.write_card("phone", v, datetime.now(TZ).strftime("%Y%m%d-%H%M")))
+    if check:
+        sys.exit(passk.exit_code(v))
 
 
 if __name__ == "__main__":
@@ -665,4 +675,6 @@ if __name__ == "__main__":
         server._port = int(os.environ.get("PHONE_QA_PORT", "8083"))
         cli.run_app(server)
     else:
-        asyncio.run(main(sys.argv[1:]))
+        args = sys.argv[1:]
+        k = int(args.pop(args.index("--k") + 1)) if "--k" in args else 3
+        asyncio.run(main([x for x in args if x not in ("--k", "--check")], k, "--check" in args))

@@ -136,3 +136,19 @@ async def bounded(build: Awaitable[str]) -> str:
     except Exception:  # noqa: BLE001 -- a timeout or any failure: the talk starts blank, as before
         logger.warning("voice context: none", exc_info=True)
         return ""
+
+
+EVENT_STATUSES = ("waiting", "idle", "failed")  # where a task needs someone or has finished
+EVENT_PAGE = 50
+
+
+async def events(ws: str, viewer: str, room: str, keep: Keep, since: str) -> list[dict]:
+    """Tasks `keep` takes that changed after `since` and now need `viewer` or are done/failed, oldest first.
+    ponytail: one newest-first page per status each poll (a live talk polls every few seconds); a change pushed
+    on the room's stream is the upgrade if a page ever misses one."""
+    pages = await asyncio.gather(*(tasks_repo.list_tasks_by_status(ws, s, limit=EVENT_PAGE) for s in EVENT_STATUSES))
+    rows = [t for rows, _ in pages for t in rows if (t.get("updatedAt") or "") > since and keep(t)]
+    rows = [t for t in rows if await tasks_access.can_view(t, viewer)]
+    views = await asyncio.gather(*(task_view(ws, t, viewer, room) for t in rows))
+    out = [{**v, "updatedAt": t["updatedAt"]} for t, v in zip(rows, views, strict=True) if v["status"] != "working"]
+    return sorted(out, key=lambda e: e["updatedAt"])

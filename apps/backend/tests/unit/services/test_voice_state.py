@@ -83,3 +83,26 @@ async def test_a_result_line_is_judged_for_everyone_present():
         out = await voice_state.task_view("org_1", {"taskId": "k-1"}, "u", ROOM, ["u", "sam"])
     assert out == {"taskId": "k-1", "title": "Post", "status": "done", "result": "Drafted."}
     assert rl.call_args.args[1:] == (ROOM, ["u", "sam"])
+
+
+async def test_events_are_changes_since_that_need_someone_or_finished():
+    t = lambda i, s, at, room=ROOM: {"taskId": i, "status": s, "updatedAt": at, "audience": {"roomId": room}}  # noqa: E731
+    pages = {
+        "waiting": [t("k-q", "waiting", "2026-11-08T10:05:00Z"), t("k-w", "waiting", "2026-11-08T10:06:00Z")],
+        "idle": [t("k-d", "idle", "2026-11-08T10:04:00Z"), t("k-old", "idle", "2026-11-08T09:00:00Z"),
+                 t("k-x", "idle", "2026-11-08T10:07:00Z", room="other")],
+    }  # fmt: skip
+    status = {"k-q": "needs_you", "k-w": "working", "k-d": "done"}
+
+    def view(ws, row, viewer, room, people=None):
+        return {"taskId": row["taskId"], "title": "T", "status": status[row["taskId"]], "result": ""}
+
+    with (
+        patch.object(voice_state.tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=lambda ws, s, limit: (pages.get(s, []), None))),
+        patch.object(voice_state.tasks_access, "can_view", AsyncMock(return_value=True)),
+        patch.object(voice_state, "task_view", AsyncMock(side_effect=view)),
+    ):  # fmt: skip
+        out = await voice_state.events(
+            "org_1", "u", ROOM, lambda r: r["audience"]["roomId"] == ROOM, "2026-11-08T10:00:00Z"
+        )
+    assert [(e["taskId"], e["status"]) for e in out] == [("k-d", "done"), ("k-q", "needs_you")]  # oldest first

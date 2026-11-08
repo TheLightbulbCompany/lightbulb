@@ -97,7 +97,7 @@ async def test_start_names_the_assistant_its_agent_and_the_routers_state(m):
         out = await voice_owner.start(
             ROOM, voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
         )
-    assert out == {"assistantName": "Nova", "agentId": "a1", "context": "Recent chat..."}
+    assert out == {"assistantName": "Nova", "agentId": "a1", "context": "Recent chat...", "now": out["now"]}
     ws, viewer, room, keep, memory_user, chat_room, people = ctx.await_args.args
     assert (ws, viewer, room, memory_user, chat_room, people) == (
         "org_1",
@@ -262,3 +262,36 @@ async def test_owner_route_auth_like_siblings(m):
     assert ap.await_args.args == ("org_1", "app", {"user_id": "user_maya", "name": "Maya", "where": ""}, "yes",
                                   "order")  # fmt: skip
     assert ap.await_args.kwargs == {"room_id": ROOM}
+
+
+def _ev(speaker="user_maya", since="2026-11-08T10:00:00+00:00"):
+    return voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId=speaker, since=since)
+
+
+async def test_events_since_are_the_talks_tasks_as_the_member(m):
+    with patch.object(voice_owner.voice_state, "events", AsyncMock(return_value=[{"taskId": "k-1"}])) as ev:
+        out = await voice_owner.events(ROOM, _ev())
+    assert out["events"] == [{"taskId": "k-1"}] and out["now"]
+    ws, viewer, room, keep, since = ev.await_args.args
+    assert (ws, viewer, room, since) == ("org_1", "user_maya", ROOM, "2026-11-08T10:00:00+00:00")
+    assert keep({"ownerUserId": "user_maya"}) and not keep({"ownerUserId": "user_sam", "audience": {}})
+
+
+async def test_events_and_stop_are_only_for_the_seated_member(m):
+    for call in (voice_owner.events(ROOM, _ev("user_other")),
+                 voice_owner.stop_work(ROOM, voice_owner.StopIn(ownerId="org_1", roomToken="t",
+                                                                 speakerUserId="user_other", taskId="k-1"))):  # fmt: skip
+        with pytest.raises(HTTPException) as e:
+            await call
+        assert e.value.status_code == 403
+
+
+async def test_stop_work_is_the_task_lists_stop_as_the_member(m):
+    with patch.object(
+        voice_owner.tasks_router, "_act", AsyncMock(return_value={"title": "Post", "status": "working"})
+    ) as act:
+        out = await voice_owner.stop_work(
+            ROOM, voice_owner.StopIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", taskId="k-1")
+        )
+    assert out == {"stopped": True, "title": "Post", "status": "working"}
+    act.assert_awaited_once_with("org_1", "k-1", "stop", "user_maya", None)

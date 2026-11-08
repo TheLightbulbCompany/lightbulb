@@ -175,3 +175,122 @@ async def test_a_respec_mints_a_missing_boot_secret_field_and_restarts_the_sessi
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--dry-run"]) == 0
     prepare.assert_not_awaited()
     assert roll.await_args.kwargs["restart_session"] is False
+
+
+def _bridges(monkeypatch, *uptimes):
+    """Every ``health`` (the idle probe and the rewake) answers idle from a bridge up ``uptimes[i]`` seconds; the
+    last repeats. A bridge up longer than the time since the roll's update started before it: the old spec."""
+    queue, seen = list(uptimes), []
+
+    async def call(owner_id, method, params=None, **kwargs):
+        seen.append(params)
+        up = queue.pop(0) if len(queue) > 1 else queue[0]
+        return {"busy": 0, "uptimeS": up}
+
+    monkeypatch.setattr(container_rpc, "call", call)
+    monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_POLL_S", 0.0)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_microvm_older_than_the_update_is_stopped_too(monkeypatch):
+    """Prod 2026-11-08: the founder's workspace ran on two microVMs (both booted 13:30:24). The roll's stop at
+    13:53:53 took one; the other, still on h-2026.11.8-d99e0f8, answered the rewake and served caller runs on the
+    old image until 14:13:47. A bridge that answers after the stop with an uptime older than the update is the old
+    spec: drain and stop again."""
+    calls = _wire(monkeypatch, current_image="x:old")
+    monkeypatch.setattr(hermes_provisioning, "_session_warm", AsyncMock(return_value=True))
+    seen = _bridges(monkeypatch, 1424.0, 1424.0, 1424.0, 1.0)  # probe, rewake (survivor), probe, rewake (fresh)
+
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert [c[0] for c in calls] == ["update", "ready", "stop", "stop"]
+    assert seen == [{"drain": True}, None, {"drain": True}, None]
+
+
+@pytest.mark.asyncio
+async def test_a_parked_owner_whose_probe_reached_an_old_microvm_is_verified(monkeypatch):
+    """Not warm by the backend's estimate, but the drain probe answered from a bridge older than the update: the
+    stop is checked by a wake, like a warm one."""
+    calls = _wire(monkeypatch, current_image="x:old")
+    seen = _bridges(monkeypatch, 900.0, 2.0)
+
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert seen == [{"drain": True}, None]
+
+
+@pytest.mark.asyncio
+async def test_a_parked_owner_on_a_fresh_microvm_is_not_woken_again(monkeypatch):
+    calls = _wire(monkeypatch, current_image="x:old")
+    seen = _bridges(monkeypatch, 3.0)
+
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert seen == [{"drain": True}]
+
+
+@pytest.mark.asyncio
+async def test_an_old_microvm_that_outlives_the_deadline_fails_the_roll(monkeypatch):
+    """Never "updated" while a bridge older than the update still answers: the script exits 1 for it."""
+    calls = _wire(monkeypatch, current_image="x:old")
+    monkeypatch.setattr(hermes_provisioning, "_session_warm", AsyncMock(return_value=True))
+    _bridges(monkeypatch, 5000.0)
+    monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
+
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
+    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_stop_is_retried_not_reported_updated(monkeypatch):
+    """``StopRuntimeSession`` failing (a throttle, a Conflict while the runtime updates) left the VM running and the
+    roll still said "updated"."""
+    from botocore.exceptions import ClientError
+
+    calls = _wire(monkeypatch, current_image="x:old")
+    _bridges(monkeypatch, 1.0)
+    answers = [ClientError({"Error": {"Code": "ConflictException"}}, "StopRuntimeSession"), None]
+
+    def _stop(arn, sid):
+        calls.append(("stop", arn, sid))
+        if (answer := answers.pop(0)) is not None:
+            raise answer
+
+    monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", _stop)
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert [c[0] for c in calls] == ["update", "ready", "stop", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_never_confirms_fails_the_roll(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    calls = _wire(monkeypatch, current_image="x:old")
+    _bridges(monkeypatch, 1.0)
+    monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
+
+    def _stop(arn, sid):
+        calls.append(("stop", arn, sid))
+        raise ClientError({"Error": {"Code": "ThrottlingException"}}, "StopRuntimeSession")
+
+    monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", _stop)
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
+    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_the_script_names_every_owner_still_busy_at_the_end(monkeypatch, capsys):
+    from scripts import roll_hermes_runtimes
+
+    async def _roll(owner_id, *, dry_run=False, respec=False, restart_session=False):
+        return "updated-session-busy" if owner_id != "org_b" else "updated"
+
+    monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", _roll)
+    monkeypatch.setattr(roll_hermes_runtimes, "prepare_hermes_workspace", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        roll_hermes_runtimes.container_repo,
+        "scan_all",
+        AsyncMock(return_value=[{"owner_id": o, "agentcore_runtime_arn": "arn"} for o in ("org_a", "org_b", "org_c")]),
+    )
+    assert await roll_hermes_runtimes.main(["--all"]) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == "still busy (re-run them): org_a org_c"

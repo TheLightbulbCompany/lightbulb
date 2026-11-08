@@ -151,7 +151,9 @@ async def test_roll_tolerates_no_warm_session(monkeypatch):
     calls = _wire(monkeypatch, current_image="x:old")
 
     def _no_session(arn, sid):
-        raise RuntimeError("Session not found or has been terminated")
+        from botocore.exceptions import ClientError
+
+        raise ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "StopRuntimeSession")
 
     monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", _no_session)
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"

@@ -333,11 +333,12 @@ async def test_superseded_bearers_expire_only_after_a_confirmed_session_stop(mon
 
     world.calls.clear(), world.expired.clear()
     world.runtime_env["AGENTCORE_PROFILE_ID"] = "drifted"
-    monkeypatch.setattr(hp, "_wait_for_idle_session", AsyncMock(return_value=False))
+    monkeypatch.setattr(hp, "_idle_payload", AsyncMock(return_value=None))
     assert await hp.reconcile_runtime("org_a") == "updated-session-busy"
     assert world.expired == []
 
-    monkeypatch.setattr(hp, "_wait_for_idle_session", AsyncMock(return_value=True))
+    monkeypatch.setattr(hp, "_idle_payload", AsyncMock(return_value={}))
+    monkeypatch.setattr(hp, "ROLL_IDLE_WAIT_S", 0.0)  # the unconfirmed stop is retried until the deadline
     world.runtime_env["AGENTCORE_PROFILE_ID"] = "drifted"
 
     def _stop_fails(arn, sid):

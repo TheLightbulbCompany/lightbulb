@@ -32,6 +32,11 @@ MAX_INPUT_BYTES = 200 * 1024
 MAX_RUN_BUDGET_S = 23_400
 
 UNSUPPORTED = (400, {"error": "unsupported_in_this_version"})
+#: A phone caller's run (request principal "caller") is created HERE, never on /internal/v1/runs. The route is
+#: the capability: an image without caller mode answers it 404 not_found before any thread starts, so the
+#: backend refuses the run instead of handing a caller's words to a full-tool Worker on a stale microVM (prod
+#: 2026-11-08: four caller runs on h-2026.11.8-d99e0f8 got terminal, gh, gog and the owner's AWS connection).
+CALLER_RUNS_PATH = "/internal/v1/caller-runs"
 
 
 class Refused(Exception):
@@ -115,11 +120,13 @@ def validate_request(request) -> dict:
     return request
 
 
-def _create(headers: dict, body) -> tuple[int, dict]:
+def _create(headers: dict, body, *, caller: bool = False) -> tuple[int, dict]:
     if not isinstance(body, dict):
         raise _invalid("run_identity")
     identity = validate_identity(body.get("identity"))
     request = validate_request(body.get("request"))
+    if caller and request.get("principal") != "caller":
+        raise _invalid("run_request")
     task_mode.admit(identity)  # a task-kind run latches this VM to its task; anything else on a latched VM is 409
     # The attempt's secret rides only the thread's copy (like localSessionToken): never in RUNS or the
     # S3 run record, which other turns of the workspace can read.
@@ -196,8 +203,8 @@ def _steer(run_id: str, body) -> tuple[int, dict]:
 def handle(path: str, method: str, headers: dict, body) -> tuple[int, dict] | None:
     """None when `path` is not a v1 run route. The caller has checked the gateway token."""
     try:
-        if path == "/internal/v1/runs":
-            return _create(headers, body) if method == "POST" else None
+        if path in ("/internal/v1/runs", CALLER_RUNS_PATH):
+            return _create(headers, body, caller=path == CALLER_RUNS_PATH) if method == "POST" else None
         match = _RUN_RE.fullmatch(path)
         if not match:
             return None

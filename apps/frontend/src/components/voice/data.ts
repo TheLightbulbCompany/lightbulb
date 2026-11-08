@@ -52,6 +52,8 @@ export interface AgentConfig {
   timezone?: string;
   bookingsGo: "google" | "square" | "other" | "own"; otherSystem: string;
   number: string; forwardFrom: string;
+  /** Onboarding step 4, stored by POST /voice/number; Go live reads it. */
+  numberChoice?: { path: "keep" | "new"; areaCode?: string | null; carrier?: string | null; mode?: "missed" | "all" | null };
   handoff: { number: string; onlyOpenHours: boolean };
   meetings: { followUps: boolean; emailNotes: boolean };
   reminders: { dayBefore: boolean; missedCallers: boolean; waitlist: boolean };

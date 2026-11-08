@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
-from core.services import voice_onboarding
+from core.services import voice_onboarding, voice_outbound
 
 router = APIRouter()
 
@@ -158,6 +158,22 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
             raise HTTPException(status_code=409, detail={"code": "number_unavailable", "reason": str(exc)}) from None
     await messaging_repo.put_voice_agent(ws, body.config, auth.user_id)
     return {"config": body.config}
+
+
+class ForwardCheckIn(BaseModel):
+    forwardFrom: str = Field(default="", max_length=40)
+
+
+@router.post("/voice/forward-check")
+async def forward_check(body: ForwardCheckIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Onboarding "Keep my number": ring the business line once; the page polls GET /voice/agent for forwardingOk.
+    `forwardFrom` is the line the owner just typed (step 4 saves only on Continue); it is kept on the document."""
+    require_org_admin(auth)
+    ws = resolve_owner_id(auth)
+    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    if body and body.forwardFrom:
+        cfg["forwardFrom"] = body.forwardFrom
+    return await voice_outbound.forward_check(ws, cfg)
 
 
 class DraftIn(BaseModel):

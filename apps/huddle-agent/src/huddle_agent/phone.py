@@ -27,10 +27,8 @@ import time
 from typing import Literal
 
 import httpx
-from livekit import api, rtc
+from livekit import api
 from livekit.agents import (
-    Agent,
-    inference,
     AgentServer,
     AgentSession,
     JobContext,
@@ -39,11 +37,12 @@ from livekit.agents import (
     room_io,
 )
 from livekit.plugins import google, noise_cancellation, openai
+from openai.types.beta.realtime.session import TurnDetection
 
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import Context, Mouth, check_said, result_instructions
+from huddle_agent.mouth import Mouth, Talker
 
 logger = logging.getLogger("phone")
 # One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
@@ -78,6 +77,9 @@ OFFER_MESSAGE = (
     "The answer is taking a while. In one short sentence, offer to take a message so the team can call them back, "
     "or they can keep holding. Add no facts."
 )
+
+# Server-side turns on silence (developers.openai.com/api/docs/guides/realtime-vad): talking over the voice stops it.
+SERVER_TURNS = TurnDetection(type="server_vad", silence_duration_ms=500, create_response=True, interrupt_response=True)
 
 # The opening is the model's own words (founder, 8 Nov): it must name the assistant, say it is an AI assistant and
 # that the call is recorded. The owner's greeting is its style, not a script. DisclosureGuard checks the result.
@@ -196,7 +198,7 @@ def say_disclosure(session, line: str) -> None:
     """One-shot reply with that exact line, in the wording that made Gemini speak verbatim (the greeting tests).
     Gemini Live can't take a turn back out of its history, so the instruction says it is one-time."""
     logger.info("phone: first line lacked the disclosure; saying it once")
-    session.generate_reply(
+    return session.generate_reply(
         instructions=f'The disclosure was missed. Say exactly this, word for word, and nothing else: "{line}" '
         "This is a one-time line: do not say it again later in the call."
     )
@@ -207,7 +209,7 @@ def greet(session) -> None:
     greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov).
     Not interruptible, as in LiveKit's greeting example (`allow_interruptions=False`): a caller's "hi" over it cut the
     disclosure off (8 Nov evals). Gemini's server-side turns ignore the flag (LiveKit logs a warning)."""
-    session.generate_reply(allow_interruptions=False)
+    return session.generate_reply(allow_interruptions=False)
 
 
 class Backend:
@@ -302,11 +304,14 @@ class Turns:
             await asyncio.gather(self._last, return_exceptions=True)
 
 
-class Receptionist(Agent):
-    """The talker: no tool but `delegate`."""
+class Receptionist(Talker):
+    """The talker: no tool but `delegate`. Talker (mouth.py) holds its rules in code: an undelegated answer is cut
+    and delegated, a result that adds a number or name is said again word for word."""
+
+    where = "phone"
 
     def __init__(self, backend: Backend, info: dict, transfer, hold: Hold | None = None) -> None:
-        super().__init__(instructions=INSTRUCTIONS.format(**{
+        super().__init__(INSTRUCTIONS.format(**{
             "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
             "greeting": info["greeting"],
             "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
@@ -317,25 +322,32 @@ class Receptionist(Agent):
             ),
         }))  # fmt: skip
         self._b, self._transfer, self._live = backend, transfer, info.get("mode") != "message_only"
-        self.turns, self.context, self.hold = Turns(backend), Context(), hold
+        self.allow = tuple(n for n in (info["assistantName"], info["businessName"], info.get("callerName")) if n)
+        self.turns, self.hold = Turns(backend), hold
         self.did: list[str] = []  # what the call did itself, the record's summary (the Front desk adds its steps)
 
     @function_tool(description=DELEGATE_DOC)
     async def delegate(
         self, request: str, kind: Literal["ask", "person", "message"] = "ask", name: str = ""
     ) -> dict:
-        if kind == "person":
-            return await self._hand_off()
-        if kind == "message":  # the existing take-message path: always open, paused or not
-            self.did.append(f"Message: {request[:120]}")
+        if kind != "ask":
+            self.asked = True  # the talker's reply to a hand-off or a message is not an undelegated answer
+            if kind == "person":
+                return await self._hand_off()
+            self.did.append(f"Message: {request[:120]}")  # the existing take-message path: always open
             return await self._b.post("message", {"text": request, "name": name, "callbackNumber": ""})
         if not self._live:
+            self.asked = True
             return {"error": "not_allowed", "say": "offer to take a message"}
-        # a task of its own: an interruption cancels the talker's reply, never the post
+        return self.tool_delegate(request)
+
+    def post(self, request: str) -> None:
+        """Talker's send: a task of its own, so an interruption cancels the talker's reply, never the post."""
+        if not self._live:
+            return  # a paused line only takes messages
         self.turns.add(self.context.take(request))
         if self.hold:
             self.hold.start()
-        return {"sent": True}
 
     async def _hand_off(self) -> dict:
         """Hand the caller to a person at the business. If none is available, offer to take a message."""
@@ -419,14 +431,11 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(
         user_away_timeout=AWAY_S,
         **(
-            # Client-side turns (docs.livekit.io/agents/logic/turns): LiveKit's VAD and audio end-of-turn model
-            # decide when the caller is done, and adaptive interruption ignores "mm-hm". The plugin's default
-            # semantic_vad took 5-7 s to answer (book eval, 7 Nov). Gemini keeps its own turn-taking.
-            dict(
-                llm=openai.realtime.RealtimeModel(model=MODEL, voice=VOICE, turn_detection=None),
-                vad=inference.VAD(),
-                turn_handling={"turn_detection": inference.TurnDetector(), "interruption": {"mode": "adaptive"}},
-            )
+            # vad=None (as owner.py): user_state comes from the realtime model's own speech_started/stopped, so
+            # speaking -> listening is the end of the turn it answers, before its transcript (Talker.turn_ended
+            # depends on that order). server_vad, not semantic_vad: the plugin's semantic_vad took 5-7 s to answer
+            # (book eval, 7 Nov). Gemini keeps its own turn-taking.
+            dict(llm=openai.realtime.RealtimeModel(model=MODEL, voice=VOICE, turn_detection=SERVER_TURNS), vad=None)
             if OPENAI
             else dict(llm=google.realtime.RealtimeModel(model=MODEL, voice=VOICE, api_version="v1beta"))
         ),
@@ -436,7 +445,7 @@ async def entrypoint(ctx: JobContext) -> None:
     t0 = time.time()
     guard = DisclosureGuard(
         info["assistantName"],
-        lambda line: say_disclosure(session, line),
+        lambda line: agent.unchecked(say_disclosure(session, line)),
     )
 
     @session.on("conversation_item_added")
@@ -455,8 +464,10 @@ async def entrypoint(ctx: JobContext) -> None:
                 }
             )
             guard.seen(items)
-            if ev.item.role in ("user", "assistant") and not ev.item.interrupted:
-                agent.context.add("Caller" if ev.item.role == "user" else info["assistantName"], text)
+            if ev.item.role == "user":
+                agent.heard("Caller", text)
+            elif ev.item.role == "assistant" and not ev.item.interrupted:
+                agent.context.add(info["assistantName"], text)
 
     @session.on("agent_state_changed")
     def _state(ev) -> None:
@@ -493,7 +504,9 @@ async def entrypoint(ctx: JobContext) -> None:
         stayed open, billing Gemini, until the 20-minute cap)."""
         await asyncio.sleep(AWAY_S)
         try:
-            await asyncio.wait_for(session.generate_reply(instructions=SILENT_BYE), 10)
+            bye = session.generate_reply(instructions=SILENT_BYE)
+            agent.unchecked(bye)
+            await asyncio.wait_for(bye, 10)
         except Exception:  # noqa: BLE001 -- a lost goodbye must not keep the line open
             logger.warning(
                 "phone %s: silent goodbye failed", backend.call_id, exc_info=True
@@ -511,29 +524,23 @@ async def entrypoint(ctx: JobContext) -> None:
             asyncio.get_running_loop().call_later(hold.left() + 0.1, still_away)
             return
         if ev.new_state == "away" and not silent:
-            session.generate_reply(instructions=STILL_THERE)
+            agent.unchecked(session.generate_reply(instructions=STILL_THERE))
             silent.append(asyncio.create_task(hang_up_silent()))
         elif ev.new_state != "away" and silent:
             silent.pop().cancel()
 
-    limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up))
+    session.on("user_state_changed", lambda ev: ev.old_state == "speaking" and agent.turn_ended())
+
+    limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up, agent.unchecked))
 
     def idle() -> bool:
         return session.user_state != "speaking" and session.agent_state not in ("speaking", "thinking")
 
     def hold_line(line: str) -> None:
         if session.user_state != "speaking":  # the caller talking over the wait is answered, not held
-            session.generate_reply(instructions=line)
+            agent.unchecked(session.generate_reply(instructions=line))  # a holding line, never an answer
 
     hold_lines.append(hold_line)
-    allow = (info["assistantName"], info["businessName"], info.get("callerName") or "")
-
-    def say(texts: list[str]) -> None:
-        speech = session.generate_reply(instructions=result_instructions(texts))
-        speech.add_done_callback(lambda h: check_said(
-            " ".join(t for i in h.chat_items if getattr(i, "role", None) == "assistant"
-                     and (t := getattr(i, "text_content", None))), texts, allow, "phone"))  # fmt: skip
-
     async def fetch(after: int, _handled: int) -> dict:
         out = await backend.post("events", {"after": after})
         if out.get("error"):
@@ -546,7 +553,7 @@ async def entrypoint(ctx: JobContext) -> None:
             await mouth.poll()
             if mouth.pending:
                 hold.answered()  # the team spoke: no more holding lines for this ask
-            mouth.speak(say, ready=idle(), live=True)
+            mouth.speak(agent.say, ready=idle(), live=True)
 
     reports = asyncio.create_task(speak_loop(Mouth(fetch, int(info.get("after") or 0))))
 
@@ -585,7 +592,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    greet(session)
+    agent.unchecked(greet(session))  # the opening: DisclosureGuard judges it
 
 
 if __name__ == "__main__":

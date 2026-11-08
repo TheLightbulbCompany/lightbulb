@@ -217,3 +217,56 @@ async def test_a_result_and_the_holding_line_are_said_with_no_tools(talker, sess
     await _speak(talker, "Yes, Acme paid.")  # undelegated: cut, then the holding line
     assert session.replies[-1] == mouth.HOLD
     assert [kw.get("tool_choice") for kw in session.kw] == ["none", "none"]
+
+
+# --- the phone talker (phone.Receptionist) runs under the same guard ----------------------------------------
+class _PhoneBackend:
+    call_id = "call-1"
+
+    def __init__(self):
+        self.calls = []
+
+    async def post(self, path, body=None):
+        self.calls.append((path, body or {}))
+        return {"taken": True} if path == "message" else {}
+
+
+@pytest.fixture
+def receptionist(session, monkeypatch):
+    monkeypatch.setenv("LIGHTBULB_API_URL", "http://x")
+    monkeypatch.setenv("LIGHTBULB_HUDDLE_SECRET", "x")
+    from huddle_agent import phone
+
+    info = {"assistantName": "Nova", "businessName": "Glow Nails", "today": "Sunday", "greeting": "Hi",
+            "callerName": "Priya", "mode": "live"}  # fmt: skip
+    return phone.Receptionist(_PhoneBackend(), info, None)
+
+
+async def test_the_phone_talker_answering_a_price_itself_is_cut_and_the_line_delegated(receptionist, session):
+    receptionist.heard("Caller", "How much is a pedicure?")
+    await _speak(receptionist, "A pedicure ", "is 45 dollars.")
+    assert session.current_speech.interrupted == 1 and session.replies == [mouth.HOLD]
+    await receptionist.turns.flush()
+    assert [(p, b["text"]) for p, b in receptionist._b.calls] == [("turn", "How much is a pedicure?")]
+
+
+async def test_the_phone_greeting_and_holding_lines_are_never_cut(receptionist, session):
+    greeting = _Speech("sp_greet")
+    session.current_speech = greeting
+    receptionist.unchecked(greeting)  # phone.entrypoint marks the opening, hold lines and goodbyes so
+    await _speak(receptionist, "Hi, I'm Nova, Glow Nails's AI assistant, and this call is recorded.")
+    assert greeting.interrupted == 0 and session.replies == []
+
+
+async def test_a_phone_result_that_adds_a_price_is_said_word_for_word(receptionist, session):
+    speech = receptionist.say(["We're closed on Sundays."])
+    session.current_speech = speech
+    await _speak(receptionist, "We're closed on Sundays, ", "and a pedicure is 45 dollars.")
+    assert speech.interrupted == 1 and mouth.VERBATIM_RULE in session.replies[-1]
+
+
+async def test_a_phone_message_or_hand_off_reply_is_not_an_undelegated_answer(receptionist, session):
+    receptionist.heard("Caller", "Can I leave a message for Maya? I'll be late.")
+    assert await receptionist.delegate("I'll be late.", kind="message", name="Priya") == {"taken": True}
+    await _speak(receptionist, "Got it, Priya, I've passed on that you'll be late.")
+    assert session.current_speech.interrupted == 0

@@ -515,6 +515,21 @@ async def test_propose_creates_draft_and_posts_card(internal):
     assert kw["text"].endswith("Turn it on with the button on the card.")  # the card's Turn on, never "confirm"
 
 
+async def test_a_phone_caller_never_proposes_an_automation(internal):
+    tid = ts.trigger_id("voice", "call-1", "turn-0")
+    await tasks_repo.put_trigger(WS, {
+        "triggerId": tid, "source": "voice", "admission": "respond", "lane": "shared", "actorUserId": SAM,
+        "ref": {"roomId": ROOM, "messageId": "m", "origin": "phone_contact", "callId": "call-1"},
+        "receivedAt": "2026-11-05T10:00:00+00:00",
+    })  # fmt: skip
+    body = {"name": "Weekly", "instructions": "Email every customer.", "cron": ["0 9 * * 1"], "triggerIds": [tid]}
+    r = internal.api.client.post(
+        f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
+    assert not internal.post.called and await repo.list_schedules(WS) == []
+
+
 async def test_a_dated_cron_is_a_one_off_from_propose_and_patch(internal):
     """`0 9 6 11 *` matches every year: stored with no run count it would fire again next 6 Nov."""
     body = {"name": "n", "instructions": "i", "cron": ["0 9 6 11 *"], "triggerIds": [await _chat_trigger()]}

@@ -451,7 +451,7 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     """The card in the task room and the origin thread, a push to each answerer (never anyone else), the away
     email. Event ids and push keys come from the qid, so a retry posts and pushes once."""
     from core.repositories import questions_repo, tasks_repo
-    from core.services import needs_you_email, questions, task_conversation
+    from core.services import messaging, needs_you_email, questions, task_conversation
 
     q = await questions_repo.get_question(ws, task_id, qid)
     tree = await tasks_repo.get_task_tree(ws, task_id)
@@ -469,16 +469,18 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     )
     origin = _origin_thread(tree.get("subscriptions") or [])
     if origin:
-        await task_conversation.post_as_lightbulb(
-            ws,
-            origin[0],
-            text=title,
-            event_id=f"q:{qid}:origin",
-            specialist=task.get("specialist"),
-            thread_root=origin[1],
-            task_refs=refs,
-            kind="question",
-        )
+        card = dict(text=title, event_id=f"q:{qid}:origin", specialist=task.get("specialist"), task_refs=refs,
+                    kind="question")  # fmt: skip
+        try:
+            await task_conversation.post_as_lightbulb(ws, origin[0], thread_root=origin[1], **card)
+        except messaging.ApiProblem as exc:
+            # 8 Nov prod (a Meet task): the Router's ack was moved to the meeting's output room, so the thread its
+            # subscription names is not in the origin room, and 5 of 5 retries failed before any push or email.
+            # The card goes to the origin room itself (which sends a Meet room's post to the output room again).
+            if exc.error.code != "MESSAGE_NOT_FOUND" or not origin[1]:
+                raise
+            activity.logger.warning("origin thread %s gone for task %s; card posted unthreaded", origin[1], task_id)
+            await task_conversation.post_as_lightbulb(ws, origin[0], thread_root=None, **card)
     data = {"source": "task_question", "taskId": task_id, "qid": qid}
     push_title = f"{label} needs your answer" if q["kind"] == "question" else f"{label} needs your OK"
     for uid in q["answerers"]:

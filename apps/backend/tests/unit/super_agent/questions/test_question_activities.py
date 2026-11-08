@@ -162,6 +162,28 @@ async def test_relay_question_idempotent_and_only_to_answerers(world, relay):
     assert relay["away"].await_args.args[3] == [ADA]
 
 
+async def test_relay_survives_an_origin_thread_that_is_not_in_the_origin_room(world, relay):
+    """8 Nov prod (task 7f2c3575, a Meet's): the Router's ack went to the meeting's output room, so the origin thread
+    is in another room; relay_question failed 5/5 with MESSAGE_NOT_FOUND and no answerer was pushed or emailed."""
+    from core.services import messaging
+
+    await tasks_repo.subscribe(WS, TASK, "room:00000000-0000-0000-0000-0000000000aa:ack-elsewhere", created_by="router")
+    gone = messaging.ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.")
+
+    async def post(ws, room, **k):
+        if k.get("thread_root"):
+            raise gone
+        return "m1"
+
+    relay["post"].side_effect = post
+    await effects_repo.put_effect(WS, _effect(kind="purchase", operands={"item": "acme.dev"}))
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    await _run(tq.relay_question, WS, TASK, ref.qid)
+    origin = [c for c in relay["post"].await_args_list if c.kwargs["event_id"].endswith(":origin")]
+    assert [c.kwargs["thread_root"] for c in origin] == ["ack-elsewhere", None]  # then the origin room itself
+    assert [c.args[0] for c in relay["push"].await_args_list] == [ADA] and relay["away"].await_count == 1
+
+
 async def test_relay_names_the_specialist_not_its_id(world, relay, monkeypatch):
     """Dev walk 7: the card read "**ee033f05-…** needs your OK to …": the specialist's id, not its name."""
     from core.services import messaging

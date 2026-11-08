@@ -11,6 +11,7 @@ from core.services import business_profile as bp
 from core.services import clerk_admin, voice_booking
 from core.temporal import activities as acts
 from core.temporal import router_prompt
+from routers import voice_phone as vp
 
 CFG = {
     "services": [{"name": "Pedicure", "price": "$45", "minutes": 45}, {"name": "Gel manicure", "price": "$40"}],
@@ -19,15 +20,18 @@ CFG = {
 }
 
 
+_real_busy_across = voice_booking.busy_across
+
+
 @pytest.fixture
 def sources(monkeypatch):
     bp._cache.clear()
     get = AsyncMock(return_value=CFG)
     monkeypatch.setattr(messaging_repo, "get_voice_agent", get)
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Glow Nails"}))
-    monkeypatch.setattr(
-        voice_booking, "free", AsyncMock(return_value=["2026-11-14T09:00", "2026-11-14T09:30", "2026-11-14T14:00"])
-    )
+    monkeypatch.setattr(vp, "_taken", AsyncMock(return_value=[]))
+    monkeypatch.setattr(voice_booking, "busy_across", AsyncMock(return_value=[]))
+    monkeypatch.setattr(vp, "free_slots", lambda *a: ["2026-11-14T09:00", "2026-11-14T09:30", "2026-11-14T14:00"])
     rows = [{"sk": "VOICEBOOK#2099-11-12T15:00", "service": "Pedicure", "phone": "+15550001"},
             {"sk": "VOICEBOOK#2099-11-13T10:00", "service": "Pedicure", "phone": "+15550002"}]  # fmt: skip
     monkeypatch.setattr(bp, "_upcoming", AsyncMock(return_value=rows))
@@ -65,7 +69,7 @@ async def test_a_callers_profile_is_never_cached(sources, monkeypatch):
 
 
 async def test_the_profile_degrades_when_sources_fail(sources, monkeypatch):
-    monkeypatch.setattr(voice_booking, "free", AsyncMock(side_effect=RuntimeError("google down")))
+    monkeypatch.setattr(vp, "_taken", AsyncMock(side_effect=RuntimeError("ddb")))
     monkeypatch.setattr(bp, "_upcoming", AsyncMock(side_effect=RuntimeError("ddb")))
     text = await bp.business_profile("org_x", "+15550001")
     assert "Pedicure $45" in text and "Open start times" not in text and "This caller's" not in text
@@ -81,8 +85,55 @@ async def test_the_profile_never_holds_the_turn_past_its_bound(sources, monkeypa
         await asyncio.sleep(5)
 
     monkeypatch.setattr(bp, "TIMEOUT_S", 0.05)
-    monkeypatch.setattr(clerk_admin, "get_organization", slow)
+    monkeypatch.setattr(messaging_repo, "get_voice_agent", slow)
     assert await bp.business_profile("org_x") == ""
+
+
+async def test_the_facts_and_slots_never_wait_on_google_or_clerk(sources, monkeypatch):
+    """8 Nov prod: an expired Google grant timed the profile out on 18 phone turns in 16 minutes, so the Router had
+    no facts, hours or slots. A slow Google (or Clerk) now costs only its own part: the facts and Nova's own slots
+    still go out inside the bound."""
+
+    async def slow(*_a, **_k):
+        await asyncio.sleep(5)
+
+    bp._names.clear()
+    sources.return_value = CFG | {"bookingsGo": "google"}
+    google = AsyncMock(side_effect=slow)
+    monkeypatch.setattr(clerk_admin, "get_organization", slow)
+    monkeypatch.setattr(voice_booking, "_request", google)
+    monkeypatch.setattr(voice_booking, "busy_across", _real_busy_across)
+    monkeypatch.setattr(bp, "GOOGLE_S", 0.05)
+    monkeypatch.setattr(bp, "ORG_S", 0.05)
+    started = asyncio.get_running_loop().time()
+    text = await bp.business_profile("org_x", "+15550001")
+    assert asyncio.get_running_loop().time() - started < 1
+    assert "Pedicure $45" in text and "$50 deposit" in text and "Business: not named" in text
+    assert "9:00 AM–9:30 AM, 2:00 PM" in text  # Nova's own slots: hours minus the workspace's bookings
+    assert google.await_count == 1  # Google was asked once for the week, and not waited for
+
+
+async def test_googles_busy_blocks_are_one_bounded_freebusy_for_the_week(monkeypatch):
+    calls = []
+
+    async def answer(ws, method, url, body):
+        calls.append(body)
+        return {"calendars": {"primary": {"busy": [{"start": "2026-11-14T14:00:00Z", "end": "2026-11-14T15:00:00Z"}]}}}
+
+    monkeypatch.setattr(voice_booking, "_request", answer)
+    cfg = {"bookingsGo": "google", "timezone": "America/New_York",
+           "hours": {d: {"open": "09:00", "close": "17:00"} for d in vp._DAYS}}  # fmt: skip
+    got = await _real_busy_across("org_x", cfg, ["2026-11-14", "2026-11-15"], 1.0)
+    assert len(calls) == 1  # one request for the whole week, not one per day
+    assert calls[0]["timeMin"].startswith("2026-11-14T09:00") and calls[0]["timeMax"].startswith("2026-11-15T17:00")
+    assert [(s.hour, e.hour) for s, e in got] == [(9, 10)]  # 14:00Z is 9 AM in New York
+    assert await _real_busy_across("org_x", {**cfg, "bookingsGo": "nova"}, ["2026-11-14"], 1.0) == []
+
+    async def refused(*_a):
+        raise ValueError("google: no exportable grant in the workspace keyring")
+
+    monkeypatch.setattr(voice_booking, "_request", refused)
+    assert await _real_busy_across("org_x", cfg, ["2026-11-14"], 1.0) == []  # Nova's own slots, not none
 
 
 def test_the_batch_fences_the_profile_as_data_and_the_rule_lets_the_router_answer_from_it():

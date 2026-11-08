@@ -74,7 +74,6 @@ IMPORTERS = {
     "core/services/session_chat.py",
     "core/services/text_lines.py",
     "core/services/update_service.py",
-    "core/services/voice_calls.py",
     "core/services/website_logins.py",
     "core/services/week4_active.py",
     "core/services/workspace_name.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)

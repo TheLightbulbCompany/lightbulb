@@ -12,7 +12,8 @@ import logging
 import threading
 import time
 
-from bridge import OWNER, turn
+import bridge
+from bridge import turn
 
 log = logging.getLogger("bridge")
 
@@ -112,7 +113,7 @@ def flush_once() -> None:
         _pending.clear()
     for session_key, events in batches:
         for i in range(0, len(events), MAX_BATCH):
-            status = turn._post_backend(f"subagents/{OWNER}/events",
+            status = turn._post_backend(f"subagents/{bridge.OWNER}/events",
                                         {"sessionKey": session_key, "events": events[i:i + MAX_BATCH]})
             if status != 200:
                 # ponytail: dropped, like a frame; the 5 s snapshot heals the client.

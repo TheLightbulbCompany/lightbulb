@@ -6,6 +6,7 @@ broker refreshes only when the presented hash is the current token (the backend'
 VM never spends a real refresh token. Runs Hermes's real pool code in the pinned image; only the
 bridge's HTTP POST is replaced."""
 
+import bridge
 import base64
 import hashlib
 import json
@@ -42,7 +43,7 @@ def fake_post(path, body, timeout, *, api, hook_token):
 
 
 credentials._post = fake_post
-credentials.API, credentials.OWNER, credentials.HOOK_TOKEN = "https://api.invalid", "org_smoke", "hook"
+credentials.API, bridge.OWNER, bridge.HOOK_TOKEN = "https://api.invalid", "org_smoke", "hook"
 with tempfile.TemporaryDirectory() as root:
     os.environ["HERMES_HOME"] = root
     sync.HOME = Path(root)

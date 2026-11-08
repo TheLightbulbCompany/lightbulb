@@ -151,4 +151,5 @@ async def test_no_other_module_reads_network_key():
         for p in root.rglob("*.py")
         if not {"tests", ".venv"} & set(p.relative_to(root).parts) and "networkKey" in p.read_text()
     )
-    assert readers == ["core/services/agentcore_runtime.py"]
+    # runtime_transport only forwards it, on the invoke (the shared runtime's boot header).
+    assert readers == ["core/services/agentcore_runtime.py", "core/services/runtime_transport.py"]

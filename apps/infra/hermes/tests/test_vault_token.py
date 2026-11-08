@@ -12,7 +12,7 @@ def test_an_authorized_invoke_hands_the_bridge_its_vault_token(monkeypatch):
     assert server.handle_plugin("/plugins/lightbulb-channel/nope", "POST", unauth, {})[0] == 401
     assert bridge.VAULT_TOKEN == ""
 
-    auth = {"authorization": f"Bearer {server.GATEWAY_TOKEN}", "x-lightbulb-vault": "vault-1"}
+    auth = {"authorization": f"Bearer {bridge.GATEWAY_TOKEN}", "x-lightbulb-vault": "vault-1"}
     server.handle_plugin("/plugins/lightbulb-channel/nope", "POST", auth, {})
     assert bridge.VAULT_TOKEN == "vault-1"
     assert "vault-1" not in os.environ.values()

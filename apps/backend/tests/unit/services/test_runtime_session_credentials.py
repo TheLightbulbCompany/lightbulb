@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from unittest.mock import patch
 
-from core.billing.bedrock_aip import build_owner_session_policy
+from core.billing.bedrock_aip import browser_arns, build_owner_session_policy
 from core.services import runtime_transport as rt
 
 BUCKET = "lightbulb-dev-owner-state"
@@ -40,10 +40,31 @@ def test_the_session_policy_scopes_memory_to_the_owners_actors_and_namespaces():
     assert keys == ["org_a", "org_a:user_*", "/owners/org_a/", "/owners/org_a:user_*/"]
 
 
+BROWSERS = [
+    "arn:aws:bedrock-agentcore:us-east-1:111122223333:browser-custom/lightbulb_prod_workspace_browser-AbCdEf1234",
+]
+
+
 def test_the_session_policy_fits_stss_inline_limit():
     long_owner = "org_" + "x" * 28  # a real Clerk org id is 31 characters
-    policy = build_owner_session_policy(long_owner, BUCKET + "-111122223333", MEMORY)
+    policy = build_owner_session_policy(long_owner, BUCKET + "-111122223333", MEMORY, BROWSERS)
     assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
+
+
+def test_the_session_policy_gives_the_screen_driver_only_invoke_browser():
+    policy = build_owner_session_policy("org_a", BUCKET, MEMORY, BROWSERS)
+    browser = [st for st in policy["Statement"] if "browser" in json.dumps(st["Resource"])]
+    assert browser == [{"Effect": "Allow", "Action": ["bedrock-agentcore:InvokeBrowser"], "Resource": BROWSERS}]
+
+
+def test_owner_as_credentials_never_reach_owner_bs_prefix_or_memory():
+    """Tenant isolation, as the shared runtime relies on it: A's set names A everywhere, B nowhere."""
+    a = json.dumps(build_owner_session_policy("org_a", BUCKET, MEMORY, BROWSERS))
+    assert "org_b" not in a and f"{BUCKET}/*" not in a
+    b = build_owner_session_policy("org_b", BUCKET, MEMORY, BROWSERS)
+    assert {
+        st["Resource"] for st in b["Statement"] if isinstance(st["Resource"], str) and "/org_" in st["Resource"]
+    } == {f"arn:aws:s3:::{BUCKET}/org_b/*"}
 
 
 class _Sts:
@@ -86,7 +107,8 @@ def test_credentials_are_minted_with_the_owners_session_policy_and_cached(sts):
     assert json.loads(header[rt.SESSION_CREDENTIALS_HEADER])["accessKeyId"] == "ASIA1"
     (call,) = sts.calls
     assert call["RoleArn"] == ROLE and call["DurationSeconds"] == 3600
-    assert json.loads(call["Policy"]) == build_owner_session_policy("org_a", BUCKET, MEMORY)
+    browser = browser_arns("us-east-1", "111122223333")[:1]
+    assert json.loads(call["Policy"]) == build_owner_session_policy("org_a", BUCKET, MEMORY, browser)
     assert rt._session_credentials_header("org_a") == header
     assert len(sts.calls) == 1  # cached until 15 min before expiry
     rt._session_credentials_header("org_b")
@@ -144,3 +166,26 @@ async def test_every_invoke_and_the_wake_carry_the_owners_credentials(sts, monke
         )
     assert len(captured) == 2  # the wake, then the call
     assert all(json.loads(e["headers"][rt.SESSION_CREDENTIALS_HEADER])["sessionToken"] == "token" for e in captured)
+
+
+def test_the_network_seed_is_the_boot_secrets_else_derived_per_row(monkeypatch):
+    """Owners provisioned before the shared runtime keep their member key (the boot secret's); one
+    with no boot secret gets a stable derived one, new with each row (a teardown rotates it)."""
+    from core.config import settings
+    from core.services import agentcore_runtime
+
+    monkeypatch.setattr(settings, "GATE_BEARER_HMAC_KEY", "k" * 32)
+    monkeypatch.setattr("boto3.client", lambda *a, **kw: object())
+    secrets = {"lightbulb/dev/hermes/org_old/boot": {"networkKey": "kept"}}
+    monkeypatch.setattr(agentcore_runtime, "_read_secret", lambda sm, name: secrets.get(name))
+    monkeypatch.setattr(agentcore_runtime, "boot_secret_name", lambda owner: f"lightbulb/dev/hermes/{owner}/boot")
+    assert agentcore_runtime.network_seed_sync("org_old", "row-1") == "kept"
+    new = agentcore_runtime.network_seed_sync("org_new", "row-1")
+    assert (
+        new
+        == agentcore_runtime.network_seed_sync("org_new", "row-1")
+        != agentcore_runtime.network_seed_sync("org_new", "row-2")
+    )
+    import base64
+
+    assert len(base64.b64decode(new)) == 32  # an Ed25519 seed

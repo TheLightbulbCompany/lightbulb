@@ -17,6 +17,7 @@ Lane Q appends its effects and questions routes to this router.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -33,7 +34,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
-from core.services import purchases, questions, task_asks, task_conversation, tasks_access
+from core.services import purchases, questions, runtime_runs, task_asks, task_conversation, tasks_access
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.temporal import activities as acts
@@ -76,6 +77,9 @@ class RunEventBody(BaseModel):
     error: str | None = Field(None, max_length=128)
     usage: dict[str, Any] | None = None
     recent_tools: list[dict[str, Any]] = Field(default_factory=list, alias="recentTools", max_length=50)
+    # The session's scoped AWS credentials end within 15 min (bridge.aws_session_due): a run sends
+    # no invoke while it runs, so this heartbeat is the one chance to hand it a fresh set.
+    credentials_due: bool = Field(False, alias="credentialsDue")
     # Files the Worker's result named (`MEDIA:` lines), already PUT by the task VM to the TASK ROOM's
     # attachment keys; the result post adopts them (an older bridge sends none).
     attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
@@ -89,6 +93,26 @@ class InputBody(BaseModel):
     text: str = Field(max_length=32 * 1024)
     delivery_id: str = Field(alias="deliveryId", min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
     run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+
+
+_REFRESHES: set[asyncio.Task] = set()
+
+
+def _refresh_credentials(owner_id: str, task_id: str, att: dict) -> None:
+    """Poll the run once, in the background: a poll is an invoke on the run's own session, and every
+    invoke carries the backend's current scoped set (``runtime_transport._session_credentials_header``
+    re-mints 15 min before expiry; the bridge keeps the later-expiring set). In the background because
+    the poll may outlast the bridge's 20 s event timeout."""
+
+    async def _poll() -> None:
+        try:
+            await runtime_runs.get_run(owner_id, runtime_runs.RunIdentity.for_attempt(owner_id, task_id, att))
+        except Exception:  # noqa: BLE001 -- the next heartbeat asks again
+            logger.info("credentials refresh poll failed task=%s", task_id, exc_info=True)
+
+    task = asyncio.create_task(_poll())
+    _REFRESHES.add(task)
+    task.add_done_callback(_REFRESHES.discard)
 
 
 def _not_found(exc: RPCError) -> bool:
@@ -131,6 +155,8 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
             )
         if label:
             await _progress_line(owner_id, body.task_id, body.attempt, label)
+        if body.credentials_due:
+            _refresh_credentials(owner_id, body.task_id, att)
         try:
             await handle.heartbeat(body.status)
         except AsyncActivityCancelledError:

@@ -41,7 +41,8 @@ import urllib.request
 import uuid
 from contextvars import ContextVar
 
-from bridge import API, HOOK_TOKEN, OWNER, browser_state, cdp_mux
+import bridge
+from bridge import API, browser_state, cdp_mux
 from bridge.cdp_mux import CLOUD
 
 log = logging.getLogger("bridge.browser_control")
@@ -123,9 +124,9 @@ _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
 
 def _request(path: str, body: dict) -> urllib.request.Request:
     return urllib.request.Request(
-        f"{API}/api/v1/internal/browser/{OWNER}/{path}",
+        f"{API}/api/v1/internal/browser/{bridge.OWNER}/{path}",
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
         method="POST",
     )
 
@@ -856,7 +857,9 @@ def invoke(action: dict) -> dict:
 
     import boto3
 
-    client = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or "us-east-1")
+    # The session's scoped credentials (a shared runtime's execution role has no browser grant).
+    client = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or "us-east-1",
+                          **bridge.aws_session_kwargs())
     (_, out), = client.invoke_browser(**ref, action=action)["result"].items()
     if isinstance(out.get("data"), bytes):
         out = {**out, "data": base64.b64encode(out["data"]).decode()}

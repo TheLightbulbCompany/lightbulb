@@ -1,5 +1,6 @@
 """The 7 h recycle: stop the session at an idle moment before AgentCore's 8 h maxLifetime kills
 it mid-turn (prod 2026-09-25 21:00:04), under a self-expiring hold that refuses new turns."""
+import bridge
 import os
 import shutil
 import time
@@ -48,7 +49,7 @@ def test_the_clock_starts_at_the_first_invoke_not_at_boot(stops):
 def test_an_idle_session_past_the_threshold_asks_for_a_stop_under_a_hold(stops, monkeypatch):
     _aged(monkeypatch, recycle.RECYCLE_AFTER_S + 1)
     assert recycle.check_once() is True
-    assert stops[0] == [f"runtime/{turn.OWNER}/recycle"]
+    assert stops[0] == [f"runtime/{bridge.OWNER}/recycle"]
     assert turn.reserve_turn() is False  # refusing while the stop lands
 
 

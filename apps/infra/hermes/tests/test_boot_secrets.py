@@ -53,8 +53,6 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
 
         assert bridge.HOOK_TOKEN == "boot-hook"
         assert bridge.GATEWAY_TOKEN == "boot-gw"
-        assert turn.HOOK_TOKEN == "boot-hook", "turn.py captured a stale value, not the boot fetch"
-        assert server.GATEWAY_TOKEN == "boot-gw", "server.py captured a stale value, not the boot fetch"
         assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "boot-bearer"
         # An old boot secret's providerSwitchFrozen/providerSwitchGeneration are ignored
         # outright (Task 11): no env export, and turns still admit.

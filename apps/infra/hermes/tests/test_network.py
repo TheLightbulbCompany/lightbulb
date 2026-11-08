@@ -209,7 +209,7 @@ def test_a_pooled_microvm_without_an_invoke_starts_no_engine(net):
     time.sleep(0.2)
     assert net.spawns() == 0
     # The first authorized invoke is what starts it, in the background.
-    assert server.handle_plugin("/x", "POST", {"authorization": f"Bearer {server.GATEWAY_TOKEN}"}, {})[0] == 404
+    assert server.handle_plugin("/x", "POST", {"authorization": f"Bearer {bridge.GATEWAY_TOKEN}"}, {})[0] == 404
     assert _until(lambda: net.spawns() == 1 and network._running())
 
 

@@ -1737,7 +1737,7 @@ describe("ServiceStack — Hermes tenant vending role (#5088)", () => {
       ]);
     });
 
-    test(`${environment}: grants only the owner-data S3 and workspace-memory actions`, () => {
+    test(`${environment}: grants only the owner-data S3, workspace-memory and browser-invoke actions`, () => {
       expect(role.Properties.ManagedPolicyArns).toBeUndefined();
       expect(role.Properties.Policies).toHaveLength(1);
       const statements = role.Properties.Policies[0].PolicyDocument.Statement;
@@ -1756,7 +1756,10 @@ describe("ServiceStack — Hermes tenant vending role (#5088)", () => {
             "bedrock-agentcore:ListMemoryRecords",
           ],
         ],
+        // The screen driver's InvokeBrowser on the backend-started session (bridge browser_control.invoke).
+        ["WorkspaceBrowserInvoke", "Allow", "bedrock-agentcore:InvokeBrowser"],
       ]);
+      expect(JSON.stringify(statements[3].Resource)).toContain(":browser-custom/");
       expect(statements[0].Resource).toBe(`arn:aws:s3:::${bucket}`);
       expect(statements[1].Resource).toBe(`arn:aws:s3:::${bucket}/*`);
       // The one shared workspace memory, never a memory/* wildcard.

@@ -75,14 +75,23 @@ def build_owner_litestream_s3_policy(owner_id: str, bucket: str) -> dict:
     }
 
 
-def build_owner_session_policy(owner_id: str, bucket: str, memory_arn: str = "") -> dict:
+def build_owner_session_policy(owner_id: str, bucket: str, memory_arn: str = "", browsers: list[str] = ()) -> dict:
     """The session policy on one owner's runtime credentials (runtime_transport): only that
     owner's ``<owner>/*`` objects and, with a memory, its own memory events and records. AWS
     intersects it with the vending role, so everything this does not allow is denied. No
-    Sids: an inline session policy is capped at 2,048 characters."""
+    Sids: an inline session policy is capped at 2,048 characters.
+
+    ``browsers`` (``browser_arns``): the screen driver's ``InvokeBrowser`` on the session the
+    backend started (bridge ``browser_control.invoke``), as the per-owner ``owner-browser`` grant
+    has it. That action authorizes on the browser, not a profile, so it is no narrower there
+    either: sessions are found only by id, and only the backend may list them."""
     statements = build_owner_litestream_s3_policy(owner_id, bucket)["Statement"]
     if memory_arn:
         statements += _owner_memory_allows(owner_id, memory_arn)
+    if browsers:
+        statements.append(
+            {"Effect": "Allow", "Action": ["bedrock-agentcore:InvokeBrowser"], "Resource": list(browsers)}
+        )
     return {"Version": "2012-10-17", "Statement": [{k: v for k, v in st.items() if k != "Sid"} for st in statements]}
 
 

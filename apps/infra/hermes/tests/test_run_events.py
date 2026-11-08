@@ -73,7 +73,7 @@ def test_heartbeat_event_every_interval(quiet_turn, monkeypatch, run_events):  #
     monkeypatch.setattr(runs.turn, "durable_run_status", lambda *a, **k: next(statuses))
     monkeypatch.setattr(runs, "HEARTBEAT_EVERY_S", 0.01)
     runs._heartbeats(IDENTITY, Event())
-    assert run_events == [(IDENTITY, {"kind": "heartbeat", "status": "running", "recentTools": [{"name": "web"}]})]
+    assert run_events == [(IDENTITY, {"kind": "heartbeat", "status": "running", "recentTools": [{"name": "web"}], "credentialsDue": True})]
 
 
 def test_terminal_posted_before_the_turn_ends(quiet_turn, threads, monkeypatch, run_events):  # noqa: F811

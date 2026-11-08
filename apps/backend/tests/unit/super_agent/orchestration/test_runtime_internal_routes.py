@@ -140,6 +140,26 @@ async def test_run_event_heartbeat_updates_progress_line(api):
     assert [e[0] for e in api.fake.log] == ["heartbeat", "heartbeat"]
 
 
+async def test_a_heartbeat_due_for_credentials_polls_the_run_so_its_invoke_carries_a_fresh_set(api, monkeypatch):
+    """STS caps a set at 1 h; a run lasts up to 6.5 h and sends no invoke while it runs. A heartbeat
+    saying the set is due gets one poll of that run (an invoke on its own session); one not due, none."""
+    import asyncio
+
+    polled = []
+
+    async def get_run(owner_id, identity):
+        polled.append((owner_id, identity.run_id, identity.task_id))
+
+    monkeypatch.setattr(ri.runtime_runs, "get_run", get_run)
+    tid = await _task()
+    ref = await _running(tid)
+    body = {"runSecret": await _secret(tid), "taskId": tid, "attempt": 1, "kind": "heartbeat", "status": "running"}
+    await api.post(_url(WS, ref.run_id), json=body, headers=H)
+    await api.post(_url(WS, ref.run_id), json={**body, "credentialsDue": True}, headers=H)
+    await asyncio.gather(*ri._REFRESHES)
+    assert polled == [(WS, ref.run_id, tid)]
+
+
 async def test_progress_line_is_plain_words_and_skips_internal_tools(api):
     """Live dev bug (5 Nov): "Working: skill_view". An internal tool posts nothing; the first real one
     posts plain words, once per attempt."""

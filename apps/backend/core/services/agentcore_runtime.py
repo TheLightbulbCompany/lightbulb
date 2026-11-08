@@ -164,23 +164,41 @@ def _read_secret(sm, name: str) -> dict | None:
         return None
 
 
+def network_seed_sync(owner_id: str, row_id: str) -> str | None:
+    """The workspace's network member seed (base64, 32 bytes): the boot secret's ``networkKey``
+    where the owner has one (every owner provisioned before the shared runtime), else derived like
+    ``derive_vault_token`` under its own label -- a shared-runtime owner has no boot secret, and
+    the backend sends this on each invoke (``runtime_transport._boot_header``). None when neither
+    exists. Sync: SecretsManager."""
+    import boto3
+
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    seed = (_read_secret(sm, boot_secret_name(owner_id)) or {}).get("networkKey")
+    if seed:
+        return seed
+    key = settings.GATE_BEARER_HMAC_KEY
+    if not key or not row_id:
+        return None
+    msg = f"lightbulb-network-key:v1:{owner_id}:{row_id}".encode()
+    return base64.b64encode(hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()).decode()
+
+
 async def network_member_key(owner_id: str) -> str | None:
     """The workspace's PUBLIC member key: the engine's key spelling (lowercase base32, no padding,
     of the Ed25519 public key whose seed is ``networkKey`` -- the sidecar's ``identity.key``), so
-    the author of every entry the cloud member signed. None when there is no boot secret or key."""
-    import boto3
+    the author of every entry the cloud member signed. None when there is no seed."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    from core.repositories import container_repo
 
-    def _read() -> str | None:
-        seed = (_read_secret(sm, boot_secret_name(owner_id)) or {}).get("networkKey")
-        if not seed:
-            return None
-        public = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed)).public_key().public_bytes_raw()
-        return base64.b32encode(public).decode().lower().rstrip("=")
-
-    return await run_in_thread(_read)
+    seed = await run_in_thread(network_seed_sync, owner_id, "")  # the boot secret's, when it has one
+    if not seed and settings.GATE_BEARER_HMAC_KEY:
+        row_id = ((await container_repo.get_by_owner_id(owner_id)) or {}).get("id") or ""
+        seed = await run_in_thread(network_seed_sync, owner_id, row_id)
+    if not seed:
+        return None
+    public = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed)).public_key().public_bytes_raw()
+    return base64.b32encode(public).decode().lower().rstrip("=")
 
 
 async def write_boot_secret(

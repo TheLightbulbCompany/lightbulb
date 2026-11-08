@@ -114,7 +114,7 @@ def test_a_completed_answer_nobody_heard_is_posted_into_the_room(monkeypatch):
     """10-02: Forge's answer landed 50 s after hang-up and went nowhere. The closing batch's 202 says
     the call is gone; the room gets the answer as the agent's own message, once per run."""
     posts = _quiet_run(monkeypatch, delivered=False)
-    assert [p[0] for p in posts] == [f"agent-messages/{turn.OWNER}"]
+    assert [p[0] for p in posts] == [f"agent-messages/{bridge.OWNER}"]
     body = posts[0][1]
     assert (body["eventId"], body["roomId"], body["agentId"]) == ("live-late:run-1", ROOM, "agent-1")
     assert body["text"] == 'From the Live call "what\'s on my board?":\n\nThree tasks open; two due today.'

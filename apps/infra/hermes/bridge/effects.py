@@ -22,7 +22,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bridge import API, HOOK_TOKEN, OWNER
+import bridge
+from bridge import API
 
 log = logging.getLogger("bridge")
 
@@ -252,7 +253,7 @@ def _post(path: str, body: dict, *, timeout_s: float = 8.0) -> tuple[int, dict]:
     req = urllib.request.Request(
         f"{API}{path}",
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
         method="POST",
     )
     try:
@@ -329,7 +330,7 @@ class EffectsCallback:
             "idemKey": idem,
         }
         try:
-            status, data = _post(f"/api/v1/internal/runtime/{OWNER}/effects", body)
+            status, data = _post(f"/api/v1/internal/runtime/{bridge.OWNER}/effects", body)
         except Exception as exc:  # noqa: BLE001 -- fail closed, whatever went wrong
             log.warning("effects check failed run=%s: %s", self.run_id, type(exc).__name__)
             return Decision.refuse(UNAVAILABLE)
@@ -365,7 +366,7 @@ class EffectsCallback:
         final = "done" if disposition == "done" or (disposition is None and not _failed(result)) else "unknown"
         body = {"disposition": final, "resultRef": None, "runSecret": self.run_secret, "runId": self.run_id}
         try:
-            status, _ = _post(f"/api/v1/internal/runtime/{OWNER}/effects/{idem}/done", body)
+            status, _ = _post(f"/api/v1/internal/runtime/{bridge.OWNER}/effects/{idem}/done", body)
             if status != 200:
                 log.warning("effect done not recorded run=%s idem=%s status=%s", self.run_id, idem, status)
         except Exception as exc:  # noqa: BLE001 -- the intent row stays; the gate refuses a repeat until a person looks

@@ -9,7 +9,7 @@ import type { RoomMessage, RoomParticipant } from "./types";
 
 export type DetailsTab = "members" | "files" | "about";
 
-const TABS: Array<{ id: DetailsTab; label: string }> = [
+const ALL_TABS: Array<{ id: DetailsTab; label: string }> = [
   { id: "members", label: "Members" }, { id: "files", label: "Files" }, { id: "about", label: "Details" },
 ];
 
@@ -31,6 +31,8 @@ interface RoomDetailsPanelProps {
   // Leave dialog -- explain why Leave isn't offered rather than saying nothing.
   ownerCannotLeave?: boolean;
   members: ReactNode; // the shipped Members section, lifted verbatim from RoomPanel
+  /** The Lightbulb page's own DM with the assistant: no Members tab (nobody to manage). */
+  hideMembers?: boolean;
 }
 
 function messageTime(at: string) {
@@ -51,8 +53,10 @@ export function RoomDetailsPanel({
   onLeaveRoom,
   ownerCannotLeave,
   members,
+  hideMembers = false,
 }: RoomDetailsPanelProps) {
   const id = useId();
+  const TABS = hideMembers ? ALL_TABS.filter((entry) => entry.id !== "members") : ALL_TABS;
   const [confirmLeave, setConfirmLeave] = useState(false);
   const noun = room?.kind === "group-dm" ? "group chat" : "channel";
   const leaveCancel = useRef<HTMLButtonElement>(null);

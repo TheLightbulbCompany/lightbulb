@@ -115,6 +115,21 @@ describe("places", () => {
     openChatPanel("a-1");
     expect(snap()).toMatchObject({ ready: false, main: null, pane: null });
   });
+
+  it("without a shell, the pane still opens (the Lightbulb page draws it), with no URL; the shell starts empty", () => {
+    _resetControllerForTests();
+    openPanel("artifact", { src: "attachment", room: "r1", id: "a1", name: "x.png", type: "image/png" }, { pushUrl: true });
+    expect(snap()).toMatchObject({ ready: false, place: "chat", main: null, pane: { component: "artifact", params: { id: "a1" } } });
+    openPanel("automation", { id: "au1" }, { pushUrl: true });
+    expect(snap().pane).toMatchObject({ component: "automation", params: { id: "au1" } });
+    openTaskPane("t1");
+    expect(snap().pane).toMatchObject({ component: "task", params: { taskId: "t1" } });
+    openPanel("home", {}, { pushUrl: true }); // a place: no place without the shell
+    expect(snap().main).toBeNull();
+    expect(pushSearchParams).not.toHaveBeenCalled();
+    attachShell(() => undefined);
+    expect(snap().pane).toBeNull();
+  });
 });
 
 describe("the conversation", () => {

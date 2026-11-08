@@ -4272,6 +4272,15 @@ def _budget_expired(run_id: str) -> None:
         _interrupt(run_id, agent)
 
 
+def _task_frame_sink(identity: dict):
+    """A Worker run's browser tab, cast live to the room its task came from (the backend names that room's channel
+    in `identity.frames`), so the task's pane there can show it; None (no cast) without one."""
+    frames = identity.get("frames")
+    if not (isinstance(frames, dict) and all(isinstance(frames.get(k), str) and frames[k] for k in ("endpoint", "channel", "roomId"))):
+        return None
+    return FramePublisher(frames["endpoint"], frames["channel"], frames["roomId"], identity["agentId"], identity["runId"], None).browser_frame
+
+
 def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, str | None, str, dict]:
     """Execute an already-rendered prompt in the run's own session, without room re-rendering:
     a Paperclip run's (family "paperclip") or a task's Worker turn (family "task", bridge/runs.py).
@@ -4328,7 +4337,7 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
-    browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, family)
+    browser_lease = browser_control.begin_turn(str(run_id), agent_id, _task_frame_sink(identity), family)
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         env["OPENCLI_CDP_ENDPOINT"] = cdp
     # Same-session Paperclip retries must not replace another active desktop ledger.

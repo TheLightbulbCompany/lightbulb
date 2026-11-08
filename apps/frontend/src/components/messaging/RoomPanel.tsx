@@ -150,6 +150,8 @@ export interface RoomPanelProps {
   onCardReply?: (reply: CardReply) => Promise<void>;
   /** RoomHeader's Live controls; false on the Lightbulb page, where the orb is the voice control. */
   voiceControls?: boolean;
+  /** The Lightbulb page: a DM here is the member's own with the assistant, so no Members tab, Add people or invites. */
+  oneToOne?: boolean;
 }
 
 /** How long a silent ask reads "Lightbulb is reading…" at most: an ask Lightbulb must answer (a reply took ~2 min in the
@@ -336,6 +338,7 @@ function RoomContent({
   onAttachmentUrl,
   onCardReply,
   voiceControls,
+  oneToOne: oneToOnePage = false,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -558,7 +561,8 @@ function RoomContent({
   const showContext = showDetail || !contextCollapsed || requestsShown || filesViewShown || scheduledShown;
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
-  const canAddMembers = !!visibleRoom && !!onAddMember && !visibleRoom.shared;
+  const oneToOne = oneToOnePage && visibleRoom?.kind === "dm";
+  const canAddMembers = !!visibleRoom && !!onAddMember && !visibleRoom.shared && !oneToOne;
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const canManageMembers = visibleRoom?.kind === "channel" && isRoomAdmin;
   // A DM or group chat with Lightbulb is run by its people (founder ruling, 6 Nov 2026): Instructions, icon, Pause,
@@ -921,7 +925,8 @@ function RoomContent({
         onAddPeople={canAddMembers ? openMemberPicker : undefined}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
-        onPatchRoom={onPatchRoom} settingsPeople={membersSection} memoryClient={messagingClient} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
+        oneToOne={oneToOne}
+        onPatchRoom={onPatchRoom} settingsPeople={oneToOne ? undefined : membersSection} memoryClient={messagingClient} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
         // Search, then this project's views: Tasks (its warn dot = something here needs you while the pane
         // is closed), Files and Scheduled. View labels show from 1280 px (messaging.css).
         views={<>
@@ -1007,7 +1012,8 @@ function RoomContent({
     {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
       <PaneHeader title="Details" headingRef={contextHeading} onClose={() => setContextCollapsed(true)} />
-      <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
+      <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={oneToOne && detailsTab === "members" ? "files" : detailsTab}
+        onSelectTab={setDetailsTab} hideMembers={oneToOne}
         participants={participants} actionable={actionable}
         messages={messages} activeRuns={activeRuns} hideActiveWork
         onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined} ownerCannotLeave={ownerCannotLeave}

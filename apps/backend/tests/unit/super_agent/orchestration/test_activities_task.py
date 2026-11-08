@@ -195,6 +195,62 @@ async def test_worker_turn_stores_token_and_goes_async(world):
     assert identity.run_id == ref.run_id and "Pay Acme $40" in request.input
 
 
+async def test_worker_turn_casts_its_browser_to_the_origin_room(world, monkeypatch):
+    # The requester's room gets the run's live browser frames (Lightbulb page, task pane), addressed by the runId the
+    # task's attempts now carry.
+    async def get_room(room_id):
+        return {"roomId": room_id, "deliveryKey": "dk1", "workspaceId": "ws_1"} if room_id == ROOM else None
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
+    monkeypatch.setattr(acts.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.example")
+    tid = await _task()
+    ref = await _attempt(tid)
+    with pytest.raises(activity._CompleteAsyncError):
+        await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    identity, _ = world["runs"][0]
+    assert identity.to_wire()["frames"] == {
+        "endpoint": "https://events.example",
+        "channel": f"/ws/ws_1/rooms/{ROOM}/dk1",
+        "roomId": ROOM,
+    }
+
+
+@pytest.mark.parametrize(("members", "cast"), [(["sam", "guest"], False), (["sam"], True)])
+async def test_a_person_only_tasks_browser_never_reaches_a_room_with_anyone_else(world, monkeypatch, members, cast):
+    # The room's channel reaches every member (a shared room's guests too): a person-only task casts only where its
+    # people are everyone (its own DM), as `_announce` posts its line.
+    async def get_room(room_id):
+        return {"roomId": room_id, "deliveryKey": "dk1", "workspaceId": "ws_1"}
+
+    async def list_members(room_id):
+        return [{"kind": "human", "id": m} for m in members] + [{"kind": "agent", "id": CEO}]
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
+    monkeypatch.setattr(acts.messaging_repo, "list_members", list_members)
+    monkeypatch.setattr(acts.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.example")
+    tid = await _task(audience={"kind": "person", "userIds": ["sam"], "roomId": ROOM})
+    ref = await _attempt(tid)
+    with pytest.raises(activity._CompleteAsyncError):
+        await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    wire = world["runs"][0][0].to_wire()
+    assert ("frames" in wire) is cast
+    if cast:
+        assert wire["frames"]["channel"] == f"/ws/ws_1/rooms/{ROOM}/dk1"
+
+
+async def test_worker_turn_without_a_room_channel_casts_nowhere(world, monkeypatch):
+    async def get_room(room_id):
+        raise RuntimeError("table down")
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
+    monkeypatch.setattr(acts.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.example")
+    tid = await _task()
+    ref = await _attempt(tid)
+    with pytest.raises(activity._CompleteAsyncError):
+        await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    assert "frames" not in world["runs"][0][0].to_wire()
+
+
 async def test_worker_brief_carries_the_requesters_local_time(world, monkeypatch):
     async def tz(user_id):
         assert user_id == "sam"  # the task's requester, not the runtime's UTC clock

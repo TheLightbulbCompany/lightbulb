@@ -58,3 +58,11 @@ async def test_a_cap_of_one_a_dry_run_or_the_whole_fleet_is_refused(wired, argv)
     with pytest.raises(SystemExit):
         await script.main(argv)
     wired.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [["--network-workers", "on"], ["--max-concurrent-turns", "6"]])
+async def test_a_setting_change_restarts_the_session(wired, flag):
+    """On the shared runtime these are boot values a session takes on its first invoke: no env drift."""
+    assert await script.main(["--owner-id", "org_a", *flag]) == 0
+    assert script.roll_runtime_image.await_args.kwargs["restart_session"] is True

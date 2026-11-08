@@ -91,6 +91,7 @@ async def main(argv: list[str] | None = None) -> int:
             parser.error("--max-concurrent-turns needs --owner-id, no --dry-run, and 0 (default) or >= 2")
         await container_repo.update_fields(args.owner_id, {"max_concurrent_turns": args.max_concurrent_turns or None})
 
+    settings_changed = bool(args.network_workers) or args.max_concurrent_turns is not None
     failed, busy = 0, []
     for owner_id in await _targets(args):
         try:
@@ -98,8 +99,10 @@ async def main(argv: list[str] | None = None) -> int:
             # only at cold start, so a change needs the idle
             # stop the roll already does. Idempotent; the same step reconcile_runtime runs.
             boot_changed = False if args.dry_run else await prepare_hermes_workspace(owner_id)
+            # On the shared runtime the turn cap and network workers are boot values the session takes
+            # on its first invoke, not env drift: a change needs the idle restart.
             result = await roll_runtime_image(
-                owner_id, dry_run=args.dry_run, respec=args.respec, restart_session=boot_changed
+                owner_id, dry_run=args.dry_run, respec=args.respec, restart_session=boot_changed or settings_changed
             )
         except Exception as exc:  # noqa: BLE001 -- one owner's failure must not stop the fleet roll
             failed += 1

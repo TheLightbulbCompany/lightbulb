@@ -113,7 +113,9 @@ def runtime_arn(container: dict) -> str | None:
     (``HERMES_SHARED_RUNTIME_ARN``) for any provisioned workspace -- one with its own runtime from
     before, or a ``running`` row -- else the row's own. Session ids stay per owner
     (:func:`session_id_for`), so each workspace still gets its own microVM. The row's own runtime
-    is kept, unused, until the per-owner cleanup; unsetting the setting moves every workspace back."""
+    is kept, unused, until the per-owner cleanup; unsetting the setting moves those workspaces back.
+    A workspace provisioned onto the pool has no runtime of its own: after an unset it reads as
+    unprovisioned (None) until a reconcile (``provision_runner``) gives it one."""
     from core.config import settings
 
     own = container.get("agentcore_runtime_arn")
@@ -122,9 +124,12 @@ def runtime_arn(container: dict) -> str | None:
     return own
 
 
-#: How long past ``warm_until`` :func:`live_arn` still counts a session live on its own runtime, so
-#: one late or missed heartbeat (every ~2 min) cannot send a live run's poll to the pool (RunLost).
-LIVE_GRACE_S = 150
+#: How long past ``warm_until`` :func:`live_arn` still counts a session live on its own runtime. It
+#: must outlast AgentCore's idle timeout, or the pool starts a second microVM for the owner while the
+#: old one is still up: ``warm_until`` can trail the last invoke's by WARM_EXTEND_STEP_S, so the old
+#: VM may live WARM_MARGIN_S + WARM_EXTEND_STEP_S (160 s) past it. Plus 30 s, which also covers a
+#: late room-turn heartbeat (every 30 s); a Worker's (every ~2 min) slides the estimate itself.
+LIVE_GRACE_S = 190
 
 
 def live_arn(container: dict, task_id: str | None = None) -> str | None:

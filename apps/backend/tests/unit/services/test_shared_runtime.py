@@ -177,7 +177,7 @@ async def test_a_missed_heartbeat_inside_the_grace_window_keeps_the_poll_on_its_
     with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: session):
         status = await runtime_runs.get_run("org_a", identity)  # no RunLost
         assert status.status == "running" and sent == [OWN]
-        session["warm_until"] = now - 151  # past the grace window: idle, the pool takes it
+        session["warm_until"] = now - rt.LIVE_GRACE_S - 1  # past the grace window: idle, the pool takes it
         with pytest.raises(runtime_runs.RunLost):
             await runtime_runs.get_run("org_a", identity)
         assert sent == [OWN, SHARED]
@@ -206,3 +206,65 @@ async def test_a_shared_roll_stops_again_while_a_microvm_older_than_the_update_a
     with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: warm):
         assert await hp.roll_runtime_image("org_a") == "updated"
     assert stops == [SHARED, SHARED]
+
+
+@pytest.mark.asyncio
+async def test_a_shared_roll_moves_a_session_still_warm_on_its_own_runtime_onto_the_pool(shared, monkeypatch):
+    """At the first pool deploy, warm sessions are on each workspace's OWN (old-image) runtime: the roll
+    stops that one at idle, so the next invoke starts on the pool."""
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(hp, "_runtime_description", lambda arn: pytest.fail("no pool update to compare"))
+    stops = []
+    monkeypatch.setattr(hp, "_stop_runtime_session", lambda arn, sid: stops.append(arn))
+    monkeypatch.setattr(hp.container_repo, "clear_session", AsyncMock())
+    monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", AsyncMock())
+    monkeypatch.setattr(container_rpc, "call", AsyncMock(return_value={"busy": 0, "uptimeS": 5}))
+    warm = {"warm_until": 10**10, "arn": OWN, "started_at": 1}
+    with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: warm):
+        assert await hp.roll_runtime_image("org_a", dry_run=True) == "would-update"
+        assert await hp.roll_runtime_image("org_a") == "updated"
+    assert stops == [OWN]
+
+
+def test_the_drain_outlasts_agentcores_idle_timeout(shared):
+    """live_arn leaves the own runtime only once its microVM has surely idled out: ``warm_until`` can lag
+    the last invoke by WARM_EXTEND_STEP_S, so warm + grace must pass the last invoke + IDLE_TIMEOUT_S."""
+    from core.services.agentcore_runtime import IDLE_TIMEOUT_S
+
+    worst_warm = IDLE_TIMEOUT_S - rt.WARM_MARGIN_S - rt.WARM_EXTEND_STEP_S  # after the last invoke
+    assert worst_warm + rt.LIVE_GRACE_S > IDLE_TIMEOUT_S
+
+
+def test_the_fleet_grid_reports_a_shared_runtime_workspace(shared, monkeypatch):
+    import asyncio
+
+    from core.services.ops import fleet
+
+    monkeypatch.setattr(
+        fleet.container_repo, "scan_all", AsyncMock(return_value=[{"owner_id": "o", "status": "running"}])
+    )
+    monkeypatch.setattr(fleet, "_display_names", AsyncMock(return_value={}))
+    [cell] = asyncio.run(fleet._build_grid())
+    assert (cell["runtime_arn"], cell["status"]) == (SHARED, "running")
+
+
+@pytest.mark.asyncio
+async def test_a_network_reload_reaches_a_session_still_warm_on_its_own_runtime(shared, monkeypatch):
+    from core.services import network_member
+
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: {"arn": OWN, "warm_until": 10**10}):
+        assert await network_member._session_is_warm("org_a")
+
+
+@pytest.mark.asyncio
+async def test_a_late_teardown_spares_a_reprovisioned_shared_workspace(shared, monkeypatch):
+    """Both incarnations have no ARN on the pool: the row id tells them apart."""
+    monkeypatch.setattr(
+        hp.container_repo, "get_by_owner_id", AsyncMock(return_value={"id": "row-new", "status": "running"})
+    )
+    assert await hp._superseded("org_a", {"id": "row-old"})
+    assert not await hp._superseded("org_a", {"id": "row-new"})
+    assert "status" in hp._TEARDOWN_ROW_KEYS  # the captured row still routes to the pool (runtime_arn)

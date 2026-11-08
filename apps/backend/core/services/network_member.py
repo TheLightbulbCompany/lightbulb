@@ -178,9 +178,10 @@ async def _session_is_warm(owner_id: str) -> bool:
 async def _runtime_arn(owner_id: str) -> str | None:
     from core.repositories import container_repo
 
-    from core.services.runtime_transport import runtime_arn
+    from core.services.runtime_transport import live_arn
 
-    return runtime_arn((await container_repo.get_by_owner_id(owner_id)) or {})
+    # The live one: at the cut-over a session still warm on the workspace's own runtime is there.
+    return await run_in_thread(live_arn, (await container_repo.get_by_owner_id(owner_id)) or {})
 
 
 async def join_network(owner_id: str, ticket: str) -> dict:

@@ -606,11 +606,12 @@ async def _delete_runtime_and_bearer(owner_id: str, container_row: dict) -> None
             logger.warning("hermes teardown: could not revoke gate token for owner=%s", owner_id, exc_info=True)
 
 
-async def _superseded(owner_id: str, arn: str | None) -> bool:
+async def _superseded(owner_id: str, container: dict) -> bool:
     """A new workspace was provisioned under this owner id after the wipe deleted the row: its
-    boot secret carries the old member key over, so every owner-keyed name is now ITS."""
+    boot secret carries the old member key over, so every owner-keyed name is now ITS. The row id
+    tells the incarnations apart on the shared runtime, where neither row carries an ARN."""
     row = await container_repo.get_by_owner_id(owner_id)
-    return bool(row) and row.get("agentcore_runtime_arn") != arn
+    return bool(row) and any(row.get(k) != container.get(k) for k in ("id", "agentcore_runtime_arn"))
 
 
 _runtime_teardowns: set[asyncio.Task] = set()
@@ -621,7 +622,8 @@ FORGET_WINDOW_S = 180
 TEARDOWN_PK = "TEARDOWN#"
 TEARDOWN_DUE_S = 200
 TEARDOWN_TTL_S = 30 * 86400
-_TEARDOWN_ROW_KEYS = ("owner_id", "id", "agentcore_runtime_arn", "gateway_token", "bedrock_gate_token_hash")
+# ``status`` routes an ARN-less (shared-runtime) row to the pool: ``runtime_transport.runtime_arn``.
+_TEARDOWN_ROW_KEYS = ("owner_id", "id", "agentcore_runtime_arn", "status", "gateway_token", "bedrock_gate_token_hash")
 
 
 def _teardown_key(owner_id: str, container: dict) -> dict:
@@ -679,12 +681,11 @@ async def _forget_then_teardown(owner_id: str, container: dict, author: str, *, 
     from core.repositories import messaging_repo
     from core.services import container_rpc
 
-    arn = container.get("agentcore_runtime_arn")
     retry_s = FORGET_RETRY_S
     deadline = time.monotonic() + (FORGET_WINDOW_S if window_s is None else window_s)
     forgot = superseded = False
     while not forgot:
-        if superseded := await _superseded(owner_id, arn):
+        if superseded := await _superseded(owner_id, container):
             break
         try:
             await container_rpc.call(owner_id, "memory.forget_author", {"author": author}, target=container)
@@ -700,7 +701,7 @@ async def _forget_then_teardown(owner_id: str, container: dict, author: str, *, 
                 break
             await asyncio.sleep(retry_s)
     try:
-        if superseded or await _superseded(owner_id, arn):
+        if superseded or await _superseded(owner_id, container):
             await _delete_runtime_and_bearer(owner_id, container)
             logger.warning("owner wipe: owner provisioned again; only the old runtime deleted owner=%s", owner_id)
         else:

@@ -200,7 +200,9 @@ async def _request_agentcore(
     if not arn:
         raise ValueError("agentcore transport requires containers.agentcore_runtime_arn")
     owner_id = container.get("owner_id") or ""
-    vault = _vault_header(container)
+    # Every invoke names its tenant: a shared runtime binds its session to the first one and
+    # refuses any other (bridge.bind_tenant); a per-owner runtime checks it against its own.
+    vault = {**_vault_header(container), **({TENANT_HEADER: owner_id} if owner_id else {})}
     envelope: dict[str, Any] = {"path": path, "method": method}
     if headers or vault:
         envelope["headers"] = {**(headers or {}), **vault}
@@ -280,6 +282,7 @@ async def _request_agentcore(
 
 
 VAULT_HEADER = "X-Lightbulb-Vault"
+TENANT_HEADER = "X-Lightbulb-Tenant"
 
 
 def _vault_header(container: dict) -> dict[str, str]:

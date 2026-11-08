@@ -20,7 +20,7 @@ import asyncio
 import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -101,18 +101,16 @@ async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 
 async def month_seconds(ws: str, tz_name: str | None) -> int:
-    """Seconds of calls and held meetings since the 1st of this month in the business's timezone. Calls are made
-    when they start, so last month's are skipped unread; every channel is read (a meeting is booked ahead).
-    ponytail: one META read per room this month, and a series counts only its newest occurrence (history keeps no
-    inCallAt); a per-month counter row written at call end when either matters."""
-    try:
-        tz = ZoneInfo(tz_name or "America/New_York")
-    except (ZoneInfoNotFoundError, ValueError):
-        tz = ZoneInfo("America/New_York")
-    start = datetime.now(tz).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    floor = (start - timedelta(days=1)).strftime("%Y-%m-%d")  # createdAt is UTC ISO: a day of slack for the zone
-    rows = [r for r in await messaging_repo.list_owner_rooms(ws)
-            if r.get("kind") == "channel" or (r.get("kind") == "call" and (r.get("createdAt") or "") >= floor)]  # fmt: skip
+    """Seconds of calls and held meetings this month (the business's timezone): the month's counter row
+    (voice_billing.add_month_seconds at each end). A month whose counter doesn't exist yet (nothing has ended since
+    the counter shipped) is summed from the newest TIMELINE_ROOMS call and channel rooms instead.
+    ponytail: the fallback goes once every workspace has a counter for the month (December)."""
+    counted = await voice_billing.counted_seconds(ws, tz_name)
+    if counted is not None:
+        return counted
+    start = voice_billing.month_start(tz_name)
+    rows = [r for r in await messaging_repo.list_owner_rooms(ws) if r.get("kind") in ("call", "channel")]
+    rows = sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)[:TIMELINE_ROOMS]
     total, since = 0, start.timestamp()
     for m in await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows)):
         if not m or m.get("ownerId") != ws:
@@ -189,6 +187,8 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
         number = _e164(handoff["number"]) if isinstance(handoff["number"], str) else None
         if number is None:  # the worker dials tel:{number} as stored
             raise HTTPException(status_code=422, detail={"code": "handoff_number_invalid"})
+        if number == _e164(str(body.config.get("forwardFrom") or "")):  # forwarding there would ring us again
+            raise HTTPException(status_code=422, detail={"code": "handoff_is_forwarded_line"})
         body.config["handoff"] = {**handoff, "number": number}
     ws = resolve_owner_id(auth)
     if body.config.get("live") and not (await messaging_repo.get_voice_agent(ws) or {}).get("live"):

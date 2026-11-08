@@ -385,10 +385,12 @@ async def entrypoint(ctx: JobContext) -> None:
     if info.get("forwardTo"):  # the month's minutes are used up and the owner chose forwarding
         try:
             await transfer(info["forwardTo"])
-            ctx.shutdown("minutes used up: forwarded")
-            return
         except Exception:  # noqa: BLE001 -- a SIP refusal: answer rather than leave the caller in silence
             logger.warning("phone %s: run-out forward failed", backend.call_id, exc_info=True)
+        else:  # only now does the record say forwarded; a failed forward is an ordinary answered call
+            await backend.post("end", {"durationSec": 0, "forwarded": True})
+            ctx.shutdown("minutes used up: forwarded")
+            return
     agent = Receptionist(backend, info, transfer)
     session = AgentSession(
         user_away_timeout=AWAY_S,

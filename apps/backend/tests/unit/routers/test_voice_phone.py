@@ -473,7 +473,36 @@ async def test_minutes_used_up_and_run_out_forward_hands_the_call_to_the_owner(c
         call = await _start(client, runOut="forward")
     assert call["forwardTo"] == "+14155550199"
     rec = (await messaging_repo.get_room(call["callId"]))["call"]
+    assert rec["outcome"] == "answered" and "transferredTo" not in rec  # nothing said until the transfer connects
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    rec = client.post(url, json={"durationSec": 0, "forwarded": True}, headers=W).json()
     assert rec["outcome"] == "forwarded" and rec["transferredTo"] == "+14155550199"
+    assert rec["steps"][-1]["text"] == "Minutes used up: forwarded to you"
+
+
+async def test_a_failed_run_out_forward_is_an_ordinary_answered_call(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward")
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    rec = client.post(url, json={"durationSec": 90}, headers=W).json()  # the worker answered instead
+    assert rec["outcome"] == "answered" and "transferredTo" not in rec and not rec["steps"]
+
+
+@pytest.mark.parametrize("line", [{"forwardFrom": "(415) 555-0199"}, {"handoff": {"number": NUMBER}}])
+async def test_run_out_never_forwards_to_the_line_that_rings_us(client, line):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward", **line)
+    assert call["forwardTo"] is None
+
+
+async def test_call_end_adds_to_the_months_counter_once(client):
+    from core.billing import voice_billing
+
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    client.post(url, json={"durationSec": 160}, headers=W)
+    client.post(url, json={"durationSec": 160}, headers=W)  # a retried end
+    assert await voice_billing.counted_seconds("org_1", None) == 160
 
 
 async def test_minutes_used_up_and_run_out_keep_answers(client):

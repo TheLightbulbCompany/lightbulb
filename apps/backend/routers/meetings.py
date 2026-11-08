@@ -9,10 +9,11 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
+from core.billing import voice_billing
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
@@ -82,6 +83,14 @@ async def _publish(room_id: str, status: str) -> None:
         logger.warning("meeting room %s: live publish failed", room_id, exc_info=True)
 
 
+async def _count_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
+    """The meeting's time in the call, onto the workspace's month of voice minutes (GET /voice/usage)."""
+    meta = await messaging_repo.get_room(room_id) or {}
+    if meta.get("ownerId"):
+        at = datetime.fromtimestamp(in_call_at, UTC)
+        await voice_billing.add_month_seconds(meta["ownerId"], int(seconds), at)
+
+
 async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None) -> None:
     """The rest of the one end path, once ``status`` is written. Never raises: the written status
     turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
@@ -98,6 +107,7 @@ async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call
             lambda: voice_calls._fire(meeting_notes.on_ended(room_id) if notes else meeting_invites.advance(room_id)),
         ),
         ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
+        ("minutes", lambda: _count_minutes(room_id, presence, in_call_at) if presence else None),
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
     ]

@@ -178,3 +178,21 @@ async def test_usage_run_out_comes_from_the_agent_page(repos, async_client_org_a
     assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["runOut"] == "keep"
     await messaging_repo.put_voice_agent(WS, {"runOut": "forward"}, "u")
     assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["runOut"] == "forward"
+
+
+@pytest.mark.asyncio
+async def test_usage_reads_the_months_counter_row_when_there_is_one(repos, async_client_org_admin):  # noqa: F811
+    from datetime import UTC, datetime
+
+    from core.billing import voice_billing
+
+    await _month_of_calls()  # the scan would say 8
+    await voice_billing.add_month_seconds(WS, 600, datetime.now(UTC))
+    assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["used"] == 10
+
+
+@pytest.mark.asyncio
+async def test_handoff_number_cannot_be_the_forwarded_line(repos, async_client_org_admin):  # noqa: F811
+    cfg = {"forwardFrom": "(415) 555-0177", "handoff": {"number": "+14155550177"}}
+    r = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_is_forwarded_line"

@@ -326,39 +326,17 @@ async def test_lost_claim_retires_the_brief_once_the_funnel_completed(env):
 
 
 async def test_lost_claim_keeps_the_brief_while_the_winner_could_still_revert(env):
-    """THE race that would silently eat a brief. Seeded ids are NOT proof of
-    fulfilment: `record_onboarding_ids` writes them BEFORE the last fallible
-    step (stage_first_run_files), whose failure rolls the goal, the project
-    and the ids back. A peer that deleted on this evidence would leave the
-    company with no claim, no goal and no record of what the user asked for."""
+    """A young claim is a winner mid-flight that can still fail and revert; deleting the item
+    then would lose the only record of what the user asked for."""
     env.repo.claim_funnel_submission.return_value = FunnelClaimResult.ALREADY_SUBMITTED
     env.repo.resolve_owner_row.return_value = _owner_row(
         funnel_state="submitted",
-        onboarding_goal_id="goal-1",
         funnel_submitted_at=datetime.now(timezone.utc),  # winner is mid-flight
     )
 
     await reconcile_pending_brief("org_abc")
 
     env.repo.delete_pending_brief.assert_not_awaited()
-
-
-async def test_lost_claim_retires_the_brief_once_the_seeded_ids_have_settled(env):
-    """The winner's rollback runs in its own except handler, seconds after
-    recording the ids. Past SETTLED_CLAIM_S the ids are final, so an item
-    still sitting there (a racing peer, a funnel that briefly re-rendered on a
-    stale read) is retired rather than leaked -- a leaked item's put-if-absent
-    key blocks every future brief for that owner."""
-    env.repo.claim_funnel_submission.return_value = FunnelClaimResult.ALREADY_SUBMITTED
-    env.repo.resolve_owner_row.return_value = _owner_row(
-        funnel_state="submitted",
-        onboarding_goal_id="goal-1",
-        funnel_submitted_at=datetime.now(timezone.utc) - timedelta(seconds=brief_mod.SETTLED_CLAIM_S + 5),
-    )
-
-    await reconcile_pending_brief("org_abc")
-
-    env.repo.delete_pending_brief.assert_awaited_once_with("org_abc")
 
 
 async def test_a_stale_claim_with_nothing_seeded_is_reverted_so_it_can_be_re_won(env):

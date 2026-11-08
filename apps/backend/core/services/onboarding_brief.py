@@ -216,18 +216,11 @@ MAX_DRAIN_FAILURES = 5
 # lifetime's worth of background work.
 _RETRY_BACKOFF_S = (2, 5, 10, 20, 30, 60, 60)
 
-# A funnel claim held this long with nothing seeded behind it is not a peer
-# mid-flight (a real drain takes seconds) -- it is a claim whose owner died
-# between the CAS and the seed, e.g. a task killed by a rolling deploy. The
-# generation fence has no stale-steal of its own, so without this the row sits
-# at "submitted" with no goal and no project forever, unclaimable.
+# A funnel claim held this long is not a peer mid-flight (a real drain takes
+# seconds) -- it is a claim whose owner died, e.g. a task killed by a rolling
+# deploy. The generation fence has no stale-steal of its own, so without this
+# the row sits at "submitted" forever, unclaimable.
 STALE_CLAIM_S = 300
-
-# How long after a claim its seeded ids are treated as final. A drain that is
-# going to roll back does so in its own except handler, seconds after
-# recording the ids -- so past this, ids on the row mean the brief really was
-# fulfilled and any pending item still sitting there can be retired.
-SETTLED_CLAIM_S = 60
 
 
 def _claim_age_s(submitted_at) -> float | None:
@@ -575,22 +568,12 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
 async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) -> DrainOutcome:
     """We lost the funnel claim. Decide what that means for the pending item.
 
-    Three cases, and the distinction is load-bearing:
-
-    * **Fulfilment completed** (``funnel_state == "complete"`` after the
-      initial goal/project and BRIEF.md stage). The brief is done; retire it.
-    * **A peer is mid-flight.** Leave the item alone and stop. It is NOT
-      enough that the row carries ``onboarding_goal_id``: those ids are
-      written by ``record_onboarding_ids`` BEFORE the last fallible step
-      (``stage_first_run_files``), whose failure rolls the goal, the project
-      AND the ids back. Deleting on that evidence loses the brief in exactly
-      the case this mechanism exists to survive -- a winner that reverts.
-    * **The claim is stale.** A drain that won the CAS and then died before
-      seeding (a rolling deploy, a cancelled task) leaves the row at
-      "submitted" with nothing behind it, and the generation fence has no
-      stale-steal of its own -- so the row would sit unclaimable forever
-      while onboarding stays incomplete. Revert the claim so the next pass can
-      win it.
+    * **Fulfilment completed** (``funnel_state == "complete"``): the brief is done; retire it.
+    * **A peer is mid-flight** (a young claim): leave the item alone. The winner can still fail and
+      revert, and the item is the only record of what the user asked for.
+    * **The claim is stale**: a drain that won the CAS and died (a rolling deploy, a cancelled task)
+      leaves the row at "submitted", and the generation fence has no stale-steal of its own. Revert
+      the claim so the next pass can win it.
     """
     fresh = await repo.resolve_owner_row(owner_id, consistent_read=True)
     if fresh is None:
@@ -599,29 +582,10 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
         await repo.delete_pending_brief(owner_id)
         return DrainOutcome.DONE
     age_s = _claim_age_s(getattr(fresh, "funnel_submitted_at", None))
-
-    if fresh.onboarding_goal_id:
-        if age_s is not None and age_s >= SETTLED_CLAIM_S:
-            # Ids present and the winner is long past its own rollback window,
-            # so they are stable: this brief WAS fulfilled, even though the
-            # kickoff has not been observed to deliver yet. Retire the item.
-            # Without this the winner's own delete is the only retirement, and
-            # anything that wrote a second item (a funnel that briefly
-            # re-rendered on a stale read, a racing peer) would leak one
-            # forever -- and a leaked item's put-if-absent key blocks every
-            # future brief for that owner.
-            await repo.delete_pending_brief(owner_id)
-        # Otherwise: seeded moments ago and still inside the window where the
-        # winner could fail and roll the ids back. A peer owns this; leave the
-        # item and let their success path retire it.
-        return DrainOutcome.DONE
-
     if age_s is not None and age_s < STALE_CLAIM_S:
-        # Young claim with no ids yet: a peer really is mid-seed. Wait.
         return DrainOutcome.DONE
-
     logger.warning(
-        "reconcile_brief: reverting a stale funnel claim for %s (age=%ss, no seeded ids)",
+        "reconcile_brief: reverting a stale funnel claim for %s (age=%ss)",
         owner_id,
         int(age_s) if age_s is not None else "unknown",
     )

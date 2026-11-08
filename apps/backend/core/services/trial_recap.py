@@ -2,8 +2,9 @@
 
 Numbers (docs/marketing/15 §B, plan Appendix C), over the 30 days before ``trial_end``:
 
-- ``approvals``: approval Questions a person allowed (any answer but ``deny``).
-- ``handoffs``: Questions a person answered (a denial is a handoff too).
+- ``approvals``: approval and review Questions a person said yes to (any answer but ``deny`` or
+  ``request_changes``, as ``task_questions._DENYING``).
+- ``handoffs``: Questions a person answered (a no is a handoff too).
 - ``agents``: distinct agents that posted in a room.
 - ``people``: distinct humans that posted in a room.
 - ``top_item``: the title of the most recently allowed approval.
@@ -23,6 +24,7 @@ from core.repositories import messaging_repo, questions_repo
 logger = logging.getLogger(__name__)
 
 WINDOW_S = 30 * 86400
+_DENYING = ("deny", "request_changes")  # task_questions._DENYING (that module imports Temporal)
 _MAX_PAGES = 20
 _cache: dict[tuple[str, str], dict] = {}
 
@@ -60,7 +62,11 @@ async def room_activity(owner_id: str, since_s: float) -> tuple[int, int]:
 def question_numbers(questions: list[dict]) -> tuple[int, int, str | None]:
     """(handoffs, approvals, top_item) from answered Question rows."""
     allowed = sorted(
-        (q for q in questions if q.get("kind") == "approval" and (q.get("answer") or {}).get("optionId") != "deny"),
+        (
+            q
+            for q in questions
+            if q.get("kind") in ("approval", "review") and (q.get("answer") or {}).get("optionId") not in _DENYING
+        ),
         key=lambda q: q.get("answeredAt") or "",
     )
     return len(questions), len(allowed), (allowed[-1].get("title") or None) if allowed else None

@@ -22,7 +22,7 @@ def test_recap_window_is_the_last_three_days():
 @pytest.mark.asyncio
 async def test_trial_recap_counts_questions(monkeypatch):
     """Answered Questions in the window are the handoffs; allowed approvals are the approvals, the latest names
-    the top item; a denial is a handoff but not an approval. No Paperclip."""
+    the top item; a denial or a request for changes is a handoff but not an approval; an approved review counts. No Paperclip."""
     trial_recap._cache.clear()
     answered = [
         {"kind": "approval", "answer": {"optionId": "allow_once"}, "answeredAt": IN, "title": "Send invoices"},
@@ -34,12 +34,14 @@ async def test_trial_recap_counts_questions(monkeypatch):
         },
         {"kind": "approval", "answer": {"optionId": "deny"}, "answeredAt": IN, "title": "Refund"},
         {"kind": "question", "answer": {"optionId": "answer"}, "answeredAt": IN, "title": "Which day?"},
+        {"kind": "review", "answer": {"optionId": "request_changes"}, "answeredAt": IN, "title": "Draft A"},
+        {"kind": "review", "answer": {"optionId": "send"}, "answeredAt": "2027-01-12T00:00:00+00:00", "title": "Mail"},
     ]
     read = AsyncMock(return_value=answered)
     monkeypatch.setattr(trial_recap.questions_repo, "answered_since", read)
     monkeypatch.setattr(trial_recap, "room_activity", AsyncMock(return_value=(2, 3)))
     got = await trial_recap.recap("org_1", END)
-    assert (got["handoffs"], got["approvals"], got["top_item"], got["people"], got["agents"]) == (4, 2, "Hire", 2, 3)
+    assert (got["handoffs"], got["approvals"], got["top_item"], got["people"], got["agents"]) == (6, 3, "Mail", 2, 3)
     assert read.await_args.args == ("org_1", "2026-12-16T08:00:00+00:00")
 
 

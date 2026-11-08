@@ -42,8 +42,9 @@ _LIGHTBULB_NAME = re.compile(r"^\W*(?:(?:hey|hi|hello|yo|ok|okay)\s+)?lightbulb\
 
 async def router_room(meta: dict, owner_id: str) -> bool:
     """A room people chat with Lightbulb in: Lightbulb (the front agent) seated, and not an
-    app/feed/vendor/session/meeting room or one shared with another organization. A task's own room is a Router
-    room. A room without Lightbulb's seat (a specialist's DM) keeps today's path: Lightbulb could not answer there."""
+    app/feed/vendor/session room or one shared with another organization. A task's own room is a Router room, and so
+    is a Google Meet's: the meeting's voice posts the lines addressed to the assistant there (voice_meet `/ask`). A
+    room without Lightbulb's seat (a specialist's DM) keeps today's path: Lightbulb could not answer there."""
     if not meta:
         return False
     if meta.get("task"):
@@ -51,7 +52,6 @@ async def router_room(meta: dict, owner_id: str) -> bool:
     if (
         not meta.get("roomId")
         or meta.get("app")
-        or meta.get("meeting")
         or messaging.is_session_room(meta)
         or messaging.is_feed_room(meta)
         or messaging.is_vendor_room(meta)
@@ -166,6 +166,8 @@ async def _admit_message(room_id: str, seq: int) -> None:
     ref = {"roomId": room_id, "messageId": msg["messageId"]}
     if msg.get("threadRootMessageId"):
         ref["threadRoot"] = msg["threadRootMessageId"]
+    if meta.get("meeting"):
+        ref["origin"] = "meeting"  # anyone in a Meet acts as the inviter: every spend, send or publish gets a card
     base = {
         "triggerId": trigger_id,
         "source": "chat",
@@ -219,8 +221,8 @@ async def _admit_message(room_id: str, seq: int) -> None:
     routed: dict[str, str] | None = None
     if listen == "observe":
         admission = None
-    elif addressed or named or meta.get("kind") == "dm":
-        admission = "respond"
+    elif addressed or named or meta.get("kind") == "dm" or meta.get("meeting"):
+        admission = "respond"  # a meeting's lines are posted only when they named the assistant (meet.py's gate)
     elif listen == "mentions":
         admission = None
     elif await _to_people(meta, msg):

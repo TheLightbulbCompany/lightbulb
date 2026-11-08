@@ -1,5 +1,5 @@
 """Where a phone booking goes: the Agent page's `bookingsGo`. "google" is the owner's own Google Calendar
-(the workspace's existing grant, `access_token.get(ws, "google")`, as `integration_reads._calendar` reads it); anything
+(the workspace's existing grant, `access_token.get(ws, "google")`); anything
 else is Nova's own calendar (routers/voice_phone `VOICEBOOK#` rows and `VOICECELL#` cells), unchanged.
 
 Google Calendar API v3, on the primary calendar, as Google documents it:
@@ -27,11 +27,20 @@ from core.services.credentials import access_token
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_S = 2.0  # token + request, per Google call (the speed rule's integration bound, integration_reads.READ_S)
+GOOGLE_S = 2.0  # token + request, per Google call (the speed rule's integration bound)
 API = "https://www.googleapis.com/calendar/v3"
 EVENTS = f"{API}/calendars/primary/events"
 _PROBLEM_SK = "VOICELINEPROBLEM#google"  # -> the open Line-problem's task, so a workspace has at most one
 _OPEN = ("queued", "working", "waiting")  # tasks_schema.TaskStatus; idle (Done), resolved, failed are closed
+
+
+async def warm_google(ws: str) -> None:
+    """Fetch (and so cache) the workspace's Google token at a call's start, so the first in-call Google call is
+    not a cold one. Fire-and-forget; never raises."""
+    try:
+        await access_token.get(ws, "google")
+    except Exception:  # noqa: BLE001 -- not connected, or a failed fetch: the booking call will say so
+        logger.debug("google warm-up skipped ws=%s", ws)
 
 
 def _vp():

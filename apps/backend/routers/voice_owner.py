@@ -1,33 +1,29 @@
-"""Owner mode in the app (voice-agents spec §4.1b, §4.5, §5 Home): Live in a member's DM with the assistant is
-the Router -- one realtime session in the huddle worker (apps/huddle-agent `owner.py`) -- and it calls these with
-the worker secret and the room token. Reads are answered here in under a few seconds; anything open-ended is
-`start_work`, the same Router trigger the meeting and the phone use, so its result lands in the DM as a task.
+"""Owner mode in the app (one-brain plan, founder ruling 8 Nov 2026, option A): Live in a member's DM with the
+assistant is ears and a mouth for the DM's Router (apps/huddle-agent `owner.py`). The worker calls these with the
+worker secret and the room token: each spoken line becomes the member's message, exactly as a typed one (it wakes
+the Router), and `/events` hands back the agent messages the room gets, which the voice says. Nothing here reads,
+approves or starts work for the voice: the Router and its Workers do, and approval is the one-tap card.
 
 Who may act: the speaker is the LiveKit identity the server took from the Clerk-minted join token, and must be a
-human member of this workspace seated in the DM (`voice_calls._voice_requester`). That member has full authority,
-as when they type in the DM; anyone else is refused.
+human member of this workspace seated in the DM (`voice_calls._voice_requester`); anyone else is refused.
 """
 
 import asyncio
-import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import Field
 
 from core.auth import AuthContext
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import integration_reads, memory_api, messaging, voice_approve, voice_state
-from core.services.messaging import human_display_name
+from core.services import messaging
 from core.services.voice_calls import _voice_requester
-from routers import tasks as tasks_router
 from routers.huddles import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
-from routers.internal_automations import VoiceStartIn, start_voice_work
-from routers.voice_meet import _calls, assistant_name
-from routers.voice_phone import _bookings, transcript_lines
+from routers.voice_meet import agent_lines, assistant_name, latest_seq
+from routers.voice_phone import transcript_lines
 
 router = APIRouter(dependencies=[_Worker])
 
@@ -49,208 +45,69 @@ async def _owner(room_id: str, body: OwnerIn) -> tuple[str, str, str | None]:
     return room_id, member, next((m["id"] for m in members if m.get("kind") == "agent"), None)
 
 
-def _keep(room: str, member: str):
-    """The tasks a talk speaks of: this DM's, and the member's own from anywhere."""
-    return lambda t: (t.get("audience") or {}).get("roomId") == room or t.get("ownerUserId") == member
-
-
 @router.post("/internal/voice/owner/{room_id}/start")
 async def start(room_id: str, body: OwnerIn) -> dict:
-    """The assistant's name, the DM's agent (the tile the session speaks as) and the Router's state: this DM's
-    recent messages, the tasks of this DM and of the member, and memory with the member's private scope. `now` is
-    the first `/events` cursor."""
-    room, member, agent = await _owner(room_id, body)
-    now, keep = utc_now_iso(), _keep(room, member)
-    name, context = await asyncio.gather(
-        assistant_name(body.ownerId),
-        voice_state.bounded(voice_state.context(body.ownerId, member, room, keep, member, room, [member])),
-    )
-    return {"assistantName": name, "agentId": agent, "context": context, "now": now}
+    """The assistant's name, the DM's agent (the tile the voice speaks as) and `after`, the first `/events` cursor:
+    the voice says only what the room gets from now on."""
+    room, _member, agent = await _owner(room_id, body)
+    name, after = await asyncio.gather(assistant_name(body.ownerId), latest_seq(room))
+    return {"assistantName": name, "agentId": agent, "after": after}
 
 
 class TurnIn(OwnerIn):
     sessionId: Annotated[str, Field(min_length=1, max_length=200)]
-    n: int = Field(ge=0, le=100000)  # the turn's place in the talk: with sessionId, its one message
-    role: Literal["user", "assistant"]
+    n: int = Field(ge=0, le=100000)  # the line's place in the talk: with sessionId, its one message
     text: Annotated[str, Field(min_length=1, max_length=4000)]
 
 
 @router.post("/internal/voice/owner/{room_id}/turn")
 async def turn(room_id: str, body: TurnIn) -> dict:
-    """One spoken line becomes a message in the DM (`via: voice`), so typed and spoken are one conversation. The
-    member's line is theirs and wakes no agent (the voice already answered); the reply is the DM agent's. Keyed
-    on the talk and turn: a retry is the same message."""
-    room_id, member, agent = await _owner(room_id, body)
+    """One spoken line becomes the member's message in the DM (`via: voice`), exactly as a typed one: it wakes the
+    Router (admission), which decides it like any other. Keyed on the talk and line: a retry is the same message."""
+    room_id, member, _agent = await _owner(room_id, body)
     key = f"voice-turn:{room_id}:{body.sessionId}:{body.n}"
-    if body.role == "user":
-        msg = await messaging.create_human_message(
-            AuthContext(user_id=member, org_id=body.ownerId),
-            room_id,
-            messaging.CreateMessageRequest(
-                client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
-                text=body.text,
-                reply_to_message_id=None,
-                thread_root_message_id=None,
-            ),
-            via="voice",
-            wake=False,
-        )
-        return {"messageId": str(msg.message_id)}
-    if agent is None:
-        raise _problem(409, "no_agent")
-    receipt = await messaging.create_agent_message(
-        body.ownerId,
-        messaging.AgentMessageRequest(
-            event_id=key,
-            room_id=uuid.UUID(room_id),
-            agent_id=uuid.UUID(agent),
+    msg = await messaging.create_human_message(
+        AuthContext(user_id=member, org_id=body.ownerId),
+        room_id,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
             text=body.text,
             reply_to_message_id=None,
             thread_root_message_id=None,
         ),
-        attrs={"via": "voice"},
+        via="voice",
     )
-    return {"messageId": str(receipt.message_id)}
-
-
-class WorkIn(OwnerIn):
-    title: Annotated[str, Field(min_length=1, max_length=200)]
-    brief: Annotated[str, Field(min_length=1, max_length=8000)]
-
-
-@router.post("/internal/voice/owner/{room_id}/start-work", status_code=202)
-async def start_work(room_id: str, body: WorkIn) -> dict:
-    """An ask becomes a Router task delivered to the DM. The same ask (title and brief, normalised) from the same
-    member on the same day is one task: the trigger id derives from it, so a retry after a failed start starts it
-    and only a trigger that already exists is "already on it"."""
-    room_id, member, agent = await _owner(room_id, body)
-    ask = " ".join(f"{body.title}\n{body.brief}".lower().split())
-    run_id = hashlib.sha256(f"{room_id}:{member}:{utc_now_iso()[:10]}:{ask}".encode()).hexdigest()[:32]
-    # start_voice_work reads the requester from this row; writing it again on a retry is the same row
-    await messaging_repo.put_voice_run(
-        body.ownerId, run_id, {"roomId": room_id, "requesterUserId": member, "agentId": agent}
-    )
-    out = await start_voice_work(
-        body.ownerId,
-        VoiceStartIn(
-            run_id=run_id,
-            call_id=room_id,
-            room_id=room_id,
-            title=body.title,
-            brief=f"Asked aloud in the app.\n\n{body.brief}",
-        ),
-        origin="owner_voice",  # a seated member's own ask: desktop_execution lets its task reach their Mac
-    )
-    created = out.pop("created", True)
-    return {"started": created, **({} if created else {"already": True}), **out}
+    return {"messageId": str(msg.message_id)}
 
 
 class EventsIn(OwnerIn):
-    since: Annotated[str, Field(min_length=1, max_length=40)]
+    after: int = Field(ge=0)
 
 
 @router.post("/internal/voice/owner/{room_id}/events")
 async def events(room_id: str, body: EventsIn) -> dict:
-    """What changed since `since` (the last `now`): the talk's tasks that finished, failed or need the member. The
-    worker polls this while a talk is live and says each one; `now` is read first, so nothing falls between."""
-    room, member, _agent = await _owner(room_id, body)
-    now = utc_now_iso()
-    return {"events": await voice_state.events(body.ownerId, member, room, _keep(room, member), body.since), "now": now}
-
-
-class StopIn(OwnerIn):
-    taskId: Annotated[str, Field(min_length=1, max_length=200)]
-
-
-@router.post("/internal/voice/owner/{room_id}/stop-work")
-async def stop_work(room_id: str, body: StopIn) -> dict:
-    """The member's spoken stop: the task list's own Stop (`routers.tasks._act`), as the member."""
-    _room, member, _agent = await _owner(room_id, body)
-    out = await tasks_router._act(body.ownerId, body.taskId, "stop", member, None)
-    return {"stopped": True, "title": out["title"], "status": out["status"]}
-
-
-class ReadIn(OwnerIn):
-    kind: Literal["memory", "calls", "calendar"]
-    question: str = Field(default="", max_length=1000)
-    days: Annotated[int, Field(le=90), AfterValidator(lambda d: max(d, 1))] = 7
-    date: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
-    from_: str = Field(default="", alias="from", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
-    to: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
-
-
-@router.post("/internal/voice/owner/{room_id}/read")
-async def read(room_id: str, body: ReadIn) -> dict:
-    """Memory (with the member's own private scope: only they hear it), call counts, the assistant's bookings."""
-    room_id, member, _agent = await _owner(room_id, body)
-    if body.kind == "memory":
-        page = await memory_api.recall_page(
-            body.ownerId, member, body.question or "recent decisions", budget_tokens=1500,
-            audience={"kind": "room", "roomId": room_id},
-        )  # fmt: skip
-        return {"facts": [" ".join(r["content"].split())[:400] for r in page.get("results", [])[:6]]}
-    if body.kind == "calls":
-        return await _calls(body.ownerId, body.days, body.from_, body.to)
-    rows = await _bookings(body.ownerId, body.date)
-    return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b.get("service"),
-                          "name": b.get("name")} for b in rows[:50]]}  # fmt: skip
-
-
-@router.post("/internal/voice/owner/{room_id}/integrations")
-async def integrations(room_id: str, body: OwnerIn) -> dict:
-    await _owner(room_id, body)
-    return {"connected": await integration_reads.connected(body.ownerId)}
-
-
-class IntegrationIn(OwnerIn):
-    provider: Annotated[str, Field(min_length=1, max_length=40)]
-    query: str = Field(default="", max_length=300)
-
-
-@router.post("/internal/voice/owner/{room_id}/integration-read")
-async def integration_read(room_id: str, body: IntegrationIn) -> dict:
-    """One bounded read of a connected integration (integration_reads, the meeting's reader)."""
-    await _owner(room_id, body)
-    out = await integration_reads.read(body.ownerId, body.provider, body.query, instructions=True)
-    return out if isinstance(out, dict) else {"text": out}
-
-
-class ApproveIn(OwnerIn):
-    phrase: Literal["yes", "no", "undo"]
-    hint: str = Field(default="", max_length=300)
-
-
-@router.post("/internal/voice/owner/{room_id}/approve")
-async def approve(room_id: str, body: ApproveIn) -> dict:
-    """The member's spoken yes queues a one-tap confirm on their card (voice_approve); it never answers it."""
-    room_id, member, _agent = await _owner(room_id, body)
-    speaker = {"user_id": member, "name": await human_display_name(member), "where": ""}
-    return await voice_approve.approve(body.ownerId, "app", speaker, body.phrase, body.hint, room_id=room_id)
-
-
-class WorkRef(BaseModel):
-    title: Annotated[str, Field(min_length=1, max_length=200)]
-    taskId: Annotated[str, Field(min_length=1, max_length=200)]
+    """The agent messages the DM got after message `after` (the Router's ack and replies, its Workers' answers),
+    oldest first, and the next cursor. The worker polls this while a talk is live and says each one."""
+    room, _member, _agent = await _owner(room_id, body)
+    return await agent_lines(room, body.after)
 
 
 class EndIn(OwnerIn):
     sessionId: Annotated[str, Field(min_length=1, max_length=200)]  # the worker's job id: one talk, one row
     durationSec: int = Field(ge=0, le=86400)
     transcript: list[dict] = Field(default=[], max_length=2000)
-    work: list[WorkRef] = Field(default=[], max_length=50)  # start_work's tasks, in the order asked
 
 
 @router.post("/internal/voice/owner/{room_id}/end")
 async def end(room_id: str, body: EndIn) -> dict:
     """The talk is kept as a hidden call room with `ownerMode`, a "Yours" row on Home: the transcript as phone
-    calls keep it, a one-line summary and the started tasks as follow-ups. A talk with nothing said is not kept."""
+    calls keep it and a one-line summary (the tasks are the DM's own). A talk with nothing said is not kept."""
     room_id, member, _agent = await _owner(room_id, body)
     lines = transcript_lines(body.transcript)
     if not lines:
         return {"kept": False}
     first = next((line["text"] for line in lines if line["who"] == "caller"), "")
-    did = "; ".join(w.title for w in body.work)
-    summary = " → ".join(x for x in (first and f"“{first[:120]}”", did) if x)
+    summary = f"“{first[:120]}”" if first else ""
     call = {
         "startedAt": (datetime.now(UTC) - timedelta(seconds=body.durationSec)).isoformat(),
         "endedAt": utc_now_iso(),
@@ -259,7 +116,7 @@ async def end(room_id: str, body: EndIn) -> dict:
         "outcome": "answered",
         "summary": summary,
         "transcript": lines,
-        "followUps": [{"text": w.title, "status": "working", "taskId": w.taskId} for w in body.work],
+        "followUps": [],
         "ownerMode": True,
         "resolvedAt": None,
         "dmRoomId": room_id,

@@ -1,4 +1,5 @@
-"""Owner mode's backend: only a member seated in the DM acts, one task per ask, reads with the member's scope."""
+"""Owner mode's backend: only a member seated in the DM acts; a spoken line is their message and wakes the Router;
+the voice gets the agent lines the DM receives; nothing else (no reads, approvals or work) is the voice's."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -12,181 +13,22 @@ MEMBERS = [{"kind": "human", "id": "user_maya", "role": "owner"}, {"kind": "agen
 META = {"ownerId": "org_1", "kind": "dm"}
 
 
-_TRIGGERS: set[str] = set()
-
-
-async def _start(owner_id, body, origin=None):
-    """admission.enqueue_trigger's created flag: one trigger per run id."""
-    created = body.run_id not in _TRIGGERS
-    _TRIGGERS.add(body.run_id)
-    return {"triggerId": f"t-{body.run_id}", "taskId": f"k-{body.run_id}", "created": created}
-
-
 @pytest.fixture
 def m():
-    _TRIGGERS.clear()
     with (
         patch.object(voice_owner, "_require_room_token", lambda *a: None),
         patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(return_value=META)),
         patch.object(voice_owner.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
         patch.object(voice_owner.messaging_repo, "member_home", lambda m, o: o),
-        patch.object(voice_owner.messaging_repo, "put_voice_run", AsyncMock()) as put_run,
-        patch.object(voice_owner, "start_voice_work", AsyncMock(side_effect=_start)) as sw,
     ):
-        yield {"put_run": put_run, "sw": sw}
-
-
-def _work(speaker="user_maya", title="Draft a post about holiday hours", brief="We close Dec 25."):
-    return voice_owner.WorkIn(ownerId="org_1", roomToken="t", speakerUserId=speaker, title=title, brief=brief)
-
-
-async def test_a_member_ask_starts_a_router_task_in_the_dm(m):
-    out = await voice_owner.start_work(ROOM, _work())
-    run_id = m["put_run"].await_args.args[1]
-    assert out == {"started": True, "triggerId": f"t-{run_id}", "taskId": f"k-{run_id}"}
-    run = m["put_run"].await_args.args[2]
-    assert run == {"roomId": ROOM, "requesterUserId": "user_maya", "agentId": "a1"}
-    body = m["sw"].await_args.args[1]
-    assert (body.room_id, body.call_id, body.title) == (ROOM, ROOM, "Draft a post about holiday hours")
-    assert "Asked aloud" in body.brief
-    assert m["sw"].await_args.kwargs == {"origin": "owner_voice"}  # its task may reach the member's own Mac
-
-
-async def test_the_same_ask_again_is_already_on_it(m):
-    first = await voice_owner.start_work(ROOM, _work())
-    out = await voice_owner.start_work(
-        ROOM, _work(title=" draft a post about HOLIDAY hours ", brief="we close  dec 25.")
-    )
-    assert out["already"] is True and out["started"] is False and out["taskId"] == first["taskId"]
-
-
-async def test_the_same_title_with_another_brief_is_another_task(m):
-    a = await voice_owner.start_work(ROOM, _work(brief="We close Dec 25."))
-    b = await voice_owner.start_work(ROOM, _work(brief="We open late on Dec 26."))
-    assert a["started"] and b["started"] and a["taskId"] != b["taskId"]
-
-
-async def test_a_failed_start_can_be_retried(m):
-    m["sw"].side_effect = RuntimeError("dynamo down")
-    with pytest.raises(RuntimeError):
-        await voice_owner.start_work(ROOM, _work())
-    m["sw"].side_effect = _start
-    out = await voice_owner.start_work(ROOM, _work())
-    assert out["started"] is True and "already" not in out
-
-
-async def test_someone_not_seated_in_the_dm_does_nothing(m):
-    with pytest.raises(HTTPException) as e:
-        await voice_owner.start_work(ROOM, _work(speaker="user_other"))
-    assert e.value.status_code == 403
-    m["sw"].assert_not_awaited()
-
-
-async def test_only_a_dm_is_owner_mode(m):
-    with patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(return_value={**META, "kind": "channel"})):
-        with pytest.raises(HTTPException) as e:
-            await voice_owner.start_work(ROOM, _work())
-    assert e.value.status_code == 404
-
-
-async def test_start_names_the_assistant_its_agent_and_the_routers_state(m):
-    with (
-        patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
-        patch.object(voice_owner.voice_state, "context", AsyncMock(return_value="Recent chat...")) as ctx,
-    ):
-        out = await voice_owner.start(
-            ROOM, voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
-        )
-    assert out == {"assistantName": "Nova", "agentId": "a1", "context": "Recent chat...", "now": out["now"]}
-    ws, viewer, room, keep, memory_user, chat_room, people = ctx.await_args.args
-    assert (ws, viewer, room, memory_user, chat_room, people) == (
-        "org_1",
-        "user_maya",
-        ROOM,
-        "user_maya",
-        ROOM,
-        ["user_maya"],
-    )
-    assert keep({"audience": {"roomId": ROOM}}) and keep({"ownerUserId": "user_maya", "audience": {"roomId": "x"}})
-    assert not keep({"ownerUserId": "user_sam", "audience": {"roomId": "x"}})
+        yield
 
 
 AGENT = "7f1d2c3b-0000-4000-8000-0000000000aa"
 
 
-def _turn(role, n=0, speaker="user_maya"):
-    return voice_owner.TurnIn(
-        ownerId="org_1", roomToken="t", speakerUserId=speaker, sessionId="job_1", n=n, role=role, text="Hi there"
-    )
-
-
-async def test_a_spoken_line_is_the_members_message_in_the_dm_and_wakes_nobody(m):
-    from types import SimpleNamespace
-
-    with patch.object(
-        voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m1"))
-    ) as ch:
-        assert await voice_owner.turn(ROOM, _turn("user")) == {"messageId": "m1"}
-        await voice_owner.turn(ROOM, _turn("user"))  # a retry
-    first, again = ch.await_args_list
-    auth, room, req = first.args
-    assert (auth.user_id, auth.org_id, room, req.text) == ("user_maya", "org_1", ROOM, "Hi there")
-    assert first.kwargs == {"via": "voice", "wake": False}
-    assert again.args[2].client_message_id == req.client_message_id  # the same message, never a double
-
-
-async def test_the_voices_reply_is_the_dm_agents_message(m):
-    from types import SimpleNamespace
-
-    members = [MEMBERS[0], {"kind": "agent", "id": AGENT}]
-    with (
-        patch.object(voice_owner.messaging_repo, "list_members", AsyncMock(return_value=members)),
-        patch.object(
-            voice_owner.messaging, "create_agent_message", AsyncMock(return_value=SimpleNamespace(message_id="m2"))
-        ) as ca,
-    ):
-        assert await voice_owner.turn(ROOM, _turn("assistant", n=1)) == {"messageId": "m2"}
-    ws, req = ca.await_args.args
-    assert (ws, str(req.agent_id), req.event_id) == ("org_1", AGENT, f"voice-turn:{ROOM}:job_1:1")
-    assert ca.await_args.kwargs == {"attrs": {"via": "voice"}}
-
-
-async def test_only_the_seated_member_writes_turns(m):
-    with pytest.raises(HTTPException) as e:
-        await voice_owner.turn(ROOM, _turn("user", speaker="user_other"))
-    assert e.value.status_code == 403
-
-
-async def test_memory_reads_with_the_members_private_scope(m):
-    with patch.object(
-        voice_owner.memory_api, "recall_page", AsyncMock(return_value={"results": [{"content": "Closed  Dec 25"}]})
-    ) as rp:
-        out = await voice_owner.read(
-            ROOM,
-            voice_owner.ReadIn(
-                ownerId="org_1", roomToken="t", speakerUserId="user_maya", kind="memory", question="holiday hours?"
-            ),
-        )
-    assert out == {"facts": ["Closed Dec 25"]}
-    assert rp.await_args.args[:2] == ("org_1", "user_maya")
-
-
-async def test_integration_read_goes_through_the_shared_reader(m):
-    with patch.object(
-        voice_owner.integration_reads, "read", AsyncMock(return_value="Dentist at 2026-11-09T10:00")
-    ) as r:
-        out = await voice_owner.integration_read(
-            ROOM,
-            voice_owner.IntegrationIn(
-                ownerId="org_1", roomToken="t", speakerUserId="user_maya", provider="calendar", query=""
-            ),
-        )
-    assert out == {"text": "Dentist at 2026-11-09T10:00"}
-    r.assert_awaited_once_with("org_1", "calendar", "", instructions=True)  # owner mode: the private instructions
-
-
 async def test_owner_end_creates_yours_item(m):
-    """A talk on the orb is kept as a hidden call room: the transcript, a one-line summary and its follow-ups."""
+    """A talk on the orb is kept as a hidden call room: the transcript and a one-line summary."""
     from routers import voice
 
     body = voice_owner.EndIn(
@@ -194,7 +36,6 @@ async def test_owner_end_creates_yours_item(m):
         transcript=[{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
                     {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1},
                     {"who": "nobody", "text": "dropped"}],
-        work=[{"title": "Draft the holiday-hours post", "taskId": "k-1"}],
     )  # fmt: skip
     with patch.object(voice_owner.messaging_repo, "create_room", AsyncMock()) as create:
         out = await voice_owner.end(ROOM, body)
@@ -205,8 +46,7 @@ async def test_owner_end_creates_yours_item(m):
     assert call["ownerMode"] is True and call["durationSec"] == 42 and call["status"] == "ended"
     assert call["transcript"] == [{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
                                   {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1}]  # fmt: skip
-    assert call["summary"] == "“Anything I need to handle?” → Draft the holiday-hours post"
-    assert call["followUps"] == [{"text": "Draft the holiday-hours post", "status": "working", "taskId": "k-1"}]
+    assert call["summary"] == "“Anything I need to handle?”" and call["followUps"] == []
     item = voice._item({"roomId": out["roomId"], "kind": "call", "createdAt": "2026-11-07T08:02:00Z", "call": call})
     assert item["type"] == "call" and item["ownerMode"] is True  # the "Yours" chip's test
 
@@ -241,57 +81,88 @@ async def test_a_retried_end_keeps_the_row_it_made(m):
                 await voice_owner.end(ROOM, body)  # no row behind the error: it is raised
 
 
-async def test_owner_route_auth_like_siblings(m):
+def _turn(text="What have we shipped in the last week?", n=0, speaker="user_maya"):
+    return voice_owner.TurnIn(ownerId="org_1", roomToken="t", speakerUserId=speaker, sessionId="job_1", n=n, text=text)
+
+
+async def test_a_spoken_line_is_the_members_message_and_wakes_the_router(m):
+    from types import SimpleNamespace
+
+    with patch.object(
+        voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m1"))
+    ) as ch:
+        assert await voice_owner.turn(ROOM, _turn()) == {"messageId": "m1"}
+        await voice_owner.turn(ROOM, _turn())  # a retry
+    first, again = ch.await_args_list
+    auth, room, req = first.args
+    assert (auth.user_id, auth.org_id, room, req.text) == (
+        "user_maya",
+        "org_1",
+        ROOM,
+        "What have we shipped in the last week?",
+    )
+    assert first.kwargs == {"via": "voice"}  # exactly a typed message: wake defaults on, so admission → Router
+    assert again.args[2].client_message_id == req.client_message_id  # the same message, never a double
+
+
+async def test_a_fragment_is_only_a_message_and_approves_nothing(m):
+    """ "Is" (a cut-off line) is stored as the member's message for the Router like any typed text; no route here
+    approves, and typed text never answers a card (the one-tap card does)."""
+    from types import SimpleNamespace
+
+    with patch.object(
+        voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m2"))
+    ) as ch:
+        await voice_owner.turn(ROOM, _turn("Is"))
+    assert ch.await_args.args[2].text == "Is"
+    assert not hasattr(voice_owner, "approve") and "voice_approve" not in vars(voice_owner)
+
+
+async def test_only_the_seated_member_writes_turns(m):
+    with pytest.raises(HTTPException) as e:
+        await voice_owner.turn(ROOM, _turn(speaker="user_other"))
+    assert e.value.status_code == 403
+
+
+async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
+    with (
+        patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
+        patch.object(voice_owner, "latest_seq", AsyncMock(return_value=41)) as seq,
+    ):
+        out = await voice_owner.start(
+            ROOM, voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
+        )
+    assert out == {"assistantName": "Nova", "agentId": "a1", "after": 41}
+    seq.assert_awaited_once_with(ROOM)
+
+
+async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
+    lines = {"messages": [{"id": "a1", "text": "Checking GitHub."}], "after": 6}
+    with patch.object(voice_owner, "agent_lines", AsyncMock(return_value=lines)) as al:
+        body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5)
+        assert await voice_owner.events(ROOM, body) == lines
+        al.assert_awaited_once_with(ROOM, 5)
+        with pytest.raises(HTTPException) as e:
+            await voice_owner.events(ROOM, body.model_copy(update={"speakerUserId": "user_other"}))
+    assert e.value.status_code == 403
+
+
+def test_the_voice_has_no_tool_routes():
+    paths = {r.path.rsplit("/", 1)[-1] for r in voice_owner.router.routes}
+    assert paths == {"start", "turn", "events", "end"}
+
+
+async def test_only_a_dm_is_owner_mode_and_the_worker_secret_is_required(m):
     import httpx
     from fastapi import FastAPI
 
+    with patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(return_value={**META, "kind": "channel"})):
+        with pytest.raises(HTTPException) as e:
+            await voice_owner.turn(ROOM, _turn())
+    assert e.value.status_code == 404
     app = FastAPI()
     app.include_router(voice_owner.router)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
-    body = {"ownerId": "org_1", "roomToken": "t", "speakerUserId": "user_maya", "phrase": "yes", "hint": "order"}
     with patch("core.config.settings.HUDDLE_WORKER_SECRET", "s3cret"):  # no worker secret header
-        assert (await client.post(f"/internal/voice/owner/{ROOM}/approve", json=body)).status_code == 401
-    with pytest.raises(HTTPException) as e:  # seated in the DM, like start-work
-        await voice_owner.approve(ROOM, voice_owner.ApproveIn(**{**body, "speakerUserId": "user_other"}))
-    assert e.value.status_code == 403
-    with (
-        patch.object(voice_owner, "human_display_name", AsyncMock(return_value="Maya")),
-        patch.object(voice_owner.voice_approve, "approve", AsyncMock(return_value={"confirm_sent": True})) as ap,
-    ):
-        assert await voice_owner.approve(ROOM, voice_owner.ApproveIn(**body)) == {"confirm_sent": True}
-    assert ap.await_args.args == ("org_1", "app", {"user_id": "user_maya", "name": "Maya", "where": ""}, "yes",
-                                  "order")  # fmt: skip
-    assert ap.await_args.kwargs == {"room_id": ROOM}
-
-
-def _ev(speaker="user_maya", since="2026-11-08T10:00:00+00:00"):
-    return voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId=speaker, since=since)
-
-
-async def test_events_since_are_the_talks_tasks_as_the_member(m):
-    with patch.object(voice_owner.voice_state, "events", AsyncMock(return_value=[{"taskId": "k-1"}])) as ev:
-        out = await voice_owner.events(ROOM, _ev())
-    assert out["events"] == [{"taskId": "k-1"}] and out["now"]
-    ws, viewer, room, keep, since = ev.await_args.args
-    assert (ws, viewer, room, since) == ("org_1", "user_maya", ROOM, "2026-11-08T10:00:00+00:00")
-    assert keep({"ownerUserId": "user_maya"}) and not keep({"ownerUserId": "user_sam", "audience": {}})
-
-
-async def test_events_and_stop_are_only_for_the_seated_member(m):
-    for call in (voice_owner.events(ROOM, _ev("user_other")),
-                 voice_owner.stop_work(ROOM, voice_owner.StopIn(ownerId="org_1", roomToken="t",
-                                                                 speakerUserId="user_other", taskId="k-1"))):  # fmt: skip
-        with pytest.raises(HTTPException) as e:
-            await call
-        assert e.value.status_code == 403
-
-
-async def test_stop_work_is_the_task_lists_stop_as_the_member(m):
-    with patch.object(
-        voice_owner.tasks_router, "_act", AsyncMock(return_value={"title": "Post", "status": "working"})
-    ) as act:
-        out = await voice_owner.stop_work(
-            ROOM, voice_owner.StopIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", taskId="k-1")
-        )
-    assert out == {"stopped": True, "title": "Post", "status": "working"}
-    act.assert_awaited_once_with("org_1", "k-1", "stop", "user_maya", None)
+        r = await client.post(f"/internal/voice/owner/{ROOM}/turn", json=_turn().model_dump())
+    assert r.status_code == 401

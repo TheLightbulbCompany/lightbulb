@@ -122,7 +122,7 @@ async def _admit(w, msg):
         ({"kind": "channel", "task": {"taskId": "t"}}, True),
         ({"kind": "channel", "app": {"app_id": "a"}}, False),
         ({"kind": "channel", "session": {"id": "s"}}, False),
-        ({"kind": "channel", "meeting": {"id": "m"}}, False),
+        ({"kind": "channel", "meeting": {"id": "m"}}, True),  # its voice posts only addressed lines
     ],
 )
 async def test_router_room_exclusions(world, meta, expected):
@@ -266,6 +266,16 @@ async def test_a_message_jev_lets_pass_gets_lightbulbs_read_receipt(world, monke
         world["listen"] = listen
         await _admit(world, _msg(i))
     assert len(events) == 1
+
+
+async def test_a_meetings_line_is_answered_with_the_meeting_origin(world):
+    """The Meet voice posts only lines that named the assistant (meet.py's gate): each is answered, and its work is
+    the meeting's (origin meeting: confirmAll in activities._ensure_task), whatever the agents' listen mode."""
+    world["meta"] = {**world["meta"], "meeting": {"title": "Monday"}, "hidden": True}
+    world["listen"] = "mentions"
+    tid = await _admit(world, _msg())
+    assert world["router"] == [admission.TriggerRef(WS, tid, "shared", "respond", ROOM)] and world["jev"] == []
+    assert (await repo.get_trigger(WS, tid))["ref"]["origin"] == "meeting"
 
 
 async def test_lightbulb_mentions_only_room_skips_jev(world):

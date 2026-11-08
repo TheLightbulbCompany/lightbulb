@@ -34,7 +34,7 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import clerk_admin, integration_reads, questions, voice_booking, voice_outbound
+from core.services import clerk_admin, questions, voice_booking, voice_outbound
 from routers.huddles import _Worker
 from routers.voice import _e164, month_seconds
 from routers.internal_automations import VoiceStartIn, start_voice_work
@@ -190,7 +190,7 @@ async def start_call(body: StartIn) -> dict:
     org = await clerk_admin.get_organization(owner_id) if owner_id.startswith("org_") else None
     business, assistant = (org or {}).get("name") or "the business", cfg["name"].strip() or "Lightbulb"
     if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
-        _warming.add(t := asyncio.create_task(integration_reads.warm_google(owner_id)))
+        _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
     seen = await _seen(owner_id, body.callerNumber)
     # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.

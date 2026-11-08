@@ -26,8 +26,8 @@ async def _on_request(req: JobRequest) -> None:
 
 
 # In livekit-agents 1.8.11 this kwarg wins over LIVEKIT_AGENT_NAME (worker.py rtc_session); the Dockerfile sets
-# LIVEKIT_AGENT_NAME=lightbulb-huddle too, so both agree. HUDDLE_RIG_AGENT_NAME: the Meet self-test
-# (tests/meet_sim) runs this worker on a laptop under its own dispatch name, so no real call reaches it.
+# LIVEKIT_AGENT_NAME=lightbulb-huddle too, so both agree. HUDDLE_RIG_AGENT_NAME: a laptop run of
+# this worker under its own dispatch name, so no real call reaches it.
 @server.rtc_session(agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"), on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
     # A phone call: the plan allows one deployed agent, so the SIP dispatch rules target this one and name their

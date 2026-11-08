@@ -5499,7 +5499,12 @@ async def create_agent_message(
     if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     bound = request.run_id or request.reply_to_message_id or request.thread_root_message_id
-    if meta.get("hidden") and meta.get("meeting") and not (bound or request.uploaded_attachments):
+    if (
+        meta.get("hidden")
+        and meta.get("meeting")
+        and not (bound or request.uploaded_attachments)
+        and agent_id != await _front_agent_id(owner_id)  # the meeting's Router answers in it: the voice says it
+    ):
         # A Google Meet's room (hidden, with a meeting record) is read by nobody: what an agent posts
         # there (a late Live answer) goes to the meeting's output room when it sits there. A session's
         # chat is hidden too, but people read it, so it keeps its posts. Every door resolves the same room,

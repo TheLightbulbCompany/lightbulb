@@ -1,44 +1,33 @@
-"""The meeting agent's backend (voice-agents spec §4.4, §4.4a, §5 "The meeting agent"): the huddle worker's
-meeting mode (apps/huddle-agent `meet.py`, one Gemini Live session per meeting) calls these with the worker
-secret and the room token.
+"""The meeting agent's backend (one-brain plan, founder ruling 8 Nov 2026, option A): the huddle worker's meeting
+mode (apps/huddle-agent `meet.py`) is ears and a mouth for the meeting room's Router. It calls these with the worker
+secret and the room token: `/ask` posts a line addressed to the assistant as a message in the meeting's room (a
+Router room, admission), and `/events` hands back the agent messages that room gets, which the voice says.
 
 The meeting's record lives on the room META's ``meeting`` map, where the owner's timeline reads it:
 ``asked`` [{t, who, q, a}], ``followUps`` [{text, status, taskId}], ``summary``.
 
 Who may act: everyone in the meeting, with the powers of the inviting member (the organizer who sent the invite;
-the host member when there is none). The speaker's name is kept for the record only. A task started from a meeting
-carries ``confirmAll``: a spend, an outside send or a publish always gets a Needs-you card for the inviter.
+the host member when there is none); the line is theirs, naming who said it. A task started from a meeting carries
+``confirmAll`` (admission's ``origin: meeting``): a spend, an outside send or a publish always gets a Needs-you card.
 """
 
 import asyncio
-import hashlib
 import logging
-from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
+import uuid
+from typing import Annotated
 
 from fastapi import APIRouter
-from pydantic import AfterValidator, Field
+from pydantic import Field
 
+from core.auth import AuthContext
 from core.config import settings
-from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import (
-    integration_reads,
-    livekit_huddles,
-    meeting_bots,
-    meeting_invites,
-    memory_api,
-    voice_approve,
-    voice_state,
-)
+from core.services import livekit_huddles, meeting_bots, meeting_invites, messaging
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
-from routers.internal_automations import VoiceStartIn, start_voice_work
-from routers.voice_phone import _TZ, _bookings
 
 router = APIRouter(dependencies=[_Worker])
 logger = logging.getLogger(__name__)
 
-CHAT_CHARS = 500  # Meet's chat limit (meeting_bots.say)
 ANNOUNCE = (
     '{name} is in this meeting for {company}. It listens and speaks only when someone says "{name}, ..."; '
     'say "{name}, stop" to cut it off. Anything that spends, sends or publishes waits for the inviting member\'s OK. '
@@ -60,7 +49,24 @@ async def assistant_name(owner_id: str) -> str:
     return name or "Lightbulb"
 
 
-_warming: set[asyncio.Task] = set()  # held so the warm-up is not garbage-collected mid-flight
+async def latest_seq(room_id: str) -> int:
+    """The room's newest message seq: the first `/events` cursor, so a talk says only what comes after it."""
+    rows = await messaging_repo.list_messages_before(room_id, 10**19, 1)
+    return int(rows[-1]["messageSeq"]) if rows else 0
+
+
+async def agent_lines(room_id: str, after: int) -> dict:
+    """The agent messages in the room's main chat after seq `after`, oldest first (a thread's and a progress line
+    are not said), and the next cursor. The voice says these word for word (huddle-agent mouth.py)."""
+    rows, _ = await messaging_repo.list_messages(room_id, after, 100)
+    said = [
+        {"id": r["messageId"], "text": r.get("editedText") or r["text"]}
+        for r in rows
+        if (r.get("author") or {}).get("kind") == "agent"
+        and not (r.get("progress") or r.get("deletedAt") or r.get("threadRootMessageId"))
+        and (r.get("editedText") or r.get("text") or "").strip()
+    ]
+    return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
 
 
 class StartIn(RoomBody):
@@ -69,12 +75,9 @@ class StartIn(RoomBody):
 
 @router.post("/internal/voice/meet/{room_id}/start")
 async def start(room_id: str, body: StartIn) -> dict:
-    """The assistant's name, the join announcement in the Meet's chat (once an occurrence), and the Router's state
-    for the inviting member: this meeting's room and its tasks, the inviter's workspace-wide tasks, and workspace
-    memory. Everyone in the meeting hears it, so nothing private (a DM, a person-only task, private memory)."""
+    """The assistant's name, the join announcement in the Meet's chat (once an occurrence), and `after`, the first
+    `/events` cursor."""
     room_id, meta, meeting = await _meeting(room_id, body)
-    _warming.add(t := asyncio.create_task(integration_reads.warm_google(body.ownerId)))
-    t.add_done_callback(_warming.discard)
     name, bot = await assistant_name(body.ownerId), meeting.get("recallBotId")
     if bot:
         mine = await meeting_invites._patch_meeting(
@@ -85,27 +88,7 @@ async def start(room_id: str, body: StartIn) -> dict:
                 await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
             except Exception as e:  # noqa: BLE001 -- RecallError or a transport error alike
                 logger.warning("meet room %s: announce failed %s", room_id, getattr(e, "code", type(e).__name__))
-    context = await voice_state.bounded(_context(body.ownerId, room_id, meeting))
-    return {"assistantName": name, "title": meeting.get("title") or "Meeting", "context": context}
-
-
-async def _context(owner_id: str, room_id: str, meeting: dict) -> str:
-    """The inviter's state that everyone present may hear: never a person-only task, never private memory."""
-    members = await messaging_repo.list_members(room_id)
-    inviter = inviting_member(meeting, members)
-    if inviter is None:
-        return ""
-    people = [m["id"] for m in members if m.get("kind") == "human"]
-
-    def keep(t: dict) -> bool:
-        audience = t.get("audience") or {}
-        if audience.get("kind") == "person":
-            return False  # one person's task, even one asked in this meeting's room
-        return audience.get("roomId") == room_id or (
-            t.get("ownerUserId") == inviter and audience.get("kind") == "workspace"
-        )
-
-    return await voice_state.context(owner_id, inviter, room_id, keep, None, room_id, people)
+    return {"assistantName": name, "title": meeting.get("title") or "Meeting", "after": await latest_seq(room_id)}
 
 
 def inviting_member(meeting: dict, members: list[dict]) -> str | None:
@@ -116,172 +99,45 @@ def inviting_member(meeting: dict, members: list[dict]) -> str | None:
     return next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
 
 
-class WorkIn(RoomBody):
-    title: Annotated[str, Field(min_length=1, max_length=200)]
-    brief: Annotated[str, Field(min_length=1, max_length=8000)]
+class AskIn(RoomBody):
+    text: Annotated[str, Field(min_length=1, max_length=4000)]
     participantId: str = Field(default="", max_length=128)
     speakerName: str = Field(default="", max_length=120)
 
 
-@router.post("/internal/voice/meet/{room_id}/start-work", status_code=202)
-async def start_work(room_id: str, body: WorkIn) -> dict:
-    """An ask becomes a Worker task and a follow-up on the meeting. One title per occurrence is one task: a
-    repeat ask is "already on it" (the task id is derived from it). Runs as the inviting member."""
-    room_id, meta, meeting = await _meeting(room_id, body)
-    run_id = hashlib.sha256(
-        f"{room_id}:{meeting.get('inCallAt', 0)}:{body.title.strip().lower()}".encode()
-    ).hexdigest()[:32]
-    if await messaging_repo.get_voice_run(body.ownerId, run_id):
-        done = next((f for f in meeting.get("followUps") or [] if f.get("runId") == run_id), {})
-        return {"already": True, "taskId": done.get("taskId")}
-    member = inviting_member(meeting, await messaging_repo.list_members(room_id))
-    if member is None:
-        return {"started": False, "reason": "no_inviter"}
-    who = body.speakerName or ((meeting.get("roster") or {}).get(body.participantId) or {}).get("name") or ""
-    await messaging_repo.put_voice_run(
-        body.ownerId, run_id, {"roomId": room_id, "requesterUserId": member, "agentId": None}
-    )
-    brief = (
-        f'Asked aloud in the meeting "{meeting.get("title") or "Meeting"}" by {who or "a participant"}.\n\n{body.brief}'
-    )
-    out = await start_voice_work(
-        body.ownerId,
-        VoiceStartIn(run_id=run_id, call_id=room_id, room_id=room_id, title=body.title, brief=brief),
-        confirm_all=True,
-    )
-    entry = {
-        "text": body.title,
-        "status": "working",
-        "taskId": out["taskId"],
-        "runId": run_id,
-        "who": who,
-        "at": utc_now_iso(),
-    }
-    await meeting_invites._patch_meeting(room_id, lambda m: {"followUps": [*(m.get("followUps") or []), entry]})
-    await _tile_phase(room_id, "drafting")
-    return {"started": True, **out}
-
-
-class ApproveIn(RoomBody):
-    phrase: Literal["yes", "no", "undo"]
-    hint: str = Field(default="", max_length=300)
-    participantId: str = Field(default="", max_length=128)
-    speakerName: str = Field(default="", max_length=120)
-
-
-@router.post("/internal/voice/meet/{room_id}/approve")
-async def approve(room_id: str, body: ApproveIn) -> dict:
-    """Anyone's yes in the meeting is the inviting member's, and only queues their one-tap confirm."""
+@router.post("/internal/voice/meet/{room_id}/ask")
+async def ask(room_id: str, body: AskIn) -> dict:
+    """A line said to the assistant by name becomes a message in the meeting's room, as the inviting member's
+    (`via: voice`), naming who said it: it wakes the room's Router like a typed message."""
     room_id, _meta, meeting = await _meeting(room_id, body)
     member = inviting_member(meeting, await messaging_repo.list_members(room_id))
     if member is None:
-        return {"none": True}
-    who = body.speakerName or ((meeting.get("roster") or {}).get(body.participantId) or {}).get("name") or ""
-    speaker = {"user_id": member, "name": who, "where": meeting.get("title") or "the meeting"}
-    return await voice_approve.approve(body.ownerId, "meet", speaker, body.phrase, body.hint, room_id=room_id)
+        return {"posted": False, "reason": "no_inviter"}
+    who = body.speakerName or ((meeting.get("roster") or {}).get(body.participantId) or {}).get("name") or "Someone"
+    key = f"meet-ask:{room_id}:{meeting.get('inCallAt', 0)}:{body.participantId}:{body.text}"
+    msg = await messaging.create_human_message(
+        AuthContext(user_id=member, org_id=body.ownerId),
+        room_id,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+            text=f"{who} said in the meeting: {body.text}",
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+        via="voice",
+    )
+    return {"posted": True, "messageId": str(msg.message_id)}
 
 
-class ReadIn(RoomBody):
-    kind: Literal["memory", "calls", "calendar"]
-    question: str = Field(default="", max_length=1000)
-    days: Annotated[int, Field(le=90), AfterValidator(lambda d: max(d, 1))] = 7  # 0 or less: today
-    date: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
-    participantId: str = Field(default="", max_length=128)
-    from_: str = Field(default="", alias="from", pattern=r"^(\d{4}-\d{2}-\d{2})?$")  # call counts over local days
-    to: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
+class EventsIn(RoomBody):
+    after: int = Field(ge=0)
 
 
-def _started(call: dict) -> datetime:
-    try:
-        at = datetime.fromisoformat(call.get("startedAt") or "")
-    except ValueError:
-        return datetime.min.replace(tzinfo=UTC)
-    return at if at.tzinfo else at.replace(tzinfo=UTC)
-
-
-async def _calls(owner_id: str, days: int, frm: str = "", to: str = "") -> dict:
-    """Phone calls in the last `days`, or on the business's local days `frm`..`to` inclusive, by outcome (the call
-    rooms' META.call records)."""
-    since, until = datetime.now(UTC) - timedelta(days=days), datetime.max.replace(tzinfo=UTC)
-    if frm:
-        to = to or frm
-        since = datetime.fromisoformat(frm).replace(tzinfo=_TZ)
-        until = datetime.fromisoformat(to).replace(tzinfo=_TZ) + timedelta(days=1)
-    # ponytail: one META read per call room, capped at the newest 200; a calls index when volume needs it.
-    rows = [r for r in await messaging_repo._query(messaging_repo.owner_pk(owner_id), begins_with="ROOM#")
-            if str(r.get("name", "")).startswith("Call · ")]  # fmt: skip
-    rows = sorted(rows, key=lambda r: r.get("createdAt", ""), reverse=True)[:200]
-    outcomes: dict[str, int] = {}
-    for r in rows:
-        call = ((await messaging_repo.get_room(r["roomId"])) or {}).get("call") or {}
-        if since <= _started(call) < until:  # startedAt carries the business's offset: compare as times
-            key = call.get("outcome") or call.get("status") or "unknown"
-            outcomes[key] = outcomes.get(key, 0) + 1
-    span = {"from": frm, "to": to} if frm else {"days": days}
-    return {**span, "calls": sum(outcomes.values()), "byOutcome": outcomes}
-
-
-@router.post("/internal/voice/meet/{room_id}/read")
-async def read(room_id: str, body: ReadIn) -> dict:
-    """The meeting's read tools: workspace memory (never a person's private scope: everyone hears it), call
-    counts, and the assistant's own calendar."""
-    room_id, _meta, meeting = await _meeting(room_id, body)
-    if body.kind == "memory":
-        page = await memory_api.recall_page(
-            body.ownerId, None, body.question or "recent decisions", budget_tokens=1500,
-            audience={"kind": "room", "roomId": room_id},
-        )  # fmt: skip
-        return {"facts": [" ".join(r["content"].split())[:400] for r in page.get("results", [])[:6]]}
-    if body.kind == "calls":
-        return await _calls(body.ownerId, body.days, body.from_, body.to)
-    rows = await _bookings(body.ownerId, body.date)
-    return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b.get("service"),
-                          "name": b.get("name")} for b in rows[:50]]}  # fmt: skip
-
-
-class IntegrationIn(RoomBody):
-    provider: Annotated[str, Field(min_length=1, max_length=40)]
-    query: str = Field(default="", max_length=300)
-    participantId: str = Field(default="", max_length=128)
-
-
-@router.post("/internal/voice/meet/{room_id}/integrations")
-async def integrations(room_id: str, body: RoomBody) -> dict:
-    await _meeting(room_id, body)
-    return {"connected": await integration_reads.connected(body.ownerId)}
-
-
-@router.post("/internal/voice/meet/{room_id}/integration-read")
-async def integration_read(room_id: str, body: IntegrationIn) -> dict:
-    """One bounded read of a connected integration (integration_reads)."""
-    room_id, _meta, meeting = await _meeting(room_id, body)
-    out = await integration_reads.read(body.ownerId, body.provider, body.query)
-    return out if isinstance(out, dict) else {"text": out}
-
-
-class ChatIn(RoomBody):
-    text: Annotated[str, Field(min_length=1, max_length=20000)]
-    participantId: str = Field(default="", max_length=128)
-
-
-@router.post("/internal/voice/meet/{room_id}/chat")
-async def chat(room_id: str, body: ChatIn) -> dict:
-    """A short line goes to the Meet's chat as it is; a draft or a long answer is posted to the meeting's room
-    and the chat gets its first line and a link."""
-    room_id, _meta, meeting = await _meeting(room_id, body)
-    bot = meeting.get("recallBotId")
-    if not bot:
-        raise _problem(409, "no_bot")
-    if len(body.text) <= CHAT_CHARS:
-        await meeting_bots.say(bot, body.text)
-        return {"sent": "chat"}
-    key = f"meeting:{bot}:draft:{hashlib.sha256(body.text.encode()).hexdigest()[:16]}"
-    await meeting_invites._post_line(body.ownerId, room_id, key, body.text)
-    target = await meeting_invites.output_room(body.ownerId, room_id)
-    link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
-    head = body.text.strip().splitlines()[0][:200]
-    await meeting_bots.say(bot, f"{head} ... Full text: {link}")
-    return {"sent": "link", "link": link}
+@router.post("/internal/voice/meet/{room_id}/events")
+async def events(room_id: str, body: EventsIn) -> dict:
+    """The agent messages the meeting's room got after `after`: the voice says each one in the meeting."""
+    room_id, _meta, _meeting_map = await _meeting(room_id, body)
+    return await agent_lines(room_id, body.after)
 
 
 class EndIn(RoomBody):

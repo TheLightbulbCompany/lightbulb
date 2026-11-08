@@ -15,7 +15,7 @@ from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import agent_email_repo, container_repo, messaging_repo
+from core.repositories import agent_email_repo, container_repo, messaging_repo, tasks_repo
 from core.services import (
     agent_email,
     agent_mail_send,
@@ -45,9 +45,15 @@ def owed(meeting: dict) -> bool:
     )
 
 
+#: How the voice's own lines are marked in the transcript: the notes take action items only from people.
+ASSISTANT_MARK = " (the assistant)"
+
+
 def _render(lines: list[dict]) -> str:
     return "".join(
-        f"[{time.strftime('%H:%M', time.gmtime(x.get('at') or 0))}] {x['name']}: {x['text']}\n" for x in lines
+        f"[{time.strftime('%H:%M', time.gmtime(x.get('at') or 0))}] {x['name']}"
+        f"{ASSISTANT_MARK if x.get('kind') == 'agent' else ''}: {x['text']}\n"
+        for x in lines
     )
 
 
@@ -183,8 +189,9 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 f"meeting:{room_id}:{occurrence}:notes",
                 f"Write the meeting notes for {title}: decisions, open questions, two paragraphs max, then a last "
                 'section headed "Action items:" with one line per item ("- <owner>: <what>"); do not create tasks '
-                "yourself, each action item becomes a thread for the team; the transcript is attached"
-                + _unsaid_text(meeting),
+                "yourself, each action item becomes a thread for the team. Action items come only from what people "
+                f"said: never from a line marked{ASSISTANT_MARK}, which is the voice repeating the team. The "
+                "transcript is attached" + _unsaid_text(meeting),
                 dispatch_targets=[{"agentId": writer, "eventKind": "user_request"}],
             )
             if message:
@@ -328,7 +335,7 @@ async def _mail_organizer(
 
 #: What a notes run's mail reads from the meeting, snapshotted when the run is dispatched.
 _MAIL_FIELDS = (
-    "title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt", "unsaid",
+    "title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt", "unsaid", "inCallAt",
 )  # fmt: skip
 
 
@@ -400,6 +407,52 @@ def action_items(notes: str) -> list[str]:
     return [i for i in items if i]
 
 
+_TASK_STATUSES = ("queued", "working", "waiting", "idle", "resolved", "failed")
+_TASKS_PAGE = 50
+_STOP = frozenset(
+    """the and for with from that this then them they their your our out into about after before
+more some will should would could have has had been what when were also just only than over make made send share
+finalize finish draft write post""".split()
+)
+
+
+def _words(text: str) -> set[str]:
+    """The content words of a line: lowercase, plural "s" dropped, short and common words left out."""
+    return {w.rstrip("s") for w in re.findall(r"[a-z]+", text.lower().replace("colour", "color")) if len(w) > 2} - _STOP
+
+
+def covered(item: str, titles: list[str]) -> bool:
+    """A task already started in the meeting covers the item: at least two of the item's content words (the owner
+    prefix "<owner>:" aside), and half of the fewer, are in its title ("Finalize and share holiday-hours post" is
+    "Draft the holiday-hours post", 8 Nov prod Meet re-run LB-24 vs LB-19)."""
+    want = _words(item.split(":", 1)[-1])
+    for title in titles:
+        have = _words(title)
+        shared = want & have
+        if len(shared) >= 2 and 2 * len(shared) >= min(len(want), len(have)):
+            return True
+    return False
+
+
+async def _meeting_task_titles(owner_id: str, room_id: str, since: int) -> list[str]:
+    """Titles of the tasks the meeting's room started since the call began (open or done): its Router's threads
+    (their room subscription) and the room's own tasks."""
+    from core.temporal.activities import _origin  # the room a task came from (its Router subscription)
+
+    after = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(since))
+    titles = []
+    for status in _TASK_STATUSES:
+        # ponytail: one page per status, newest first; a meeting starts far fewer than 50 threads
+        page, _ = await tasks_repo.list_tasks_by_status(owner_id, status, limit=_TASKS_PAGE)
+        for t in page:
+            if (t.get("createdAt") or "") < after:
+                continue
+            here = (t.get("audience") or {}).get("roomId") == room_id
+            if here or _origin(await tasks_repo.get_task_tree(owner_id, t["taskId"]))[0] == room_id:
+                titles.append(t.get("title") or "")
+    return titles
+
+
 async def _file_action_items(owner_id: str, message_id: str, request: dict, notes: str) -> None:
     """Action items -> threads (super-agent plan: "meeting action items → Requests, not Paperclip"): one message in
     the meeting's own room as the inviting member, which its Router starts a thread for each, like an addressed line
@@ -409,6 +462,10 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
     items = action_items(notes)
     room_id = request["roomId"]
     meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+    since = int((request.get("meeting") or {}).get("inCallAt") or meeting.get("inCallAt") or 0)
+    if items:  # work the meeting already started, open or done, is not filed again (LB-24 duplicated finished LB-19)
+        titles = await _meeting_task_titles(owner_id, room_id, since)
+        items = [i for i in items if not covered(i, titles)]
     member = inviting_member(meeting, await messaging_repo.list_members(room_id)) if items else None
     if member is None:
         return

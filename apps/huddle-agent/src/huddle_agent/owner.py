@@ -3,11 +3,12 @@ design; super-agent-design/evidence/voice/voice-brain-architecture-research.md, 
 Live in their DM with the assistant (agent.py hands it every `mode: "owner"` dispatch), a realtime talker owns the
 spoken conversation and the DM's Router is the one brain.
 
-The talker has one tool, `delegate`: every substantive request goes to the DM as the member's message (`/owner/turn`,
-via voice, wake on), with the talk's turns since the last delegation, and the talker says a short holding line. It
-answers only greetings, thanks and "are you there" itself. The Router's and its Workers' messages in the DM come back
-through `/events`, and the talker says each once, briefly, adding nothing (mouth.py). Approval is the one-tap card;
-a spoken "yes" is only a delegated message. Interrupting stops the speech, never the post.
+The talker has no tools and never replies on its own (create_response off): code decides every final line
+(mouth.Talker.line). A greeting or thanks gets a short reply; every other line goes to the DM as the member's message
+(`/owner/turn`, via voice, wake on), with the talk's turns since the last ask, and the fixed holding line is said. The
+Router's and its Workers' messages in the DM come back through `/events`, and the talker says each once, briefly,
+adding nothing (mouth.py). Approval is the one-tap card; a spoken "yes" is only a delegated message. Interrupting
+stops the speech, never the post.
 """
 
 from __future__ import annotations
@@ -20,13 +21,13 @@ import os
 import time
 
 from livekit import rtc
-from livekit.agents import AgentSession, JobContext, function_tool, room_io
+from livekit.agents import AgentSession, JobContext, room_io
 from livekit.plugins import openai
 from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVad
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import DELEGATE_DOC, Mouth, Talker
+from huddle_agent.mouth import Mouth, Talker
 from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
@@ -38,21 +39,20 @@ WAIT_S = 90.0  # after a delegation the talk stays open this long for its answer
 
 INSTRUCTIONS = """You are {name}, the voice of this business's AI assistant, talking with {who} in the Lightbulb app.
 Today is {today}. You own only the conversation; the team behind you owns every fact, tool and decision.
-- Greetings, thanks, "are you there?", "can you hear me?": answer yourself, in a few words.
-- Everything else -- any question, request, correction, a yes or a no, "stop that thread" -- call delegate with what
-  they asked in their own words, then say one short natural holding line ("Let me check.") and stop. Never answer it
-  yourself, never guess, never say anything is done or approved. You cannot approve anything: a yes is delegated.
-- When a message from the team arrives, say it as you are told, adding nothing.
+Every request goes to the team before you hear it, and a holding line is said for you.
+- Greetings, thanks, "are you there?", "can you hear me?": answer in a few words.
+- Otherwise say only what you are told to say: the holding line, or a message from the team, adding nothing.
 Speak briefly and naturally, one or two short sentences."""
 
 
 def realtime_model():
     """gpt-realtime-2.1-mini (gpt-realtime and -mini shut down 20 Jan 2027, developers.openai.com/api/docs/deprecations).
     Semantic turns, low eagerness: owners pause mid-thought ("the invoice for... Acme"); silence-only VAD cuts them
-    off. interrupt_response: talking over the voice stops it (developers.openai.com/api/docs/guides/realtime-vad)."""
+    off. create_response off: code answers each line (Talker.line), never the model on its own. interrupt_response:
+    talking over the voice stops it (developers.openai.com/api/docs/guides/realtime-vad)."""
     return openai.realtime.RealtimeModel(
         model=os.environ.get("OWNER_MODEL", "gpt-realtime-2.1-mini"), voice=os.environ.get("OWNER_VOICE", "marin"),
-        turn_detection=SemanticVad(type="semantic_vad", eagerness="low", create_response=True, interrupt_response=True),
+        turn_detection=SemanticVad(type="semantic_vad", eagerness="low", create_response=False, interrupt_response=True),
     )
 
 
@@ -84,7 +84,7 @@ class Quiet:
 
 
 class OwnerAgent(Talker):
-    """The talker: no tool but `delegate`."""
+    """The talker: no tools."""
 
     where = "owner"
 
@@ -92,10 +92,6 @@ class OwnerAgent(Talker):
         super().__init__(INSTRUCTIONS.format(**info))
         self._turns, self.allow = turns, (info["name"], info["who"])
         self.delegated_at = 0.0  # when the last request went to the Router (the talk waits for its answer)
-
-    @function_tool(description=DELEGATE_DOC)
-    async def delegate(self, request: str) -> dict:
-        return self.tool_delegate(request)
 
     def post(self, request: str) -> None:
         # a task of its own: an interruption cancels the talker's reply, never the post
@@ -134,9 +130,8 @@ class Turns:
 
 def talk_session() -> AgentSession:
     """vad=None: no separate VAD (1.8.11 builds a silero one unless told not to, but leaves it unwired under server
-    turn detection), so user_state comes from the realtime model's own speech_started/stopped: speaking -> listening is
-    the end of the turn it answers, before its transcript (Talker.turn_ended depends on that order). Quiet ends the
-    talk, not user_away_timeout."""
+    turn detection), so user_state comes from the realtime model's own speech_started/stopped. Quiet ends the talk,
+    not user_away_timeout."""
     return AgentSession(llm=realtime_model(), vad=None, user_away_timeout=None)
 
 
@@ -176,7 +171,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
             items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
             if ev.item.role == "user":
-                agent.heard(who, text)
+                agent.line(who, text)  # code decides: a short reply to small talk, else posted and held
             elif not ev.item.interrupted:
                 agent.context.add(name, text)
 
@@ -209,7 +204,6 @@ async def run(ctx: JobContext, meta: dict) -> None:
         quiet_timer.update(talk["live"], session.user_state, "thinking" if waiting else session.agent_state)
 
     session.on("user_state_changed", recount)
-    session.on("user_state_changed", lambda ev: ev.old_state == "speaking" and agent.turn_ended())
     for event in ("track_published", "track_unpublished", "track_muted", "track_unmuted"):
         ctx.room.on(event, recount)
 

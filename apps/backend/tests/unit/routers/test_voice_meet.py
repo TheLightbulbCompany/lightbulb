@@ -274,3 +274,52 @@ async def test_a_refused_or_foreign_question_falls_back_to_a_message(m):
     ):
         assert (await voice_meet.ask(ROOM, _ask()))["posted"] is True  # not a question said in this room
     sa.assert_not_awaited()
+
+
+def _made_task():
+    """A Router thread started from a meeting message (a `chat:` trigger, no follow-up), that made a document."""
+    return {"taskId": "k9", "title": "Draft the holiday-hours post", "status": "idle", "triggerId": "chat:m7",
+            "attemptCount": 1, "audience": {"kind": "room", "roomId": ROOM},
+            "outputs": [{"id": "file:a1", "kind": "document", "title": "holiday-hours-post.md"}]}  # fmt: skip
+
+
+async def _announce_made(m, task):
+    from core.temporal import activities
+
+    tree = {"task": task, "attempts": [{"n": 1, "outcome": "completed", "output": "Drafted the holiday-hours post."}],
+            "subscriptions": [{"createdBy": "router", "threadKey": f"room:{ROOM}:root1"}]}  # fmt: skip
+    post = AsyncMock()
+    with (
+        patch.object(activities.tasks_repo, "get_task_tree", AsyncMock(return_value=tree)),
+        patch.object(activities.task_conversation, "ensure_task_room", AsyncMock()),
+        patch.object(activities.task_conversation, "post_as_lightbulb", post),
+        patch.object(voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"meeting": m["meeting"]})),
+        patch.object(voice_meet, "_tile_phase", AsyncMock()),
+    ):
+        await activities._announce("org_1", task["taskId"], "idle")
+    return next(c.kwargs["text"] for c in post.await_args_list if c.kwargs.get("kind") == "task_line")
+
+
+async def test_a_meeting_thread_that_made_something_posts_its_link_in_the_room_and_the_meet_chat(m):
+    """8 Nov prod Meet re-run: "put the link in chat" -- LB-19 made holiday-hours-post.md, but the room line had only
+    a task card and nothing reached the Meet's chat (`task_moved` says a link only for follow-ups, never written)."""
+    m["meeting"].update(status="in_call")
+    line = await _announce_made(m, _made_task())
+    assert line.startswith("Drafted the holiday-hours post.") and line.endswith("/chat?panel=task&taskId=k9")
+    m["say"].assert_awaited_once_with("bot_1", line)
+    await _announce_made(m, _made_task())  # a retried Activity: the Meet chat gets it once
+    m["say"].assert_awaited_once()
+
+
+async def test_after_the_call_the_room_line_still_has_the_link_and_an_answer_gets_none(m):
+    m["meeting"].update(status="ended")
+    line = await _announce_made(m, _made_task())
+    assert line.endswith("taskId=k9") and m["say"].await_count == 0
+    m["meeting"].update(status="in_call")
+    line = await _announce_made(m, {**_made_task(), "outputs": []})  # an answer: nothing made, no link
+    assert "http" not in line and m["say"].await_count == 0
+
+
+async def test_a_thread_outside_a_meeting_keeps_its_line():
+    with patch.object(voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"})):
+        assert await voice_meet.with_link("dm-1", _made_task(), "Done.") == "Done."

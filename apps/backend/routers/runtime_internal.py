@@ -509,6 +509,63 @@ async def worker_ask(owner_id: str, body: AskBody, request: Request) -> dict:
     return await _question_view(opened)
 
 
+class FrontDeskBody(BaseModel):
+    task_id: str = Field(alias="taskId")
+    run_id: str = Field(alias="runId")
+    attempt: int = Field(ge=1)
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+    action: Literal["availability", "book", "my_bookings", "move", "cancel", "message"]
+    date: str = ""
+    service: str = ""
+    start: str = ""
+    new_start: str | None = None
+    name: str = ""
+    text: str = ""
+    callback_number: str = ""
+
+
+@router.post("/{owner_id}/front-desk")
+async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> dict:
+    """A phone caller's thread acts for that caller (governance P2, the caller case): the call comes from the task's
+    own trigger, never the model, and each action is the phone's own route, which keeps a caller to their own
+    bookings and honours the Agent page's allow switches. 403 for any task that is not a caller's."""
+    from pydantic import ValidationError
+
+    from core.services import business_profile
+    from routers import voice_phone as vp
+
+    await _gate(owner_id, request)
+    att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
+    task = await _current_task(owner_id, att, body.task_id, body.attempt)
+    trig = await tasks_repo.get_trigger(owner_id, task["triggerId"]) if task.get("triggerId") else None
+    call_id = ((trig or {}).get("ref") or {}).get("callId")
+    meta = await vp.messaging_repo.get_room(call_id) if call_id else None
+    if (
+        not await tasks_repo.from_contact(owner_id, task)
+        or (meta or {}).get("kind") != "call"
+        or meta.get("ownerId") != owner_id
+    ):
+        raise HTTPException(status_code=403, detail="not_a_caller_thread")
+    try:
+        if body.action == "availability":
+            return await vp.availability(call_id, vp.DateIn(date=body.date, service=body.service))
+        if body.action == "my_bookings":
+            return await vp.my_bookings(call_id)
+        if body.action == "message":
+            return await vp.take_message(
+                call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)
+            )
+        try:
+            if body.action == "book":
+                return await vp.book(call_id, vp.BookIn(start=body.start, service=body.service, name=body.name))
+            new = body.new_start if body.action == "move" else None
+            return await vp.change_booking(call_id, vp.ChangeIn(start=body.start, newStart=new))
+        finally:  # the caller's batch and thread see the change at once, not after the 60 s cache
+            business_profile.forget(owner_id)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+
+
 NOTE_CAP = 20  # notes per attempt
 
 

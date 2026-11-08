@@ -124,6 +124,9 @@ class RunRequest:
     # `unsupported_in_this_version` until the image carries F1. `faults` are dev-only kill hooks the bridge reads.
     effects: Literal["off", "required"] = "off"
     faults: tuple[str, ...] = ()
+    # "caller": a phone caller's thread. The bridge gives it only the caller's booking tools and no integration
+    # tokens (governance P2, the caller case); absent = a member's run, unchanged.
+    principal: Literal["caller"] | None = None
 
     def __post_init__(self) -> None:
         if self.effects not in ("off", "required"):
@@ -143,6 +146,8 @@ class RunRequest:
             wire["memory"] = self.memory
         if self.faults:
             wire["faults"] = list(self.faults)
+        if self.principal:
+            wire["principal"] = self.principal
         return wire
 
 

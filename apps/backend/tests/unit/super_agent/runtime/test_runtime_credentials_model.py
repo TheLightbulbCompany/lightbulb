@@ -97,3 +97,25 @@ async def test_force_requires_presented_hash(async_client, wired):
     r = await async_client.post(URL + "/model", json={"agent_id": "ceo", "force": True}, headers=HDR)
     assert r.status_code == 400  # the app answers request validation errors with 400
     wired["vend"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_caller_thread_never_receives_owner_tokens(async_client, wired):
+    """Governance P2, the caller case (founder, 8 Nov): a phone caller's thread vends the model grant only."""
+    body = (await async_client.post(URL, json={"agent_id": "ceo", "principal": "caller"}, headers=HDR)).json()
+    assert body["tokens"] == {} and body["model"]["access_token"] == "AT-model"
+    assert "microsoft365" not in body.get("expires_at", {})
+    wired["rpc"].access_token.get_with_expiry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_backend_decides_the_caller_from_the_task_row(async_client, wired, monkeypatch):
+    """Defense in depth: a caller's task vends no owner token even when the bridge declares nothing."""
+    rpc = wired["rpc"]
+    rows = {"t-caller": {"origin": "phone_contact"}, "t-member": {"origin": None, "triggerId": "chat:m1"}}
+    monkeypatch.setattr(rpc.tasks_repo, "get_task", AsyncMock(side_effect=lambda _o, t: rows.get(t)))
+    monkeypatch.setattr(rpc.tasks_repo, "get_trigger", AsyncMock(return_value={"ref": {}}))
+    vend = lambda t: async_client.post(URL, json={"agent_id": "ceo", "task_id": t}, headers=HDR)  # noqa: E731
+    assert (await vend("t-caller")).json()["tokens"] == {}
+    assert (await vend("t-unknown")).json()["tokens"] == {}  # fail closed
+    assert (await vend("t-member")).json()["tokens"] == {"microsoft365": "graph"}

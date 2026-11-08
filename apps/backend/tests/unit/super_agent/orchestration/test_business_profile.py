@@ -172,6 +172,10 @@ async def test_a_callers_thread_gets_the_profile_and_the_caller_principal(monkey
     assert "## Business profile" in req.input and "Pedicure $45" in req.input
     assert req.principal == "caller" and req.to_wire()["principal"] == "caller"
     assert "offer up to 3 open times" in req.instructions  # 8 Nov prod: six slots read out to a caller
+    # 8 Nov prod booking smoke after #5123: 9 AM picked with no times offered; the service asked only after "yes"
+    note = acts.CALLER_THREAD_NOTE
+    assert "never pick a time yourself" in note and "already named a service or time, reuse it" in note
+    assert "read the exact service, day and time back once" in note and 'On their "yes", book it at once' in note
     member = await acts._request("org_x", task | {"origin": "member"}, att, tree)
     assert "## Business profile" not in member.input and "principal" not in member.to_wire()
     assert "offer up to 3" not in member.instructions

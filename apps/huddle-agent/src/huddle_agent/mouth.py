@@ -17,6 +17,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from livekit.agents import Agent
+from openai.types.realtime.audio_transcription import AudioTranscription
 
 from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
@@ -139,8 +140,25 @@ def added_facts(spoken: str, source: str, allow: tuple[str, ...] = ()) -> list[s
 TEAM = "[The team's message, to tell them now; not said by them]"
 
 
+#: Opens a fixed line (the holding line, a phone line) as the newest turn. Instructions alone, the model answered the
+#: newest turn instead: a team message just said, so one result was spoken 3 times, rephrased, by itself and the two
+#: holding lines queued behind it, and the next message (Monday's slots) never (8 Nov prod smoke after #5123, move).
+LINE = "[Your next line, to say now; not said by them]"
+
+#: The language every voice hears and speaks. Unpinned, the realtime default transcriber heard an English caller as "はい。" and
+#: "Szerelt?", and Nova replied in Japanese (8 Nov prod smoke after #5123, book). No business sets a language yet.
+LANGUAGE = "en"
+ENGLISH = "Speak only English, whatever language a line seems to be in."
+TRANSCRIPTION = AudioTranscription(model="gpt-transcribe", language=LANGUAGE)  # as Meet's STT
+
+
 def team_line(text: str) -> bool:
-    return text.startswith(TEAM)
+    """A turn code added (a team message or a fixed line), never a person's line."""
+    return text.startswith((TEAM, LINE))
+
+
+def line_input(instructions: str) -> str:
+    return f"{LINE}\n{instructions}"
 
 
 def verbatim_instructions(texts: list[str]) -> str:
@@ -211,7 +229,7 @@ class Talker(Agent):
 
     def say_fixed(self, text_or_rule: str):
         """A fixed line (the holding line, a phone line), never checked."""
-        speech = self.reply(text_or_rule)
+        speech = self.reply(text_or_rule, user_input=line_input(text_or_rule))
         self.unchecked(speech)
         return speech
 

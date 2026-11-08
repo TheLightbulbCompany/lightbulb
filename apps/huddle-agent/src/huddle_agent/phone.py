@@ -41,7 +41,7 @@ from openai.types.beta.realtime.session import TurnDetection
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import REPEAT, Mouth, Talker, fixed, team_line
+from huddle_agent.mouth import ENGLISH, REPEAT, TRANSCRIPTION, Mouth, Talker, fixed, line_input, team_line
 
 logger = logging.getLogger("phone")
 # One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
@@ -93,7 +93,7 @@ disclosure was missed, say the one disclosure sentence exactly as given, then co
 
 INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}.
 {opening}Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:"): every word you speak is
-for the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk.
+for the caller. """ + ENGLISH + """ Speak briefly and warmly, one or two sentences at a time, like a good front desk.
 {caller}The front desk team behind you answers every question, booking and change; each caller line goes to them
 before you hear it, and a holding line is said for you.
 - Greetings, thanks, "are you there?", "can you hear me?": answer in a few words.
@@ -259,10 +259,17 @@ def say_disclosure(session, line: str) -> None:
     ))
 
 
+def realtime_model():
+    """The caller's words transcribed as English (mouth.TRANSCRIPTION): they are what the room and the Router read."""
+    return openai.realtime.RealtimeModel(
+        model=MODEL, voice=VOICE, turn_detection=SERVER_TURNS, input_audio_transcription=TRANSCRIPTION
+    )
+
+
 def line(session, instructions: str):
     """A phone-only line said from instructions (still there, goodbye, a holding or message offer), tools off: with
     tools on, the model calls delegate instead of speaking it."""
-    return session.generate_reply(instructions=instructions, tool_choice="none")
+    return session.generate_reply(instructions=instructions, user_input=line_input(instructions), tool_choice="none")
 
 
 def greet(session, opening: str = ""):
@@ -592,7 +599,7 @@ async def entrypoint(ctx: JobContext) -> None:
             # vad=None (as owner.py): user_state comes from the realtime model's own speech_started/stopped.
             # server_vad, not semantic_vad: the plugin's semantic_vad took 5-7 s to answer (book eval, 7 Nov).
             # Gemini keeps its own turn-taking (and replies on its own: the flag-only fallback is not code-driven).
-            dict(llm=openai.realtime.RealtimeModel(model=MODEL, voice=VOICE, turn_detection=SERVER_TURNS), vad=None)
+            dict(llm=realtime_model(), vad=None)
             if OPENAI
             else dict(llm=google.realtime.RealtimeModel(model=MODEL, voice=VOICE, api_version="v1beta"))
         ),

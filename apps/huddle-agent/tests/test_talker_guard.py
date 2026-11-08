@@ -87,7 +87,7 @@ async def test_a_substantive_line_is_posted_and_only_the_holding_line_is_said(ta
     assert talker.line("Maya", said) == "asked"
     await talker._turns.flush()
     assert talker.backend.sent == [said]
-    assert session.replies == [mouth.HOLD] and session.kw == [{"tool_choice": "none"}]  # the model says nothing else
+    assert session.replies == [mouth.HOLD] and session.kw == [{"user_input": mouth.line_input(mouth.HOLD), "tool_choice": "none"}]  # the model says nothing else
     assert session.made[-1].id in talker.free  # the fixed line is never cut
 
 

@@ -308,6 +308,10 @@ SESSION_CREDENTIALS_HEADER = "X-Lightbulb-Aws-Session"
 SESSION_CREDENTIALS_S = 3600
 _SESSION_REFRESH_S = 900
 _SESSION_CREDENTIALS: dict[str, tuple[float, dict[str, str]]] = {}
+#: After a failed mint, invokes for that owner go without credentials this long before STS is tried again.
+_SESSION_FAILED_S = 60
+_SESSION_FAILED: dict[str, float] = {}
+_STS_CONFIG_KW = {"connect_timeout": 2, "read_timeout": 5, "retries": {"total_max_attempts": 2, "mode": "standard"}}
 
 
 def _session_credentials_header(owner_id: str) -> dict[str, str]:
@@ -325,25 +329,33 @@ def _session_credentials_header(owner_id: str) -> dict[str, str]:
     cached = _SESSION_CREDENTIALS.get(owner_id)
     if cached and cached[0] - time.time() > _SESSION_REFRESH_S:
         return cached[1]
+    if _SESSION_FAILED.get(owner_id, 0.0) > time.time():
+        return {}  # STS failed moments ago: not again on every invoke
     import boto3
+    from botocore.config import Config
     from botocore.exceptions import BotoCoreError, ClientError
 
     from core.billing.bedrock_aip import build_owner_session_policy
 
-    memory_arn = ""
-    if settings.AGENTCORE_MEMORY_ID:
-        account = role.split(":")[4]  # arn:aws:iam::<account>:role/<name>
-        memory_arn = f"arn:aws:bedrock-agentcore:{settings.AWS_REGION}:{account}:memory/{settings.AGENTCORE_MEMORY_ID}"
-    policy = build_owner_session_policy(owner_id, settings.OWNER_STATE_BUCKET, memory_arn)
     try:
-        creds = boto3.client("sts", region_name=settings.AWS_REGION).assume_role(
+        memory_arn = ""
+        if settings.AGENTCORE_MEMORY_ID:
+            account = role.split(":")[4]  # arn:aws:iam::<account>:role/<name>
+            memory_arn = (
+                f"arn:aws:bedrock-agentcore:{settings.AWS_REGION}:{account}:memory/{settings.AGENTCORE_MEMORY_ID}"
+            )
+        policy = build_owner_session_policy(owner_id, settings.OWNER_STATE_BUCKET, memory_arn)
+        # Short budgets: an STS outage must cost an invoke seconds, not boto's 60 s connect default.
+        sts = boto3.client("sts", region_name=settings.AWS_REGION, config=Config(**_STS_CONFIG_KW))
+        creds = sts.assume_role(
             RoleArn=role,
             RoleSessionName=f"lb-{owner_id}"[:64],
             Policy=json.dumps(policy, separators=(",", ":")),
             DurationSeconds=SESSION_CREDENTIALS_S,
         )["Credentials"]
-    except (ClientError, BotoCoreError) as exc:
+    except (ClientError, BotoCoreError, IndexError) as exc:
         logger.warning("session credentials for owner %s failed: %s", owner_id, str(exc)[:160])
+        _SESSION_FAILED[owner_id] = time.time() + _SESSION_FAILED_S
         return {}
     expires = creds["Expiration"]
     header = {

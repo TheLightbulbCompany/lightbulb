@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from unittest.mock import patch
 
 from core.billing.bedrock_aip import build_owner_session_policy
 from core.services import runtime_transport as rt
@@ -73,8 +74,10 @@ def sts(monkeypatch):
     monkeypatch.setattr(settings, "OWNER_STATE_BUCKET", BUCKET)
     monkeypatch.setattr(settings, "AGENTCORE_MEMORY_ID", "ws-mem-AbCdEf1234")
     monkeypatch.setattr(rt, "_SESSION_CREDENTIALS", {})
+    monkeypatch.setattr(rt, "_SESSION_FAILED", {})
     client = _Sts()
-    monkeypatch.setattr("boto3.client", lambda name, **kw: client)
+    client.kw = {}
+    monkeypatch.setattr("boto3.client", lambda name, **kw: (client.kw.update(kw), client)[1])
     return client
 
 
@@ -90,13 +93,34 @@ def test_credentials_are_minted_with_the_owners_session_policy_and_cached(sts):
     assert len(sts.calls) == 2 and "org_b" in sts.calls[1]["Policy"]
 
 
+def test_sts_gets_short_budgets(sts):
+    rt._session_credentials_header("org_a")
+    config = sts.kw["config"]
+    assert (config.connect_timeout, config.read_timeout) == (2, 5)
+    assert config.retries == {"total_max_attempts": 2, "mode": "standard"}
+
+
 def test_no_role_or_a_failed_mint_sends_no_credentials(sts, monkeypatch):
     from core.config import settings
 
     sts.fail = True
     assert rt._session_credentials_header("org_a") == {}
-    monkeypatch.setattr(settings, "HERMES_TENANT_ROLE_ARN", "")
     assert rt._session_credentials_header("org_a") == {}
+    assert len(sts.calls) == 1  # a failure is not retried on every invoke
+    monkeypatch.setitem(rt._SESSION_FAILED, "org_a", 0.0)  # the 60 s are up
+    sts.fail = False
+    assert rt._session_credentials_header("org_a")
+    assert len(sts.calls) == 2
+    monkeypatch.setattr(settings, "HERMES_TENANT_ROLE_ARN", "")
+    assert rt._session_credentials_header("org_b") == {}
+
+
+def test_a_malformed_role_arn_sends_no_credentials_and_never_fails_the_invoke(sts, monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "HERMES_TENANT_ROLE_ARN", "not-an-arn")
+    assert rt._session_credentials_header("org_a") == {}
+    assert sts.calls == []
 
 
 @pytest.mark.asyncio
@@ -110,11 +134,13 @@ async def test_every_invoke_and_the_wake_carry_the_owners_credentials(sts, monke
 
     client = Client()
     monkeypatch.setattr("boto3.client", lambda name, **kw: client)
-    monkeypatch.setattr(rt, "_ensure_session", lambda owner_id, arn, deadline, wake: wake())  # a cold session
-    await rt.request(
-        {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"},
-        "/plugins/lightbulb-channel/rpc",
-        json_body={},
-    )
+    # patch.object, not monkeypatch: conftest stubs this with patch.object, and a monkeypatch undo
+    # would put that stub back after conftest restored the real one (leaking it into later files).
+    with patch.object(rt, "_ensure_session", lambda owner_id, arn, deadline, wake: wake()):  # a cold session
+        await rt.request(
+            {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"},
+            "/plugins/lightbulb-channel/rpc",
+            json_body={},
+        )
     assert len(captured) == 2  # the wake, then the call
     assert all(json.loads(e["headers"][rt.SESSION_CREDENTIALS_HEADER])["sessionToken"] == "token" for e in captured)

@@ -11,6 +11,8 @@ export interface RoomHuddle {
   userIds: string[];
   /** Huddles are switched on (the server's LiveKit is configured). False until the seed answers. */
   available: boolean;
+  /** The room has agents (Lightbulb would join). Outside a DM that is a 409: agent voice lives in the DM. */
+  lightbulb: boolean;
 }
 
 /** User ids in this room's huddle: seeded from the server, then kept by `room.huddle.changed` (a full snapshot).
@@ -21,6 +23,7 @@ export function useRoomHuddle(roomId: string | undefined): RoomHuddle {
   const { onEvent, connectionRevision } = useLiveEvents();
   const [state, setState] = useState<{ roomId?: string; userIds: string[] }>({ userIds: [] });
   const [available, setAvailable] = useState(false);
+  const [lightbulb, setLightbulb] = useState(false);
 
   useEffect(() => {
     if (!roomId) return;
@@ -37,8 +40,9 @@ export function useRoomHuddle(roomId: string | undefined): RoomHuddle {
       api.get(`/huddles/${encodeURIComponent(roomId)}`)
         .then((raw) => {
           if (stale) return;
-          const { userIds, available: on } = raw as { userIds: string[]; available?: boolean };
+          const { userIds, available: on, lightbulb: agents } = raw as { userIds: string[]; available?: boolean; lightbulb?: boolean };
           setAvailable(on === true);
+          setLightbulb(agents === true);
           if (!eventSeen) setState({ roomId, userIds });
         })
         // A 404 is permanent (a shared-channel guest, a deleted room): stop asking.
@@ -50,5 +54,5 @@ export function useRoomHuddle(roomId: string | undefined): RoomHuddle {
     return () => { stale = true; clearTimeout(retry); off(); window.removeEventListener("focus", onFocus); };
   }, [api, onEvent, roomId, connectionRevision]);
 
-  return { userIds: state.roomId === roomId ? state.userIds : [], available };
+  return { userIds: state.roomId === roomId ? state.userIds : [], available, lightbulb };
 }

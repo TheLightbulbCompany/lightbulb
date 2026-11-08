@@ -7,7 +7,7 @@ would reply to every line of side talk, each reply billed.
 
 It hears the room (every Meet person's track, mixed here: a realtime session takes one input stream) and
 speaks only when addressed by the assistant's name. Two gates: Gemini's own decide-not-to-respond, and
-`Gate` -- the wake rules of transcript.py over each person's own transcript (the huddle's per-person
+`Gate` -- the wake rules of transcript.py over each person's own transcript (a per-person
 transcriber, one stream per Meet track, so every line has its exact speaker). Gemini's input transcript is
 not used: after it declines to answer side talk it sends none for the talk that follows, for as long as half a
 minute (self-test 7 Nov: an ask and a guest's question in that gap were never seen). A reply's audio is HELD
@@ -60,7 +60,7 @@ VOICE = os.environ.get("MEET_VOICE", "marin" if OPENAI else "Kore")
 TRANSCRIBE = os.environ.get("MEET_TRANSCRIBE_MODEL", "gpt-transcribe")
 ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
-MEET_QUIET_S = 3.0  # huddle.py: a reply waits for a real pause in the room
+MEET_QUIET_S = 3.0  # a reply waits for a real pause in the room
 STALE_S = 20.0  # spec §4.4b.4: a reply not started this long after its ask is dropped
 MEETING_IDLE_S = 60 * 60  # spec §4.4b: leave after an hour of silence
 MEETING_MAX_S = float(os.environ.get("MEET_MAX_S", 90 * 60))  # cost cap: leave after 90 minutes whatever happens
@@ -71,7 +71,6 @@ NUDGE_S = 3.0  # an ask Gemini has not started answering this long after its fin
 ADDRESSED = ("ask",)
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
 STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 400}
-# agent.MEET_VAD; not imported: agent.py imports this module
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
 INSTRUCTIONS = """You are {name}, the AI assistant of {company}, listening in the Google Meet "{title}". Today is
@@ -479,7 +478,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         "today": time.strftime("%A %Y-%m-%d"),
     }, names)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
-    # the huddle's per-person transcriber (agent.py): the gate's ears, with the exact speaker of each line
+    # the per-person transcriber: the gate's ears, with the exact speaker of each line
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
         model=TRANSCRIBE, use_realtime=True, turn_detection=STT_VAD,

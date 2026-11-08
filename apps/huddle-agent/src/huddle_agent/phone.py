@@ -32,7 +32,7 @@ from livekit.agents import (
 from livekit.plugins import google, noise_cancellation, openai
 
 from huddle_agent import end_after, usage_log
-from huddle_agent.huddle import emit_metric
+from huddle_agent.metrics import emit_metric
 
 logger = logging.getLogger("phone")
 # One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.

@@ -3,10 +3,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { RoomSummary } from "@lightbulb/shared";
 import type { RoomParticipant } from "../types";
 
-const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, joining: null as string | null, room: null as object | null, ids: [] as string[], available: true }));
+const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, joining: null as string | null, room: null as object | null, ids: [] as string[], available: true, lightbulb: false }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId, joining: huddle.joining, room: huddle.room }) }));
 vi.mock("@/components/huddle/LiveStrip", () => ({ LiveStrip: ({ roomId, members }: { roomId?: string; members?: unknown[] }) => <span data-testid="strip" data-members={members?.length}>{roomId}</span> }));
-vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available }) }));
+vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available, lightbulb: huddle.lightbulb }) }));
 import { RoomHeader } from "../RoomHeader";
 
 const room = (extra: Partial<RoomSummary> = {}): RoomSummary => ({
@@ -19,7 +19,7 @@ const who = (kind: "human" | "agent", id: string, displayName: string, listenMod
 const people = [who("human", "h1", "Ana"), who("human", "h2", "Ben"), who("human", "h3", "Cy"), who("agent", "a1", "CEO", "active")];
 const base = { roomName: "general", participantCount: 4, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn(), counterparts: people };
 
-beforeEach(() => { huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.room = null; huddle.ids = []; huddle.available = true; });
+beforeEach(() => { huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.room = null; huddle.ids = []; huddle.available = true; huddle.lightbulb = false; });
 
 it("Go live joins this room", () => {
   render(<RoomHeader {...base} room={room()} />);
@@ -35,6 +35,15 @@ it.each(["dm", "group-dm"] as const)("Go live is in a %s header too, named witho
 
 it("a channel with only observe agents still offers Go live (people-only)", () => {
   render(<RoomHeader {...base} room={room()} counterparts={[who("human", "h1", "Ana"), who("agent", "a1", "CEO", "observe")]} />);
+  expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();
+});
+
+it("with agents in the room, Go live is only in the DM", () => {
+  huddle.lightbulb = true;
+  const { unmount } = render(<RoomHeader {...base} room={room()} />);
+  expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
+  unmount();
+  render(<RoomHeader {...base} roomName="Nova" room={room({ kind: "dm" })} counterparts={[who("agent", "a1", "Nova", "active")]} />);
   expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();
 });
 

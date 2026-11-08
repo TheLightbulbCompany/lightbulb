@@ -86,7 +86,7 @@ export function RoomHeader({
 }: RoomHeaderProps) {
   const id = useId();
   const huddle = useHuddle();
-  const { userIds: huddlers, available: huddlesOn } = useRoomHuddle(room && !room.guest ? room.roomId : undefined);
+  const { userIds: huddlers, available: huddlesOn, lightbulb: hasAgents } = useRoomHuddle(room && !room.guest ? room.roomId : undefined);
   const [editingTopic, setEditingTopic] = useState(false);
   const [topicDraft, setTopicDraft] = useState(room?.topic ?? "");
   const [renaming, setRenaming] = useState(false);
@@ -175,7 +175,8 @@ export function RoomHeader({
     <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>
     <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={cancelTopicEdit}>Cancel</Button>
   </form>;
-  const goLive = !huddle.room && room && huddlesOn && !room.guest;
+  // Agent voice lives only in the DM with the assistant (the backend 409s voice_in_dm_only elsewhere).
+  const goLive = !huddle.room && room && huddlesOn && !room.guest && (room.kind === "dm" || !hasAgents);
   const dialogs = <>
     <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) { setRenaming(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"

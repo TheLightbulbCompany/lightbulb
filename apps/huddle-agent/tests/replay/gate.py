@@ -20,9 +20,9 @@ import sys
 from huddle_agent import meet
 
 from . import SCENARIOS, load
-from .sim import ROSTER
 
 NAME = "Nova"
+ROSTER = ("Friday", "Forge", "Tally", "Pulse", "Gauge", "Vera", "Atlas")  # the rig workspace's agents
 WPS = 2.7  # spoken words a second
 REPLY_S = 4.0
 MODEL_S = 0.8  # ponytail: assumed Gemini first-audio latency after a line ends
@@ -93,7 +93,7 @@ def judge(name: str) -> list[tuple[str, str, str]]:
         return default if k is None else lines[k][edge] if k < len(lines) else None
 
     out = []
-    for e in scenario.get("meet_expect", scenario["expect"]):  # a scenario the Meet gate judges differently from the huddle engine
+    for e in scenario["expect"]:
         kind, s = next(iter(e.items()))
         if kind == "ack_within":
             end = at(s["line"], "end", None)

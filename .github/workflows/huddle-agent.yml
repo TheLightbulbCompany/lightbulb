@@ -4,14 +4,9 @@ name: Huddle Agent
 # (deploy-prod, manual). Dev workers run on the Mac with `lk agent start`, so there is no dev deploy.
 on:
   pull_request:
-    # The three backend files are the replay's router (tests/replay/router.py loads them by path), so a
-    # change to them runs the replay gate.
     paths:
       - "apps/huddle-agent/**"
       - ".github/workflows/huddle-agent.yml"
-      - "apps/backend/core/services/messaging.py"
-      - "apps/backend/core/services/jev.py"
-      - "apps/backend/core/services/voice_calls.py"
   push:
     branches: [main]
     paths: ["apps/huddle-agent/**", ".github/workflows/huddle-agent.yml"]

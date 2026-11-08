@@ -26,6 +26,7 @@ def _rt(room, owner):
 
 
 RT = _rt(ROOM, "org_a")
+DM = {"ownerId": "org_a", "kind": "dm"}
 TEAM = [{"id": "agent-fin", "name": "Finance"}, {"id": "agent-ceo-1", "name": "Ada"}]
 
 
@@ -59,6 +60,7 @@ def _join(
     fresh=True,
     lease="tok",
     fresh_meta=None,
+    gate=None,
 ):
     repo = mod.meeting_invites.container_repo
     with (
@@ -68,7 +70,9 @@ def _join(
         patch.object(vc, "prewake_owner", MagicMock()) as wake,
         patch.object(vc, "prewarm_cards", MagicMock()) as warm,
         patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=fresh)),
-        patch.object(vc, "_room_team", room_team or AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))),
+        patch.object(vc, "_room_team", room_team or AsyncMock(return_value=(DM, TEAM[:1]))),
+        patch.object(vc, "_gate", gate or AsyncMock(return_value=("paid", 0))),
+        patch.object(mod.messaging_repo, "get_voice_agent", AsyncMock(return_value={"name": "Nova"})),
         patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
         patch.object(lk, "mint_token", MagicMock(return_value="jwt")) as mint,
         patch.object(lk, "has_ceo", has_ceo if isinstance(has_ceo, AsyncMock) else AsyncMock(return_value=has_ceo)),
@@ -84,12 +88,16 @@ def test_the_calls_orb_route_is_gone():
     assert not [r for r in app.routes if getattr(r, "path", "").startswith("/api/v1/calls")]
 
 
-def test_join_wakes_the_workspace_and_warms_the_cards(client):
-    resp, _, _ = _join(client)
-    assert resp.status_code == 200
-    # health, then profile.warm per agent, which also compacts that agent's session for this room
-    _join.wake.assert_called_once_with("org_a", TEAM, ROOM)
-    _join.warm.assert_called_once_with("org_a", TEAM)  # F4: the first /route fits its 3 s budget
+def test_agent_voice_outside_the_dm_is_409_with_no_room_or_token(client):
+    """The multi-voice huddle engine is gone (task 9a): agent voice lives only in the DM with the assistant."""
+    resp, mint, dispatch = _join(
+        client, room_team=AsyncMock(return_value=({"ownerId": "org_a", "kind": "channel"}, TEAM))
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {"code": "voice_in_dm_only", "message": "Voice lives in your room with Nova."}
+    mint.assert_not_called()
+    dispatch.assert_not_awaited()
+    _join.wake.assert_not_called()
 
 
 def test_join_does_not_dispatch_twice_while_the_worker_is_joining(client):
@@ -110,7 +118,7 @@ def test_join_returns_token_and_dispatches_the_ceo(client):
     assert mint.call_args.kwargs == {"room_id": ROOM, "user_id": "user_a", "name": "Pat"}
     room, meta = dispatch.await_args.args
     assert room == ROOM
-    assert meta == {"roomId": ROOM, "ownerId": "org_a", "roomToken": RT}
+    assert meta == {"roomId": ROOM, "ownerId": "org_a", "roomToken": RT, "mode": "owner"}
 
 
 def test_join_skips_dispatch_when_the_ceo_is_there(client):
@@ -151,9 +159,9 @@ def test_a_live_room_join_takes_no_meeting_lease(client):
 
 def test_a_meeting_room_join_runs_under_the_meeting_lease(client):
     scheduled = {"ownerId": "org_a", "meeting": {"status": "bot_created"}}
-    resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(scheduled, TEAM)))
+    resp, mint, _ = _join(client, room_team=AsyncMock(return_value=(scheduled, [])))  # people-only: agents 409
     assert resp.status_code == 200
-    dispatch.assert_awaited_once()
+    mint.assert_called_once()
     _join.claim.assert_awaited_once()
     assert _join.claim.await_args.args == (f"meeting#{ROOM}",)
     _join.release.assert_awaited_once_with(f"meeting#{ROOM}", token="tok")
@@ -208,20 +216,17 @@ def test_join_livekit_failure_is_502(client, has_ceo, dispatch_error):
     assert metrics == ["huddle.livekit.error"]
 
 
-@pytest.mark.parametrize("kind", ["dm", "group-dm"])
-def test_join_works_in_a_dm_and_group_dm(client, kind):
-    """The real _room_team: any room kind joins; a DM's agent is a one-agent team that gets Lightbulb."""
+@pytest.mark.parametrize("kind,status", [("dm", 200), ("group-dm", 409)])
+def test_agent_voice_joins_only_in_a_dm(client, kind, status):
+    """The real _room_team: a DM's agent is a one-agent team that gets Lightbulb; a group DM's agents 409."""
     meta = {"ownerId": "org_a", "kind": kind}
     with (
         patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
         patch.object(vc, "room_agents", AsyncMock(return_value=[{"id": "agent-eng", "name": "Engineering"}])),
-        patch.object(vc, "_gate", AsyncMock(return_value=("paid", 0))),
     ):
         resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
-    assert resp.status_code == 200 and resp.json()["lightbulb"] is True
-    dispatch.assert_awaited_once()
-    if kind == "group-dm":  # a DM is owner mode: nothing to wake (test_join_of_a_dm_dispatches_the_owner_router...)
-        _join.wake.assert_called_once_with("org_a", [{"id": "agent-eng", "name": "Engineering"}], ROOM)
+    assert resp.status_code == status
+    assert dispatch.await_count == (status == 200)
 
 
 def test_people_only_room_joins_without_dispatch_or_wake(client):
@@ -636,7 +641,7 @@ def test_frames_with_no_worker_are_dropped_with_a_metric(client):
 
 
 def test_join_normalizes_an_uppercase_room_id(client):
-    team = AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))
+    team = AsyncMock(return_value=(DM, TEAM[:1]))
     resp, mint, dispatch = _join(client, room_team=team, path_room=ROOM.upper())
     assert resp.status_code == 200
     assert resp.json()["roomName"] == lk.room_name(ROOM)
@@ -921,8 +926,8 @@ def test_join_of_a_dm_dispatches_the_owner_router_and_wakes_nothing(client):
     """Owner mode (voice spec §4.5, §5 Home): Live in a DM with the assistant is the Router session, whose reads and
     start_work go through the backend, so no workspace runtime is woken and no routing cards are warmed."""
     meta = {"ownerId": "org_a", "kind": "dm"}
-    with patch.object(vc, "_gate", AsyncMock(return_value=("paid", 0))) as gate:
-        resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM[:1])))
+    gate = AsyncMock(return_value=("paid", 0))
+    resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM[:1])), gate=gate)
     assert resp.status_code == 200
     gate.assert_awaited_once_with("org_a")
     assert dispatch.await_args.args[1] == {"roomId": ROOM, "ownerId": "org_a", "roomToken": RT, "mode": "owner"}
@@ -934,8 +939,9 @@ def test_owner_mode_join_is_402_without_plan_or_free_minutes(client):
     """The /summon gate, at the DM's join: no session (and no realtime bill) without a plan or free minutes."""
     meta = {"ownerId": "org_a", "kind": "dm"}
     limit = vc._problem(402, code="voice_limit", reason="free_minutes_used")
-    with patch.object(vc, "_gate", AsyncMock(side_effect=limit)):
-        resp, mint, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM[:1])))
+    resp, mint, dispatch = _join(
+        client, room_team=AsyncMock(return_value=(meta, TEAM[:1])), gate=AsyncMock(side_effect=limit)
+    )
     assert resp.status_code == 402
     assert resp.json()["detail"] == {"code": "voice_limit", "reason": "free_minutes_used"}
     dispatch.assert_not_awaited()

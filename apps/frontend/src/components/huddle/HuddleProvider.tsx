@@ -24,7 +24,8 @@ interface Huddle {
   joining: string | null;
   /** The connected LiveKit room, for the header strip's LiveKit components (the mic is their TrackToggle). */
   room: Room | null;
-  join(roomId: string, roomName: string): Promise<void>;
+  /** `mic` false: connect without opening or publishing the microphone (the orb's pre-connect). */
+  join(roomId: string, roomName: string, mic?: boolean): Promise<void>;
   leave(): void;
   /** Asks an agent in (no id: the last one you spoke to, else the CEO), like saying its name. One tap: the worker's
    *  exchange ends on its own idle rules. */
@@ -60,7 +61,7 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
     setJoined(null); setJoining(null); setAgentNotice(null);
   }, []);
 
-  const join = useCallback(async (roomId: string, roomName: string) => {
+  const join = useCallback(async (roomId: string, roomName: string, mic = true) => {
     leave();
     const mine = attempt.current;
     setError(null);
@@ -70,8 +71,8 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
         serverUrl: string; token: string; lightbulb?: boolean;
       };
       if (mine !== attempt.current) return;
-      // stopMicTrackOnMute: a muted mic releases its capture track, so a pre-connected, idle orb (TalkOrb) does not
-      // keep the OS microphone indicator lit for minutes.
+      // stopMicTrackOnMute: a muted mic stops its capture track, so after a talk ends (TalkOrb: End, Mute, quiet) the
+      // warm room keeps no live capture and the OS microphone indicator goes off.
       const room = new Room({ publishDefaults: { stopMicTrackOnMute: true } });
       room.on(RoomEvent.DataReceived, (payload, from, _kind, topic) => {
         if (topic === LIVE_NOTICE_TOPIC) {
@@ -102,6 +103,7 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
           const { code, reason } = JSON.parse(new TextDecoder().decode(payload)) as { code?: unknown; reason?: unknown };
           if (typeof code !== "string") return;
           if (code === "idle_ended") leave(); // the worker left an idle room; anyone can Go live again
+          if (code === "quiet_ended") void room.localParticipant.setMicrophoneEnabled(false); // the talk went quiet: mic off, room warm
           setError({ code, reason: typeof reason === "string" ? reason : undefined });
         } catch { /* not ours */ }
       });
@@ -109,7 +111,7 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
       roomRef.current = room;
       await room.connect(serverUrl, token);
       if (mine !== attempt.current) { void room.disconnect(); return; }
-      await room.localParticipant.setMicrophoneEnabled(true);
+      if (mic) await room.localParticipant.setMicrophoneEnabled(true);
       if (mine !== attempt.current) return;
       setJoined({ roomId, roomName, room, lightbulb: lightbulb !== false });
       setJoining(null);

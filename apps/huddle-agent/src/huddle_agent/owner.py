@@ -1,8 +1,8 @@
 """Owner mode in the app (voice-agents spec §4.1b, §4.5, §5 Home): ONE realtime session -- the Router -- when a
 member goes Live in their DM with the assistant (agent.py hands it every `mode: "owner"` dispatch).
 
-It listens to that one member (the hold-to-talk orb mutes the mic between turns; the model's own turn detection
-ends each turn), answers reads itself through the backend in a few seconds, and hands anything open-ended to a
+It listens to that one member (the orb opens the mic on a tap and keeps it open; push-to-talk opens it while held;
+OpenAI's semantic turn detection ends each turn and the member can talk over it), answers reads itself through the backend in a few seconds, and hands anything open-ended to a
 Worker with start_work without waiting: the result lands in the DM as a task. The member has full authority, as
 when they type in the DM; the backend checks who is speaking (apps/backend/routers/voice_owner.py).
 """
@@ -18,16 +18,19 @@ import time
 from datetime import UTC, datetime
 from typing import Literal
 
+from livekit import rtc
 from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io
 from livekit.plugins import google, openai
+from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVad
 
 from huddle_agent import end_after, with_state
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
-OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 20 * 60))  # cost cap, like a phone call
-AWAY_S = float(os.environ.get("OWNER_AWAY_S", 5 * 60))  # nobody spoke this long: leave; the next press rejoins
+OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 55 * 60))  # under OpenAI's 60-min realtime session cap
+QUIET_S = float(os.environ.get("OWNER_QUIET_S", 15))  # mic live, the voice done, nobody spoke: close the mic
+AWAY_S = float(os.environ.get("OWNER_AWAY_S", 5 * 60))  # no live mic this long: leave; the next tap rejoins
 POLL_S = float(os.environ.get("OWNER_EVENTS_S", 3))  # how often the talk asks what its tasks did
 
 INSTRUCTIONS = """You are {name}, the AI assistant of this business, talking with {who}, a member, in the Lightbulb
@@ -62,9 +65,56 @@ def realtime_model():
             api_version="v1beta",
             session_resumption=types.SessionResumptionConfig(),  # outlives Gemini's 10-minute connection
         )
+    # Semantic turns, low eagerness: owners pause mid-thought ("the invoice for... Acme"); silence-only VAD cuts them
+    # off. interrupt_response: talking over the voice stops it (developers.openai.com/api/docs/guides/realtime-vad).
     return openai.realtime.RealtimeModel(
-        model=os.environ.get("OWNER_MODEL", "gpt-realtime-2.1"), voice=os.environ.get("OWNER_VOICE", "marin")
+        model=os.environ.get("OWNER_MODEL", "gpt-realtime-2.1"), voice=os.environ.get("OWNER_VOICE", "marin"),
+        turn_detection=SemanticVad(type="semantic_vad", eagerness="low", create_response=True, interrupt_response=True),
     )
+
+
+_TOOL = {"recall_memory": "Checking memory", "call_stats": "Checking calls", "calendar": "Checking bookings",
+         "list_integrations": "Checking apps", "approve": "Sending the confirm", "stop_work": "Stopping the task"}  # fmt: skip
+
+
+def tool_label(name: str, arguments: str) -> str:
+    """What the orb's Working state says while a tool runs."""
+    try:
+        args = json.loads(arguments) or {}
+    except ValueError:
+        args = {}
+    if name == "start_work":
+        return f"Starting: {args.get('title') or 'a task'}"[:80]
+    if name == "read_integration":
+        return f"Checking {args.get('provider') or 'an app'}"[:80]
+    return _TOOL.get(name, "Working")
+
+
+class Quiet:
+    """Ends the talk on quiet, from LiveKit's agent and user states. Not `user_away_timeout`: in livekit-agents 1.8.11
+    its timer starts once the member subscribes to the voice (agent_session._set_user_away_timer), mic or not, so it
+    would end the pre-connected room, which publishes no mic, 15 s after it joins. Not OpenAI's `idle_timeout_ms`:
+    it makes the model speak, it ends nothing. With the mic live, QUIET_S after the voice finished and nobody spoke
+    calls `on_quiet` (the web closes the mic, the room stays warm); with no live mic, AWAY_S calls `on_away`."""
+
+    def __init__(self, on_quiet, on_away, quiet_s: float = QUIET_S, away_s: float = AWAY_S) -> None:
+        self._fire, self._s = {True: on_quiet, False: on_away}, {True: quiet_s, False: away_s}
+        self._timer: asyncio.TimerHandle | None = None
+        self._key: bool | None = None
+
+    def update(self, mic_live: bool, user: str, agent: str) -> None:
+        if user == "speaking" or agent != "listening":
+            return self.cancel()
+        if self._timer and self._key == mic_live:
+            return  # already counting
+        self.cancel()
+        self._key = mic_live
+        self._timer = asyncio.get_running_loop().call_later(self._s[mic_live], self._fire[mic_live])
+
+    def cancel(self) -> None:
+        if self._timer:
+            self._timer.cancel()
+        self._timer = self._key = None
 
 
 class OwnerAgent(Agent):
@@ -244,7 +294,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         "context": info.get("context", ""),
     })  # fmt: skip
     turns = Turns(backend, member.identity, ctx.job.id)
-    session = AgentSession(llm=realtime_model(), user_away_timeout=AWAY_S)
+    session = AgentSession(llm=realtime_model(), user_away_timeout=None)  # Quiet below
     items: list[dict] = []
     t0 = time.time()
 
@@ -261,6 +311,15 @@ async def run(ctx: JobContext, meta: dict) -> None:
     def _state(ev) -> None:
         status = {"speaking": "speaking", "thinking": "working"}.get(ev.new_state, "listening")
         asyncio.create_task(attrs({f"lightbulb.agent.{tile}.status": status}))
+        recount()
+
+    @session.on("tool_execution_updated")  # the orb's Working state names the tool that runs
+    def _tool(ev) -> None:
+        if ev.update.type == "tool_call_started":
+            label = tool_label(ev.update.function_call.name, ev.update.function_call.arguments)
+            asyncio.create_task(attrs({f"lightbulb.agent.{tile}.task": label}))
+        elif ev.update.type == "tool_call_ended":
+            asyncio.create_task(attrs({f"lightbulb.agent.{tile}.task": ""}))
 
     async def leave(reason: str) -> None:
         """The web leaves on idle_ended, so the next press joins again and dispatches a fresh session."""
@@ -270,18 +329,30 @@ async def run(ctx: JobContext, meta: dict) -> None:
             )
         ctx.shutdown(reason)
 
-    @session.on("user_state_changed")
-    def _away(ev) -> None:
-        if ev.new_state == "away":
-            asyncio.create_task(leave("member quiet"))
+    def quiet() -> None:
+        """The web closes the mic on quiet_ended; the room stays, so the next tap is instant. Tasks run on."""
+        asyncio.create_task(ctx.room.local_participant.publish_data(
+            json.dumps({"code": "quiet_ended"}), reliable=True, topic="huddle.error"))  # fmt: skip
+
+    quiet_timer = Quiet(quiet, lambda: asyncio.create_task(leave("member quiet")))
+
+    def recount(*_args) -> None:
+        mic = any(p.kind == rtc.TrackKind.KIND_AUDIO and not p.muted for p in member.track_publications.values())
+        quiet_timer.update(mic, session.user_state, session.agent_state)
+
+    session.on("user_state_changed", recount)
+    for event in ("track_published", "track_unpublished", "track_muted", "track_unmuted"):
+        ctx.room.on(event, recount)
 
     session.on("close", lambda _ev: ctx.shutdown("session closed"))
     limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length")))
     reports = asyncio.create_task(Events(backend, member.identity, info.get("now") or datetime.now(UTC).isoformat()).run(session))
     record = lambda: talk_record(agent, items, ctx.job.id, time.time() - t0)  # noqa: E731
-    ctx.add_shutdown_callback(lambda _reason="": _close(limit, backend, record, turns, reports))
+    ctx.add_shutdown_callback(lambda _reason="": (quiet_timer.cancel(), _close(limit, backend, record, turns, reports))[1])
     # the web's Talk RPC (HuddleProvider.talkStart): nothing to summon here, the session already listens
     ctx.room.local_participant.register_rpc_method("talk_start", lambda _data: "ok")
+    # a tap on the orb while the voice speaks: stop the reply, keep the talk
+    ctx.room.local_participant.register_rpc_method("interrupt", lambda _data: (session.interrupt(), "ok")[1])
     await session.start(
         agent=agent,
         room=ctx.room,
@@ -293,6 +364,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         record=False,
     )
     await attrs({f"lightbulb.agent.{tile}.status": "listening", f"lightbulb.agent.{tile}.name": name})
+    recount()
     logger.info("owner: listening in room %s as %s", meta["roomId"], name)
 
 

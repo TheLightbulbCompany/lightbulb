@@ -1,6 +1,6 @@
 "use client";
 
-// The Lightbulb place (founder, 8 Nov 2026): hold to talk on top, and under it the member's DM with the assistant
+// The Lightbulb place (founder, 8 Nov 2026): tap to talk on top, and under it the member's DM with the assistant
 // exactly as /chat rendered it (composer, messages, tasks with statuses, Workers' results and cards). The room's
 // side column (a thread, its tasks, room details) renders inline: no workspace shell is mounted, so useThreadPane
 // keeps it in the room, and the shell's openPanel calls (an attachment in the right pane) are no-ops here.

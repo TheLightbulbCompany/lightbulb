@@ -50,7 +50,7 @@ const live = vi.hoisted(() => ({ tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useOptionalLiveEvents: () => (live.tasks ? live : null) }));
 
 // The rail's talk orb: one Live at a time (HuddleProvider), in the assistant's DM.
-const huddle = vi.hoisted(() => ({ roomId: null as string | null, roomName: null as string | null, joining: null, room: null, error: null, join: vi.fn(), leave: vi.fn() }));
+const huddle = vi.hoisted(() => ({ roomId: null as string | null, roomName: null as string | null, joining: null, room: null, error: null, join: vi.fn(), leave: vi.fn(), dismissError: vi.fn() }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ CEO_IDENTITY: "agent-ceo", useHuddle: () => huddle }));
 vi.mock("@/components/huddle/useAssistantDm", () => ({ useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "agent", id: "a1" }] }) }));
 vi.mock("@/components/voice/data", async (orig) => ({ ...(await orig<typeof import("@/components/voice/data")>()), useAgentConfig: () => ({ data: { name: "Nova" } }) }));
@@ -128,7 +128,7 @@ describe("WorkspaceHeader", () => {
   });
   it("chat layout shows the talk orb", () => {
     render(<WorkspaceHeader />);
-    const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
+    const orb = screen.getByRole("button", { name: "Talk to Lightbulb" });
     expect(orb).toBeEnabled();
     fireEvent.keyDown(orb, { key: " " });
     expect(huddle.join).toHaveBeenCalledWith("dm1", "Lightbulb");
@@ -138,7 +138,7 @@ describe("WorkspaceHeader", () => {
     huddle.roomId = "c1"; huddle.roomName = "#general"; huddle.join.mockClear();
     try {
       render(<WorkspaceHeader />);
-      const orb = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
+      const orb = screen.getByRole("button", { name: "Talk to Lightbulb" });
       expect(orb).toBeDisabled();
       expect(orb).toHaveAccessibleDescription("You're in a Live in #general. End it to talk to Lightbulb.");
       fireEvent.pointerDown(orb);

@@ -263,3 +263,22 @@ it("ambiguous_name sets agentNotice and leaving clears it", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Leave Live" }));
   expect(screen.getByTestId("notice")).toHaveTextContent("");
 });
+
+// Privacy (tap to talk, 8 Nov): the orb's pre-connect joins with { mic: false } and must publish no audio at all,
+// not a published track that the UI only hides. No setMicrophoneEnabled(true) means no capture and no publication.
+it("a join with the mic off never opens or publishes the microphone", async () => {
+  function Pre() { const h = useHuddle(); return <button onClick={() => void h.join("r1", "general", false)}>pre {h.roomId ?? "none"}</button>; }
+  render(<HuddleProvider><Pre /></HuddleProvider>);
+  fireEvent.click(screen.getByText("pre none"));
+  await screen.findByText("pre r1");
+  expect(lk.room.connect).toHaveBeenCalled();
+  expect(lk.room.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+});
+
+it("quiet_ended from the worker closes the mic and keeps the room", async () => {
+  await joinNow();
+  lk.room.localParticipant.setMicrophoneEnabled.mockClear();
+  act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code: "quiet_ended" })), { identity: "agent-ceo" }, undefined, "huddle.error"));
+  expect(lk.room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(false);
+  expect(lk.room.disconnect).not.toHaveBeenCalled();
+});

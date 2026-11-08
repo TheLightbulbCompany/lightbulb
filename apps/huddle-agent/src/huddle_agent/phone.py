@@ -144,15 +144,15 @@ def discloses(text: str, assistant: str) -> bool:
 
 
 def disclosure_of(items: list[dict], assistant: str) -> str:
-    """`ok` / `missing` from the first assistant line spoken before the caller's first line; `unknown` when none was
-    transcribed before the caller spoke. A cut-off line is judged on what played (LiveKit keeps the synchronized
-    transcript of an interrupted speech), so an opening cut after its disclosure is ok."""
+    """Judge the opening's assistant bursts before the caller's first line; `unknown` when none was transcribed.
+    Interrupted items contain only what played, so an opening cut after its disclosure is still ok."""
+    opening = []
     for i in sorted(items, key=lambda i: i["t"]):
         if i["role"] == "user":
-            return "unknown"
+            break
         if i["role"] == "assistant":
-            return "ok" if discloses(i["text"], assistant) else "missing"
-    return "unknown"
+            opening.append(i["text"])
+    return ("ok" if discloses(" ".join(opening), assistant) else "missing") if opening else "unknown"
 
 
 class Backend:
@@ -224,6 +224,11 @@ class DisclosureGuard:
         self.corrected = self._done = self._spoke = self._over = False
         self._items: list[dict] = []
         self._timer: asyncio.TimerHandle | None = None
+        self._verdict: str | None = None  # the original opening, never reclassified by the correction
+
+    @property
+    def disclosure(self) -> str:
+        return self._verdict or disclosure_of(self._items, self.assistant)
 
     def state(self, old: str, new: str) -> None:
         if self._done:
@@ -241,7 +246,8 @@ class DisclosureGuard:
             return
         if self._fail():
             pass
-        elif discloses(self._said(), self.assistant):
+        elif disclosure_of(items, self.assistant) == "ok":
+            self._verdict = "ok"
             self._done = True  # disclosed: nothing to judge
             return
         if self._spoke and any(i["role"] == "user" for i in items):
@@ -252,10 +258,6 @@ class DisclosureGuard:
         self._over = True
         self._judge()
 
-    def _said(self) -> str:
-        """The opening turn's words: every assistant line so far, in order (bursts are one opening)."""
-        return " ".join(i["text"] for i in sorted(self._items, key=lambda i: i["t"]) if i["role"] == "assistant")
-
     @staticmethod
     def _fail() -> bool:
         return os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1"
@@ -264,7 +266,8 @@ class DisclosureGuard:
         if self._done or not self._over or not self._items:
             return  # the opening's line may still be on its way
         self._done = True
-        if self._fail() or not discloses(self._said(), self.assistant):
+        self._verdict = "missing" if self._fail() else disclosure_of(self._items, self.assistant)
+        if self._verdict != "ok":
             logger.info("phone: the opening lacked the disclosure; saying it once")
             self.corrected = True
             self._say(self.line)
@@ -361,6 +364,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 await backend.post("transfer", {"failed": True})
         ls[0].send_result(None, NOBODY)
 
+    transferred: set[str] = set()  # the events iterator may restart; an admitted SIP action must not replay
+
     async def events():
         """The room's new agent messages, oldest first, each once (the cursor moves past it)."""
         after = int(info.get("after") or 0)
@@ -372,22 +377,37 @@ async def entrypoint(ctx: JobContext) -> None:
                 continue
             after = max(after, int(out.get("after") or 0))
             for m in out.get("messages", []):
-                if m.get("action") == "transfer":
+                if m.get("action") == "transfer" and (mid := m.get("id")) and mid not in transferred:
+                    transferred.add(mid)
                     spawn(hand_off())
                 yield {"kind": "agent", **m}
 
-    live_session = await live.start(
-        ctx, prompt=prompt(info), surface="phone", post=post, events=events,
-        user_away_timeout=AWAY_S,  # caller silence only: the voice's own words never reset it
-        record=True,  # the opening says the call is recorded
-        room_options=room_io.RoomOptions(
-            participant_identity=caller.identity,
-            close_on_disconnect=True,
-            # noise cancellation tuned for SIP audio, in the agent and nowhere else on the call (one denoiser:
-            # docs.livekit.io/transport/media/enhanced-noise-cancellation)
-            audio_input=room_io.AudioInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
-        ),
-    )  # fmt: skip
+    try:
+        live_session = await live.start(
+            ctx, prompt=prompt(info), surface="phone", post=post, events=events,
+            user_away_timeout=AWAY_S,  # caller silence only: the voice's own words never reset it
+            record=True,  # the opening says the call is recorded
+            room_options=room_io.RoomOptions(
+                participant_identity=caller.identity,
+                close_on_disconnect=True,
+                # noise cancellation tuned for SIP audio, in the agent and nowhere else on the call (one denoiser:
+                # docs.livekit.io/transport/media/enhanced-noise-cancellation)
+                audio_input=room_io.AudioInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
+            ),
+        )  # fmt: skip
+    except Exception:  # the paid call already exists, but the normal shutdown hooks are not registered yet
+        logger.exception("phone %s: voice session could not start", backend.call_id)
+        emit_metric("phone.voice.failed", 1, "Count", {"engine": "gpt-live"})
+        try:
+            await backend.post("unknown", {"question": "The assistant's voice failed during this call: call them back."})
+        finally:
+            try:
+                await backend.post("end", {"durationSec": int(time.monotonic() - answered),
+                                           "summary": "Voice failed; callback needed", "disclosure": "unknown"})
+            finally:
+                await ctx.delete_room()
+                ctx.shutdown("voice failed")
+        return
     ls.append(live_session)
     session = live_session.session
     items: list[dict] = []
@@ -485,7 +505,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 "durationSec": duration,
                 "summary": "; ".join(did),
                 "transcript": clean_transcript(items),
-                "disclosure": disclosure_of(items, info["assistantName"]),
+                "disclosure": guard.disclosure,
                 "disclosureRepeated": guard.corrected,
                 "silent": bool(silent_end),
             },

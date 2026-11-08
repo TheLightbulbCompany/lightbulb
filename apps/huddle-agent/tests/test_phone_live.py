@@ -221,6 +221,24 @@ async def test_the_opening_said_in_bursts_is_judged_whole(monkeypatch):
     call.state("speaking", "listening")
     await asyncio.sleep(0.1)
     assert len(call.live.sent) == 1  # the opening only: the two bursts disclose together
+    call.ctx.room.emit("participant_disconnected", call.caller)
+    await asyncio.sleep(0.01)
+    (end,) = [body for path, body in call.backend.calls if path == "end"]
+    assert end["disclosure"] == "ok" and end["disclosureRepeated"] is False
+
+
+async def test_the_end_record_does_not_reclassify_a_corrected_opening(monkeypatch):
+    call = await Call(monkeypatch).answer()
+    call.state("listening", "speaking")
+    call.item("assistant", "Hi, this is Nova. How can I help?", 1.0)
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    assert len(call.live.sent) == 2  # the guard requested the missing disclosure
+    call.item("assistant", "I'm Nova, an AI assistant, and this call is recorded.", 3.0)
+    call.ctx.room.emit("participant_disconnected", call.caller)
+    await asyncio.sleep(0.01)
+    (end,) = [body for path, body in call.backend.calls if path == "end"]
+    assert end["disclosure"] == "missing" and end["disclosureRepeated"] is True
 
 
 async def test_phone_person_and_message_are_delegations_with_kind(monkeypatch):
@@ -284,6 +302,21 @@ async def test_nobody_to_take_the_call_is_told_to_gpt_live(monkeypatch):
     assert call.transfers == [] and any(
         d is None and "Nobody" in t for d, t in call.live.sent[1:]
     )
+
+
+async def test_restarting_events_does_not_repeat_an_admitted_transfer(monkeypatch):
+    """live.py restarts the events iterator after a transport failure; its spoken-id dedupe must also hold for
+    the phone's SIP side effect, which happens before a message is yielded to live.py."""
+    message = {"id": "transfer-1", "seq": 5, "text": "Putting you through.", "action": "transfer"}
+    call = await Call(monkeypatch, replies={"events": {"messages": [message], "after": 5},
+                                           "transfer": {"transferTo": "+16105559999"}}).answer()  # fmt: skip
+    for _ in range(2):
+        events = call.started["events"]()
+        assert await anext(events) == {"kind": "agent", **message}
+        await events.aclose()
+        await asyncio.sleep(0.01)
+    assert call.transfers == ["tel:+16105559999"]
+    assert call.paths().count("transfer") == 1
 
 
 async def test_phone_hangup_ends_session_and_billing(monkeypatch):
@@ -351,3 +384,17 @@ async def test_the_end_is_posted_even_when_the_close_fails(monkeypatch):
     call.ctx.room.emit("participant_disconnected", call.caller)
     await asyncio.sleep(0.01)
     assert "end" in call.paths() and call.shutdowns == ["caller hung up"]
+
+
+async def test_a_voice_start_failure_ends_the_call_and_requests_a_callback(monkeypatch):
+    call = Call(monkeypatch)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("voice unavailable")
+
+    monkeypatch.setattr(phone.live, "start", broken)
+    await call.answer()
+    assert call.deleted == 1 and call.shutdowns == ["voice failed"]
+    assert call.paths().count("unknown") == call.paths().count("end") == 1
+    (end,) = [body for path, body in call.backend.calls if path == "end"]
+    assert end["durationSec"] >= 0 and end["disclosure"] == "unknown"

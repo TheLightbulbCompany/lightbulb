@@ -409,7 +409,10 @@ async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch
     state = {"line": "live"}
     monkeypatch.setattr(vp, "agent_config", AsyncMock(return_value={}))
     monkeypatch.setattr(vp, "_line_state", lambda cfg, caller: state["line"])
-    trig = {"voice:c1:turn-0": {"triggerId": "voice:c1:turn-0", "ref": {"origin": "phone_contact", "callId": call}},
+    trig = {"voice:c1:turn-0": {"triggerId": "voice:c1:turn-0", "ref": {"origin": "phone_contact", "callId": call,
+                                                                                "roomId": call}},
+            "voice:wrong-room": {"triggerId": "voice:wrong-room", "ref": {"origin": "phone_contact", "callId": call,
+                                                                            "roomId": "other-room"}},
             "chat:m1": {"triggerId": "chat:m1", "ref": {"roomId": call, "text": "hi"}}}  # fmt: skip
     monkeypatch.setattr(repo, "get_trigger", AsyncMock(side_effect=lambda _ws, t: trig.get(t)))
     routed = AsyncMock()
@@ -425,7 +428,7 @@ async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch
     assert routed.await_args.args == (WS, "voice:c1:turn-0", {"transfer": "msg-1"})
 
     for body in ({"triggerIds": ["chat:m1"], "text": "x"}, {"triggerIds": ["voice:c1:turn-0", "chat:m1"], "text": "x"},
-                 {"triggerIds": ["nope"], "text": "x"}):  # fmt: skip
+                 {"triggerIds": ["nope"], "text": "x"}, {"triggerIds": ["voice:wrong-room"], "text": "x"}):  # fmt: skip
         r = await api.post(url, json=body, headers=H)
         assert r.status_code == 403 and r.json()["detail"] == "not_a_caller", body
     state["line"] = "message_only"

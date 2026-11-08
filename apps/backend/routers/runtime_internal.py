@@ -584,6 +584,8 @@ async def transfer_call(owner_id: str, body: TransferCallBody, request: Request)
     refs = [(t or {}).get("ref") or {} for t in triggers]
     calls = {r.get("callId") if r.get("origin") == "phone_contact" else None for r in refs}
     call_id = next(iter(calls)) if len(calls) == 1 else None
+    if not call_id or any(r.get("roomId") != call_id for r in refs):
+        raise HTTPException(status_code=403, detail="not_a_caller")
     meta = await vp.messaging_repo.get_room(call_id) if call_id else None
     if not meta or meta.get("kind") != "call" or meta.get("ownerId") != owner_id:
         raise HTTPException(status_code=403, detail="not_a_caller")

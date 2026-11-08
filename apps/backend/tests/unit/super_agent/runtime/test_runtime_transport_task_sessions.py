@@ -203,3 +203,16 @@ async def test_stop_task_session_leaves_workspace_warm(table, monkeypatch):
 
     assert stopped == [(ARN, rt.session_id_for(OWNER, TASK))]
     assert _keys(table) == {f"__session__#{OWNER}"}
+
+
+@pytest.mark.asyncio
+async def test_a_late_stop_cannot_clear_the_new_runtime_session(table):
+    key = f"__session__#{OWNER}"
+    table.put_item(Item={"owner_id": key, "arn": "arn:new-pool", "warm_until": int(time.time()) + 600})
+    await container_repo.clear_session(OWNER, expected_arn=ARN)
+    assert table.get_item(Key={"owner_id": key})["Item"]["arn"] == "arn:new-pool"
+    await container_repo.clear_session(OWNER, expected_arn="arn:new-pool")
+    assert "Item" not in table.get_item(Key={"owner_id": key})
+    table.put_item(Item={"owner_id": key, "wake_tok": "new-pool-wake", "waking_until": int(time.time()) + 60})
+    await container_repo.clear_session(OWNER, expected_arn=ARN)
+    assert table.get_item(Key={"owner_id": key})["Item"]["wake_tok"] == "new-pool-wake"

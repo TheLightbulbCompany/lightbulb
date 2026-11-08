@@ -243,7 +243,9 @@ async def test_a_shared_roll_moves_a_session_still_warm_on_its_own_runtime_onto_
     stops that one at idle, so the next invoke starts on the pool."""
     row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
-    monkeypatch.setattr(hp, "_runtime_description", lambda arn: pytest.fail("no pool update to compare"))
+    monkeypatch.setattr(
+        hp, "_runtime_description", lambda arn: {"createdAt": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    )
     stops = []
     monkeypatch.setattr(hp, "_stop_runtime_session", lambda arn, sid: stops.append(arn))
     monkeypatch.setattr(hp.container_repo, "clear_session", AsyncMock())
@@ -264,6 +266,9 @@ async def test_the_roll_and_transport_agree_a_session_in_the_drain_grace_is_stil
     warm = {"warm_until": int(time.time()) - 1, "arn": OWN, "started_at": 1}
     monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: warm)
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(
+        hp, "_runtime_description", lambda arn: {"createdAt": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    )
     assert rt.live_arn(row) == OWN
     assert await hp.roll_runtime_image("org_a", dry_run=True) == "would-update"
 
@@ -436,3 +441,32 @@ async def test_teardown_stops_the_live_vm_before_deleting_its_owned_runtime(shar
     await hp.teardown_hermes_runtime("org_a", container_row=row, delete_profiles=False)
     hp.stop_runtime_session.assert_awaited_once_with("org_a", OWN)
     hp._delete_runtime_and_bearer.assert_awaited_once_with("org_a", row)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pool_uptime, expected_stops", [(298, [OWN]), (1000, [OWN, SHARED])])
+async def test_migration_accepts_preexisting_current_pool_vm_and_stops_actual_old_pool_vm(
+    shared, monkeypatch, pool_uptime, expected_stops
+):
+    import time
+
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    session = {"arn": OWN, "warm_until": 10**10, "started_at": 1}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: session)
+    updated = datetime.fromtimestamp(time.time() - 600, tz=timezone.utc)
+    monkeypatch.setattr(hp, "_runtime_description", lambda arn: {"createdAt": updated})
+    monkeypatch.setattr(hp, "_idle_payload", AsyncMock(return_value={"busy": 0, "uptimeS": 1000}))
+    monkeypatch.setattr(hp, "ROLL_IDLE_POLL_S", 0)
+    monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", AsyncMock())
+    stops = []
+
+    async def stop(owner, arn):
+        stops.append(arn)
+        session.update(arn=SHARED)
+        return True
+
+    monkeypatch.setattr(hp, "stop_runtime_session", stop)
+    monkeypatch.setattr(hp, "_rewake", AsyncMock(side_effect=[pool_uptime, 5]))
+    assert await hp.roll_runtime_image("org_a") == "updated"
+    assert stops == expected_stops

@@ -1607,6 +1607,13 @@ def extend_session_warm_sync(owner_id: str, *, warm_until: int, task_id: str | N
             raise
 
 
-async def clear_session(owner_id: str, *, task_id: str | None = None) -> None:
-    """Forget the session: the next invoke takes the cold path (one serialized ``health``)."""
-    await run_in_thread(_get_table().delete_item, Key=_session_key(owner_id, task_id))
+async def clear_session(owner_id: str, *, task_id: str | None = None, expected_arn: str | None = None) -> None:
+    """Forget only the stopped runtime's estimate; a late stop must spare a newer route."""
+    kwargs = {"Key": _session_key(owner_id, task_id)}
+    if expected_arn is not None:
+        kwargs.update(ConditionExpression="arn = :arn", ExpressionAttributeValues={":arn": expected_arn})
+    try:
+        await run_in_thread(_get_table().delete_item, **kwargs)
+    except ClientError as exc:
+        if not _conditional_miss(exc):
+            raise

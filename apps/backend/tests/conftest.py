@@ -164,7 +164,7 @@ def _runtime_session_gate_off():
     from core.repositories import container_repo
     from core.services import runtime_transport
 
-    async def _no_clear(owner_id):
+    async def _no_clear(owner_id, **kwargs):
         return None
 
     with (

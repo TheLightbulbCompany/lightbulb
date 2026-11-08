@@ -22,6 +22,7 @@ from livekit.agents import Agent, AgentSession, JobContext, room_io
 from livekit.plugins.openai.realtime import GPTLiveModel
 
 from huddle_agent.metrics import emit_metric
+from huddle_agent.mouth import speakable
 
 logger = logging.getLogger("live")
 
@@ -153,7 +154,8 @@ class LiveSession:
         may answer one delegation (an ack, then the answer): each is appended with its id."""
         if delegation_id not in self.pending:
             delegation_id = None
-        for chunk in _chunks(" ".join(text.split())):  # several appends with one id continue the same work
+        # as it can be heard: links as labels, no URLs or code, a Choice card as its options, capped (idempotent)
+        for chunk in _chunks(speakable(text)):  # several appends with one id continue the same work
             self.transport.commentary(chunk, delegation_id)
 
     async def _read(self, events: Events) -> None:
@@ -245,15 +247,17 @@ async def start(
     room_options: room_io.RoomOptions | None = None,
     on_spoken: Spoken | None = None,
     record: bool = False,
+    user_away_timeout: float | None = None,
 ) -> LiveSession:
     """GPT-Live in `ctx.room` with `prompt` (OpenAI's live-prompting template; `delegation_policy` renders its
     delegation section), every delegation posted with `post(text, context_turns)`, every agent message from `events`
     sent back as a result. `room_options`: the surface's participant and track. `on_spoken(event id)`: called once a
     result was appended, so the surface reports it spoken to the backend (Mouth's `spoken` cursor). `record`: LiveKit's
-    session recording (the phone kept it on)."""
+    session recording (the phone kept it on). `user_away_timeout`: seconds of silence before LiveKit marks the user
+    away (its `user_state_changed`); None: never."""
     model = GPTLiveModel(delegation="client")
     agent = Agent(instructions=prompt)  # no tools: client delegation refuses them
-    session = AgentSession(llm=model, vad=None, user_away_timeout=None)
+    session = AgentSession(llm=model, vad=None, user_away_timeout=user_away_timeout)
     await session.start(
         agent=agent, room=ctx.room, record=record, **({"room_options": room_options} if room_options else {})
     )

@@ -265,15 +265,28 @@ async def test_events_loop_retries_after_a_failure(monkeypatch):
     await s.close()
 
 
-async def test_long_result_is_split_under_the_append_cap():
+async def test_results_are_made_speakable_once():
     t = FakeTransport()
     s = session(Router(delay=0), transport=t)
-    s.on_delegate(delegation(1))
-    text = " ".join(f"Sentence number {i} says a thing." for i in range(200))
-    s.send_result("item_1", text)
-    assert len(t.appends) > 1 and all(len(a) <= live.APPEND_CHARS and d == "item_1" for a, d in t.appends)
-    assert " ".join(a for a, _ in t.appends) == text
+    msg = (
+        "**Booked.** See [the PR](https://github.com/x/y/pull/1) or https://example.com/raw\n"
+        "```python\nprint('code')\n```\n"
+        "Which time?\n```openui-lang\nChoice(\"time\", [\"1:00 PM\", \"2:30 PM\", \"4:00 PM\"])\n```"
+    )
+    s.send_result(None, msg)
+    (said, _),  = t.appends
+    assert said == "Booked. See the PR or Which time? 1:00 PM, 2:30 PM or 4:00 PM."
+    s.send_result(None, said)  # phone.py already calls speakable: a second pass changes nothing
+    assert t.appends[1][0] == said
+    s.send_result(None, "word " * 400)
+    assert len(t.appends[2][0]) <= 600  # mouth.SPOKEN_CHARS
     await s.close()
+
+
+def test_chunks_split_under_the_append_cap():
+    text = " ".join(f"Sentence number {i} says a thing." for i in range(200))
+    chunks = live._chunks(text)
+    assert len(chunks) > 1 and all(len(c) <= live.APPEND_CHARS for c in chunks) and " ".join(chunks) == text
 
 
 async def test_close_waits_for_posts_and_ends_the_session():
@@ -382,7 +395,13 @@ async def test_start_wires_gpt_live_to_the_router(monkeypatch):
 
 async def test_start_passes_record(monkeypatch):
     s = await _start(monkeypatch, Router(delay=0), record=True)
-    assert s.session.started["record"] is True
+    assert s.session.started["record"] is True and s.session.kw["user_away_timeout"] is None
+    await s.close()
+
+
+async def test_start_passes_user_away_timeout(monkeypatch):
+    s = await _start(monkeypatch, Router(delay=0), user_away_timeout=15.0)
+    assert s.session.kw == {"llm": s.transport.model, "vad": None, "user_away_timeout": 15.0}
     await s.close()
 
 

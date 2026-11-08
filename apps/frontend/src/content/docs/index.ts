@@ -45,7 +45,7 @@ export const docsFaq = [
   // prices are WORKSPACE_PRICE_USD / ULTRA_PRICE_USD in the backend settings,
   // the free tier is the `trial_local` path (a 30-day no-card window on the
   // server-selected free model), and the starter roster is
-  // STARTER_ROSTER in paperclip_provisioning.py. There is no 14-day trial —
+  // STARTER_ROSTER in workspace_provisioning.py. There is no 14-day trial —
   // it was removed in July 2026. Keep this block true or delete the entry.
   {
     question: "Is Lightbulb free to try?",

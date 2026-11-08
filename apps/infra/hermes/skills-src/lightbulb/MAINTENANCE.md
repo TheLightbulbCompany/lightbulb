@@ -341,7 +341,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Integrations wiring ..... references/integrations.md
                               <- apps/backend/routers/integrations.py; core/services/hermes_profiles.py (translate_mcp_servers)
   - Starter team + roster ... references/company-and-plans.md
-                              <- apps/backend/core/services/paperclip_provisioning.py (STARTER_ROSTER + provision_org);
+                              <- apps/backend/core/services/workspace_provisioning.py (STARTER_ROSTER + provision_org);
                                  core/services/{agent_provenance,paperclip_agent_lifecycle}.py;
                                  core/repositories/paperclip_repo.py (starter_agent_ids)
   - Starter channel first message + pre-typed replies + first-reply intake ... references/company-and-plans.md
@@ -381,7 +381,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Paperclip budget engine (PATCH companies/agents budgets, GET budgets/overview). Real spend fed by
                                  core/services/paperclip_cost.py + openrouter-settlement report.
   - Software projects ....... references/software-projects.md + SKILL.md routing row
-                              + the Engineering persona (paperclip_provisioning.py STARTER_CAPABILITIES["engineering"])
+                              + the Engineering persona (workspace_provisioning.py STARTER_CAPABILITIES["engineering"])
                               <- core/services/credentials/providers.yaml (github scopes + gh_cli; vercel_cli paste_token +
                                  skill_cli/VERCEL_TOKEN; aws aws_sts tiers, PowerUserAccess = no IAM; cloudflare/sentry/posthog
                                  actor: mcp); credentials/skills/vercel/SKILL.md (the pinned npx form);

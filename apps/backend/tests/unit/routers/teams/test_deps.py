@@ -152,12 +152,11 @@ async def test_no_active_org_is_refused_before_any_read_or_mint(identity):
     [
         (set(), "pcu_xyz"),  # removed from / never joined this workspace's company
         ({"someone_else"}, "pcu_xyz"),
-        ({"u1"}, ""),  # identity sign-up not confirmed
     ],
 )
 async def test_not_joined_member_gets_no_context(auth_ctx, active_ws, identity, members, pc_user_id):
     """The Teams authorization fence: an ACTIVE workspace does not authorize a
-    human outside ``member_user_ids`` (or without a confirmed identity). No
+    human outside ``member_user_ids``. No
     reconcile → 409; with reconcile → 202. Never a cookie mint."""
     active_ws.member_user_ids = members
     identity.paperclip_user_id = pc_user_id

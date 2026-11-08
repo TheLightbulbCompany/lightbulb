@@ -66,7 +66,7 @@ def test_stripping_is_a_no_op_on_text_that_never_carried_a_marker():
 
 
 def test_every_starter_agent_renders_a_full_persona():
-    from core.services.paperclip_provisioning import STARTER_CAPABILITIES, STARTER_ROSTER
+    from core.services.workspace_provisioning import STARTER_CAPABILITIES, STARTER_ROSTER
 
     assert set(STARTER_CAPABILITIES) == {key for key, *_ in STARTER_ROSTER}
     for key, name, role, title, _parent in STARTER_ROSTER:

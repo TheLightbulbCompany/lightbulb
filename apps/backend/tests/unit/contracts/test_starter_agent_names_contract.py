@@ -24,7 +24,7 @@ from pathlib import Path
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from core.services.paperclip_provisioning import STARTER_ROSTER  # noqa: E402
+from core.services.workspace_provisioning import STARTER_ROSTER  # noqa: E402
 
 # apps/backend/tests/unit/contracts/<this file> -> repo root
 _REPO_ROOT = Path(__file__).resolve().parents[5]

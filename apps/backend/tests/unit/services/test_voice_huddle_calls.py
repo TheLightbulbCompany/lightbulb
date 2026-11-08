@@ -69,6 +69,13 @@ async def test_first_summon_opens_a_window_with_one_free_claim(start_env):
     assert out == {"callId": call["callId"], "deadline": 1800, "budgetSeconds": 600, "joined": False}
 
 
+async def test_a_native_workspace_call_names_the_owner_as_its_company(start_env):
+    """A workspace provisioned without Paperclip has company_id "": the bridge 400s an empty companyId."""
+    vc._owner_row.return_value = SimpleNamespace(company_id="", starter_agent_ids={"ceo": "ceo-1"})
+    await _start()
+    assert vc.put_call.await_args.args[0]["companyId"] == "org_a"
+
+
 async def test_second_summon_for_the_room_joins_without_a_claim_or_hold(start_env):
     vc.container_repo.get_by_status.return_value = [
         {**OPEN_WINDOW, "roomId": "room-2", "callId": "other-room"},

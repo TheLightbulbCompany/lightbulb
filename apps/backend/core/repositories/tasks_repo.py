@@ -436,6 +436,22 @@ async def resubscribe_router_threads(ws: str, task_id: str) -> None:
                 pass
 
 
+async def list_room_threads(ws: str, room_id: str) -> list[dict]:
+    """The room's THREAD rows (`room:<roomId>` and its reply threads): which task holds each, and which held it
+    before (`history`). One `begins_with` query: a room's tasks without a workspace-wide scan."""
+    kwargs: dict[str, Any] = {
+        "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+        "ExpressionAttributeValues": {":pk": ts.ws_pk(ws), ":prefix": ts.thread_sk(f"room:{room_id}")},
+    }
+    out: list[dict] = []
+    while True:
+        page = await run_in_thread(_table().query, **kwargs)
+        out += [plain(i) for i in page.get("Items", [])]
+        if "LastEvaluatedKey" not in page:
+            return out
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 async def task_for_thread(ws: str, thread_key: str) -> str | None:
     row = await _get(ws, ts.thread_sk(thread_key))
     return row["taskId"] if row and row["active"] else None

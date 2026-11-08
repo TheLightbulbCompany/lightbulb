@@ -251,3 +251,35 @@ async def test_a_phone_result_that_adds_a_price_is_said_word_for_word(receptioni
     assert speech.interrupted == 1 and mouth.VERBATIM_RULE in session.replies[-1]
 
 
+
+
+# --- follow-ups to #5115 -------------------------------------------------------------------------------------
+@pytest.mark.parametrize("said", ["can you check it again", "could you check on it", "Can you help?", "Let me see it",
+                                  "Say it in Spanish"])  # fmt: skip
+async def test_a_request_built_from_friendly_words_is_delegated(talker, session, said):
+    assert talker.line("Maya", said) == "asked"
+    await talker._turns.flush()
+    assert talker.backend.sent == [said] and session.replies == [mouth.HOLD]
+
+
+@pytest.mark.parametrize("said", ["Let me check.", "One sec, let me check on it.", "Sorry, I didn't catch that."])
+async def test_the_assistants_own_holding_words_are_still_small_talk(talker, session, said):
+    talker.line("Maya", "Hi Nova")
+    session.current_speech = session.made[-1]
+    await _speak(talker, said)
+    assert session.current_speech.interrupted == 0
+
+
+@pytest.mark.parametrize("said", ["Say that again?", "Can you repeat that?", "What was that?", "Sorry, come again?"])
+async def test_a_repeat_request_says_the_last_result_again_word_for_word(talker, session, said):
+    talker.say(["We shipped phone reception in 4966."])
+    assert talker.line("Maya", said) == "repeat"
+    await talker._turns.flush()
+    assert talker.backend.sent == []  # never posted to the Router
+    assert session.replies[-1] == mouth.verbatim_instructions(["We shipped phone reception in 4966."])
+    assert session.kw[-1] == {"tool_choice": "none"}
+
+
+async def test_a_repeat_request_with_nothing_said_yet_is_small_talk(talker, session):
+    assert talker.line("Maya", "Can you repeat that?") == "chat"
+    assert session.replies == [mouth.SMALL_TALK_RULE] and talker.backend.sent == []

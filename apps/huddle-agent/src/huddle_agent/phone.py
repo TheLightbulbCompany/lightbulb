@@ -41,7 +41,7 @@ from openai.types.beta.realtime.session import TurnDetection
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import Mouth, Talker, fixed
+from huddle_agent.mouth import REPEAT, Mouth, Talker, fixed
 
 logger = logging.getLogger("phone")
 # One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
@@ -121,6 +121,12 @@ PERSON = re.compile(
 MESSAGE = re.compile(r"\b(leave|take|pass on|give them) (a |the |my )?message\b", re.IGNORECASE)
 MESSAGE_WORDS = 10  # a message line this long carries the message itself; a shorter one only asks to leave one
 YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay|please)\b", re.IGNORECASE)
+#: All a "yes" to the message offer may carry ("Yes please, go ahead"); more ("yes, book me at 3") is a request.
+YES_ONLY = set("yes yeah yep sure ok okay please thanks thank you go ahead that would that'd be great fine".split())
+#: The caller calling off the message they were asked for.
+CANCEL = re.compile(r"^\W*(actually,? )?(never ?mind|no,? thanks|no thank you|forget it|no,? that's (fine|ok)|nothing)\b",
+                    re.IGNORECASE)  # fmt: skip
+NO_MESSAGE = "No problem."
 CONNECTING = "One moment, I'll connect you."
 NOBODY = "Nobody can take the call right now. I can take a message for the team."
 ASK_MESSAGE = "Sure. What's the message, and your name?"
@@ -432,17 +438,28 @@ class Receptionist(Talker):
         return False
 
     def line(self, who: str, text: str, user_input: str | None = None) -> str:
-        """A caller's final line, decided in code: "chat", "person", "message", "ask_message" or "asked". A line
+        """A caller's final line, decided in code: "chat", "repeat", "person", "message", "ask_message", "cancel"
+        (the message asked for, called off) or "asked". A line
         said over the opening is decided the same way and answered once the opening has played (speech queue)."""
         if not (text := " ".join(text.split())):
             return ""
         offered, self.offered = self.offered, False
+        if self.taking and CANCEL.match(text) and len(text.split()) < 6:
+            self.context.add(who, text)
+            self.taking = False
+            self.say_fixed(fixed(NO_MESSAGE))
+            return "cancel"
+        if self.taking and REPEAT.search(text) and len(text.split()) < 8:  # they missed the question: ask it again
+            self.context.add(who, text)
+            self.say_fixed(fixed(ASK_MESSAGE))
+            return "ask_message"
         if self.taking or (not self._live and not self.chat(text)):
             self.context.add(who, text)
             self.taking = False
             self._spawn(self._message(text, TAKEN if self._live else PAUSED))
             return "message"
-        if offered and YES.match(text) and len(text.split()) < MESSAGE_WORDS:
+        rest = set(re.findall(r"[\w']+", text.lower())) - YES_ONLY
+        if offered and YES.match(text) and (not rest or MESSAGE.search(text)) and len(text.split()) < MESSAGE_WORDS:
             self.context.add(who, text)
             self.taking = True
             self.say_fixed(fixed(ASK_MESSAGE))

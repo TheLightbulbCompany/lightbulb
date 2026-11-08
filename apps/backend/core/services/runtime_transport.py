@@ -232,7 +232,11 @@ async def _request_agentcore(
             {
                 "path": "/plugins/lightbulb-channel/rpc",
                 "method": "POST",
-                "headers": {"Authorization": f"Bearer {container.get('gateway_token') or ''}", **vault},
+                "headers": {
+                    "Authorization": f"Bearer {container.get('gateway_token') or ''}",
+                    **vault,
+                    **_session_credentials_header(owner_id),
+                },
                 "body": {"method": "health", "params": {}, "timeoutMs": int(AGENTCORE_INGRESS_TIMEOUT_S * 1000)},
             },
             AGENTCORE_INGRESS_TIMEOUT_S + 5.0,
@@ -248,7 +252,9 @@ async def _request_agentcore(
         if remaining <= 0:
             # Waited out the whole budget on someone else's wake: the caller's retry path.
             raise httpx.ReadTimeout("agentcore session is still waking")
-        result, text = _invoke_envelope(arn, owner_id, envelope, remaining + margin, task_id)
+        scoped = _session_credentials_header(owner_id)  # STS blocks: here on the pool, not the loop
+        sent = {**envelope, "headers": {**envelope.get("headers", {}), **scoped}} if scoped else envelope
+        result, text = _invoke_envelope(arn, owner_id, sent, remaining + margin, task_id)
         _note_invoked(owner_id, session, task_id)
         # The contract server answers 200 with the gateway's own status inside; a 503 here is
         # the contract server saying the gateway has not finished booting.
@@ -295,6 +301,63 @@ def _vault_header(container: dict) -> dict[str, str]:
         return {VAULT_HEADER: derive_vault_token(container.get("owner_id") or "", container.get("id") or "")}
     except (RuntimeError, ValueError):
         return {}
+
+
+SESSION_CREDENTIALS_HEADER = "X-Lightbulb-Aws-Session"
+#: STS caps a chained AssumeRole at 1 h; a fresh set rides any invoke made in the last 15 min.
+SESSION_CREDENTIALS_S = 3600
+_SESSION_REFRESH_S = 900
+_SESSION_CREDENTIALS: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def _session_credentials_header(owner_id: str) -> dict[str, str]:
+    """Credentials for this owner's session only (research 11 §1.3, the token-vending role): an
+    AssumeRole of ``HERMES_TENANT_ROLE_ARN`` with ``build_owner_session_policy`` as the session
+    policy, so they reach ``<owner>/*`` and this owner's memory and nothing else. The bridge uses
+    them for S3 and memory instead of its execution role. Sent like the vault token, on the invoke,
+    never in the runtime's env or boot secret. Empty (no header, the bridge keeps its role) when
+    the role is unset or STS fails. Sync: runs on the invoke pool."""
+    from core.config import settings
+
+    role = settings.HERMES_TENANT_ROLE_ARN
+    if not role or not owner_id:
+        return {}
+    cached = _SESSION_CREDENTIALS.get(owner_id)
+    if cached and cached[0] - time.time() > _SESSION_REFRESH_S:
+        return cached[1]
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    from core.billing.bedrock_aip import build_owner_session_policy
+
+    memory_arn = ""
+    if settings.AGENTCORE_MEMORY_ID:
+        account = role.split(":")[4]  # arn:aws:iam::<account>:role/<name>
+        memory_arn = f"arn:aws:bedrock-agentcore:{settings.AWS_REGION}:{account}:memory/{settings.AGENTCORE_MEMORY_ID}"
+    policy = build_owner_session_policy(owner_id, settings.OWNER_STATE_BUCKET, memory_arn)
+    try:
+        creds = boto3.client("sts", region_name=settings.AWS_REGION).assume_role(
+            RoleArn=role,
+            RoleSessionName=f"lb-{owner_id}"[:64],
+            Policy=json.dumps(policy, separators=(",", ":")),
+            DurationSeconds=SESSION_CREDENTIALS_S,
+        )["Credentials"]
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning("session credentials for owner %s failed: %s", owner_id, str(exc)[:160])
+        return {}
+    expires = creds["Expiration"]
+    header = {
+        SESSION_CREDENTIALS_HEADER: json.dumps(
+            {
+                "accessKeyId": creds["AccessKeyId"],
+                "secretAccessKey": creds["SecretAccessKey"],
+                "sessionToken": creds["SessionToken"],
+                "expiration": expires.isoformat(),
+            }
+        )
+    }
+    _SESSION_CREDENTIALS[owner_id] = (expires.timestamp(), header)
+    return header
 
 
 def _invoke_envelope(

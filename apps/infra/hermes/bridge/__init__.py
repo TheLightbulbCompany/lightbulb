@@ -1,6 +1,7 @@
 """Shared env config for the Hermes-on-AgentCore bridge. server/turn/sync import from here."""
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -25,6 +26,12 @@ S3_BUCKET = os.environ.get("S3_BUCKET", "")
 # The workspace's network member key (base64 of a 32-byte Ed25519 seed), from the boot secret
 # only. Module state, never os.environ: bridge.network writes it as the sidecar's identity.key.
 NETWORK_KEY = ""
+# This session's own AWS credentials (backend runtime_transport._session_credentials_header): an
+# STS set whose session policy reaches only this owner's ``<owner>/*`` objects and memory. Set by
+# server.handle_plugin from the X-Lightbulb-Aws-Session header on each invoke. Module state, never
+# os.environ, for the vault token's reason. Read through aws_session_kwargs().
+AWS_SESSION: dict = {}
+AWS_SESSION_HEADER = "X-Lightbulb-Aws-Session"
 
 
 def default_s3_prefix(owner: str) -> str:
@@ -92,3 +99,26 @@ try:
     _set_multiplex_active(True)
 except ImportError:
     pass
+
+
+def set_aws_session(raw: str) -> None:
+    """Keep the invoke's scoped credentials; a malformed header is ignored (the last set stays)."""
+    global AWS_SESSION
+    try:
+        creds = json.loads(raw)
+        expires = datetime.fromisoformat(creds["expiration"])
+        keys = (creds["accessKeyId"], creds["secretAccessKey"], creds["sessionToken"])
+    except (ValueError, TypeError, KeyError):
+        return
+    if all(isinstance(k, str) and k for k in keys):
+        AWS_SESSION = {"keys": keys, "expires": expires}
+
+
+def aws_session_kwargs() -> dict:
+    """boto3 client kwargs for the scoped credentials, or {} (the execution role, today's path)
+    when no invoke brought any or they have expired."""
+    creds = AWS_SESSION
+    if not creds or creds["expires"] <= datetime.now(timezone.utc):
+        return {}
+    access, secret, token = creds["keys"]
+    return {"aws_access_key_id": access, "aws_secret_access_key": secret, "aws_session_token": token}

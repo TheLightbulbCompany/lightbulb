@@ -252,6 +252,9 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
     vault = _header(headers, "X-Lightbulb-Vault")
     if vault:
         bridge.VAULT_TOKEN = vault
+    session = _header(headers, bridge.AWS_SESSION_HEADER)
+    if session:
+        bridge.set_aws_session(session)
     call = _handle_call_run(path, method, headers, body)
     if call is not None:
         return call

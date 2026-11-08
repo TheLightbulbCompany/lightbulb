@@ -610,6 +610,10 @@ class TestDdbRows:
 
 
 class TestAgentCoreDebugRoutes:
+    @pytest.fixture(autouse=True)
+    def no_existing_session(self, monkeypatch):
+        monkeypatch.setattr("core.repositories.container_repo.get_session_sync", lambda *a, **k: {})
+
     """/debug/provision: POST runs the canonical provision funnel, DELETE tears the
     runtime down, PATCH rewrites the roster profiles and stops the session."""
 

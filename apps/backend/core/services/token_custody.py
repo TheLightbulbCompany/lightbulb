@@ -260,7 +260,7 @@ async def session_idle(owner_id: str) -> bool:
     bridge takes its own 120 s refusal hold with the answer, so the stop that follows inside the
     guard lands before any turn can start. True when there is no runtime to wait for."""
     row = await container_repo.get_by_owner_id(owner_id) or {}
-    arn = runtime_transport.runtime_arn(row)
+    arn = await run_in_thread(runtime_transport.live_arn, row)
     return not arn or await hermes_provisioning._wait_for_idle_session(owner_id)
 
 
@@ -270,7 +270,7 @@ async def fenced_session(owner_id: str) -> AsyncIterator[bool]:
     inside the guard, right after :func:`session_idle` answered True. Yields False, nothing
     touched, when the stop is unconfirmed or the lease is held."""
     row = await container_repo.get_by_owner_id(owner_id) or {}
-    arn = runtime_transport.runtime_arn(row)
+    arn = await run_in_thread(runtime_transport.live_arn, row)
     if arn and not await hermes_provisioning.stop_runtime_session(owner_id, arn):
         yield False
         return

@@ -558,9 +558,9 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
             raise
         logger.warning("Browser teardown failed for owner=%s", owner_id)
 
-    from core.services.runtime_transport import runtime_arn
+    from core.services.runtime_transport import live_arn
 
-    arn = runtime_arn(container_row)
+    arn = await run_in_thread(live_arn, container_row)
     if arn:
         await stop_runtime_session(owner_id, arn)  # best-effort; never raises
     # Deletes only the row's OWN runtime (never the shared one, which no row names).
@@ -1989,7 +1989,7 @@ async def _join_shared_runtime(owner_id: str, row: dict) -> str:
     runtime keeps it (unused while the setting is set) for the per-owner cleanup."""
     shared = settings.HERMES_SHARED_RUNTIME_ARN or row["agentcore_shared_runtime_arn"]
     if row.get("status") == "running":
-        if not row.get("agentcore_runtime_arn") and row.get("agentcore_shared_runtime_arn") != shared:
+        if row.get("agentcore_shared_runtime_arn") != shared:
             await container_repo.update_fields(owner_id, {"agentcore_shared_runtime_arn": shared})
         return shared
     await _browser_profile_id(owner_id, row)  # records browser_profile_id: the boot header names it

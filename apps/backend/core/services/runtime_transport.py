@@ -141,20 +141,19 @@ def live_arn(container: dict, task_id: str | None = None) -> str | None:
     ``LIVE_GRACE_S``), which run and room-turn heartbeats keep current (:func:`note_alive`).
     Sync: a DynamoDB read, on the invoke pool."""
     arn = runtime_arn(container)
-    own = container.get("agentcore_runtime_arn") or container.get("agentcore_shared_runtime_arn")
-    if not own or arn == own:
+    owner_id = container.get("owner_id")
+    if not arn or not owner_id:
         return arn
-    from botocore.exceptions import BotoCoreError, ClientError
-
     from core.repositories import container_repo as repo
 
-    try:
-        row = repo.get_session_sync(container.get("owner_id") or "", task_id=task_id)
-    except (ClientError, BotoCoreError):
-        # An unavailable lease store cannot prove the old VM has drained. Keep its route
-        # rather than start a second writer on the pool while it may still be running.
-        return own
-    return own if row.get("arn") == own and int(row.get("warm_until") or 0) > time.time() - LIVE_GRACE_S else arn
+    # The session ledger records the actual writer, including a legacy workspace already
+    # migrated to the pool when configuration is rolled back. Container fields describe the
+    # desired destination, not which VM is still alive. A failed read must propagate: neither
+    # destination is safe to start or stop until the current writer can be established.
+    row = repo.get_session_sync(owner_id, task_id=task_id)
+    if row.get("arn") and int(row.get("warm_until") or 0) > time.time() - LIVE_GRACE_S:
+        return row["arn"]
+    return arn
 
 
 def note_alive(owner_id: str, task_id: str | None = None) -> None:

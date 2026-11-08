@@ -45,6 +45,7 @@ def table():
 
 @pytest.fixture(autouse=True)
 def no_browser_state(monkeypatch):
+    monkeypatch.setattr("core.repositories.container_repo.get_session_sync", lambda *a, **k: {})
     monkeypatch.setattr("core.repositories.container_repo.get_browser_state", AsyncMock(return_value=None))
 
 

@@ -171,12 +171,17 @@ async def _session_is_warm(owner_id: str) -> bool:
     Includes the conservative drain window: a signed-out computer must be revoked in an old
     microVM that may still be serving. False with no runtime yet."""
     from core.repositories import container_repo
-    from core.services.runtime_transport import LIVE_GRACE_S
+    from core.services.runtime_transport import LIVE_GRACE_S, runtime_arn
 
-    arn, row = await asyncio.gather(_runtime_arn(owner_id), run_in_thread(container_repo.get_session_sync, owner_id))
-    draining = bool(settings.HERMES_SHARED_RUNTIME_ARN and arn != settings.HERMES_SHARED_RUNTIME_ARN)
+    container, row = await asyncio.gather(
+        container_repo.get_by_owner_id(owner_id), run_in_thread(container_repo.get_session_sync, owner_id)
+    )
+    arn = row.get("arn")
+    desired = runtime_arn(container or {})
+    pool_route = settings.HERMES_SHARED_RUNTIME_ARN or (container or {}).get("agentcore_shared_runtime_arn")
+    draining = bool(pool_route and arn and arn != desired)
     warm_after = time.time() - (LIVE_GRACE_S if draining else 0)
-    return bool(arn) and int(row.get("warm_until") or 0) > warm_after and row.get("arn") == arn
+    return bool(arn and desired and (arn == desired or draining)) and int(row.get("warm_until") or 0) > warm_after
 
 
 async def _runtime_arn(owner_id: str) -> str | None:

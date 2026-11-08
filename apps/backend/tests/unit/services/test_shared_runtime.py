@@ -47,7 +47,8 @@ def test_a_failed_drain_read_never_starts_a_second_session_on_the_pool(shared, m
         raise ClientError({"Error": {"Code": "InternalServerError"}}, "GetItem")
 
     monkeypatch.setattr(hp.container_repo, "get_session_sync", unavailable)
-    assert rt.live_arn({"owner_id": "org_a", route_field: OWN, "status": "running"}) == OWN
+    with pytest.raises(ClientError):
+        rt.live_arn({"owner_id": "org_a", route_field: OWN, "status": "running"})
 
 
 @pytest.mark.asyncio
@@ -334,3 +335,101 @@ async def test_a_late_teardown_spares_a_reprovisioned_shared_workspace(shared, m
     assert await hp._superseded("org_a", {"id": "row-old"})
     assert not await hp._superseded("org_a", {"id": "row-new"})
     assert "status" in hp._TEARDOWN_ROW_KEYS  # the captured row still routes to the pool (runtime_arn)
+
+
+@pytest.mark.parametrize("saved_route", [False, True])
+def test_rollback_keeps_a_migrated_legacy_workspace_on_its_live_pool_session(monkeypatch, saved_route):
+    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "")
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    if saved_route:
+        row["agentcore_shared_runtime_arn"] = SHARED
+    session = {"arn": SHARED, "warm_until": 10**10}
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: session)
+    assert rt.live_arn(row) == SHARED
+    session["warm_until"] = 0
+    assert rt.live_arn(row) == OWN
+
+
+@pytest.mark.asyncio
+async def test_legacy_migration_records_the_shared_route_without_rewriting_profiles(shared, monkeypatch):
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "update_fields", AsyncMock())
+    monkeypatch.setattr(hp, "write_profiles", AsyncMock(side_effect=AssertionError("rewrote live profile")))
+    assert await hp._join_shared_runtime("org_a", row) == SHARED
+    hp.container_repo.update_fields.assert_awaited_once_with("org_a", {"agentcore_shared_runtime_arn": SHARED})
+
+
+@pytest.mark.asyncio
+async def test_custody_fence_stops_the_live_legacy_vm_before_taking_the_wake_lease(shared, monkeypatch):
+    from core.services import token_custody
+
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: {"arn": OWN, "warm_until": 10**10})
+    events = []
+
+    async def stop(owner, arn):
+        events.append(("stop", arn))
+        return True
+
+    def take(owner, **kw):
+        events.append(("lease", kw["arn"]))
+        return True
+
+    monkeypatch.setattr(hp, "stop_runtime_session", stop)
+    monkeypatch.setattr(hp.container_repo, "try_take_wake_lease_sync", take)
+    monkeypatch.setattr(hp.container_repo, "finish_wake_sync", lambda *a, **k: None)
+    async with token_custody.fenced_session("org_a") as held:
+        assert held
+        assert events == [("stop", OWN), ("lease", OWN)]
+
+
+@pytest.mark.asyncio
+async def test_debug_restart_stops_the_live_legacy_vm(shared, monkeypatch):
+    from types import SimpleNamespace
+    from routers import debug
+
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: {"arn": OWN, "warm_until": 10**10})
+    monkeypatch.setattr(debug, "resolve_owner_id", lambda auth: "org_a")
+    monkeypatch.setattr(debug, "get_owner_type", lambda auth: "org")
+    monkeypatch.setattr(hp, "write_profiles", AsyncMock())
+    monkeypatch.setattr(hp, "stop_runtime_session", AsyncMock(return_value=True))
+    await debug.redeploy_container(SimpleNamespace(is_org_context=False))
+    hp.stop_runtime_session.assert_awaited_once_with("org_a", OWN)
+
+
+@pytest.mark.asyncio
+async def test_rollback_revokes_a_pool_session_still_inside_drain_grace(monkeypatch):
+    import time
+    from core.services import network_member
+
+    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "")
+    row = {
+        "owner_id": "org_a",
+        "agentcore_runtime_arn": OWN,
+        "agentcore_shared_runtime_arn": SHARED,
+        "status": "running",
+    }
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(
+        hp.container_repo, "get_session_sync", lambda *a, **k: {"arn": SHARED, "warm_until": int(time.time()) - 1}
+    )
+    assert await network_member._session_is_warm("org_a")
+
+
+@pytest.mark.asyncio
+async def test_teardown_stops_the_live_vm_before_deleting_its_owned_runtime(shared, monkeypatch):
+    from core.services import browser_control
+
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: {"arn": OWN, "warm_until": 10**10})
+    monkeypatch.setattr(browser_control, "teardown", AsyncMock())
+    monkeypatch.setattr(hp, "stop_runtime_session", AsyncMock(return_value=True))
+    monkeypatch.setattr(hp, "_delete_runtime_and_bearer", AsyncMock())
+    monkeypatch.setattr(hp, "_delete_boot_secret", lambda *a: None)
+    monkeypatch.setattr(hp, "_delete_prefixes", lambda *a: None)
+    await hp.teardown_hermes_runtime("org_a", container_row=row, delete_profiles=False)
+    hp.stop_runtime_session.assert_awaited_once_with("org_a", OWN)
+    hp._delete_runtime_and_bearer.assert_awaited_once_with("org_a", row)

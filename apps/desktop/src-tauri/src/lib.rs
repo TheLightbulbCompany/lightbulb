@@ -1734,6 +1734,29 @@ mod flavor_origin_tests {
     }
 
     #[test]
+    fn start_url_is_voice() {
+        for (conf, origin) in [
+            (parse(include_str!("../tauri.conf.json")), "https://thelightbulb.company"),
+            (parse(include_str!("../tauri.dev.conf.json")), "https://dev.thelightbulb.company"),
+        ] {
+            for u in &loaded_urls(&conf)[..3] {
+                assert_eq!(u, &format!("{origin}/voice"));
+            }
+        }
+    }
+
+    #[test]
+    fn voice_and_chat_both_stay_in_the_webview() {
+        // No path allow-list: IPC capability is origin/* and the navigation hook only
+        // diverts OAuth URLs, so /chat stays reachable alongside /voice.
+        for p in ["voice", "chat"] {
+            assert!(!is_oauth_url(&Url::parse(&format!("https://thelightbulb.company/{p}")).unwrap()));
+        }
+        let cap = parse(include_str!("../capabilities/default.json"));
+        assert_eq!(cap["remote"]["urls"], json!(["https://thelightbulb.company/*"]));
+    }
+
+    #[test]
     fn prod_build_grants_ipc_to_the_prod_origin_only() {
         let conf = parse(include_str!("../tauri.conf.json"));
         assert_eq!(conf["app"]["security"]["capabilities"], json!(["default"]));

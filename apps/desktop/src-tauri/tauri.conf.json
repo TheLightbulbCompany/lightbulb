@@ -6,8 +6,8 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "devUrl": "https://thelightbulb.company/chat",
-    "frontendDist": "https://thelightbulb.company/chat"
+    "devUrl": "https://thelightbulb.company/voice",
+    "frontendDist": "https://thelightbulb.company/voice"
   },
   "app": {
     "withGlobalTauri": true,
@@ -21,7 +21,7 @@
         "minHeight": 600,
         "titleBarStyle": "Visible",
         "dragDropEnabled": false,
-        "url": "https://thelightbulb.company/chat"
+        "url": "https://thelightbulb.company/voice"
       }
     ],
     "security": {

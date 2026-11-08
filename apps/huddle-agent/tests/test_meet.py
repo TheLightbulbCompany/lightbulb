@@ -476,6 +476,61 @@ async def test_wake_backlog_does_not_append_to_a_voice_that_already_ended():
     assert m.history() == [("Team", "The calendar is updated.")]
 
 
+async def test_slow_wake_catch_up_precedes_the_live_events_reader():
+    """live.start starts its events reader before returning. That reader must not race the wake's slow HTTP fetch
+    and turn an old, unheard question into spoken commentary and an answer binding."""
+    fetching, opened, reading, release = (asyncio.Event() for _ in range(4))
+    q = {"id": "q11", "seq": 11, "text": "What holiday hours?", "question": {"taskId": "t1", "qid": "q-11"}}
+
+    class B(_Backend):
+        async def meet(self, op, body):
+            if op == "events":
+                self.sent.append((op, body))
+                if len(self.sent) == 1:
+                    fetching.set()
+                    await release.wait()
+                    return {"messages": [q], "after": 11}
+                # Without the barrier this live read wins the race and speaks the sleeping question.
+                return {"messages": [q], "after": 11}
+            return await super().meet(op, body)
+
+    b, readers, voices = B(), [], []
+
+    async def open_voice(history):
+        voices.append(_Voice(history))
+
+        async def next_event():
+            reading.set()
+            return await m.events().__anext__()
+
+        readers.append(asyncio.create_task(next_event()))
+        opened.set()
+        return voices[-1]
+
+    m = _meeting(b, open_voice=open_voice)
+    m.heard(SAM, "Nova, what shipped?", final=False)
+    opening = m.opening
+    await fetching.wait()
+    await opened.wait()
+    await reading.wait()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    try:
+        assert len(b.sent) == 1 and not readers[0].done()
+        assert m.question is None
+        release.set()
+        await opening
+        assert voices[0].contexts == ["Team: What holiday hours?"]
+        await m.post("What shipped?", [])
+        assert "answers" not in b.asks()[-1]
+        assert not readers[0].done()
+    finally:
+        release.set()
+        readers[0].cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+        await opening
+
+
 async def test_a_voice_that_closed_itself_is_reopened_by_the_name():
     """M4: the AgentSession closed on its own (live.ended): asleep, so the next name opens a new one."""
     m, opened = _sleepy()

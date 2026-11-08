@@ -208,6 +208,8 @@ class Meeting:
         self._b, self.name, self.after, self.quiet, self.poll_s = backend, name, after, quiet, poll_s
         self._open_voice, self.mix = open_voice, mix  # open_voice: async (history) -> LiveSession
         self._turn = asyncio.Lock()  # a wake waits for a sleep's close in flight
+        self._caught_up = asyncio.Event()  # the live reader starts only after this wake's silent catch-up
+        self._caught_up.set()
         self.voice = None  # the LiveSession while awake
         self.opening: asyncio.Task | None = None
         self.active_at = time.monotonic()  # GPT-Live's last delegation or speech
@@ -267,6 +269,7 @@ class Meeting:
         backlog = None
         try:
             async with self._turn:
+                self._caught_up.clear()
                 backlog = asyncio.create_task(self._backlog())
                 self.activity()
                 self.voice = voice = await self._open_voice(self.history())
@@ -283,6 +286,7 @@ class Meeting:
             if backlog is not None and not backlog.done():
                 backlog.cancel()
                 await asyncio.gather(backlog, return_exceptions=True)
+            self._caught_up.set()
             self.opening = None
 
     async def _backlog(self) -> list[str]:
@@ -369,6 +373,7 @@ class Meeting:
     async def events(self):
         """Each new agent message in the meeting's room, once, when the room has paused. A Worker's question carries
         its ref: the next ask within ANSWER_WITHIN_S answers it."""
+        await self._caught_up.wait()  # live.start schedules this reader while wake catch-up may still be fetching
         while True:
             await asyncio.sleep(self.poll_s)
             try:

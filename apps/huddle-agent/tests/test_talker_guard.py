@@ -21,10 +21,11 @@ class _Speech:
 
 class _Session:
     def __init__(self):
-        self.current_speech, self.replies, self.made = _Speech("sp_0"), [], []
+        self.current_speech, self.replies, self.made, self.kw = _Speech("sp_0"), [], [], []
 
-    def generate_reply(self, instructions):
+    def generate_reply(self, instructions, **kw):
         self.replies.append(instructions)
+        self.kw.append(kw)
         self.made.append(_Speech(f"sp_{len(self.replies)}"))
         return self.made[-1]
 
@@ -204,3 +205,15 @@ async def test_sorry_i_didnt_catch_that_is_not_cut(talker, session):
 
 async def test_the_owner_session_has_no_separate_vad():
     assert owner.talk_session().vad is None  # the turn order Talker.turn_ended relies on
+
+
+async def test_a_result_and_the_holding_line_are_said_with_no_tools(talker, session):
+    """8 Nov prod Meet: with `delegate` on during the result turn, the talker said "On it." / "Let me check." in place
+    of the answer and once called delegate with the person's last line again (a duplicate ask). livekit-agents
+    1.8.11 sends tool_choice per response on OpenAI realtime (per_response_tool_choice)."""
+    talker.say(["We shipped phone reception."])
+    talker.heard("Maya", "Did Acme pay?")
+    session.current_speech = _Speech("sp_x")
+    await _speak(talker, "Yes, Acme paid.")  # undelegated: cut, then the holding line
+    assert session.replies[-1] == mouth.HOLD
+    assert [kw.get("tool_choice") for kw in session.kw] == ["none", "none"]

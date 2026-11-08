@@ -22,6 +22,7 @@ import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { superAgentEnabled } from "../super-agent";
+import { noNatGateway } from "./network-stack";
 import {
   allTableArns,
   alertTopicArn,
@@ -2435,6 +2436,11 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Fargate Service
     // -------------------------------------------------------------------------
+    // Without a NAT gateway the backend and Temporal tasks reach the internet on their own public
+    // IP; serviceSg still admits only the ALB, peers and the runtimes (noNatGateway, network-stack).
+    const taskNetwork = noNatGateway(env)
+      ? { vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC }, assignPublicIp: true }
+      : { vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }, assignPublicIp: false };
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `lightbulb-${env}-backend`,
       cluster: props.container.cluster,
@@ -2450,9 +2456,8 @@ export class ServiceStack extends cdk.Stack {
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      ...taskNetwork,
       securityGroups: [serviceSg],
-      assignPublicIp: false,
       enableExecuteCommand: true,
     });
     // The first prod promotion may still have pre-#3454 pollers (60 s visibility).
@@ -2493,9 +2498,8 @@ export class ServiceStack extends cdk.Stack {
         desiredCount: 1,
         ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
         circuitBreaker: { rollback: true },
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        ...taskNetwork,
         securityGroups: [serviceSg],
-        assignPublicIp: false,
         enableExecuteCommand: true,
       });
 
@@ -2530,9 +2534,8 @@ export class ServiceStack extends cdk.Stack {
         desiredCount: 1,
         ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
         circuitBreaker: { rollback: true },
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        ...taskNetwork,
         securityGroups: [serviceSg],
-        assignPublicIp: false,
         enableExecuteCommand: true,
       });
     }

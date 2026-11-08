@@ -405,7 +405,7 @@ export class ContainerStack extends cdk.Stack {
     // session (dev 2026-10-26: three sessions, three IPs), so a site that ties a sign-in to its
     // address -- Google among them -- signs the workspace out after every Stop/Start even though
     // the restore replays every cookie. In VPC mode the browser leaves through this VPC's NAT
-    // gateway: one fixed address per env (dev: same IP over 3 sessions, with profiles, extensions,
+    // gateway (dev: the NAT instance's EIP): one fixed address per env (dev: same IP over 3 sessions, with profiles, extensions,
     // Chrome policy, InvokeBrowser and live view all working, no execution role).
     // Its own security group, out on 80/443 only: the browser runs pages from anywhere, and the
     // runtime group's allow-all would let one reach Paperclip, a backend task's :8000 or Aurora.

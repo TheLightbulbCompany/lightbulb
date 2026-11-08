@@ -93,6 +93,7 @@ async def test_orb_posts_in_order_and_a_failure_does_not_stop_the_next():
 
 async def test_orb_router_reply_sent_as_result(live):
     polls = [
+        {"messages": [], "after": 2},  # the session opens
         {"messages": [{"id": "m1", "seq": 5, "text": "Checking GitHub.", "inReplyTo": "h1"}], "after": 5},
         {"messages": [{"id": "m1", "seq": 5, "text": "Checking GitHub.", "inReplyTo": "h1"},
                       {"id": "m2", "seq": 7, "text": "We shipped #5095.", "inReplyTo": "h1"}], "after": 7},
@@ -111,43 +112,42 @@ async def test_orb_router_reply_sent_as_result(live):
     assert got == [{"kind": "agent", "id": "m1", "seq": 5, "text": "Checking GitHub.", "inReplyTo": "h1"},
                    {"kind": "agent", "id": "m2", "seq": 7, "text": "We shipped #5095.", "inReplyTo": "h1"}]  # fmt: skip
     asked = [(body["after"], body["spoken"]) for op, body in b.sent if op == "events"]
-    assert asked[:3] == [(2, 2), (5, 5), (7, 7)]  # `spoken` is reported, so the next Live starts after it
+    assert asked[:4] == [(2, 2), (2, 2), (5, 5), (7, 7)]  # `spoken` is reported, so the next Live starts after it
 
 
-async def test_orb_hears_an_answer_that_landed_while_it_was_closed(live, monkeypatch):
+async def test_orb_hears_only_voice_answers_that_landed_while_it_was_closed(live, monkeypatch):
     monkeypatch.setattr(owner, "POLL_S", 10)  # one poll per open here
     b = _Backend(polls=[{"messages": [], "after": 3},
-                        {"messages": [{"id": "w1", "seq": 9, "text": "Pulse: the PR is merged."}], "after": 9}])  # fmt: skip
+                        {"messages": [{"id": "t1", "seq": 5, "text": "A typed reply.", "inReplyTo": "typed"},
+                                      {"id": "q0", "seq": 6, "text": "No reply ref."},
+                                      {"id": "w1", "seq": 9, "text": "Pulse: the PR is merged.", "inReplyTo": "m1"}],
+                         "after": 9}])  # fmt: skip
     t = _talk(b)
+    assert await t.post("Merge the PR", []) == "m1"
     first = t.results()
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(anext(first), 0.01)
-    await first.aclose()  # the orb closed; the Worker answers meanwhile
+    await first.aclose()  # the orb closed; a typed reply and the Worker's answer land meanwhile
     second = t.results()  # the next open
-    assert (await anext(second))["id"] == "w1"
+    assert (await anext(second))["id"] == "w1"  # the spoken ask's answer, never the typed reply
     await second.aclose()
-    assert [body["after"] for op, body in b.sent if op == "events"][1] == 3  # the room's cursor, not a fresh skip
+    assert [body["after"] for op, body in b.sent if op == "events"][1] == 3  # the room's cursor
 
 
-async def test_orb_waits_for_its_own_reply_and_no_longer_than_wait_s(live, monkeypatch):
-    b = _Backend(polls=[{"messages": [{"id": "x", "seq": 4, "text": "Unrelated.", "inReplyTo": "other"}], "after": 4},
-                        {"messages": [{"id": "y", "seq": 5, "text": "Started a thread.", "inReplyTo": "m1"}],
+async def test_orb_waits_wait_s_from_each_ask_whatever_replies(live, monkeypatch):
+    b = _Backend(polls=[{"messages": [{"id": "y", "seq": 5, "text": "Started a thread.", "inReplyTo": "m1"}],
                          "after": 5}])  # fmt: skip
     t = _talk(b)
     woke = []
     t.rewake = lambda: woke.append(1)
-    monkeypatch.setattr(owner, "WAIT_S", 0.03)
+    monkeypatch.setattr(owner, "WAIT_S", 0.05)
     assert await t.post("Fix the deploy", []) == "m1" and t.waiting()
     gen = t.results()
-    await anext(gen)  # another message: still waiting
-    assert t.waiting()
-    await anext(gen)  # its own reply: the wait ends
-    assert not t.waiting()
+    await anext(gen)  # the Router's ack: the Worker's answer is still to come
     await gen.aclose()
-    await t.post("And the docs?", [])
     assert t.waiting()
-    await asyncio.sleep(0.05)
-    assert not t.waiting() and woke == [1, 1]  # no reply in WAIT_S: Quiet re-arms
+    await asyncio.sleep(0.07)
+    assert not t.waiting() and woke == [1]  # WAIT_S from the post: Quiet re-arms
 
 
 async def test_orb_has_no_approve_path(live):

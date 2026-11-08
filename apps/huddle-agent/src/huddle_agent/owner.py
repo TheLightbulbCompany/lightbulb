@@ -99,7 +99,7 @@ class Talk:
         self._n, self._lock = 0, asyncio.Lock()  # asyncio.Lock wakes waiters in order: posts land as asked
         self.question: dict | None = None  # {taskId, qid}: the last Worker question handed to the voice
         self.question_at = 0.0
-        self.asked: dict[str, float] = {}  # posted message id -> when: Quiet waits WAIT_S for its reply
+        self.asked: dict[str, float] = {}  # this room's voice-asked message ids -> when posted, kept while warm
         self.rewake: Callable[[], None] | None = None  # run's recount: once WAIT_S is up, Quiet counts again
         self.spoken_seq = after  # the last seq handed to the voice: reported, so the next Live starts there
         self._handing = after  # the seq of the message being handed over now
@@ -107,7 +107,8 @@ class Talk:
         self.t0 = time.time()
 
     def waiting(self) -> bool:
-        """An ask posted under WAIT_S ago that no message has replied to (`inReplyTo`): its answer is on the way."""
+        """An ask posted under WAIT_S ago: its answer may be on the way. A reply never ends the wait: the Router's
+        "Started a thread" ack would let the talk close before the Worker answers."""
         now = time.monotonic()
         return any(now - t < WAIT_S for t in self.asked.values())
 
@@ -141,9 +142,11 @@ class Talk:
 
     async def results(self) -> AsyncIterator[dict]:
         """live.py's `events`: each agent message the DM gets after the room's cursor, once, as
-        {kind: "agent", id, seq, text[, inReplyTo, question]}. The cursor is the room's, across sessions: an answer
-        that landed while the orb was closed is heard on the next open."""
+        {kind: "agent", id, seq, text[, inReplyTo, question]}. The cursor is the room's, across sessions: of what
+        landed while the orb was closed, an answer to one of this room's spoken asks is heard on the next open; a
+        typed reply stays in the chat, never read out later."""
         said: set[str] = set()
+        carried = True  # the first poll: what landed before this session opened
         while True:
             try:
                 out = await self._b.owner("events", {"speakerUserId": self._speaker, "after": self.after,
@@ -155,12 +158,13 @@ class Talk:
                 if m["id"] in said:
                     continue
                 said.add(m["id"])
+                if carried and m.get("inReplyTo") not in self.asked:
+                    continue
                 if m.get("question"):
                     self.question, self.question_at = m["question"], time.monotonic()
-                self.asked.pop(m.get("inReplyTo") or "", None)  # only its own reply ends an ask's wait
                 self._handing = int(m.get("seq") or 0)
                 yield {"kind": "agent", **m}
-            self.after = max(self.after, int(out.get("after") or 0))
+            self.after, carried = max(self.after, int(out.get("after") or 0)), False
             await asyncio.sleep(POLL_S)
 
 

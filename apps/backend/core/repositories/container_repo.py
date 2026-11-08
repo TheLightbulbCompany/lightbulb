@@ -405,30 +405,6 @@ async def release_pass(name: str) -> None:
 HUDDLE_KEY_PREFIX = "__huddle__#"
 
 
-async def try_advance_huddle_presence(room_id: str, version: int) -> bool:
-    """True when ``version`` is newer than the last presence snapshot published for this room.
-
-    The worker posts presence from concurrent tasks, so a join then a quick leave can arrive
-    reversed; the older one must not overwrite the newer. Fails open: a DynamoDB fault publishes."""
-    try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": f"{HUDDLE_KEY_PREFIX}{room_id}"},
-            UpdateExpression="SET presence_version = :v",
-            ConditionExpression="attribute_not_exists(presence_version) OR presence_version < :v",
-            ExpressionAttributeValues={":v": int(version)},
-        )
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        logger.warning("huddle presence version write failed room=%s: %s", room_id, e)
-        return True
-    except Exception as e:  # noqa: BLE001
-        logger.warning("huddle presence version write failed room=%s: %s", room_id, e)
-        return True
-
-
 # How long an owner-lifecycle claim stays exclusive before another caller may take it over.
 # It fences the OAuth connect / disconnect critical section in routers/connections.py: a
 # Secrets-Manager write plus the Hermes profile fan-out, tens of seconds at worst. 120 is a

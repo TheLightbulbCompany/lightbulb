@@ -725,33 +725,6 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     return "meeting_scheduled"
 
 
-# The same lines the bot's tile shows (packages/shared voice/words.ts meetVoiceLimitText): the people
-# in the Meet cannot tap anything and may not be the workspace's admin.
-_VOICE_LIMIT_LINES = {
-    "free_minutes_used": "Today's free voice minutes are used up. The agents can speak again tomorrow.",
-    "credits_low": "Voice is paused: the workspace's credits are low.",
-    "plan_inactive": "Voice is off: the workspace's plan is not active.",
-}
-
-
-async def say_voice_limit(room_id: str, reason: str | None) -> None:
-    """The bot says in the Meet's chat why the agents are silent, once an occurrence: the worker asks
-    for a voice on every line said to an agent, and nobody watches a tile. Marked before it is sent,
-    so a failed send is not repeated. A room with no meeting, or no bot in it, says nothing."""
-    try:
-        meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
-        bot_id = meeting.get("recallBotId")
-        if not bot_id or meeting.get("limitSaid"):
-            return
-        mine = await _patch_meeting(
-            room_id, {"limitSaid": True}, when=lambda m: m.get("recallBotId") == bot_id and not m.get("limitSaid")
-        )
-        if mine is not None:
-            await meeting_bots.say(bot_id, _VOICE_LIMIT_LINES.get(reason or "", "The agents cannot speak right now."))
-    except Exception:  # noqa: BLE001 -- fired and forgotten: the tile still says it
-        logger.warning("meeting room %s: voice-limit chat line failed", room_id, exc_info=True)
-
-
 _CALL_KEYS = (
     "inCallAt",
     "lastBotStatus",

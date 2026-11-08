@@ -75,8 +75,8 @@ async def turn(room_id: str, body: TurnIn) -> dict:
     Router (admission), which decides it like any other. Keyed on the talk and line: a retry is the same message."""
     room_id, member, _agent = await _owner(room_id, body)
     key = f"voice-turn:{room_id}:{body.sessionId}:{body.n}"
-    if await answer_said_question(body.ownerId, room_id, member, body.answers, body.text, key):
-        return {"answered": body.answers.qid}
+    # an answer to the question just said is still the DM's line, but wakes nobody: the answer is the input
+    answered = await answer_said_question(body.ownerId, room_id, member, body.answers, body.text, key)
     msg = await messaging.create_human_message(
         AuthContext(user_id=member, org_id=body.ownerId),
         room_id,
@@ -87,8 +87,10 @@ async def turn(room_id: str, body: TurnIn) -> dict:
             thread_root_message_id=None,
         ),
         via="voice",
+        **({"wake": False} if answered else {}),
     )
-    return {"messageId": str(msg.message_id)}
+    out = {"messageId": str(msg.message_id)}
+    return {**out, "answered": body.answers.qid} if answered else out
 
 
 class EventsIn(OwnerIn):

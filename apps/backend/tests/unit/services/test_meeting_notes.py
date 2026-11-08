@@ -597,7 +597,7 @@ async def test_each_action_item_becomes_a_thread_through_the_meeting_rooms_route
     assert (auth.user_id, auth.org_id, room) == ("user_1", "org_1", ROOM)  # the meeting's room, the inviter
     assert req.text == ("Action items from the meeting Weekly sync, one thread each:\n- Pat: send the holiday post\n"
                         "- Ada: order nail gels")  # fmt: skip
-    assert made.await_args.kwargs == {"via": "voice"}
+    assert made.await_args.kwargs == {"via": "meeting_notes"}  # nobody spoke it: no spoken-reply hint
     ids = {c.args[2].client_message_id for c in made.await_args_list}
     assert len(ids) == 1  # the reply and the run's end: one message
 

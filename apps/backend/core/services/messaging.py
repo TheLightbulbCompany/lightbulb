@@ -50,7 +50,8 @@ from core.services.workspace_provisioning import STARTER_ROLE_KEYS as _STARTER_K
 from core.services.usage_service import record_usage
 
 # Where a message came from when not the chat surface itself; carried on the stored message.
-MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text", "apps", "voice"]  # voice: said in a Live talk
+# voice: said in a Live talk; meeting_notes: a meeting's action items, filed from its notes
+MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text", "apps", "voice", "meeting_notes"]
 
 logger = logging.getLogger(__name__)
 

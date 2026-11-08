@@ -278,6 +278,14 @@ async def test_a_meetings_line_is_answered_with_the_meeting_origin(world):
     assert (await repo.get_trigger(WS, tid))["ref"]["origin"] == "meeting"
 
 
+async def test_the_meeting_notes_action_items_keep_the_meeting_origin_and_no_spoken_hint(world):
+    """Review of #5112: the notes' action items are posted by meeting_notes (nobody spoke them)."""
+    world["meta"] = {**world["meta"], "meeting": {"title": "Monday"}, "hidden": True}
+    tid = await _admit(world, {**_msg(), "via": "meeting_notes"})
+    ref = (await repo.get_trigger(WS, tid))["ref"]
+    assert ref["origin"] == "meeting" and "text" not in ref
+
+
 async def test_a_spoken_line_tells_the_router_and_workers_to_answer_for_speech(world):
     tid = await _admit(world, {**_msg(), "via": "voice", "kind": "dm"})
     ref = (await repo.get_trigger(WS, tid))["ref"]

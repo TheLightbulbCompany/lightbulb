@@ -423,7 +423,7 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
             reply_to_message_id=None,
             thread_root_message_id=None,
         ),
-        via="voice",
+        via="meeting_notes",  # nobody spoke it: no spoken-reply hint (admission still tags origin=meeting)
     )
 
 

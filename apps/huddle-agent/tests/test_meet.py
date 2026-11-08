@@ -257,3 +257,40 @@ async def test_the_line_after_a_spoken_question_answers_it():
     await t.delegate("And what shipped?")
     await asyncio.gather(*t._posts)
     assert sent[0]["answers"] == {"taskId": "t1", "qid": "q-1"} and "answers" not in sent[1]
+
+
+async def _said_question(t):
+    from huddle_agent import mouth
+
+    async def fetch(after, handled):
+        return {"messages": [{"id": "q1", "seq": 8, "text": "**Pulse** asks: What holiday hours?",
+                              "question": {"taskId": "t1", "qid": "q-1"}}], "after": 8}  # fmt: skip
+
+    t.mouth = m = mouth.Mouth(fetch, 7)
+    await m.poll()
+    m.speak(lambda texts: None, ready=True, live=True)
+    return m
+
+
+async def test_a_line_long_after_a_spoken_question_is_a_new_ask_not_its_answer():
+    """Review of #5112: "Nova, what's on my calendar?" ten minutes later must not become Pulse's answer."""
+    from huddle_agent import mouth
+
+    sent = []
+
+    class B:
+        async def meet(self, op, body):
+            sent.append(body)
+            return {}
+
+    t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
+    m = await _said_question(t)
+    m.question_at -= mouth.ANSWER_WITHIN_S + 1
+    await t.delegate("What's on my calendar?")
+    await asyncio.gather(*t._posts)
+    assert "answers" not in sent[0]
+    m = await _said_question(t)  # said again: the next line inside the window answers it
+    m.question_at -= mouth.ANSWER_WITHIN_S - 5
+    await t.delegate("We close at 2.")
+    await asyncio.gather(*t._posts)
+    assert sent[1]["answers"] == {"taskId": "t1", "qid": "q-1"} and mouth.ANSWER_WITHIN_S == 60

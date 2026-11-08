@@ -230,13 +230,22 @@ async def test_the_line_after_a_said_question_answers_it_like_a_typed_answer(m):
     card's own path, as the inviting member, and no message wakes the Router to claim progress."""
     from routers import questions as question_routes
 
+    from types import SimpleNamespace
+
     with (
         patch.object(voice_meet.messaging_repo, "list_messages_before", AsyncMock(return_value=[QROW])),
         patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
-        patch.object(voice_meet.messaging, "create_human_message", AsyncMock()) as ch,
+        patch.object(
+            voice_meet.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m5"))
+        ) as ch,
     ):
-        assert await voice_meet.ask(ROOM, _ask()) == {"posted": False, "answered": "q-17b4"}
-    ch.assert_not_awaited()
+        assert await voice_meet.ask(ROOM, _ask()) == {"posted": True, "messageId": "m5", "answered": "q-17b4"}
+        await voice_meet.ask(ROOM, _ask())  # a retry: the same message
+    # the chat keeps the spoken line, but it wakes nobody: the Router never gets the answer as a second input
+    first, again = ch.await_args_list
+    assert first.kwargs == {"via": "voice", "wake": False}
+    assert first.args[2].text == "Sam said in the meeting: We close at 2 on Christmas Eve."
+    assert again.args[2].client_message_id == first.args[2].client_message_id
     ws, task_id, qid, me, body = sa.await_args.args
     assert (ws, task_id, qid, me, body.option_id) == ("org_1", "k1", "q-17b4", "user_maya", "answer")
     assert body.text == "Sam said in the meeting: We close at 2 on Christmas Eve."

@@ -156,8 +156,8 @@ async def ask(room_id: str, body: AskIn) -> dict:
     who = body.speakerName or ((meeting.get("roster") or {}).get(body.participantId) or {}).get("name") or "Someone"
     key = f"meet-ask:{room_id}:{meeting.get('inCallAt', 0)}:{body.participantId}:{body.text}"
     text = f"{who} said in the meeting: {body.text}"
-    if await answer_said_question(body.ownerId, room_id, member, body.answers, text, key):
-        return {"posted": False, "answered": body.answers.qid}
+    # an answer to the question just said is still the chat's line, but wakes nobody: the answer is the input
+    answered = await answer_said_question(body.ownerId, room_id, member, body.answers, text, key)
     msg = await messaging.create_human_message(
         AuthContext(user_id=member, org_id=body.ownerId),
         room_id,
@@ -168,8 +168,10 @@ async def ask(room_id: str, body: AskIn) -> dict:
             thread_root_message_id=None,
         ),
         via="voice",
+        **({"wake": False} if answered else {}),
     )
-    return {"posted": True, "messageId": str(msg.message_id)}
+    out = {"posted": True, "messageId": str(msg.message_id)}
+    return {**out, "answered": body.answers.qid} if answered else out
 
 
 class EventsIn(RoomBody):

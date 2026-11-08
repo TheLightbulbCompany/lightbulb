@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 
 from livekit.agents import Agent
@@ -19,6 +20,7 @@ from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
 
 logger = logging.getLogger("mouth")
+ANSWER_WITHIN_S = 60.0  # a line delegated this soon after a Worker's question was said answers it; later, a new ask
 SPOKEN_CHARS = 600  # what the talker is handed of one message; the whole message is in the chat
 
 DELEGATE_DOC = """Hand the person's request to the team, who answer it in the chat: every question, request, correction,
@@ -147,12 +149,13 @@ class Talker(Agent):
         return ToolResult({"sent": True}, reply_required=False)
 
     def take_question(self) -> dict | None:
-        """The Worker question last said aloud, once: the next line delegated answers it (the backend answers it
-        the way a typed answer on its card does)."""
+        """The Worker question last said aloud, once, when it was said within ANSWER_WITHIN_S: the next line
+        delegated answers it (the backend answers it the way a typed answer on its card does). Later, the line is a
+        new ask ("Nova, what's on my calendar?" ten minutes on is not Pulse's answer)."""
         if self.mouth is None:
             return None
         q, self.mouth.question = self.mouth.question, None
-        return q
+        return q if q and time.monotonic() - self.mouth.question_at <= ANSWER_WITHIN_S else None
 
     def delegate_now(self, request: str) -> None:
         self.line, self.asked, self.owed = "", True, False  # a pending cut must not post the next line again
@@ -240,6 +243,7 @@ class Mouth:
         self.pending: list[dict] = []
         self._said: set[str] = set()
         self.question: dict | None = None  # {taskId, qid}: the last Worker question said aloud
+        self.question_at = 0.0  # when it was said (monotonic)
 
     async def poll(self) -> None:
         try:
@@ -265,7 +269,8 @@ class Mouth:
         if not ready:
             return 0
         msgs, self.pending, self.handled = self.pending, [], self.after
-        self.question = next((m["question"] for m in reversed(msgs) if m.get("question")), self.question)
+        if q := next((m["question"] for m in reversed(msgs) if m.get("question")), None):
+            self.question, self.question_at = q, time.monotonic()
         try:
             say([speakable(m["text"]) for m in msgs])
         except Exception:  # noqa: BLE001 -- a closed session: the messages are in the chat anyway

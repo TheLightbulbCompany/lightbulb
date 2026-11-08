@@ -175,6 +175,8 @@ async def test_only_a_dm_is_owner_mode_and_the_worker_secret_is_required(m):
 
 
 async def test_the_orbs_line_after_a_said_question_answers_it(m):
+    from types import SimpleNamespace
+
     from routers import questions as question_routes
 
     qrow = {"kind": "question", "taskRefs": [{"taskId": "k1", "qid": "q-2"}]}
@@ -184,8 +186,10 @@ async def test_the_orbs_line_after_a_said_question_answers_it(m):
     with (
         patch.object(voice_owner.messaging_repo, "list_messages_before", AsyncMock(return_value=[qrow])),
         patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
-        patch.object(voice_owner.messaging, "create_human_message", AsyncMock()) as ch,
+        patch.object(
+            voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m7"))
+        ) as ch,
     ):
-        assert await voice_owner.turn(ROOM, body) == {"answered": "q-2"}
-    ch.assert_not_awaited()
+        assert await voice_owner.turn(ROOM, body) == {"messageId": "m7", "answered": "q-2"}
+    assert ch.await_args.kwargs == {"via": "voice", "wake": False} and ch.await_args.args[2].text == "Nail gels."
     assert sa.await_args.args[:4] == ("org_1", "k1", "q-2", "user_maya") and sa.await_args.args[4].text == "Nail gels."

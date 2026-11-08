@@ -30,6 +30,51 @@ def _client_with(response: MagicMock) -> tuple[MetronomeClient, MagicMock]:
     return MetronomeClient(api_key="tok_sandbox", base_url="https://api.metronome.com/v1", http_client=fake), fake
 
 
+async def test_voice_contract_is_monthly_advance_and_scopes_usage_to_one_enrollment(monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "METRONOME_STRIPE_DELIVERY_METHOD_ID", "delivery-1")
+    client, http = _client_with(_resp(200, {"data": {"id": "voice-contract"}}))
+    assert (
+        await client.create_voice_contract(
+            customer_id="customer-1",
+            rate_card_id="voice-card",
+            subscription_product_id="voice-sub",
+            uniqueness_key="enrollment-1",
+        )
+        == "voice-contract"
+    )
+    payload = http.post.await_args.kwargs["json"]
+    assert http.post.await_args.args[0] == "/contracts/create"
+    assert payload["usage_filter"] == {"group_key": "voice_plan", "group_values": ["enrollment-1"]}
+    assert payload["billing_provider_configuration"] == {
+        "billing_provider": "stripe",
+        "delivery_method_id": "delivery-1",
+    }
+    assert payload["subscriptions"] == [
+        {
+            "collection_schedule": "ADVANCE",
+            "billing_cycle_config": {"invoice_placement": "ON_SCHEDULED_INVOICE"},
+            "initial_quantity": 1,
+            "proration": {"invoice_behavior": "BILL_IMMEDIATELY", "is_prorated": True},
+            "subscription_rate": {"billing_frequency": "MONTHLY", "product_id": "voice-sub"},
+        }
+    ]
+
+
+async def test_voice_contract_cancellation_normalizes_python_microseconds_for_provider():
+    client, http = _client_with(_resp(200, {}))
+    await client.end_voice_contract(
+        customer_id="customer-1", contract_id="voice-contract", ending_before="2026-11-08T12:34:56.123456+00:00"
+    )
+    assert http.post.await_args.args[0] == "/contracts/updateEndDate"
+    assert http.post.await_args.kwargs["json"] == {
+        "customer_id": "customer-1",
+        "contract_id": "voice-contract",
+        "ending_before": "2026-11-08T12:34:56.123Z",
+    }
+
+
 @pytest.mark.asyncio
 async def test_ingest_posts_event_array_with_bearer_auth():
     client, fake = _client_with(_resp(200, {}))

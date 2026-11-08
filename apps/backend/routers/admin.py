@@ -408,6 +408,7 @@ async def admin_provision_retry(
 # A billing action that changed nothing must not read as "succeeded": the admin
 # UI prints the 409 detail, and the audit row records an error instead of a success.
 _BILLING_NOOP_REASONS = {
+    "voice_plan_managed": "Manage voice-plan billing separately; no pause was applied.",
     "no_billing_account": "This workspace has no billing account — nothing was changed.",
     "no_subscription": "This workspace has no Stripe subscription — nothing was changed.",
     "no_customer": "This workspace has no Stripe customer — nothing was changed.",

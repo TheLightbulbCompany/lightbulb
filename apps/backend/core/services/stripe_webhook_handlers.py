@@ -647,6 +647,9 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
 
 
 async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    from core.billing.voice_plan_payments import on_invoice
+
+    await on_invoice(event)
     event_data = event["data"]["object"]
     put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
     logger.warning("Payment failed for customer %s", event_data.get("customer"))
@@ -680,6 +683,9 @@ async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingSer
     """`invoice.paid` (T23): ``invoice_paid {at_list}`` on every paid invoice, and
     ``trial_converted`` once per workspace, on its first invoice paid at list. Telemetry only;
     billing state stays with the subscription events. Never raises into the webhook."""
+    from core.billing.voice_plan_payments import on_invoice
+
+    await on_invoice(event)
     invoice = event["data"]["object"]
     put_metric("stripe.invoice", dimensions={"event": "paid"})
     sub_id, sub_metadata = _invoice_subscription(invoice)
@@ -731,6 +737,10 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     Customer credit purchases use Metronome payment-gated commits directly;
     there is no Stripe Checkout credit-settlement or bundled-credit branch.
     """
+    from core.billing.voice_plan_checkout import complete
+
+    if await complete(event):
+        return Response(status_code=200)
     session = event["data"]["object"]
     session_metadata = session.get("metadata") or {}
     # Launch competition: a settled session that carried the winner free-month
@@ -766,6 +776,7 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "customer.subscription.trial_will_end": handle_trial_will_end,
     "customer.subscription.deleted": handle_subscription_deleted,
     "invoice.payment_failed": handle_invoice_payment_failed,
+    "invoice.payment_action_required": handle_invoice_payment_failed,
     "invoice.paid": handle_invoice_paid,
     "checkout.session.completed": handle_checkout_session,
     "checkout.session.async_payment_succeeded": handle_checkout_session,

@@ -12,6 +12,9 @@ fresh client per logical operation via `for_settings()`.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
+from decimal import Decimal
+from urllib.parse import quote
 from typing import Any
 
 import httpx
@@ -171,6 +174,57 @@ class MetronomeClient:
         if not contract_id:
             raise MetronomeError(f"create_contract: no data.id in Metronome response (got keys {sorted(body)})")
         return contract_id
+
+    async def create_voice_contract(
+        self, *, customer_id: str, rate_card_id: str, subscription_product_id: str, uniqueness_key: str
+    ) -> str:
+        """An explicitly enrolled voice plan; distinct from the owner's prepaid-credit contract.
+
+        Official contracts API: subscriptions are qty-one MONTHLY ADVANCE; usage_filter's key must
+        be a group key on the voice metric. The dedicated card prices only voice_minutes.
+        """
+        body = await self._post(
+            "/contracts/create",
+            {
+                "customer_id": customer_id,
+                "rate_card_id": rate_card_id,
+                "starting_at": time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime()),
+                "uniqueness_key": uniqueness_key,
+                "billing_provider_configuration": {"billing_provider": "stripe", **_stripe_delivery()},
+                "usage_filter": {"group_key": "voice_plan", "group_values": [uniqueness_key]},
+                "subscriptions": [
+                    {
+                        "collection_schedule": "ADVANCE",
+                        "billing_cycle_config": {"invoice_placement": "ON_SCHEDULED_INVOICE"},
+                        "proration": {"invoice_behavior": "BILL_IMMEDIATELY", "is_prorated": True},
+                        "initial_quantity": 1,
+                        "subscription_rate": {"billing_frequency": "MONTHLY", "product_id": subscription_product_id},
+                    }
+                ],
+            },
+        )
+        contract_id = (body.get("data") or {}).get("id")
+        if not contract_id:
+            raise MetronomeError("create_voice_contract: no data.id")
+        return contract_id
+
+    async def end_voice_contract(self, *, customer_id: str, contract_id: str, ending_before: str) -> None:
+        """End only the voice contract; leave the customer's credits contract intact."""
+        # Metronome rejects Python's six-digit fractions; it accepts at most milliseconds.
+        end = (
+            datetime.fromisoformat(ending_before)
+            .astimezone(UTC)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        await self._post(
+            "/contracts/updateEndDate",
+            {
+                "customer_id": customer_id,
+                "contract_id": contract_id,
+                "ending_before": end,
+            },
+        )
 
     async def list_contracts(self, *, customer_id: str) -> list[dict]:
         """POST /v2/contracts/list — all contracts for one customer. Adoption
@@ -405,7 +459,31 @@ class MetronomeClient:
         body = await self._post("/contracts/customerBalances/getNetBalance", {"customer_id": customer_id})
         return body.get("data", {})
 
-    async def list_customer_invoices(self, *, customer_id: str, status: str = "DRAFT") -> list[dict]:
+    async def scoped_voice_seconds(
+        self, *, customer_id: str, metric_id: str, usage_key: str, starting_on: str, ending_before: str
+    ) -> int:
+        """The same scoped seconds that the voice contract prices, without local rounding or timezone drift."""
+        total, cursor = Decimal(0), None
+        while True:
+            path = "/usage/groups" + (f"?next_page={quote(cursor, safe='')}" if cursor else "")
+            body = await self._post(
+                path,
+                {
+                    "customer_id": customer_id,
+                    "billable_metric_id": metric_id,
+                    "window_size": "none",
+                    "starting_on": starting_on,
+                    "ending_before": ending_before,
+                    "group_key": ["voice_plan"],
+                    "group_filters": {"voice_plan": [usage_key]},
+                },
+            )
+            total += sum((Decimal(str(row.get("value") or 0)) for row in body.get("data") or []), Decimal(0))
+            cursor = body.get("next_page")
+            if not cursor:
+                return int(total)
+
+    async def list_customer_invoices(self, *, customer_id: str, status: str | None = "DRAFT") -> list[dict]:
         """GET /v1/customers/{id}/invoices — invoice list for one customer.
 
         With status=DRAFT this returns the continuously-updated draft usage
@@ -420,8 +498,14 @@ class MetronomeClient:
         ``line_items`` here as unreliable and re-fetch via
         ``get_customer_invoice`` before summing.
         """
-        body = await self._get(f"/customers/{customer_id}/invoices", params={"status": status})
-        return body.get("data") or []
+        invoices, cursor = [], None
+        while True:
+            params = {**({"status": status} if status else {}), **({"next_page": cursor} if cursor else {})}
+            body = await self._get(f"/customers/{customer_id}/invoices", params=params)
+            invoices += body.get("data") or []
+            cursor = body.get("next_page")
+            if not cursor:
+                return invoices
 
     async def get_customer_invoice(self, *, customer_id: str, invoice_id: str) -> dict:
         """GET /v1/customers/{customer_id}/invoices/{invoice_id} — full detail

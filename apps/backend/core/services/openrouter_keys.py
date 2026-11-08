@@ -68,7 +68,14 @@ def limit_for_account(account: dict | None) -> float:
     provider choice) it IS the valve. An explicit managed paid owner is valved by Metronome
     reservations instead, so their key only carries a high backstop and is never cut to Base's."""
     from core.services.trial_cap import is_managed_capped
+    from core.billing.voice_billing import has_voice_plan
 
+    if has_voice_plan(account):
+        return (
+            settings.OPENROUTER_BASE_KEY_DAILY_LIMIT_USD
+            if is_managed_capped(account)
+            else settings.OPENROUTER_PAID_KEY_DAILY_LIMIT_USD
+        )
     if (account or {}).get("subscription_status") == "trial_local":
         return settings.OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD
     if is_managed_capped(account):

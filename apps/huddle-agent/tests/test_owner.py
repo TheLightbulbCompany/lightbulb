@@ -34,9 +34,10 @@ class _Backend:
 
 class _LiveSession:
     def __init__(self, kw):
-        self.kw, self.closed, self.session = kw, 0, None
+        self.kw, self.closed, self.session, self.close_s = kw, 0, None, 0
 
     async def close(self):
+        await asyncio.sleep(self.close_s)  # live.close() lets posts in flight finish first
         self.closed += 1
 
 
@@ -146,7 +147,7 @@ async def test_orb_waits_wait_s_from_each_ask_whatever_replies(live, monkeypatch
     await anext(gen)  # the Router's ack: the Worker's answer is still to come
     await gen.aclose()
     assert t.waiting()
-    await asyncio.sleep(0.07)
+    await asyncio.sleep(0.2)
     assert not t.waiting() and woke == [1]  # WAIT_S from the post: Quiet re-arms
 
 
@@ -254,9 +255,17 @@ async def test_orb_opens_gpt_live_only_while_the_mic_is_live_and_closes_it(live,
     ctx.mic(True)
     await asyncio.sleep(0)
     assert len(live.sessions) == 2 and live.sessions[1].kw["on_spoken"] is not None
+    live.sessions[1].close_s = 0.03
+    lp.track_publications["TR_2"] = types.SimpleNamespace(sid="TR_2", name="agent-assistant")
+    ctx.mic(False)
+    ctx.mic(True)  # a quick reopen while the old session is still closing
+    await asyncio.sleep(0)
+    lp.track_publications["TR_3"] = types.SimpleNamespace(sid="TR_3", name="agent-assistant")  # the new voice
+    await asyncio.sleep(0.05)
+    assert live.sessions[1].closed == 1 and ctx.unpublished == ["TR_1", "TR_2"] and "TR_3" in lp.track_publications
     for cb in ctx.callbacks:  # the room left: closed too, and the talk kept
         await cb()
-    assert live.sessions[1].closed == 1 and [op for op, _ in b.sent][-1] == "end"
+    assert live.sessions[2].closed == 1 and [op for op, _ in b.sent][-1] == "end"
 
 
 async def test_orb_closes_gpt_live_when_the_talk_goes_quiet(live, monkeypatch):

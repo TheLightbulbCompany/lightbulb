@@ -133,7 +133,7 @@ class Talk:
         self.asked[str(mid)] = time.monotonic()
         if self.rewake:
             # no reply by then: Quiet re-arms (the lambda: a talk that ended meanwhile cleared `rewake`)
-            asyncio.get_running_loop().call_later(WAIT_S, lambda: self.rewake and self.rewake())
+            asyncio.get_running_loop().call_later(WAIT_S + 0.1, lambda: self.rewake and self.rewake())
         return str(mid)
 
     async def spoken(self, event_id: str) -> None:
@@ -239,15 +239,15 @@ async def run(ctx: JobContext, meta: dict) -> None:
     async def shut(opening: asyncio.Task | None) -> None:
         if opening is None:
             return
+        lp = ctx.room.local_participant  # this session's track, taken now: close() takes up to ~10 s, and a quick
+        old = [p.sid for p in lp.track_publications.values() if p.name == f"agent-{tile}"]  # reopen publishes anew
         try:
             await (await opening).close()
         except Exception:  # noqa: BLE001 -- a failed start or close: nothing left open to bill
             logger.warning("owner: live session not closed cleanly", exc_info=True)
-        lp = ctx.room.local_participant  # the closed session's track: the strip must find the next one's
-        for pub in list(lp.track_publications.values()):
-            if pub.name == f"agent-{tile}":
-                with contextlib.suppress(Exception):
-                    await lp.unpublish_track(pub.sid)
+        for sid in old:  # the closed session's track goes, so the strip finds the next one's
+            with contextlib.suppress(Exception):
+                await lp.unpublish_track(sid)
 
     def recount(*_args) -> None:
         mic = any(p.kind == rtc.TrackKind.KIND_AUDIO and not p.muted for p in member.track_publications.values())

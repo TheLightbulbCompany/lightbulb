@@ -34,6 +34,8 @@ DELETED = (
     "core.services.paperclip_provisioning",
     "core.services.paperclip_user_delete",
     "core.services.paperclip_sql",
+    "core.services.paperclip_session_cookie",
+    "core.services.paperclip_user_session",
 )
 
 KEPT = {
@@ -44,10 +46,6 @@ KEPT = {
     "core/services/paperclip_meta.py": "agent create fields",
     "core/services/paperclip_openclaw_pairing.py": "resolve_company_id_for_owner, read by the client callers",
     "core/services/paperclip_owner_email.py": "agent mail sender identity",
-    "core/services/paperclip_session_cookie.py": "/teams/* BFF session cookie and the 401 self-heal in main.py",
-    "core/services/paperclip_user_session.py": "/teams/* BFF per-user sign-in",
-    "routers/teams/agents.py": "the shared /teams _ctx (session cookie) and /teams/members principal map; /agents routes are native",
-    "routers/teams/deps.py": "TeamsContext for agents.py and settings.py",
     "routers/teams/schemas.py": "request bodies for agents.py and settings.py",
 }
 
@@ -88,6 +86,8 @@ IMPORTERS = {
     "routers/company_context.py",
     "routers/debug.py",
     "routers/ses_inbound.py",
+    "routers/teams/agents.py",
+    "routers/teams/deps.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
     "routers/teams/settings.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
     "routers/webhooks.py",
 }

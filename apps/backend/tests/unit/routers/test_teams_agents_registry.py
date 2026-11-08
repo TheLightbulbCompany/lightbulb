@@ -27,7 +27,6 @@ def client(monkeypatch):
         raise AssertionError("the roster must not call Paperclip")
 
     monkeypatch.setattr(paperclip_admin_client.PaperclipAdminClient, "__init__", paperclip_down)
-    monkeypatch.setattr(agents_mod, "_admin", paperclip_down)
     monkeypatch.setattr(agents_mod, "_ctx", paperclip_down)
     monkeypatch.setattr(agent_registry_repo, "list_agents", AsyncMock(return_value=ROWS))
     repo = MagicMock()

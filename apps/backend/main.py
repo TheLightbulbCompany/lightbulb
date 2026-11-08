@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -30,7 +29,6 @@ from core.services.messaging import ApiProblem
 from core.services import hosted_mcp
 from core.services.a2a_auth import READ_SCOPE_A2A, RESOURCE_A2A, SEND_SCOPE
 from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE
-from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_mail,
@@ -415,99 +413,6 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
         # uploaded sessions: FastAPI's default 422 would echo tool-call summaries.
         return JSONResponse(status_code=422, content={"detail": "Invalid sessions upload."})
     return await request_validation_exception_handler(request, exc)
-
-
-# PaperclipApiError handler — translate upstream Paperclip non-2xx responses into
-# matching HTTPExceptions so the BFF returns a faithful status to the browser
-# instead of a generic 500. ``PaperclipApiError`` is raised by every method on
-# ``PaperclipAdminClient`` (see ``_post`` / ``_get`` / ``_patch`` / ``_delete``)
-# whenever Paperclip responds with a non-2xx; without this handler the Teams
-# BFF (``routers/teams/*.py``) would propagate it as an unhandled exception
-# and FastAPI would return 500 with a useless body. We forward Paperclip's
-# original status code (e.g. 403 / 404) under ``upstream_status`` so panel-side
-# error handling has something to branch on, and ``exc.message`` — NOT
-# ``str(exc)``, which now carries the upstream response body — as the detail, so
-# an upstream error payload never reaches the browser. The ``502`` fallback is
-# for the (currently-impossible) case where ``status_code`` is outside the
-# standard HTTP range — we can't legitimately return that to the client, so map
-# to "bad gateway" which is exactly what an out-of-range upstream status implies.
-@app.exception_handler(PaperclipApiError)
-async def paperclip_api_error_handler(request, exc: PaperclipApiError):
-    # 401 self-heal (Teams BFF only). A Teams request forwards the browser's
-    # Paperclip session cookie upstream; once that cookie expires/rotates the
-    # upstream returns 401. Without intervention the stale cookie keeps being
-    # forwarded and the user loops 401 forever (the cookie is HttpOnly, so the
-    # frontend can't clear it). So: catch the upstream 401, FORCE a fresh
-    # per-user sign-in, overwrite the browser cookie on the response, and
-    # return a 401 with ``{"detail":"session refreshed, retry"}``.
-    #
-    # Contract with the frontend (wired in a later step): on a 401 from a
-    # Teams call, retry the request EXACTLY ONCE — the retry now carries the
-    # freshly reseeded cookie and succeeds. We do this here, in ONE exception
-    # handler, rather than wrapping each of the ~40 Teams handlers.
-    #
-    # ``request.state.teams_user_id`` is stamped by ``_ctx`` before any
-    # upstream call. Its presence is what scopes this self-heal to Teams BFF
-    # requests; the board proxy handles its own 401 fallback inline and never
-    # sets this, so it falls through to the faithful-status path below.
-    teams_user_id = getattr(request.state, "teams_user_id", None)
-    if exc.status_code == 401 and teams_user_id:
-        from core.services.paperclip_session_cookie import resolve_session_cookie
-        from routers.teams.agents import get_user_session_cookie_for
-
-        refresh = JSONResponse(
-            status_code=401,
-            content={"detail": "session refreshed, retry"},
-        )
-        try:
-            await resolve_session_cookie(
-                cookies=request.cookies,
-                response=refresh,
-                user_id=teams_user_id,
-                mint=lambda: get_user_session_cookie_for(teams_user_id),
-                force=True,
-            )
-        except Exception:
-            # The re-mint (a fresh per-user sign-in) can fail for many reasons:
-            # SessionCookieError (missing key), PaperclipApiError (sign-in 4xx/5xx),
-            # UserSessionError (workspace no longer active), Clerk lookup errors.
-            # Any of them must degrade to a plain 401 — never escape this handler
-            # (which would 500) or loop the client.
-            logger.warning("teams 401 self-heal: re-mint failed for user %s", teams_user_id, exc_info=True)
-            return JSONResponse(
-                status_code=401,
-                content={"detail": exc.message, "upstream_status": exc.status_code},
-            )
-        return refresh
-
-    status = exc.status_code if 400 <= exc.status_code < 600 else 502
-    if status >= 500:
-        # str(exc) is "GET /api/companies/<company_uuid>/... -> 5xx: <body>" — it
-        # embeds the internal Paperclip path + company UUID, and an upstream 5xx
-        # carries nothing client-actionable. Log the real detail server-side
-        # (the body is the only place upstream says why) and return a
-        # generic body so we don't leak backend architecture to the caller.
-        logger.warning("paperclip upstream error: %s", exc, exc_info=True)
-        return JSONResponse(
-            status_code=502,
-            content={"detail": "upstream error", "upstream_status": 502},
-        )
-    return JSONResponse(
-        status_code=status,
-        content={"detail": _paperclip_reason(exc), "upstream_status": exc.status_code},
-    )
-
-
-def _paperclip_reason(exc: PaperclipApiError) -> str:
-    """Paperclip's own user-facing 4xx reason ("Issue is blocked by unresolved blockers",
-    "Missing permission: tasks:assign.") from its ``{"error": ...}`` body; ``exc.message``
-    only says WHICH call failed (Paperclip audit 2026-09-24 F5). 5xx never reaches here."""
-    try:
-        body = exc.body if isinstance(exc.body, dict) else json.loads(exc.body or "{}")
-        reason = body.get("error")
-    except (ValueError, AttributeError):
-        reason = None
-    return reason[:300] if isinstance(reason, str) and reason.strip() else exc.message
 
 
 # Request-ID middleware — generates/propagates X-Request-ID for log correlation.

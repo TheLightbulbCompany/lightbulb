@@ -5,7 +5,7 @@ Every ``/agents`` route reads and writes ``agent_registry``; none calls Papercli
 ``adapterType`` / ``adapterConfig`` / ``url`` / ``headers`` return 422 at the FastAPI boundary.
 
 This module also defines the shared ``_ctx`` Depends helper (and the
-indirection helpers it leans on — ``_admin``, ``_repo``) that the rest
+indirection helper it leans on — ``_repo``) that the rest
 of the Teams BFF (Tasks 7-12) imports.
 """
 
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -25,10 +25,6 @@ from core.dynamodb import run_in_thread
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import agent_registry, hermes_profiles, voice_calls
 from core.services.voice_persona import agent_voice
-from core.services.paperclip_admin_client import (
-    PaperclipAdminClient,
-    shared_admin_client,
-)
 from core.services.agent_provenance import _load_agent_sidecars, stamp_agent_provenance
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
@@ -40,7 +36,6 @@ from core.services.agent_lifecycle import (
     delete_agent_everywhere,
     ensure_root_ceo_survives,
 )
-from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.person_label import NEW_MEMBER, is_relay_email
 from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import (
@@ -146,17 +141,6 @@ def _redact_agent(agent):
 # (adapter synthesis) easy to mock in isolation.
 
 
-def _admin() -> PaperclipAdminClient:
-    """Return the process-wide shared admin client.
-
-    Thin indirection over ``paperclip_admin_client.shared_admin_client`` —
-    kept because tests monkeypatch this function
-    (``monkeypatch.setattr(agents_mod, "_admin", lambda: admin)``) and the
-    sibling Teams routers route through it.
-    """
-    return shared_admin_client()
-
-
 def _repo() -> PaperclipRepo:
     """Build the paperclip-companies DDB repo.
 
@@ -189,28 +173,6 @@ def _resolve_owner_id(ctx) -> str:
     return getattr(ctx, "owner_id", None) or ctx.user_id
 
 
-async def _user_session(ctx) -> str:
-    """Return the user-session cookie for ``ctx``.
-
-    Thin indirection so the pairing tests can monkeypatch the I/O without
-    re-implementing the full ``_ctx`` dependency chain. The production
-    path resolves the cookie in ``deps.resolve_teams_context``; this
-    helper just reads it back off the ``TeamsContext``.
-    """
-    return ctx.session_cookie
-
-
-async def _resolve_user_email(user_id: str) -> str:
-    """Fetch the user's primary email from Clerk.
-
-    Thin indirection over ``clerk_admin.get_primary_email`` — kept because
-    tests monkeypatch this name and the sibling Teams routers call it.
-    """
-    from core.services.clerk_admin import get_primary_email
-
-    return await get_primary_email(user_id)
-
-
 async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
     """Map Paperclip principalId → Clerk user_id for the caller's org.
 
@@ -223,8 +185,6 @@ async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
     actor enrichment and the ``/members`` roster need the same principal map.
     """
     principal_to_clerk: dict[str, str] = {}
-    if ctx.paperclip_user_id:
-        principal_to_clerk[ctx.paperclip_user_id] = ctx.user_id
     if ctx.org_id is None:
         return principal_to_clerk
     repo = _repo()
@@ -239,66 +199,18 @@ async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
     return principal_to_clerk
 
 
-async def get_user_session_cookie_for(user_id: str) -> str:
-    """Mint a fresh per-user Better Auth session cookie (cold path only).
+async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
+    """Resolve the Teams BFF context for the current request: Clerk auth -> workspace META row ->
+    membership. ``deps_mod.resolve_teams_context`` (not a direct import) so tests that monkeypatch
+    the deps module Just Works.
 
-    The per-user sign-in wired with the production repo / admin client /
-    email resolver. Factored to module scope so BOTH the normal context
-    builder (``_ctx`` via ``resolve_session_cookie``'s ``mint`` callback)
-    and the 401 self-heal handler use the exact same sign-in — they must
-    not drift on how a fresh cookie is obtained. Tests monkeypatch the
-    indirection helpers (``_repo`` / ``_admin`` / ``_resolve_user_email``)
-    rather than this function.
+    Self-heal: a ``reconcile`` callback (``ensure_user_ready(auth)``) makes a non-member drive
+    provisioning and get 202 (the UI polls until active) instead of a 409. ``/teams`` never polled
+    ``/container/status``, so without this a member could only get provisioned by visiting ``/chat``.
     """
-    return await get_user_session_cookie(
-        user_id=user_id,
-        repo=_repo(),
-        admin_client=_admin(),
-        clerk_email_resolver=_resolve_user_email,
-    )
-
-
-async def _ctx(
-    request: Request,
-    response: Response,
-    auth: AuthContext = Depends(get_current_user),
-) -> TeamsContext:
-    """Resolve the Teams BFF context for the current request.
-
-    Wires together: Clerk auth -> paperclip-companies row lookup ->
-    browser-held Paperclip session cookie (reused; minted only on cold
-    start / 401) -> ``TeamsContext`` for the handler. Using
-    ``deps_mod.resolve_teams_context`` (rather than a direct import) so
-    test code that monkeypatches the deps module Just Works.
-
-    Self-heal: a ``reconcile`` callback (``ensure_user_ready(auth)``) is
-    wired into ``resolve_teams_context`` so a missing Paperclip row drives
-    provisioning itself and returns 202 (the UI polls until active), instead
-    of wedging the member on a 409. ``/teams`` never polled
-    ``/container/status``, so without this a member could only get
-    provisioned by visiting ``/chat``. The 202 / 503 status codes from
-    ``resolve_teams_context`` otherwise propagate as-is.
-
-    ``request.state.teams_user_id`` is stashed for the 401 self-heal
-    exception handler (registered in ``main.py``): when an upstream
-    PaperclipAdminClient call 401s, the handler re-mints + reseeds the
-    browser cookie for this user, and ``request.state`` is the only place
-    it can recover whose cookie to refresh.
-    """
-    # Recorded before any upstream call so the 401 handler can refresh
-    # THIS user's cookie even if the handler raised before ctx was built.
-    request.state.teams_user_id = auth.user_id
-
     return await deps_mod.resolve_teams_context(
         auth=auth,
         repo=_repo(),
-        session_factory=get_user_session_cookie_for,
-        cookies=request.cookies,
-        response=response,
-        # Self-heal: if this user has no Paperclip row yet, /teams runs the
-        # lazy JOIN itself. Fired in the background by resolve_teams_context;
-        # ensure_user_ready is idempotent, so it no-ops when the org isn't
-        # ready and the frontend keeps polling the 202 until the row goes active.
         reconcile=lambda: _self_heal_reconcile(auth),
     )
 
@@ -400,7 +312,7 @@ async def list_members(auth: AuthContext = Depends(get_current_user)):
             _member_row(m["user_id"], m["first_name"], m["last_name"], m["email"], m["image_url"])
             for m in await list_organization_members(auth.org_id)
         ]
-    who = SimpleNamespace(user_id=auth.user_id, org_id=auth.org_id, paperclip_user_id=None)
+    who = SimpleNamespace(user_id=auth.user_id, org_id=auth.org_id)
     clerk_to_principal = {clerk: pc for pc, clerk in (await build_principal_to_clerk(who)).items()}
     return {"members": [{**m, "paperclipUserId": clerk_to_principal.get(m["userId"])} for m in members]}
 

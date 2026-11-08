@@ -14,17 +14,11 @@ from routers.teams.deps import TeamsContext
 
 @pytest.fixture
 def client(monkeypatch):
-    ctx = TeamsContext(
-        user_id="u1", org_id="org_1", owner_id="org_1", company_id="", paperclip_user_id="", session_cookie=""
-    )
+    ctx = TeamsContext(user_id="u1", org_id="org_1", owner_id="org_1")
 
     async def fake_ctx():
         return ctx
 
-    def no_paperclip():
-        raise AssertionError("Paperclip called")
-
-    monkeypatch.setattr(agents_mod, "_admin", no_paperclip)
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
     try:
         yield TestClient(app)

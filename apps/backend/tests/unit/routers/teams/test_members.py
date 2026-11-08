@@ -65,10 +65,8 @@ def test_list_members_is_the_clerk_org_roster(client, monkeypatch):
         ]
     )
 
-    from routers.teams import agents as agents_mod
     import core.services.clerk_admin as clerk_admin
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(clerk_admin, "list_organization_members", org_members)
 
     r = client.get("/api/v1/teams/members", headers={"Authorization": "Bearer x"})

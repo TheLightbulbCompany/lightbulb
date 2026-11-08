@@ -91,3 +91,35 @@ async def test_approve_posts_route():
     a._b.owner = owner_op
     assert await a.approve("yes", "the supply order") == {"confirm_sent": True, "title": "x"}
     assert sent == [("approve", {"phrase": "yes", "hint": "the supply order", "speakerUserId": "user_maya"})]
+
+
+def test_the_routers_state_is_in_the_instructions():
+    a = owner.OwnerAgent(
+        Backend("r", "o", "t"), "u", {"name": "Nova", "who": "Maya", "today": "Sunday", "context": "- [k-1] Post: done"}
+    )
+    assert a.instructions.endswith("- [k-1] Post: done")
+    assert "What you know" not in _agent().instructions  # no context, no empty section
+
+
+async def test_spoken_lines_post_to_the_dm_in_order():
+    import asyncio
+
+    sent = []
+
+    class B:
+        async def owner(self, op, body):
+            await asyncio.sleep(0.01 if body["n"] == 0 else 0)  # the first post is the slow one
+            sent.append((op, body))
+            if body["n"] == 1:
+                raise BackendError(500, "x", None)  # one failure does not stop the next
+            return {}
+
+    t = owner.Turns(B(), "user_maya", "job_1")
+    t.add("user", "Draft the post")
+    t.add("assistant", "On it.")
+    t.add("user", "Thanks")
+    await t.flush()
+    assert [(b["n"], b["role"], b["text"]) for _, b in sent] == [
+        (0, "user", "Draft the post"), (1, "assistant", "On it."), (2, "user", "Thanks")
+    ]
+    assert {(op, b["sessionId"], b["speakerUserId"]) for op, b in sent} == {("turn", "job_1", "user_maya")}

@@ -17,9 +17,10 @@ from typing import Annotated, Literal
 from fastapi import APIRouter
 from pydantic import AfterValidator, BaseModel, Field
 
+from core.auth import AuthContext
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import integration_reads, memory_api, voice_approve
+from core.services import integration_reads, memory_api, messaging, voice_approve, voice_state
 from core.services.messaging import human_display_name
 from core.services.voice_calls import _voice_requester
 from routers.huddles import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
@@ -49,9 +50,59 @@ async def _owner(room_id: str, body: OwnerIn) -> tuple[str, str, str | None]:
 
 @router.post("/internal/voice/owner/{room_id}/start")
 async def start(room_id: str, body: OwnerIn) -> dict:
-    """The assistant's name, and the DM's agent (the tile the session speaks as)."""
-    _room, _member, agent = await _owner(room_id, body)
-    return {"assistantName": await assistant_name(body.ownerId), "agentId": agent}
+    """The assistant's name, the DM's agent (the tile the session speaks as) and the Router's state: this DM's
+    recent messages, the tasks of this DM and of the member, and memory with the member's private scope."""
+    room, member, agent = await _owner(room_id, body)
+    keep = lambda t: (t.get("audience") or {}).get("roomId") == room or t.get("ownerUserId") == member  # noqa: E731
+    name, context = await asyncio.gather(
+        assistant_name(body.ownerId), voice_state.context(body.ownerId, member, room, keep, member, room)
+    )
+    return {"assistantName": name, "agentId": agent, "context": context}
+
+
+class TurnIn(OwnerIn):
+    sessionId: Annotated[str, Field(min_length=1, max_length=200)]
+    n: int = Field(ge=0, le=100000)  # the turn's place in the talk: with sessionId, its one message
+    role: Literal["user", "assistant"]
+    text: Annotated[str, Field(min_length=1, max_length=4000)]
+
+
+@router.post("/internal/voice/owner/{room_id}/turn")
+async def turn(room_id: str, body: TurnIn) -> dict:
+    """One spoken line becomes a message in the DM (`via: voice`), so typed and spoken are one conversation. The
+    member's line is theirs and wakes no agent (the voice already answered); the reply is the DM agent's. Keyed
+    on the talk and turn: a retry is the same message."""
+    room_id, member, agent = await _owner(room_id, body)
+    key = f"voice-turn:{room_id}:{body.sessionId}:{body.n}"
+    if body.role == "user":
+        msg = await messaging.create_human_message(
+            AuthContext(user_id=member, org_id=body.ownerId),
+            room_id,
+            messaging.CreateMessageRequest(
+                client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+                text=body.text,
+                reply_to_message_id=None,
+                thread_root_message_id=None,
+            ),
+            via="voice",
+            wake=False,
+        )
+        return {"messageId": str(msg.message_id)}
+    if agent is None:
+        raise _problem(409, "no_agent")
+    receipt = await messaging.create_agent_message(
+        body.ownerId,
+        messaging.AgentMessageRequest(
+            event_id=key,
+            room_id=uuid.UUID(room_id),
+            agent_id=uuid.UUID(agent),
+            text=body.text,
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+        attrs={"via": "voice"},
+    )
+    return {"messageId": str(receipt.message_id)}
 
 
 class WorkIn(OwnerIn):

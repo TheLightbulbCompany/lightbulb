@@ -20,7 +20,7 @@ from typing import Literal
 from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io
 from livekit.plugins import google, openai
 
-from huddle_agent import end_after
+from huddle_agent import end_after, with_state
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.phone import clean_transcript
 
@@ -61,7 +61,7 @@ def realtime_model():
 
 class OwnerAgent(Agent):
     def __init__(self, backend: Backend, speaker: str, info: dict) -> None:
-        super().__init__(instructions=INSTRUCTIONS.format(**info))
+        super().__init__(instructions=with_state(INSTRUCTIONS.format(**info), info.get("context", "")))
         self._b, self._speaker = backend, speaker
         self.work: list[dict] = []  # the tasks this talk started: its follow-ups on Home
 
@@ -127,6 +127,33 @@ class OwnerAgent(Agent):
         return out
 
 
+class Turns:
+    """Each spoken line posted to the DM in order (`/owner/{room}/turn`), so typed and spoken are one conversation.
+    `n` numbers the lines: with the job id, each line's one message. A failed post is logged; the talk goes on."""
+
+    def __init__(self, backend: Backend, speaker: str, session_id: str) -> None:
+        self._b, self._speaker, self._sid = backend, speaker, session_id
+        self._n = 0
+        self._last: asyncio.Task | None = None
+
+    def add(self, role: str, text: str) -> None:
+        self._last = asyncio.create_task(self._post(self._last, self._n, role, text[:4000]))
+        self._n += 1
+
+    async def _post(self, prev: asyncio.Task | None, n: int, role: str, text: str) -> None:
+        if prev:
+            await asyncio.gather(prev, return_exceptions=True)  # in the order said
+        try:
+            await self._b.owner("turn", {"speakerUserId": self._speaker, "sessionId": self._sid, "n": n,
+                                         "role": role, "text": text})  # fmt: skip
+        except BackendError as e:
+            logger.warning("owner: turn %d not posted (%s)", n, e.code)
+
+    async def flush(self) -> None:
+        if self._last:
+            await asyncio.gather(self._last, return_exceptions=True)
+
+
 def talk_record(agent: OwnerAgent, items: list[dict], session_id: str, seconds: float) -> dict:
     """What `/owner/{room}/end` keeps as the "Yours" row: the transcript as phone calls keep it, and the tasks."""
     return {"speakerUserId": agent._speaker, "sessionId": session_id, "durationSec": int(seconds),
@@ -146,7 +173,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
     name, tile = info["assistantName"], info.get("agentId") or "assistant"
     agent = OwnerAgent(backend, member.identity, {
         "name": name, "who": member.name or "the owner", "today": time.strftime("%A %Y-%m-%d"),
+        "context": info.get("context", ""),
     })  # fmt: skip
+    turns = Turns(backend, member.identity, ctx.job.id)
     session = AgentSession(llm=realtime_model(), user_away_timeout=AWAY_S)
     items: list[dict] = []
     t0 = time.time()
@@ -156,6 +185,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if text := getattr(ev.item, "text_content", None):
             at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
             items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
+            if ev.item.role in ("user", "assistant") and not ev.item.interrupted:
+                turns.add(ev.item.role, text)
     attrs = ctx.room.local_participant.set_attributes
 
     @session.on("agent_state_changed")
@@ -179,7 +210,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     session.on("close", lambda _ev: ctx.shutdown("session closed"))
     limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length")))
     record = lambda: talk_record(agent, items, ctx.job.id, time.time() - t0)  # noqa: E731
-    ctx.add_shutdown_callback(lambda _reason="": _close(limit, backend, record))
+    ctx.add_shutdown_callback(lambda _reason="": _close(limit, backend, record, turns))
     # the web's Talk RPC (HuddleProvider.talkStart): nothing to summon here, the session already listens
     ctx.room.local_participant.register_rpc_method("talk_start", lambda _data: "ok")
     await session.start(
@@ -196,9 +227,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
     logger.info("owner: listening in room %s as %s", meta["roomId"], name)
 
 
-async def _close(limit: asyncio.Task, backend: Backend, record) -> None:
+async def _close(limit: asyncio.Task, backend: Backend, record, turns: Turns) -> None:
     limit.cancel()
     try:
+        await turns.flush()
         await backend.owner("end", record())  # the talk becomes a "Yours" row on Home
     except BackendError as e:
         logger.warning("owner: talk not kept (%s)", e.code)

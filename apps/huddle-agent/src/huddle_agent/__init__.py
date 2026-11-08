@@ -1,6 +1,11 @@
 import asyncio
 import logging
 
+STATE = """
+
+What you know at the start of this talk (the chat so far, the open and recent tasks, memory). It is current;
+use it before any tool:
+{context}"""
 GOODBYE = "We're out of time. In one short sentence, say a warm goodbye; don't ask anything."
 
 
@@ -38,3 +43,8 @@ def usage_log(session, what: str) -> None:
 
     session.on("metrics_collected", add)
     session.on("close", lambda _ev: logging.getLogger("huddle_agent").info("%s usage %s", what, n))
+
+
+def with_state(instructions: str, context: str) -> str:
+    """The session's instructions with the Router's state from the backend's start (voice_state.context)."""
+    return instructions + STATE.format(context=context) if context else instructions

@@ -89,12 +89,65 @@ async def test_only_a_dm_is_owner_mode(m):
     assert e.value.status_code == 404
 
 
-async def test_start_names_the_assistant_and_its_agent(m):
-    with patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")):
+async def test_start_names_the_assistant_its_agent_and_the_routers_state(m):
+    with (
+        patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
+        patch.object(voice_owner.voice_state, "context", AsyncMock(return_value="Recent chat...")) as ctx,
+    ):
         out = await voice_owner.start(
             ROOM, voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
         )
-    assert out == {"assistantName": "Nova", "agentId": "a1"}
+    assert out == {"assistantName": "Nova", "agentId": "a1", "context": "Recent chat..."}
+    ws, viewer, room, keep, memory_user, chat_room = ctx.await_args.args
+    assert (ws, viewer, room, memory_user, chat_room) == ("org_1", "user_maya", ROOM, "user_maya", ROOM)
+    assert keep({"audience": {"roomId": ROOM}}) and keep({"ownerUserId": "user_maya", "audience": {"roomId": "x"}})
+    assert not keep({"ownerUserId": "user_sam", "audience": {"roomId": "x"}})
+
+
+AGENT = "7f1d2c3b-0000-4000-8000-0000000000aa"
+
+
+def _turn(role, n=0, speaker="user_maya"):
+    return voice_owner.TurnIn(
+        ownerId="org_1", roomToken="t", speakerUserId=speaker, sessionId="job_1", n=n, role=role, text="Hi there"
+    )
+
+
+async def test_a_spoken_line_is_the_members_message_in_the_dm_and_wakes_nobody(m):
+    from types import SimpleNamespace
+
+    with patch.object(
+        voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m1"))
+    ) as ch:
+        assert await voice_owner.turn(ROOM, _turn("user")) == {"messageId": "m1"}
+        await voice_owner.turn(ROOM, _turn("user"))  # a retry
+    first, again = ch.await_args_list
+    auth, room, req = first.args
+    assert (auth.user_id, auth.org_id, room, req.text) == ("user_maya", "org_1", ROOM, "Hi there")
+    assert first.kwargs == {"via": "voice", "wake": False}
+    assert again.args[2].client_message_id == req.client_message_id  # the same message, never a double
+
+
+async def test_the_voices_reply_is_the_dm_agents_message(m):
+    from types import SimpleNamespace
+
+    members = [MEMBERS[0], {"kind": "agent", "id": AGENT}]
+    with (
+        patch.object(voice_owner.messaging_repo, "list_members", AsyncMock(return_value=members)),
+        patch.object(
+            voice_owner.messaging, "create_agent_message", AsyncMock(return_value=SimpleNamespace(message_id="m2"))
+        ) as ca,
+    ):
+        assert await voice_owner.turn(ROOM, _turn("assistant", n=1)) == {"messageId": "m2"}
+    ws, req = ca.await_args.args
+    assert (ws, str(req.agent_id), req.event_id) == ("org_1", AGENT, f"voice-turn:{ROOM}:job_1:1")
+    assert ca.await_args.kwargs == {"attrs": {"via": "voice"}}
+
+
+async def test_only_the_seated_member_writes_turns(m):
+    with pytest.raises(HTTPException) as e:
+        await voice_owner.turn(ROOM, _turn("user", speaker="user_other"))
+    assert e.value.status_code == 403
 
 
 async def test_memory_reads_with_the_members_private_scope(m):

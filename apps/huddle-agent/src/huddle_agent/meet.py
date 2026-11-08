@@ -40,7 +40,7 @@ from livekit.agents.voice import io
 from livekit.plugins import google, noise_cancellation, openai
 from openai.types.beta.realtime.session import TurnDetection
 
-from huddle_agent import end_after, usage_log
+from huddle_agent import end_after, usage_log, with_state
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.transcript import (
     _LEADS,
@@ -231,7 +231,7 @@ class MeetAgent(Agent):
     def __init__(
         self, b: Backend, gate: Gate, mixer: Mixer, info: dict, names: dict[str, str]
     ) -> None:
-        super().__init__(instructions=INSTRUCTIONS.format(**info))
+        super().__init__(instructions=with_state(INSTRUCTIONS.format(**info), info.get("context", "")))
         self._b, self.gate, self._mixer, self._names = b, gate, mixer, names
         self.turns: list[dict] = []  # each person's line, in the order they began: seq, kind, final, who, text
         self._by_item: dict[str, dict] = {}
@@ -475,7 +475,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     gate = Gate(name=name)
     agent = MeetAgent(backend, gate, mixer, {
         "name": name, "company": meta.get("company") or "the team", "title": info["title"],
-        "today": time.strftime("%A %Y-%m-%d"),
+        "today": time.strftime("%A %Y-%m-%d"), "context": info.get("context", ""),
     }, names)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
     # the per-person transcriber: the gate's ears, with the exact speaker of each line

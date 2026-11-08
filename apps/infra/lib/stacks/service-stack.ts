@@ -803,6 +803,18 @@ export class ServiceStack extends cdk.Stack {
         resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/hook_grant_signing_key-*`],
       }),
     );
+    // Paperclip exit: the backend no longer reads the Paperclip bootstrap admin
+    // credentials (task 9). The wildcard SecretsAccess above would still hand
+    // them out, so deny them explicitly. The secret itself is RETAIN in
+    // auth-stack and is deleted by hand.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "DenyPaperclipAdminCredentialsRead",
+        effect: iam.Effect.DENY,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip_admin_credentials-*`],
+      }),
+    );
 
     // Wipes list the owner's secrets by prefix (core/services/owner_secret_sweep.py).
     // ListSecrets has no resource-level scoping, so it must be "*" (metadata only).
@@ -1616,22 +1628,8 @@ export class ServiceStack extends cdk.Stack {
       // records provisioned by dns-stack.ts.
       PUBLIC_API_BASE:
         env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`,
-      // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
-      // (apps/backend/main.py) builds an empty dispatch host set, so requests
-      // to `company-{env}.isol8.co` fall through to the default Isol8 API
-      // instead of being rewritten to the paperclip_proxy router. Mirrors
-      // the env-derivation in paperclip-stack.ts so the two stay in lockstep
-      // (keeps ServiceStack independent of PaperclipStack synth order).
-      // The `Origin` header the Teams BFF sends on Paperclip /api/auth/* +
-      // board-mutation calls. MUST match PaperclipStack's PAPERCLIP_PUBLIC_URL
-      // (Better Auth's trustedOrigins / origin guard), so keep the two in lockstep
-      // at the same https origin. NOT a live link and NOT the agent's API URL —
-      // see the PAPERCLIP_PUBLIC_URL comment in paperclip-stack.ts. Switching this
-      // to the http in-VPC host (PR #1073) broke Better Auth sign-in (403).
-      PAPERCLIP_PUBLIC_URL:
-        env === "prod"
-          ? `https://company.${rootDomain}`
-          : `https://${env}.company.${rootDomain}`,
+      // PAPERCLIP_PUBLIC_URL is gone with the Paperclip server (task 9 removed
+      // the backend read). PAPERCLIP_INTERNAL_URL stays until its readers go.
       // Cloud Map A record published by PaperclipStack at:
       //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
       // Namespace name is `lightbulb-${env}.local` (ContainerStack). Reading

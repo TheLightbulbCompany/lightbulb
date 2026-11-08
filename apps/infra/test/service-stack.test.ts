@@ -692,6 +692,29 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(rendered).not.toContain("rds-data:ExecuteStatement");
   });
 
+  // Lead ruling (task 10): CDK stops handing the backend PAPERCLIP_PUBLIC_URL and the
+  // Paperclip admin credentials (task 9 removed both reads); the three it still reads stay.
+  test("backend gets no PAPERCLIP_PUBLIC_URL and is denied the Paperclip admin credentials", () => {
+    const env = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .flatMap((c: any) => [...(c.Environment ?? []), ...(c.Secrets ?? [])].map((e: any) => e.Name));
+    expect(env).not.toContain("PAPERCLIP_PUBLIC_URL");
+    for (const kept of ["PAPERCLIP_SERVICE_TOKEN_KEY", "PAPERCLIP_EVENTS_WEBHOOK_SECRET", "PAPERCLIP_INTERNAL_URL"]) {
+      expect(env).toContain(kept);
+    }
+    const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>
+      Object.values(SERVICE_TEMPLATE_DEV.findResources(type)).flatMap(
+        (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+      ),
+    );
+    const deny = statements.find((st: any) => st.Sid === "DenyPaperclipAdminCredentialsRead");
+    expect(deny.Effect).toBe("Deny");
+    expect([deny.Action].flat()).toContain("secretsmanager:GetSecretValue");
+    expect([deny.Resource].flat()).toContain(
+      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/paperclip_admin_credentials-*",
+    );
+  });
+
   test("backend role can list secrets (metadata-only, resource '*' — the paginated ARN discovery)", () => {
     SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({

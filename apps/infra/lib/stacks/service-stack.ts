@@ -1265,6 +1265,49 @@ export class ServiceStack extends cdk.Stack {
     // inline document sits near CloudFormation's 10 KB limit, and one more
     // inline statement tips CDK into an overflow ManagedPolicy that
     // relocates unrelated statements (the packing the stack tests pin).
+    // Tenant vending role (session-scoped credentials, #5088). The backend assumes it per owner
+    // with an inline session policy (bedrock_aip.build_owner_session_policy) that narrows these
+    // grants to that owner's S3 prefix and memory actorId/namespace, and hands the 1 h
+    // credentials to the owner's bridge. This role is the CEILING: the bucket and the shared
+    // workspace memory, with exactly the actions the per-owner owner-litestream-s3 and
+    // owner-memory inline policies grant. No KMS: the bucket is SSE-S3. No sts:TagSession: the
+    // assume passes no tags. 1 h max is also AWS's cap on a chained assume.
+    const ownerStateBucket = `lightbulb-${env}-openclaw-replicas`;
+    const hermesTenantRole = new iam.Role(this, "HermesTenantRole", {
+      roleName: `lightbulb-${env}-hermes-tenant`,
+      assumedBy: new iam.ArnPrincipal(this.taskRole.roleArn),
+      maxSessionDuration: cdk.Duration.hours(1),
+      description: `Lightbulb ${env} Hermes tenant vending role (narrowed per owner by a session policy)`,
+      inlinePolicies: {
+        "owner-data": new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              sid: "OwnerStateBucketList",
+              actions: ["s3:GetBucketLocation", "s3:ListBucket"],
+              resources: [`arn:aws:s3:::${ownerStateBucket}`],
+            }),
+            new iam.PolicyStatement({
+              sid: "OwnerStateObjects",
+              actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+              resources: [`arn:aws:s3:::${ownerStateBucket}/*`],
+            }),
+            new iam.PolicyStatement({
+              sid: "WorkspaceMemoryUse",
+              actions: [
+                "bedrock-agentcore:CreateEvent",
+                "bedrock-agentcore:ListEvents",
+                "bedrock-agentcore:GetEvent",
+                "bedrock-agentcore:ListSessions",
+                "bedrock-agentcore:RetrieveMemoryRecords",
+                "bedrock-agentcore:ListMemoryRecords",
+              ],
+              resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+            }),
+          ],
+        }),
+      },
+    });
+
     new iam.ManagedPolicy(this, "TaskRoleSts", {
       managedPolicyName: `lightbulb-${env}-backend-sts`,
       statements: [
@@ -1282,6 +1325,11 @@ export class ServiceStack extends cdk.Stack {
           // can vend -- routers/connections.py rejects any other name at
           // connect time with a 400 rather than an AccessDenied here.
           resources: ["arn:aws:iam::*:role/lightbulb-connector"],
+        }),
+        new iam.PolicyStatement({
+          sid: "StsAssumeHermesTenantRole",
+          actions: ["sts:AssumeRole"],
+          resources: [hermesTenantRole.roleArn],
         }),
       ],
       roles: [this.taskRole],
@@ -1513,6 +1561,8 @@ export class ServiceStack extends cdk.Stack {
       // <owner>/hermes/. The name is a naming scar from litestream and must NOT be
       // changed: a rename strands every profile.
       OWNER_STATE_BUCKET: `lightbulb-${env}-openclaw-replicas`,
+      // The vending role the backend assumes per owner for the bridge's scoped S3/memory credentials.
+      HERMES_TENANT_ROLE_ARN: hermesTenantRole.roleArn,
       // Wraps integration-credential data keys (credential-envelopes table). Set in every stage, so
       // integration credentials are always written sealed to the table.
       CREDENTIAL_KMS_KEY_ARN: props.kmsKeyArn,

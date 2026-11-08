@@ -25,12 +25,13 @@ def client():
 @pytest.fixture
 def gate(monkeypatch):
     calls = []
-    state = {"refuse": False}
+    state = {"refuse": False, "row": {"allowedBy": None, "taskId": "task-1"}}
 
     async def require_intent(ws, kind, operands, *, match=None):
         calls.append((ws, kind, operands, match))
         if state["refuse"]:
             raise effect_doors.DoorRefused(kind)
+        return state["row"]
 
     monkeypatch.setattr(effect_doors, "require_intent", require_intent)
     monkeypatch.setattr(
@@ -94,3 +95,12 @@ def test_purchase_door(client, gate, monkeypatch):
     assert operands == {"merchant": "Acme", "url": "https://acme.io", "amount": 35.0, "why": "hosting"}
     assert match({"merchant": "Acme", "url": "https://acme.io", "amount": 35, "why": "hosting"})  # the tool's int
     assert not match({"merchant": "Acme", "url": "https://acme.io", "amount": 36, "why": "hosting"})
+    assert request.await_args.kwargs["approved"] is True  # the intent row came from an answered Question
+    assert request.await_args.kwargs["issue_id"] == "task-1"  # the intent's task, not the Worker's issueId
+    for junk in ({"issueId": "made-up"}, {"issueId": None}, {}):
+        b = {k: v for k, v in body.items() if k != "issueId"} | junk
+        assert client.post(f"/api/v1/internal/link-wallet/{OWNER}/requests", json=b, headers=H).status_code == 200
+        assert request.await_args.kwargs["issue_id"] == "task-1"
+    gate["row"] = {"allowedBy": "mode:auto", "taskId": "task-1"}
+    client.post(f"/api/v1/internal/link-wallet/{OWNER}/requests", json=body, headers=H)
+    assert request.await_args.kwargs["approved"] is False  # the mode let it through: no person said yes

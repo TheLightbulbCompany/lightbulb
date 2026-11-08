@@ -1,4 +1,4 @@
-"""Agent purchases: policy check, the ledger, the Needs-you card, the Link spend request.
+"""Agent purchases: policy check, the ledger, the Link spend request.
 
 An agent can only ASK. Every amount reaches Link through ``_policy`` (structured limits, no
 free-text judging) and then Link's own customer approval; nothing here lets a caller approve,
@@ -9,8 +9,11 @@ table -- the same place ``website_logins`` keeps its ``LOGINREQ#`` asks, with no
 monthly cap sums these rows. The id is a hash of the intent (agent, issue, merchant, amount,
 reason), so a retry lands on the same row and the same Link idempotency key.
 
-Approval: the card carries the RECORD of the ask. The "Approve in Link" URL is minted per click
-(``approval_link``) and never stored on the card or the row.
+Approval: the person's yes is the Needs-you Question. The effects route asks one for a purchase
+unless "ask before moving money" is off and the merchant is allowlisted (``needs_person``), and the
+door (``effect_doors.require_intent``) lets the ask through only on that task's intent row. Then
+Link's own customer approval. The "Approve in Link" URL is minted per click (``approval_link``)
+and never stored on the row.
 """
 
 from __future__ import annotations
@@ -26,17 +29,12 @@ from decimal import Decimal, InvalidOperation
 from botocore.exceptions import ClientError
 
 from core.dynamodb import run_in_thread, utc_now_iso
-from core.repositories import billing_repo, messaging_repo
-from core.repositories.paperclip_repo import PaperclipRepo
+from core import tasks_schema as ts
+from core.repositories import billing_repo, messaging_repo, tasks_repo
 from core.services import link_wallet, owner_lifecycle, website_logins
-from core.services.board_cards import file_board_card
-from core.services.paperclip_admin_client import shared_admin_client
-from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
 logger = logging.getLogger(__name__)
 
-CARD_MARKER = "purchase_request"
 SK_PREFIX = "PURCHASE#"
 # Statuses whose amount counts against the project's monthly cap: Link holds or has spent it.
 COUNTED = ("pending_approval", "approved", "submitted", "succeeded")
@@ -199,22 +197,28 @@ def _policy(limits: dict, cents: int, project_id: str, site: str, rows: list[dic
         raise PurchaseRefused("over_project_cap", "That would go over this project's monthly purchase limit.")
 
 
-async def _issue_project(owner_id: str, issue_id: str) -> tuple[str, str | None]:
-    company_id = await resolve_company_id_for_owner(
-        owner_id=owner_id, repo=PaperclipRepo(table_name="paperclip-companies")
-    )
-    if not company_id or not issue_id:
-        raise PurchaseRefused("issue_required", "Purchases must be tied to one of your issues.")
-    admin = shared_admin_client()
-    cookie = await get_admin_session_cookie(admin._http)
+async def needs_person(owner_id: str, url: str) -> bool:
+    """A person's yes (an answered Question) must come first: "ask before moving money" (``money_moves``,
+    default on) is on, or the merchant is not on the owner's allowlist."""
+    if (await billing_repo.get_capability_policy(owner_id))["money_moves"]:
+        return True
     try:
-        issue = await admin.get_issue(session_cookie=cookie, issue_id=issue_id)
-    except Exception:  # noqa: BLE001 -- an unreadable issue is an unknown issue
-        raise PurchaseRefused("issue_required", "Purchases must be tied to one of your issues.") from None
-    if not isinstance(issue, dict) or issue.get("companyId", company_id) != company_id:
-        raise PurchaseRefused("issue_required", "Purchases must be tied to one of your issues.")
-    project = issue.get("project") if isinstance(issue.get("project"), dict) else {}
-    return str(issue.get("projectId") or "none"), project.get("name")
+        site = website_logins.site_of(website_logins.normalize_origin(url))
+    except website_logins.LoginError:
+        return True
+    return not _allowlisted(await billing_repo.get_purchase_limits(owner_id), site)
+
+
+async def _task_project(owner_id: str, task_id: str) -> tuple[str, str | None]:
+    """``issueId`` on the wire is the task id: it must be a task of this workspace. Its project, else "none"."""
+    task = await tasks_repo.get_task(owner_id, task_id) if task_id else None
+    if task is None:
+        raise PurchaseRefused("issue_required", "Purchases must be tied to one of your tasks.")
+    project_id = task.get("projectId")
+    if not project_id:
+        return "none", None
+    project = await tasks_repo._get(owner_id, ts.project_sk(project_id))
+    return project_id, (project or {}).get("name")
 
 
 # ---------------------------------------------------------------------------
@@ -252,10 +256,20 @@ async def _create_link_request(owner_id: str, row: dict) -> dict:
 
 
 async def request_purchase(
-    owner_id: str, *, agent_id: str, merchant: str, url: str, amount: object, why: str, issue_id: str
+    owner_id: str,
+    *,
+    agent_id: str,
+    merchant: str,
+    url: str,
+    amount: object,
+    why: str,
+    issue_id: str,
+    approved: bool,
 ) -> dict:
     """Returns ``{requestId, status}`` only. Raises ``PurchaseRefused`` /
-    ``link_wallet.LinkWalletError`` with a code the route maps to the wire."""
+    ``link_wallet.LinkWalletError`` with a code the route maps to the wire.
+
+    ``approved``: the door's intent row came from an answered Question (not from the approval mode)."""
     merchant, why, issue_id = _text(merchant, 80), _text(why, 500), _text(issue_id, 128)
     if not merchant or len(why) < 10:
         raise PurchaseRefused("bad_request", "merchant and a reason are required.")
@@ -271,9 +285,10 @@ async def request_purchase(
         return {"requestId": request_id, "status": existing["status"]}
     if not await link_wallet.connection(owner_id):
         raise PurchaseRefused("wallet_disconnected", "The Link wallet isn't connected. Ask an admin to connect it.")
-    project_id, project_name = await _issue_project(owner_id, issue_id)
+    project_id, project_name = await _task_project(owner_id, issue_id)
+    if not approved and await needs_person(owner_id, merchant_url):
+        raise PurchaseRefused("needs_approval", "This purchase needs a person's yes first: ask through the task.")
     limits = await billing_repo.get_purchase_limits(owner_id)
-    eager = _allowlisted(limits, site) and not (await billing_repo.get_capability_policy(owner_id))["money_moves"]
 
     row = {
         "pk": messaging_repo.owner_pk(owner_id),
@@ -305,44 +320,11 @@ async def request_purchase(
                 raise
             return {"requestId": request_id, "status": (await get(owner_id, request_id) or row)["status"]}
         try:
-            # money_moves is the existing "owner approval required?" switch (default True). Turning
-            # it off lets an allowlisted merchant go straight to Link's own customer approval.
-            if eager:
-                created = await _create_link_request(owner_id, row)
-                row["status"], row["linkId"] = created.get("status") or "pending_approval", created["id"]
+            created = await _create_link_request(owner_id, row)
         except Exception:
             await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
             raise
-
-    try:
-        card = await file_board_card(
-            owner_id,
-            marker=CARD_MARKER,
-            build_payload=lambda company: {
-                "title": f"Approve a ${cents / 100:.2f} purchase at {merchant} for {company}",
-                "request_id": request_id,
-                "merchant": merchant,
-                "merchant_url": merchant_url,
-                "amount_display": f"${cents / 100:.2f}",
-                "reason": why,
-                "project": project_name or project_id,
-            },
-            issue_id=issue_id,
-            dedupe={"request_id": request_id},
-        )
-        if card is None:
-            raise PurchaseRefused("board_unavailable", "The owner's board isn't ready yet. Try again later.")
-    except Exception:
-        # Not filed, so not an ask: end any Link request already made for it, drop the row, and let a
-        # retry (same id, same Link idempotency key) start clean instead of reading back a dead one.
-        if row.get("linkId"):
-            try:
-                await link_wallet.cancel_spend_request(owner_id, row["linkId"])
-            except Exception:  # noqa: BLE001 -- best effort; the row is deleted either way
-                logger.warning("purchases: could not cancel an unfiled request owner_id=%s", owner_id)
-        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
-        raise
-    return {"requestId": request_id, "status": row["status"]}
+    return {"requestId": request_id, "status": created.get("status") or "pending_approval"}
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +334,8 @@ async def request_purchase(
 
 async def approval_link(owner_id: str, request_id: str) -> dict:
     """Mint the "Approve in Link" URL for this click (owner route). Creates the Link spend request
-    first if the ask has not reached Link, re-running the policy: the caps may have moved since."""
+    first if the ask has not reached Link (a ``needs_owner`` row from the card era), re-running the
+    policy: the caps may have moved since."""
     row = await get(owner_id, request_id)
     if row is None:
         raise PurchaseRefused("not_found", "No such purchase request.")
@@ -382,21 +365,3 @@ async def approval_link(owner_id: str, request_id: str) -> dict:
             await _set(owner_id, request_id, status=link["status"])
     status = link.get("status") or row["status"]
     return {"status": status, "approvalUrl": link.get("approval_url") if status == "pending_approval" else None}
-
-
-async def cancel_for_card(owner_id: str, payload: dict | None) -> None:
-    """The owner rejected a ``purchase_request`` card: end the ask. The row becomes ``canceled`` FIRST
-    and terminal (``approval_link`` refuses it; a later Link ``approved`` is never written over it), so
-    nothing may pay on it whatever Link says next. Then the Link request is cancelled
-    (``POST /spend_requests/{id}/cancel``), best effort."""
-    if not isinstance(payload, dict) or payload.get("isol8_action") != CARD_MARKER:
-        return
-    row = await get(owner_id, str(payload.get("request_id") or ""))
-    if row is None or row["status"] == "canceled":
-        return
-    await _set(owner_id, row["requestId"], status="canceled")
-    if row.get("linkId"):
-        try:
-            await link_wallet.cancel_spend_request(owner_id, row["linkId"])
-        except Exception:  # noqa: BLE001 -- the local row is already terminal
-            logger.warning("purchases: Link cancel failed after card rejection owner_id=%s", owner_id)

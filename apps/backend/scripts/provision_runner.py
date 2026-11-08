@@ -7,8 +7,8 @@ failure (retried). ``provision_lambda`` maps them to the typed errors the
 machine's Retry/Catch match on.
 
 Three legs, in order: ``prepare_hermes_workspace`` settles the owner's tokens
-and boot secret; step 0 seeds the owner's Paperclip company (see
-``_seed_owner_paperclip``); the runtime leg provisions the workspace's
+and boot secret; step 0 seeds the owner's workspace row and starter roster (see
+``_seed_owner_workspace``); the runtime leg provisions the workspace's
 AgentCore runtime and writes every roster profile
 (``hermes_provisioning.provision_hermes_runtime``) — a NO-OP when the
 workspace is already running. Then ``reconcile_runtime`` makes the (now
@@ -41,55 +41,24 @@ EXIT_TRANSIENT = 11
 logger = logging.getLogger("provision_runner")
 
 
-async def _seed_owner_paperclip(owner_id: str) -> int:
-    """Step 0: run the OWNER Paperclip seed BEFORE the container work. Returns
-    an exit code from the runner's ABI (0 ok / 10 deterministic / 11 transient).
+async def _seed_owner_workspace(owner_id: str) -> int:
+    """Step 0: seed the OWNER workspace (META row + starter roster, no external call) BEFORE
+    the runtime work. Returns an exit code from the runner's ABI (0 ok / 10 deterministic /
+    11 transient).
 
-    WHY here: GET /container/status used to run provision_org (Better-Auth
-    signup + company + starter roster) on the poll thread, where load-balanced
-    poll fan-out double-ran it and double-created the company. This is now THE
-    owner-seed path; two concurrent executions converge at the source: company
-    create replays under the per-org Idempotency-Key, and the provisioner's
-    Better Auth sign-up is fenced by the seed claim in
-    ``paperclip_provisioning`` (Better Auth sign-up is not idempotent).
+    The provisioner is the Clerk org CREATOR (``get_organization().created_by``): always an
+    admin, and a stable per-org choice (the dispatch carries only ``owner_id``). A missing
+    creator is a Clerk blip, so transient. A seed failure is classified like a runtime failure
+    (``classify_provision_error``). Org-only: a non-org owner is refused (deterministic).
 
-    Reuses the SAME service helper ensure_user_ready uses
-    (``_ensure_paperclip_for_org``) — no seed logic is duplicated. It keeps
-    its own swallows: 409 (a benign concurrent-seed no-op) and 422 (a
-    duplicate-email orphan, recorded as a paperclip-row failure — Teams
-    degraded, but the container must still boot,
-    so it is NOT a reason to fail the whole provision). Only a GENUINE seed
-    failure — a non-409/422 Paperclip error, a timeout/connection error, or a
-    config bug — propagates here, where it is classified into the exit-code ABI
-    exactly like a container failure (``classify_provision_error``): transient
-    -> EXIT_TRANSIENT (SFN retries), deterministic -> EXIT_DETERMINISTIC (SFN
-    stops). This ties seed success to the execution instead of the old
-    poll-thread swallow that booted the box regardless.
-
-    Org-only. Personal workspaces no longer exist (the September 2026 cohort
-    was purged or migrated), so a non-org ``owner_id`` is refused with
-    EXIT_DETERMINISTIC before anything is seeded — the executor's own fence,
-    matching ``ensure_user_ready``'s refusal of a no-org caller. The dispatch
-    carries ONLY owner_id (the triggering admin can differ between two polls,
-    so it is not a stable input). So step 0 resolves the
-    company's bootstrap identity from Clerk: the org CREATOR
-    (``get_organization().created_by``) — always an admin, and a STABLE
-    per-org choice the executor's determinism prefers over "whichever admin's
-    poll won the race". ``owner_email`` is resolved via ``lookup_owner_email``
-    (the runner has Clerk creds), the same fallback the helpers use for a JWT
-    without an email claim; passing it in avoids a redundant second lookup
-    inside the helper.
-
-    After the seed, ``proactive.ensure`` starts the workspace's proactive layer
-    (first ideas, then the paying-only automations); its failure is logged, not
-    classified: the daily schedule reconcile ensures it again.
+    After the seed, ``proactive.ensure`` starts the workspace's proactive layer; its failure
+    is logged, not classified: the daily schedule reconcile ensures it again.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
     from core.services import clerk_admin
-    from core.services.paperclip_owner_email import lookup_owner_email
     from core.services import proactive
-    from core.services.user_provision import _ensure_paperclip_for_org
+    from core.services.user_provision import _ensure_workspace_for_org
 
     if not is_org_owner_id(owner_id):
         logger.error("seed step 0: owner %s is not a workspace (org) — refusing to provision", owner_id)
@@ -99,25 +68,11 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
         org = await clerk_admin.get_organization(owner_id)
         creator_user_id = (org or {}).get("created_by")
         if not creator_user_id:
-            # No resolvable bootstrap identity for the org. A Clerk hiccup
-            # (or an unset CLERK_SECRET_KEY in a misconfigured env) is the
-            # likely cause — a genuinely creator-less Clerk org is
-            # vanishingly rare — so treat it as transient and let SFN retry
-            # rather than fail the provision on a momentary blip.
-            logger.warning(
-                "seed step 0: org %s has no resolvable Clerk creator — deferring (transient)",
-                owner_id,
-            )
+            logger.warning("seed step 0: org %s has no resolvable Clerk creator — deferring (transient)", owner_id)
             return EXIT_TRANSIENT
-        owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=creator_user_id) or ""
-        # is_admin=True: the org creator is definitionally an org admin, so
-        # the create branch of _ensure_paperclip_for_org is authorized. When
-        # the company already exists (an idempotent re-run) this same call
-        # falls through to the JOIN path and no-ops on the creator's already
-        # -active owner row.
-        await _ensure_paperclip_for_org(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
+        await _ensure_workspace_for_org(org_id=owner_id, user_id=creator_user_id, is_admin=True)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
-        logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
+        logger.exception("seed step 0 (owner workspace) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
         return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
     try:
@@ -133,8 +88,7 @@ async def run(owner_id: str) -> int:
 
     bind_log_context(user_id=owner_id)
 
-    # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0 seeds
-    # the roster: step 0's starter-agent loop bakes hook_token into the adapter at seed time.
+    # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) before the runtime leg.
     # A row that already has a runtime already has its tokens, and the reconcile below
     # prepares it -- running prepare here too would rewrite the boot secret first and hide
     # that boot-time change from the reconcile's restart decision (C1: a warm session kept
@@ -148,13 +102,13 @@ async def run(owner_id: str) -> int:
     except Exception as exc:  # noqa: BLE001 — classified + recorded
         return await _record_failure(owner_id, exc, "prepare")
 
-    seed_exit = await _seed_owner_paperclip(owner_id)
+    seed_exit = await _seed_owner_workspace(owner_id)
     if seed_exit == EXIT_DETERMINISTIC:
         await _mark_error(
             owner_id,
             "provision refused: owner is not a workspace (org)"
             if not is_org_owner_id(owner_id)
-            else "provision seed: owner paperclip seed or nightly-CEO arm failed (see log)",
+            else "provision seed: owner workspace seed failed (see log)",
             retryable=False,
         )
     if seed_exit != EXIT_OK:
@@ -179,7 +133,7 @@ BRIEF_DRAIN_TIMEOUT_S = 30.0
 
 
 async def _drain_pending_brief(owner_id: str) -> None:
-    """Step 0 just made the Paperclip company active: fulfil a first-room message captured
+    """Step 0 just made the workspace active: fulfil a first-room message captured
     before it was (``onboarding_brief.capture_first_workspace_message`` drains its own capture
     too). Idempotent and claim-fenced; a no-op read when nothing is pending. Never fails the
     provision -- an unfinished drain leaves the brief PENDING for the next drain."""
@@ -194,7 +148,7 @@ async def _drain_pending_brief(owner_id: str) -> None:
 
 
 async def _seat_workspace_rooms(owner_id: str) -> None:
-    """Step 0 just made the company active: create the vendor shared channel and seat every
+    """Step 0 just made the workspace active: create the vendor shared channel and seat every
     current teammate in ``#general``. A member who joined before the room existed was missed by
     the ``organizationMembership.created`` webhook's seat. Both are idempotent (a removed member
     is never re-seated: the AUTOJOIN marker stays). Never fails the provision."""

@@ -14,7 +14,7 @@ async def test_membership_created_renews_member_lifecycle():
 
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()) as renew,
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()),
     ):
         from routers.webhooks import _handle_organization_membership_created
 
@@ -29,7 +29,7 @@ async def test_membership_created_ignores_missing_email():
 
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()) as renew,
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()) as join,
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()) as join,
     ):
         from routers.webhooks import _handle_organization_membership_created
 
@@ -51,17 +51,13 @@ async def test_membership_created_invokes_paperclip_join():
 
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()) as join,
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()) as join,
     ):
         from routers.webhooks import _handle_organization_membership_created
 
         await _handle_organization_membership_created(payload)
 
-    join.assert_awaited_once_with(
-        org_id="org_xyz",
-        member_user_id="user_member",
-        member_email="member@example.com",
-    )
+    join.assert_awaited_once_with(org_id="org_xyz", member_user_id="user_member")
 
 
 @pytest.mark.asyncio
@@ -77,7 +73,7 @@ async def test_membership_created_join_failure_is_logged_and_metered_not_raised(
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
         patch(
-            "core.services.user_provision._ensure_paperclip_for_member",
+            "core.services.user_provision._ensure_workspace_member",
             new=AsyncMock(side_effect=RuntimeError("paperclip is down")),
         ),
         patch("routers.webhooks.put_metric") as put_metric,
@@ -87,7 +83,7 @@ async def test_membership_created_join_failure_is_logged_and_metered_not_raised(
         # Must not raise.
         await _handle_organization_membership_created(payload)
 
-    put_metric.assert_any_call("paperclip.member_add", dimensions={"outcome": "webhook_error"})
+    put_metric.assert_any_call("workspace.member_add", dimensions={"outcome": "webhook_error"})
 
 
 @pytest.mark.asyncio
@@ -98,7 +94,7 @@ async def test_membership_created_adds_the_member_to_the_vendor_room():
     }
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()),
         patch("core.services.messaging.on_org_member_joined", new=AsyncMock()) as joined,
     ):
         from routers.webhooks import _handle_organization_membership_created
@@ -115,7 +111,7 @@ async def test_membership_created_survives_a_vendor_room_failure():
     }
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()),
         patch("core.services.messaging.on_org_member_joined", new=AsyncMock(side_effect=RuntimeError("boom"))),
     ):
         from routers.webhooks import _handle_organization_membership_created
@@ -131,7 +127,7 @@ async def test_membership_created_joins_the_default_room_and_survives_its_failur
     }
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()),
         patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
         patch("core.services.messaging.join_default_room", new=AsyncMock(side_effect=RuntimeError("boom"))) as join,
         patch("core.services.messaging.join_feed_room", new=AsyncMock(side_effect=RuntimeError("boom"))) as feed,
@@ -151,7 +147,7 @@ async def test_membership_created_is_the_rejoin_that_reactivates_the_private_str
     }
     with (
         patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()),
         patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
         patch("core.services.messaging.join_default_room", new=AsyncMock()),
         patch("core.services.messaging.join_feed_room", new=AsyncMock()),

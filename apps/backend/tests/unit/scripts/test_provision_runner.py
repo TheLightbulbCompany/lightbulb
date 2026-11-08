@@ -1,7 +1,7 @@
 """Tests for scripts/provision_runner.py's exit-code ABI and error recording.
 
 No lease: the runner takes no claim and holds no fence. Three legs — prepare
-the workspace, seed Paperclip (step 0), create the AgentCore runtime — and a
+the workspace, seed the workspace row (step 0), create the AgentCore runtime — and a
 failure is recorded on the row with its retryability before the mapped exit.
 """
 
@@ -21,9 +21,9 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 @pytest.fixture
 def hermes(monkeypatch):
     """Step 0 is neutralized here so the runtime tests stay about the runtime
-    work; the step-0 tests re-patch it, and the _seed_owner_paperclip helper
+    work; the step-0 tests re-patch it, and the _seed_owner_workspace helper
     tests never take this fixture."""
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", AsyncMock(return_value=provision_runner.EXIT_OK))
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", AsyncMock(return_value=provision_runner.EXIT_OK))
     prepare = AsyncMock()
     provision = AsyncMock(return_value="arn:hermes-1")
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
@@ -87,10 +87,10 @@ async def test_happy_path_runs_every_leg_and_exits_0(monkeypatch, hermes, repo):
 
 async def test_the_brief_drains_after_step_0_and_the_trial_arms_after_the_runtime(monkeypatch, hermes, repo):
     """The two duties the status poll used to run: the pending onboarding brief once the
-    Paperclip company is active (step 0), the trial clock once the runtime is running."""
+    workspace is active (step 0), the trial clock once the runtime is running."""
     order: list[str] = []
     monkeypatch.setattr(
-        provision_runner, "_seed_owner_paperclip", AsyncMock(side_effect=lambda _o: order.append("seed") or 0)
+        provision_runner, "_seed_owner_workspace", AsyncMock(side_effect=lambda _o: order.append("seed") or 0)
     )
     hermes.drain.side_effect = lambda _o: order.append("drain")
     hermes.vendor_room.side_effect = lambda _o: order.append("vendor_room")
@@ -208,13 +208,13 @@ async def test_openrouter_claim_conflict_retries_without_flashing_an_error_row(m
 
 
 # ---------------------------------------------------------------------------
-# Step 0: owner Paperclip seed, before the runtime work
+# Step 0: owner workspace seed, before the runtime work
 # ---------------------------------------------------------------------------
 
 
 async def test_seed_step_0_always_runs_then_provisions_runtime(monkeypatch, hermes, repo):
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", seed)
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
     seed.assert_awaited_once_with("org_a")
     hermes.provision.assert_awaited_once()
@@ -225,7 +225,7 @@ async def test_seed_step_0_deterministic_fail_exits_10_skips_runtime_surfaces_er
     and the row is flipped to error(retryable=False) so the poll SURFACES the
     failure instead of looping it."""
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", seed)
     assert await provision_runner.run("org_a") == provision_runner.EXIT_DETERMINISTIC
     hermes.provision.assert_not_awaited()
     repo.mark_provision_error.assert_awaited_once()
@@ -234,7 +234,7 @@ async def test_seed_step_0_deterministic_fail_exits_10_skips_runtime_surfaces_er
 
 async def test_seed_step_0_transient_fail_exits_11_skips_runtime_writes_no_error(monkeypatch, hermes, repo):
     seed = AsyncMock(return_value=provision_runner.EXIT_TRANSIENT)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", seed)
     assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
     hermes.provision.assert_not_awaited()
     repo.mark_provision_error.assert_not_awaited()
@@ -242,13 +242,13 @@ async def test_seed_step_0_transient_fail_exits_11_skips_runtime_writes_no_error
 
 async def test_seed_step_0_error_record_failure_still_returns_exit_code(monkeypatch, hermes, repo):
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", seed)
     repo.mark_provision_error = AsyncMock(side_effect=RuntimeError("ddb down"))
     assert await provision_runner.run("org_a") == provision_runner.EXIT_DETERMINISTIC
     hermes.provision.assert_not_awaited()
 
 
-# ---- _seed_owner_paperclip direct tests: org/email resolution + classification ----
+# ---- _seed_owner_workspace direct tests: creator resolution + classification ----
 
 
 @pytest.fixture(autouse=True)
@@ -261,17 +261,13 @@ def _stub_proactive(monkeypatch):
 
 
 def _stub_org_seed(monkeypatch, seed=None):
-    """Patch the org seed's collaborators: the Clerk creator lookup, the owner
-    email lookup, and ``_ensure_paperclip_for_org`` itself (returned)."""
+    """Patch the org seed's collaborators: the Clerk creator lookup and
+    ``_ensure_workspace_for_org`` itself (returned)."""
     seed = seed or AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_org", seed)
+    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", seed)
     monkeypatch.setattr(
         "core.services.clerk_admin.get_organization",
         AsyncMock(return_value={"created_by": "user_c"}),
-    )
-    monkeypatch.setattr(
-        "core.services.paperclip_owner_email.lookup_owner_email",
-        AsyncMock(return_value="c@example.com"),
     )
     return seed
 
@@ -280,22 +276,22 @@ async def test_seed_helper_refuses_non_org_owner(monkeypatch, _stub_proactive):
     """Personal workspaces no longer exist: a user_ owner is refused with
     EXIT_DETERMINISTIC before Clerk, the seed or the arm is touched — the
     runner then flips the row to error(retryable=False) instead of seeding a
-    personal company."""
+    personal workspace."""
     seed = _stub_org_seed(monkeypatch)
     get_org = AsyncMock()
     monkeypatch.setattr("core.services.clerk_admin.get_organization", get_org)
-    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_DETERMINISTIC
+    assert await provision_runner._seed_owner_workspace("user_p") == provision_runner.EXIT_DETERMINISTIC
     get_org.assert_not_awaited()
     seed.assert_not_awaited()
     _stub_proactive.assert_not_awaited()
 
 
 async def test_seed_helper_ensures_proactive_after_org_seed(monkeypatch, _stub_proactive):
-    """The proactive ensure runs AFTER _ensure_paperclip_for_org, with the org_id."""
+    """The proactive ensure runs AFTER _ensure_workspace_for_org, with the org_id."""
     order = MagicMock()
     order.attach_mock(_stub_org_seed(monkeypatch), "seed")
     order.attach_mock(_stub_proactive, "ensure")
-    assert await provision_runner._seed_owner_paperclip("org_x") == provision_runner.EXIT_OK
+    assert await provision_runner._seed_owner_workspace("org_x") == provision_runner.EXIT_OK
     assert [c[0] for c in order.mock_calls] == ["seed", "ensure"]
     _stub_proactive.assert_awaited_once_with("org_x")
 
@@ -303,30 +299,21 @@ async def test_seed_helper_ensures_proactive_after_org_seed(monkeypatch, _stub_p
 async def test_seed_helper_proactive_failure_never_fails_the_seed(monkeypatch, _stub_proactive):
     _stub_org_seed(monkeypatch)
     _stub_proactive.side_effect = RuntimeError("boom")
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_OK
+    assert await provision_runner._seed_owner_workspace("org_p") == provision_runner.EXIT_OK
 
 
-async def test_seed_helper_org_resolves_creator_then_calls_ensure_paperclip_for_org(monkeypatch):
+async def test_seed_helper_org_resolves_creator_then_calls_ensure_workspace_for_org(monkeypatch):
     """Org owner_id (org_...): the runner has only owner_id (dispatch drops the
     triggering user), so the bootstrap identity is the org CREATOR resolved from
-    Clerk (created_by), always an admin, with its email resolved from the same
-    fallback the helpers use."""
+    Clerk (created_by), always an admin."""
     ensure_org = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_org", ensure_org)
+    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", ensure_org)
     monkeypatch.setattr(
         "core.services.clerk_admin.get_organization",
         AsyncMock(return_value={"created_by": "user_creator"}),
     )
-    look = AsyncMock(return_value="creator@example.com")
-    monkeypatch.setattr("core.services.paperclip_owner_email.lookup_owner_email", look)
-    assert await provision_runner._seed_owner_paperclip("org_xyz") == provision_runner.EXIT_OK
-    ensure_org.assert_awaited_once_with(
-        org_id="org_xyz",
-        user_id="user_creator",
-        email="creator@example.com",
-        is_admin=True,
-    )
-    look.assert_awaited_once_with(org_id="org_xyz", fallback_user_id="user_creator")
+    assert await provision_runner._seed_owner_workspace("org_xyz") == provision_runner.EXIT_OK
+    ensure_org.assert_awaited_once_with(org_id="org_xyz", user_id="user_creator", is_admin=True)
 
 
 async def test_seed_helper_org_no_resolvable_creator_is_transient(monkeypatch):
@@ -335,32 +322,30 @@ async def test_seed_helper_org_no_resolvable_creator_is_transient(monkeypatch):
     seed helper is never entered."""
     monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value=None))
     ensure_org = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_org", ensure_org)
-    assert await provision_runner._seed_owner_paperclip("org_xyz") == provision_runner.EXIT_TRANSIENT
+    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", ensure_org)
+    assert await provision_runner._seed_owner_workspace("org_xyz") == provision_runner.EXIT_TRANSIENT
     ensure_org.assert_not_awaited()
 
 
-async def test_seed_helper_deterministic_paperclip_4xx_exits_10(monkeypatch):
-    """A non-409/422 Paperclip 4xx that propagates out of the helper classifies
-    DETERMINISTIC → EXIT_DETERMINISTIC (SFN stops, surfaced not looped)."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    _stub_org_seed(monkeypatch, AsyncMock(side_effect=PaperclipApiError("bad request", status_code=400, body={})))
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_DETERMINISTIC
+async def test_seed_helper_deterministic_error_exits_10(monkeypatch):
+    """A shape/config bug out of the seed classifies DETERMINISTIC → EXIT_DETERMINISTIC
+    (SFN stops, surfaced not looped)."""
+    _stub_org_seed(monkeypatch, AsyncMock(side_effect=ValueError("bad roster")))
+    assert await provision_runner._seed_owner_workspace("org_p") == provision_runner.EXIT_DETERMINISTIC
 
 
-async def test_seed_helper_transient_paperclip_5xx_exits_11(monkeypatch):
-    """A Paperclip 5xx classifies TRANSIENT → EXIT_TRANSIENT (SFN retries)."""
-    from core.services.paperclip_admin_client import PaperclipApiError
+async def test_seed_helper_transient_store_error_exits_11(monkeypatch):
+    """A registry/DynamoDB outage classifies TRANSIENT → EXIT_TRANSIENT (SFN retries)."""
+    from core.services.agent_registry import RegistryUnavailable
 
-    _stub_org_seed(monkeypatch, AsyncMock(side_effect=PaperclipApiError("boom", status_code=503, body={})))
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_TRANSIENT
+    _stub_org_seed(monkeypatch, AsyncMock(side_effect=RegistryUnavailable("ddb down")))
+    assert await provision_runner._seed_owner_workspace("org_p") == provision_runner.EXIT_TRANSIENT
 
 
 async def test_seed_helper_transient_connection_error_exits_11(monkeypatch):
-    """A transport/connection error (not a Paperclip status) defaults TRANSIENT
+    """A transport/connection error defaults TRANSIENT
     → EXIT_TRANSIENT, same as the container path's classifier."""
     import httpx
 
     _stub_org_seed(monkeypatch, AsyncMock(side_effect=httpx.ConnectError("connection refused")))
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_TRANSIENT
+    assert await provision_runner._seed_owner_workspace("org_p") == provision_runner.EXIT_TRANSIENT

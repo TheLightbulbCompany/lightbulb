@@ -48,7 +48,7 @@ async def test_membership_created_welcomes_a_teammate_but_not_the_creator(user_i
     from routers.webhooks import _handle_organization_membership_created
 
     with (
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()),
         patch("core.repositories.messaging_repo.ensure_user_stream", new=AsyncMock()),
         patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
         patch("core.services.messaging.join_default_room", new=AsyncMock()),
@@ -68,7 +68,7 @@ async def test_a_teammate_welcome_failure_never_fails_the_webhook():
     from routers.webhooks import _handle_organization_membership_created
 
     with (
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()),
         patch("core.repositories.messaging_repo.ensure_user_stream", new=AsyncMock()),
         patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
         patch("core.services.messaging.join_default_room", new=AsyncMock()),

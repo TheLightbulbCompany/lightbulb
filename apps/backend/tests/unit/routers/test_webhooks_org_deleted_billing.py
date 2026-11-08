@@ -22,20 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-def _fake_provisioning() -> MagicMock:
-    """A stand-in for PaperclipProvisioning: ``disable_workspace`` is the
-    one Paperclip call ``_handle_organization_deleted`` makes."""
-    provisioning = MagicMock()
-    provisioning.disable_workspace = AsyncMock()
-    return provisioning
-
-
 def _patch_provisioning(monkeypatch):
-    from routers import webhooks
-
-    provisioning = _fake_provisioning()
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    """``disable_workspace`` is the one workspace write ``_handle_organization_deleted`` makes."""
+    provisioning = MagicMock(disable_workspace=AsyncMock())
+    monkeypatch.setattr("core.services.workspace_provisioning.disable_workspace", provisioning.disable_workspace)
     monkeypatch.setattr("core.services.workspace_join.revoke_join_link", AsyncMock())
     monkeypatch.setattr("core.repositories.openrouter_key_repo.mark_retiring", AsyncMock(return_value=False))
     return provisioning
@@ -74,7 +64,7 @@ async def test_organization_deleted_cancels_active_stripe_subscription(monkeypat
     assert set_sub_kwargs["subscription_id"] is None
     assert set_sub_kwargs["status"] == "canceled"
     # The workspace's ONE Paperclip row is disabled once, by org id.
-    provisioning.disable_workspace.assert_awaited_once_with(org_id="org_acme")
+    provisioning.disable_workspace.assert_awaited_once_with("org_acme")
 
 
 @pytest.mark.asyncio
@@ -160,7 +150,7 @@ async def test_organization_deleted_workspace_disable_failure_does_not_block_can
     ):
         await webhooks._handle_organization_deleted({"id": "org_sweep_fail"})
 
-    provisioning.disable_workspace.assert_awaited_once_with(org_id="org_sweep_fail")
+    provisioning.disable_workspace.assert_awaited_once_with("org_sweep_fail")
     mock_delete.assert_called_once()
     call_args, _call_kwargs = mock_delete.call_args
     assert call_args[0] == "sub_456"

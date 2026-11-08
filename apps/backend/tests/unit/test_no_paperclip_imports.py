@@ -31,6 +31,7 @@ DELETED = (
     "routers.paperclip_cost",
     "routers.company_board",
     "core.services.paperclip_api_key",
+    "core.services.paperclip_provisioning",
     "core.services.paperclip_user_delete",
     "core.services.paperclip_sql",
 )
@@ -38,12 +39,11 @@ DELETED = (
 KEPT = {
     "core/repositories/paperclip_repo.py": "the workspace META store (resolve_owner_row, funnel, members) and the copy_workspace_meta translation",
     "core/services/paperclip_adapter_config.py": "hermes_gateway adapter block for agent create",
-    "core/services/paperclip_admin_client.py": "workspace provisioning (its agent writes mirror into the registry) and purchase cards still write through Paperclip",
+    "core/services/paperclip_admin_client.py": "purchase cards and the Paperclip-run paths (task 6) still write through Paperclip",
     "core/services/paperclip_admin_session.py": "admin cookie for the client above and for the prod scripts",
     "core/services/paperclip_meta.py": "agent create fields",
     "core/services/paperclip_openclaw_pairing.py": "resolve_company_id_for_owner, read by the client callers",
     "core/services/paperclip_owner_email.py": "agent mail sender identity",
-    "core/services/paperclip_provisioning.py": "workspace provisioning seeds the company and starter agents",
     "core/services/paperclip_session_cookie.py": "/teams/* BFF session cookie and the 401 self-heal in main.py",
     "core/services/paperclip_user_session.py": "/teams/* BFF per-user sign-in",
     "routers/teams/agents.py": "the shared /teams _ctx (session cookie) and /teams/members principal map; /agents routes are native",
@@ -77,12 +77,11 @@ IMPORTERS = {
     "core/services/session_chat.py",
     "core/services/text_lines.py",
     "core/services/update_service.py",
-    "core/services/user_provision.py",
     "core/services/voice_calls.py",
-    "core/services/voice_persona.py",
     "core/services/website_logins.py",
     "core/services/week4_active.py",
     "core/services/workspace_name.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
+    "core/services/workspace_provisioning.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
     "core/services/workspace_wipe.py",
     "routers/admin.py",
     "routers/billing.py",

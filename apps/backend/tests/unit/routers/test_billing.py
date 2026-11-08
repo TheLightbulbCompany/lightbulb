@@ -304,10 +304,6 @@ class TestStripeWebhook:
                 "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
                 new=AsyncMock(return_value={"owner_id": "user_webhook_test", "subscription_status": "canceled"}),
             ),
-            patch(
-                "core.services.paperclip_provisioning.build_paperclip_provisioning",
-                new=AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
-            ),
         ):
             mock_billing_svc = AsyncMock()
             mock_billing_cls.return_value = mock_billing_svc

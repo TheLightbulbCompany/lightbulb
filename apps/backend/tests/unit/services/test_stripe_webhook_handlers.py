@@ -726,10 +726,6 @@ async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
     with (
         patch.object(handlers, "billing_repo") as repo,
         patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
-        patch(
-            "core.services.paperclip_provisioning.build_paperclip_provisioning",
-            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
-        ),
         # Teardown re-reads the row through core.services.entitlement_teardown
         # (it must: the caller's snapshot predates the cancellation write, and
         # the shared status is derived from BOTH providers). No Apple status
@@ -764,10 +760,6 @@ async def test_subscription_deleted_resets_plan_to_standard(facts_mock):
     with (
         patch.object(handlers, "billing_repo") as repo,
         patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
-        patch(
-            "core.services.paperclip_provisioning.build_paperclip_provisioning",
-            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
-        ),
         # Teardown re-reads the row through core.services.entitlement_teardown
         # (it must: the caller's snapshot predates the cancellation write, and
         # the shared status is derived from BOTH providers). No Apple status
@@ -1025,10 +1017,6 @@ async def _run_deleted(event, row, billing_service, release):
         patch.object(text_lines.stripe.Subscription, "retrieve", MagicMock(side_effect=retrieve_stub)) as retrieve,
         patch("core.services.text_lines.release_line", release),
         patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
-        patch(
-            "core.services.paperclip_provisioning.build_paperclip_provisioning",
-            AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
-        ),
         patch(
             "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
             AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "canceled"}),

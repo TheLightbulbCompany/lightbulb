@@ -184,11 +184,81 @@ async def test_gpt_live_hears_every_meet_person_mixed():
     assert not np.frombuffer((await mix.__anext__()).data, dtype=np.int16).any()  # nobody: silence, still a frame
 
 
-async def test_meet_runs_on_gpt_live_for_the_whole_meeting_and_closes_it(monkeypatch):
-    """Open from the start (it hears what people refer to later); GPT-Live bills every open second, so it closes with
-    the meeting. The tile shows the voice's state."""
+class _Voice:
+    def __init__(self, history):
+        self.history, self.closed = history, False
+
+    async def close(self):
+        self.closed = True
+
+
+def _sleepy(backend=None):
+    opened = []
+
+    async def open_voice(history):
+        opened.append(_Voice(history))
+        return opened[-1]
+
+    return _meeting(backend, open_voice=open_voice), opened
+
+
+async def test_meet_sleeps_after_5_minutes_without_activity():
+    """GPT-Live bills every open second: no delegation and no speech of its own for SLEEP_S, and it closes."""
+    m, opened = _sleepy()
+    m.heard(SAM, "Nova, what", final=False)
+    await m.opening
+    assert m.voice is opened[0] and meet.SLEEP_S == 300
+    await m.sleep()
+    assert m.voice is not None  # just opened
+    m.active_at -= meet.SLEEP_S - 10
+    await m.post("what shipped", [])  # a delegation is activity
+    await m.sleep()
+    assert m.voice is not None
+    m.active_at -= meet.SLEEP_S + 1
+    m.activity()  # its own speech (agent_state speaking/thinking) is activity too
+    await m.sleep()
+    assert m.voice is not None
+    m.active_at -= meet.SLEEP_S + 1
+    await m.sleep()
+    assert m.voice is None and opened[0].closed
+
+
+async def test_meet_wakes_on_the_name_carrying_history():
+    """Asleep, the first interim or final line with the name reopens it, told the recent meeting, the team messages
+    from while it slept (not said again) and the words that named it."""
+    b = _Backend([{"messages": [{"id": "a7", "seq": 7, "text": "Pulse posted the holiday hours."}], "after": 7}])
+    m, opened = _sleepy(b)
+    m.line(MAYA, "Let's look at the holiday hours.")
+    m.heard(SAM, "Lightbulb, are those", final=False)
+    await m.opening
+    [voice] = opened
+    assert voice.history == [("Maya", "Let's look at the holiday hours."), ("Nova", "Pulse posted the holiday hours."),
+                             ("Sam", "Lightbulb, are those")]  # fmt: skip
+    assert m.after == 7 and "a7" in m.seen
+    m.heard(SAM, "Nova, and the other thing?", final=True)  # awake: GPT-Live decides, nothing reopens
+    assert m.opening is None and len(opened) == 1
+    m.active_at -= meet.SLEEP_S + 1
+    await m.sleep()
+    m.heard(MAYA, "Nova, one more", final=True)  # asleep again: the name wakes it with the meeting so far
+    await m.opening
+    assert len(opened) == 2 and ("Maya", "Let's look at the holiday hours.") in opened[1].history
+
+
+async def test_meet_no_reopen_on_unaddressed_talk_while_asleep():
+    m, opened = _sleepy()
+    for who, text in [(MAYA, "Leo, did you push the fix?"), (SAM, "Does anyone know what shipped?"),
+                      (MAYA, "Novak said the light is fine."), (SAM, "Let's move on.")]:  # fmt: skip
+        m.heard(who, text, final=False)
+        m.heard(who, text, final=True)
+    await asyncio.sleep(0)
+    assert m.opening is None and opened == [] and meet.names_it("Nova", "I asked Nova.")  # contains the name: wakes
+
+
+async def test_meet_runs_asleep_until_named_and_closes_the_voice_with_the_meeting(monkeypatch):
+    """Nothing is billed until someone names it; the open voice is closed with the meeting. The tile shows its
+    state."""
     monkeypatch.setenv("OPENAI_API_KEY", "k")
-    b, started, shutdown, attrs, hooks = _Backend(), {}, [], [], {}
+    b, started, shutdown, attrs, hooks, made = _Backend(), {}, [], [], {}, []
 
     class Session:
         input = type("In", (), {"audio": None})()
@@ -220,16 +290,22 @@ async def test_meet_runs_on_gpt_live_for_the_whole_meeting_and_closes_it(monkeyp
         def on(self, ev, fn=None):
             self.handlers[ev] = fn
 
+    real = meet.Meeting
     b.transcript = b.aclose = b.leave_meeting = noop
     room = Room()
     ctx = type("Ctx", (), {"room": room, "connect": noop, "add_shutdown_callback": lambda _s, cb: shutdown.append(cb),
                            "shutdown": lambda _s, *_: None})()  # fmt: skip
     monkeypatch.setattr(meet.live, "start", start)
     monkeypatch.setattr(meet, "Backend", lambda *_a: b)
+    monkeypatch.setattr(meet, "Meeting", lambda *a, **k: made.append(real(*a, **k)) or made[-1])
     task = asyncio.create_task(meet.run(ctx, {"roomId": "r", "ownerId": "o", "roomToken": "t", "company": "Acme"}))
     while not attrs:
         await asyncio.sleep(0.01)
-    assert started["surface"] == "meet" and "Standup" in started["prompt"]
+    assert started == {}  # asleep at join
+    [m] = made
+    m.heard("meet:r:12", "Nova, what", final=False)
+    await m.opening
+    assert started["surface"] == "meet" and "Standup" in started["prompt"] and started["history"] == [("Someone", "Nova, what")]
     assert started["room_options"].audio_output.track_name == meet.TRACK
     assert isinstance(Live.session.input.audio, meet.Mix)
     hooks["agent_state_changed"](type("Ev", (), {"old_state": "listening", "new_state": "speaking"})())

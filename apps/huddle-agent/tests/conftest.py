@@ -8,7 +8,8 @@ import types
 if importlib.util.find_spec("huddle_agent.live") is None:  # ponytail: delete this file after Task 1 merges
     stub = types.ModuleType("huddle_agent.live")
 
-    async def start(ctx, *, prompt, surface, post, events, room_options=None, on_spoken=None, record=False):
+    async def start(ctx, *, prompt, surface, post, events, room_options=None, on_spoken=None, record=False,
+                    user_away_timeout=None, history=None):
         raise NotImplementedError("huddle_agent.live is Task 1")
 
     def delegation_policy(backend_tools: list[str]) -> str:

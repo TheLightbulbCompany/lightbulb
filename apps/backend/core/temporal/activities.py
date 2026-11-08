@@ -76,8 +76,9 @@ WORKER_INSTRUCTIONS = (
     "few lines) and you made no file, put the piece itself after that sentence, ready to paste. When the task is "
     "a question (what shipped, a figure, what an email or calendar says), read the source and answer it: your whole "
     "answer is the answer, facts first, at most 100 words, no opening sentence about what you did; it is posted in "
-    "the chat as the reply. A request to make, buy or send something is not a question, even when phrased as one "
-    '("Can you build me a booking page?"). Never write a placeholder link such as [Book]([BOOKING LINK]): when '
+    "the chat as the reply. A question about this business (its hours, services, prices, policies) starts with "
+    "business_facts, never by asking which business. A request to make, buy or send something is not a "
+    'question, even when phrased as one ("Can you build me a booking page?"). Never write a placeholder link such as [Book]([BOOKING LINK]): when '
     "you don't have the URL, write the call to action as "
     'plain text, e.g. "Book your spot: (link to add)". An email is its subject line and its body only: no '
     '"Preview text:", "Preheader:" or other meta lines in it.'

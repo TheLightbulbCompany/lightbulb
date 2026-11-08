@@ -146,6 +146,15 @@ class Mix(AudioInput):
         self._q: dict[str, deque[np.ndarray]] = {}
         self.ring: deque[rtc.AudioFrame] = deque(maxlen=int(PREROLL_S * RATE / FRAME))
         self._new = asyncio.Event()
+        self._read_s, self._attached_at = 0.0, None  # audio read since attach, and when
+
+    def hold(self) -> None:
+        """The wake: the ring stops rolling, so the startup wait never evicts the line that woke it."""
+        self.ring = deque(self.ring)
+
+    def release(self) -> None:
+        """Asleep again: the ring rolls, and the next attach starts its own pacing."""
+        self.ring, self._read_s, self._attached_at = deque(self.ring, maxlen=self.ring.maxlen or int(PREROLL_S * RATE / FRAME)), 0.0, None
 
     def push(self, who: str, frame: rtc.AudioFrame) -> None:
         self._q.setdefault(who, deque(maxlen=3)).append(np.frombuffer(frame.data, dtype=np.int16))  # 60 ms, no backlog
@@ -171,9 +180,16 @@ class Mix(AudioInput):
             self.tick()
 
     async def __anext__(self) -> rtc.AudioFrame:
+        """At once while under PREROLL_S ahead of real time (the service rejects a burst over 5 s), then real time."""
         while not self.ring:
             self._new.clear()
             await self._new.wait()
+        now = asyncio.get_running_loop().time()
+        if self._attached_at is None:
+            self._attached_at = now
+        if (ahead := self._read_s - (now - self._attached_at)) > PREROLL_S:
+            await asyncio.sleep(ahead - PREROLL_S)
+        self._read_s += FRAME / RATE
         return self.ring.popleft()
 
 
@@ -188,9 +204,10 @@ class Meeting:
     delegation posted (`post`) and the team's messages (`events`)."""
 
     def __init__(self, backend, name: str, after: int = 0, quiet=lambda: True, poll_s: float = POLL_S,
-                 open_voice=None) -> None:  # fmt: skip
+                 open_voice=None, mix: Mix | None = None) -> None:  # fmt: skip
         self._b, self.name, self.after, self.quiet, self.poll_s = backend, name, after, quiet, poll_s
-        self._open_voice = open_voice  # async (history) -> LiveSession
+        self._open_voice, self.mix = open_voice, mix  # open_voice: async (history) -> LiveSession
+        self._turn = asyncio.Lock()  # a wake waits for a sleep's close in flight
         self.voice = None  # the LiveSession while awake
         self.opening: asyncio.Task | None = None
         self.active_at = time.monotonic()  # GPT-Live's last delegation or speech
@@ -235,45 +252,84 @@ class Meeting:
         self.active_at = time.monotonic()
 
     def history(self) -> list[tuple[str, str]]:
-        """The recent meeting as (speaker, text), oldest first."""
+        """The recent meeting as (speaker, text), oldest first; the team's messages as "Team"."""
         since = time.time() - HISTORY_S
-        return [(ln["name"], ln["text"]) for ln in self.lines if ln["at"] >= since][-HISTORY_LINES:]
+        return [("Team" if ln["kind"] == "agent" else ln["name"], ln["text"]) for ln in self.lines
+                if ln["at"] >= since][-HISTORY_LINES:]  # fmt: skip
 
     async def _wake(self) -> None:
-        """Opens the voice with the recent meeting and the team messages from while it slept (in the notes and the
-        history, not said again). The words that named it reach it as audio: the Mix pre-roll, then the live mix."""
+        """Opens the voice with the recent meeting. The words that named it reach it as audio: the Mix pre-roll, held
+        from this moment, then the live mix. The team messages from while it slept are fetched alongside, into the notes
+        (not said, and not in this history: off the wake's critical path)."""
+        if self.mix is not None:
+            self.mix.hold()
+        woke = time.monotonic()
         try:
-            try:
-                out = await self._b.meet("events", {"after": self.after})
-                for m in out.get("messages", []):
-                    if m["id"] not in self.seen and (m.get("text") or "").strip():
-                        self.seen.add(m["id"])
-                        self._note(m["text"])
-                self.after = max(self.after, int(out.get("after") or 0))
-            except BackendError as e:
-                logger.warning("meet: events failed (%s)", e.code)
-            self.activity()
-            self.voice = await self._open_voice(self.history())
-            self.activity()
-            logger.info("meet: voice awake")
+            async with self._turn:
+                backlog = asyncio.create_task(self._backlog())
+                self.activity()
+                self.voice = await self._open_voice(self.history())
+                self.activity()
+                logger.info("meet: voice awake %.2f s after the name", time.monotonic() - woke)
+                await backlog
         except Exception:  # noqa: BLE001 -- the next line with the name tries again
             logger.exception("meet: voice not opened")
+            if self.mix is not None:
+                self.mix.release()
         finally:
             self.opening = None
+
+    async def _backlog(self) -> None:
+        try:
+            out = await self._b.meet("events", {"after": self.after})
+        except BackendError as e:
+            logger.warning("meet: events failed (%s)", e.code)
+            return
+        for m in out.get("messages", []):
+            if (text := speakable(m.get("text") or "")) and not self._keys(m) & self.seen:
+                self._record(m, text)
+                if q := m.get("question"):  # in the chat, unsaid: the next ask may still answer it
+                    self.question, self.question_at = q, time.monotonic()
+        self.after = max(self.after, int(out.get("after") or 0))
+
+    def ended(self, voice) -> None:
+        """The voice's AgentSession closed (on its own, or ours): asleep, so a name opens it again."""
+        if self.voice is voice:
+            self.voice = None
+            if self.mix is not None:
+                self.mix.release()
+
+    async def _close(self) -> None:
+        voice, self.voice = self.voice, None
+        if voice.session is not None:
+            voice.session.input.audio = None  # the mix is free for the next session
+        if self.mix is not None:
+            self.mix.release()
+        await voice.close()
 
     async def sleep(self) -> None:
         """Closes the voice after SLEEP_S with no delegation and no speech of its own."""
         if self.voice is not None and self.opening is None and time.monotonic() - self.active_at > SLEEP_S:
-            voice, self.voice = self.voice, None
             logger.info("meet: voice asleep")
-            await voice.close()
+            async with self._turn:
+                await self._close()
 
     async def close(self) -> None:
         if self.opening is not None:
             await asyncio.gather(self.opening, return_exceptions=True)
         if self.voice is not None:
-            voice, self.voice = self.voice, None
-            await voice.close()
+            await self._close()
+
+    @staticmethod
+    def _keys(m: dict) -> set[str]:
+        return {m["id"], (m.get("question") or {}).get("qid")} - {None}
+
+    def _record(self, m: dict, text: str) -> None:
+        """A team message into the record once: seen, the notes, the last ask's answer."""
+        self.seen |= self._keys(m)
+        self._note(m["text"])
+        if self.asked:
+            self.asked[-1]["a"] = f"{self.asked[-1]['a']} {text}".strip()[:2000]
 
     def _note(self, text: str) -> None:
         self.lines.append({"mark": len(self.lines), "kind": "agent", "name": self.name[:200], "text": text[:4000],
@@ -312,18 +368,13 @@ class Meeting:
                 logger.warning("meet: events failed (%s)", e.code)
                 continue
             for m in out.get("messages", []):
-                q = m.get("question")
-                keys = {m["id"], (q or {}).get("qid")} - {None}
-                if keys & self.seen or not (text := speakable(m.get("text") or "")):
+                if self._keys(m) & self.seen or not (text := speakable(m.get("text") or "")):
                     continue
-                self.seen |= keys
+                self._record(m, text)  # before the wait: a sleep that cancels it never loses the note
                 while not self.quiet():
                     await asyncio.sleep(max(self.poll_s, 0.01))
-                if q:
+                if q := m.get("question"):
                     self.question, self.question_at = q, time.monotonic()
-                self._note(m["text"])
-                if self.asked:
-                    self.asked[-1]["a"] = f"{self.asked[-1]['a']} {text}".strip()[:2000]
                 yield {"kind": "agent", "id": m["id"], "text": text,
                        **{k: m[k] for k in ("question", "inReplyTo") if m.get(k)}}  # fmt: skip
             self.after = max(self.after, int(out.get("after") or 0))
@@ -373,9 +424,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if voice.session is not None:
             voice.session.input.audio = mix
             voice.session.on("agent_state_changed", on_state)
+            voice.session.on("close", lambda *_: meeting.ended(voice))
         return voice
 
-    meeting = Meeting(backend, name, int(info.get("after") or 0), open_voice=open_voice,
+    meeting = Meeting(backend, name, int(info.get("after") or 0), open_voice=open_voice, mix=mix,
                       quiet=lambda: time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)

@@ -210,6 +210,7 @@ async def test_a_waking_voice_hears_the_pre_roll_first_then_live():
 class _Voice:
     def __init__(self, history):
         self.history, self.closed = history, False
+        self.session = type("S", (), {"input": type("I", (), {"audio": "mix"})()})()
 
     async def close(self):
         self.closed = True
@@ -247,23 +248,25 @@ async def test_meet_sleeps_after_5_minutes_without_activity():
 
 
 async def test_meet_wakes_on_the_name_carrying_history():
-    """Asleep, the first interim or final line with the name reopens it, told the recent meeting and the team messages
-    from while it slept (not said again); the words that named it come as the Mix pre-roll's audio."""
+    """Asleep, the first interim or final line with the name reopens it, told the recent meeting; the team messages
+    from while it slept are fetched alongside, into the notes (not said), and the next wake's history has them as
+    "Team". The words that named it come as the Mix pre-roll's audio."""
     b = _Backend([{"messages": [{"id": "a7", "seq": 7, "text": "Pulse posted the holiday hours."}], "after": 7}])
     m, opened = _sleepy(b)
     m.line(MAYA, "Let's look at the holiday hours.")
     m.heard(SAM, "Lightbulb, are those", final=False)
     await m.opening
     [voice] = opened
-    assert voice.history == [("Maya", "Let's look at the holiday hours."), ("Nova", "Pulse posted the holiday hours.")]
-    assert m.after == 7 and "a7" in m.seen
+    assert voice.history == [("Maya", "Let's look at the holiday hours.")]  # the fetch is off the critical path
+    assert m.after == 7 and "a7" in m.seen and m.lines[-1]["text"] == "Pulse posted the holiday hours."
     m.heard(SAM, "Nova, and the other thing?", final=True)  # awake: GPT-Live decides, nothing reopens
     assert m.opening is None and len(opened) == 1
     m.active_at -= meet.SLEEP_S + 1
     await m.sleep()
     m.heard(MAYA, "Nova, one more", final=True)  # asleep again: the name wakes it with the meeting so far
     await m.opening
-    assert len(opened) == 2 and ("Maya", "Let's look at the holiday hours.") in opened[1].history
+    assert len(opened) == 2 and opened[0].session.input.audio is None  # the mix was taken off the closed session
+    assert ("Team", "Pulse posted the holiday hours.") in opened[1].history
 
 
 async def test_meet_no_reopen_on_unaddressed_talk_while_asleep():
@@ -338,3 +341,75 @@ async def test_meet_runs_asleep_until_named_and_closes_the_voice_with_the_meetin
     for cb in shutdown:
         await cb()
     assert Live.closed and ("end", {"asked": [], "summary": "Asked 0 times"}) in b.sent
+
+
+async def test_a_result_cancelled_in_the_quiet_wait_stays_in_the_notes_across_a_sleep():
+    """I1: the voice slept while a team message waited for a pause: it is in the notes and the next wake's history,
+    and the wake's catch-up does not add it twice."""
+    msg = {"id": "a8", "seq": 8, "text": "We shipped #5095."}
+    b = _Backend([{"messages": [msg], "after": 8}, {"messages": [msg], "after": 8}])
+    opened = []
+
+    async def open_voice(history):
+        opened.append(_Voice(history))
+        return opened[-1]
+
+    m = meet.Meeting(b, "Nova", quiet=lambda: False, poll_s=0, open_voice=open_voice)
+    waiting = asyncio.create_task(m.events().__anext__())
+    await asyncio.sleep(0.02)
+    waiting.cancel()  # live.close() cancels its events reader mid-wait
+    m.heard(SAM, "Nova, did it ship?", final=False)
+    await m.opening
+    assert opened[0].history == [("Team", "We shipped #5095.")]
+    assert [ln["text"] for ln in m.lines] == ["We shipped #5095."]
+
+
+async def test_a_wake_holds_the_pre_roll_and_paces_what_is_past_the_burst():
+    """I2: from the wake, the ring stops rolling, so a slow start evicts nothing; the new session reads PREROLL_S at
+    once and the rest at real time (the service rejects a burst over 5 s). Asleep again, it rolls."""
+    mix = meet.Mix()
+    n = int(meet.PREROLL_S * meet.RATE / meet.FRAME)
+    for _ in range(n):
+        mix.tick()
+    mix.hold()
+    for _ in range(10):  # 200 ms of startup
+        mix.tick()
+    assert len(mix.ring) == n + 10
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    for _ in range(n):
+        await mix.__anext__()
+    assert loop.time() - t0 < 0.5  # the first PREROLL_S at once
+    for _ in range(10):
+        await mix.__anext__()
+    assert loop.time() - t0 >= 0.15  # past it, real time
+    mix.release()
+    for _ in range(n + 5):
+        mix.tick()
+    assert len(mix.ring) == n
+
+
+async def test_the_wake_catch_up_records_a_thread_question_and_the_last_answer():
+    """M2: a Worker's question that came while it slept is in the notes, the last ask's answer, and the next ask may
+    answer it (#5112)."""
+    q = {"id": "q1", "seq": 9, "text": "**Pulse** asks: What holiday hours?", "question": {"taskId": "t1", "qid": "q-1"}}
+    b = _Backend([{"messages": [q], "after": 9}])
+    m, opened = _sleepy(b)
+    m.asked.append({"t": 0, "who": "Sam", "q": "draft it", "a": ""})
+    m.heard(SAM, "Nova, any news?", final=True)
+    await m.opening
+    assert m.question == {"taskId": "t1", "qid": "q-1"} and m.asked[-1]["a"] == "Pulse asks: What holiday hours?"
+    await m.post("We close at 2.", [])
+    assert b.asks()[-1]["answers"] == {"taskId": "t1", "qid": "q-1"}
+
+
+async def test_a_voice_that_closed_itself_is_reopened_by_the_name():
+    """M4: the AgentSession closed on its own (live.ended): asleep, so the next name opens a new one."""
+    m, opened = _sleepy()
+    m.heard(SAM, "Nova, hi", final=False)
+    await m.opening
+    m.ended(opened[0])
+    assert m.voice is None
+    m.heard(SAM, "Nova, are you there?", final=False)
+    await m.opening
+    assert len(opened) == 2 and m.voice is opened[1]

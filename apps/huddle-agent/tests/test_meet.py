@@ -346,3 +346,14 @@ async def test_meet_approve_posts_route():
     a._b.meet = meet_op
     assert await a.approve("no", "") == {"none": True}
     assert sent[0][0] == "approve" and sent[0][1]["phrase"] == "no" and "participantId" in sent[0][1]
+
+
+def test_the_name_as_its_own_sentence_then_the_ask_wakes():
+    """8 Nov sim: the transcriber wrote "Lightbulb. How many phone calls did we get today?" and the nudge never came,
+    so OpenAI (which answers only when asked) said nothing."""
+    for line in ("Lightbulb. How many phone calls did we get today?", "Light bulb. How many phone calls today?",
+                 "Nova. Read me the bookings.", "Hey Nova. What's on Wednesday?"):  # fmt: skip
+        assert meet.wakes("Nova", line), line
+    for line in ("Nova. That was great.", "Thanks, Nova. How was your weekend?", "I asked Nova. What did she say?",
+                 "Nova. Is it."):  # fmt: skip
+        assert not meet.wakes("Nova", line), line

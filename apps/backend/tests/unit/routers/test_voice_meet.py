@@ -39,8 +39,9 @@ def m():
         patch.object(voice_meet.messaging_repo, "put_voice_run", AsyncMock()) as put_run,
         patch.object(voice_meet.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
         patch.object(voice_meet, "start_voice_work", AsyncMock(return_value={"triggerId": "t", "taskId": "k1"})) as sw,
+        patch.object(voice_meet.voice_state, "context", AsyncMock(return_value="ctx")) as ctx,
     ):
-        patched.update(phase=phase, meeting=meeting, say=say, get_run=get_run, put_run=put_run, sw=sw)
+        patched.update(phase=phase, meeting=meeting, say=say, get_run=get_run, put_run=put_run, sw=sw, ctx=ctx)
         yield patched
     voice_meet._clears.clear()
 
@@ -300,3 +301,35 @@ async def test_single_announcement(m):
 def test_announcement_says_recorded_and_fits_the_chat():
     longest = voice_meet.ANNOUNCE.format(name="N" * 30, company="C" * 50)
     assert "This meeting is recorded and notes are saved to " in longest and len(longest) <= voice_meet.CHAT_CHARS
+
+
+async def test_start_gives_the_inviters_state_with_nothing_private(m):
+    with (
+        patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")),
+        patch.object(voice_meet.integration_reads, "warm_google", AsyncMock()),
+    ):
+        out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+        await asyncio.sleep(0)
+    assert out["context"] == "ctx"
+    ws, viewer, room, keep, memory_user, chat_room, people = m["ctx"].await_args.args
+    assert (ws, viewer, room, memory_user, chat_room) == ("org_1", "user_maya", ROOM, None, ROOM)  # workspace memory
+    assert people == ["user_maya"]  # every person seated in the meeting's room hears it
+    assert keep({"audience": {"kind": "room", "roomId": ROOM}})
+    assert keep({"ownerUserId": "user_maya", "audience": {"kind": "workspace"}})
+    assert not keep({"ownerUserId": "user_maya", "audience": {"kind": "person", "roomId": "dm"}})  # never a DM's
+    # a person-only task asked in this very meeting's room is still that person's
+    assert not keep({"ownerUserId": "user_maya", "audience": {"kind": "person", "roomId": ROOM}})
+
+
+async def test_a_slow_context_never_holds_the_start(m):
+    async def slow(*a):
+        await asyncio.sleep(10)
+
+    with (
+        patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")),
+        patch.object(voice_meet.integration_reads, "warm_google", AsyncMock()),
+        patch.object(voice_meet.voice_state, "CONTEXT_S", 0.01),
+        patch.object(voice_meet.messaging_repo, "list_members", AsyncMock(side_effect=slow)),
+    ):
+        out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+    assert out["context"] == "" and out["assistantName"] == "Nova"

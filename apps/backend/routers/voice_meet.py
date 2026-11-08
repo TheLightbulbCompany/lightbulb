@@ -29,6 +29,7 @@ from core.services import (
     meeting_invites,
     memory_api,
     voice_approve,
+    voice_state,
 )
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
@@ -68,7 +69,9 @@ class StartIn(RoomBody):
 
 @router.post("/internal/voice/meet/{room_id}/start")
 async def start(room_id: str, body: StartIn) -> dict:
-    """The assistant's name, and the join announcement in the Meet's chat, once an occurrence."""
+    """The assistant's name, the join announcement in the Meet's chat (once an occurrence), and the Router's state
+    for the inviting member: this meeting's room and its tasks, the inviter's workspace-wide tasks, and workspace
+    memory. Everyone in the meeting hears it, so nothing private (a DM, a person-only task, private memory)."""
     room_id, meta, meeting = await _meeting(room_id, body)
     _warming.add(t := asyncio.create_task(integration_reads.warm_google(body.ownerId)))
     t.add_done_callback(_warming.discard)
@@ -82,7 +85,27 @@ async def start(room_id: str, body: StartIn) -> dict:
                 await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
             except Exception as e:  # noqa: BLE001 -- RecallError or a transport error alike
                 logger.warning("meet room %s: announce failed %s", room_id, getattr(e, "code", type(e).__name__))
-    return {"assistantName": name, "title": meeting.get("title") or "Meeting"}
+    context = await voice_state.bounded(_context(body.ownerId, room_id, meeting))
+    return {"assistantName": name, "title": meeting.get("title") or "Meeting", "context": context}
+
+
+async def _context(owner_id: str, room_id: str, meeting: dict) -> str:
+    """The inviter's state that everyone present may hear: never a person-only task, never private memory."""
+    members = await messaging_repo.list_members(room_id)
+    inviter = inviting_member(meeting, members)
+    if inviter is None:
+        return ""
+    people = [m["id"] for m in members if m.get("kind") == "human"]
+
+    def keep(t: dict) -> bool:
+        audience = t.get("audience") or {}
+        if audience.get("kind") == "person":
+            return False  # one person's task, even one asked in this meeting's room
+        return audience.get("roomId") == room_id or (
+            t.get("ownerUserId") == inviter and audience.get("kind") == "workspace"
+        )
+
+    return await voice_state.context(owner_id, inviter, room_id, keep, None, room_id, people)
 
 
 def inviting_member(meeting: dict, members: list[dict]) -> str | None:

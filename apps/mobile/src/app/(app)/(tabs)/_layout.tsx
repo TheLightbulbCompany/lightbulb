@@ -36,8 +36,8 @@ function ActivityBadge({ onCount }: { onCount: (total: number) => void }) {
 }
 
 /**
- * Chats · Activity · Teams · Settings (spec 2026-09-26): Home and DMs merged
- * into Chats, More folded into Settings.
+ * Home · Agent · Needs you · Settings. Home keeps typed conversations alongside Live;
+ * the route names remain stable for notification links.
  *
  * `NativeTabs` (react-native-screens' UITabBarController) rather than the JS
  * tab bar: on iOS 26 that is the real glass tab bar, with SF-font labels, SF
@@ -69,8 +69,8 @@ export default function TabsLayout() {
       <ActivityBadge onCount={setUnseen} />
       <NativeTabs key={orgId ?? "none"} tintColor={tint}>
         <NativeTabs.Trigger name="chats">
-          <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} md="chat_bubble" />
-          <NativeTabs.Trigger.Label>Chats</NativeTabs.Trigger.Label>
+          <NativeTabs.Trigger.Icon sf={{ default: "house", selected: "house.fill" }} md="home" />
+          <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
           {/* No Badge element at all at zero, not a "0" child and not
               `hidden`: expo-router sets `badgeValue = String(children)` for
               any truthy child and only consults `hidden` when there is none
@@ -79,18 +79,17 @@ export default function TabsLayout() {
             <NativeTabs.Trigger.Badge>{String(unread)}</NativeTabs.Trigger.Badge>
           )}
         </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="teams">
+          <NativeTabs.Trigger.Icon sf={{ default: "sparkles", selected: "sparkles" }} md="auto_awesome" />
+          <NativeTabs.Trigger.Label>Agent</NativeTabs.Trigger.Label>
+        </NativeTabs.Trigger>
         <NativeTabs.Trigger name="activity">
-          <NativeTabs.Trigger.Icon sf="at" md="alternate_email" />
-          <NativeTabs.Trigger.Label>Activity</NativeTabs.Trigger.Label>
-          {/* Same zero rule as Chats' badge above. */}
+          <NativeTabs.Trigger.Icon sf="tray" md="inbox" />
+          <NativeTabs.Trigger.Label>Needs you</NativeTabs.Trigger.Label>
+          {/* Same zero rule as Home's badge above. */}
           {unseen > 0 && (
             <NativeTabs.Trigger.Badge>{String(unseen)}</NativeTabs.Trigger.Badge>
           )}
-        </NativeTabs.Trigger>
-        {/* Work: threads and schedules. */}
-        <NativeTabs.Trigger name="teams">
-          <NativeTabs.Trigger.Icon sf={{ default: "checklist", selected: "checklist" }} md="checklist" />
-          <NativeTabs.Trigger.Label>Work</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="settings">
           <NativeTabs.Trigger.Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} md="settings" />

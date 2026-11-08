@@ -42,7 +42,8 @@ _LIGHTBULB_NAME = re.compile(r"^\W*(?:(?:hey|hi|hello|yo|ok|okay)\s+)?lightbulb\
 
 VOICE_HINT = (
     "(Said aloud in a voice talk; the reply is read out. Answer in one or two short spoken sentences: no lists, "
-    "tables, links or markdown. Longer work goes in its thread as usual.)"
+    "tables, links or markdown. In them, name the specific items you found (the PR numbers, the figures, the "
+    "names), never a summary of themes. Longer work goes in its thread as usual.)"
 )
 
 

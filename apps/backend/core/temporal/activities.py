@@ -77,11 +77,13 @@ WORKER_INSTRUCTIONS = (
     "a question (what shipped, a figure, what an email or calendar says), read the source and answer it: your whole "
     "answer is the answer, facts first, at most 100 words, no opening sentence about what you did; it is posted in "
     "the chat as the reply. Name the specific items you found (PR numbers, figures, names), never a summary of "
-    "themes. When the brief lists Connected apps: if the source the question needs isn't in it (a calendar is "
-    "google, for example), say it isn't connected and that they can connect it in Settings → Connections. Don't answer from other threads, files "
-    "or memory instead: those aren't a record of it. If it is connected, use your tools to answer, and use memory "
-    "for context. A request to make, buy or send something is not a question, even when phrased as one "
-    '("Can you build me a booking page?"). Never write a placeholder link such as [Book]([BOOKING LINK]): when '
+    "themes. A question about this business (its hours, services, prices, policies) starts with business_facts, "
+    "never by asking which business. When the brief lists Connected apps: if the source the question needs isn't "
+    "in it (a calendar is google, for example), say it isn't connected and that they can connect it in Settings → "
+    "Connections. Don't answer from other threads, files or memory instead: those aren't a record of it. If it is "
+    "connected, use your tools to answer, and use memory for context. A request to make, buy or send something is "
+    'not a question, even when phrased as one ("Can you build me a booking page?"). Never write a placeholder link '
+    "such as [Book]([BOOKING LINK]): when "
     "you don't have the URL, write the call to action as "
     'plain text, e.g. "Book your spot: (link to add)". An email is its subject line and its body only: no '
     '"Preview text:", "Preheader:" or other meta lines in it.'
@@ -326,6 +328,12 @@ async def _local_now(ws: str, user_id: str | None) -> str:
 def _callers(triggers: dict[str, dict]) -> set[str]:
     """The batch's phone caller triggers (`ref.origin` phone_contact, written by the backend only)."""
     return {tid for tid, t in triggers.items() if (t.get("ref") or {}).get("origin") == "phone_contact"}
+
+
+def _caller_tasks(tasks: list[dict], rooms: set[str]) -> list[dict]:
+    """What a phone caller's batch may see of the open and closed tasks: only this call's own (origin phone_contact,
+    in the call's room). Owner and member task titles never reach a caller."""
+    return [t for t in tasks if t.get("origin") == "phone_contact" and (t.get("audience") or {}).get("roomId") in rooms]
 
 
 async def _caller_profile(ws: str, triggers) -> str | None:
@@ -753,6 +761,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         "text": await _input_text(ws, trig["triggerId"]),
         "who": None,
         "where": None,
+        "caller": ref.get("origin") == "phone_contact",  # a phone caller's line: fenced as data in the batch
     }
     if ref.get("roomId") and ref.get("messageId"):
         msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"]) or {}
@@ -1486,6 +1495,8 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         chat = next((t for t in to_model.values() if {"roomId", "messageId"} <= set(t.get("ref") or {})), None)
         recent = await _recent_lines(ws, chat, set(to_model), inp.lane, user_id) if chat else None
         closed = await _closed_tasks(ws, inp.lane, user_id, rooms)
+        if _callers(to_model):
+            open_tasks, closed = _caller_tasks(open_tasks, rooms), _caller_tasks(closed, rooms)
         prompt = router_prompt.render_batch(
             views,
             roster,
@@ -1498,8 +1509,13 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             instructions=await _project_instructions(room_id),
             profile=await _caller_profile(ws, to_model.values()),
         )
-        memory = memory_tags.block_for_router(
-            "private" if private and user_id else "shared", user_id if private else None, room_id
+        # A phone caller's batch gets no memory block at all: owner memory never reaches a caller through a reply.
+        memory = (
+            None
+            if _callers(to_model)
+            else memory_tags.block_for_router(
+                "private" if private and user_id else "shared", user_id if private else None, room_id
+            )
         )
         scope = ts.trigger_scope(next(iter(to_model.values())))
 

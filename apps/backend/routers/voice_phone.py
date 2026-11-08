@@ -34,9 +34,19 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import clerk_admin, questions, voice_booking, voice_outbound
+from core import tasks_schema as ts
+from core.services import (
+    admission,
+    clerk_admin,
+    questions,
+    task_conversation,
+    voice_booking,
+    voice_calls,
+    voice_outbound,
+)
 from routers.huddles import _Worker
 from routers.voice import _e164, month_seconds
+from routers.voice_meet import agent_lines, latest_seq
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
 logger = logging.getLogger(__name__)
@@ -230,6 +240,13 @@ async def start_call(body: StartIn) -> dict:
     name = f"Call · {call['callerName'] or body.callerNumber or 'unknown'}"[:60]
     members = [{"kind": "human", "id": line["ownerUserId"], "displayName": business, "mentionHandle": None,
                 "role": "owner", "listenMode": None}]  # fmt: skip
+    front = None
+    if not forward_to:
+        try:  # Lightbulb (the Router's voice) is seated, so its replies and the Front desk's answers land here
+            front = await task_conversation._front_agent(owner_id)
+            members.append(front)
+        except Exception:  # noqa: BLE001 -- no front agent yet: the call is still answered; the caller's lines wait
+            logger.warning("call room without Lightbulb ws=%s", owner_id, exc_info=True)
     try:
         await messaging_repo.create_room(
             owner_id=owner_id,
@@ -245,9 +262,12 @@ async def start_call(body: StartIn) -> dict:
     except messaging_repo.MessagingRepoError:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
             raise
+    if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
+        voice_calls.prewake_owner(owner_id, team=[front])
     allow, mode = cfg["allow"], _line_state(cfg, body.callerNumber)
     paused = mode != "live"
     return {
+        "after": await latest_seq(call_id),  # the first `/events` cursor: a replayed start says nothing twice
         "mode": mode,
         "callId": call_id,
         "ownerId": owner_id,
@@ -772,3 +792,84 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
                                           "steps": _step(c, f"Handed to the team: {body.title}")})  # fmt: skip
     return out
+
+
+# --- the caller's lines go to the Router (one-brain plan, "Phone, too", founder 8 Nov 2026) ------------------
+#: Said to the Router with each line: who is speaking, and that the reply is spoken on the phone.
+CALLER_HINT = (
+    "(Said by a caller on the business's phone line, an outside contact, not a member. The reply is read out on "
+    "the call: one or two short spoken sentences, no lists, links or markdown.)"
+)
+
+
+class TurnIn(BaseModel):
+    n: int = Field(ge=0, le=100000)  # the line's place in the call: with the call id, its one message and trigger
+    text: Annotated[str, Field(min_length=1, max_length=4000)]
+
+
+@router.post("/internal/voice/calls/{call_id}/turn")
+async def caller_turn(call_id: str, body: TurnIn) -> dict:
+    """One delegated caller line: a message in the call's room, authored by the caller (a non-member: no admission
+    row, no memory), and a `phone_contact` trigger for that room, so the Router decides it with the caller's scope
+    and the Business profile, and its Front desk threads run as the caller. Keyed on (call, n): a retry is the same."""
+    meta, call = await _call(call_id)
+    ws, requester = meta["ownerId"], meta.get("ownerUserId")
+    if not requester:
+        raise _err(403, "no_requester")
+    if _line_state(await agent_config(ws), call.get("caller", "")) != "live":
+        raise _err(403, "not_allowed")  # a paused line only takes messages (/message)
+    who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()
+    key = f"call-turn:{call_id}:{body.n}"
+    msg, _ = await messaging_repo.create_message(
+        room_id=call_id,
+        owner_id=ws,
+        idemp_pk=messaging_repo.owner_pk(ws),
+        idemp_sk=messaging_repo.agent_idemp_sk(key),
+        req_hash=messaging_repo.request_hash(call_id, body.n, body.text),
+        author={"kind": "human", "id": f"caller:{call_id}", "displayName": who},
+        text=body.text,
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=None,
+        client_message_id=None,
+        silent=True,
+        author_member_check=False,
+        via="voice",
+    )
+    now = utc_now_iso()
+    trigger = ts.Trigger(
+        ws=ws,
+        trigger_id=ts.trigger_id("voice", call_id, f"turn-{body.n}"),
+        source="voice",
+        admission="respond",
+        lane="shared",  # the batch key is the call's room (trigger_scope): a call never shares a Router prompt
+        actor_user_id=requester,  # the line's owner user, as start_work's tasks: written by start_call, never the model
+        received_at=now,
+        created_at=now,
+        updated_at=now,
+        ref={
+            "roomId": call_id,
+            "messageId": msg["messageId"],
+            "callId": call_id,
+            "origin": "phone_contact",
+            "from": who,
+            "text": f"{body.text}\n\n{CALLER_HINT}",
+        },
+    )
+    await admission.enqueue_trigger(ws, trigger, room_id=call_id)
+    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id}
+
+
+class CallEventsIn(BaseModel):
+    after: int = Field(ge=0)
+
+
+@router.post("/internal/voice/calls/{call_id}/events")
+async def call_events(call_id: str, body: CallEventsIn) -> dict:
+    """Lightbulb's messages in the call's room after seq `after` (the Router's ack and replies, the Front desk's
+    answers), oldest first: the phone voice says each once (huddle-agent mouth.py)."""
+    await _call(call_id)
+    return await agent_lines(call_id, body.after)

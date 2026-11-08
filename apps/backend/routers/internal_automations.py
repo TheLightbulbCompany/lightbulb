@@ -120,6 +120,8 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
     room_id, requester, thread_root = body.room_id, body.requester_user_id, body.thread_root
     triggers = [t for t in [await _trigger(owner_id, tid) for tid in body.trigger_ids] if t]
+    if any((t.get("ref") or {}).get("origin") == "phone_contact" for t in triggers):
+        raise _err(403, "not_allowed")  # a phone caller never sets up an automation in the business's name
     for trig in triggers:
         ref = trig.get("ref") or {}
         room_id = room_id or ref.get("roomId")

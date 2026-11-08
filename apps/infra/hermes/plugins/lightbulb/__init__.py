@@ -959,6 +959,29 @@ def _front_desk(args: dict, *, session_id: str = "", **_kw) -> str:
         return f"Not done: {type(exc).__name__}."
 
 
+BUSINESS_FACTS_SCHEMA = {
+    "name": "business_facts",
+    "description": "Read this business's own facts from its Agent page: name, services and prices, opening hours, "
+                   "policies and the Knowledge answers. Use it first for any question about the business.",
+    "parameters": {"type": "object", "properties": {}},
+}
+NO_FACTS = "No Agent page saved yet: say the business's facts are not set up on the Agent page."
+
+
+def _business_facts(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not _task_run(ctx):
+        return "business_facts works only on a Lightbulb task run."
+    body = {k: ctx.get(k) for k in ("taskId", "runId", "attempt", "runSecret")}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/business-facts"
+    try:
+        return _post(url, ctx["hookToken"], body).get("facts") or NO_FACTS
+    except urllib.error.HTTPError as exc:
+        return f"Facts not read: HTTP {exc.code}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Facts not read: {type(exc).__name__}."
+
+
 def _ask_person(args: dict, *, session_id: str = "", **_kw) -> str:
     question = str(args.get("question") or "").strip()
     options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
@@ -1100,6 +1123,8 @@ def register(ctx) -> None:
                       description=TASK_NOTE_SCHEMA["description"], emoji="📝")
     ctx.register_tool("front_desk", FRONT_DESK_TOOLSET, FRONT_DESK_SCHEMA, _front_desk,
                       description=FRONT_DESK_SCHEMA["description"], emoji="📅")
+    ctx.register_tool("business_facts", TASK_TOOLSET, BUSINESS_FACTS_SCHEMA, _business_facts,
+                      description=BUSINESS_FACTS_SCHEMA["description"], emoji="📇")
     ctx.register_tool("ask_person", "lightbulb", ASK_PERSON_SCHEMA, _ask_person,
                       description=ASK_PERSON_SCHEMA["description"], emoji="❓")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,

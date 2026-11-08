@@ -49,8 +49,19 @@ async def test_the_profile_is_bounded_and_cached(sources):
     sources.return_value = CFG | {"knowledge": [{"q": f"Q{i}?", "a": "x" * 200} for i in range(100)]}
     text = await bp.business_profile("org_x", "+15550001")
     assert len(text) <= 2100
-    await bp.business_profile("org_x", "+15550001")
-    assert sources.await_count == 2  # get_voice_agent + agent_config, once: the second call is the 60 s cache
+    await bp.business_profile("org_x")
+    await bp.business_profile("org_x")
+    assert sources.await_count == 4  # get_voice_agent + agent_config, once more: the member's second is cached
+
+
+async def test_a_callers_profile_is_never_cached(sources, monkeypatch):
+    """The cache is per process: a front_desk booking in the API process cannot drop the Router's copy in the
+    Temporal worker, so a caller's batch reads the bookings fresh every time."""
+    rows = []
+    monkeypatch.setattr(bp, "_upcoming", AsyncMock(side_effect=lambda ws, now: list(rows)))
+    assert "bookings: none" in await bp.business_profile("org_x", "+15550001")
+    rows.append({"sk": "VOICEBOOK#2099-11-12T15:00", "service": "Pedicure", "phone": "+15550001"})
+    assert "Pedicure Thu 12 Nov, 3:00 PM" in await bp.business_profile("org_x", "+15550001")  # no forget() needed
 
 
 async def test_the_profile_degrades_when_sources_fail(sources, monkeypatch):
@@ -140,3 +151,13 @@ def test_a_callers_words_never_pass_through_to_a_full_tool_task():
     )
     assert [d.task_id for d in kept] == [theirs["taskId"]]
     assert acts._callers({"voice:c": {"ref": {"origin": "phone_contact"}}, "chat:m": {"ref": {}}}) == {"voice:c"}
+
+
+@pytest.mark.parametrize("off", [{"allow": {"answer": False}}, {"paused": True}])
+async def test_facts_follow_the_phones_answer_and_pause_rule(sources, off):
+    """facts_text (the profile's and a Worker's business_facts' one reader) hides the facts as the phone does
+    (voice_phone.start_call): "answer questions" off or the line paused leaves only the name and time zone."""
+    assert "Pedicure $45" in await bp.facts_text("org_x")
+    sources.return_value = {**CFG, **off}
+    for text in (await bp.facts_text("org_x"), await bp.business_profile("org_x")):
+        assert "Glow Nails" in text and "Pedicure" not in text and "$50 deposit" not in text

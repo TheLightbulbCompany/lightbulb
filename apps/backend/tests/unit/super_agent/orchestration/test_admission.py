@@ -286,6 +286,12 @@ async def test_a_spoken_line_tells_the_router_and_workers_to_answer_for_speech(w
     assert "text" not in (await repo.get_trigger(WS, tid2))["ref"]
 
 
+def test_the_spoken_hint_keeps_the_specifics():
+    """Prod LB-9 (8 Nov): the Worker read 532 merged PRs with gh, then obeyed "no lists" and said themes, no PR."""
+    hint = " ".join(admission.VOICE_HINT.split())
+    assert "name the specific items you found" in hint and "never a summary of themes" in hint
+
+
 async def test_lightbulb_mentions_only_room_skips_jev(world):
     world["listen"] = "mentions"
     await _admit(world, _msg())

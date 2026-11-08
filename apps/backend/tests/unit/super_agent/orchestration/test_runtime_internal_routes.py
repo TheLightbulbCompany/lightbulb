@@ -365,3 +365,32 @@ async def test_front_desk_acts_only_for_a_callers_thread(api, monkeypatch):
     body |= {"taskId": member, "runId": mref.run_id, "runSecret": await _secret(member)}
     r = await api.post(url, json=body, headers=H)
     assert r.status_code == 403 and r.json()["detail"] == "not_a_caller_thread"
+
+
+async def test_business_facts_reads_only_the_runs_own_workspace(api, monkeypatch):
+    """business_facts (router-latency-2026-11-08): a Worker reads its own workspace's Agent page, never another's;
+    a wrong secret or another workspace's path reads nothing."""
+    from core.repositories import messaging_repo
+
+    pages = {WS: {"services": [{"name": "Cut", "price": "$40", "minutes": 30}],
+                  "knowledge": [{"q": "Parking?", "a": "Free out back."}]},
+             "org_other": {"services": [{"name": "Other salon secret"}]}}  # fmt: skip
+    seen = []
+
+    async def page(owner_id):
+        seen.append(owner_id)
+        return pages.get(owner_id)
+
+    monkeypatch.setattr(messaging_repo, "get_voice_agent", page)
+    tid = await _task()
+    ref = await _running(tid)
+    body = {"taskId": tid, "runId": ref.run_id, "attempt": 1, "runSecret": await _secret(tid)}
+    got = await api.post(f"/api/v1/internal/runtime/{WS}/business-facts", json=body, headers=H)
+    assert got.status_code == 200
+    facts = got.json()["facts"]
+    assert "Cut $40 (30 min)" in facts and "Parking? A: Free out back." in facts and "Other" not in facts
+    assert set(seen) == {WS}
+    bad = await api.post(f"/api/v1/internal/runtime/{WS}/business-facts", json={**body, "runSecret": "x"}, headers=H)
+    assert bad.status_code == 403
+    other = await api.post("/api/v1/internal/runtime/org_other/business-facts", json=body, headers=H)
+    assert other.status_code in (401, 403) and "org_other" not in seen

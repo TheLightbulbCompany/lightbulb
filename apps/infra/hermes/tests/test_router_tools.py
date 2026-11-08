@@ -111,6 +111,11 @@ def test_router_toolset_off_every_other_turn(monkeypatch):
     monkeypatch.setattr(turn, "_capture_api_errors", lambda a: None)
     turn._construct_agent(AGENT, {}, None, f"agent:{AGENT}:lightbulb:task:{TASK}")
     assert "lightbulb_router" not in captured["enabled_toolsets"]
+    import contextvars  # a Router build sets _ROUTER_TURN: keep it out of later tests
+
+    key = f"agent:{AGENT}:lightbulb:task:{TASK}"
+    contextvars.copy_context().run(turn._construct_agent, AGENT, {}, None, key, **turn.ROUTER_RUN_LIMITS)
+    assert captured["enabled_toolsets"] == ["lightbulb_router"] and captured["skip_memory"] is True  # reaches AIAgent
 
 
 def test_task_ns_matches_schema():

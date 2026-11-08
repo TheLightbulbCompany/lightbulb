@@ -331,9 +331,9 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         "for today and any date or time)",
         task.get("description") or "",
     ]
-    if task.get("triggerId") and (
-        asked := await _input_text(ws, task["triggerId"])
-    ):  # the person's own words, never paraphrased
+    # A question's own words, never paraphrased. Only a question: one message can start several threads, and the
+    # brief is each one's whole job, so a work thread never sees the message's other asks.
+    if task.get("question") and (asked := await _input_text(ws, task["triggerId"])):
         parts.append(f"## Asked\n{asked}")
     for tid in att.get("inputTriggerIds") or []:
         text = await _input_text(ws, tid)

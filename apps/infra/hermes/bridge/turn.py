@@ -838,8 +838,10 @@ ROUTER_TOOLSET = "lightbulb_router"
 VOICE_WORK_TOOLSET = "lightbulb_voice_work"
 # task_note: only a super-agent Worker run re-adds it (_run_durable_turn); every other turn strips it.
 TASK_TOOLSET = "lightbulb_task"
+# skip_memory: no recall prefetch, no provider tools, no MEMORY.md/USER.md block (pinned d5b3cad agent_init
+# `_init_memory`: the built-in store loads only without skip_memory or with the memory toolset).
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET], "disabled_toolsets": None,
-                     "skip_background_review": True}
+                     "skip_background_review": True, "skip_memory": True}
 MAX_DECISIONS = 40
 #: A Router turn never reads or writes memory (founder ruling A, 8 Nov 2026): a Worker reads the source.
 _ROUTER_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_router_turn", default=False)

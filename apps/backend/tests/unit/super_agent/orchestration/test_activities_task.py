@@ -798,11 +798,14 @@ async def test_the_worker_reads_what_was_asked_word_for_word(monkeypatch):
         "title": "Check what shipped",
         "description": "Check what shipped",
         "triggerId": "chat:m1",
+        "question": True,
         "audience": {"kind": "workspace"},
         "lane": "shared",
     }
-    req = await acts._request(WS, task, {"n": 1, "inputTriggerIds": []}, {"attempts": []})
-    assert "## Asked\nwhat have we shipped in the last week?" in req.input
+    att, tree = {"n": 1, "inputTriggerIds": []}, {"attempts": []}
+    assert "## Asked\nwhat have we shipped in the last week?" in (await acts._request(WS, task, att, tree)).input
+    # A work thread's brief is its whole job: a message's other asks never reach it (review #5099).
+    assert "## Asked" not in (await acts._request(WS, task | {"question": False}, att, tree)).input
 
 
 async def test_a_task_of_another_room_says_only_done(world):

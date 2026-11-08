@@ -473,9 +473,11 @@ async def get_trigger(ws: str, trigger_id: str) -> dict | None:
 
 
 async def from_contact(ws: str, task: dict) -> bool:
-    """Whether the task was started for an outside contact (a phone caller): its trigger's `ref.origin`, which only the
-    backend writes (routers/voice_phone.py). ponytail: the task's own trigger only; a sub-task it starts inherits
-    nothing yet."""
+    """Whether the task is an outside contact's (a phone caller's): its own `origin`, which `_ensure_task` copies from
+    its trigger or the task it came from. A row written before `origin` existed falls back to its trigger's
+    `ref.origin` (only the backend writes either)."""
+    if task.get("origin"):
+        return task["origin"] == "phone_contact"
     if not task.get("triggerId"):
         return False
     return (((await get_trigger(ws, task["triggerId"])) or {}).get("ref") or {}).get("origin") == "phone_contact"

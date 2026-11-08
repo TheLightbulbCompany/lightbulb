@@ -27,3 +27,8 @@ it("no-org user at /voice sees OrganizationList with afterSelect /voice", () => 
   expect(org.list).toHaveBeenCalledWith(expect.objectContaining({ afterSelectOrganizationUrl: "/voice", afterCreateOrganizationUrl: "/onboarding" }));
   org.current = { id: "o" };
 });
+
+it("Workspace rail item opens the super-agent UI at /chat", () => {
+  render(<VoiceShell><div /></VoiceShell>);
+  expect(screen.getByRole("link", { name: "Workspace" })).toHaveAttribute("href", "/chat");
+});

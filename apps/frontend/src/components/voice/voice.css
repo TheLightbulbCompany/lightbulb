@@ -3,17 +3,26 @@
 
 .vx-shell { display: grid; grid-template-columns: 64px minmax(0, 1fr); height: 100dvh; background: var(--plane-pane); color: var(--fg); font-family: var(--font-sans); }
 .vx-rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 4px; background: var(--plane-rail); border-right: 1px solid var(--plane-edge); }
-.vx-rail a { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 56px; min-height: 48px; border-radius: var(--radius-md); color: var(--fg-mute); text-decoration: none; font-size: var(--text-2xs); font-weight: 500; text-align: center; line-height: 1.15; }
-.vx-rail a:hover, .vx-rail a[aria-current="page"] { color: var(--fg); background: var(--plane-selected); }
+.vx-rail a { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 56px; min-height: 52px; border-radius: var(--radius-md); color: var(--fg-mute); text-decoration: none; font-size: var(--text-2xs); font-weight: 400; text-align: center; line-height: 1.15; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+.vx-rail a:hover { color: var(--fg); background: var(--plane-hover); }
+.vx-rail a[aria-current="page"] { color: var(--fg); background: var(--plane-selected); }
+.vx-rail a:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
+.vx-rail a svg { flex: none; }
 .vx-rail a[aria-current="page"] { font-weight: 600; }
-.vx-rail .vx-badge { position: absolute; top: 4px; right: 8px; min-width: 16px; height: 16px; padding: 0 4px; display: grid; place-items: center; border: 1px solid var(--warn-hue); border-radius: 999px; background: var(--plane-rail); color: var(--warn-hue); font-size: var(--text-2xs); font-weight: 600; line-height: 1; }
+.vx-rail .vx-badge { position: absolute; top: 4px; left: calc(50% + 4px); min-width: 16px; height: 16px; padding: 0 4px; display: grid; place-items: center; border: 1px solid var(--warn-hue); border-radius: 999px; background: var(--plane-rail); box-shadow: 0 0 0 2px var(--plane-rail); color: var(--warn-hue); font-size: var(--text-2xs); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+.vx-rail a:hover .vx-badge { background: var(--plane-hover); box-shadow: 0 0 0 2px var(--plane-hover); }
+.vx-rail a[aria-current="page"] .vx-badge { background: var(--plane-selected); box-shadow: 0 0 0 2px var(--plane-selected); }
 .vx-rail .vx-spacer { flex: 1; }
+.vx-rail .vx-logo { min-height: 48px; margin-bottom: 8px; }
 .vx-rail .vx-logo .brand-mark { height: 28px; }
-.vx-main { min-width: 0; min-height: 0; overflow: auto; }
+.vx-main { min-width: 0; min-height: 0; overflow: auto; scrollbar-color: var(--plane-edge) transparent; }
+.vx-shell ::selection { color: var(--plane-pane); background: var(--fg); }
 
 /* The Lightbulb place: the orb, then the assistant's room taking the rest (the room panel is height: 100%). */
 .vx-lightbulb { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
-.vx-lightbulb > .vx-page { width: 100%; padding-bottom: 12px; }
+.vx-lightbulb > .vx-page { width: 100%; max-width: none; padding: 16px 20px; border-bottom: 1px solid var(--plane-edge); }
+.vx-lightbulb .vx-talk { gap: 14px; padding: 0; border: 0; border-radius: 0; background: none; }
+.vx-lightbulb .vx-orb { width: 48px; height: 48px; }
 
 /* Phone: the four places become the bottom tabs. */
 @media (max-width: 640px) {
@@ -21,6 +30,7 @@
   .vx-rail { order: 2; flex-direction: row; justify-content: space-around; gap: 0; padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--plane-edge); background: var(--plane-pane); }
   .vx-rail .vx-spacer, .vx-rail .vx-account { display: none; }
   .vx-rail a { flex: 1; width: auto; }
+  .vx-rail .vx-logo { margin-bottom: 0; }
 }
 
 .vx-page { max-width: 760px; margin: 0 auto; padding: 24px 24px 48px; }
@@ -44,8 +54,9 @@
 .vx-home .vx-page { max-width: 820px; }
 
 .vx-talk { display: flex; align-items: center; gap: 16px; padding: 16px; border: 1px solid var(--plane-edge); border-radius: var(--radius-xl); background: var(--plane-pane); }
-.vx-orb { flex: none; display: grid; place-items: center; width: 56px; height: 56px; border: 0; border-radius: 999px; background: var(--fg); color: var(--plane-pane); cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; transition: transform var(--dur-fast) var(--ease-out); }
-.vx-orb:active { transform: scale(0.96); }
+.vx-orb { flex: none; display: grid; place-items: center; width: 56px; height: 56px; border: 0; border-radius: 999px; background: var(--fg); color: var(--plane-pane); cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-base) var(--ease-out), background-color var(--dur-fast) var(--ease-out), opacity var(--dur-base) var(--ease-out); }
+.vx-orb:hover:not(:disabled) { background: color-mix(in srgb, var(--fg) 86%, var(--plane-pane)); }
+.vx-orb:active:not(:disabled) { transform: scale(0.96); }
 .vx-orb[data-state="listening"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 72%, transparent); animation: vx-listen 1.8s var(--ease-out) infinite; }
 .vx-orb[data-state="connecting"] { opacity: 0.7; }
 /* Thinking: the orb breathes while the Router reads or hands off; speaking: a steady ring in the voice's own colour. */
@@ -55,13 +66,16 @@
 .vx-orb:disabled { cursor: not-allowed; opacity: 0.5; }
 @keyframes vx-listen { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 18%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .vx-orb[data-state="listening"], .vx-orb[data-state="thinking"] { animation: none; } }
-.vx-talk b { display: block; font-size: var(--text-ui); font-weight: 600; }
-.vx-talk p { margin-top: 2px; color: var(--fg-mute); font-size: var(--text-caption); }
+.vx-talk b { display: block; font-size: var(--text-ui); line-height: var(--text-ui--line-height); font-weight: 600; }
+.vx-talk p { margin-top: 2px; color: var(--fg-mute); font-size: var(--text-caption); line-height: var(--text-caption--line-height); text-wrap: pretty; }
 .vx-talk .vx-caption { color: var(--fg-soft); font-size: var(--text-ui); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 @media (max-width: 640px) {
   .vx-talk { flex-direction: column; text-align: center; padding: 24px 16px; }
   .vx-orb { width: 88px; height: 88px; }
   .vx-talk .vx-more { display: none; }
+  .vx-lightbulb > .vx-page { padding: 12px; }
+  .vx-lightbulb .vx-talk { flex-direction: row; text-align: start; padding: 0; }
+  .vx-lightbulb .vx-orb { width: 56px; height: 56px; }
 }
 .vx-talk-text { flex: 1; min-width: 0; }
 /* Compact (the Workspace rail): a rail item, quiet until a talk is on; its state reads as the orb's ring. The status
@@ -81,24 +95,28 @@
 }
 
 .vx-needs { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 14px; border: 1px solid color-mix(in srgb, var(--warn-hue) 40%, var(--plane-edge)); border-radius: var(--radius-lg); font-size: var(--text-ui); color: var(--fg); text-decoration: none; }
+.vx-needs { transition: background-color var(--dur-fast) var(--ease-out); }
 .vx-needs:hover { background: var(--plane-hover); }
 .vx-dot { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 999px; background: var(--warn-hue); vertical-align: 1px; }
 
 .vx-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 20px 0 4px; }
+.vx-chip { transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
 .vx-chip { height: 32px; padding: 0 12px; border: 1px solid var(--plane-edge); border-radius: 999px; background: var(--plane-pane); color: var(--fg-soft); font: inherit; font-size: var(--text-caption); cursor: pointer; }
 .vx-chip:hover { background: var(--plane-hover); }
 .vx-chip[aria-pressed="true"] { border-color: var(--fg); background: var(--fg); color: var(--plane-pane); font-weight: 600; }
 .vx-chip span { margin-left: 4px; font-variant-numeric: tabular-nums; opacity: 0.75; }
 
-.vx-day { margin: 20px 0 4px; padding: 0 8px; color: var(--fg-mute); font-size: var(--text-caption); font-weight: 600; }
+.vx-day { margin: 24px 0 4px; padding: 0 8px; color: var(--fg-mute); font-size: var(--text-caption); font-weight: 600; }
 .vx-row { display: grid; grid-template-columns: 64px 20px minmax(0, 1fr) auto; gap: 10px; width: 100%; padding: 10px 8px; border: 0; border-bottom: 1px solid var(--plane-edge); border-radius: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; align-items: start; }
+.vx-row { transition: background-color var(--dur-fast) var(--ease-out); }
 .vx-row:hover { background: var(--plane-hover); }
-.vx-row[aria-current="true"] { background: var(--plane-selected); border-radius: var(--radius-md); }
-.vx-row time { white-space: nowrap; color: var(--fg-mute); font-size: var(--text-caption); font-variant-numeric: tabular-nums; padding-top: 1px; }
+.vx-row[aria-current="true"] { background: color-mix(in srgb, var(--plane-selected) 65%, var(--plane-pane)); }
+.vx-row:focus-visible { outline-offset: -2px; }
+.vx-row time { white-space: nowrap; color: var(--fg-mute); font-size: var(--text-caption); font-variant-numeric: tabular-nums; padding-top: 2px; }
 .vx-row svg { color: var(--fg-mute); margin-top: 2px; }
 .vx-row .vx-who { font-weight: 600; font-size: var(--text-ui); }
 .vx-row .vx-who small { margin-left: 6px; font-weight: 400; color: var(--fg-mute); font-size: var(--text-caption); }
-.vx-row .vx-did { margin-top: 3px; display: flex; gap: 8px; align-items: baseline; color: var(--fg-soft); font-size: var(--text-caption); line-height: var(--text-caption--line-height); }
+.vx-row .vx-did { margin-top: 4px; display: flex; gap: 8px; align-items: baseline; color: var(--fg-soft); font-size: var(--text-caption); line-height: var(--text-caption--line-height); }
 .vx-row .vx-did .vx-tag { flex: none; }
 .vx-row .vx-dur { color: var(--fg-mute); font-size: var(--text-caption); font-variant-numeric: tabular-nums; text-align: right; padding-top: 1px; }
 @media (max-width: 640px) {
@@ -109,7 +127,7 @@
 }
 
 .vx-foot { margin-top: 16px; padding: 0 8px; color: var(--fg-mute); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
-.vx-empty { margin-top: 24px; padding: 24px 16px; border: 1px dashed var(--plane-edge); border-radius: var(--radius-lg); color: var(--fg-mute); font-size: var(--text-ui); text-align: center; }
+.vx-empty { margin-top: 24px; padding: 32px 16px; border: 1px solid var(--plane-edge); border-radius: var(--radius-lg); color: var(--fg-mute); font-size: var(--text-ui); text-align: center; }
 
 .vx-pane { min-width: 0; overflow: auto; border-left: 1px solid var(--plane-edge); background: var(--plane-sidebar); padding: 20px; }
 .vx-pane section { margin-top: 20px; }
@@ -136,14 +154,15 @@ textarea.vx-field { resize: vertical; }
 .vx-cards { display: grid; gap: 12px; margin-top: 20px; }
 .vx-kind { color: var(--fg-mute); font-size: var(--text-caption); }
 .vx-kind b { color: var(--warn-hue); font-weight: 600; }
-.vx-card h2 { margin-top: 2px; font-size: var(--text-ui); font-weight: 600; text-wrap: pretty; }
+.vx-card h2 { margin-top: 4px; font-size: var(--text-ui); font-weight: 600; text-wrap: pretty; }
 .vx-card p { margin-top: 4px; color: var(--fg-soft); font-size: var(--text-caption); line-height: var(--text-caption--line-height); }
+.vx-card { transition: opacity var(--dur-base) var(--ease-out); }
 .vx-card[data-done="true"] { opacity: 0.6; }
 
 /* Agent page */
 .vx-agent-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--plane-edge); }
 .vx-sec { padding: 24px 0; border-bottom: 1px solid var(--plane-edge); }
-.vx-sec > h2 { font-size: var(--text-ui); font-weight: 600; }
+.vx-sec > h2 { font-size: var(--text-ui); line-height: var(--text-ui--line-height); font-weight: 600; }
 .vx-sec > .vx-hint { margin-top: 2px; color: var(--fg-mute); font-size: var(--text-caption); max-width: 62ch; }
 .vx-grid { display: grid; gap: 12px; margin-top: 14px; }
 .vx-label { display: grid; gap: 4px; font-size: var(--text-caption); color: var(--fg-soft); }

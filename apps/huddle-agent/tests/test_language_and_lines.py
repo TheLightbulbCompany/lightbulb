@@ -21,7 +21,7 @@ def env(monkeypatch):
 
 
 def test_phone_and_orb_transcribe_english_and_meet_stt_does():
-    for model in (phone.realtime_model(), owner.realtime_model()):
+    for model in (owner.realtime_model(),):  # the phone is on GPT-Live (live.py)
         tr = model._opts.input_audio_transcription
         assert tr is not None and tr.language == "en"
     assert meet.realtime_model()._opts.input_audio_transcription is None  # Meet hears through its STT
@@ -30,7 +30,7 @@ def test_phone_and_orb_transcribe_english_and_meet_stt_does():
 
 def test_every_voice_replies_in_english():
     texts = (
-        phone.INSTRUCTIONS,
+        phone.prompt(INFO),  # GPT-Live's prompt
         owner.INSTRUCTIONS,
         meet.INSTRUCTIONS,
     )
@@ -62,22 +62,6 @@ class _Backend:
 
     async def post(self, path, body=None):
         return {}
-
-
-async def test_a_team_message_is_never_the_newest_turn_for_a_fixed_line(monkeypatch):
-    """move-125915: the result, then the holding line and the 8 s line queued behind it, each said the result."""
-    s = _Session()
-    monkeypatch.setattr(phone.Receptionist, "session", property(lambda _self: s))
-    r = phone.Receptionist(_Backend(), INFO, None)
-    r.say(["Taylor, I couldn't move your booking."])
-    r.delegate("Okay, then how about Monday afternoon instead?")
-    phone.line(s, phone.HOLD_AGAIN)
-    await r.turns.flush()
-    team, hold, again = s.kw
-    assert team["user_input"].startswith(mouth.TEAM)
-    for kw in (hold, again):  # each fixed line is its own newest turn, so the model says it, not the result
-        assert mouth.team_line(kw["user_input"]) and kw["instructions"] in kw["user_input"]
-        assert "couldn't move" not in kw["user_input"]
 
 
 async def test_each_message_id_is_spoken_exactly_once():

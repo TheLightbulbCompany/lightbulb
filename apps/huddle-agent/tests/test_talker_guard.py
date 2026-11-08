@@ -247,53 +247,6 @@ async def test_a_result_that_says_on_it_itself_is_not_cut(talker, session):
     assert session.current_speech.interrupted == 0
 
 
-# --- the phone talker (phone.Receptionist) runs under the same guard ----------------------------------------
-class _PhoneBackend:
-    call_id = "call-1"
-
-    def __init__(self):
-        self.calls = []
-
-    async def post(self, path, body=None):
-        self.calls.append((path, body or {}))
-        return {"taken": True} if path == "message" else {}
-
-
-@pytest.fixture
-def receptionist(session, monkeypatch):
-    monkeypatch.setenv("LIGHTBULB_API_URL", "http://x")
-    monkeypatch.setenv("LIGHTBULB_HUDDLE_SECRET", "x")
-    from huddle_agent import phone
-
-    info = {"assistantName": "Nova", "businessName": "Glow Nails", "today": "Sunday", "greeting": "Hi",
-            "callerName": "Priya", "mode": "live"}  # fmt: skip
-    return phone.Receptionist(_PhoneBackend(), info, None)
-
-
-async def test_a_phone_question_is_posted_and_only_the_holding_line_is_said(receptionist, session):
-    assert receptionist.line("Caller", "How much is a pedicure?") == "asked"
-    await receptionist.turns.flush()
-    assert [(p, b["text"]) for p, b in receptionist._b.calls] == [("turn", "How much is a pedicure?")]
-    assert session.replies == [mouth.HOLD]
-
-
-async def test_the_phone_greeting_and_holding_lines_are_never_cut(receptionist, session):
-    greeting = _Speech("sp_greet")
-    session.current_speech = greeting
-    receptionist.unchecked(greeting)  # phone.entrypoint marks the opening, hold lines and goodbyes so
-    await _speak(receptionist, "Hi, I'm Nova, Glow Nails's AI assistant, and this call is recorded.")
-    assert greeting.interrupted == 0 and session.replies == []
-
-
-async def test_a_phone_result_that_adds_a_price_is_said_word_for_word(receptionist, session):
-    speech = receptionist.say(["We're closed on Sundays."])
-    session.current_speech = speech
-    await _speak(receptionist, "We're closed on Sundays, ", "and a pedicure is 45 dollars.")
-    assert speech.interrupted == 1 and mouth.VERBATIM_RULE in session.replies[-1]
-
-
-
-
 # --- follow-ups to #5115 -------------------------------------------------------------------------------------
 @pytest.mark.parametrize("said", ["can you check it again", "could you check on it", "Can you help?", "Let me see it",
                                   "Say it in Spanish"])  # fmt: skip

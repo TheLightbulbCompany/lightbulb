@@ -37,14 +37,3 @@ def test_no_retiring_openai_models():
     hits = [f"{p.name}:{n}" for p in src.glob("*.py") for n, line in enumerate(p.read_text().splitlines(), 1)
             if bad.search(line) and not line.lstrip().startswith("#") and "deprecated" not in line and "shut" not in line]
     assert not hits, hits
-
-
-def test_default_engines_are_openai(monkeypatch):
-    import importlib
-
-    from huddle_agent import phone
-
-    for k in ("PHONE_ENGINE", "PHONE_MODEL"):
-        monkeypatch.delenv(k, raising=False)
-    importlib.reload(phone)
-    assert phone.OPENAI and phone.MODEL == "gpt-realtime-2.1-mini"

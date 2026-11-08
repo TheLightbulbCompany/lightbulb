@@ -1,25 +1,21 @@
-"""The phone receptionist (voice-agents spec §4.1b, §4.3; founder ruling 8 Nov 2026, "Phone, too": the phone joins
-the one-Router design as ears and a mouth, shape 1: talker plus delegated brain,
-super-agent-design/evidence/voice/voice-brain-architecture-research.md pattern 1). One realtime session per inbound
-call (PHONE_ENGINE=gemini: Gemini Live, the flag-only fallback).
+"""The phone receptionist (voice-agents spec §4.1b, §4.3) on GPT-Live (plan 2026-11-08-gpt-live-voice, Task 4;
+founder 8 Nov 2026: "use their voice model with our deepseek router"). GPT-Live is the voice: it listens, speaks,
+takes turns and decides when a caller's line needs the backend (client delegation, `live.start`). Every delegation
+is the caller's line in the call's room (`/turn`, the caller principal: the call's open thread first, else the
+Router with the Business profile, whose Front desk threads book, move and cancel as the caller). The room's agent
+messages come back through `/events` as results. Our code says nothing of its own: it runs the call (SIP, the
+disclosure check, the record, billing at hang-up, the run-out forward) and the two routes only the worker can do:
+the SIP transfer (an events item of kind `transfer`) and a paused line's message (`/turn` refuses: `/message`).
 
 Dispatched by a LiveKit SIP dispatch rule: in prod to the one deployed agent, `lightbulb-huddle` (agent.py
-routes `phone-` rooms here); on a dev Mac to its own name (`lightbulb-phone-dev`). It opens with the
-disclosure (its name, an AI assistant, recorded). The talker has no tools and never replies on its own: code decides
-every caller line (`Receptionist.line`). Small talk gets a short reply; a request for a person goes to the existing
-/transfer route; a message (asked for, offered, or the only thing a paused line takes) goes to /message; every other
-line is posted to the call's room as the caller's line (`/turn`) with the holding line said: the Router decides it
-with the caller's scope and the Business profile, and its Front desk threads book, move and cancel as the caller.
-The Router's and the Front desk's messages come back through `/events` and are said once, faithfully, adding nothing
-(mouth.py). A wait gets another holding line at HOLD_S and an offer to take a message at OFFER_S. /transfer and
-/message (apps/backend/routers/voice_phone.py) also keep the call record.
+routes `phone-` rooms here); on a dev Mac to its own name (`lightbulb-phone-dev`).
 Run: `AGENT_MODULE=huddle_agent.phone uv run python -m huddle_agent.phone dev`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import itertools
 import json
 import logging
 import os
@@ -28,35 +24,19 @@ import time
 
 import httpx
 from livekit import api
-from livekit.agents import (
-    AgentServer,
-    AgentSession,
-    JobContext,
-    cli,
-    room_io,
-)
-from livekit.plugins import google, noise_cancellation, openai
-from openai.types.beta.realtime.session import TurnDetection
+from livekit.agents import AgentServer, JobContext, cli, room_io
+from livekit.plugins import noise_cancellation
 
-from huddle_agent import end_after, usage_log
-from huddle_agent.backend import BackendError
+from huddle_agent import GOODBYE, live
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import ENGLISH, REPEAT, TRANSCRIPTION, Mouth, Talker, fixed, line_input, team_line
+from huddle_agent.mouth import speakable
 
 logger = logging.getLogger("phone")
-# One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
-OPENAI = os.environ.get("PHONE_ENGINE", "openai") != "gemini"
-# gpt-realtime-mini is deprecated; 2.1-mini is its price ($10/$20 per M audio tokens) with tools and 128k context
-MODEL = os.environ.get("PHONE_MODEL", "gpt-realtime-2.1-mini" if OPENAI else "gemini-3.8-live")
-VOICE = os.environ.get("PHONE_VOICE", "marin" if OPENAI else "Kore")
-AWAY_S = float(
-    os.environ.get("PHONE_AWAY_S", "15")
-)  # silence before "are you still there?", and again before hanging up
-STILL_THERE = 'The line has gone quiet. Ask once, briefly: "Are you still there?"'
-SILENT_BYE = "Nobody is answering. In one short sentence, say you'll hang up now and goodbye; don't ask anything."
-CALL_MAX_S = float(
-    os.environ.get("PHONE_MAX_S", 20 * 60)
-)  # cost cap: a call ends after 20 minutes
+AWAY_S = float(os.environ.get("PHONE_AWAY_S", "15"))  # silence before GPT-Live hears the line is quiet; again: hang up
+CALL_MAX_S = float(os.environ.get("PHONE_MAX_S", 20 * 60))  # cost cap: a call ends after 20 minutes
+BYE_S = 8.0  # the goodbye's time to play at the cost cap
+WAIT_S = 90.0  # a pending delegation keeps a quiet line open this long (a Front desk thread: 69-95 s on dev, 8 Nov)
+POLL_S = 1.0  # how often the call asks what Lightbulb posted in its room
 # One warm process is plenty for a line; a busy host gets a longer start and its own load ceiling.
 server = AgentServer(
     num_idle_processes=1,
@@ -64,75 +44,61 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-HOLD_S = float(os.environ.get("PHONE_HOLD_S", 8))  # no answer yet: one more holding line
-OFFER_S = float(os.environ.get("PHONE_OFFER_S", 20))  # still none: offer to take a message
-WAIT_S = 90.0  # a delegation's answer may take this long (a Front desk thread: 69-95 s on dev, 8 Nov)
-POLL_S = 1.0  # how often the call asks what Lightbulb posted in its room
-# Fixed words: free-form, the model said "I don't have a confirmed booking yet… I can't confirm anything right now"
-# and "nothing is finalized yet" while the Front desk was answering (8 Nov prod booking smoke after #5122).
-HOLD_AGAIN = fixed("Thanks for waiting, I'm still checking on that.")
-OFFER_MESSAGE = fixed("This is taking a moment. You can keep holding, or I can take a message so the team can call you back.")
+#: What the backend does for a caller (GPT-Live's `Backend tools`): the caller-scoped Front desk, nothing more.
+TOOLS = [
+    "Availability: check open times for the business's services.",
+    "Bookings: book, move or cancel the caller's own appointment.",
+    "Messages: take a message for the team.",
+    "A person: transfer the caller to a person at the business.",
+    "Business profile: answer questions about the business's services, prices, hours and policies.",
+]
+MESSAGE_ONLY_TOOLS = ["Messages: take a message for the team; the owner will call back."]
 
-# Server-side turns on silence (developers.openai.com/api/docs/guides/realtime-vad): talking over the voice stops it.
-# create_response off: code answers each line (Receptionist.line), never the model on its own.
-SERVER_TURNS = TurnDetection(type="server_vad", silence_duration_ms=500, create_response=False, interrupt_response=True)
-
-# The opening is the model's own words (founder, 8 Nov): it must name the assistant, say it is an AI assistant and
-# that the call is recorded. The owner's greeting is its style, not a script. DisclosureGuard checks the result.
-# One short sentence and its question, then silence (8 Nov prod calls: up to 20 s of run-on and spoken planning,
-# "Okay, let me think about how to respond…", "Game plan: it's Sunday…", buried the caller's first line).
-#: The opening, said once: handed to the greeting's own reply (OpenAI), never in the session prompt. Every reply
-#: carries the session prompt, so an opening script there re-greeted mid-call (8 Nov prod re-run #3, move-102705:
-#: the holding line "Let me check." came out as the whole opening first). Gemini keeps it in the prompt (`greet`).
-OPENING = """You speak first. Your opening is one short sentence, in your own words, that says all three: your name, {assistant}; that you are an AI assistant;
-and that this call is recorded. Then ask "How can I help?" and stop: say nothing else until the caller speaks. It is
-your very first words: no preamble before it. Take its tone from the owner's greeting, which is a guide, not a
-script: "{greeting}" Greet once and never again; after it, answer what the caller says. If you are told the
-disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller.
-"""
-
-INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}.
-{opening}Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:"): every word you speak is
-for the caller. """ + ENGLISH + """ Speak briefly and warmly, one or two sentences at a time, like a good front desk.
-{caller}The front desk team behind you answers every question, booking and change; each caller line goes to them
-before you hear it, and a holding line is said for you.
-- Greetings, thanks, "are you there?", "can you hear me?": answer in a few words.
-- When a message from the team arrives, say what it says, faithfully and briefly. When it says the team is booking,
-  moving or cancelling something, or that it is done, say so plainly ("I'm moving it to Sunday now.", "You're booked
-  for 3 pm Saturday."). Never turn it into a refusal, never tell the caller to contact anyone else (they are talking
-  to the front desk), and never say an outcome the message does not say.
-- Otherwise say only what you are told to say.
-{can}Never share anything about other customers."""
-
-#: The model's planning said aloud (8 Nov prod calls): an opening that starts like this is cut, and the guard says
-#: the disclosure sentence instead.
-NARRATION = re.compile(
-    r"\b(let me think|think about how|how (to|i should) respond|game plan|my plan|i should (say|respond|answer)"
-    r"|the (user|caller) (is|wants|said|asked))\b",
-    re.IGNORECASE,
+#: Said once after start, as the docs greet: the same instructions as the prompt's opening, as commentary with
+#: delegation_id null (developers.openai.com/api/docs/guides/live-prompting, "Language and pronunciation").
+OPENING = (
+    "The call has just been answered. Speak first, in one short sentence: say your name, {assistant}; that you are "
+    'an AI assistant; and that this call is recorded. Then ask how you can help, and listen. Take your tone from the '
+    'owner\'s greeting, a guide, not a script: "{greeting}"'
 )
 
-#: A caller asking for a person: the existing /transfer route, decided in code.
-PERSON = re.compile(
-    r"\b(speak|talk|put me through|transfer|connect)\b.*\b(person|human|someone|somebody|anyone|manager|owner|staff)\b"
-    r"|\b(real person|human being|transfer me)\b",
-    re.IGNORECASE,
-)
-#: A caller leaving a message: the existing /message route.
-MESSAGE = re.compile(r"\b(leave|take|pass on|give them) (a |the |my )?message\b", re.IGNORECASE)
-MESSAGE_WORDS = 10  # a message line this long carries the message itself; a shorter one only asks to leave one
-YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay|please)\b", re.IGNORECASE)
-#: All a "yes" to the message offer may carry ("Yes please, go ahead"); more ("yes, book me at 3") is a request.
-YES_ONLY = set("yes yeah yep sure ok okay please thanks thank you go ahead that would that'd be great fine".split())
-#: The caller calling off the message they were asked for.
-CANCEL = re.compile(r"^\W*(actually,? )?(never ?mind|no,? thanks|no thank you|forget it|no,? that's (fine|ok)|nothing)\b",
-                    re.IGNORECASE)  # fmt: skip
-NO_MESSAGE = "No problem."
-CONNECTING = "One moment, I'll connect you."
-NOBODY = "Nobody can take the call right now. I can take a message for the team."
-ASK_MESSAGE = "Sure. What's the message, and your name?"
-TAKEN = "Thanks, I've passed your message on to the team."
-PAUSED = "Thanks. I can only take messages right now, so I've passed that on to the team."
+PROMPT = """You are {assistant}, the calm, friendly AI receptionist on the phone for {business}.
+Speak warmly and naturally, at an unhurried pace, one or two short sentences at a time, like a good front desk. Be
+clear and direct, not overly cheerful. Speak only English, whatever language a line seems to be in.
+If the caller is frustrated, acknowledge it briefly and focus on the next helpful step.
+{caller}{paused}
+Opening: your very first words on the call say your name, {assistant}; that you are an AI assistant; and that this
+call is recorded. Then ask how you can help, and listen.
+
+Backchannel policy: Use light backchannels. Acknowledge naturally without competing with the main response.
+
+Interruption policy: Stop speaking when the caller interrupts. Listen to what they say. The one exception is the
+opening: finish saying your name, that you are an AI assistant and that this call is recorded, then listen.
+
+{delegation}
+
+Names, dates and numbers: before a booking is made, say the name it goes under back to the caller and ask if you
+have it right. If an important name, date, or number is unclear, ask about that part. Use the caller's correction.
+Do not guess the missing value.
+
+Wait for the backend's result before stating a price or a time, confirming a booking, or saying that a message was
+taken or a transfer is under way. Never share anything about other customers."""
+
+#: Facts the call tells GPT-Live (commentary with delegation_id null): GPT-Live chooses what to say.
+QUIET = "The line has been quiet for a while. If the caller stays silent, the call will end."
+NOBODY = "Nobody at the business can take the call right now. The team can take a message instead."
+PAUSED = "The caller's message was passed on to the team; the owner will call back."
+
+
+def prompt(info: dict) -> str:
+    paused = info.get("mode") == "message_only"
+    return PROMPT.format(
+        assistant=info["assistantName"],
+        business=info["businessName"],
+        caller=f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
+        paused="This line is not taking bookings or questions right now: it only takes messages.\n" if paused else "",
+        delegation=live.delegation_policy(MESSAGE_ONLY_TOOLS if paused else TOOLS),
+    )
 
 
 def e164(number: str) -> str:
@@ -185,104 +151,6 @@ def disclosure_of(items: list[dict], assistant: str) -> str:
     return "unknown"
 
 
-def _disclosed_at(text: str, assistant: str) -> int | None:
-    """Where the disclosure is complete in `text` (the end of the last of its three parts), None while it is not."""
-    if not discloses(text, assistant):
-        return None
-    ends = [re.search(rf"\b{re.escape(w)}\b", text, re.IGNORECASE) for w in (assistant, "AI assistant", "recorded")]
-    return max(m.end() for m in ends) if all(ends) else None
-
-
-def opening_cut(said: str, assistant: str) -> str:
-    """Why the opening must stop now, "" while it may go on: `narration` (the model's planning said aloud before
-    the disclosure) or `run_on` (words after the disclosure and its question, or after one more sentence)."""
-    at = _disclosed_at(said, assistant)
-    if at is None:
-        return "narration" if NARRATION.search(said) else ""
-    tail = said[at:]
-    end = re.search(r"\?|[.!][^.!?]*[.!]", tail)  # its question, or the disclosure's sentence and one more
-    return "run_on" if end and re.search(r"\w", tail[end.end():]) else ""
-
-
-class DisclosureGuard:
-    """Judges the greeting once it has finished: after the agent's first speaking -> listening change, on final items
-    (the agent adds an assistant item only after its audio played, `interrupted` set when cut off). A failed first
-    line makes `say` speak the disclosure sentence once. PHONE_TEST_FAIL_DISCLOSURE=1 fails it (scripted runs)."""
-
-    def __init__(self, assistant: str, say) -> None:
-        self.assistant, self._say = assistant, say
-        self.line = f"I'm {assistant}, an AI assistant, and this call is recorded."
-        self.corrected, self._done, self._greeted, self._spoke = (
-            False,
-            False,
-            False,
-            False,
-        )
-
-    def state(self, old: str, new: str) -> None:
-        if new == "speaking":
-            self._spoke = True
-        elif self._spoke and old == "speaking":
-            self._greeted = True  # the greeting finished (or was cut off) playing
-
-    def seen(self, items: list[dict]) -> None:
-        if self._done or not self._greeted:
-            return
-        if os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1":
-            verdict = "missing"
-        else:
-            verdict = disclosure_of(items, self.assistant)
-            if verdict == "unknown" and not any(i["role"] == "user" for i in items):
-                return  # the greeting's line may still be on its way; judge when it (or the caller) lands
-        self._done = True
-        if verdict == "missing":
-            self.corrected = True
-            self._say(self.line)
-
-
-def firm(speech):
-    """The disclosure sentence plays out whatever the caller says. Set on the handle: `generate_reply` drops
-    `allow_interruptions=False` under the realtime model's server-side turns (agent_activity.py generate_reply
-    warns and passes NOT_GIVEN), so the opening was interruptible after #5108."""
-    speech.allow_interruptions = False
-    return speech
-
-
-def say_disclosure(session, line: str) -> None:
-    """One-shot reply with that exact line, in the wording that made Gemini speak verbatim (the greeting tests).
-    Gemini Live can't take a turn back out of its history, so the instruction says it is one-time."""
-    logger.info("phone: first line lacked the disclosure; saying it once")
-    return firm(session.generate_reply(
-        instructions=f'The disclosure was missed. Say exactly this, word for word, and nothing else: "{line}" '
-        "This is a one-time line: do not say it again later in the call.",
-        tool_choice="none",  # the compliance correction is spoken, never a delegate call
-    ))
-
-
-def realtime_model():
-    """The caller's words transcribed as English (mouth.TRANSCRIPTION): they are what the room and the Router read."""
-    return openai.realtime.RealtimeModel(
-        model=MODEL, voice=VOICE, turn_detection=SERVER_TURNS, input_audio_transcription=TRANSCRIPTION
-    )
-
-
-def line(session, instructions: str):
-    """A phone-only line said from instructions (still there, goodbye, a holding or message offer), tools off: with
-    tools on, the model calls delegate instead of speaking it."""
-    return session.generate_reply(instructions=instructions, user_input=line_input(instructions), tool_choice="none")
-
-
-def greet(session, opening: str = ""):
-    """The opening turn: the model speaks first, from the prompt (docs.livekit.io/agents/build/audio, "generate_reply"
-    greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov).
-    Not interruptible until its disclosure has played (`firm`; Receptionist.transcription_node frees it): a caller's
-    "hi" over it cut the disclosure off (8 Nov evals), and a whole opening held firm dropped the caller's first line
-    (8 Nov prod). Tools off: the opening is spoken, never a delegate call."""
-    if OPENAI and opening:  # OpenAI: the opening is this reply's own instructions, never in the session prompt
-        return firm(session.generate_reply(instructions=opening, tool_choice="none"))
-    return firm(session.generate_reply(tool_choice="none"))
-
-
 class Backend:
     def __init__(self) -> None:
         base = (
@@ -322,59 +190,6 @@ class Backend:
         }
 
 
-class Hold:
-    """The wait after a delegation: `say(HOLD_AGAIN)` at HOLD_S and `say(OFFER_MESSAGE)` at OFFER_S unless the team
-    speaks first (`answered`). `waiting`: the last delegation is under WAIT_S old, so a quiet caller is holding, not
-    gone (the Router's ack may come before a Front desk thread's answer); `left()` is how long until it is not."""
-
-    def __init__(self, say, hold_s: float = HOLD_S, offer_s: float = OFFER_S) -> None:
-        self._say, self._at = say, ((hold_s, HOLD_AGAIN), (offer_s, OFFER_MESSAGE))
-        self._timers: list[asyncio.TimerHandle] = []
-        self._since: float | None = None
-
-    def start(self) -> None:
-        self.answered()
-        loop = asyncio.get_running_loop()
-        self._since = time.monotonic()
-        self._timers = [loop.call_later(s, self._say, line) for s, line in self._at]
-
-    def answered(self) -> None:
-        for t in self._timers:
-            t.cancel()
-        self._timers = []
-
-    def left(self) -> float:
-        return 0.0 if self._since is None else max(0.0, WAIT_S - (time.monotonic() - self._since))
-
-    @property
-    def waiting(self) -> bool:
-        return self.left() > 0
-
-
-class Turns:
-    """Each delegated request posted to the call's room in order (`/turn`, n numbers them: a retry is the same
-    message). A failed post is logged; the hold's message offer still comes."""
-
-    def __init__(self, backend: Backend) -> None:
-        self._b, self._n = backend, 0
-        self._last: asyncio.Task | None = None
-
-    def add(self, text: str) -> None:
-        self._last = asyncio.create_task(self._post(self._last, self._n, text[:4000]))
-        self._n += 1
-
-    async def _post(self, prev: asyncio.Task | None, n: int, text: str) -> None:
-        if prev:
-            await asyncio.gather(prev, return_exceptions=True)  # in the order said
-        out = await self._b.post("turn", {"n": n, "text": text})
-        if out.get("error"):
-            logger.warning("phone %s: line %d not posted (%s)", self._b.call_id, n, out["error"])
-
-    async def flush(self) -> None:
-        if self._last:
-            await asyncio.gather(self._last, return_exceptions=True)
-
-
 class Ending:
     """The call ends once, at the first of: the caller hanging up (their SIP participant left), our own hang-up,
     or the job's shutdown. LiveKit only shuts the job down ~22 s after the caller leaves (8 Nov prod logs), which
@@ -391,177 +206,62 @@ class Ending:
         return self._task
 
 
-class Receptionist(Talker):
-    """The talker: no tools. `line` decides each caller line in code (mouth.Talker.line, plus the phone's own
-    hand-off and message routes); Talker._cut holds what it says to the team's messages."""
+class DisclosureGuard:
+    """Judges the opening once it has finished: after the agent's first speaking -> listening change, on the
+    assistant lines transcribed so far (an interrupted one holds only what played). No line that discloses makes
+    `say` have the disclosure sentence said once; a caller talking over the opening before its disclosure is such a
+    miss (Review Focus 4). PHONE_TEST_FAIL_DISCLOSURE=1 fails it (scripted runs)."""
 
-    where = "phone"
+    def __init__(self, assistant: str, say) -> None:
+        self.assistant, self._say = assistant, say
+        self.line = f"I'm {assistant}, an AI assistant, and this call is recorded."
+        self.corrected = self._done = self._greeted = self._spoke = False
 
-    def __init__(self, backend: Backend, info: dict, transfer, hold: Hold | None = None) -> None:
-        self.opening_rule = OPENING.format(assistant=info["assistantName"], greeting=info["greeting"])
-        super().__init__(INSTRUCTIONS.format(**{
-            "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
-            "opening": "" if OPENAI else self.opening_rule,
-            "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
-            "can": (
-                "This line is not taking bookings or questions right now: it only takes messages, and the owner will "
-                "call back.\n"
-                if info.get("mode") == "message_only" else ""
-            ),
-        }))  # fmt: skip
-        self._b, self._transfer, self._live = backend, transfer, info.get("mode") != "message_only"
-        self.allow = tuple(n for n in (info["assistantName"], info["businessName"], info.get("callerName")) if n)
-        self.turns, self.hold = Turns(backend), hold
-        self.did: list[str] = []  # what the call did itself, the record's summary (the Front desk adds its steps)
-        self.assistant, self.opening = info["assistantName"], ""  # the opening's speech id
-        self.caller_name = info.get("callerName") or ""
-        # the next line is the caller's message: they asked to leave one, or said yes to an offer (`offered`)
-        self.taking, self.offered = False, False
-        self._tasks: set[asyncio.Task] = set()
+    def state(self, old: str, new: str) -> None:
+        if new == "speaking":
+            self._spoke = True
+        elif self._spoke and old == "speaking":
+            self._greeted = True  # the greeting finished (or was cut off) playing
 
-    async def transcription_node(self, text, model_settings):
-        """The opening as it is spoken: firm until its disclosure has played, then interruptible (cut now if the
-        caller is already talking); cut on `opening_cut`. Every other speech goes to Talker's checks."""
-        speech = self._speech()
-        if speech is None or speech.id != self.opening:
-            async for delta in super().transcription_node(text, model_settings):
-                yield delta
+    def seen(self, items: list[dict]) -> None:
+        if self._done or not self._greeted:
             return
-        said, done = "", False
-        async for delta in text:
-            said += str(delta)
-            if not done:
-                done = self._opening_words(said, speech)
-            yield delta
+        said = [i["text"] for i in items if i["role"] == "assistant"]
+        if os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1":
+            ok = False
+        elif not said:
+            return  # the opening's line is still on its way
+        else:
+            ok = any(discloses(t, self.assistant) for t in said)
+        self._done = True
+        if not ok:
+            logger.info("phone: the opening lacked the disclosure; saying it once")
+            self.corrected = True
+            self._say(self.line)
 
-    def _opening_words(self, said: str, speech) -> bool:
-        """True once the opening has been cut (nothing more to check)."""
-        if not speech.allow_interruptions and _disclosed_at(said, self.assistant) is not None:
-            speech.allow_interruptions = True
-            if self.session.user_state == "speaking":  # they talked over the disclosure: it is said, so they win
-                speech.interrupt(force=True)
-                return True
-        if why := opening_cut(said, self.assistant):
-            logger.warning("phone: opening %s, speech cut", why)  # never the words: no transcript in logs
-            emit_metric("phone.opening.cut", 1, "Count", {"why": why})
-            speech.interrupt(force=True)
-            return True
-        return False
 
-    def line(self, who: str, text: str, user_input: str | None = None) -> str:
-        """A caller's final line, decided in code: "chat", "repeat", "person", "message", "ask_message", "cancel"
-        (the message asked for, called off) or "asked". A line
-        said over the opening is decided the same way and answered once the opening has played (speech queue)."""
-        if not (text := " ".join(text.split())):
-            return ""
-        offered, self.offered = self.offered, False
-        if self.taking and CANCEL.match(text) and len(text.split()) < 6:
-            self.context.add(who, text)
-            self.taking = False
-            self.say_fixed(fixed(NO_MESSAGE))
-            return "cancel"
-        if self.taking and REPEAT.search(text) and len(text.split()) < 8:  # they missed the question: ask it again
-            self.context.add(who, text)
-            self.say_fixed(fixed(ASK_MESSAGE))
-            return "ask_message"
-        if self.taking or (not self._live and not self.chat(text)):
-            self.context.add(who, text)
-            self.taking = False
-            self._spawn(self._message(text, TAKEN if self._live else PAUSED))
-            return "message"
-        rest = set(re.findall(r"[\w']+", text.lower())) - YES_ONLY
-        if offered and YES.match(text) and (not rest or MESSAGE.search(text)) and len(text.split()) < MESSAGE_WORDS:
-            self.context.add(who, text)
-            self.taking = True
-            self.say_fixed(fixed(ASK_MESSAGE))
-            return "ask_message"
-        if PERSON.search(text) and self._live:
-            self.context.add(who, text)
-            self._spawn(self._hand_off())
-            return "person"
-        if MESSAGE.search(text):
-            self.context.add(who, text)
-            if len(text.split()) >= MESSAGE_WORDS:
-                self._spawn(self._message(text, TAKEN))
-                return "message"
-            self.taking = True
-            self.say_fixed(fixed(ASK_MESSAGE))
-            return "ask_message"
-        speech = self._speech()
-        if speech is not None and speech.id == self.opening and self.chat(text):
-            self.context.add(who, text)
-            return ""  # a "hi" over the opening: the opening answers it
-        return super().line(who, text, user_input)
-
-    def _spawn(self, coro) -> None:
-        t = asyncio.create_task(coro)
-        self._tasks.add(t)
-        t.add_done_callback(self._tasks.discard)
-
-    async def _message(self, text: str, then: str) -> None:
-        """The existing take-message path (always open, paused or not), then its fixed confirmation."""
-        self.did.append(f"Message: {text[:120]}")
-        out = await self._b.post("message", {"text": text, "name": self.caller_name, "callbackNumber": ""})
-        if out.get("error"):
-            logger.warning("phone %s: message not taken (%s)", self._b.call_id, out["error"])
-        self.say_fixed(fixed(then))
-
-    def post(self, request: str) -> None:
-        """Talker's send: a task of its own, so an interruption cancels the talker's reply, never the post."""
-        self.turns.add(self.context.take(request))
-        if self.hold:
-            self.hold.start()
-
-    async def _hand_off(self) -> None:
-        """Hand the caller to a person at the business; if none is available, offer to take a message."""
-        out = await self._b.post("transfer")
-        if out.get("transferTo"):
-            with contextlib.suppress(Exception):  # the connecting line is a courtesy: never hold the transfer
-                await asyncio.wait_for(self.say_fixed(fixed(CONNECTING)), 6)
-            try:
-                await self._transfer(out["transferTo"])
-                self.did.append("Transferred to a person")
-                return
-            except Exception:  # noqa: BLE001 -- a SIP refusal: the record says the hand-off was missed
-                logger.warning("phone %s: transfer failed", self._b.call_id, exc_info=True)
-                await self._b.post("transfer", {"failed": True})
-        self.offered = True
-        self.say_fixed(fixed(NOBODY))
+def say_exactly(line: str) -> str:
+    return f'The disclosure was missed. Say this now, word for word, then continue with the caller: "{line}"'
 
 
 # Standalone (`python -m huddle_agent.phone dev`, a dev line): its own dispatch name; this kwarg wins over
 # LIVEKIT_AGENT_NAME in livekit-agents 1.8.11. Deployed, the huddle worker's entrypoint routes `phone-` rooms here.
-@server.rtc_session(
-    agent_name=os.environ.get("PHONE_AGENT_NAME", "lightbulb-phone-dev")
-)
+@server.rtc_session(agent_name=os.environ.get("PHONE_AGENT_NAME", "lightbulb-phone-dev"))
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     try:
         caller = await asyncio.wait_for(ctx.wait_for_participant(), AWAY_S * 2)
         answered = time.monotonic()  # the SIP caller joins when the call is answered: billing starts here
     except TimeoutError:  # 8 Nov sims: a job that started after the caller left sat in the room for 12 minutes
-        logger.info(
-            "phone: nobody joined job %s; leaving", ctx.job.id
-        )  # the room name holds the caller's number
+        logger.info("phone: nobody joined job %s; leaving", ctx.job.id)  # the room name holds the caller's number
         ctx.shutdown("no caller")
         return
-    meta = json.loads(
-        ctx.job.metadata or "{}"
-    )  # a test dispatch (lk dispatch) names the numbers itself
-    called = e164(
-        caller.attributes.get("sip.trunkPhoneNumber") or meta.get("calledNumber") or ""
-    )
-    caller_number = e164(
-        caller.attributes.get("sip.phoneNumber") or meta.get("callerNumber") or ""
-    )
+    meta = json.loads(ctx.job.metadata or "{}")  # a test dispatch (lk dispatch) names the numbers itself
+    called = e164(caller.attributes.get("sip.trunkPhoneNumber") or meta.get("calledNumber") or "")
+    caller_number = e164(caller.attributes.get("sip.phoneNumber") or meta.get("callerNumber") or "")
     backend = Backend()
     info = await backend.post(
-        "/internal/voice/calls",
-        {
-            "calledNumber": called,
-            "callerNumber": caller_number,
-            "livekitRoom": ctx.room.name,
-        },
+        "/internal/voice/calls", {"calledNumber": called, "callerNumber": caller_number, "livekitRoom": ctx.room.name}
     )
     if info.get("error"):
         logger.error("phone: call refused (%s)", info["error"])
@@ -572,9 +272,7 @@ async def entrypoint(ctx: JobContext) -> None:
     async def transfer(to: str) -> None:
         await ctx.api.sip.transfer_sip_participant(
             api.TransferSIPParticipantRequest(
-                room_name=ctx.room.name,
-                participant_identity=caller.identity,
-                transfer_to=f"tel:{to}",
+                room_name=ctx.room.name, participant_identity=caller.identity, transfer_to=f"tel:{to}"
             )
         )
 
@@ -587,51 +285,90 @@ async def entrypoint(ctx: JobContext) -> None:
             await backend.post("end", {"durationSec": 0, "forwarded": True})
             ctx.shutdown("minutes used up: forwarded")
             return
-    hold_lines: list = []  # the hold's say, bound once the session exists
-    hold = Hold(lambda text: hold_lines[0](text) if hold_lines else None)
-    agent = Receptionist(backend, info, transfer, hold)
-    session = AgentSession(
-        user_away_timeout=AWAY_S,
-        # the realtime model's own turns, explicitly: left unset, AgentSession builds its default TurnDetector, which
-        # with vad=None only logs "TurnDetector requires a VAD model" and is dropped (every re-run #3 call, audio or not)
-        turn_handling={"turn_detection": "realtime_llm"},
-        **(
-            # vad=None (as owner.py): user_state comes from the realtime model's own speech_started/stopped.
-            # server_vad, not semantic_vad: the plugin's semantic_vad took 5-7 s to answer (book eval, 7 Nov).
-            # Gemini keeps its own turn-taking (and replies on its own: the flag-only fallback is not code-driven).
-            dict(llm=realtime_model(), vad=None)
-            if OPENAI
-            else dict(llm=google.realtime.RealtimeModel(model=MODEL, voice=VOICE, api_version="v1beta"))
+
+    did: list[str] = []  # what the call did itself, the record's summary (the Front desk adds its steps)
+    tasks: set[asyncio.Task] = set()
+    turn_n, order = itertools.count(), asyncio.Lock()
+    asked = [0.0]  # when GPT-Live last delegated (monotonic)
+    ls: list[live.LiveSession] = []  # bound once started; post and events run only after
+
+    def spawn(coro) -> None:
+        t = asyncio.create_task(coro)
+        tasks.add(t)
+        t.add_done_callback(tasks.discard)
+
+    async def post(text: str, turns: list[str]) -> str:
+        """One delegation: the caller's line in the call's room, numbered in the order asked (a retry is the same
+        message). A paused line refuses it (`not_allowed`): it is a message for the team."""
+        asked[0] = time.monotonic()
+        said = "\n".join(f"> {t}" for t in turns)
+        body = (text.strip() + (f"\n\nSaid on the call since the last ask:\n{said}" if said else ""))[:4000]
+        n = next(turn_n)
+        async with order:
+            out = await backend.post("turn", {"n": n, "text": body})
+        if out.get("error") == "not_allowed":
+            did.append(f"Message: {text[:120]}")
+            await backend.post("message", {"text": body, "name": info.get("callerName") or "", "callbackNumber": ""})
+            ls[0].send_result(None, PAUSED)
+            return ""
+        if out.get("error"):
+            logger.warning("phone %s: line %d not posted (%s)", backend.call_id, n, out["error"])
+        return out.get("messageId", "")
+
+    async def hand_off() -> None:
+        """The backend asked for a person: the existing /transfer route, then the SIP transfer."""
+        out = await backend.post("transfer")
+        if out.get("transferTo"):
+            try:
+                await transfer(out["transferTo"])
+                did.append("Transferred to a person")
+                return
+            except Exception:  # noqa: BLE001 -- a SIP refusal: the record says the hand-off was missed
+                logger.warning("phone %s: transfer failed", backend.call_id, exc_info=True)
+                await backend.post("transfer", {"failed": True})
+        ls[0].send_result(None, NOBODY)
+
+    async def events():
+        """The room's new agent messages, oldest first, each once (the cursor moves past it)."""
+        after = int(info.get("after") or 0)
+        while True:
+            await asyncio.sleep(POLL_S)
+            out = await backend.post("events", {"after": after})
+            if out.get("error"):
+                logger.warning("phone %s: events failed (%s)", backend.call_id, out["error"])
+                continue
+            after = max(after, int(out.get("after") or 0))
+            for m in out.get("messages", []):
+                if m.get("kind") == "transfer":
+                    spawn(hand_off())
+                    continue
+                # a card's Choice said as its options, links and markdown dropped: the caller only hears it
+                yield {"kind": "agent", **m, "text": speakable(m.get("text") or "")}
+
+    live_session = await live.start(
+        ctx, prompt=prompt(info), surface="phone", post=post, events=events,
+        room_options=room_io.RoomOptions(
+            participant_identity=caller.identity,
+            close_on_disconnect=True,
+            # noise cancellation tuned for SIP audio, in the agent and nowhere else on the call (one denoiser:
+            # docs.livekit.io/transport/media/enhanced-noise-cancellation)
+            audio_input=room_io.AudioInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         ),
-    )
-    usage_log(session, f"phone {backend.call_id}")
+    )  # fmt: skip
+    ls.append(live_session)
+    session = live_session.session
     items: list[dict] = []
     t0 = time.time()
-    guard = DisclosureGuard(
-        info["assistantName"],
-        lambda text: agent.unchecked(say_disclosure(session, text)),
-    )
+    heard = [time.monotonic()]  # the last sign of life on the line: the caller, the voice, or a pending ask
+    guard = DisclosureGuard(info["assistantName"], lambda line: live_session.send_result(None, say_exactly(line)))
 
     @session.on("conversation_item_added")
     def _item(ev) -> None:
-        text = getattr(ev.item, "text_content", None)
-        if text and not (ev.item.role == "user" and team_line(text)):  # a team message is not the caller's line
-            at = (ev.item.metrics or {}).get(
-                "started_speaking_at"
-            ) or ev.item.created_at
-            items.append(
-                {
-                    "role": ev.item.role,
-                    "text": text,
-                    "t": at - t0,
-                    "interrupted": ev.item.interrupted,
-                }
-            )
+        if text := getattr(ev.item, "text_content", None):
+            at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
+            items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
+            heard[0] = time.monotonic()
             guard.seen(items)
-            if ev.item.role == "user":
-                agent.line("Caller", text)  # code decides: small talk, a person, a message, else the Router
-            elif ev.item.role == "assistant" and not ev.item.interrupted:
-                agent.context.add(info["assistantName"], text)
 
     @session.on("agent_state_changed")
     def _state(ev) -> None:
@@ -645,107 +382,74 @@ async def entrypoint(ctx: JobContext) -> None:
         if getattr(ev.error, "recoverable", True) or failed:
             return  # a retry is under way; a second failure is the same one
         failed.append(type(ev.source).__name__)
-        asyncio.create_task(voice_failed(ev.error))
+        spawn(voice_failed(ev.error))
 
     async def voice_failed(err) -> None:
-        """No model left (7 Nov: Gemini's 402 left callers in silence): a callback card in the owner's Needs you, a
-        metric, and the line is closed."""
+        """No model left: a callback card in the owner's Needs you, a metric, and the line is closed."""
         logger.error("phone %s: voice model failed (%s)", backend.call_id, getattr(err, "error", err))
-        emit_metric("phone.voice.failed", 1, "Count", {"engine": "openai" if OPENAI else "gemini"})
+        emit_metric("phone.voice.failed", 1, "Count", {"engine": "gpt-live"})
         await backend.post("unknown", {"question": "The assistant's voice failed during this call: call them back."})
-        agent.did.append("Voice failed; callback needed")
+        did.append("Voice failed; callback needed")
         await hang_up("voice failed")
 
-    async def hang_up(reason: str = "call max length") -> None:
+    async def hang_up(reason: str) -> None:
         await ctx.delete_room()  # disconnects the SIP caller too
         # the call ends as we hang up, not at the job's shutdown; no await after it, so on_end (which cancels the
-        # silent and max-length tasks that may be running this) starts only once this has returned
+        # silence and max-length tasks that may be running this) starts only once this has returned
         ending.now()
         ctx.shutdown(reason)
 
-    silent: list[asyncio.Task] = []
     silent_end: list[bool] = []
 
-    async def hang_up_silent() -> None:
-        """Still nobody after "are you still there?": a goodbye, then the line is closed (8 Nov sims: a silent line
-        stayed open, billing Gemini, until the 20-minute cap)."""
-        await asyncio.sleep(AWAY_S)
-        try:
-            bye = line(session, SILENT_BYE)
-            agent.unchecked(bye)
-            await asyncio.wait_for(bye, 10)
-        except Exception:  # noqa: BLE001 -- a lost goodbye must not keep the line open
-            logger.warning(
-                "phone %s: silent goodbye failed", backend.call_id, exc_info=True
-            )
-        silent_end.append(True)
-        await hang_up("caller silent")
+    def holding() -> bool:
+        """GPT-Live is waiting on the team (a delegation is pending, for up to WAIT_S): a quiet caller is holding."""
+        return bool(live_session.pending) and time.monotonic() - asked[0] < WAIT_S
 
-    def still_away() -> None:
-        if session.user_state == "away":
-            _away(type("Ev", (), {"new_state": "away"}))
-
-    @session.on("user_state_changed")
-    def _away(ev) -> None:
-        if ev.new_state == "away" and hold.waiting:  # a caller holding for an answer is not gone: ask after the wait
-            asyncio.get_running_loop().call_later(hold.left() + 0.1, still_away)
-            return
-        if ev.new_state == "away" and not silent:
-            agent.unchecked(line(session, STILL_THERE))
-            silent.append(asyncio.create_task(hang_up_silent()))
-        elif ev.new_state != "away" and silent:
-            silent.pop().cancel()
-
-
-    limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up, agent.unchecked))
-
-    def idle() -> bool:
-        return session.user_state != "speaking" and session.agent_state not in ("speaking", "thinking")
-
-    def hold_line(text: str) -> None:
-        if session.user_state != "speaking":  # the caller talking over the wait is answered, not held
-            agent.unchecked(line(session, text))  # a holding line, never an answer
-            agent.offered = agent.offered or text == OFFER_MESSAGE  # a "yes" next is a message to take
-
-    hold_lines.append(hold_line)
-
-    async def fetch(after: int, _handled: int) -> dict:
-        out = await backend.post("events", {"after": after})
-        if out.get("error"):
-            raise BackendError(0, out["error"], None)
-        return out
-
-    async def speak_loop(mouth: Mouth) -> None:
+    async def watch_silence() -> None:
+        """Quiet for AWAY_S: GPT-Live is told (it decides what to say); quiet for AWAY_S more: the call ends
+        (8 Nov sims: a silent line stayed open, billed, until the 20-minute cap). live.start sets no
+        user_away_timeout, so the line's silence is measured here."""
+        told = False
         while True:
-            await asyncio.sleep(POLL_S)
-            await mouth.poll()
-            if mouth.pending:
-                hold.answered()  # the team spoke: no more holding lines for this ask
-            mouth.speak(agent.say, ready=idle(), live=True)
+            await asyncio.sleep(min(1.0, AWAY_S / 4))
+            if session.user_state == "speaking" or session.agent_state == "speaking" or holding():
+                heard[0] = time.monotonic()
+            quiet = time.monotonic() - heard[0]
+            if quiet < AWAY_S:
+                told = False
+            elif quiet >= 2 * AWAY_S and told:
+                silent_end.append(True)
+                await hang_up("caller silent")
+                return
+            elif not told:
+                told = True
+                live_session.send_result(None, QUIET)
 
-    reports = asyncio.create_task(speak_loop(Mouth(fetch, int(info.get("after") or 0))))
+    async def time_cap() -> None:
+        await asyncio.sleep(CALL_MAX_S)
+        live_session.send_result(None, GOODBYE)
+        await asyncio.sleep(BYE_S)
+        await hang_up("call max length")
+
+    watchers = [asyncio.create_task(watch_silence()), asyncio.create_task(time_cap())]
 
     async def on_end(duration: int) -> None:
-        limit.cancel()
-        reports.cancel()
-        hold.answered()
-        await agent.turns.flush()  # a line said just before hang-up still reaches the room
-        for task in silent:
-            task.cancel()
+        for task in (*watchers, *tasks):
+            if task is not asyncio.current_task():
+                task.cancel()
+        await live_session.close()  # GPT-Live bills every open second; a post in flight still reaches the room
         out = await backend.post(
             "end",
             {
                 "durationSec": duration,
-                "summary": "; ".join(agent.did),
+                "summary": "; ".join(did),
                 "transcript": clean_transcript(items),
                 "disclosure": disclosure_of(items, info["assistantName"]),
                 "disclosureRepeated": guard.corrected,
                 "silent": bool(silent_end),
             },
         )
-        logger.info(
-            "phone: call %s ended outcome=%s", backend.call_id, out.get("outcome", out)
-        )
+        logger.info("phone: call %s ended outcome=%s", backend.call_id, out.get("outcome", out))
 
     ending = Ending(answered, on_end)
 
@@ -764,21 +468,7 @@ async def entrypoint(ctx: JobContext) -> None:
             left.append(asyncio.create_task(hung_up(ending.now())))
 
     ctx.add_shutdown_callback(shutdown)
-    await session.start(
-        agent=agent,
-        room=ctx.room,
-        room_options=room_io.RoomOptions(
-            participant_identity=caller.identity,
-            close_on_disconnect=True,
-            # noise cancellation tuned for SIP audio, in the agent and nowhere else on the call (one denoiser:
-            # docs.livekit.io/transport/media/enhanced-noise-cancellation)
-            audio_input=room_io.AudioInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
-        ),
-        record=True,  # the greeting says the call is recorded
-    )
-    opening = greet(session, agent.opening_rule)  # the opening: DisclosureGuard judges it
-    agent.unchecked(opening)
-    agent.opening = opening.id
+    live_session.send_result(None, OPENING.format(assistant=info["assistantName"], greeting=info["greeting"]))
 
 
 if __name__ == "__main__":

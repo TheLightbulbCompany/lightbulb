@@ -22,7 +22,6 @@ function buildDbStack(environment: "dev" | "prod"): Template {
     env,
     environment,
     kmsKey,
-    vpc: network.vpc,
   });
   return Template.fromStack(dbStack);
 }
@@ -49,7 +48,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     env,
     environment,
     kmsKey,
-    vpc: network.vpc,
   });
 
   const container = new ContainerStack(app, `Container-${environment}`, {

@@ -1746,6 +1746,43 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-lightbulb-dev-database-Deploy:
+    name: Deploy devlightbulbdevdatabaseD4582FCD
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset5
+      - dev-lightbulb-dev-auth-Deploy
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-dev-database
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset5.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-lightbulb-dev-network-Deploy:
     name: Deploy devlightbulbdevnetworkA7A20077
     permissions:
@@ -1753,8 +1790,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset5
       - Assets-FileAsset6
+      - Assets-FileAsset7
       - dev-lightbulb-dev-dns-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
@@ -1780,7 +1817,7 @@ jobs:
         with:
           name: lightbulb-dev-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset5.outputs.asset-hash }}.json
+            needs.Assets-FileAsset6.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1791,7 +1828,6 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset7
       - Assets-FileAsset8
       - Assets-FileAsset9
       - Assets-FileAsset10
@@ -1801,6 +1837,7 @@ jobs:
       - Assets-FileAsset14
       - Assets-FileAsset15
       - Assets-FileAsset16
+      - Assets-FileAsset17
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-auth-Deploy
@@ -1828,7 +1865,7 @@ jobs:
         with:
           name: lightbulb-dev-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset7.outputs.asset-hash }}.json
+            needs.Assets-FileAsset8.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1839,8 +1876,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset17
-      - Assets-FileAsset8
+      - Assets-FileAsset18
+      - Assets-FileAsset9
       - dev-lightbulb-dev-network-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
@@ -1865,44 +1902,6 @@ jobs:
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: lightbulb-dev-container
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset17.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-lightbulb-dev-database-Deploy:
-    name: Deploy devlightbulbdevdatabaseD4582FCD
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset18
-      - dev-lightbulb-dev-network-Deploy
-      - dev-lightbulb-dev-auth-Deploy
-    runs-on: ${{ vars.DEPLOY_RUNNER }}
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: lightbulb-dev-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset18.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -1955,7 +1954,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset22
-      - Assets-FileAsset8
+      - Assets-FileAsset9
       - Assets-FileAsset23
       - Assets-FileAsset24
       - Assets-FileAsset25
@@ -2044,10 +2043,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2096,10 +2095,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2209,10 +2208,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2258,10 +2257,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2308,10 +2307,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2345,220 +2344,6 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-lightbulb-prod-network-Deploy:
-    name: Deploy prodlightbulbprodnetworkE2A7D626
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset30
-      - Assets-FileAsset6
-      - prod-lightbulb-prod-dns-Deploy
-      - dev-lightbulb-dev-auth-Deploy
-      - dev-lightbulb-dev-dns-Deploy
-      - dev-lightbulb-dev-agent-mail-outbound-Deploy
-      - dev-lightbulb-dev-network-Deploy
-      - dev-lightbulb-dev-api-Deploy
-      - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
-      - dev-lightbulb-dev-openrouter-gate-Deploy
-      - dev-lightbulb-dev-service-Deploy
-      - dev-lightbulb-dev-observability-Deploy
-      - dev-DeployVercelDev
-      - dev-DeployCompanyDev
-    runs-on: ${{ vars.DEPLOY_RUNNER }}
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: lightbulb-prod-network
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset30.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-lightbulb-prod-ses-inbound-Deploy:
-    name: Deploy prodlightbulbprodsesinbound545D542B
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset31
-      - Assets-FileAsset32
-      - Assets-FileAsset33
-      - Assets-FileAsset34
-      - prod-lightbulb-prod-auth-Deploy
-      - dev-lightbulb-dev-auth-Deploy
-      - dev-lightbulb-dev-dns-Deploy
-      - dev-lightbulb-dev-agent-mail-outbound-Deploy
-      - dev-lightbulb-dev-network-Deploy
-      - dev-lightbulb-dev-api-Deploy
-      - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
-      - dev-lightbulb-dev-openrouter-gate-Deploy
-      - dev-lightbulb-dev-service-Deploy
-      - dev-lightbulb-dev-observability-Deploy
-      - dev-DeployVercelDev
-      - dev-DeployCompanyDev
-    runs-on: ${{ vars.DEPLOY_RUNNER }}
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: lightbulb-prod-ses-inbound
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset31.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-lightbulb-prod-api-Deploy:
-    name: Deploy prodlightbulbprodapiE47660F7
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset35
-      - Assets-FileAsset9
-      - Assets-FileAsset10
-      - Assets-FileAsset11
-      - Assets-FileAsset12
-      - Assets-FileAsset13
-      - Assets-FileAsset14
-      - Assets-FileAsset15
-      - Assets-FileAsset16
-      - prod-lightbulb-prod-network-Deploy
-      - prod-lightbulb-prod-dns-Deploy
-      - prod-lightbulb-prod-auth-Deploy
-      - dev-lightbulb-dev-auth-Deploy
-      - dev-lightbulb-dev-dns-Deploy
-      - dev-lightbulb-dev-agent-mail-outbound-Deploy
-      - dev-lightbulb-dev-network-Deploy
-      - dev-lightbulb-dev-api-Deploy
-      - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
-      - dev-lightbulb-dev-openrouter-gate-Deploy
-      - dev-lightbulb-dev-service-Deploy
-      - dev-lightbulb-dev-observability-Deploy
-      - dev-DeployVercelDev
-      - dev-DeployCompanyDev
-    runs-on: ${{ vars.DEPLOY_RUNNER }}
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: lightbulb-prod-api
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset35.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-lightbulb-prod-container-Deploy:
-    name: Deploy prodlightbulbprodcontainer8E71224D
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset36
-      - prod-lightbulb-prod-network-Deploy
-      - dev-lightbulb-dev-auth-Deploy
-      - dev-lightbulb-dev-dns-Deploy
-      - dev-lightbulb-dev-agent-mail-outbound-Deploy
-      - dev-lightbulb-dev-network-Deploy
-      - dev-lightbulb-dev-api-Deploy
-      - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
-      - dev-lightbulb-dev-openrouter-gate-Deploy
-      - dev-lightbulb-dev-service-Deploy
-      - dev-lightbulb-dev-observability-Deploy
-      - dev-DeployVercelDev
-      - dev-DeployCompanyDev
-    runs-on: ${{ vars.DEPLOY_RUNNER }}
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: lightbulb-prod-container
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset36.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-lightbulb-prod-database-Deploy:
     name: Deploy prodlightbulbproddatabase10822FFE
     if: github.event_name == 'workflow_dispatch'
@@ -2567,16 +2352,15 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset37
-      - prod-lightbulb-prod-network-Deploy
+      - Assets-FileAsset30
       - prod-lightbulb-prod-auth-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2606,6 +2390,220 @@ jobs:
         with:
           name: lightbulb-prod-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset30.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-network-Deploy:
+    name: Deploy prodlightbulbprodnetworkE2A7D626
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset31
+      - Assets-FileAsset7
+      - prod-lightbulb-prod-dns-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-openrouter-gate-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-network
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset31.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-ses-inbound-Deploy:
+    name: Deploy prodlightbulbprodsesinbound545D542B
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset32
+      - Assets-FileAsset33
+      - Assets-FileAsset34
+      - Assets-FileAsset35
+      - prod-lightbulb-prod-auth-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-openrouter-gate-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-ses-inbound
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset32.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-api-Deploy:
+    name: Deploy prodlightbulbprodapiE47660F7
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset36
+      - Assets-FileAsset10
+      - Assets-FileAsset11
+      - Assets-FileAsset12
+      - Assets-FileAsset13
+      - Assets-FileAsset14
+      - Assets-FileAsset15
+      - Assets-FileAsset16
+      - Assets-FileAsset17
+      - prod-lightbulb-prod-network-Deploy
+      - prod-lightbulb-prod-dns-Deploy
+      - prod-lightbulb-prod-auth-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-openrouter-gate-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-api
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset36.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-lightbulb-prod-container-Deploy:
+    name: Deploy prodlightbulbprodcontainer8E71224D
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset37
+      - prod-lightbulb-prod-network-Deploy
+      - dev-lightbulb-dev-auth-Deploy
+      - dev-lightbulb-dev-dns-Deploy
+      - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-network-Deploy
+      - dev-lightbulb-dev-api-Deploy
+      - dev-lightbulb-dev-container-Deploy
+      - dev-lightbulb-dev-openrouter-gate-Deploy
+      - dev-lightbulb-dev-service-Deploy
+      - dev-lightbulb-dev-observability-Deploy
+      - dev-DeployVercelDev
+      - dev-DeployCompanyDev
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: lightbulb-prod-container
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset37.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
@@ -2625,10 +2623,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2684,10 +2682,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2738,10 +2736,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2784,11 +2782,11 @@ jobs:
       - prod-lightbulb-prod-auth-Deploy
       - prod-lightbulb-prod-dns-Deploy
       - prod-lightbulb-prod-agent-mail-outbound-Deploy
+      - prod-lightbulb-prod-database-Deploy
       - prod-lightbulb-prod-network-Deploy
       - prod-lightbulb-prod-ses-inbound-Deploy
       - prod-lightbulb-prod-api-Deploy
       - prod-lightbulb-prod-container-Deploy
-      - prod-lightbulb-prod-database-Deploy
       - prod-lightbulb-prod-openrouter-gate-Deploy
       - prod-lightbulb-prod-service-Deploy
       - prod-lightbulb-prod-observability-Deploy
@@ -2796,10 +2794,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy
@@ -2867,11 +2865,11 @@ jobs:
       - prod-lightbulb-prod-auth-Deploy
       - prod-lightbulb-prod-dns-Deploy
       - prod-lightbulb-prod-agent-mail-outbound-Deploy
+      - prod-lightbulb-prod-database-Deploy
       - prod-lightbulb-prod-network-Deploy
       - prod-lightbulb-prod-ses-inbound-Deploy
       - prod-lightbulb-prod-api-Deploy
       - prod-lightbulb-prod-container-Deploy
-      - prod-lightbulb-prod-database-Deploy
       - prod-lightbulb-prod-openrouter-gate-Deploy
       - prod-lightbulb-prod-service-Deploy
       - prod-lightbulb-prod-observability-Deploy
@@ -2879,10 +2877,10 @@ jobs:
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
+      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-api-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-openrouter-gate-Deploy
       - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-observability-Deploy

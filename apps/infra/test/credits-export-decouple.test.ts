@@ -25,7 +25,6 @@ describe("credits export decouple (pass 2 — retired)", () => {
       stackName: "isol8-dev-database",
       environment: "dev",
       kmsKey: new kms.Key(support, "Key"),
-      vpc: new ec2.Vpc(support, "Vpc"),
     });
     template = Template.fromStack(stack);
   });

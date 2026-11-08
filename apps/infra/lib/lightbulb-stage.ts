@@ -184,7 +184,6 @@ export class LightbulbStage extends cdk.Stage {
       stackName: `lightbulb-${env}-database`,
       environment: env,
       kmsKey: auth.kmsKey,
-      vpc: network.vpc,
     });
 
     const container = new ContainerStack(this, `lightbulb-${env}-container`, {

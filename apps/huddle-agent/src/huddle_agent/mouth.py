@@ -157,7 +157,8 @@ class Talker(Agent):
 
     def say(self, texts: list[str], verbatim: bool = False):
         rule = verbatim_instructions if verbatim else result_instructions
-        speech = self.session.generate_reply(instructions=rule(texts))
+        # no tools: with `delegate` on, the result turn said "Let me check." and re-posted the last line (8 Nov Meet)
+        speech = self.session.generate_reply(instructions=rule(texts), tool_choice="none")
         self.results[speech.id] = (texts, verbatim)
         speech.add_done_callback(lambda h: self.results.pop(h.id, None))
         return speech
@@ -195,7 +196,7 @@ class Talker(Agent):
     def _hold(self) -> None:
         if not self.holding:
             self.holding = True
-            self.session.generate_reply(instructions=HOLD)
+            self.session.generate_reply(instructions=HOLD, tool_choice="none")
         self.held = True
         if self.line:
             self.delegate_now(self.line)

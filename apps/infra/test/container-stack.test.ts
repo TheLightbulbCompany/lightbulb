@@ -251,10 +251,7 @@ describe("ContainerStack — dev", () => {
                 // The OpenClaw image and its workflow are deleted; a workflow
                 // that can assume this role but has no ECR grant would fail on
                 // push instead of at the door.
-                "token.actions.githubusercontent.com:workflow": [
-                  "build-paperclip-image",
-                  "build-hermes-image",
-                ],
+                "token.actions.githubusercontent.com:workflow": ["build-hermes-image"],
               }),
             }),
           }),

@@ -116,6 +116,34 @@ jobs:
       - id: Publish
         name: Publish Assets-DockerAsset1
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-DockerAsset1-step.sh
+  Assets-DockerAsset2:
+    name: Publish Assets Assets-DockerAsset2
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - id: Publish
+        name: Publish Assets-DockerAsset2
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-DockerAsset2-step.sh
   Assets-FileAsset1:
     name: Publish Assets Assets-FileAsset1
     needs:
@@ -2674,7 +2702,7 @@ jobs:
       - Assets-FileAsset23
       - Assets-FileAsset24
       - Assets-FileAsset25
-      - Assets-DockerAsset1
+      - Assets-DockerAsset2
       - prod-lightbulb-prod-agent-mail-outbound-Deploy
       - prod-lightbulb-prod-database-Deploy
       - prod-lightbulb-prod-network-Deploy

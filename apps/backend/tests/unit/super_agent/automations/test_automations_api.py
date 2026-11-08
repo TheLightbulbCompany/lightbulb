@@ -768,12 +768,20 @@ async def test_propose_takes_a_bare_trigger_id_and_here(internal):
 
 
 async def test_a_workspace_owned_automation_is_paused_and_turned_on_by_any_org_admin(api):
-    """The proactive layer's automations (look around, feed posts) belong to the workspace, not a person."""
-    from core.services import proactive
-
-    (look, _) = proactive.automation_rows(WS, "UTC")
-    await repo.create_schedule(WS, look)
-    sid = look["scheduleId"]
+    """A workspace-owned schedule is controlled by an org admin, never an ordinary member."""
+    sid = "workspace-reminder"
+    await repo.create_schedule(
+        WS,
+        {
+            "scheduleId": sid,
+            "ownerUserId": WS,
+            "name": "Reminder",
+            "cron": ["0 8 * * *"],
+            "tz": "UTC",
+            "policyText": "Check in",
+            "deliverTo": "none",
+        },
+    )
     await repo.set_status(WS, sid, "active", reason=None, allowed_from=frozenset({"draft"}))
     assert _as(api, PRIYA, admin=False).post(f"{BASE}/{sid}/pause").status_code in (403, 404)
     assert _as(api, PRIYA, admin=True).post(f"{BASE}/{sid}/pause").json()["status"] == "paused"

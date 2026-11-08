@@ -86,8 +86,8 @@ async def notices(owner_id: str, account: dict, now: int | None = None) -> None:
 
 
 async def _rearm_automation(owner_id: str) -> None:
-    """An extended trial may use the platform again: ``proactive.ensure`` resumes the automations its
-    expiry paused. If that fails, a durable reconcile retries it."""
+    """An extended trial retries cleanup of retired built-in schedules. User-created
+    automations keep their own state; a durable reconcile retries cleanup on failure."""
     from core.services import proactive
 
     try:

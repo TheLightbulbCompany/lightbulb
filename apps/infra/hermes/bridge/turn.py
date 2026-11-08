@@ -676,7 +676,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             limits = dict(CALL_RUN_LIMITS)
             enabled, _ = profile_toolsets()  # lane A: work asked aloud may become a task (start_work)
             if enabled is not None:  # the Router's decision tools stay off a call, as _construct_agent strips them
-                strip = (ROUTER_TOOLSET, TASK_TOOLSET)  # task_note is a Worker run's alone
+                strip = (ROUTER_TOOLSET, TASK_TOOLSET, FRONT_DESK_TOOLSET)  # task_note is a Worker run's alone
                 limits["enabled_toolsets"] = [*(t for t in enabled if t not in strip), VOICE_WORK_TOOLSET]
             agent = _construct_agent(agent_id, body, frames, call_key, **limits)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
@@ -839,6 +839,10 @@ ROUTER_TOOLSET = "lightbulb_router"
 VOICE_WORK_TOOLSET = "lightbulb_voice_work"
 # task_note: only a super-agent Worker run re-adds it (_run_durable_turn); every other turn strips it.
 TASK_TOOLSET = "lightbulb_task"
+# A phone caller's thread (request principal "caller"): this caller's availability, book, move, cancel and message,
+# plus task_note, and nothing else: no shell, browser, files, MCP or skills (governance P2, the caller case).
+FRONT_DESK_TOOLSET = "lightbulb_front_desk"
+CALLER_TOOLSETS = [TASK_TOOLSET, FRONT_DESK_TOOLSET]
 # skip_memory: no recall prefetch, no provider tools, no MEMORY.md/USER.md block (pinned d5b3cad agent_init
 # `_init_memory`: the built-in store loads only without skip_memory or with the memory toolset).
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET], "disabled_toolsets": None,
@@ -1745,10 +1749,11 @@ def _post_backend(path: str, body: dict) -> int:
     return last_status
 
 
-def runtime_mcp_env(agent_id: str) -> dict[str, str]:
+def runtime_mcp_env(agent_id: str, principal: str | None = None) -> dict[str, str]:
     """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile. The same
-    vend fills the backend-custodied grants in locally (bridge/credentials.py, spec 13)."""
-    vended = credentials.vend(agent_id, api=API, owner=bridge.OWNER, hook_token=bridge.HOOK_TOKEN)
+    vend fills the backend-custodied grants in locally (bridge/credentials.py, spec 13). ``principal``
+    "caller": the backend vends the model grant only."""
+    vended = credentials.vend(agent_id, api=API, owner=bridge.OWNER, hook_token=bridge.HOOK_TOKEN, principal=principal)
     return vended.mcp_env() if vended is not None else {}
 
 
@@ -3976,7 +3981,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     if enabled_toolsets is not None:  # the Router's decision tools are only for Router runs (limits re-add them)
-        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET, TASK_TOOLSET)]
+        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET, TASK_TOOLSET, FRONT_DESK_TOOLSET)]
     db = _session_db(agent_id)
     # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
     if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key
@@ -4355,17 +4360,23 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                "runSecret": identity.get("runSecret")} if not paperclip and not router else {})}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
-    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    caller = not paperclip and not router and request.get("principal") == "caller"
+    # A caller's thread holds no owner integration token: the vend says principal "caller" (the model grant only),
+    # and no renewer re-vends the owner's grants into its scope.
+    mcp_env = runtime_mcp_env(agent_id, principal="caller") if caller else runtime_mcp_env(agent_id)
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(mcp_env, None if caller else agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         budget = None
         try:
             extra = {"max_iterations": limits["max_iterations"]} if limits.get("max_iterations") else {}
             if not paperclip:
                 extra["tool_complete_callback"] = task_tool_recorder(run_id)
             memory = {"memory": request["memory"]} if request.get("memory") else {}  # a task's block (spec 07 §5.2)
-            if not paperclip and not router and identity.get("taskId") and identity.get("runSecret"):
+            if caller:
+                extra["enabled_toolsets"] = list(CALLER_TOOLSETS)
+            elif not paperclip and not router and identity.get("taskId") and identity.get("runSecret"):
                 enabled, _ = profile_toolsets()  # a Worker run: its own task room's note tool (task_note)
                 if enabled is not None:
-                    strip = (ROUTER_TOOLSET, VOICE_WORK_TOOLSET)
+                    strip = (ROUTER_TOOLSET, VOICE_WORK_TOOLSET, FRONT_DESK_TOOLSET)
                     extra["enabled_toolsets"] = [*(t for t in enabled if t not in strip), TASK_TOOLSET]
             if router:  # decisions only: no execution tools, no background review, no side session
                 extra |= ROUTER_RUN_LIMITS

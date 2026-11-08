@@ -30,6 +30,7 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import container_repo, effects_repo, messaging_repo, tasks_repo
 from core.services import (
+    business_profile,
     chat_gate,
     container_provision,
     hermes_profiles,
@@ -318,6 +319,15 @@ async def _local_now(ws: str, user_id: str | None) -> str:
     return router_prompt.local_now(tz)
 
 
+async def _caller_profile(ws: str, triggers) -> str | None:
+    """The Business profile, for a phone caller's batch only (founder, 8 Nov: the phone front door; owner and member
+    chat, the orb and Meet stay without it)."""
+    caller = next((t for t in triggers if (t.get("ref") or {}).get("origin") == "phone_contact"), None)
+    if caller is None:
+        return None
+    return await business_profile.business_profile(ws, await business_profile.caller_of(caller)) or None
+
+
 #: A phone caller's task (and every sub-task of it) gets this much Worker time per attempt (end-state Task 4).
 CONTACT_RUN_BUDGET_S = 600
 
@@ -353,12 +363,17 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
     contact = await tasks_repo.from_contact(ws, task)
     if contact:  # a phone caller's words (the brief) never sync into team memory
         memory["sync"] = "none"
+        # The Front desk thread: the business's facts in hand, and (bridge) only the caller's booking tools.
+        trig = await tasks_repo.get_trigger(ws, task["triggerId"]) if task.get("triggerId") else None
+        if profile := await business_profile.business_profile(ws, await business_profile.caller_of(trig)):
+            parts.append("\n".join(router_prompt.profile_block(profile)))
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS,
         memory=memory,
         effects="required",
         run_budget_seconds=CONTACT_RUN_BUDGET_S if contact else None,  # the bridge's own hard stop
+        principal="caller" if contact else None,
     )
 
 
@@ -1465,6 +1480,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             asker=user_id,
             now=await _local_now(ws, user_id),
             instructions=await _project_instructions(room_id),
+            profile=await _caller_profile(ws, to_model.values()),
         )
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id

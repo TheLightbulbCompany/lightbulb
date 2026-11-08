@@ -97,3 +97,12 @@ async def test_force_requires_presented_hash(async_client, wired):
     r = await async_client.post(URL + "/model", json={"agent_id": "ceo", "force": True}, headers=HDR)
     assert r.status_code == 400  # the app answers request validation errors with 400
     wired["vend"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_caller_thread_never_receives_owner_tokens(async_client, wired):
+    """Governance P2, the caller case (founder, 8 Nov): a phone caller's thread vends the model grant only."""
+    body = (await async_client.post(URL, json={"agent_id": "ceo", "principal": "caller"}, headers=HDR)).json()
+    assert body["tokens"] == {} and body["model"]["access_token"] == "AT-model"
+    assert "microsoft365" not in body.get("expires_at", {})
+    wired["rpc"].access_token.get_with_expiry.assert_not_awaited()

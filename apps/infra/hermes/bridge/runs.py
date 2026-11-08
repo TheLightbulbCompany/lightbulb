@@ -107,6 +107,7 @@ def validate_request(request) -> dict:
         and isinstance(limits, dict) and set(limits) <= {"max_iterations", "run_budget_seconds"}
         and all(_positive_int(v) for v in limits.values())
         and limits.get("run_budget_seconds", 0) <= MAX_RUN_BUDGET_S
+        and request.get("principal") in (None, "caller")
         and ("memory" not in request or request["memory"] is None or memory_ctx.valid(request["memory"]))
     )
     if not ok:

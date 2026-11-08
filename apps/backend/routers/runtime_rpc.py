@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 class RuntimeCredentialRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    # "caller": a phone caller's thread (governance P2, the caller case): the model grant only, no owner tokens.
+    principal: Literal["caller"] | None = None
 
 
 class RuntimeModelRequest(RuntimeCredentialRequest):
@@ -84,7 +87,8 @@ async def runtime_credentials(
     unavailable: list[str] = []
     for provider in registry.all_providers().values():
         if (
-            provider.key not in connected
+            body.principal == "caller"
+            or provider.key not in connected
             or not provider.oauth
             or registry.refresh_owner_for(provider, connected[provider.key]) != "backend"
             or not registry.available_for(provider, owner_id)

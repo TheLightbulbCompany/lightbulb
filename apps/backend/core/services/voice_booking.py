@@ -55,12 +55,14 @@ async def _request(ws: str, method: str, url: str, body: dict | None = None) -> 
     return await asyncio.wait_for(go(), GOOGLE_S)
 
 
-async def _try(ws: str, cfg: dict, call_id: str, method: str, url: str, body: dict | None = None) -> dict | None:
+async def _try(ws: str, cfg: dict, call_id: str | None, method: str, url: str, body: dict | None = None) -> dict | None:
     """The Google answer, or None after raising the Line-problem. Never raises: the hold is the booking."""
     try:
         return await _request(ws, method, url, body)
     except Exception:  # noqa: BLE001 -- expired grant, timeout, 4xx/5xx: all keep the hold
         logger.warning("google calendar %s failed ws=%s", method, ws, exc_info=True)
+    if not call_id:  # a read outside a call (business_profile): no call to raise the Line problem on
+        return None
     try:
         await _line_problem(ws, cfg, call_id)
     except Exception:  # noqa: BLE001 -- the problem card is best-effort; the call goes on
@@ -111,7 +113,7 @@ async def _keep(ws: str, start: str, event_id: str) -> str:
     return event_id
 
 
-async def free(ws: str, cfg: dict, call_id: str, date: str, minutes: int) -> list[str]:
+async def free(ws: str, cfg: dict, call_id: str | None, date: str, minutes: int) -> list[str]:
     """Open half-hour starts on `date`: opening hours minus Nova's own bookings, and with Google minus the primary
     calendar's busy blocks (a failed freeBusy offers Nova's slots only)."""
     vp = _vp()

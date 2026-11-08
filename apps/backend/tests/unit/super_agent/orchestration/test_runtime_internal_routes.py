@@ -329,3 +329,34 @@ async def test_task_note_posts_in_its_own_task_room(api):
     await repo.update_attempt(WS, tid, 1, {"status": "ended"}, allowed_status=frozenset({"running"}))
     stale = await api.post(url, json=body, headers=H)
     assert stale.status_code == 409 and stale.json()["detail"] == "stale_run"
+
+
+async def test_front_desk_acts_only_for_a_callers_thread(api, monkeypatch):
+    """Governance P2, the caller case: a caller's thread books through the phone's own route for its own call; a
+    member's thread is refused."""
+    from unittest.mock import AsyncMock
+
+    from routers import voice_phone as vp
+
+    call = "11111111-2222-3333-4444-555555555555"
+    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
+    booked = AsyncMock(return_value={"booked": True})
+    monkeypatch.setattr(vp, "book", booked)
+    tid = await _task(origin="phone_contact", triggerId="voice:c1:r1")
+    trig = {"voice:c1:r1": {"ref": {"origin": "phone_contact", "callId": call}}, "chat:m1": {"ref": {"text": "hi"}}}
+    monkeypatch.setattr(repo, "get_trigger", AsyncMock(side_effect=lambda _ws, t: trig.get(t)))
+    ref = await _running(tid)
+    body = {"taskId": tid, "runId": ref.run_id, "attempt": 1, "runSecret": await _secret(tid), "action": "book",
+            "start": "2026-11-14T14:00", "service": "Gel manicure", "name": "Ana"}  # fmt: skip
+    url = f"/api/v1/internal/runtime/{WS}/front-desk"
+    r = await api.post(url, json=body, headers=H)
+    assert r.status_code == 200 and r.json() == {"booked": True}
+    assert booked.await_args.args[0] == call and booked.await_args.args[1].start == "2026-11-14T14:00"
+    bad = await api.post(url, json={**body, "start": "Saturday"}, headers=H)
+    assert bad.status_code == 422
+
+    member = await _task()
+    mref = await _running(member)
+    body |= {"taskId": member, "runId": mref.run_id, "runSecret": await _secret(member)}
+    r = await api.post(url, json=body, headers=H)
+    assert r.status_code == 403 and r.json()["detail"] == "not_a_caller_thread"

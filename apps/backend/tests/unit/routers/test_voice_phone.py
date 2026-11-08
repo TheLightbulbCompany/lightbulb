@@ -75,9 +75,8 @@ async def _start(client, caller="+14155550133", room="phone-dev-_x_1", **config)
 async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
     call = await _start(client)
     assert call["greeting"] == (
-        "Thanks for calling Maya's Nail Studio. This is Nova, Maya's Nail Studio's AI assistant. "
-        "This call is recorded. How can I help?"
-    )
+        "Hi, I'm Nova, Maya's Nail Studio's AI assistant, and this call is recorded. How can I help?"
+    )  # one short sentence and its question (8 Nov prod: a long opening buried the caller's first line)
     assert "Gel manicure $45 (60 min)" in call["facts"] and "Behind the building." in call["facts"]
     base = f"/api/v1/internal/voice/calls/{call['callId']}"
     day = _tomorrow()
@@ -121,7 +120,7 @@ async def test_a_custom_greeting_missing_the_disclosures_falls_back_to_ours(clie
     assert (await _start(client, greeting=ok))["greeting"] == ok
     for bad in ("Hi, Nova here at Maya's. How can I help?", "Hi, the AI assistant here. This call is recorded."):
         got = (await _start(client, room=f"phone-dev-_g{len(bad)}", greeting=bad))["greeting"]
-        assert got.startswith("Thanks for calling Maya's Nail Studio. This is Nova") and "recorded" in got
+        assert got.startswith("Hi, I'm Nova, Maya's Nail Studio's AI assistant") and "recorded" in got
 
 
 async def test_the_record_keeps_each_lines_time_and_the_disclosure_verdict(client):
@@ -590,6 +589,7 @@ async def test_a_caller_line_is_a_caller_principal_trigger_for_the_router(client
     assert trig.ref["origin"] == "phone_contact" and trig.ref["callId"] == call["callId"]
     assert trig.ref["roomId"] == call["callId"] and trig.ref["messageId"] == out["messageId"]
     assert trig.ref["text"].startswith("How much is a gel manicure?") and "outside contact" in trig.ref["text"]
+    assert "Offer at most three open times" in trig.ref["text"]
 
 
 async def test_a_paused_line_sends_no_caller_line_to_the_router(client, router_seat):
@@ -608,3 +608,48 @@ async def test_call_events_are_lightbulbs_lines_only(client, router_seat):
     lines.assert_awaited_once_with(call["callId"], 0)
     real = client.post(f"{base}/events", json={"after": 0}, headers=W).json()
     assert real["messages"] == [] and real["after"] == 1  # the caller's own line is never said back
+
+
+def test_card_numbers_and_the_expiry_or_cvv_after_them_are_redacted():
+    r = voice_phone.redact_cards
+    assert r("my card is 4111 1111 1111 1111 exp 12/27 cvv 123, thanks") == (
+        "my card is [card number removed] [removed], thanks"
+    )
+    assert r("4111-1111-1111-1111") == "[card number removed]"
+    assert r("4111111111111111 123") == "[card number removed] [removed]"  # a CVV said straight after
+    assert r("card 5555555555554444, call me at 4155550133") == "card [card number removed], call me at 4155550133"
+    for kept in (
+        "4111 1111 1111 1112",  # not Luhn-valid
+        "call me at +1 415 555 0133",  # a phone number: 11 digits
+        "booking 2026-11-14T13:00 for 45 min",
+        "provided card number digits 4111...",  # 8 Nov prod step: 4 digits are no card number
+    ):
+        assert r(kept) == kept, kept
+
+
+async def test_no_card_digits_reach_the_steps_messages_transcript_or_the_call_room(client, router_seat):
+    _, enq = router_seat
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    card = "4111 1111 1111 1111, expires 08/29"
+    msg = {"text": f"Wants to pay the deposit with card {card}", "name": "Taylor"}
+    assert client.post(f"{base}/message", json=msg, headers=W).status_code == 200
+    assert client.post(f"{base}/turn", json={"n": 0, "text": f"Card is {card}"}, headers=W).status_code == 200
+    tx = [{"role": "user", "text": f"The number is {card}"}]
+    rec = client.post(f"{base}/end", json={"durationSec": 30, "transcript": tx}, headers=W).json()
+    room_texts = [m["text"] for m in (await messaging_repo.list_messages(call["callId"], 0, 50))[0]]
+    saved = f"{rec} {room_texts} {enq.call_args.args[1].ref}"
+    assert "4111" not in saved and "08/29" not in saved
+    assert "[card number removed]" in rec["steps"][0]["text"] and room_texts
+
+
+async def test_a_placeholder_name_is_never_stored_as_the_caller(client):
+    call = await _start(client, caller="+14155550177", room="phone-dev-_n_1")
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    for name in ("Unknown", "unknown caller", "N/A", "Caller", "Anonymous"):
+        assert client.post(f"{base}/message", json={"text": "Call me back", "name": name}, headers=W).status_code == 200
+    rec = client.post(f"{base}/end", json={"durationSec": 20}, headers=W).json()
+    assert rec["callerName"] == "" and all(m["name"] == "" for m in rec["messages"])
+    again = await _start(client, caller="+14155550177", room="phone-dev-_n_2")
+    assert again["callerName"] == ""  # no "Unknown, a returning client"
+    assert voice_phone.real_name(" Taylor  Test ") == "Taylor Test"

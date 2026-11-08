@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("LIGHTBULB_API_URL", "http://x")
 os.environ.setdefault("LIGHTBULB_HUDDLE_SECRET", "x")
 
-from huddle_agent import phone  # noqa: E402
+from huddle_agent import mouth, phone  # noqa: E402
 
 
 def test_dialed_numbers_become_e164():
@@ -23,11 +23,27 @@ INFO = {
 }
 
 
-def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
-    """Founder, 8 Nov: no script. The prompt names what the opening must say; the owner's greeting is a style."""
+class _Speech:
+    def __init__(self, sid="sp_open", allow=True):
+        self.id, self.allow_interruptions, self.interrupted = sid, allow, 0
+
+    def interrupt(self, force=False):
+        self.interrupted += 1
+
+    def add_done_callback(self, cb):
+        pass
+
+
+def test_the_opening_is_one_short_sentence_with_the_three_disclosures_and_no_narration():
+    """Founder, 8 Nov: no script. The prompt names what the opening must say; the owner's greeting is a style.
+    8 Nov prod: the opening ran on for up to 20 s and spoke the model's planning aloud."""
     text = " ".join(phone.Receptionist(phone.Backend(), INFO, None).instructions.split())
-    assert "You speak first. Your opening line, in your own words, must say all three: your name, Lightbulb; that you are an AI assistant; and that this call is recorded." in text
+    assert ("You speak first. Your opening is one short sentence, in your own words, that says all three: your "
+            "name, Lightbulb; that you are an AI assistant; and that this call is recorded.") in text
+    assert 'Then ask "How can I help?" and stop: say nothing else until the caller speaks.' in text
     assert "It is your very first words: no preamble before it." in text  # gpt-realtime-2 preambles by default
+    assert 'Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:")' in text
+    assert "Today is" not in text  # the date set off "it's Sunday, so we're closed" run-ons; the team has it
     assert f'a guide, not a script: "{GREETING}"' in text
     assert "If you are told the disclosure was missed, say the one disclosure sentence exactly as given" in text
     replies = []
@@ -35,10 +51,130 @@ def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
     class Session:
         def generate_reply(self, **kw):
             replies.append(kw)
+            return _Speech()
 
-    phone.greet(Session())
-    # no instructions (Gemini keeps them); nobody cuts it off; tools off: the opening is never a delegate call
-    assert replies == [{"allow_interruptions": False, "tool_choice": "none"}]
+    opening = phone.greet(Session())
+    # no instructions (Gemini keeps them); tools off: the opening is never a delegate call
+    assert replies == [{"tool_choice": "none"}]
+    # firm on the handle: generate_reply drops allow_interruptions=False under server-side turns
+    assert opening.allow_interruptions is False
+
+
+def test_the_opening_is_cut_on_narration_or_once_its_disclosure_and_question_are_said():
+    cut = lambda said: phone.opening_cut(said, "Nova")  # noqa: E731
+    # 8 Nov prod, person-073556: planning before the disclosure
+    assert cut("Okay, let me think about how to respond to your request") == "narration"
+    assert cut("Game plan: greet them") == "narration"
+    # 8 Nov prod, book run 1: the disclosure, its question, then a run-on
+    said = "Hi, thanks for calling The Lightbulb Company. This is Nova, the AI assistant. This call is recorded. "
+    assert cut(said) == "" and cut(said + "How can I help?") == ""
+    assert cut(said + "How can I help? Game plan: it's Sunday") == "run_on"
+    assert cut("Hi, I'm Nova, an AI assistant, and this call is recorded, how can I help? If you") == "run_on"
+    # no question: the disclosure's sentence and one more, then nothing
+    assert cut("I'm Nova, an AI assistant; this call is recorded. Happy to help.") == ""
+    assert cut("I'm Nova, an AI assistant; this call is recorded. Happy to help. If you're just checking") == "run_on"
+    assert cut("Hi, thanks for calling.") == ""  # no disclosure yet, no narration: it may go on
+
+
+async def _speak(r, *deltas):
+    async def stream():
+        for d in deltas:
+            yield d
+
+    return "".join([d async for d in r.transcription_node(stream(), None)])
+
+
+def _receptionist(monkeypatch, speech, user_state="listening", agent_state="listening"):
+    replies = []
+
+    class Session:
+        current_speech = speech
+
+        def generate_reply(self, **kw):
+            replies.append(kw)
+            return _Speech("sp_hold")
+
+    s = Session()
+    s.user_state, s.agent_state = user_state, agent_state
+    monkeypatch.setattr(phone.Receptionist, "session", property(lambda _self: s))
+    b = FakeBackend()
+    r = phone.Receptionist(b, {**INFO, "mode": "live"}, None)
+    r.opening = speech.id
+    return r, s, b, replies
+
+
+async def test_only_the_disclosure_is_firm_then_a_caller_talking_over_it_wins(monkeypatch):
+    speech = _Speech(allow=False)
+    r, s, _b, _ = _receptionist(monkeypatch, speech)
+    await _speak(r, "Hi, this is Lightbulb, ", "an AI assistant, ")
+    assert speech.allow_interruptions is False and speech.interrupted == 0  # the disclosure is still playing
+    await _speak(r, "Hi, this is Lightbulb, an AI assistant, ", "and this call is recorded. ", "How can I help?")
+    assert speech.allow_interruptions is True and speech.interrupted == 0  # free now; nothing cut
+    speech = _Speech(allow=False)
+    r, s, _b, _ = _receptionist(monkeypatch, speech, user_state="speaking")
+    await _speak(r, "Hi, this is Lightbulb, an AI assistant, ", "and this call is recorded. ", "How can")
+    assert speech.interrupted == 1  # the caller was already talking: the rest of the opening gives way
+    speech = _Speech(allow=False)
+    r, *_ = _receptionist(monkeypatch, speech)
+    await _speak(r, "Okay, let me think ", "about how to respond")
+    assert speech.interrupted == 1  # narration: cut, and the guard says the disclosure sentence
+
+
+async def test_a_line_said_over_the_firm_opening_is_delegated_after_it(monkeypatch):
+    """8 Nov prod: LiveKit skipped the reply to every line said over the uninterruptible opening."""
+    speech = _Speech(allow=False)
+    r, _s, b, replies = _receptionist(monkeypatch, speech)
+    r.caller_speaking()  # while the disclosure plays
+    r.turn_ended()
+    r.heard("Caller", "Can I book Saturday afternoon?")
+    r.after_opening()
+    await r.turns.flush()
+    assert [(p, body["text"].split("\n\n")[0]) for p, body in b.calls] == [("turn", "Can I book Saturday afternoon?")]
+    assert replies == [{"instructions": mouth.HOLD, "tool_choice": "none"}]
+    assert r.held and r.tool_delegate("Can I book Saturday afternoon?") == {"sent": True}
+    await r.turns.flush()
+    assert len(b.calls) == 1  # the model's own delegate call for the same line posts nothing more
+    r.after_opening()
+    assert len(b.calls) == 1  # once
+
+    for state, line, why in (("speaking", "Can I book?", "a reply has it"), ("listening", "Hi", "a greeting")):
+        speech = _Speech(allow=False)
+        r, _s, b, replies = _receptionist(monkeypatch, speech, agent_state=state)
+        r.caller_speaking()
+        r.turn_ended()
+        r.heard("Caller", line)
+        r.after_opening()
+        await r.turns.flush()
+        assert b.calls == [] and replies == [], why
+    speech = _Speech(allow=True)  # the disclosure had played: LiveKit answers the line itself
+    r, _s, b, replies = _receptionist(monkeypatch, speech)
+    r.caller_speaking()
+    r.heard("Caller", "Can I book?")
+    r.after_opening()
+    await r.turns.flush()
+    assert b.calls == []
+
+
+async def test_the_call_ends_once_at_hang_up_billed_from_answer():
+    """8 Nov prod: the end ran at job shutdown, ~22 s after the caller left, and counted from job start."""
+    import asyncio
+
+    ended = []
+
+    async def end(duration):
+        ended.append(duration)
+
+    ending = phone.Ending(phone.time.monotonic() - 19.4, end)
+    first = ending.now()  # the caller's SIP participant left
+    await asyncio.sleep(0.01)
+    assert ending.now("job shutdown") is first  # the shutdown callback awaits the same end
+    await first
+    assert ended == [19]
+    import inspect
+
+    src = inspect.getsource(phone.entrypoint)
+    assert '@ctx.room.on("participant_disconnected")' in src and "participant.identity == caller.identity" in src
+    assert "Ending(answered, on_end)" in src and "ctx.add_shutdown_callback(shutdown)" in src
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():
@@ -160,10 +296,11 @@ def test_the_corrective_line_is_one_reply_that_says_never_again():
     class Session:
         def generate_reply(self, **kwargs):
             calls.append(kwargs)
+            return _Speech()
 
-    phone.say_disclosure(
+    assert phone.say_disclosure(
         Session(), "I'm Lightbulb, an AI assistant, and this call is recorded."
-    )
+    ).allow_interruptions is False  # the disclosure sentence is firm
     (only,) = calls
     assert (
         '"I\'m Lightbulb, an AI assistant, and this call is recorded."'
@@ -335,7 +472,7 @@ def test_every_scripted_line_is_said_with_tools_off():
     class Session:
         def generate_reply(self, **kw):
             made.append(kw)
-            return object()
+            return _Speech()
 
     for text in (phone.STILL_THERE, phone.SILENT_BYE, phone.HOLD_AGAIN, phone.OFFER_MESSAGE):
         phone.line(Session(), text)

@@ -42,7 +42,7 @@ from openai.types.beta.realtime.session import TurnDetection
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import Mouth, Talker
+from huddle_agent.mouth import Mouth, Talker, small_talk
 
 logger = logging.getLogger("phone")
 # One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
@@ -83,12 +83,16 @@ SERVER_TURNS = TurnDetection(type="server_vad", silence_duration_ms=500, create_
 
 # The opening is the model's own words (founder, 8 Nov): it must name the assistant, say it is an AI assistant and
 # that the call is recorded. The owner's greeting is its style, not a script. DisclosureGuard checks the result.
+# One short sentence and its question, then silence (8 Nov prod calls: up to 20 s of run-on and spoken planning,
+# "Okay, let me think about how to respond…", "Game plan: it's Sunday…", buried the caller's first line).
 INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. You speak first. Your opening
-line, in your own words, must say all three: your name, {assistant}; that you are an AI assistant; and that this call
-is recorded. It is your very first words: no preamble before it. Take its tone from the owner's greeting, which is a guide, not a script: "{greeting}" Greet once and
-never again; after it, answer what the caller says. If you are told the disclosure was missed, say the one disclosure
-sentence exactly as given, then continue with the caller. Speak briefly and warmly, one or two sentences at a time,
-like a good front desk. Today is {today}.
+is one short sentence, in your own words, that says all three: your name, {assistant}; that you are an AI assistant;
+and that this call is recorded. Then ask "How can I help?" and stop: say nothing else until the caller speaks. It is
+your very first words: no preamble before it. Take its tone from the owner's greeting, which is a guide, not a
+script: "{greeting}" Greet once and never again; after it, answer what the caller says. If you are told the
+disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller.
+Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:"): every word you speak is
+for the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk.
 {caller}You own only the conversation; the front desk team behind you owns every fact, booking and decision.
 - Greetings, thanks, "are you there?", "can you hear me?": answer yourself, in a few words.
 - Everything else -- a question about the business, its hours, prices or services, a booking, a change or cancel,
@@ -100,6 +104,15 @@ like a good front desk. Today is {today}.
   the message as request.
 - When a message from the team arrives, say it as you are told, adding nothing.
 {can}Never share anything about other customers."""
+
+#: The model's planning said aloud (8 Nov prod calls): an opening that starts like this is cut, and the guard says
+#: the disclosure sentence instead.
+NARRATION = re.compile(
+    r"\b(let me think|think about how|how (to|i should) respond|game plan|my plan|i should (say|respond|answer)"
+    r"|the (user|caller) (is|wants|said|asked))\b",
+    re.IGNORECASE,
+)
+AFTER_OPENING_S = 1.0  # after the opening: a reply already taking the caller's line has started by then
 
 DELEGATE_DOC = """Hand the caller's request to the front desk team, who answer it on this call: every question, booking,
 change, cancel, yes or no. `request` is what they said, in their own words. It returns at once and a short holding
@@ -147,15 +160,34 @@ def discloses(text: str, assistant: str) -> bool:
 
 
 def disclosure_of(items: list[dict], assistant: str) -> str:
-    """`ok` / `missing` from the first assistant line spoken before the caller's first line (a cut-off greeting
-    counts: it wasn't all said); `unknown` when none was transcribed before the caller spoke."""
+    """`ok` / `missing` from the first assistant line spoken before the caller's first line; `unknown` when none was
+    transcribed before the caller spoke. A cut-off line is judged on what played (LiveKit keeps the synchronized
+    transcript of an interrupted speech), so an opening cut after its disclosure is ok."""
     for i in sorted(items, key=lambda i: i["t"]):
         if i["role"] == "user":
             return "unknown"
         if i["role"] == "assistant":
-            ok = not i.get("interrupted") and discloses(i["text"], assistant)
-            return "ok" if ok else "missing"
+            return "ok" if discloses(i["text"], assistant) else "missing"
     return "unknown"
+
+
+def _disclosed_at(text: str, assistant: str) -> int | None:
+    """Where the disclosure is complete in `text` (the end of the last of its three parts), None while it is not."""
+    if not discloses(text, assistant):
+        return None
+    ends = [re.search(rf"\b{re.escape(w)}\b", text, re.IGNORECASE) for w in (assistant, "AI assistant", "recorded")]
+    return max(m.end() for m in ends) if all(ends) else None
+
+
+def opening_cut(said: str, assistant: str) -> str:
+    """Why the opening must stop now, "" while it may go on: `narration` (the model's planning said aloud before
+    the disclosure) or `run_on` (words after the disclosure and its question, or after one more sentence)."""
+    at = _disclosed_at(said, assistant)
+    if at is None:
+        return "narration" if NARRATION.search(said) else ""
+    tail = said[at:]
+    end = re.search(r"\?|[.!][^.!?]*[.!]", tail)  # its question, or the disclosure's sentence and one more
+    return "run_on" if end and re.search(r"\w", tail[end.end():]) else ""
 
 
 class DisclosureGuard:
@@ -194,15 +226,23 @@ class DisclosureGuard:
             self._say(self.line)
 
 
+def firm(speech):
+    """The disclosure sentence plays out whatever the caller says. Set on the handle: `generate_reply` drops
+    `allow_interruptions=False` under the realtime model's server-side turns (agent_activity.py generate_reply
+    warns and passes NOT_GIVEN), so the opening was interruptible after #5108."""
+    speech.allow_interruptions = False
+    return speech
+
+
 def say_disclosure(session, line: str) -> None:
     """One-shot reply with that exact line, in the wording that made Gemini speak verbatim (the greeting tests).
     Gemini Live can't take a turn back out of its history, so the instruction says it is one-time."""
     logger.info("phone: first line lacked the disclosure; saying it once")
-    return session.generate_reply(
+    return firm(session.generate_reply(
         instructions=f'The disclosure was missed. Say exactly this, word for word, and nothing else: "{line}" '
         "This is a one-time line: do not say it again later in the call.",
         tool_choice="none",  # the compliance correction is spoken, never a delegate call
-    )
+    ))
 
 
 def line(session, instructions: str):
@@ -211,13 +251,13 @@ def line(session, instructions: str):
     return session.generate_reply(instructions=instructions, tool_choice="none")
 
 
-def greet(session) -> None:
+def greet(session):
     """The opening turn: the model speaks first, from the prompt (docs.livekit.io/agents/build/audio, "generate_reply"
     greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov).
-    Not interruptible, as in LiveKit's greeting example (`allow_interruptions=False`): a caller's "hi" over it cut the
-    disclosure off (8 Nov evals). Gemini's server-side turns ignore the flag (LiveKit logs a warning). Tools off: the
-    opening is spoken, never a delegate call."""
-    return session.generate_reply(allow_interruptions=False, tool_choice="none")
+    Not interruptible until its disclosure has played (`firm`; Receptionist.transcription_node frees it): a caller's
+    "hi" over it cut the disclosure off (8 Nov evals), and a whole opening held firm dropped the caller's first line
+    (8 Nov prod). Tools off: the opening is spoken, never a delegate call."""
+    return firm(session.generate_reply(tool_choice="none"))
 
 
 class Backend:
@@ -312,6 +352,22 @@ class Turns:
             await asyncio.gather(self._last, return_exceptions=True)
 
 
+class Ending:
+    """The call ends once, at the first of: the caller hanging up (their SIP participant left), our own hang-up,
+    or the job's shutdown. LiveKit only shuts the job down ~22 s after the caller leaves (8 Nov prod logs), which
+    every call billed. `durationSec` runs from answer (the caller joined) to that moment; the backend's `end`
+    counts the minutes once per call (#5086), and this posts it once."""
+
+    def __init__(self, answered: float, end) -> None:
+        self.answered, self._end = answered, end
+        self._task: asyncio.Task | None = None
+
+    def now(self, _reason: str = "") -> asyncio.Task:
+        if self._task is None:
+            self._task = asyncio.create_task(self._end(int(time.monotonic() - self.answered)))
+        return self._task
+
+
 class Receptionist(Talker):
     """The talker: no tool but `delegate`. Talker (mouth.py) holds its rules in code: an undelegated answer is cut
     and delegated, a result that adds a number or name is said again word for word."""
@@ -333,6 +389,56 @@ class Receptionist(Talker):
         self.allow = tuple(n for n in (info["assistantName"], info["businessName"], info.get("callerName")) if n)
         self.turns, self.hold = Turns(backend), hold
         self.did: list[str] = []  # what the call did itself, the record's summary (the Front desk adds its steps)
+        # the opening's speech id; whether the caller talked while it was firm
+        self.assistant, self.opening, self.spoke_over = info["assistantName"], "", False
+
+    async def transcription_node(self, text, model_settings):
+        """The opening as it is spoken: firm until its disclosure has played, then interruptible (cut now if the
+        caller is already talking); cut on `opening_cut`. Every other speech goes to Talker's checks."""
+        speech = self._speech()
+        if speech is None or speech.id != self.opening:
+            async for delta in super().transcription_node(text, model_settings):
+                yield delta
+            return
+        said, done = "", False
+        async for delta in text:
+            said += str(delta)
+            if not done:
+                done = self._opening_words(said, speech)
+            yield delta
+
+    def _opening_words(self, said: str, speech) -> bool:
+        """True once the opening has been cut (nothing more to check)."""
+        if not speech.allow_interruptions and _disclosed_at(said, self.assistant) is not None:
+            speech.allow_interruptions = True
+            if self.session.user_state == "speaking":  # they talked over the disclosure: it is said, so they win
+                speech.interrupt(force=True)
+                return True
+        if why := opening_cut(said, self.assistant):
+            logger.warning("phone: opening %s, speech cut", why)  # never the words: no transcript in logs
+            emit_metric("phone.opening.cut", 1, "Count", {"why": why})
+            speech.interrupt(force=True)
+            return True
+        return False
+
+    def caller_speaking(self) -> None:
+        """The caller started talking. Over the firm disclosure LiveKit skips the reply to that line; it is taken
+        after the opening (`after_opening`)."""
+        speech = self._speech()
+        if speech is not None and speech.id == self.opening and not speech.allow_interruptions:
+            self.spoke_over = True
+
+    def after_opening(self) -> None:
+        """The caller spoke over the disclosure and nothing has taken their line: delegate it now, with a holding
+        line (`_hold`; `held` keeps a late delegate call from posting it twice). A greeting needs nothing."""
+        if not self.spoke_over:
+            return
+        self.spoke_over = False
+        if self.asked or self.held or self.session.agent_state in ("speaking", "thinking"):
+            return  # a reply already has it
+        if self.session.user_state == "speaking" or (self.line and small_talk(self.line, self.allow)):
+            return  # still talking: their turn is answered when it ends; a "hi" was answered by the opening
+        self._hold()
 
     @function_tool(description=DELEGATE_DOC)
     async def delegate(
@@ -381,10 +487,10 @@ class Receptionist(Talker):
     agent_name=os.environ.get("PHONE_AGENT_NAME", "lightbulb-phone-dev")
 )
 async def entrypoint(ctx: JobContext) -> None:
-    started = time.monotonic()
     await ctx.connect()
     try:
         caller = await asyncio.wait_for(ctx.wait_for_participant(), AWAY_S * 2)
+        answered = time.monotonic()  # the SIP caller joins when the call is answered: billing starts here
     except TimeoutError:  # 8 Nov sims: a job that started after the caller left sat in the room for 12 minutes
         logger.info(
             "phone: nobody joined job %s; leaving", ctx.job.id
@@ -502,6 +608,9 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def hang_up(reason: str = "call max length") -> None:
         await ctx.delete_room()  # disconnects the SIP caller too
+        # the call ends as we hang up, not at the job's shutdown; no await after it, so on_end (which cancels the
+        # silent and max-length tasks that may be running this) starts only once this has returned
+        ending.now()
         ctx.shutdown(reason)
 
     silent: list[asyncio.Task] = []
@@ -538,6 +647,7 @@ async def entrypoint(ctx: JobContext) -> None:
             silent.pop().cancel()
 
     session.on("user_state_changed", lambda ev: ev.old_state == "speaking" and agent.turn_ended())
+    session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and agent.caller_speaking())
 
     limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up, agent.unchecked))
 
@@ -549,6 +659,7 @@ async def entrypoint(ctx: JobContext) -> None:
             agent.unchecked(line(session, text))  # a holding line, never an answer
 
     hold_lines.append(hold_line)
+
     async def fetch(after: int, _handled: int) -> dict:
         out = await backend.post("events", {"after": after})
         if out.get("error"):
@@ -565,7 +676,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     reports = asyncio.create_task(speak_loop(Mouth(fetch, int(info.get("after") or 0))))
 
-    async def on_end(_reason: str = "") -> None:
+    async def on_end(duration: int) -> None:
         limit.cancel()
         reports.cancel()
         hold.answered()
@@ -575,7 +686,7 @@ async def entrypoint(ctx: JobContext) -> None:
         out = await backend.post(
             "end",
             {
-                "durationSec": int(time.monotonic() - started),
+                "durationSec": duration,
                 "summary": "; ".join(agent.did),
                 "transcript": clean_transcript(items),
                 "disclosure": disclosure_of(items, info["assistantName"]),
@@ -587,7 +698,23 @@ async def entrypoint(ctx: JobContext) -> None:
             "phone: call %s ended outcome=%s", backend.call_id, out.get("outcome", out)
         )
 
-    ctx.add_shutdown_callback(on_end)
+    ending = Ending(answered, on_end)
+
+    async def shutdown(reason: str = "") -> None:
+        await ending.now(reason)
+
+    async def hung_up(end: asyncio.Task) -> None:
+        await end
+        ctx.shutdown("caller hung up")
+
+    left: list[asyncio.Task] = []  # held so the task is not garbage-collected
+
+    @ctx.room.on("participant_disconnected")
+    def _left(participant) -> None:
+        if participant.identity == caller.identity and not left:  # end now: the job lingers ~22 s, billed
+            left.append(asyncio.create_task(hung_up(ending.now())))
+
+    ctx.add_shutdown_callback(shutdown)
     await session.start(
         agent=agent,
         room=ctx.room,
@@ -600,7 +727,10 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    agent.unchecked(greet(session))  # the opening: DisclosureGuard judges it
+    opening = greet(session)  # the opening: DisclosureGuard judges it
+    agent.unchecked(opening)
+    agent.opening = opening.id
+    opening.add_done_callback(lambda _: asyncio.get_running_loop().call_later(AFTER_OPENING_S, agent.after_opening))
 
 
 if __name__ == "__main__":

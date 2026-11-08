@@ -135,7 +135,7 @@ async def test_a_line_said_over_the_firm_opening_is_delegated_in_code(monkeypatc
     assert r.line("Caller", "Can I book Saturday afternoon?") == "asked"
     await r.turns.flush()
     assert [(p, body["text"].split("\n\n")[0]) for p, body in b.calls] == [("turn", "Can I book Saturday afternoon?")]
-    assert replies == [{"instructions": mouth.HOLD, "tool_choice": "none"}]
+    assert replies == [{"instructions": mouth.HOLD, "user_input": mouth.line_input(mouth.HOLD), "tool_choice": "none"}]
     r, _s, b, replies = _receptionist(monkeypatch, _Speech(allow=False))
     assert r.line("Caller", "Hi") == "" and b.calls == [] and replies == []
 
@@ -398,7 +398,7 @@ async def test_a_paused_line_takes_every_line_as_a_message(monkeypatch):
     assert b.calls == [("message", {"text": "Are you open Sunday? Call me back please, it's Priya.", "name": "",
                                     "callbackNumber": ""})]  # fmt: skip
     assert r.did == ["Message: Are you open Sunday? Call me back please, it's Priya."]
-    assert replies == [{"instructions": mouth.fixed(phone.PAUSED), "tool_choice": "none"}]
+    assert replies == [{"instructions": mouth.fixed(phone.PAUSED), "user_input": mouth.line_input(mouth.fixed(phone.PAUSED)), "tool_choice": "none"}]
 
 
 async def test_a_message_asked_for_is_taken_on_the_next_line(monkeypatch):
@@ -512,7 +512,7 @@ def test_every_scripted_line_is_said_with_tools_off():
 
     for text in (phone.STILL_THERE, phone.SILENT_BYE, phone.HOLD_AGAIN, phone.OFFER_MESSAGE):
         phone.line(Session(), text)
-    assert made[:4] == [{"instructions": t, "tool_choice": "none"} for t in
+    assert made[:4] == [{"instructions": t, "user_input": mouth.line_input(t), "tool_choice": "none"} for t in
                     (phone.STILL_THERE, phone.SILENT_BYE, phone.HOLD_AGAIN, phone.OFFER_MESSAGE)]  # fmt: skip
     phone.greet(Session())
     phone.say_disclosure(Session(), "I'm Nova, an AI assistant, and this call is recorded.")

@@ -32,7 +32,7 @@ from openai.types.beta.realtime.session import TurnDetection
 
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import Mouth, Talker
+from huddle_agent.mouth import ENGLISH, LANGUAGE, Mouth, Talker
 from huddle_agent.transcript import (
     _LEADS,
     _LIGHTBULB,
@@ -68,7 +68,8 @@ You hear only the lines said to you, as "<who>: <words>". You own only the conve
 every fact, tool and decision, and every request goes to them before you hear it.
 - A greeting or thanks: answer it in a few words.
 - Otherwise say only what you are told to say: the holding line, or a message from the team, adding nothing.
-Speak briefly, one or two short sentences."""
+Speak briefly, one or two short sentences. """ + ENGLISH
+STT_LANGUAGE = LANGUAGE  # pinned, as the phone and the orb (openai.STT defaults to it today)
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
 
@@ -280,7 +281,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     readers: dict[str, asyncio.Task] = {}
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
-        model=TRANSCRIBE, use_realtime=True, turn_detection=STT_VAD,
+        model=TRANSCRIBE, use_realtime=True, turn_detection=STT_VAD, language=STT_LANGUAGE,
         prompt=f'A meeting at {meta.get("company") or "a business"}. People ask the AI assistant "{name}" things '
         f'by name: "{name}, ...".',
     )  # fmt: skip

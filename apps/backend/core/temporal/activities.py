@@ -347,11 +347,15 @@ async def _caller_profile(ws: str, triggers) -> str | None:
 
 #: A phone caller's task (and every sub-task of it) gets this much Worker time per attempt (end-state Task 4).
 CONTACT_RUN_BUDGET_S = 600
-#: A phone caller's Front desk thread: its answer is read out on the call (8 Nov prod: six slots offered).
+#: A phone caller's Front desk thread: its answer is read out on the call (8 Nov prod: six slots offered). After #5123:
+#: 9 AM picked for "the first time you said" with no times offered, and the service asked for only after "yes".
 CALLER_THREAD_NOTE = (
     " This task is for a caller on the phone: your answer is read out to them, so offer up to 3 open times, "
-    "never a longer list. Before you book, move or cancel, read the exact day and time back and wait for "
-    'their yes; a pick ("the first one works") is not a yes.'
+    "never a longer list, and never pick a time yourself before you have offered them. When the caller has "
+    "already named a service or time, reuse it; never ask for it again. Before you book, move or cancel, have "
+    "everything the booking needs (ask for a missing service with the times), then read the exact service, day and "
+    'time back once and wait for their yes; a pick ("the first one works") is not a yes. On their "yes", book it '
+    "at once, with no further question."
 )
 
 

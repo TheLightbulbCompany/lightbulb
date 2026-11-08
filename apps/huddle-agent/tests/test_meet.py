@@ -304,7 +304,7 @@ async def test_an_addressed_line_is_posted_by_code_and_only_the_holding_line_is_
     line = "Nova, draft a holiday-hours post and put the link in chat."
     assert t.line("Sam", line, user_input=f"Sam: {line}") == "asked"
     await asyncio.gather(*t._posts)
-    assert [b["text"] for b in sent] == [line] and replies == [{"instructions": mouth.HOLD, "tool_choice": "none"}]
+    assert [b["text"] for b in sent] == [line] and replies == [{"instructions": mouth.HOLD, "user_input": mouth.line_input(mouth.HOLD), "tool_choice": "none"}]
     assert t.line("Sam", "Thanks, Nova.", user_input="Sam: Thanks, Nova.") == "chat"
     assert replies[-1] == {"instructions": mouth.SMALL_TALK_RULE, "tool_choice": "none", "user_input": "Sam: Thanks, Nova."}
     assert len(sent) == 1

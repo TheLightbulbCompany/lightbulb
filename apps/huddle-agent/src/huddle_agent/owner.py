@@ -27,7 +27,7 @@ from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVa
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import Mouth, Talker, team_line
+from huddle_agent.mouth import ENGLISH, TRANSCRIPTION, Mouth, Talker, team_line
 from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
@@ -42,7 +42,7 @@ Today is {today}. You own only the conversation; the team behind you owns every 
 Every request goes to the team before you hear it, and a holding line is said for you.
 - Greetings, thanks, "are you there?", "can you hear me?": answer in a few words.
 - Otherwise say only what you are told to say: the holding line, or a message from the team, adding nothing.
-Speak briefly and naturally, one or two short sentences."""
+Speak briefly and naturally, one or two short sentences. """ + ENGLISH
 
 
 def realtime_model():
@@ -53,6 +53,7 @@ def realtime_model():
     return openai.realtime.RealtimeModel(
         model=os.environ.get("OWNER_MODEL", "gpt-realtime-2.1-mini"), voice=os.environ.get("OWNER_VOICE", "marin"),
         turn_detection=SemanticVad(type="semantic_vad", eagerness="low", create_response=False, interrupt_response=True),
+        input_audio_transcription=TRANSCRIPTION,  # English, as the phone: an unpinned language guessed wrong
     )
 
 

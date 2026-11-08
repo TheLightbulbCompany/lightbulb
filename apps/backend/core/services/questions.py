@@ -364,6 +364,11 @@ async def answerers(
     Returns `(answerers, rule, base)`: `base` is the non-admin part (requester, app creator, governance holders), kept
     so `can_answer_now` can re-check the admin part at answer time. Raises `NoAnswerer` on an empty list.
     """
+    inviter = task.get("ownerUserId")
+    if kind == "approval" and task.get("confirmAll") and inviter and inviter != ws:
+        # Founder ruling 8 Nov 2026: a meeting's Needs-your-OK card goes to the inviter only (the meeting acts under
+        # the inviter's authority, voice_meet.inviting_member), never to the workspace's other admins.
+        return [inviter], "inviter", [inviter]
     rule = await _current_rule(ws, subkind)
     if rule == "holders":
         base = list(holders or [])
@@ -394,6 +399,8 @@ async def can_answer_now(ws: str, q: dict, user_id: str) -> bool:
     members = await _members(ws)
     if user_id not in members:
         return False
+    if q["answererRule"] == "inviter":
+        return user_id in (q.get("baseAnswerers") or [])
     rule = await _current_rule(ws, q.get("subkind"))
     if rule != "admins" and user_id in (q.get("baseAnswerers") or []):
         return True  # requester, app creator or governance holder, and today's rule still has that seat

@@ -474,21 +474,16 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
     room_id = request["roomId"]
     meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
     since = int((request.get("meeting") or {}).get("inCallAt") or meeting.get("inCallAt") or 0)
-    done: list[str] = []
     if items and since:  # work the meeting already started, open or done, is not filed again (LB-24 vs LB-19)
         titles = await _meeting_task_titles(owner_id, room_id, since)
-        done = [i for i in items if covered(i, titles)]
-        items = [i for i in items if i not in done]
-    member = inviting_member(meeting, await messaging_repo.list_members(room_id)) if items or done else None
+        # Covered items stay out of the Router's message entirely (they are in the mailed notes): listed there, the
+        # Router handed them to the finished task, which ran again (8 Nov prod Meet re-run #3, LB-28 attempt 3).
+        items = [i for i in items if not covered(i, titles)]
+    member = inviting_member(meeting, await messaging_repo.list_members(room_id)) if items else None
     if member is None:
         return
     title = " ".join(((request.get("meeting") or {}).get("title") or meeting.get("title") or "Meeting").split())
-    already = "\n".join(f"Already a thread: {i}" for i in done)
-    if items:
-        text = f"Action items from the meeting {title}, one thread each:\n" + "\n".join(f"- {i}" for i in items)
-        text += f"\n\n{already}" if already else ""
-    else:
-        text = f"Action items from the meeting {title} are already threads:\n{already}"
+    text = f"Action items from the meeting {title}, one thread each:\n" + "\n".join(f"- {i}" for i in items)
     await messaging.create_human_message(
         AuthContext(user_id=member, org_id=owner_id),
         room_id,
@@ -499,7 +494,6 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
             thread_root_message_id=None,
         ),
         via="meeting_notes",  # nobody spoke it: no spoken-reply hint (admission still tags origin=meeting)
-        **({} if items else {"wake": False}),  # only "already a thread" lines: nothing for the Router to start
     )
 
 

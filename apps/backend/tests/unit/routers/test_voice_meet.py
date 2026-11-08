@@ -214,10 +214,37 @@ async def test_a_worker_question_in_a_thread_is_said_with_its_ref():
     """8 Nov prod Meet: Pulse's question (msg 8) went to the meeting room's thread and was never said."""
     rows = [QROW, {"messageId": "a3", "messageSeq": 9, "author": {"kind": "agent"}, "text": "x",
                    "threadRootMessageId": "t"}]  # fmt: skip
-    with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
+    with _open_questions("q-17b4"), patch.object(voice_meet.messaging_repo, "list_messages",
+                                                 AsyncMock(return_value=(rows, None))):  # fmt: skip
         out = await voice_meet.agent_lines(ROOM, 4)
     assert out["messages"] == [{"id": "q1", "seq": 8, "text": QROW["text"],
                                 "question": {"taskId": "k1", "qid": "q-17b4"}}]  # fmt: skip
+
+
+def _open_questions(*qids):
+    from contextlib import ExitStack
+
+    from core.repositories import questions_repo
+
+    async def get(ws, task_id, qid):
+        assert ws == "org_1"
+        return {"qid": qid, "state": "open" if qid in qids else "answered"}
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch.object(voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1"}))
+    )
+    stack.enter_context(patch.object(questions_repo, "get_question", get))
+    return stack
+
+
+async def test_an_answered_or_closed_question_is_never_said():
+    """8 Nov prod Meet re-run #3: Pulse's answered holiday-hours question kept being said, over Vera's question."""
+    vera = {**QROW, "messageId": "q2", "messageSeq": 9, "taskRefs": [{"taskId": "k2", "role": "started", "qid": "q-2"}]}
+    with _open_questions("q-2"), patch.object(voice_meet.messaging_repo, "list_messages",
+                                              AsyncMock(return_value=([QROW, vera], None))):  # fmt: skip
+        out = await voice_meet.agent_lines(ROOM, 4)
+    assert [m["id"] for m in out["messages"]] == ["q2"] and out["after"] == 9
 
 
 def _ask(**over):

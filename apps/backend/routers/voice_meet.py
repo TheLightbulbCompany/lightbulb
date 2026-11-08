@@ -68,12 +68,19 @@ async def agent_lines(room_id: str, after: int) -> dict:
     lines and progress lines are not said, except a Worker's question in a thread this room started (with its
     `question` ref: the next line said to the voice answers it, `answer_said_question`); the meeting never heard
     one and the task waited on it (8 Nov prod Meet). The voice says these word for word (huddle-agent mouth.py)."""
+    from core.repositories import questions_repo
+
     rows, _ = await messaging_repo.list_messages(room_id, after, 100)
-    said = []
+    said, owner = [], None
     for r in rows:
         text, question = r.get("editedText") or r.get("text") or "", _question_ref(r)
         if (r.get("author") or {}).get("kind") != "agent" or r.get("progress") or r.get("deletedAt"):
             continue
+        if question:  # answered or closed (on its card, or by voice) before the voice got to it: never said
+            owner = owner or ((await messaging_repo.get_room(room_id)) or {}).get("ownerId")
+            q = await questions_repo.get_question(owner, question["taskId"], question["qid"]) if owner else None
+            if (q or {}).get("state") != "open":
+                continue
         if text.strip() and (question or not r.get("threadRootMessageId")):
             said.append({"id": r["messageId"], "seq": int(r["messageSeq"]), "text": text,
                          **({"question": question} if question else {})})  # fmt: skip

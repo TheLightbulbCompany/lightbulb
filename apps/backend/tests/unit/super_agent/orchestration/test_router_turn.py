@@ -486,6 +486,19 @@ async def test_workspace_actor_person_task_is_clamped_in_an_org_only(world):
 
 
 @pytest.mark.asyncio
+async def test_meeting_flag_inherited_by_subtask(world):
+    trig = {"triggerId": "voice:m1", "source": "voice", "ref": {"confirmAll": True}, "actorUserId": SAM}
+    parent = await acts._ensure_task(WS, ts.new_task_id(), trig, "shared", "queued", title="p", visibility="room")
+    assert parent["confirmAll"] is True
+    plain = {"triggerId": "chat:c1", "source": "chat", "ref": {}, "actorUserId": SAM}
+    child = await acts._ensure_task(
+        WS, ts.new_task_id(), plain, "shared", "queued", title="c", visibility="room", parentTaskId=parent["taskId"]
+    )
+    other = await acts._ensure_task(WS, ts.new_task_id(), plain, "shared", "queued", title="o", visibility="room")
+    assert child["confirmAll"] is True and not other.get("confirmAll")
+
+
+@pytest.mark.asyncio
 async def test_invalid_specialist_dropped(world):
     t1 = await _trig("chat:m1")
     t2 = await _trig("chat:m2")

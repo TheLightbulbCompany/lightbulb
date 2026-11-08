@@ -219,7 +219,11 @@ async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> di
 
 
 async def start_voice_work(
-    owner_id: str, body: VoiceStartIn, origin: str | None = None, ask: dict | None = None
+    owner_id: str,
+    body: VoiceStartIn,
+    origin: str | None = None,
+    confirm_all: bool = False,
+    ask: dict | None = None,
 ) -> dict:
     """The task behind voice-start, for callers already authorized another way (the phone worker). `origin`
     (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task.
@@ -262,6 +266,7 @@ async def start_voice_work(
             "taskId": task_id,
             "start": start.model_dump(by_alias=True),
             **({"origin": origin} if origin else {}),
+            **({"confirmAll": True} if confirm_all else {}),  # a meeting's task: every effect gets a card
             **({"ask": ask} if ask else {}),
         },
     )

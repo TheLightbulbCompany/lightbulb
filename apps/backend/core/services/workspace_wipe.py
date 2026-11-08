@@ -620,8 +620,8 @@ async def _messaging_run(snap: WorkspaceSnapshot) -> str:
             continue
         deleted += await messaging_repo.delete_room_partition(room_id)
         owned += 1
+    deleted += bool(await voice_onboarding.release_number(snap.org_id))  # the PHONE# line row, before the page goes
     deleted += await messaging_repo.delete_owner_partition(snap.org_id)
-    deleted += await voice_onboarding.release_number(snap.org_id)  # the PHONE# line row
     detail = f"deleted {owned} room partition(s) and {deleted} messaging row(s)"
     if foreign:
         detail += f"; skipped {len(foreign)} room(s) owned elsewhere: {', '.join(foreign)}"

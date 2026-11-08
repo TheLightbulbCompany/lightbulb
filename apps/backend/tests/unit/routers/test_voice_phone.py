@@ -422,3 +422,25 @@ def _utc(day: str, hm: str) -> str:  # New York wall time -> the UTC cell key
 
     t = datetime.strptime(f"{day}T{hm}", "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("America/New_York"))
     return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+
+
+async def test_end_emits_outcome_metric(client, monkeypatch):
+    """The end of a call emits VoiceCallOutcome tagged with the outcome; a failing emit never fails the route."""
+    seen = []
+    monkeypatch.setattr(voice_phone, "put_metric", lambda name, **kw: seen.append((name, kw["dimensions"])))
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    assert client.post(url, json={"durationSec": 30}, headers=W).json()["outcome"] == "answered"
+    assert seen == [("VoiceCallOutcome", {"outcome": "answered"})]
+
+    def boom(*a, **k):
+        raise RuntimeError("emf down")
+
+    monkeypatch.setattr(voice_phone, "put_metric", boom)
+    again = await _start(client, room="phone-dev-_x")
+    assert (
+        client.post(
+            f"/api/v1/internal/voice/calls/{again['callId']}/end", json={"durationSec": 5}, headers=W
+        ).status_code
+        == 200
+    )

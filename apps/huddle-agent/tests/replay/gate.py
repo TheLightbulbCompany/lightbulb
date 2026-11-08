@@ -93,7 +93,7 @@ def judge(name: str) -> list[tuple[str, str, str]]:
         return default if k is None else lines[k][edge] if k < len(lines) else None
 
     out = []
-    for e in scenario["expect"]:
+    for e in scenario.get("meet_expect", scenario["expect"]):  # a scenario the Meet gate judges differently from the huddle engine
         kind, s = next(iter(e.items()))
         if kind == "ack_within":
             end = at(s["line"], "end", None)

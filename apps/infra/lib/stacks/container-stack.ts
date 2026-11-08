@@ -663,7 +663,7 @@ export class ContainerStack extends cdk.Stack {
       // on cdk-* roles) doesn't need broader ECR perms. Created in dev only
       // (account-scoped role, single source of truth). The `openclaw` in its
       // name is a scar — renaming replaces the role, and build-hermes-image.yml
-      // and build-paperclip-image.yml hardcode this ARN.
+      // hardcodes this ARN.
       const oidcProviderArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
       const oidcProvider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
         this,
@@ -682,13 +682,10 @@ export class ContainerStack extends cdk.Stack {
             "token.actions.githubusercontent.com:sub":
               "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-            "token.actions.githubusercontent.com:workflow": [
-              "build-paperclip-image",
-              "build-hermes-image",
-            ],
+            "token.actions.githubusercontent.com:workflow": ["build-hermes-image"],
           },
         }),
-        description: "Used by .github/workflows/build-{paperclip,hermes}-image.yml to push to ECR",
+        description: "Used by .github/workflows/build-hermes-image.yml to push to ECR",
         maxSessionDuration: cdk.Duration.minutes(60),
       });
       builderRole.addToPolicy(
@@ -699,19 +696,9 @@ export class ContainerStack extends cdk.Stack {
         }),
       );
 
-      // The build-paperclip-image workflow uses this same OIDC role to push the
-      // extended Paperclip image (apps/infra/paperclip-extended/). Grant it
-      // pull+push on that account-scoped repo too.
-      const paperclipExtendedRepo = ecr.Repository.fromRepositoryName(
-        this,
-        "PaperclipExtendedRepoForBuilder",
-        "lightbulb/paperclip-extended",
-      );
-      paperclipExtendedRepo.grantPullPush(builderRole);
-
       // The build-hermes-image workflow (Task 20) uses this same OIDC role to push the
       // Hermes bridge image. The repo itself already exists (the spike pushed to it
-      // manually) — referenced by name here only for this grant, same as the two above.
+      // manually) — referenced by name here only for this grant.
       const hermesAgentRepoForBuilder = ecr.Repository.fromRepositoryName(
         this,
         "HermesAgentRepoForBuilder",

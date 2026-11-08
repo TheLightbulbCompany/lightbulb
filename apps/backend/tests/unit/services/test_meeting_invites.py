@@ -889,23 +889,6 @@ async def test_a_new_meeting_and_every_written_change_nudge_the_mail_panel(room)
     nudge.assert_not_awaited()
 
 
-async def test_the_voice_limit_is_said_in_the_meets_chat_once_an_occurrence(room, monkeypatch):
-    say = AsyncMock()
-    monkeypatch.setattr(meeting_invites.meeting_bots, "say", say)
-    room.state["meta"] = {"roomId": "r", "revision": 1, "meeting": {"status": "in_call"}}
-    await meeting_invites.say_voice_limit("r", "free_minutes_used")  # no bot in the call: nothing to say it
-    say.assert_not_awaited()
-    room.state["meta"]["meeting"]["recallBotId"] = "bot-1"
-    await meeting_invites.say_voice_limit("r", "free_minutes_used")
-    await meeting_invites.say_voice_limit("r", "free_minutes_used")  # the worker asks again on the next line
-    say.assert_awaited_once()
-    assert say.await_args.args[0] == "bot-1" and "free voice minutes" in say.await_args.args[1]
-    assert "limitSaid" in meeting_invites._OCCURRENCE_KEYS  # the next occurrence says it again
-    say.side_effect = RuntimeError("recall down")
-    room.state["meta"]["meeting"].pop("limitSaid")
-    await meeting_invites.say_voice_limit("r", None)  # fired and forgotten: never raises
-
-
 NO_START = "DTSTART;TZID=America/New_York:20261003T150000\r\n"
 
 

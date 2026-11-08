@@ -21,10 +21,6 @@ if (!(Number(OPENROUTER_MARKUP) >= 1)) throw new Error(`openrouter-pricing.json 
 
 export interface OpenRouterGateStackProps extends cdk.StackProps {
   environment: string;
-  /** Public API host (e.g. api.thelightbulb.company); settlement reports per-agent cost to it. */
-  apiDomain: string;
-  /** Secrets Manager name of the shared `x-lightbulb-ws-internal` secret. */
-  wsInternalSecretName: string;
 }
 
 /** Managed OpenRouter inference gate + settlement worker, one per env. */
@@ -145,9 +141,6 @@ export class OpenRouterGateStack extends cdk.Stack {
         // Settled OpenRouter cost is added here: the backend's own usage counters price only Bedrock.
         USAGE_COUNTERS_TABLE: `${tablePrefix(env)}usage-counters`,
         RESERVE_TTL_SECONDS: "1200",
-        // Best-effort per-agent cost report to the backend, which feeds Paperclip's budgets.
-        BACKEND_INTERNAL_URL: `https://${props.apiDomain}`,
-        WS_INTERNAL_SECRET_ID: props.wsInternalSecretName,
         METRONOME_API_KEY_SECRET_ID: `lightbulb/${env}/metronome_api_key`,
         OPENROUTER_MANAGEMENT_KEY_SECRET_ID: `lightbulb/${env}/openrouter/management`,
         OPENROUTER_WORKSPACE_ID: env === "dev"
@@ -176,7 +169,6 @@ export class OpenRouterGateStack extends cdk.Stack {
         `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/openrouter/owners/*`,
         `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/openrouter/management-*`,
         `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/metronome_api_key-*`,
-        `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.wsInternalSecretName}-*`,
       ],
     }));
     // Secrets Manager too: metronome_api_key is on a CMK, and paid rows can't ingest without it

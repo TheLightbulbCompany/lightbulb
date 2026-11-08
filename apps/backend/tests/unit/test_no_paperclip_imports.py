@@ -92,7 +92,6 @@ MENTIONS = {
     "core/services/task_conversation.py",
     "core/services/trigger_fire_url.py",
     "core/services/update_service.py",
-    "core/services/voice_calls.py",
     "core/services/workspace_wipe.py",
     "core/tasks_schema.py",
     "core/temporal/activities.py",

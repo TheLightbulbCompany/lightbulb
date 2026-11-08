@@ -31,12 +31,10 @@ export interface AuthStackProps extends cdk.StackProps {
 export class AuthStack extends cdk.Stack {
   public readonly secrets: AuthSecrets;
   public readonly kmsKey: kms.Key;
-  public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly paperclipEventsWebhookSecret: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
   public readonly networkProofKey: secretsmanager.Secret;
-  public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly cloudflareWarpEnrollment: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
@@ -127,16 +125,8 @@ export class AuthStack extends cdk.Stack {
       huddleWorkerSecret: createSecret("HuddleWorkerSecret", "huddle_worker_secret"),
     };
 
-    // Paperclip secrets (Task 3 — Paperclip rebuild). These do not flow through
-    // the AuthSecrets struct because they are consumed only by the
-    // service-stack's Paperclip-specific wiring + Lambda authorizer (Task 4+).
-    this.paperclipBetterAuthSecret = createSecret(
-      "PaperclipBetterAuthSecret",
-      "paperclip_better_auth_secret",
-      { passwordLength: 64, excludePunctuation: true },
-      "Required by Paperclip server for cookie/session signing; not consumed by Isol8 backend.",
-    );
-
+    // Paperclip-named but generic: the backend signs service tokens, share links,
+    // Needs-you and digest links with this key (core/services/service_token.py).
     this.paperclipServiceTokenKey = createSecret(
       "PaperclipServiceTokenKey",
       "paperclip_service_token_key",
@@ -244,32 +234,6 @@ export class AuthStack extends cdk.Stack {
       "Signing key for narrow runtime callback grants.",
     );
 
-    // Bootstrap admin Better Auth credentials. CDK creates the secret
-    // with a placeholder; the operator populates it via
-    // apps/backend/scripts/bootstrap_paperclip_admin.py (run via
-    // `aws ecs execute-command` against the backend task — see the
-    // script's docstring for the runbook). Backend reads it at first
-    // provisioning call via core/services/paperclip_admin_session.py.
-    // Encrypted with the same CMK as other auth secrets so the existing
-    // KmsDecryptForSecrets policy on the backend task role covers it.
-    //
-    // The email written into this secret is whatever ADMIN_EMAIL the
-    // bootstrap script holds at run time — currently
-    // ``admin+paperclip@isol8.co`` (a plus-addressed alias of
-    // admin@isol8.co, kept distinct so the bootstrap admin's
-    // instance_admin role doesn't leak into admin@isol8.co's regular
-    // Isol8 user identity). Legacy envs (dev) carry the bare
-    // ``admin@isol8.co`` from before the rename — safe there only
-    // because no dev user has signed up with that email.
-    this.paperclipAdminCredentials = createSecret(
-      "PaperclipAdminCredentials",
-      "paperclip_admin_credentials",
-      // Placeholder string — bootstrap script overwrites with
-      // {"email": "<ADMIN_EMAIL>", "password": "<32-byte-random>"}.
-      { passwordLength: 16, excludePunctuation: true },
-      "Paperclip bootstrap admin Better Auth credentials (JSON: {email,password}). Populated by bootstrap_paperclip_admin.py - placeholder until then.",
-    );
-
     // Password the gog CLI's file-keyring backend uses to encrypt/decrypt the
     // owner's Google OAuth keyring on EFS (GOG_KEYRING_BACKEND=file +
     // GOG_KEYRING_PASSWORD). The SAME value is injected into both the backend
@@ -294,7 +258,7 @@ export class AuthStack extends cdk.Stack {
     // browser egress. JSON: {"organization","auth_client_id","auth_client_secret"}
     // — a ZT team name plus a service token with device-enrollment permission.
     //
-    // Placeholder-until-set, like paperclipAdminCredentials: CDK generates a
+    // Placeholder-until-set: CDK generates a
     // random string on first create and a human pastes the real JSON in after
     // the Zero Trust org exists. That is a designed state, not a broken one —
     // isol8-warp-boot.sh treats "not enrollment JSON" as "skip, browser egress

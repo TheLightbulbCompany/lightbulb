@@ -7,17 +7,12 @@ from fastapi.testclient import TestClient
 
 from core import tasks_schema as ts
 from core.repositories import tasks_repo
-from core.services import voice_calls as vc
-from tests.unit.services.test_voice_huddle_calls import _dispatch, run_env  # noqa: F401 — O's harness, reused
 
 WS = "org_1"
 ROOM = "11111111-1111-4111-8111-111111111111"
 RUN = "22222222-2222-4222-8222-222222222222"
 CALL = "win-1"
 BODY = {"runId": RUN, "callId": CALL, "roomId": ROOM, "title": "Draft the launch mail", "brief": "Write it for Monday."}
-
-# origin/main's TURN_NOTE, byte for byte: the switch-off path must keep sending exactly this.
-TURN_NOTE_SHA = "84cd3f1700ac67643c8ddbae91e0e82b3e4fed478917b9f947eb2e1d86ce18ec"
 
 
 # --- the route ---------------------------------------------------------------------------------------------
@@ -96,17 +91,6 @@ async def test_a_guest_cannot_start_work(api):
 async def test_unknown_or_foreign_run_404(api):
     assert _post(api, BODY | {"runId": "nope"}).status_code == 404
     assert _post(api, BODY | {"roomId": "other-room"}).status_code == 404  # the run's room is the truth
-
-
-# --- the spoken turn ----------------------------------------------------------------------------------------
-
-
-async def test_the_turn_offers_start_work_and_keeps_the_flag(run_env):  # noqa: F811
-    await _dispatch()
-    req = run_env.await_args.kwargs["json_body"]["request"]
-    assert req["superAgent"] is True  # pinned runtime images offer start_work only with it
-    assert req["instructions"] == vc.TURN_NOTE
-    assert "start_work" in vc.TURN_NOTE and "paperclip" not in vc.TURN_NOTE.lower()
 
 
 # --- a caller's work stays the caller's, at any depth, with a budget (end-state Task 4; audit H) --------------------

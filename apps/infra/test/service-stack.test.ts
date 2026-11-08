@@ -33,7 +33,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     env,
     environment,
     kmsKey,
-    vpc: network.vpc,
   });
 
   const container = new ContainerStack(app, `Container-${environment}`, {
@@ -682,41 +681,37 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  // Account-wipe (Task 7 fix): the in-backend teardown deletes the owner's
-  // Paperclip Better Auth "user" row via the RDS Data API, which needs three
-  // grants the task role otherwise lacks. These live in the inline default
-  // policy (AWS::IAM::Policy) via addToPolicy — unlike the bedrock-role-delete
-  // grant, which lives in the dedicated ManagedPolicy. Assertions are
-  // non-vacuous: each asserts the action IS present AND the resource is the
-  // expected scoped ARN (not a bare "*"), except ListSecrets which IS "*".
-  test("backend role can run the Paperclip Aurora-user delete (rds-data:ExecuteStatement scoped to the paperclip cluster)", () => {
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Sid: "AccountWipePaperclipAuroraExec",
-            Action: "rds-data:ExecuteStatement",
-            Resource:
-              "arn:aws:rds:us-east-1:877352799272:cluster:lightbulb-dev-paperclip-db",
-          }),
-        ]),
-      }),
-    });
+  // Paperclip exit: wipes no longer touch the Paperclip Aurora cluster, which is
+  // being removed, so the Data API and DB-secret grants are gone.
+  test("backend role has no Paperclip Aurora or admin-credentials grants", () => {
+    const rendered = JSON.stringify(SERVICE_TEMPLATE_DEV.toJSON());
+    for (const sid of ["AccountWipePaperclipAuroraExec", "AccountWipePaperclipDbSecretRead", "PaperclipAdminCredentialsWrite"]) {
+      expect(rendered).not.toContain(sid);
+    }
+    expect(rendered).not.toContain("rds-data:ExecuteStatement");
   });
 
-  test("backend role can read the dash-named paperclip-db-credentials secret (GetSecretValue scoped, not the slash-named wildcard)", () => {
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Sid: "AccountWipePaperclipDbSecretRead",
-            Action: "secretsmanager:GetSecretValue",
-            Resource:
-              "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb-dev-paperclip-db-credentials-*",
-          }),
-        ]),
-      }),
-    });
+  // Lead ruling (task 10): CDK stops handing the backend PAPERCLIP_PUBLIC_URL and the
+  // Paperclip admin credentials (task 9 removed both reads); the three it still reads stay.
+  test("backend gets no PAPERCLIP_PUBLIC_URL and is denied the Paperclip admin credentials", () => {
+    const env = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .flatMap((c: any) => [...(c.Environment ?? []), ...(c.Secrets ?? [])].map((e: any) => e.Name));
+    expect(env).not.toContain("PAPERCLIP_PUBLIC_URL");
+    for (const kept of ["PAPERCLIP_SERVICE_TOKEN_KEY", "PAPERCLIP_EVENTS_WEBHOOK_SECRET", "PAPERCLIP_INTERNAL_URL"]) {
+      expect(env).toContain(kept);
+    }
+    const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>
+      Object.values(SERVICE_TEMPLATE_DEV.findResources(type)).flatMap(
+        (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+      ),
+    );
+    const deny = statements.find((st: any) => st.Sid === "DenyPaperclipAdminCredentialsRead");
+    expect(deny.Effect).toBe("Deny");
+    expect([deny.Action].flat()).toContain("secretsmanager:GetSecretValue");
+    expect([deny.Resource].flat()).toContain(
+      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/paperclip_admin_credentials-*",
+    );
   });
 
   test("backend role can list secrets (metadata-only, resource '*' — the paginated ARN discovery)", () => {

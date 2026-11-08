@@ -103,7 +103,7 @@ export class NetworkStack extends cdk.Stack {
     // WAF web ACL on the ALB — COUNT ONLY. WAFv2 cannot attach to an API Gateway
     // HTTP API (REST APIs only), and the AppSync Event API is not a supported
     // resource, so the ALB behind the VPC Link is the one choke point that
-    // covers the backend REST, the Paperclip host route and the bv- listener.
+    // covers the backend REST and the bv- listener.
     // Every rule counts and the default action is allow: this ships to read the
     // metrics. Switching to block is a separate, owner-approved change, and
     // test/network-stack.test.ts fails if a rule stops being count-only.
@@ -202,25 +202,16 @@ export class NetworkStack extends cdk.Stack {
               evaluationWindowSec: 300,
               aggregateKeyType: "FORWARDED_IP",
               forwardedIpConfig: { headerName: "X-Lightbulb-Client-Ip", fallbackBehavior: "NO_MATCH" },
-              // company[-env] requests are reverse-proxied by Vercel (next.config.ts),
-              // so their source IP is a shared Vercel egress, not a user: leave them
-              // out rather than pool unrelated users into one bucket. Vercel rewrites
-              // them onto the api[-env] host under this path prefix (the host header
-              // API GW sees is api[-env], so the path is the only marker).
-              // The bv- door (/api/v1/gateway/*) is out too: CloudFront forwards every
+              // The bv- door (/api/v1/gateway/*) is scoped out: CloudFront forwards every
               // viewer header there, so a client could set X-Lightbulb-Client-Ip itself.
               scopeDownStatement: {
                 notStatement: {
                   statement: {
-                    orStatement: {
-                      statements: ["/__paperclip_proxy__", "/api/v1/gateway/"].map((prefix) => ({
-                        byteMatchStatement: {
-                          searchString: prefix,
-                          fieldToMatch: { uriPath: {} },
-                          positionalConstraint: "STARTS_WITH",
-                          textTransformations: [{ priority: 0, type: "NONE" }],
-                        },
-                      })),
+                    byteMatchStatement: {
+                      searchString: "/api/v1/gateway/",
+                      fieldToMatch: { uriPath: {} },
+                      positionalConstraint: "STARTS_WITH",
+                      textTransformations: [{ priority: 0, type: "NONE" }],
                     },
                   },
                 },
@@ -339,7 +330,7 @@ export class NetworkStack extends cdk.Stack {
     browserViewListener.addAction("BrowserViewRelay", {
       priority: 10,
       // The raw machine-relay WS door (routers/gateway_relay.py — desktop node
-      // hosts + Paperclip operators) is the only route left on this listener:
+      // hosts) is the only route left on this listener:
       // /api/v1/browser-view/* went with routers/browser_view.py, so the cap is
       // narrowed to match. A device or service token authenticates at the
       // application layer; widening this pattern widens what a hostile in-VPC

@@ -1,18 +1,15 @@
 """Huddles ("Live"): LiveKit rooms for every room kind, with Lightbulb (the CEO worker) as a summoned voice. See docs/superpowers/specs/2026-10-01-huddles-design.md.
 
-Three auth models: Clerk for people (`/huddles/*`), the worker secret for the CEO worker
-(`/internal/huddles/*`), and the owner's hook token for the bridge's frame relay
-(`/internal/huddles/{ownerId}/rooms/{roomId}/frames`).
+Two auth models: Clerk for people (`/huddles/*`) and the worker secret for the voice worker
+(`/internal/huddles/{roomId}/transcript`).
 """
 
 import contextlib
 import hmac
 import logging
-import uuid
-from typing import Annotated, Any, Literal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -20,15 +17,11 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
 from core.services import livekit_huddles, meeting_invites, meeting_notes, messaging, voice_calls
-from core.services.live_events import get_live_event_publisher
-from routers.messaging import _require_hook_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _Id = Annotated[str, Field(min_length=1, max_length=128)]
-# A Meet speaker's label ("Priya", "Priya + Dan"): shown in a meeting room, never used to authorize.
-_SpeakerName = Annotated[str | None, Field(max_length=120)]
 DISPATCH_DEDUPE_S = 40
 
 
@@ -56,75 +49,9 @@ def _room_id(room_id: str) -> str:
     return messaging.validate_uuid(room_id, label="room ID")
 
 
-async def _worker_call(call_id: str, token: str) -> dict:
-    call = await voice_calls.get_call(call_id)
-    if not call:
-        raise _problem(404, "call_not_found")
-    _require_room_token(token, call.get("roomId") or "", call["ownerId"])
-    return call
-
-
 class RoomBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
-
-
-class SummonBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
-    speakerUserId: _Id
-    speakerName: _SpeakerName = None
-
-
-class TurnBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
-    speakerUserId: _Id
-    speakerName: _SpeakerName = None
-    agentId: _Id
-    runId: uuid.UUID  # the worker's, once per delegation and resent on every retry
-    utterance: str = Field(min_length=1, max_length=4_000)
-    transcript: str = Field(default="", max_length=12_000)
-    steerRunId: uuid.UUID | None = None
-    steerOnly: bool = False  # steer steerRunId or do nothing: lines said in the room never start a run (v2 §4.3)
-    # The same spoken turn's other asks ("Forge is answering ..."), for a new run's input (engine §3.4).
-    requests: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=8)
-
-
-class RouteBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
-    speakerUserId: _Id
-    utterance: str = Field(min_length=1, max_length=4_000)
-    transcript: str = Field(default="", max_length=12_000)
-    humans: int | None = Field(default=None, ge=0, le=128)  # people in the call; None: the Lightbulb wake word
-    # Live's open requests for Jev (routing v2 §5): {agent, speaker} holding the floor, [{agent, request}].
-    # ``mine``: the speaker is the person the floor agent is talking with (understanding §4.4).
-    floor: dict[str, str | bool] | None = None
-    voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)  # a worker before ``open``
-    # The worker's request list (understanding §4.4): open rows and the newest answered ones, each with its
-    # ``asker`` and how far its answer has been said (``delivery``).
-    open: list[dict[str, str]] = Field(default_factory=list, max_length=12)
-    # Who the speaker is talking with, one per agent, newest first: {agentId, obligation, task, state, expects,
-    # why, last, lastBy, seconds}. What a meeting line with no name on it is routed on (voice_calls._engaged).
-    engagements: list[dict[str, str | int]] = Field(default_factory=list, max_length=8)
-    # Epoch seconds the transcript's last lines were said, oldest first, aligned to its end (Live reask rule).
-    at: list[int] = Field(default_factory=list, max_length=30)
-    setting: Literal["live", "meeting"] = "live"  # "meeting": a Google Meet, stricter floor
-    unclaimed: bool = False  # a question to the room nobody took for 3.5 s (the worker measures it)
-
-
-class EndBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
-    usageSeconds: int = Field(ge=0)
-
-
-class PresenceBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
-    userIds: list[_Id] = Field(max_length=128)
-    version: int = Field(default=0, ge=0)  # monotonic per worker; a stale (reordered) snapshot is dropped
 
 
 class TranscriptLine(BaseModel):
@@ -149,19 +76,6 @@ class TranscriptBody(BaseModel):
         if not self.final and len(self.lines) > 500:  # rolling flushes stay small; only `final` is whole
             raise ValueError("a non-final transcript batch holds at most 500 lines")
         return self
-
-
-class LateAnswerBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
-    agentId: _Id
-    runId: _Id
-    request: str = Field(default="", max_length=2000)
-    answer: str = Field(max_length=20000)
-
-
-class FramesBody(BaseModel):
-    events: list[dict[str, Any]] = Field(max_length=50)
 
 
 @router.post("/huddles/{room_id}/join")
@@ -253,121 +167,6 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
     return {"userIds": user_ids, "available": True, "lightbulb": lightbulb}
 
 
-@router.post("/internal/huddles/{room_id}/summon", dependencies=[_Worker])
-async def summon(room_id: str, body: SummonBody):
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    # open_voice_window's _room_team 404s unless body.ownerId owns the room and the speaker is a member.
-    try:
-        return await voice_calls.open_voice_window(
-            owner_id=body.ownerId, room_id=room_id, speaker_user_id=body.speakerUserId
-        )
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        if detail.get("code") == "voice_limit":  # a Meet's people learn it in the meeting's chat
-            voice_calls._fire(meeting_invites.say_voice_limit(room_id, detail.get("reason")))
-        raise
-
-
-@router.post("/internal/huddles/{room_id}/team", dependencies=[_Worker])
-async def team(room_id: str, body: RoomBody):
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    return await voice_calls.huddle_team(owner_id=body.ownerId, room_id=room_id)
-
-
-@router.post("/internal/huddles/{room_id}/agents/{agent_id}/session", dependencies=[_Worker])
-async def agent_session(room_id: str, agent_id: str, body: RoomBody):
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    return await voice_calls.agent_session(owner_id=body.ownerId, room_id=room_id, agent_id=agent_id)
-
-
-@router.post("/internal/huddles/{room_id}/agents/{agent_id}/meet-voice", dependencies=[_Worker])
-async def agent_meet_voice(room_id: str, agent_id: str, body: RoomBody):
-    """The voice that reads this agent's ready answer in a Meet. Not `/session`: that one claims the one-time
-    "what should I call you" prompt, which a read-aloud answer never asks."""
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    return await voice_calls.agent_meet_voice(owner_id=body.ownerId, room_id=room_id, agent_id=agent_id)
-
-
-@router.post("/internal/huddles/calls/{call_id}/turns", dependencies=[_Worker])
-async def turn(call_id: str, body: TurnBody):
-    call = await _worker_call(call_id, body.roomToken)
-    if call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId or call.get("status") != voice_calls.OPEN:
-        raise _problem(404, "call_not_found")
-    args = {
-        "call": call,
-        "agent_id": body.agentId,
-        "speaker_id": body.speakerUserId,
-        "speaker_name": body.speakerName,
-        "utterance": body.utterance,
-    }
-    if body.steerRunId:
-        steered = await voice_calls.steer_voice_run(run_id=str(body.steerRunId), **args)
-        if steered:
-            return steered
-    if body.steerOnly:
-        return {"runId": str(body.steerRunId), "agentId": body.agentId, "steered": False}
-    return await voice_calls.dispatch_voice_run(
-        run_id=str(body.runId), transcript=body.transcript, requests=body.requests, **args
-    )
-
-
-@router.post("/internal/huddles/{room_id}/route", dependencies=[_Worker])
-async def route(room_id: str, body: RouteBody):
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    if body.setting == "meeting" and not ((await messaging_repo.get_room(room_id)) or {}).get("meeting"):
-        raise _problem(400, "not_a_meeting")  # the meeting floor never runs in a Live room
-    args = {
-        "owner_id": body.ownerId,
-        "room_id": room_id,
-        "speaker_id": body.speakerUserId,
-        "utterance": body.utterance,
-        "transcript": body.transcript,
-    }
-    # One router (routing v2 §6). humans None is the Lightbulb wake word: someone answers. Otherwise a
-    # null agentId is nobody (people talking to each other); "hold" asks the worker to wait for the
-    # speaker's next final (an older worker ignores it and reads null as nobody).
-    return await voice_calls.route_live_line(
-        **args,
-        humans=body.humans or 0,
-        wake=body.humans is None,
-        floor=body.floor,
-        voice_runs=body.voiceRuns,
-        at=body.at,
-        setting=body.setting,
-        unclaimed=body.unclaimed,
-        open_requests=body.open,
-        engagements=body.engagements,
-    )
-
-
-@router.post("/internal/huddles/{room_id}/runs/{run_id}/abort", dependencies=[_Worker])
-async def abort(room_id: str, run_id: str, body: RoomBody):
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    return {"aborted": await voice_calls.abort_voice_run(body.ownerId, room_id, run_id)}
-
-
-@router.post("/internal/huddles/{room_id}/runs/{run_id}/no-post", dependencies=[_Worker])
-async def no_post(room_id: str, run_id: str, body: RoomBody):
-    """ "Don't post that": the run's answer never reaches the room late, by either door."""
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    return {"noPost": await voice_calls.mark_no_post(body.ownerId, room_id, run_id)}
-
-
-@router.post("/internal/huddles/calls/{call_id}/end", dependencies=[_Worker])
-async def end(call_id: str, body: EndBody):
-    call = await _worker_call(call_id, body.roomToken)
-    if call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId:
-        raise _problem(404, "call_not_found")
-    return {"closed": await voice_calls.close_call(call_id, usage_seconds=body.usageSeconds)}
-
-
 @router.post("/internal/huddles/{room_id}/transcript", dependencies=[_Worker])
 async def transcript(room_id: str, body: TranscriptBody):
     """The worker's rolling transcript, in batches: what people and agents said in a huddle, kept
@@ -387,52 +186,3 @@ async def transcript(room_id: str, body: TranscriptBody):
     logger.info("live transcript room=%s huddle=%s owner=%s\n%s", room_id, body.huddleId, body.ownerId, rendered)
     put_metric("voice.huddle.transcript_lines", len(body.lines))
     return {"ok": True}
-
-
-@router.post("/internal/huddles/{room_id}/late-answer", dependencies=[_Worker])
-async def late_answer(room_id: str, body: LateAnswerBody):
-    """A voice run's answer nobody heard -- it finished after the asker moved on, the news
-    expired, or the call ended -- is posted into the room by its agent instead of dropped (a
-    meeting keeps it on its record for the notes and the mail)."""
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    await voice_calls.post_late_answer(body.ownerId, room_id, body.agentId, body.runId, body.request, body.answer)
-    return {"ok": True}
-
-
-@router.post("/internal/huddles/{room_id}/presence", dependencies=[_Worker])
-async def presence(room_id: str, body: PresenceBody):
-    room_id = _room_id(room_id)
-    _require_room_token(body.roomToken, room_id, body.ownerId)
-    meta = await messaging_repo.get_room(room_id)
-    if not meta or meta.get("deletedAt") or meta.get("ownerId") != body.ownerId:
-        raise _problem(404, "room_not_found")
-    if body.version and not await container_repo.try_advance_huddle_presence(room_id, body.version):
-        return {"ok": True, "stale": True}  # a newer snapshot already went out
-    await get_live_event_publisher().publish_room(
-        room_id,
-        messaging.make_live_event("room.huddle.changed", {"roomId": room_id, "userIds": body.userIds}, room_id=room_id),
-    )
-    return {"ok": True}
-
-
-@router.post("/internal/huddles/{owner_id}/rooms/{room_id}/frames")
-async def frames(owner_id: str, room_id: str, body: FramesBody, request: Request):
-    """The bridge's voice-run frames (C2), relayed to the room's worker. Not tied to the window:
-    a background run keeps relaying after Live closes (no worker -> dropped, 200)."""
-    await _require_hook_token(owner_id, request)
-    room_id = _room_id(room_id)
-    meta = await messaging_repo.get_room(room_id)
-    if not meta or meta.get("ownerId") != owner_id:
-        raise _problem(404, "room_not_found")
-    if any((ev.get("payload") or {}).get("roomId") != room_id for ev in body.events):
-        raise _problem(400, "room_mismatch")
-    try:
-        await livekit_huddles.send_frames(room_id, body.events)
-    except Exception:  # noqa: BLE001 -- no worker in the room (or LiveKit down): the run still finishes
-        put_metric("huddle.frame.no_worker")
-        logger.info("voice frames not relayed room=%s", room_id, exc_info=True)
-        # 202, not 200: accepted but nobody heard it. The bridge posts a completed run's answer
-        # into the room itself when its closing batch comes back undelivered (the call ended).
-        return JSONResponse({"ok": True, "delivered": False}, status_code=202)
-    return {"ok": True, "delivered": True}

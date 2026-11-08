@@ -21,8 +21,7 @@ lines may carry ``id`` and ``thread`` (the id of their thread root).
 Every row runs twice. ``chat``: as typed, with its structured mentions and listen modes. ``voice``:
 how a Live line reaches chat routing (feat/live-jev-routing, #3591) -- no @ or structured mentions,
 every agent listening whatever its mode. Both variants run the production addressing stage
-(``messaging.address``, routing v2 §3.1) on a human's latest line; voice reads its history as
-``voice_calls.route_live_line`` does (a parsed "Name: text" transcript, no times).
+(``messaging.address``, routing v2 §3.1) on a human's latest line.
 Raw rows land in ``results/raw/`` (gitignored), the summary in ``results/<tag>-multiparty.md``.
 """
 
@@ -41,8 +40,7 @@ from pathlib import Path
 
 os.environ.setdefault("CLERK_ISSUER", "https://bench.clerk.accounts.dev")  # Settings() refuses to load without it
 
-from core.repositories import messaging_repo  # noqa: E402
-from core.services import jev, messaging, openclaw_work, voice_calls  # noqa: E402
+from core.services import jev, messaging  # noqa: E402
 
 HERE = Path(__file__).parent
 RAW = HERE / "results" / "raw"
@@ -242,70 +240,16 @@ async def _stub_card(owner_id: str, agent_id: str, display_name: str, recency: s
 #: What the voice variant scores: "shipped" = what today's worker delivers (/route's agentId alone; it
 #: ignores "hold"), "next" = step 4's worker (queues every agentIds entry, waits on "hold").
 VOICE_WORKER = "shipped"
-#: case id (its room and owner id) -> its members: the room the Live router reads instead of DynamoDB.
-ROOMS: dict[str, list[dict]] = {}
-
-
-def stub_room() -> None:
-    """``voice_calls.route_live_line`` reads the room's members, the speaker's name and the CEO; here
-    they come from ``ROOMS``."""
-
-    async def members(room_id: str) -> list[dict]:
-        return ROOMS[room_id]
-
-    async def team(owner_id: str, user_id: str, room_id: str, **_) -> tuple[dict, list]:
-        return {"roomId": room_id, "ownerId": owner_id, "kind": "channel", "name": "general"}, []
-
-    async def name(user_id: str) -> str:
-        return next((m["displayName"] for ms in ROOMS.values() for m in ms if m["id"] == user_id), user_id)
-
-    async def ceo(owner_id: str) -> str | None:
-        return next((m["id"] for m in ROOMS[owner_id] if m.get("role") == "ceo"), None)
-
-    messaging_repo.list_members, voice_calls._room_team = members, team
-    messaging.human_display_name, openclaw_work._fallback_ceo_id = name, ceo
-    voice_calls.put_metric = lambda *a, **k: None
-
-
-async def live(case: dict, state: dict, rec: dict) -> dict:
-    """The voice variant of a person's line: the one Live router itself (conversation understanding
-    §4.2), every agent it names in ``agentIds`` answering (a request's owner, or whoever replies to
-    small talk); a held line answers nothing yet."""
-    latest = state["latest"]
-    ROOMS[case["id"]] = state["members"]
-    lines = [f"{h['author']['displayName']}: {h['text']}" for h in [*state["history"], latest]]
-    r = await voice_calls.route_live_line(
-        owner_id=case["id"],
-        room_id=case["id"],
-        speaker_id=latest["author"]["id"],
-        utterance=latest["text"],
-        transcript="\n".join(lines),
-        humans=len(case["people"]),
-    )
-    names = {a["id"]: a["displayName"] for a in state["agents"]}
-    ops = r["ops"]
-    rec["how"] = "hold" if r.get("hold") else "requests" if ops["requests"] else "social" if ops["social"] else "none"
-    # who answers, as the worker that reads ``ops`` runs it: every request's owner, else the small-talk reply
-    owners = dict.fromkeys(x["agentId"] for x in ops["requests"]) or ([ops["social"]] if ops["social"] else [])
-    rec["responders"] = [] if r.get("hold") else sorted(names[a] for a in owners)
-    rec["stage"], rec["whoP"] = None, None
-    return rec
 
 
 async def route(case: dict, *, offline: bool = False) -> dict:
-    """The production router: chat as create_human_message + openclaw_work run it, voice as
-    voice_calls.route_live_line does (its history parsed from a "Name: text" transcript, no times)."""
+    """The production router: chat as create_human_message + openclaw_work run it; voice through the
+    same addressing stage with every agent listening (the Live router it once mirrored is gone, #5057)."""
     state = build(case)
     voice = case["variant"] == "voice"
     latest = state["latest"]
     stage = None
-    if voice:
-        transcript = "\n".join(f"{h['author']['displayName']}: {h['text']}" for h in state["history"])
-        state["history"] = voice_calls._transcript_history(transcript, state["members"], latest["text"])
     human = latest["author"]["kind"] == "human"
-    if voice and human and not offline:
-        rec = {k: case[k] for k in ("id", "row", "category", "subtype", "cue", "variant", "goal_status", "expected")}
-        return await live(case, state, rec | {"expected_responder": case["expected_responder"]})
     if human and not offline and (voice or case["room_kind"] != "dm"):
         stage = await messaging.address(latest, state["members"], history=state["history"], live=voice)
         latest["addressing"] = messaging._stored_addressing(stage)
@@ -343,7 +287,7 @@ async def route(case: dict, *, offline: bool = False) -> dict:
         rec["how"] = f"forced_{decision['forced']}" if decision.get("forced") else "fallback"
         rec["responders"] = sorted(names[a] for a in fallback(state, det["candidates"], to_people))
     elif voice and who == "none" and len(case["people"]) <= 1:
-        rec["how"] = "fallback_lone"  # route_live_line: a lone speaker's "none" counts as Jev down
+        rec["how"] = "fallback_lone"  # a lone speaker's "none" counts as Jev down
         rec["responders"] = sorted(names[a] for a in fallback(state, det["candidates"], to_people))
     else:
         rec["responders"] = [] if who == "none" else [names[who]]
@@ -429,7 +373,6 @@ async def run(cases: list[dict], out: Path, concurrency: int, offline: bool) -> 
         jev.put_metric = messaging.put_metric = lambda *a, **k: None
         jev._key, jev._key_checked_at, jev._KEY_TTL_S = os.environ["AI_GATEWAY_API_KEY"], time.monotonic(), 10**9
     jev.agent_card = _stub_card
-    stub_room()
     done = {json.loads(line)["id"] for line in out.read_text().splitlines()} if out.exists() else set()
     sem = asyncio.Semaphore(concurrency)
 

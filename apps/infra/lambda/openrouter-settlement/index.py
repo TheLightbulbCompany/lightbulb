@@ -70,7 +70,7 @@ STALE_METADATA_RELEASE_S = 24 * 3600
 
 
 def settle_one(row, *, get_generation, ingest, commit, now, commit_free, release_unknown,
-                release_stale_metadata, report_cost=None):
+                release_stale_metadata):
     mode = row.get("billing_mode")
     # free and capped rows never touch Metronome: a capped owner's valve is the
     # OpenRouter per-key daily limit, so its cost is recorded, not debited.
@@ -102,26 +102,6 @@ def settle_one(row, *, get_generation, ingest, commit, now, commit_free, release
         debit_microcents(amount)  # a bad markup must fail before the Metronome ingest, not after
         ingest(event)  # Metronome deduplicates by generation ID for 34 days.
         outcome = commit(row, event, amount, now)
-    # Best effort, strictly AFTER the money truth is committed: a failure here never fails the
-    # settle, and a retry sees a non-pending row, so a cost is reported at most once.
-    # ponytail: a report that fails (backend/Paperclip down) is NOT retried -- the row is settled,
-    # so the cost is dropped from the (soft) Paperclip budget, which under-counts during an outage.
-    # Accepted: the hard real-time stop is the gate reservation + OpenRouter per-key limit, untouched
-    # here; a settled-but-unreported re-drive (new query/flag + sweep) is the upgrade if it matters.
-    if outcome == "settled" and report_cost and mode in ("paid", "capped") and row.get("agent_id"):
-        try:
-            # Prefer the gate's stamp; fall back to the settled /generation cost x markup when a cut
-            # stream left no stamp, so interrupted calls still reach Paperclip budgets (never a silent 0).
-            cost_micro = int(row.get("cost_microcents") or 0) or debit_microcents(amount)
-            if cost_micro > 0:
-                report_cost(row, event["properties"]["model"], event["timestamp"], cost_micro)
-        except Exception as exc:
-            print(json.dumps({"_aws": {"Timestamp": now * 1000, "CloudWatchMetrics": [{
-                "Namespace": "LightbulbAI", "Dimensions": [["env", "service"]],
-                "Metrics": [{"Name": "openrouter.settlement.paperclip_post_failed", "Unit": "Count"}]}]},
-                "env": os.environ.get("GATE_ENV", ""), "service": "openrouter-settlement",
-                "owner_id": row["owner_id"], "request_id": row["request_id"],
-                "error": exc.__class__.__name__, "openrouter.settlement.paperclip_post_failed": 1}))
     return outcome
 
 
@@ -581,24 +561,6 @@ def _ingest(event):
         pass
 
 
-def _report_paperclip_cost(row, model, occurred_at, cost_micro):
-    """Tell the backend one managed call's real cost; it carries sub-cent remainders into Paperclip.
-
-    ``cost_micro`` is resolved by the caller: the gate's stamp, or the settled /generation cost x
-    markup when a cut stream left no stamp."""
-    request = urllib.request.Request(
-        f"{os.environ['BACKEND_INTERNAL_URL']}/api/v1/internal/paperclip/cost/{urllib.parse.quote(row['owner_id'], safe='')}",
-        method="POST",
-        data=json.dumps({"agentId": row["agent_id"], "generationId": row["generation_id"],
-                         "costMicrocents": int(cost_micro), "model": model,
-                         "occurredAt": occurred_at}).encode(),
-        headers={"x-lightbulb-ws-internal": _secret(os.environ["WS_INTERNAL_SECRET_ID"]),
-                 "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=10):
-        pass
-
-
 def list_workspace_keys(management_key, workspace_id, *, fetch=_http_json, max_pages=100):
     if not workspace_id:
         raise ValueError("OpenRouter workspace ID is required for key audit")
@@ -722,8 +684,7 @@ def handler(event, context):
             outcome = settle_one(row, get_generation=_get_generation, ingest=_ingest,
                                  commit=store.commit, commit_free=store.commit_free,
                                  release_unknown=store.release_unknown,
-                                 release_stale_metadata=store.release_stale_metadata, now=now,
-                                 report_cost=_report_paperclip_cost if os.environ.get("BACKEND_INTERNAL_URL") else None)
+                                 release_stale_metadata=store.release_stale_metadata, now=now)
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         except Exception as exc:
             # No prompts, keys, or customer IDs in logs. The row stays pending.

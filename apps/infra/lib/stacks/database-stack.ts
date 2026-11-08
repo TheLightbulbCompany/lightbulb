@@ -1,8 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
-import * as rds from "aws-cdk-lib/aws-rds";
 import { superAgentEnabled } from "../super-agent";
 import { tablePrefix } from "../table-names";
 import { Construct } from "constructs";
@@ -10,12 +8,6 @@ import { Construct } from "constructs";
 export interface DatabaseStackProps extends cdk.StackProps {
   environment: string;
   kmsKey: kms.IKey;
-  /**
-   * VPC for the Paperclip Aurora cluster (Task 1 of paperclip-rebuild).
-   * The DynamoDB tables in this stack are VPC-less; the VPC is consumed
-   * exclusively by the Aurora subnet group + security group.
-   */
-  vpc: ec2.IVpc;
 }
 
 const ENV_CONFIG: Record<string, { removalPolicy: cdk.RemovalPolicy }> = {
@@ -51,12 +43,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly paperclipCompaniesTable: dynamodb.Table;
   public readonly roomReadCursorsTable: dynamodb.Table;
   public readonly workspaceJoinLinksTable: dynamodb.Table;
-
-  // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
-  // pgvector extension is created by the drizzle migrations runner in
-  // paperclip-stack.ts (Task 5), not here.
-  public readonly paperclipDbCluster: rds.DatabaseClusterFromSnapshot;
-  public readonly paperclipDbSecurityGroup: ec2.SecurityGroup;
 
   public readonly marketplaceListingsTable: dynamodb.Table;
   public readonly marketplacePurchasesTable: dynamodb.Table;
@@ -542,78 +528,5 @@ export class DatabaseStack extends cdk.Stack {
       value: tablePrefix(env),
       exportName: `${this.stackName}-table-prefix`,
     });
-
-    // ─────────────────────────────────────────────────────────────────
-    // Paperclip Aurora Serverless v2 cluster
-    //
-    // Postgres 16.4 with pgvector available. Scale-to-zero (min 0 ACU,
-    // max 4 ACU). Subnet group on private-with-egress subnets. Security
-    // group is restrictive — ingress is granted later (in paperclip-stack
-    // / service-stack) only from the backend SG and the Paperclip task SG.
-    //
-    // Cross-stack note: the props.vpc reference here is the only reason
-    // DatabaseStack now depends on NetworkStack. See lightbulb-stage.ts for
-    // the wiring.
-    // ─────────────────────────────────────────────────────────────────
-    const paperclipDbSecurityGroup = new ec2.SecurityGroup(this, "PaperclipDbSg", {
-      vpc: props.vpc,
-      description:
-        "Paperclip Aurora cluster - only backend SG and Paperclip task SG may reach 5432 (ASCII only - EC2 rejects non-ASCII)",
-      allowAllOutbound: false,
-    });
-
-    // Restored from the manual snapshot of the retired `isol8-{env}-paperclip-db`
-    // cluster, taken with Paperclip scaled to 0 right before the rename shipped:
-    //   aws rds create-db-cluster-snapshot --db-cluster-identifier isol8-{env}-paperclip-db \
-    //     --db-cluster-snapshot-identifier lightbulb-{env}-paperclip-db-rename
-    // The snapshot id is permanent in this template — a fresh stack restores
-    // it again, which is the intended disaster-recovery baseline. The master
-    // password is re-generated into the new secret (the username cannot change
-    // on a restore); the database name comes with the snapshot.
-    const paperclipDbV2SubnetGroup = new rds.SubnetGroup(this, "PaperclipDbSubnetsV2", {
-      subnetGroupName: `lightbulb-${env}-paperclip-db`,
-      vpc: props.vpc,
-      description: "Subnets for Paperclip Aurora cluster",
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
-    this.paperclipDbCluster = new rds.DatabaseClusterFromSnapshot(this, "PaperclipDbV2", {
-      engine: rds.DatabaseClusterEngine.auroraPostgres({
-        // The live clusters auto-upgraded to 16.11; a restore cannot target an
-        // older minor than the snapshot's.
-        version: rds.AuroraPostgresEngineVersion.of("16.11", "16"),
-      }),
-      snapshotIdentifier: `lightbulb-${env}-paperclip-db-rename`,
-      // fromSecret (not fromGeneratedSecret): that variant cannot name the
-      // secret. CDK still sets the restored cluster's master password from it
-      // and attaches it, so `cluster.secret` works exactly as before.
-      snapshotCredentials: rds.SnapshotCredentials.fromSecret(
-        new rds.DatabaseSecret(this, "PaperclipDbV2Secret", {
-          username: "paperclip_admin",
-          secretName: `lightbulb-${env}-paperclip-db-credentials`,
-        }),
-      ),
-      serverlessV2MinCapacity: 0, // scale-to-zero
-      serverlessV2MaxCapacity: 4,
-      writer: rds.ClusterInstance.serverlessV2("writer", {
-        instanceIdentifier: `lightbulb-${env}-paperclip-db-writer`,
-      }),
-      vpc: props.vpc,
-      subnetGroup: paperclipDbV2SubnetGroup,
-      securityGroups: [paperclipDbSecurityGroup],
-      backup: { retention: cdk.Duration.days(7) },
-      storageEncrypted: true,
-      storageEncryptionKey: props.kmsKey,
-      removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
-      clusterIdentifier: `lightbulb-${env}-paperclip-db`,
-      enableDataApi: true,
-    });
-
-    this.paperclipDbSecurityGroup = paperclipDbSecurityGroup;
-
-    new cdk.CfnOutput(this, "PaperclipDbEndpoint", {
-      value: this.paperclipDbCluster.clusterEndpoint.hostname,
-      exportName: `lightbulb-${env}-paperclip-db-endpoint`,
-    });
-
   }
 }

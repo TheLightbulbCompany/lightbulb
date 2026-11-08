@@ -97,7 +97,8 @@ USER appuser
 # The "start" command tells the AgentServer to connect to LiveKit and begin waiting for jobs.
 # AGENT_MODULE picks the worker: the huddle (default) or the phone receptionist (huddle_agent.phone, set as an
 # agent secret on its own LiveKit agent).
-ENV AGENT_MODULE=huddle_agent.agent
-# The venv's own interpreter: no uv at runtime, so no cache dir, no re-sync, no network needed to start.
+# The venv's own interpreter, exec form, no shell: LiveKit Cloud requires the command to launch the agent directly
+# with `start`, "without backgrounding or wrapper scripts" (docs.livekit.io/deploy/agents/builds) — a `sh -c`
+# wrapper drops any arguments the platform appends, and the deployment sat in CrashLoop with nothing in the log.
 ENV PATH="/app/.venv/bin:$PATH"
-CMD ["sh", "-c", "exec python -m \"$AGENT_MODULE\" start"]
+CMD ["python", "-m", "huddle_agent.agent", "start"]

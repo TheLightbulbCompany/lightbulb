@@ -43,7 +43,10 @@ AGENT_IDENTITY = "agent-ceo"  # C4: every agent voice publishes as this one part
 WORKER_DISPLAY_NAME = "Lightbulb"  # clients render tiles from attributes, not this name
 # LiveKit's default (10 s) would kill a meeting's final transcript retry (huddle.FINAL_TRANSCRIPT_BUDGET_S).
 SHUTDOWN_S = 60
-server = AgentServer(shutdown_process_timeout=SHUTDOWN_S)
+# One warm job process and a long init budget, like phone.py: LiveKit Cloud runs this on 1 vCPU, and the default
+# (three processes, 10 s each to import the openai/google/noise-cancellation plugins) timed out at start, so the
+# worker drained itself and the deployment sat in CrashLoop (7 Nov) with nothing in the agent log.
+server = AgentServer(shutdown_process_timeout=SHUTDOWN_S, num_idle_processes=1, initialize_process_timeout=60)
 
 
 def _seeded(seed: list[tuple[str, str]]) -> llm.ChatContext:

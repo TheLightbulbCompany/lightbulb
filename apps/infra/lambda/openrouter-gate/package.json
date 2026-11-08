@@ -6,6 +6,7 @@
   "scripts": { "test": "node --test" },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.716.0",
+    "@aws-sdk/client-kms": "^3.716.0",
     "@aws-sdk/client-secrets-manager": "^3.716.0"
   }
 }

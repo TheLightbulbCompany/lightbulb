@@ -7,18 +7,16 @@ pinned computer's link sends a ``mail`` notice) the backend makes ONE content-fr
 addresses only, a bounded retry), at most once per ``WINDOW_S`` per app.
 
 Rows (messaging table): ``APPWAKE#<user>`` / ``<app slug>`` -- the app, the URL's host, its
-state (``needs_key`` | ``ready``). URL and key are one Secrets Manager secret
-(``secret_name(<user>, wake-<app>)``), never returned or logged.
+state (``needs_key`` | ``ready``). URL and key are one sealed
+``integration_secret_store`` credential (provider ``agent-webhooks/wake-<app>``), never returned or logged.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 
-import boto3
 import httpx
 from botocore.exceptions import ClientError
 
@@ -26,6 +24,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo as repo
 from core.services import link_preview
+from core.services.credentials import integration_secret_store
 from core.services.messaging import ApiProblem
 
 logger = logging.getLogger(__name__)
@@ -39,16 +38,10 @@ RETRY_DELAYS_S = (0.5, 1.5)  # three attempts in all
 _TRANSPORT: httpx.AsyncBaseTransport | None = None
 
 
-def _sm():
-    return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-
-
-def secret_name(owner_id: str, agent_id: str) -> str:
-    return f"lightbulb/{settings.ENVIRONMENT or 'dev'}/integrations/{owner_id}/agent-webhooks/{agent_id}"
-
-
-def _sm():
-    return boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+def _provider(agent_id: str) -> str:
+    """``integration_secret_store`` provider; the legacy secret was
+    ``lightbulb/<env>/integrations/<owner>/agent-webhooks/<agent>``, the same name the store falls back to."""
+    return f"agent-webhooks/{agent_id}"
 
 
 def check_url(url: str) -> str:
@@ -63,9 +56,10 @@ def check_url(url: str) -> str:
 
 
 async def _credential(owner_id: str, agent_id: str) -> dict:
-    sm = _sm()
-    value = await run_in_thread(sm.get_secret_value, SecretId=secret_name(owner_id, agent_id))
-    return json.loads(value["SecretString"])
+    cred = await integration_secret_store.get(owner_id, _provider(agent_id))
+    if cred is None:
+        raise LookupError("no webhook credential")
+    return cred
 
 
 async def post(owner_id: str, agent_id: str, payload: dict) -> tuple[bool, str]:
@@ -123,12 +117,8 @@ async def request(user_id: str, app: str, client: str, url: str) -> dict:
     """Record (or replace) this app's webhook; it needs its key entered before any wake."""
     from urllib.parse import urlsplit
 
-    from core.secrets_manager import create_or_update_secret
-
     check_url(url)
-    secret = json.dumps({"url": url, "key": ""})
-    name = secret_name(user_id, _secret_id(app))
-    await run_in_thread(create_or_update_secret, _sm(), name, secret)
+    await integration_secret_store.put(user_id, _provider(_secret_id(app)), {"url": url, "key": ""})
     row = {
         **_key(user_id, app),
         "app": app,
@@ -155,16 +145,13 @@ async def list_wakes(user_id: str) -> list[dict]:
 
 
 async def set_key(user_id: str, app: str, key: str) -> dict:
-    from core.secrets_manager import create_or_update_secret
-
     if not key.strip() or len(key) > 4096:
         raise ApiProblem("INVALID_REQUEST", "Paste the webhook's key.")
     row = await repo._get(**_key(user_id, app))
     if row is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "No wake-up request from that app.")
-    name = secret_name(user_id, _secret_id(app))
     cred = await _credential(user_id, _secret_id(app))
-    await run_in_thread(create_or_update_secret, _sm(), name, json.dumps({"url": cred["url"], "key": key.strip()}))
+    await integration_secret_store.put(user_id, _provider(_secret_id(app)), {"url": cred["url"], "key": key.strip()})
     await run_in_thread(
         repo._table().update_item,
         Key=_key(user_id, app),
@@ -176,15 +163,7 @@ async def set_key(user_id: str, app: str, key: str) -> dict:
 
 
 async def remove(user_id: str, app: str) -> None:
-    sm = _sm()
-    try:
-        await run_in_thread(
-            sm.delete_secret,
-            SecretId=secret_name(user_id, _secret_id(app)),
-            ForceDeleteWithoutRecovery=True,
-        )
-    except sm.exceptions.ResourceNotFoundException:
-        pass
+    await integration_secret_store.delete(user_id, _provider(_secret_id(app)))
     await run_in_thread(repo._table().delete_item, Key=_key(user_id, app))
 
 

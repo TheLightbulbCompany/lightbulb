@@ -107,6 +107,9 @@ class _FakeTable:
         old = self.items.pop((Key["owner_id"], Key["provider"]), None)
         return {"Attributes": old} if old else {}
 
+    def scan(self, **kwargs):
+        return {"Items": list(self.items.values())}
+
     def query(self, KeyConditionExpression, **kwargs):
         owner = KeyConditionExpression.get_expression()["values"][1]
         return {"Items": [i for (o, _), i in self.items.items() if o == owner]}
@@ -221,3 +224,76 @@ async def test_owner_wipe_sweeps_envelopes_and_legacy_secrets(stores, monkeypatc
     assert await owner_secret_sweep.delete_owner_secrets("org_a") == expected
     assert secrets == {} and (LEGACY, True) in table.deletes  # force-deleted, not left recoverable
     assert list(table.items) == [("org_b", "github")]
+
+
+@pytest.mark.asyncio
+async def test_owner_wipe_leaves_managed_openrouter_keys_to_their_retirement(stores, monkeypatch):
+    secrets, _, table = stores
+    await store.put("org_a", "openrouter/h1", {"key": "sk-or-1"})
+    await store.put("org_a", "github", {"token": "a"})
+    monkeypatch.setattr(owner_secret_sweep.boto3, "client", lambda *a, **k: _FakeSM(secrets))
+    assert await owner_secret_sweep.delete_owner_secrets("org_a") == ["credential-envelopes/org_a/github"]
+    assert list(table.items) == [("org_a", "openrouter/h1")]
+
+
+@pytest.mark.asyncio
+async def test_oauth_app_config_is_sealed_and_its_legacy_secret_still_reads(stores):
+    from core.services.credentials import oauth_app_store
+
+    secrets, _, table = stores
+    legacy = "lightbulb/dev/integrations/org_a/oauth-app/google"
+    secrets[legacy] = json.dumps({"client_id": "old", "client_secret": "s"})
+    assert (await oauth_app_store.get("org_a", "google"))["client_id"] == "old"
+    await oauth_app_store.put("org_a", "google", client_id="cid", client_secret="csec")
+    assert ("org_a", "oauth-app/google") in table.items and legacy in table.scheduled
+    assert await oauth_app_store.get("org_a", "google") == {"client_id": "cid", "client_secret": "csec"}
+    await oauth_app_store.delete("org_a", "google")
+    assert await oauth_app_store.get("org_a", "google") is None
+
+
+def test_migration_moves_per_owner_secrets_soft_deletes_dead_ones_and_verifies(stores, capsys):
+    from scripts import migrate_secrets_to_envelopes as migrate
+
+    secrets, _, table = stores
+    keep = [
+        "lightbulb/dev/stripe_secret_key",
+        "lightbulb/dev/hermes/org_a/boot",
+        "lightbulb/dev/user-keys/org_a/openai",
+        "lightbulb/dev/integrations/platform-oauth/google",
+        "lightbulb/prod/integrations/org_a/github",
+    ]
+    for name in keep:
+        secrets[name] = "platform-value"
+    secrets["lightbulb/dev/openrouter/owners/org_a/h1"] = "sk-or-1"
+    secrets["lightbulb/dev/integrations/org_a/website-login/vault_1"] = json.dumps({"password": "pw"})
+    secrets["lightbulb/dev/integrations/user_b/github"] = json.dumps({"token": "legacy"})
+    secrets["lightbulb/dev/integrations/org_a/apps/app1/neon/prod"] = "dead"
+    sm = store._client()
+    # A newer row written after deploy must win over its legacy secret.
+    table.put_item(Item=store._seal("user_b", "github", json.dumps({"token": "newer"})))
+
+    assert migrate.run("dry-run", sm) == 0
+    assert "sk-or-1" not in capsys.readouterr().out and table.deletes == []
+    assert migrate.run("verify", sm) == 1  # still live
+    assert migrate.run("apply", sm) == 0
+    out = capsys.readouterr().out
+    assert "sk-or-1" not in out and "pw" not in out and "legacy" not in out
+    assert store._open(table.items[("org_a", "openrouter/h1")]) == {"key": "sk-or-1"}
+    assert store._open(table.items[("org_a", "website-login/vault_1")]) == {"password": "pw"}
+    assert store._open(table.items[("user_b", "github")]) == {"token": "newer"}
+    # Soft-deleted (default 30-day window), never forced; platform and deferred secrets untouched.
+    assert all(forced is False for _, forced in table.deletes)
+    assert {n for n, _ in table.deletes} == set(secrets) - set(keep)
+    assert table.scheduled == set(secrets) - set(keep)
+    assert migrate.run("verify", sm) == 0
+
+
+def test_migration_refuses_prod_without_allow_prod(stores, monkeypatch):
+    from scripts import migrate_secrets_to_envelopes as migrate
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    assert migrate.main(["--apply"]) == 2
+    monkeypatch.setattr(migrate, "run", lambda mode: 0)
+    assert migrate.main(["--apply", "--allow-prod"]) == 0
+    monkeypatch.setattr(settings, "CREDENTIAL_KMS_KEY_ARN", "")
+    assert migrate.main(["--dry-run"]) == 2

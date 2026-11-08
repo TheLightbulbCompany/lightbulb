@@ -1,7 +1,9 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, TransactWriteItemsCommand } from '@aws-sdk/client-dynamodb';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { KMSClient, DecryptCommand } from '@aws-sdk/client-kms';
 import { handleRequest } from './core.mjs';
 import { abortOnClose } from './disconnect.mjs';
+import { ownerKey } from './envelope.mjs';
 
 const ddbClient = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
@@ -11,7 +13,13 @@ const ddb = {
   updateItem: p => ddbClient.send(new UpdateItemCommand(p)),
   transactWriteItems: p => ddbClient.send(new TransactWriteItemsCommand(p)),
 };
-const secrets = { getSecretValue: p => secretsClient.send(new GetSecretValueCommand(p)) };
+const kmsClient = new KMSClient({});
+const store = {
+  ddb, env: process.env,
+  kms: { decrypt: p => kmsClient.send(new DecryptCommand(p)) },
+  secrets: { getSecretValue: p => secretsClient.send(new GetSecretValueCommand(p)) },
+};
+const secrets = { ownerKey: (...args) => ownerKey(store, ...args) };
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
   let stream = responseStream, sent = false;

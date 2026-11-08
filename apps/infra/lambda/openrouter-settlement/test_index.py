@@ -155,8 +155,8 @@ class SettlementTests(unittest.TestCase):
     def test_rotation_uses_historical_secret_and_retry_is_idempotent(self):
         seen = []
         committed = set()
-        def lookup(generation_id, secret_name):
-            seen.append((generation_id, secret_name))
+        def lookup(generation_id, row):
+            seen.append((generation_id, row["secret_name"]))
             return self.generation
         def ingest(event):
             seen.append(event["transaction_id"])
@@ -648,6 +648,41 @@ class ScheduledRunTests(unittest.TestCase):
                                          "retirement_observed_at": str(int(time.time()) - 961)}])
         result = self.run_tick(store, types.SimpleNamespace(get_remaining_time_in_millis=lambda: 30_000))
         self.assertEqual((result["settlement"], store.rows["late"]["state"], result["retirement"]["disabled"]), ({"deferred": 1}, "pending", 1))
+
+
+class OwnerKeyTests(unittest.TestCase):
+    """The settlement opens the envelope the backend's integration_secret_store seals."""
+
+    def test_opens_the_envelope_and_falls_back_to_the_legacy_secret(self):
+        import base64
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        row = {"owner_id": "org_a", "key_hash": "h1", "secret_name": "lightbulb/dev/openrouter/owners/org_a/h1"}
+        provider = "openrouter/h1"
+        data_key, nonce = os.urandom(32), os.urandom(12)
+        sealed = AESGCM(data_key).encrypt(nonce, json.dumps({"key": "sk-or-new"}).encode(), b"org_a\0openrouter/h1")
+        b64 = lambda b: {"S": base64.b64encode(b).decode()}  # noqa: E731
+        items = {("org_a", provider): {"data_key": b64(b"wrapped"), "nonce": b64(nonce), "ciphertext": b64(sealed)}}
+        contexts = []
+
+        class Ddb:
+            def get_item(self, TableName, Key, ConsistentRead):
+                item = items.get((Key["owner_id"]["S"], Key["provider"]["S"]))
+                return {"Item": item} if item else {}
+
+        class Kms:
+            def decrypt(self, CiphertextBlob, EncryptionContext):
+                contexts.append(EncryptionContext)
+                return {"Plaintext": data_key}
+
+        fake_boto3 = types.SimpleNamespace(client=lambda name: {"dynamodb": Ddb(), "kms": Kms()}[name])
+        with patch.dict(sys.modules, {"boto3": fake_boto3}), \
+                patch.dict(os.environ, {"CREDENTIAL_ENVELOPES_TABLE": "credential-envelopes"}), \
+                patch.object(worker, "_secret", side_effect=lambda name: f"legacy:{name}"):
+            self.assertEqual(worker._owner_key(row), "sk-or-new")
+            self.assertEqual(contexts, [{"owner_id": "org_a", "provider": provider}])
+            items.clear()
+            self.assertEqual(worker._owner_key(row), f"legacy:{row['secret_name']}")
 
 
 if __name__ == "__main__":

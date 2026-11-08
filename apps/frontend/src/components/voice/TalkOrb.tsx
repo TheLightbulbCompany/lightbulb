@@ -70,6 +70,8 @@ export function TalkOrb({ name, compact = false }: { name: string; compact?: boo
   const err = error && ({
     mic_denied: "Allow the microphone in your browser to talk.", no_mic: "No microphone found.",
     voice_unavailable: "Talking isn't switched on for this workspace yet.", workspace_not_ready: "Your workspace is still starting. Try again in a minute.",
+    // owner.py ends a talk after AWAY_S of quiet and says so; that is not a failure (8 Nov: it read "Couldn't reach").
+    idle_ended: `${name} left after a few minutes of quiet. Hold to talk again.`, connection_lost: "The connection dropped. Hold to talk again.",
   } as Record<string, string>)[error.code];
   const [heard, setHeard] = useState<Heard>(null);
   const agent = live && connected ? heard : null;
@@ -93,7 +95,7 @@ export function TalkOrb({ name, compact = false }: { name: string; compact?: boo
     </button>
     {/* compact: a bubble beside the rail, open while a talk is on; closed it stays in the accessibility tree */}
     <div className="vx-talk-text" data-open={compact ? live || state !== "idle" || !!alert : undefined}>
-      <b aria-live="polite">{{ connecting: `Connecting to ${name}…`, listening: `${name} is listening`, thinking: `${name} is thinking…`,
+      <b aria-live="polite">{{ connecting: `Connecting to ${name}… the first time can take 20 s — keep holding`, listening: `${name} is listening`, thinking: `${name} is thinking…`,
         speaking: `${name} is speaking`, idle: `Hold to talk to ${name}` }[state]}</b>
       {/* one persistent line: an alert, else a polite region with the caption or the suggestions */}
       <p id={lineId} role={alert ? "alert" : undefined} aria-live={alert ? undefined : "polite"} className={!alert && caption ? "vx-caption" : undefined}>

@@ -5924,13 +5924,13 @@ def json_body_size(value: dict[str, Any]) -> int:
 
 
 class AgentPostRequest(ContractModel):
-    """An agent posting OUTSIDE a room turn (a Paperclip run, heartbeat or routine).
+    """An agent posting OUTSIDE a room turn (``lightbulb-post.sh``).
 
     Target, first that applies: ``roomId`` → that room (membership checked, never
     auto-joined); ``feed`` → the workspace feed (ensured, the agent seated on ``mentions``);
     ``roomName`` → the one channel of that name the agent is in;
-    ``userId``/``handle`` → that workspace member's DM with the agent;
-    ``issueId`` → the issue creator's DM; otherwise the workspace's #general.
+    ``userId``/``handle`` → that workspace member's DM with the agent; otherwise the
+    workspace's #general. ``issueId`` is accepted and ignored (an older script's ``--issue``).
     ``postReason`` is the post's "Why I created this post" line (any target)."""
 
     event_id: str
@@ -6025,46 +6025,6 @@ async def _user_for_handle(owner_id: str, handle: str) -> str:
     raise ApiProblem("MEMBER_NOT_FOUND", "No workspace member has that handle.")
 
 
-async def _issue_creator(owner_id: str, issue_id: str) -> str | None:
-    """The Clerk user who created a Paperclip issue in this owner's company, or None when an
-    agent created it or the creator is no longer a member. Paperclip→Clerk goes through the
-    same workspace-member identity rows ``activity._people`` maps with."""
-    import httpx
-
-    from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
-    from core.services.paperclip_admin_session import get_admin_session_cookie
-
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    company = await repo.resolve_owner_row(owner_id)
-    if company is None:
-        raise ApiProblem("ROOM_FORBIDDEN", "This workspace has no Paperclip company.")
-    admin = shared_admin_client()
-    try:
-        issue = await admin.get_issue(session_cookie=await get_admin_session_cookie(admin._http), issue_id=issue_id)
-    except PaperclipApiError as exc:
-        if exc.status_code in (403, 404):
-            raise ApiProblem("ROOM_FORBIDDEN", "That issue is not in this workspace.") from exc
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read the issue.", retryable=True, retry_after=3) from exc
-    except httpx.HTTPError as exc:
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read the issue.", retryable=True, retry_after=3) from exc
-    if (issue or {}).get("companyId") != company.company_id:
-        raise ApiProblem("ROOM_FORBIDDEN", "That issue is not in this workspace.")
-    creator = issue.get("createdByUserId")
-    if not creator:
-        return None
-    workspace = await repo.get_workspace(owner_id)
-    for uid in list(getattr(workspace, "member_user_ids", None) or []):
-        identity = await repo.get_identity(uid)
-        if identity is not None and identity.paperclip_user_id == creator:
-            try:
-                await _validate_human_in_owner(owner_id, uid)
-            except ApiProblem:
-                return None
-            return uid
-    return None
-
-
 async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> str:
     agent_id = str(request.agent_id)
     if request.room_id is not None:
@@ -6099,14 +6059,12 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         await _validate_human_in_owner(owner_id, user_id)
     elif request.handle is not None:
         user_id = await _user_for_handle(owner_id, request.handle)
-    elif request.issue_id is not None:
-        user_id = await _issue_creator(owner_id, request.issue_id)
     if user_id is not None:
         return await _agent_dm_room_id(owner_id, user_id, agent_id)
     room_id = default_room_id(owner_id)
     meta = await messaging_repo.get_room(room_id)
     if meta is None or meta.get("deletedAt"):
-        raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no #general; name a room, user or issue.")
+        raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no #general; name a room or a user.")
     return room_id
 
 

@@ -1,6 +1,6 @@
 """A paired Mac's agent Chrome, leased to a run (spec §6).
 
-The bridge `acquire`s the Mac for a room or Paperclip run and gets a ticketed CDP door
+The bridge `acquire`s the Mac for a room or call run and gets a ticketed CDP door
 (`mac_cdp`). The backend decides and fences the workspace sign-in sync (first owner wins,
 `load_id`), but it never runs it: it answers sync steps with presigned URLs, the bridge runs them
 with its own `browser_state.py` over the run's pipe (one sync engine), and reports `synced`.
@@ -38,7 +38,6 @@ CDP_COMMAND = "browser.cdp.v1"
 WIPE_COMMAND = "browser.wipe.v1"
 ENSURE_TIMEOUT_S = 27  # >= the Mac's own worst launch (LAUNCH_TIMEOUT 10 + START_TIMEOUT 15)
 WIPE_TIMEOUT_S = 20
-CONSENT_SECONDS = 10  # the Mac answers from its stored switches; no person is asked
 #: The bridge reaches acquire through API Gateway (30 s cap): acquire answers inside its caller's
 #: budget, at most this. A cold `ensure` keeps running in the background and acquire answers
 #: STARTING before it claims anything, so no claim is written that nobody receives.
@@ -60,9 +59,6 @@ _clock = time.time
 
 MESSAGES = {
     "desktop_disabled": "Agents can't use a Mac's browser in this workspace yet.",
-    "desktop_consent_denied": (
-        "That Mac doesn't allow Paperclip actions. Its owner can turn them on in the Lightbulb desktop app's Settings."
-    ),
     "desktop_forbidden": "Only the Mac of the person who asked can be used for this.",
     "desktop_generation_lost": "That Mac is offline or just reconnected. Try again in a moment.",
     "desktop_update_required": "Update the Lightbulb desktop app on that Mac to let agents use its browser.",
@@ -86,16 +82,7 @@ MESSAGES = {
         "More than one of your Macs is connected. Say which one (lightbulb_desktop devices), "
         "then use_browser with its deviceId."
     ),
-    "paperclip_no_mac": (
-        "No Mac in this workspace allows Paperclip actions. "
-        "A Mac's owner can turn them on in the Lightbulb desktop app's Settings."
-    ),
-    "paperclip_mac_ambiguous": (
-        "More than one Mac in this workspace allows Paperclip actions. Ask in this task's issue thread "
-        "which Mac to use, then use_browser with its deviceId."
-    ),
 }
-NOTIFY_BODY = "{agent} is using your Mac's browser for a team task."
 SAVE_FAILED_NOTE = "Couldn't save the sign-ins from the Mac browser this time."
 #: Any other code (a peer or dependency failure) still reaches the agent with a message.
 GENERIC_MESSAGE = "The Mac's browser isn't available right now. Try again, or use the cloud browser."
@@ -243,19 +230,8 @@ async def _ready(owner: str, device: str) -> dict | None:
     }
 
 
-async def _eligible(auth: dict, entry: dict, device: str) -> bool:
-    if auth["family"] != "paperclip":
-        return entry.get("userId") == auth["memberId"]
-    try:
-        await desktop_execution._paperclip_member(auth, device)
-        return True
-    except DesktopError:
-        return False
-
-
 async def _candidates(auth: dict, row: dict) -> list[tuple[str, str]]:
-    """Every ready native Mac this run may use: the requester's (room) or any Paperclip
-    member's (Paperclip), with its ready generation."""
+    """Every ready native Mac this run may use (the requester's), with its ready generation."""
     found = []
     for key, entry in (row.get("paired_devices") or {}).items():
         if (
@@ -263,7 +239,7 @@ async def _candidates(auth: dict, row: dict) -> list[tuple[str, str]]:
             or entry.get("clientId") != NATIVE_CLIENT
             or entry.get("revoking")
             or _native_of(row, key) != key
-            or not await _eligible(auth, entry, key)
+            or entry.get("userId") != auth["memberId"]
         ):
             continue
         ready = await _ready(auth["ownerId"], key)
@@ -281,7 +257,7 @@ async def _pick(auth: dict, device_id: str | None) -> tuple[str, str]:
         native = _native_of(row, device_id)
         if native is None or row["paired_devices"][native].get("revoking"):
             raise _err("browser_access_ended", 403)  # unpaired, or its member removed
-        if not await _eligible(auth, row["paired_devices"][native], native):
+        if row["paired_devices"][native].get("userId") != auth["memberId"]:
             raise _err("desktop_forbidden", 403)
         ready = await _ready(owner, native)
         if ready is None:
@@ -293,75 +269,6 @@ async def _pick(auth: dict, device_id: str | None) -> tuple[str, str]:
     if len(found) > 1:
         raise _err("choose_mac")
     return found[0]
-
-
-def _operation(auth: dict, native: str, generation: str) -> dict:
-    # The Mac's consent parser (desktop_permissions.rs Approval::kind) answers approved=false to an
-    # operation without an object `params`, whatever its switches say. The binding fields stay at
-    # the top level: handle_approval_peer checks them there on a cross-task consent.
-    return {
-        "command": CDP_COMMAND,
-        "params": {},
-        "deviceId": native,
-        "expectedConnectionGeneration": generation,
-        "runId": auth["runId"],
-        "agentId": auth["agentId"],
-    }
-
-
-async def _consent(auth: dict, target: dict, native: str, generation: str) -> None:
-    try:
-        await asyncio.wait_for(  # a peer task's approval RPC would otherwise wait up to 125 s
-            desktop_execution.paperclip_consent(
-                auth, target, _operation(auth, native, generation), _clock() + CONSENT_SECONDS
-            ),
-            CONSENT_SECONDS + 2,
-        )
-    except DesktopError as exc:
-        raise _with_message(exc)
-    except Exception as exc:  # noqa: BLE001 -- the Mac never answered: not a consent
-        logger.warning("mac browser consent failed owner=%s: %s", auth["ownerId"], type(exc).__name__)
-        raise _err("desktop_consent_denied", 403) from None
-
-
-async def _paperclip_pick(auth: dict, device_id: str | None) -> tuple[str, str, dict]:
-    """The one Mac that allows Paperclip actions, or, when several do, the one `device_id` names.
-    Each ready Mac answers the consent ask from its own switches, with no prompt."""
-    row = await container_repo.get_by_owner_id(auth["ownerId"], consistent=True) or {}
-    found = await _candidates(auth, row)
-    if not found:
-        raise _err("paperclip_no_mac")
-
-    async def ask(native: str, generation: str):
-        try:
-            target = await _target(auth, native, generation)
-            await _consent(auth, target, native, generation)
-            return native, generation, target
-        except DesktopError as exc:
-            return exc
-
-    answers = await asyncio.gather(*(ask(*each) for each in found))
-    approved = [a for a in answers if isinstance(a, tuple)]
-    if not approved:
-        raise answers[0] if len(answers) == 1 else _err("paperclip_no_mac")
-    chosen = _native_of(row, device_id) if device_id else None
-    if len(approved) == 1:
-        if device_id and chosen != approved[0][0]:
-            raise _err("desktop_consent_denied", 403)
-        return approved[0]
-    picked = next((a for a in approved if a[0] == chosen), None)
-    if picked is not None:
-        return picked
-    if chosen is not None:
-        raise _err("desktop_consent_denied", 403)  # a known Mac that does not allow Paperclip actions
-    labels = await asyncio.gather(*(_device_name(auth["ownerId"], a[0]) for a in approved))  # one Clerk wait, not N
-    names = [f"{label or 'A Mac'} (deviceId {a[0]})" for label, a in zip(labels, approved)]
-    raise DesktopError(
-        "paperclip_mac_ambiguous",
-        409,
-        f"More than one Mac allows Paperclip actions: {', '.join(names)}. Ask in this task's issue "
-        "thread which Mac to use, then call use_browser with that deviceId.",
-    )
 
 
 async def _target(auth: dict, native: str, generation: str) -> dict:
@@ -634,31 +541,6 @@ async def _stale_wipe(target: dict) -> None:
         logger.warning("mac browser stale-profile wipe failed owner=%s", target["ownerId"])
 
 
-async def _agent_name(agent_id: str) -> str:
-    try:
-        from core.services.paperclip_admin_client import shared_admin_client
-        from core.services.paperclip_admin_session import get_admin_session_cookie
-
-        admin = shared_admin_client()
-        agent = await admin.get_agent(session_cookie=await get_admin_session_cookie(admin._http), agent_id=agent_id)
-        name = agent.get("name")
-        return name.strip()[:64] if isinstance(name, str) and name.strip() else "An agent"
-    except Exception:  # noqa: BLE001 -- the notice still goes, unnamed
-        return "An agent"
-
-
-async def notice(claims: dict) -> str | None:
-    """The text the Mac shows its owner when a Paperclip run opens a channel (spec UX #23);
-    None for a room run, whose requester is the Mac's own pairer."""
-    if claims.get("family") != "paperclip":
-        return None
-    try:
-        agent = await asyncio.wait_for(_agent_name(claims["agentId"]), 3)
-    except Exception:  # noqa: BLE001 -- slow Paperclip never holds the door
-        agent = "An agent"
-    return NOTIFY_BODY.format(agent=agent)
-
-
 PAIR_NAME_SUFFIX = " | Lightbulb Mac"  # desktop_pair appends it to the pair route's base
 
 
@@ -705,18 +587,14 @@ async def acquire(
     auth: dict, device_id: str | None, *, forwarded: bool = False, budget_s: float = ACQUIRE_BUDGET_S
 ) -> dict:
     """Answers within `budget_s` (the caller's remaining time): STARTING when a cold launch or a
-    slow consent spent it, before any claim is written."""
+    slow check spent it, before any claim is written."""
     deadline = _clock() + min(max(budget_s, 0.0), ACQUIRE_BUDGET_S)
     owner = auth["ownerId"]
-    paperclip = auth["family"] == "paperclip"
     # Disabled first: it is the one answer every other check below would mask.
     if not desktop_execution.submissions_enabled(owner):
         raise _err("desktop_disabled", 503)
-    if paperclip and not forwarded:
-        native, generation, target = await _paperclip_pick(auth, device_id)  # consented already
-    else:
-        native, generation = await _pick(auth, device_id)
-        target = await _target(auth, native, generation)
+    native, generation = await _pick(auth, device_id)
+    target = await _target(auth, native, generation)
     if target["taskAddress"] != task_address.own_address():
         if forwarded:
             raise _err("desktop_forward_loop")
@@ -728,8 +606,6 @@ async def acquire(
             {"action": "mac_acquire", "auth": auth, "request": {"deviceId": native, "budgetS": round(left - 1, 3)}},
             timeout=left,
         )
-    if paperclip and forwarded:
-        await _consent(auth, target, native, generation)  # the one Mac the origin picked, on its own task
     result = await _ensure(target, deadline - DECIDE_RESERVE_S - _clock())
     if result is None or _clock() > deadline - DECIDE_RESERVE_S:
         return STARTING  # Chrome is still launching (or it took the budget): the next poll is warm

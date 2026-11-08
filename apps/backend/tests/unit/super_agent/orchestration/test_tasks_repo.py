@@ -324,3 +324,30 @@ async def test_add_task_output_appends_once_and_keeps_the_newest(table, monkeypa
         await repo.add_task_output(WS, tid, {"id": f"file:{i}", "kind": "file", "title": f"f{i}.txt"})
     assert [o["id"] for o in (await repo.get_task(WS, tid))["outputs"]] == ["file:1", "file:2"]
     assert await repo.add_task_output(WS, "no-such-task", out) is False
+
+
+async def test_answered_since_reads_only_answered_questions_in_the_window(table):
+    """The trial recap's read: answered Questions at or after the cut, never open ones or other task rows."""
+    from core.repositories import questions_repo
+
+    task, _ = await repo.create_task(WS, _task())
+    tid = task["taskId"]
+    for qid in ("q-1", "q-2"):
+        await questions_repo.open_question(
+            WS,
+            {
+                "taskId": tid,
+                "qid": qid,
+                "kind": "approval",
+                "title": qid,
+                "options": [{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}],
+                "askedBy": {"kind": "worker", "attempt": 1},
+                "answerers": ["sam"],
+            },
+        )
+    await questions_repo.record_answer(
+        WS, tid, "q-1", option_id="deny", trigger_id=None, by="sam", client_answer_id="c1", expected_version=None
+    )
+    got = await questions_repo.answered_since(WS, "2000-01-01T00:00:00+00:00")
+    assert [(q["qid"], q["answer"]["optionId"]) for q in got] == [("q-1", "deny")]
+    assert await questions_repo.answered_since(WS, "2999-01-01T00:00:00+00:00") == []

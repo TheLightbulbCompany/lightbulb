@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from core.auth import AuthContext
 from core.repositories import messaging_repo as repo
-from core.services import hermes_profiles, ideas, messaging, proactive
+from core.services import ideas, messaging, proactive
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401  (the moto messaging table)
 
 OWNER = "org_1"
@@ -137,35 +137,12 @@ async def test_unknown_ids_are_404(workspace):
 # ---- Start ------------------------------------------------------------------------------------
 
 
-@pytest.fixture
-def paperclip(workspace, monkeypatch):
-    from core.services import paperclip_admin_client
-
-    admin = SimpleNamespace(
-        create_goal=AsyncMock(),
-        create_project=AsyncMock(side_effect=lambda **_: {"id": f"project-{admin.create_project.await_count}"}),
-        get_project=AsyncMock(return_value={"status": "in_progress"}),
-        list_projects=AsyncMock(return_value=[]),
-        list_issues=AsyncMock(return_value=[]),
-        create_issue=AsyncMock(side_effect=lambda **_: {"id": f"issue-{admin.create_issue.await_count}"}),
-        get_issue=AsyncMock(return_value={"status": "backlog"}),
-    )
-    ctx = SimpleNamespace(
-        owner_id=OWNER, company_id="company-1", session_cookie="cookie", paperclip_user_id="pc-user-1"
-    )
-    monkeypatch.setattr(ideas, "_teams_context", AsyncMock(return_value=ctx))
-    monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", lambda: admin)
-    monkeypatch.setattr(hermes_profiles, "write_profile_file", AsyncMock())
-    return admin
-
-
 @pytest.mark.asyncio
-async def test_an_in_flight_start_is_409(paperclip):
+async def test_an_in_flight_start_is_409(workspace):
     await repo.claim_idea_start(OWNER, "books-cleanup", "user_A")
     with pytest.raises(HTTPException) as err:
         await ideas.start(AUTH, "books-cleanup")
     assert err.value.status_code == 409
-    paperclip.create_goal.assert_not_awaited()
 
 
 def test_sales_tax_is_priced_per_state():
@@ -333,7 +310,7 @@ def test_every_need_names_a_known_service():
 
 
 @pytest.mark.asyncio
-async def test_needs_and_done_means_are_not_served(paperclip):
+async def test_needs_and_done_means_are_not_served(workspace):
     first = (await ideas.list_ideas(AUTH))["ideas"][0]
     assert not {"needs", "browser", "person", "doneMeans"} & first.keys()
 
@@ -344,16 +321,6 @@ def test_work_description_is_plain_for_a_suggestion_without_needs():
     )
     text = ideas.work_description(job)
     assert text == "Fourteen reviews wait.\n\nWhat's included:\n- Every review answered"
-
-
-# ---- connecting a service resumes the work ------------------------------------------------------
-
-
-@pytest.fixture
-def commenting(paperclip, monkeypatch):
-    paperclip.add_issue_comment = AsyncMock()
-    monkeypatch.setattr(ideas, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-    return paperclip
 
 
 @pytest.mark.asyncio
@@ -399,7 +366,6 @@ def super_agent(workspace, monkeypatch):
     monkeypatch.setattr(proactive, "_row_now", row_now)
     monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(side_effect=lambda ws, tid: tasks.get(tid)))
     monkeypatch.setattr(tasks_repo, "list_tasks_by_status", by_status)
-    monkeypatch.setattr(ideas, "_teams_context", AsyncMock(side_effect=AssertionError("no Paperclip")))
     return SimpleNamespace(tasks=tasks, enqueued=enqueued, rows=rows)
 
 

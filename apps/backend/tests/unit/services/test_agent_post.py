@@ -1,9 +1,9 @@
 """An agent posting OUTSIDE a room turn (``lightbulb-post.sh``): target resolution, then the
-canonical agent writer. Order: roomId > userId/handle > issue creator > #general."""
+canonical agent writer. Order: roomId > userId/handle > #general."""
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -154,44 +154,11 @@ async def test_step2_handle_resolves_a_workspace_member(created, dms, monkeypatc
     assert exc.value.error.code == "MEMBER_NOT_FOUND"
 
 
-def _paperclip(monkeypatch, issue: dict, members: dict[str, str]):
-    """Owner company ``co_1``; ``members`` maps Clerk user id -> Paperclip user id."""
-    import core.repositories.paperclip_repo as paperclip_repo
-    import core.services.paperclip_admin_client as admin_client
-    import core.services.paperclip_admin_session as admin_session
-
-    repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(company_id="co_1"))
-    repo.get_workspace = AsyncMock(return_value=SimpleNamespace(member_user_ids=list(members)))
-    repo.get_identity = AsyncMock(side_effect=lambda uid: SimpleNamespace(paperclip_user_id=members[uid]))
-    monkeypatch.setattr(paperclip_repo, "PaperclipRepo", lambda **_: repo)
-    admin = SimpleNamespace(_http=None, get_issue=AsyncMock(return_value=issue))
-    monkeypatch.setattr(admin_client, "shared_admin_client", lambda: admin)
-    monkeypatch.setattr(admin_session, "get_admin_session_cookie", AsyncMock(return_value="c"))
-
-
 @pytest.mark.asyncio
-async def test_step3_issue_creator_gets_the_dm(created, dms, monkeypatch):  # noqa: F811
-    _paperclip(monkeypatch, {"companyId": "co_1", "createdByUserId": "pc_ann"}, {"user_bob": "pc_bob", USER: "pc_ann"})
-    await messaging.post_agent_message(OWNER, _post(issueId="iss-1"))
-    assert _room_of(created) == DM
-    assert dms[0].call_args.args == (OWNER, "human", USER)
-
-
-@pytest.mark.asyncio
-async def test_step3_agent_created_issue_falls_through_to_general(created, dms, monkeypatch):  # noqa: F811
-    _paperclip(monkeypatch, {"companyId": "co_1", "createdByUserId": None}, {USER: "pc_ann"})
-    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": OWNER}))
+async def test_an_issue_id_is_accepted_and_ignored(created, monkeypatch):  # noqa: F811
+    """``lightbulb-post.sh --issue`` keeps working: the id is ignored and the post lands in #general."""
     await messaging.post_agent_message(OWNER, _post(issueId="iss-1"))
     assert _room_of(created) == GENERAL
-
-
-@pytest.mark.asyncio
-async def test_step3_another_companys_issue_is_refused(created, dms, monkeypatch):  # noqa: F811
-    _paperclip(monkeypatch, {"companyId": "co_other", "createdByUserId": "pc_ann"}, {USER: "pc_ann"})
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.post_agent_message(OWNER, _post(issueId="iss-1"))
-    assert exc.value.error.code == "ROOM_FORBIDDEN"
 
 
 @pytest.mark.asyncio

@@ -244,6 +244,26 @@ async def list_open(ws: str, task_id: str) -> list[dict]:
     return [q for q in await list_for_task(ws, task_id) if q["state"] == "open"]
 
 
+async def answered_since(ws: str, since_iso: str) -> list[dict]:
+    """The workspace's Questions answered at or after ``since_iso`` (the trial recap).
+    ponytail: one filtered read of the workspace partition; a per-day answered index if workspaces get big."""
+    kwargs: dict[str, Any] = {
+        "KeyConditionExpression": "pk = :pk AND begins_with(sk, :p)",
+        "FilterExpression": "contains(sk, :q) AND #s = :answered AND answeredAt >= :since",
+        "ExpressionAttributeNames": {"#s": "state"},
+        "ExpressionAttributeValues": {
+            ":pk": ts.ws_pk(ws), ":p": "TASK#", ":q": "#Q#", ":answered": "answered", ":since": since_iso,
+        },
+    }  # fmt: skip
+    items: list[dict] = []
+    while True:
+        page = await run_in_thread(_table().query, **kwargs)
+        items += [plain(i) for i in page.get("Items", [])]
+        if not page.get("LastEvaluatedKey"):
+            return items
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 async def needs_for_user(
     ws: str, user_id: str, *, cursor: str | None = None, limit: int = 50
 ) -> tuple[list[dict], str | None]:

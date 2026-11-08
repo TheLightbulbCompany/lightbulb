@@ -13,12 +13,9 @@ import pytest
 
 from core.services.onboarding_brief import (
     capture_first_workspace_message,
-    derive_goal_title,
     first_message_intake,
     is_root_ceo,
-    project_name_for,
     render_brief_md,
-    seed_goal_and_project,
     stage_first_run_files,
 )
 
@@ -294,124 +291,6 @@ def test_render_brief_md_no_idea_tells_friday_to_pick_one():
     assert "do not stall" in md
     # Never render a Python None into the brief.
     assert "None" not in md
-
-
-def test_goal_title_new_path_uses_their_words():
-    assert (
-        derive_goal_title(path="new", user_input="A social media agency for restaurants")
-        == "A social media agency for restaurants"
-    )
-
-
-def test_goal_title_new_path_truncates_long_input():
-    title = derive_goal_title(path="new", user_input="x" * 300)
-    assert len(title) <= 120
-    assert title.endswith("…")
-
-
-def test_goal_title_grow_path_is_a_mission_not_a_url():
-    assert derive_goal_title(path="grow", user_input="https://www.ferrosocial.com/pricing?x=1") == (
-        "Grow ferrosocial.com"
-    )
-
-
-def test_goal_title_grow_path_caps_a_pasted_paragraph():
-    # The website field is free text (up to 2000 chars); a user pasting prose
-    # instead of a URL must not produce a ~2000-char title that Paperclip
-    # could reject, stalling the client in an identical-input retry loop.
-    title = derive_goal_title(path="grow", user_input="x" * 300)
-    assert len(title) <= 120
-    assert title.endswith("…")
-
-
-def test_goal_title_no_idea_path_describes_the_actual_situation():
-    assert derive_goal_title(path="new", user_input=None) == "Find the right business to build"
-
-
-def test_project_name_is_never_a_placeholder():
-    assert project_name_for("Max") == "Max's Company"
-
-
-@pytest.mark.asyncio
-async def test_seed_creates_goal_then_project_linked_to_it():
-    admin = MagicMock()
-    admin.create_goal = AsyncMock(return_value={"id": "goal-1"})
-    admin.create_project = AsyncMock(return_value={"id": "proj-1"})
-
-    goal_id, project_id = await seed_goal_and_project(
-        admin=admin,
-        session_cookie="cookie",
-        company_id="comp-1",
-        friday_agent_id="friday-uuid",
-        goal_title="A social media agency",
-        project_name="Max's Company",
-    )
-
-    assert (goal_id, project_id) == ("goal-1", "proj-1")
-
-    goal_body = admin.create_goal.await_args.kwargs["body"]
-    assert goal_body["level"] == "company"
-    assert goal_body["status"] == "active"
-    assert "parentId" not in goal_body
-
-    project_body = admin.create_project.await_args.kwargs["body"]
-    # Regression this guards: a task created with projectId = the onboarding
-    # project must resolve goalId to the onboarding goal. Paperclip mirrors
-    # goalIds[0] into the legacy projects.goalId column that
-    # getProjectDefaultGoalId reads, and resolveIssueGoalId returns
-    # projectGoalId ?? null for any issue with a project -- it does NOT fall
-    # through to the company default. So if this ever becomes goalId (singular)
-    # instead of goalIds (plural, list), or drops goal_id from the list, every
-    # task filed into the project goes silently unattributed. This is the
-    # highest level our code can assert the fix at -- Paperclip's own mirroring
-    # of goalIds[0] -> goalId is upstream behavior, not ours to unit test here.
-    assert project_body["goalIds"] == ["goal-1"]
-    assert "targetDate" not in project_body
-
-
-@pytest.mark.asyncio
-async def test_seed_rolls_back_the_goal_when_project_create_fails():
-    admin = MagicMock()
-    admin.create_goal = AsyncMock(return_value={"id": "goal-1"})
-    admin.create_project = AsyncMock(side_effect=RuntimeError("upstream down"))
-    admin.delete_goal = AsyncMock()
-
-    with pytest.raises(RuntimeError):
-        await seed_goal_and_project(
-            admin=admin,
-            session_cookie="cookie",
-            company_id="comp-1",
-            friday_agent_id="friday-uuid",
-            goal_title="A social media agency",
-            project_name="Max's Company",
-        )
-
-    admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
-
-
-@pytest.mark.asyncio
-async def test_seed_goal_cleanup_failure_does_not_mask_the_original_error():
-    """If delete_goal itself raises during rollback, that cleanup failure
-    must not REPLACE the original create_project error -- the router maps
-    (PaperclipApiError, httpx.HTTPError, RuntimeError) to a retryable 409,
-    and an unrelated cleanup exception could fall outside that set and
-    surface as a raw 500 instead, reclassifying a retryable failure."""
-    admin = MagicMock()
-    admin.create_goal = AsyncMock(return_value={"id": "goal-1"})
-    admin.create_project = AsyncMock(side_effect=RuntimeError("upstream down"))
-    admin.delete_goal = AsyncMock(side_effect=Exception("goal delete also failed"))
-
-    with pytest.raises(RuntimeError, match="upstream down"):
-        await seed_goal_and_project(
-            admin=admin,
-            session_cookie="cookie",
-            company_id="comp-1",
-            friday_agent_id="friday-uuid",
-            goal_title="A social media agency",
-            project_name="Max's Company",
-        )
-
-    admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
 
 
 async def test_staging_overwrites_a_partial_prior_attempt(monkeypatch):

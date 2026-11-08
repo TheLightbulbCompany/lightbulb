@@ -85,13 +85,11 @@ def env(table, monkeypatch):
     async def fake_client(*args, **kwargs):
         yield http
 
-    paperclip = MagicMock()
     with (
         patch("core.services.credentials.integration_secret_store.get", side_effect=get),
         patch("core.services.credentials.integration_secret_store.put", side_effect=put),
         patch("core.services.credentials.integration_secret_store.delete", side_effect=delete),
         patch("core.services.inbound_triggers.httpx.AsyncClient", new=fake_client),
-        patch("core.services.inbound_triggers.PaperclipAdminClient", paperclip),
         patch(
             "core.services.inbound_triggers.google_accounts_repo.list_accounts",
             AsyncMock(return_value=[{"email": "ada@example.com"}]),
@@ -103,7 +101,7 @@ def env(table, monkeypatch):
             side_effect=lambda key: _gmail_provider() if key == "google" else _real_get_provider(key),
         ),
     ):
-        yield MagicMock(temporal=temporal, secrets=secrets, http=http, paperclip=paperclip, funnel=funnel)
+        yield MagicMock(temporal=temporal, secrets=secrets, http=http, funnel=funnel)
 
 
 async def _seed(provider, events, **kw):
@@ -121,7 +119,6 @@ async def _rows():
 async def test_seed_super_agent_writes_hook_and_secret_not_paperclip(env):
     out = await _seed("stripe", ["invoice.payment_failed", "charge.refunded"])
 
-    assert not env.paperclip.called
     sched, (hook,) = await _rows()
     assert sched["status"] == "draft"
     assert sched["ownerUserId"] == USER and sched["createdBy"] == "user"

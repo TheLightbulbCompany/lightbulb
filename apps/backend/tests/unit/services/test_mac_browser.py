@@ -20,7 +20,6 @@ NATIVE, CLI = "mac1", "cli1"
 ADDRESS, PEER = "http://10.0.3.7:8000", "http://10.0.3.8:8000"
 NOW = 1_000_000.0
 ROOM = {"ownerId": OWNER, "memberId": MEMBER, "runId": "r1", "agentId": "a1", "family": "room", "roomId": "rm1"}
-PAPERCLIP = {"ownerId": OWNER, "companyId": "c1", "runId": "r1", "agentId": "a1", "family": "paperclip"}
 SAVED = f"browser-state/{OWNER}/s1.json"
 ALL = {"browser.cdp.v1", "browser.cast.v1", "browser.wipe.v1", "desktop.operation.approve.v1", "system.notify"}
 
@@ -63,7 +62,6 @@ class H:
         self.granted = set(ALL)
         self.state = {"generation": "x", "mode": "idle", "saved_key": SAVED}
         self.ensure = {"ok": True, "payload": {"profileId": "prof1"}}
-        self.consent = True
         self.enabled = True
         self.resolve_error = None
         self.copy_error = None
@@ -141,10 +139,6 @@ def h(monkeypatch):
         h.dispatched.append((target["deviceId"], request["command"], request["params"]))
         if request["command"] == "browser.cdp.v1":
             return h.ensure
-        if request["command"] == desktop_execution.CONSENT_COMMAND:
-            binding = request["params"]["binding"]
-            approved = h.consent if isinstance(h.consent, bool) else target["deviceId"] in h.consent
-            return {"ok": True, "payload": {"approved": approved, "binding": binding}}
         return {"ok": True, "payload": {}}
 
     monkeypatch.setattr(desktop_execution, "_dispatch", dispatch)
@@ -159,13 +153,6 @@ def h(monkeypatch):
 
     monkeypatch.setattr(desktop_execution, "_reauthorize", reauthorize)
 
-    async def paperclip_member(auth, device):
-        entry = h.db[OWNER]["paired_devices"].get(device) or {}
-        if entry.get("userId") is None:
-            raise DesktopError("desktop_forbidden", 403)
-        return entry["userId"]
-
-    monkeypatch.setattr(desktop_execution, "_paperclip_member", paperclip_member)
     monkeypatch.setattr(browser_control, "_state_url", lambda key, action: f"{action}:{key}")
 
     async def delete_snapshot(key):
@@ -283,96 +270,6 @@ async def test_generation_comes_from_ready_row_after_reconnect(h):
     assert mac_cdp.redeem(out["cdpUrl"].rsplit("/", 1)[1])["generation"] == "g2"
 
 
-# ---- Paperclip --------------------------------------------------------------------------------
-
-
-def _consents(h):
-    return [d for d in h.dispatched if d[1] == desktop_execution.CONSENT_COMMAND]
-
-
-async def test_paperclip_acquire_runs_consent_once(h, monkeypatch):
-    async def reauthorize(auth):
-        return None
-
-    monkeypatch.setattr(desktop_execution, "_reauthorize", reauthorize)
-    out = await mac_browser.acquire(PAPERCLIP, None)
-    assert out["deviceId"] == NATIVE
-    [(device, _, params)] = _consents(h)
-    assert device == NATIVE
-    # The Mac's parser (desktop_permissions.rs) denies an operation without an object `params`.
-    assert params["operation"] == {
-        "command": "browser.cdp.v1",
-        "params": {},
-        "deviceId": NATIVE,
-        "expectedConnectionGeneration": "g1",
-        "runId": "r1",
-        "agentId": "a1",
-    }
-    claims = mac_cdp.redeem(out["cdpUrl"].rsplit("/", 1)[1])
-    assert claims["family"] == "paperclip" and claims["companyId"] == "c1"
-
-
-async def test_paperclip_acquire_refused_consent_is_desktop_consent_denied(h):
-    h.consent = False
-    await _raises("desktop_consent_denied", mac_browser.acquire(PAPERCLIP, None), 403)
-    assert not [d for d in h.dispatched if d[1] == "browser.cdp.v1"]  # no Chrome launched
-
-
-def _second_mac(h, native="mac2", member="user_2", name="Leo"):
-    h.db[OWNER]["paired_devices"] |= _pair(native, "cli-" + native, member, "pg-" + native)
-    h.db[OWNER]["paired_devices"][native]["displayName"] = f"{name}{mac_browser.PAIR_NAME_SUFFIX}"
-    h.ready[native] = {"generation": "g2", "commands": set(ALL), "userId": member}
-
-
-async def test_paperclip_several_approving_macs_ask_which_one(h):
-    h.db[OWNER]["paired_devices"][NATIVE]["displayName"] = f"Prasiddha{mac_browser.PAIR_NAME_SUFFIX}"
-    _second_mac(h)
-    err = await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, None), 409)
-    assert f"Prasiddha's Mac (deviceId {NATIVE})" in err.message
-    assert "Leo's Mac (deviceId mac2)" in err.message
-    assert "issue thread" in err.message and "use_browser" in err.message
-    await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, "unknown-device"), 409)
-    h.consent = False
-    await _raises("paperclip_no_mac", mac_browser.acquire(PAPERCLIP, None), 409)
-
-
-async def test_paperclip_several_approving_macs_take_the_chosen_one(h):
-    _second_mac(h)
-    out = await mac_browser.acquire(PAPERCLIP, "mac2")
-    assert out["deviceId"] == "mac2"
-    assert (await mac_browser._paperclip_pick(PAPERCLIP, "cli-mac2"))[0] == "mac2"  # either device of the pair
-
-
-async def test_paperclip_chosen_mac_that_does_not_approve_is_denied(h):
-    _second_mac(h)
-    _second_mac(h, "mac3", "user_3", "Ada")
-    h.consent = {NATIVE, "mac2"}
-    await _raises("desktop_consent_denied", mac_browser.acquire(PAPERCLIP, "mac3"), 403)
-
-
-async def test_paperclip_single_approver_is_used_and_others_are_denied(h):
-    _second_mac(h)
-    h.consent = {NATIVE}
-    assert (await mac_browser.acquire(PAPERCLIP, None))["deviceId"] == NATIVE
-    await _raises("desktop_consent_denied", mac_browser.acquire(PAPERCLIP, "mac2"), 403)
-
-
-async def test_paperclip_forwarded_half_consents_on_the_holder(h):
-    out = await mac_browser.acquire(PAPERCLIP, NATIVE, forwarded=True)
-    assert out["deviceId"] == NATIVE and len(_consents(h)) == 1
-
-
-async def test_paperclip_notice_on_open_names_the_agent(h, monkeypatch):
-    async def name(agent_id):
-        return "Friday"
-
-    monkeypatch.setattr(mac_browser, "_agent_name", name)
-    assert await mac_browser.notice({"family": "paperclip", "agentId": "a1"}) == (
-        "Friday is using your Mac's browser for a team task."
-    )
-    assert await mac_browser.notice({"family": "room", "agentId": "a1"}) is None
-
-
 # ---- resolve and ensure mapping ---------------------------------------------------------------
 
 
@@ -381,10 +278,9 @@ async def test_acquire_update_required_when_ready_row_lacks_wipe_marker(h):
     await _raises("desktop_update_required", mac_browser.acquire(ROOM, None), 409)
 
 
-@pytest.mark.parametrize("auth", [ROOM, PAPERCLIP])
-async def test_acquire_update_required_when_old_mac_lacks_live_cast(h, auth):
+async def test_acquire_update_required_when_old_mac_lacks_live_cast(h):
     h.ready[NATIVE]["commands"].remove("browser.cast.v1")
-    await _raises("desktop_update_required", mac_browser.acquire(auth, None), 409)
+    await _raises("desktop_update_required", mac_browser.acquire(ROOM, None), 409)
     assert h.dispatched == []  # refuse before launching Chrome or claiming a browser lease
 
 
@@ -893,7 +789,6 @@ async def test_every_raised_error_has_a_message(h):
     assert mac_browser._with_message(DesktopError("desktop_peer_unavailable", 503)).message
     for code in (
         "desktop_disabled",
-        "desktop_consent_denied",
         "desktop_forbidden",
         "desktop_generation_lost",
         "desktop_update_required",
@@ -905,8 +800,6 @@ async def test_every_raised_error_has_a_message(h):
         "no_mac",
         "choose_mac",
         "mac_browser_busy",
-        "paperclip_no_mac",
-        "paperclip_mac_ambiguous",
     ):
         assert mac_browser.MESSAGES[code]
     h.resolve_error = "desktop_task_moved"  # an unmapped code from _resolve keeps its code, gains a message
@@ -959,12 +852,6 @@ async def test_publish_refuses_a_missing_upload(h):
     h.deleted.append(pending["saved_out"])  # gone before the CAS
     assert await mac_browser.synced(ROOM, NATIVE, sync_id, True) == {"ok": True}
     assert h.state["saved_key"] == SAVED and SAVED not in h.deleted  # the previous save survives
-
-
-async def test_paperclip_without_any_ready_mac_is_paperclip_no_mac(h):
-    h.ready.clear()
-    err = await _raises("paperclip_no_mac", mac_browser.acquire(PAPERCLIP, None), 409)
-    assert "Your Mac" not in err.message
 
 
 def _revocation_repo(monkeypatch, rows):

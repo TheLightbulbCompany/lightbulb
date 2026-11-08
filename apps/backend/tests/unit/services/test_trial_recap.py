@@ -19,20 +19,37 @@ def test_recap_window_is_the_last_three_days():
     assert not trial_recap.in_recap_window(None)
 
 
-def test_approvals_count_a_rejection_as_a_handoff_and_name_the_latest_approval():
-    rows = [
-        {"status": "approved", "decidedByUserId": "u1", "decidedAt": IN, "payload": {"title": "Send invoices"}},
+@pytest.mark.asyncio
+async def test_trial_recap_counts_questions(monkeypatch):
+    """Answered Questions in the window are the handoffs; allowed approvals are the approvals, the latest names
+    the top item; a denial is a handoff but not an approval. No Paperclip."""
+    trial_recap._cache.clear()
+    answered = [
+        {"kind": "approval", "answer": {"optionId": "allow_once"}, "answeredAt": IN, "title": "Send invoices"},
         {
-            "status": "approved",
-            "decidedByUserId": "u1",
-            "decidedAt": "2027-01-11T00:00:00Z",
-            "payload": {"title": "Hire"},
+            "kind": "approval",
+            "answer": {"optionId": "allow_once"},
+            "answeredAt": "2027-01-11T00:00:00+00:00",
+            "title": "Hire",
         },
-        {"status": "rejected", "decidedByUserId": "u2", "decidedAt": IN, "payload": {}},
-        {"status": "approved", "decidedByUserId": "u1", "decidedAt": OLD, "payload": {"title": "old"}},
-        {"status": "pending", "payload": {"title": "open"}},
+        {"kind": "approval", "answer": {"optionId": "deny"}, "answeredAt": IN, "title": "Refund"},
+        {"kind": "question", "answer": {"optionId": "answer"}, "answeredAt": IN, "title": "Which day?"},
     ]
-    assert trial_recap.approval_numbers(rows, SINCE) == (3, 2, "Hire")
+    read = AsyncMock(return_value=answered)
+    monkeypatch.setattr(trial_recap.questions_repo, "answered_since", read)
+    monkeypatch.setattr(trial_recap, "room_activity", AsyncMock(return_value=(2, 3)))
+    got = await trial_recap.recap("org_1", END)
+    assert (got["handoffs"], got["approvals"], got["top_item"], got["people"], got["agents"]) == (4, 2, "Hire", 2, 3)
+    assert read.await_args.args == ("org_1", "2026-12-16T08:00:00+00:00")
+
+
+@pytest.mark.asyncio
+async def test_a_questions_outage_reads_zero_and_is_not_cached(monkeypatch):
+    trial_recap._cache.clear()
+    monkeypatch.setattr(trial_recap.questions_repo, "answered_since", AsyncMock(side_effect=RuntimeError("ddb")))
+    monkeypatch.setattr(trial_recap, "room_activity", AsyncMock(return_value=(0, 0)))
+    assert (await trial_recap.recap("org_1", END))["handoffs"] == 0
+    assert trial_recap._cache == {}
 
 
 @pytest.mark.asyncio

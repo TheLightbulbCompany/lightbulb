@@ -318,7 +318,7 @@ async def test_a_repeat_request_says_the_last_result_again_word_for_word(talker,
     await talker._turns.flush()
     assert talker.backend.sent == []  # never posted to the Router
     assert session.replies[-1] == mouth.verbatim_instructions(["We shipped phone reception in 4966."])
-    assert session.kw[-1] == {"tool_choice": "none"}
+    assert session.kw[-1] == {"tool_choice": "none", "user_input": f"{mouth.TEAM}\nWe shipped phone reception in 4966."}
 
 
 async def test_a_repeat_request_with_nothing_said_yet_is_small_talk(talker, session):
@@ -382,3 +382,28 @@ async def test_a_dropped_result_never_silences_the_next_holding_line(talker, ses
     session.made[-1].done()  # the holding line played out; no result ever came
     talker.line("Maya", "And did Acme pay?")
     assert session.replies == [mouth.HOLD, mouth.HOLD]
+
+
+#: The Front desk thread's lines as posted in the call rooms (8 Nov prod booking smoke after #5122).
+FRONT_DESK = [
+    "Just to confirm, Saturday, November 14 at 12:00 PM for the 45-minute founding team setup—is that right?",
+    "Monday, November 16 has openings at 1:00, 3:00, and 5:00 PM. Which time would you prefer?",
+    "You’re booked for the founding team setup on Saturday, November 14 at 12:00 PM.",
+]
+
+
+@pytest.mark.parametrize("text", FRONT_DESK)
+def test_a_team_message_is_the_conversations_newest_line(talker, session, text):
+    """Handed only in the response's instructions, the realtime model answered the caller's last line instead ("OK.
+    Great. I'll pass that along to the team." for "You're booked", "Got it… nothing is finalized yet" for the
+    read-back) or was cut as a refusal twice (Monday's slots). The message is the newest conversation item."""
+    talker.say([text])
+    said = session.kw[-1]["user_input"]
+    assert said.startswith(mouth.TEAM) and text in said and mouth.team_line(said)
+    assert text in session.replies[-1]  # still in the rule's <message> too
+    talker.say([text], verbatim=True)
+    assert text in session.kw[-1]["user_input"]
+
+
+def test_a_team_line_is_never_taken_for_the_callers():
+    assert mouth.team_line(f"{mouth.TEAM}\n{FRONT_DESK[0]}") and not mouth.team_line("Yes, that's right.")

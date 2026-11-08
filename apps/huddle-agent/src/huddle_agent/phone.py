@@ -41,7 +41,7 @@ from openai.types.beta.realtime.session import TurnDetection
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import REPEAT, Mouth, Talker, fixed
+from huddle_agent.mouth import REPEAT, Mouth, Talker, fixed, team_line
 
 logger = logging.getLogger("phone")
 # One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
@@ -68,14 +68,10 @@ HOLD_S = float(os.environ.get("PHONE_HOLD_S", 8))  # no answer yet: one more hol
 OFFER_S = float(os.environ.get("PHONE_OFFER_S", 20))  # still none: offer to take a message
 WAIT_S = 90.0  # a delegation's answer may take this long (a Front desk thread: 69-95 s on dev, 8 Nov)
 POLL_S = 1.0  # how often the call asks what Lightbulb posted in its room
-HOLD_AGAIN = (
-    'The team is still checking. Say one short, natural holding line, such as "Thanks for waiting, still '
-    'checking on that." Say nothing else and add no facts.'
-)
-OFFER_MESSAGE = (
-    "The answer is taking a while. In one short sentence, offer to take a message so the team can call them back, "
-    "or they can keep holding. Add no facts."
-)
+# Fixed words: free-form, the model said "I don't have a confirmed booking yet… I can't confirm anything right now"
+# and "nothing is finalized yet" while the Front desk was answering (8 Nov prod booking smoke after #5122).
+HOLD_AGAIN = fixed("Thanks for waiting, I'm still checking on that.")
+OFFER_MESSAGE = fixed("This is taking a moment. You can keep holding, or I can take a message so the team can call you back.")
 
 # Server-side turns on silence (developers.openai.com/api/docs/guides/realtime-vad): talking over the voice stops it.
 # create_response off: code answers each line (Receptionist.line), never the model on its own.
@@ -612,7 +608,7 @@ async def entrypoint(ctx: JobContext) -> None:
     @session.on("conversation_item_added")
     def _item(ev) -> None:
         text = getattr(ev.item, "text_content", None)
-        if text:
+        if text and not (ev.item.role == "user" and team_line(text)):  # a team message is not the caller's line
             at = (ev.item.metrics or {}).get(
                 "started_speaking_at"
             ) or ev.item.created_at

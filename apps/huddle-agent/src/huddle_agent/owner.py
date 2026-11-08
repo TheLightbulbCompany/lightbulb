@@ -27,7 +27,7 @@ from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVa
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import Mouth, Talker
+from huddle_agent.mouth import Mouth, Talker, team_line
 from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
@@ -167,7 +167,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     @session.on("conversation_item_added")  # LiveKit's documented per-turn event: each final user/agent line
     def _item(ev) -> None:
-        if (text := getattr(ev.item, "text_content", None)) and ev.item.role in ("user", "assistant"):
+        text = getattr(ev.item, "text_content", None)
+        if text and ev.item.role in ("user", "assistant") and not (ev.item.role == "user" and team_line(text)):
             at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
             items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
             if ev.item.role == "user":

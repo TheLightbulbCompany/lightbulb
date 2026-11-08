@@ -1029,7 +1029,15 @@ async def _room_exists(room_id: str) -> bool:
 
 
 async def _deliver(
-    ws: str, trig: dict, text: str, *, event_id: str, refs: list[dict] | None, remember: bool = True
+    ws: str,
+    trig: dict,
+    text: str,
+    *,
+    event_id: str,
+    refs: list[dict] | None,
+    remember: bool = True,
+    waiting: bool = False,
+    waiting_tasks: list[str] | None = None,
 ) -> str | None:
     """Post in the trigger's place: its thread or room (chat), the deliver room (other sources), or back to the
     sender for a plain mail/text reply. Idempotent on `event_id`."""
@@ -1051,6 +1059,7 @@ async def _deliver(
         event_id=event_id,
         thread_root=ref.get("threadRoot"),
         task_refs=refs,
+        attrs={"voiceWaiting": waiting, **({"voiceTaskIds": waiting_tasks} if waiting_tasks else {})},
         remember=remember,
         **({"in_reply_to": ref["messageId"]} if ref.get("messageId") else {}),  # the voice matches its answer by it
     )
@@ -1302,6 +1311,8 @@ async def _apply(
                 text,
                 event_id=f"{event_prefix}:{idx}",
                 refs=sl["refs"] or None,
+                waiting=bool(sl["starts"] or sl["passes"]),
+                waiting_tasks=sl["starts"] + sl["passes"],
                 # Acks and the fallback line are boilerplate: a post of only those stays out of room memory.
                 remember=any(
                     line and line not in sl["acks"] and line != router_prompt.FALLBACK for line in sl["lines"]

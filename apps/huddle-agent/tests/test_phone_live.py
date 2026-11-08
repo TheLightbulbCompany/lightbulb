@@ -39,6 +39,7 @@ class FakeLive:
         self.session.user_state, self.session.agent_state = "listening", "listening"
         self.sent: list[tuple] = []
         self.pending: dict[str, str | None] = {}
+        self.awaiting = self.pending
         self.closed = 0
 
     def send_result(self, delegation_id, text):
@@ -149,7 +150,10 @@ async def test_phone_opening_carries_three_facts(monkeypatch):
         "room_options"
     ]  # the SIP caller's audio, telephony noise cancellation, ends on hang-up
     assert opts.participant_identity == "sip_caller" and opts.close_on_disconnect
-    assert call.started["record"] is True and call.started["user_away_timeout"] == phone.AWAY_S
+    assert (
+        call.started["record"] is True
+        and call.started["user_away_timeout"] == phone.AWAY_S
+    )
     prompt = call.started["prompt"]
     (first_id, opening), *_ = call.live.sent
     for said in (prompt, opening):
@@ -217,10 +221,16 @@ async def test_the_opening_said_in_bursts_is_judged_whole(monkeypatch):
     call.state("speaking", "listening")
     await asyncio.sleep(0.01)
     call.state("listening", "speaking")
-    call.item("assistant", "I'm an AI assistant and this call is recorded. How can I help?", 2.0)
+    call.item(
+        "assistant",
+        "I'm an AI assistant and this call is recorded. How can I help?",
+        2.0,
+    )
     call.state("speaking", "listening")
     await asyncio.sleep(0.1)
-    assert len(call.live.sent) == 1  # the opening only: the two bursts disclose together
+    assert (
+        len(call.live.sent) == 1
+    )  # the opening only: the two bursts disclose together
     call.ctx.room.emit("participant_disconnected", call.caller)
     await asyncio.sleep(0.01)
     (end,) = [body for path, body in call.backend.calls if path == "end"]
@@ -307,7 +317,12 @@ async def test_nobody_to_take_the_call_is_told_to_gpt_live(monkeypatch):
 async def test_restarting_events_does_not_repeat_an_admitted_transfer(monkeypatch):
     """live.py restarts the events iterator after a transport failure; its spoken-id dedupe must also hold for
     the phone's SIP side effect, which happens before a message is yielded to live.py."""
-    message = {"id": "transfer-1", "seq": 5, "text": "Putting you through.", "action": "transfer"}
+    message = {
+        "id": "transfer-1",
+        "seq": 5,
+        "text": "Putting you through.",
+        "action": "transfer",
+    }
     call = await Call(monkeypatch, replies={"events": {"messages": [message], "after": 5},
                                            "transfer": {"transferTo": "+16105559999"}}).answer()  # fmt: skip
     for _ in range(2):
@@ -342,19 +357,31 @@ def _away(call, state="away"):
     call.live.session.emit("user_state_changed", SimpleNamespace(new_state=state))
 
 
-async def test_a_silent_line_is_told_once_then_hung_up_unless_a_request_is_pending(monkeypatch):
+async def test_a_silent_line_is_told_once_then_hung_up_unless_a_request_is_pending(
+    monkeypatch,
+):
     """Review Focus 5 for a held line, driven by the caller's own state (user_away_timeout): silence while the team
     works on a fresh request is holding, not gone; otherwise GPT-Live is told once (its words, not ours) and the
     call ends AWAY_S later, even when the voice itself talks into the silence ("are you still there?")."""
     monkeypatch.setattr(phone, "AWAY_S", 0.02)
     monkeypatch.setattr(phone, "WAIT_S", 0.05)
     call = await Call(monkeypatch, replies={"turn": {"messageId": "m1"}}).answer()
-    call.live.pending["item_1"] = await call.started["post"]("Book me Saturday at 3", [])
+    call.live.pending["item_1"] = await call.started["post"](
+        "Book me Saturday at 3", []
+    )
     _away(call)
     await asyncio.sleep(0.03)
-    assert call.deleted == 0 and len(call.live.sent) == 1  # holding for the team's answer
-    await asyncio.sleep(0.08)  # the ask is older than WAIT_S: a lost answer never holds the line open
-    assert len(call.live.sent) == 2 and call.deleted == 1 and call.shutdowns == ["caller silent"]
+    assert (
+        call.deleted == 0 and len(call.live.sent) == 1
+    )  # holding for the team's answer
+    await asyncio.sleep(
+        0.08
+    )  # the ask is older than WAIT_S: a lost answer never holds the line open
+    assert (
+        len(call.live.sent) == 2
+        and call.deleted == 1
+        and call.shutdowns == ["caller silent"]
+    )
 
     quiet = await Call(monkeypatch).answer()
     _away(quiet)
@@ -363,7 +390,11 @@ async def test_a_silent_line_is_told_once_then_hung_up_unless_a_request_is_pendi
     quiet.item("assistant", "Are you still there?", 5.0)
     quiet.state("speaking", "listening")
     await asyncio.sleep(0.04)
-    assert quiet.deleted == 1 and quiet.live.closed == 1 and quiet.shutdowns == ["caller silent"]
+    assert (
+        quiet.deleted == 1
+        and quiet.live.closed == 1
+        and quiet.shutdowns == ["caller silent"]
+    )
     (end,) = [b for p, b in quiet.backend.calls if p == "end"]
     assert end["silent"] is True
 
@@ -398,3 +429,55 @@ async def test_a_voice_start_failure_ends_the_call_and_requests_a_callback(monke
     assert call.paths().count("unknown") == call.paths().count("end") == 1
     (end,) = [body for path, body in call.backend.calls if path == "end"]
     assert end["durationSec"] >= 0 and end["disclosure"] == "unknown"
+
+
+async def test_completed_work_restores_normal_silence_timeout_without_losing_correlation(
+    monkeypatch,
+):
+    monkeypatch.setattr(phone, "AWAY_S", 0.02)
+    monkeypatch.setattr(phone, "WAIT_S", 90)
+    monkeypatch.setattr(phone, "POLL_S", 0)
+    call = await Call(
+        monkeypatch,
+        replies={
+            "turn": {"messageId": "m1"},
+            "events": [
+                {
+                    "messages": [
+                        {
+                            "id": "ack",
+                            "inReplyTo": "m1",
+                            "text": "On it.",
+                            "waiting": True,
+                        }
+                    ],
+                    "after": 5,
+                },
+                {
+                    "messages": [
+                        {
+                            "id": "answer",
+                            "inReplyTo": "m1",
+                            "text": "Booked.",
+                            "waiting": False,
+                        }
+                    ],
+                    "after": 6,
+                },
+            ],
+        },
+    ).answer()
+    call.live.awaiting = {"item_1": await call.started["post"]("Book Saturday", [])}
+    call.live.pending = dict(call.live.awaiting)
+    _away(call)
+    events = call.started["events"]()
+    assert (await anext(events))["waiting"] is True
+    assert (await anext(events))["waiting"] is False
+    assert call.deleted == 0 and len(call.live.sent) == 1  # ack never completes work
+    call.live.awaiting.clear()  # LiveSession._result's terminal receipt, independently tested
+    reader = asyncio.create_task(anext(events))
+    await asyncio.sleep(0.04)
+    reader.cancel()
+    await asyncio.gather(reader, return_exceptions=True)
+    assert call.live.pending == {"item_1": "m1"}
+    assert call.deleted == 1 and call.shutdowns == ["caller silent"]

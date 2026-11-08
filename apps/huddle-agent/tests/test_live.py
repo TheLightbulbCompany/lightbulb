@@ -19,7 +19,9 @@ class FakeTransport:
     """Stands in for the plugin's GPTLiveSession plus the agent's chat context."""
 
     def __init__(self):
-        self.items: list[tuple[str, str, str]] = []  # (id, role, text), the chat context
+        self.items: list[
+            tuple[str, str, str]
+        ] = []  # (id, role, text), the chat context
         self.appends: list[tuple[str, str | None]] = []  # (text, delegation_id)
         self.thoughts: list[str] = []
         self.closed = False
@@ -76,7 +78,9 @@ def queue_events():
 
 
 def session(router, events=None, transport=None, on_spoken=None):
-    return live.LiveSession(transport or FakeTransport(), "owner", router.post, events or _none, on_spoken)
+    return live.LiveSession(
+        transport or FakeTransport(), "owner", router.post, events or _none, on_spoken
+    )
 
 
 async def test_delegation_posts_once_and_returns_immediately():
@@ -108,7 +112,10 @@ async def test_ask_joins_chat_context_with_partial_pending_transcript():
     t.say("user", "And last week?")
     s.on_delegate(delegation(2, pending=""))
     await asyncio.sleep(0.01)
-    assert r.posts[1] == ("And last week?", ["assistant: Let me check.", "user: And last week?"])
+    assert r.posts[1] == (
+        "And last week?",
+        ["assistant: Let me check.", "user: And last week?"],
+    )
     await s.close()
 
 
@@ -122,7 +129,10 @@ async def test_item_inserted_earlier_by_created_at_is_still_sent_once():
     t.say("user", "second")
     s.on_delegate(delegation(2, ""))
     await asyncio.sleep(0.01)
-    assert r.posts[1][1] == ["assistant: an earlier line, inserted by created_at", "user: second"]
+    assert r.posts[1][1] == [
+        "assistant: an earlier line, inserted by created_at",
+        "user: second",
+    ]
     await s.close()
 
 
@@ -145,9 +155,16 @@ async def test_two_pending_delegations_both_answered_in_order():
     s.on_delegate(delegation(1, "first ask"))
     s.on_delegate(delegation(2, "second ask"))
     await asyncio.sleep(0.1)
-    assert [p[0] for p in r.posts] == ["first ask", "second ask"]  # posted in the order asked
-    await q.put({"kind": "agent", "id": "a1", "inReplyTo": "m_1", "text": "first answer"})
-    await q.put({"kind": "agent", "id": "a2", "inReplyTo": "m_2", "text": "second answer"})
+    assert [p[0] for p in r.posts] == [
+        "first ask",
+        "second ask",
+    ]  # posted in the order asked
+    await q.put(
+        {"kind": "agent", "id": "a1", "inReplyTo": "m_1", "text": "first answer"}
+    )
+    await q.put(
+        {"kind": "agent", "id": "a2", "inReplyTo": "m_2", "text": "second answer"}
+    )
     await asyncio.sleep(0.02)
     assert t.appends == [("first answer", "item_1"), ("second answer", "item_2")]
     await s.close()
@@ -166,7 +183,11 @@ async def test_interim_line_does_not_steal_the_next_delegations_answer():
               {"kind": "agent", "id": "x3", "inReplyTo": "m_2", "text": "Answer to b."}):  # fmt: skip
         await q.put(m)
     await asyncio.sleep(0.02)
-    assert t.appends == [("On it.", "item_1"), ("Answer to a.", "item_1"), ("Answer to b.", "item_2")]
+    assert t.appends == [
+        ("On it.", "item_1"),
+        ("Answer to a.", "item_1"),
+        ("Answer to b.", "item_2"),
+    ]
     await s.close()
 
 
@@ -177,10 +198,20 @@ async def test_unmatched_agent_message_is_unsolicited_never_a_pending_answer():
     s = session(Router(delay=0), events=events, transport=t)
     s.on_delegate(delegation(1, "a"))
     await asyncio.sleep(0.02)
-    await q.put({"kind": "agent", "id": "y1", "inReplyTo": "typed_msg", "text": "Reply to a typed message."})
+    await q.put(
+        {
+            "kind": "agent",
+            "id": "y1",
+            "inReplyTo": "typed_msg",
+            "text": "Reply to a typed message.",
+        }
+    )
     await q.put({"kind": "agent", "id": "y2", "text": "A Worker's update."})
     await asyncio.sleep(0.02)
-    assert t.appends == [("Reply to a typed message.", None), ("A Worker's update.", None)]
+    assert t.appends == [
+        ("Reply to a typed message.", None),
+        ("A Worker's update.", None),
+    ]
     assert "item_1" in s.pending
     await s.close()
 
@@ -223,7 +254,9 @@ async def test_send_result_none_is_unsolicited_and_keeps_the_pending_delegation(
     s.on_delegate(delegation(1, "a"))
     await asyncio.sleep(0.01)
     s.send_result(None, "Thanks for calling, goodbye.")
-    assert t.appends == [("Thanks for calling, goodbye.", None)] and s.pending == {"item_1": "m_1"}
+    assert t.appends == [("Thanks for calling, goodbye.", None)] and s.pending == {
+        "item_1": "m_1"
+    }
     s.send_result("item_1", "answer a")
     assert t.appends[-1] == ("answer a", "item_1")
     await s.close()
@@ -306,12 +339,14 @@ async def test_results_are_made_speakable_once():
     msg = (
         "**Booked.** See [the PR](https://github.com/x/y/pull/1) or https://example.com/raw\n"
         "```python\nprint('code')\n```\n"
-        "Which time?\n```openui-lang\nChoice(\"time\", [\"1:00 PM\", \"2:30 PM\", \"4:00 PM\"])\n```"
+        'Which time?\n```openui-lang\nChoice("time", ["1:00 PM", "2:30 PM", "4:00 PM"])\n```'
     )
     s.send_result(None, msg)
-    (said, _),  = t.appends
+    ((said, _),) = t.appends
     assert said == "Booked. See the PR or Which time? 1:00 PM, 2:30 PM or 4:00 PM."
-    s.send_result(None, said)  # phone.py already calls speakable: a second pass changes nothing
+    s.send_result(
+        None, said
+    )  # phone.py already calls speakable: a second pass changes nothing
     assert t.appends[1][0] == said
     s.send_result(None, "word " * 400)
     assert len(t.appends[2][0]) <= 600  # mouth.SPOKEN_CHARS
@@ -321,7 +356,11 @@ async def test_results_are_made_speakable_once():
 def test_chunks_split_under_the_append_cap():
     text = " ".join(f"Sentence number {i} says a thing." for i in range(200))
     chunks = live._chunks(text)
-    assert len(chunks) > 1 and all(len(c) <= live.APPEND_CHARS for c in chunks) and " ".join(chunks) == text
+    assert (
+        len(chunks) > 1
+        and all(len(c) <= live.APPEND_CHARS for c in chunks)
+        and " ".join(chunks) == text
+    )
 
 
 async def test_close_waits_for_posts_and_ends_the_session():
@@ -330,7 +369,9 @@ async def test_close_waits_for_posts_and_ends_the_session():
     s = session(r, transport=t)
     s.on_delegate(delegation(1))
     await s.close()
-    assert r.done == ["What have we shipped this week"] and t.closed and s.billed_s == 23.0
+    assert (
+        r.done == ["What have we shipped this week"] and t.closed and s.billed_s == 23.0
+    )
 
 
 async def test_a_failed_post_does_not_break_the_next():
@@ -346,7 +387,9 @@ async def test_a_failed_post_does_not_break_the_next():
     s.on_delegate(delegation(1, "a"))
     s.on_delegate(delegation(2, "b"))
     await asyncio.sleep(0.01)
-    assert calls == ["a", "b"] and s.pending == {"item_2": "m_b"}  # a failed post answers nothing
+    assert calls == ["a", "b"] and s.pending == {
+        "item_2": "m_b"
+    }  # a failed post answers nothing
     await s.close()
 
 
@@ -405,7 +448,9 @@ async def _start(monkeypatch, router, events=_none, **kw):
     monkeypatch.setattr(live, "Agent", StubAgent)
     monkeypatch.setattr(live, "AgentSession", StubSession)
     ctx = SimpleNamespace(room="the-room")
-    return await live.start(ctx, prompt="the prompt", surface="owner", post=router.post, events=events, **kw)
+    return await live.start(
+        ctx, prompt="the prompt", surface="owner", post=router.post, events=events, **kw
+    )
 
 
 async def test_context_uses_the_plugins_silent_thinking_append(monkeypatch):
@@ -416,8 +461,12 @@ async def test_context_uses_the_plugins_silent_thinking_append(monkeypatch):
     await s.close()
 
 
-@pytest.mark.parametrize("failure", [RuntimeError("startup refused"), asyncio.CancelledError()])
-async def test_failed_start_closes_session_and_model_without_hiding_the_original_error(monkeypatch, failure):
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("startup refused"), asyncio.CancelledError()]
+)
+async def test_failed_start_closes_session_and_model_without_hiding_the_original_error(
+    monkeypatch, failure
+):
     sessions, models = [], []
 
     class Model(StubModel):
@@ -431,7 +480,9 @@ async def test_failed_start_closes_session_and_model_without_hiding_the_original
             sessions.append(self)
 
         async def start(self, **kw):
-            self.started = kw  # the adapter may have partially opened before startup fails
+            self.started = (
+                kw  # the adapter may have partially opened before startup fails
+            )
             raise failure
 
         async def aclose(self):
@@ -442,7 +493,13 @@ async def test_failed_start_closes_session_and_model_without_hiding_the_original
     monkeypatch.setattr(live, "Agent", StubAgent)
     monkeypatch.setattr(live, "AgentSession", Session)
     with pytest.raises(type(failure)) as caught:
-        await live.start(SimpleNamespace(room="the-room"), prompt="p", surface="phone", post=Router().post, events=_none)
+        await live.start(
+            SimpleNamespace(room="the-room"),
+            prompt="p",
+            surface="phone",
+            post=Router().post,
+            events=_none,
+        )
     assert caught.value is failure
     assert sessions[0].closed and models[0].closed
 
@@ -457,13 +514,21 @@ async def test_start_wires_gpt_live_to_the_router(monkeypatch):
     duplex = s.agent.duplex_session
     s.agent.chat_ctx.items += [_msg("u1", "user", "What have we shipped this"),
                                SimpleNamespace(id="f1", type="function_call", role=None, text_content=None)]  # fmt: skip
-    duplex.emit("delegation_created", SimpleNamespace(id="item_A", pending_transcript=" week"))
+    duplex.emit(
+        "delegation_created", SimpleNamespace(id="item_A", pending_transcript=" week")
+    )
     await asyncio.sleep(0.01)
-    assert r.posts == [("What have we shipped this week", ["user: What have we shipped this"])]
-    await q.put({"kind": "agent", "id": "r1", "inReplyTo": "m_1", "text": "Three things."})
+    assert r.posts == [
+        ("What have we shipped this week", ["user: What have we shipped this"])
+    ]
+    await q.put(
+        {"kind": "agent", "id": "r1", "inReplyTo": "m_1", "text": "Three things."}
+    )
     await asyncio.sleep(0.01)
     assert duplex.appends == [("Three things.", "item_A")]
-    duplex.emit("session_reconnected", SimpleNamespace())  # the new session never asked item_A
+    duplex.emit(
+        "session_reconnected", SimpleNamespace()
+    )  # the new session never asked item_A
     assert s.pending == {}
     duplex.emit("metrics_collected", SimpleNamespace(session_duration=12.0))
     duplex.emit("metrics_collected", SimpleNamespace(session_duration=8.0))
@@ -473,42 +538,70 @@ async def test_start_wires_gpt_live_to_the_router(monkeypatch):
 
 async def test_start_passes_record(monkeypatch):
     s = await _start(monkeypatch, Router(delay=0), record=True)
-    assert s.session.started["record"] is True and s.session.kw["user_away_timeout"] is None
+    assert (
+        s.session.started["record"] is True
+        and s.session.kw["user_away_timeout"] is None
+    )
     await s.close()
 
 
 async def test_start_passes_user_away_timeout(monkeypatch):
     s = await _start(monkeypatch, Router(delay=0), user_away_timeout=15.0)
-    assert s.session.kw == {"llm": s.transport.model, "vad": None, "user_away_timeout": 15.0}
+    assert s.session.kw == {
+        "llm": s.transport.model,
+        "vad": None,
+        "user_away_timeout": 15.0,
+    }
     await s.close()
 
 
 def test_startup_context_names_speakers_and_keeps_the_newest_under_the_cap():
-    ctx = live.startup_context([("Maya", "Let's ship Friday."), ("Sam", "  "), ("Raj", "Agreed.")])
+    ctx = live.startup_context(
+        [("Maya", "Let's ship Friday."), ("Sam", "  "), ("Raj", "Agreed.")]
+    )
     assert [(i.role, i.text_content) for i in ctx.items] == [("user", "Maya: Let's ship Friday."),
                                                                ("user", "Raj: Agreed.")]  # fmt: skip
     many = [("Maya", f"line {i}") for i in range(300)]
     ctx = live.startup_context(many)
-    assert len(ctx.items) == live.HISTORY_ITEMS and ctx.items[-1].text_content == "Maya: line 299"
+    assert (
+        len(ctx.items) == live.HISTORY_ITEMS
+        and ctx.items[-1].text_content == "Maya: line 299"
+    )
     long = [("Sam", "x" * 5000) for _ in range(10)]
     ctx = live.startup_context(long)
-    assert sum(len(i.text_content) for i in ctx.items) <= live.HISTORY_CHARS and len(ctx.items) == 4
+    assert (
+        sum(len(i.text_content) for i in ctx.items) <= live.HISTORY_CHARS
+        and len(ctx.items) == 4
+    )
 
 
 async def test_start_loads_history_as_startup_context_and_never_posts_it(monkeypatch):
     r = Router(delay=0)
-    s = await _start(monkeypatch, r, history=[("Maya", "We moved the launch."), ("Raj", "To Friday.")])
-    assert [i.text_content for i in s.agent.chat_ctx.items] == ["Maya: We moved the launch.", "Raj: To Friday."]
+    s = await _start(
+        monkeypatch,
+        r,
+        history=[("Maya", "We moved the launch."), ("Raj", "To Friday.")],
+    )
+    assert [i.text_content for i in s.agent.chat_ctx.items] == [
+        "Maya: We moved the launch.",
+        "Raj: To Friday.",
+    ]
     s.agent.chat_ctx.add_message(role="user", content="Nova, when is the launch?")
-    s.agent.duplex_session.emit("delegation_created", SimpleNamespace(id="item_1", pending_transcript=""))
+    s.agent.duplex_session.emit(
+        "delegation_created", SimpleNamespace(id="item_1", pending_transcript="")
+    )
     await asyncio.sleep(0.01)
-    assert r.posts == [("Nova, when is the launch?", ["user: Nova, when is the launch?"])]
+    assert r.posts == [
+        ("Nova, when is the launch?", ["user: Nova, when is the launch?"])
+    ]
     await s.close()
 
 
 async def test_session_close_event_stops_results_and_keeps_usage(monkeypatch):
     s = await _start(monkeypatch, Router(delay=0), queue_events()[1])
-    s.agent.duplex_session.emit("metrics_collected", SimpleNamespace(session_duration=5.0))
+    s.agent.duplex_session.emit(
+        "metrics_collected", SimpleNamespace(session_duration=5.0)
+    )
     s.session.emit("close", SimpleNamespace(reason="participant left"))
     await asyncio.sleep(0)
     assert s._events.cancelled() and s.billed_s == 5.0
@@ -519,14 +612,19 @@ async def test_interrupt_never_cancels_post(monkeypatch):
     r = Router(delay=0.1)
     s = await _start(monkeypatch, r)
     duplex = s.agent.duplex_session
-    duplex.emit("delegation_created", SimpleNamespace(id="item_1", pending_transcript="do the thing"))
+    duplex.emit(
+        "delegation_created",
+        SimpleNamespace(id="item_1", pending_transcript="do the thing"),
+    )
     await asyncio.sleep(0.01)
     # the caller cuts in while the voice speaks: the model stops itself (the app sends nothing), the orb tap
     # interrupts the session, and the caller's new line delegates again
     duplex.emit("input_speech_started", SimpleNamespace())
     s.session.interrupt()
     s.agent.chat_ctx.items.append(_msg("u2", "user", "Wait, hold on"))
-    duplex.emit("delegation_created", SimpleNamespace(id="item_2", pending_transcript=""))
+    duplex.emit(
+        "delegation_created", SimpleNamespace(id="item_2", pending_transcript="")
+    )
     await asyncio.sleep(0.3)
     assert s.session.interrupted == 1
     assert r.done == ["do the thing", "Wait, hold on"]
@@ -538,12 +636,37 @@ def test_no_scripted_speech():
     src = pathlib.Path(live.__file__).read_text()
     assert not re.search(r"\.(say|generate_reply|speak)\(", src)
     # Replies are commentary; caught-up context is silent thinking. Neither is scripted speech.
-    assert re.findall(r"append_\w+\(", src) == ["append_commentary(", "append_thinking("]
+    assert re.findall(r"append_\w+\(", src) == [
+        "append_commentary(",
+        "append_thinking(",
+    ]
 
 
 def test_delegation_policy_renders_the_template():
-    p = live.delegation_policy(["The Router: the team's brain.", "Memory: recalls what the team decided."])
-    assert p.startswith("Delegation policy:\nBackend tools:\n- The Router: the team's brain.\n- Memory:")
+    p = live.delegation_policy(
+        ["The Router: the team's brain.", "Memory: recalls what the team decided."]
+    )
+    assert p.startswith(
+        "Delegation policy:\nBackend tools:\n- The Router: the team's brain.\n- Memory:"
+    )
     for label in ("Generate <|SpawnThinking|> when:", "Do not generate <|SpawnThinking|> when:",
                   "Do not guess the result while waiting."):  # fmt: skip
         assert label in p
+
+
+async def test_terminal_receipt_ends_waiting_but_ack_and_final_keep_the_original_delegation():
+    t = FakeTransport()
+    q, events = queue_events()
+    s = session(Router(delay=0), events=events, transport=t)
+    s.on_delegate(delegation(1, "book Saturday"))
+    await asyncio.sleep(0.02)
+    await s._result(
+        {"id": "ack", "inReplyTo": "m_1", "text": "On it.", "waiting": True}
+    )
+    assert s.awaiting == {"item_1": "m_1"}
+    await s._result(
+        {"id": "final", "inReplyTo": "m_1", "text": "Booked.", "waiting": False}
+    )
+    assert s.awaiting == {} and s.pending == {"item_1": "m_1"}
+    assert t.appends == [("On it.", "item_1"), ("Booked.", "item_1")]
+    await s.close()

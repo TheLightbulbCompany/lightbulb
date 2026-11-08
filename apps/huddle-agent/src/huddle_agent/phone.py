@@ -365,6 +365,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ls[0].send_result(None, NOBODY)
 
     transferred: set[str] = set()  # the events iterator may restart; an admitted SIP action must not replay
+    silence_checks: list = []  # bound after startup; events can arrive while the model is opening
 
     async def events():
         """The room's new agent messages, oldest first, each once (the cursor moves past it)."""
@@ -381,6 +382,8 @@ async def entrypoint(ctx: JobContext) -> None:
                     transferred.add(mid)
                     spawn(hand_off())
                 yield {"kind": "agent", **m}
+                if m.get("waiting") is False and silence_checks:
+                    silence_checks[0]()  # return an answered quiet caller to the ordinary silence timer
 
     try:
         live_session = await live.start(
@@ -457,7 +460,7 @@ async def entrypoint(ctx: JobContext) -> None:
         """How long GPT-Live may still wait on the team: the youngest pending ask's time left under WAIT_S (one being
         posted counts as new). 0: none pending, or all older than WAIT_S (a lost answer never holds the line)."""
         now, left = time.monotonic(), 0.0
-        for mid in live_session.pending.values():
+        for mid in live_session.awaiting.values():
             left = max(left, WAIT_S - (now - asked.get(mid, now)) if mid else WAIT_S)
         return max(left, 0.0)
 
@@ -471,6 +474,8 @@ async def entrypoint(ctx: JobContext) -> None:
     def still_away() -> None:
         if session.user_state == "away":
             _away(type("Ev", (), {"new_state": "away"}))
+
+    silence_checks.append(still_away)
 
     @session.on("user_state_changed")
     def _away(ev) -> None:

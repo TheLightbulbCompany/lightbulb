@@ -35,7 +35,10 @@ Events = Callable[[], AsyncIterator[dict]]
 
 #: One append is capped at 500 tokens (contract §2); at ~4 characters a token this stays well under it.
 APPEND_CHARS = 1600
-EVENTS_RETRY_S, EVENTS_RETRY_MAX_S = 0.5, 30.0  # the events loop restarts after a failure, backing off
+EVENTS_RETRY_S, EVENTS_RETRY_MAX_S = (
+    0.5,
+    30.0,
+)  # the events loop restarts after a failure, backing off
 #: GPT-Live's startup history cap (contract §1; gpt_live.py:42-44): 128 items and 8192 tokens. The plugin drops items
 #: past 128 but has no tokenizer, so the token cap is held here, at a conservative 3 characters a token.
 HISTORY_ITEMS, HISTORY_CHARS = 128, 8192 * 3
@@ -85,7 +88,9 @@ class Transport(Protocol):
 
     billed_s: float
 
-    def history(self) -> list[tuple[str, str, str]]: ...  # (item id, role, text), the chat context
+    def history(
+        self,
+    ) -> list[tuple[str, str, str]]: ...  # (item id, role, text), the chat context
     def commentary(self, text: str, delegation_id: str | None) -> None: ...
     def context(self, text: str) -> None: ...
     async def close(self) -> None: ...
@@ -102,8 +107,20 @@ def _chunks(text: str) -> list[str]:
     """`text` in pieces under APPEND_CHARS, split after a sentence (or a space) where it can be."""
     out = []
     while len(text) > APPEND_CHARS:
-        cut = max(text.rfind(". ", 0, APPEND_CHARS), text.rfind("? ", 0, APPEND_CHARS), text.rfind("! ", 0, APPEND_CHARS))
-        cut = cut + 1 if cut > 0 else (text.rfind(" ", 0, APPEND_CHARS) if " " in text[:APPEND_CHARS] else APPEND_CHARS)
+        cut = max(
+            text.rfind(". ", 0, APPEND_CHARS),
+            text.rfind("? ", 0, APPEND_CHARS),
+            text.rfind("! ", 0, APPEND_CHARS),
+        )
+        cut = (
+            cut + 1
+            if cut > 0
+            else (
+                text.rfind(" ", 0, APPEND_CHARS)
+                if " " in text[:APPEND_CHARS]
+                else APPEND_CHARS
+            )
+        )
         out.append(text[:cut].strip())
         text = text[cut:].strip()
     return [*out, text] if text else out
@@ -111,17 +128,39 @@ def _chunks(text: str) -> list[str]:
 
 class LiveSession:
     def __init__(
-        self, transport: Transport, surface: Surface, post: Post, events: Events, on_spoken: Spoken | None = None
+        self,
+        transport: Transport,
+        surface: Surface,
+        post: Post,
+        events: Events,
+        on_spoken: Spoken | None = None,
     ) -> None:
-        self.transport, self.surface, self._post, self._on_spoken = transport, surface, post, on_spoken
-        self.pending: dict[str, str | None] = {}  # delegation id -> its posted message id (None until posted)
-        self._by_message: dict[str, str] = {}  # posted message id -> delegation id: a reply's inReplyTo finds it
+        self.transport, self.surface, self._post, self._on_spoken = (
+            transport,
+            surface,
+            post,
+            on_spoken,
+        )
+        self._waiting_tasks: dict[str, set[str]] = {}
+        self.awaiting: dict[
+            str, str | None
+        ] = {}  # unfinished work; correlation survives its terminal reply
+        self.pending: dict[
+            str, str | None
+        ] = {}  # delegation id -> its posted message id (None until posted)
+        self._by_message: dict[
+            str, str
+        ] = {}  # posted message id -> delegation id: a reply's inReplyTo finds it
         self.billed_s = 0.0
-        self.session: AgentSession | None = None  # the real session, for the surface's own event hooks
+        self.session: AgentSession | None = (
+            None  # the real session, for the surface's own event hooks
+        )
         self.agent: Agent | None = None
         self._closed = False
         self._seen: set[str] = set()  # chat-context item ids already sent with an ask
-        self._last: asyncio.Task | None = None  # the newest post: each waits for the one before it
+        self._last: asyncio.Task | None = (
+            None  # the newest post: each waits for the one before it
+        )
         self._posts: set[asyncio.Task] = set()
         self._said: set[str] = set()  # event message ids already sent as results
         self._events = asyncio.create_task(self._read(events))
@@ -130,7 +169,11 @@ class LiveSession:
         """The ask and its context from the chat context plus `pending_transcript`, never the latter alone: a
         transcript lag splits a turn and leaves only " week" pending (contract §4, run 1). Items are tracked by id:
         the chat context inserts by created_at, so a count would skip or repeat one."""
-        new = [(r, " ".join(t.split())) for i, r, t in self.transport.history() if i not in self._seen]
+        new = [
+            (r, " ".join(t.split()))
+            for i, r, t in self.transport.history()
+            if i not in self._seen
+        ]
         self._seen.update(i for i, _r, _t in self.transport.history())
         turns = [f"{r}: {t}" for r, t in new if t]
         said: list[str] = []
@@ -148,7 +191,7 @@ class LiveSession:
         asked, as a task of its own; returns at once. Nothing cancels the post: an interruption stops only speech."""
         text, turns = self.ask(d.pending_transcript)
         out = Delegation(d.id, text, turns)
-        self.pending[d.id] = None
+        self.pending[d.id] = self.awaiting[d.id] = None
         self._last = task = asyncio.create_task(self._send(self._last, out))
         self._posts.add(task)
         task.add_done_callback(self._posts.discard)
@@ -161,14 +204,22 @@ class LiveSession:
         try:
             message_id = await self._post(d.text, d.turns)
         except Exception:  # noqa: BLE001 -- a failed post is logged; the talk and the next post go on
-            logger.warning("live %s: delegation %s not posted", self.surface, d.id, exc_info=True)
+            logger.warning(
+                "live %s: delegation %s not posted", self.surface, d.id, exc_info=True
+            )
             message_id = None
-        if d.id not in self.pending:  # the session reconnected meanwhile: the new one never asked it
+        if (
+            d.id not in self.pending
+        ):  # the session reconnected meanwhile: the new one never asked it
             return
-        if message_id is None:  # refused or failed: nothing will answer it, so no team message is attached to it
+        if (
+            message_id is None
+        ):  # refused or failed: nothing will answer it, so no team message is attached to it
             self.pending.pop(d.id)
+            self.awaiting.pop(d.id, None)
         else:
             self.pending[d.id], self._by_message[message_id] = message_id, d.id
+            self.awaiting[d.id] = message_id
 
     def send_result(self, delegation_id: str | None, text: str) -> None:
         """The team's text to the model as commentary, said once in its own words: the answer to `delegation_id`
@@ -178,7 +229,9 @@ class LiveSession:
         if delegation_id not in self.pending:
             delegation_id = None
         # as it can be heard: links as labels, no URLs or code, a Choice card as its options, capped (idempotent)
-        for chunk in _chunks(speakable(text)):  # several appends with one id continue the same work
+        for chunk in _chunks(
+            speakable(text)
+        ):  # several appends with one id continue the same work
             self.transport.commentary(chunk, delegation_id)
 
     def send_context(self, text: str) -> None:
@@ -203,8 +256,15 @@ class LiveSession:
                 raise
             except Exception:  # noqa: BLE001 -- the voice stays up; results are in the chat anyway
                 failures += 1
-                logger.warning("live %s: events failed (%d), retrying", self.surface, failures, exc_info=True)
-                await asyncio.sleep(min(EVENTS_RETRY_MAX_S, EVENTS_RETRY_S * 2 ** (failures - 1)))
+                logger.warning(
+                    "live %s: events failed (%d), retrying",
+                    self.surface,
+                    failures,
+                    exc_info=True,
+                )
+                await asyncio.sleep(
+                    min(EVENTS_RETRY_MAX_S, EVENTS_RETRY_S * 2 ** (failures - 1))
+                )
 
     async def _result(self, m: dict) -> None:
         mid, text = m.get("id"), (m.get("text") or "").strip()
@@ -213,17 +273,31 @@ class LiveSession:
             return
         if mid:
             self._said.add(mid)
-        self.send_result(self._by_message.get(m.get("inReplyTo") or ""), text)
+        delegation_id = self._by_message.get(m.get("inReplyTo") or "")
+        self.send_result(delegation_id, text)
+        if delegation_id and m.get("waiting") is True:
+            self._waiting_tasks.setdefault(delegation_id, set()).update(
+                m.get("taskIds") or []
+            )
+        if m.get("waiting") is False:
+            remaining = self._waiting_tasks.get(delegation_id, set())
+            remaining.difference_update(m.get("taskIds") or [])
+            if not remaining:
+                self.awaiting.pop(delegation_id, None)
         if mid and self._on_spoken:
             try:
                 await self._on_spoken(mid)
             except Exception:  # noqa: BLE001 -- the cursor is advisory: the next session may say it again
-                logger.warning("live %s: spoken not reported", self.surface, exc_info=True)
+                logger.warning(
+                    "live %s: spoken not reported", self.surface, exc_info=True
+                )
 
     def reconnected(self, *_args) -> None:
         """A reconnect opens a new GPT-Live session, which never asked the old delegations: their results go out
         unsolicited."""
         self.pending.clear()
+        self.awaiting.clear()
+        self._waiting_tasks.clear()
         self._by_message.clear()
 
     def ended(self, *_args) -> None:
@@ -243,20 +317,26 @@ class LiveSession:
             await self._events
         await self.transport.close()
         self.billed_s = self.transport.billed_s
-        emit_metric("voice.live.billed_s", self.billed_s, "Seconds", {"where": self.surface})
+        emit_metric(
+            "voice.live.billed_s", self.billed_s, "Seconds", {"where": self.surface}
+        )
 
 
 class _GPTLive:
     """The one adapter over the plugin (livekit-plugins-openai 1.8.11): the agent's chat context, `append_commentary`
     on its duplex session, and usage from its `metrics_collected`."""
 
-    def __init__(self, session: AgentSession, agent: Agent, model: GPTLiveModel) -> None:
+    def __init__(
+        self, session: AgentSession, agent: Agent, model: GPTLiveModel
+    ) -> None:
         self.session, self.agent, self.model, self.billed_s = session, agent, model, 0.0
         self.live = agent.duplex_session
         self.live.on("metrics_collected", self._usage)
 
     def _usage(self, m) -> None:
-        self.billed_s += getattr(m, "session_duration", 0.0) or 0.0  # deltas of the session's cumulative seconds
+        self.billed_s += (
+            getattr(m, "session_duration", 0.0) or 0.0
+        )  # deltas of the session's cumulative seconds
 
     def history(self) -> list[tuple[str, str, str]]:
         return [(i.id, i.role, i.text_content or "") for i in self.agent.chat_ctx.items
@@ -269,7 +349,9 @@ class _GPTLive:
         self.live.append_thinking(text)
 
     async def close(self) -> None:
-        await self.session.aclose()  # sends session.close and waits for session.closed with the final usage
+        await (
+            self.session.aclose()
+        )  # sends session.close and waits for session.closed with the final usage
         await self.model.aclose()
 
 
@@ -295,11 +377,17 @@ async def start(
     (`startup_context`); never sent to the Router as an ask's context."""
     model = GPTLiveModel(delegation="client")
     # no tools: client delegation refuses them. The agent's chat context is the plugin's startup history (session.start)
-    agent = Agent(instructions=prompt, **({"chat_ctx": startup_context(history)} if history else {}))
+    agent = Agent(
+        instructions=prompt,
+        **({"chat_ctx": startup_context(history)} if history else {}),
+    )
     session = AgentSession(llm=model, vad=None, user_away_timeout=user_away_timeout)
     try:
         await session.start(
-            agent=agent, room=ctx.room, record=record, **({"room_options": room_options} if room_options else {})
+            agent=agent,
+            room=ctx.room,
+            record=record,
+            **({"room_options": room_options} if room_options else {}),
         )
     except (Exception, asyncio.CancelledError):
         # Startup can fail after opening the paid model session. Close both resources even if one cleanup fails,
@@ -308,11 +396,17 @@ async def start(
             try:
                 await asyncio.wait_for(resource.aclose(), timeout=CLOSE_WAIT_S)
             except (Exception, asyncio.CancelledError):
-                logger.warning("live %s: startup cleanup failed", surface, exc_info=True)
+                logger.warning(
+                    "live %s: startup cleanup failed", surface, exc_info=True
+                )
         raise
-    live = LiveSession(_GPTLive(session, agent, model), surface, post, events, on_spoken)
+    live = LiveSession(
+        _GPTLive(session, agent, model), surface, post, events, on_spoken
+    )
     live.session, live.agent = session, agent
-    live._seen.update(i for i, _r, _t in live.transport.history())  # the startup history was never asked
+    live._seen.update(
+        i for i, _r, _t in live.transport.history()
+    )  # the startup history was never asked
     live.transport.live.on("delegation_created", live.on_delegate)
     live.transport.live.on("session_reconnected", live.reconnected)
     session.on("close", live.ended)

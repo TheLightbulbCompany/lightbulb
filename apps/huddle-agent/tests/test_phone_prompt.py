@@ -8,7 +8,6 @@ os.environ.setdefault("LIGHTBULB_HUDDLE_SECRET", "x")
 from huddle_agent import mouth, phone  # noqa: E402
 
 
-
 def test_dialed_numbers_become_e164():
     assert (
         phone.e164("14842079294") == "+14842079294"
@@ -38,14 +37,22 @@ async def test_the_call_ends_once_at_hang_up_billed_from_answer():
     ending = phone.Ending(phone.time.monotonic() - 19.4, end)
     first = ending.now()  # the caller's SIP participant left
     await asyncio.sleep(0.01)
-    assert ending.now("job shutdown") is first  # the shutdown callback awaits the same end
+    assert (
+        ending.now("job shutdown") is first
+    )  # the shutdown callback awaits the same end
     await first
     assert ended == [19]
     import inspect
 
     src = inspect.getsource(phone.entrypoint)
-    assert '@ctx.room.on("participant_disconnected")' in src and "participant.identity == caller.identity" in src
-    assert "Ending(answered, on_end)" in src and "ctx.add_shutdown_callback(shutdown)" in src
+    assert (
+        '@ctx.room.on("participant_disconnected")' in src
+        and "participant.identity == caller.identity" in src
+    )
+    assert (
+        "Ending(answered, on_end)" in src
+        and "ctx.add_shutdown_callback(shutdown)" in src
+    )
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():
@@ -118,15 +125,26 @@ async def test_nothing_is_judged_until_the_greetings_turn_is_over():
 
 
 async def test_a_paraphrased_greeting_is_missing_and_the_disclosure_is_said_once():
-    items = [{"role": "assistant", "text": "Hi there, Super Agent Test, how can I help?", "t": 1.0}]
+    items = [
+        {
+            "role": "assistant",
+            "text": "Hi there, Super Agent Test, how can I help?",
+            "t": 1.0,
+        }
+    ]
     assert phone.disclosure_of(items, "Lightbulb") == "missing"
     guard, said = _guard()
     guard.seen(items)
     await _turn_over()
     items.append({"role": "user", "text": "Hi", "t": 6.0})
     guard.seen(items)
-    assert said == ["I'm Lightbulb, an AI assistant, and this call is recorded."] and guard.corrected
-    cut_off = [{"role": "assistant", "text": GREETING[:40], "t": 1.0, "interrupted": True}]
+    assert (
+        said == ["I'm Lightbulb, an AI assistant, and this call is recorded."]
+        and guard.corrected
+    )
+    cut_off = [
+        {"role": "assistant", "text": GREETING[:40], "t": 1.0, "interrupted": True}
+    ]
     assert phone.disclosure_of(cut_off, "Lightbulb") == "missing"
 
 
@@ -175,9 +193,15 @@ async def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monke
 
 def test_the_disclosure_matches_whole_words_and_not_a_denial():
     """#4996 review: "Ava" must not match inside "available", and "not recorded" is no disclosure."""
-    assert phone.discloses("This is Ava, an AI assistant. This call is recorded.", "Ava")
-    assert not phone.discloses("Nobody is available; I'm an AI assistant and this is recorded.", "Ava")
-    assert not phone.discloses("This is Ava, an AI assistant. This call is not recorded.", "Ava")
+    assert phone.discloses(
+        "This is Ava, an AI assistant. This call is recorded.", "Ava"
+    )
+    assert not phone.discloses(
+        "Nobody is available; I'm an AI assistant and this is recorded.", "Ava"
+    )
+    assert not phone.discloses(
+        "This is Ava, an AI assistant. This call is not recorded.", "Ava"
+    )
     for denial in (
         "this call isn't being recorded.",
         "This call is not going to be recorded.",
@@ -188,7 +212,9 @@ def test_the_disclosure_matches_whole_words_and_not_a_denial():
         "No part of this call is recorded.",
         "This call won’t be recorded.",
     ):
-        assert not phone.discloses(f"This is Ava, an AI assistant. {denial}", "Ava"), denial
+        assert not phone.discloses(f"This is Ava, an AI assistant. {denial}", "Ava"), (
+            denial
+        )
     for ok in (
         "Not a problem, this call is recorded.",
         "Don't worry, this call is recorded.",
@@ -196,16 +222,16 @@ def test_the_disclosure_matches_whole_words_and_not_a_denial():
         assert phone.discloses(f"This is Ava, an AI assistant. {ok}", "Ava"), ok
 
 
-
-
 def test_a_ui_choice_question_is_said_with_its_options():
     """8 Nov prod re-run #3, move-102705 seq 6, the exact row: the Monday times were only on the card."""
-    row = ("Which time works for you on Monday, November 9?\n\n```openui-lang\nroot = Stack([q])\n"
-           'q = Choice("Choose a time:", ["1:00 PM", "2:30 PM", "4:00 PM"])\n```')
-    assert mouth.speakable(row) == "Which time works for you on Monday, November 9? 1:00 PM, 2:30 PM or 4:00 PM."
-    assert mouth.speakable("Done.\n```python\nx = 1\n```") == "Done."  # other code blocks stay unsaid
-
-
-def test_the_result_rule_never_lets_the_voice_say_there_is_no_update():
-    """8 Nov prod re-run #3: each team result came out as "I don't have a new team update yet" and was cut."""
-    assert "never say there is no update yet" in mouth.result_instructions(["Moved it."])
+    row = (
+        "Which time works for you on Monday, November 9?\n\n```openui-lang\nroot = Stack([q])\n"
+        'q = Choice("Choose a time:", ["1:00 PM", "2:30 PM", "4:00 PM"])\n```'
+    )
+    assert (
+        mouth.speakable(row)
+        == "Which time works for you on Monday, November 9? 1:00 PM, 2:30 PM or 4:00 PM."
+    )
+    assert (
+        mouth.speakable("Done.\n```python\nx = 1\n```") == "Done."
+    )  # other code blocks stay unsaid

@@ -102,7 +102,6 @@ MENTIONS = {
     "routers/gateway_relay.py",
     "routers/lifecycle_operations.py",
     "routers/memory.py",
-    "routers/meta_webhook.py",
     "routers/orgs.py",
     "routers/sessions.py",
     "routers/teams/agents.py",

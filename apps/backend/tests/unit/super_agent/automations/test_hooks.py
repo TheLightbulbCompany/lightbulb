@@ -248,7 +248,6 @@ async def test_meta_backend_fire_unavailable_still_200_but_logged(env, client, m
 
     await _hook(provider="instagram", signingMode="hmac_sha256")
     monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "vt")
-    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal")
     env.temporal.fail = TemporalUnavailable("down")
     binding = {"owner_id": WS, "trigger_public_id": PID, "trigger_secret": "x", "fields": []}
     body = json.dumps({"object": "instagram", "entry": [{"id": "17841", "time": 1700000000, "changes": []}]}).encode()
@@ -275,18 +274,15 @@ async def test_meta_entry_fires_verified(env, client, monkeypatch):
 
     await _hook(provider="instagram", signingMode="hmac_sha256")
     monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "vt")
-    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal")
     binding = {"owner_id": WS, "trigger_public_id": PID, "trigger_secret": "x", "fields": []}
     body = json.dumps({"object": "instagram", "entry": [{"id": "17841", "time": 1700000000, "changes": []}]}).encode()
     with (
         patch.object(meta_webhook, "_signature_valid", AsyncMock(return_value=True)),
         patch.object(meta_webhook, "_bindings_for_asset", AsyncMock(return_value=[binding])),
         patch.object(meta_webhook, "billing_repo") as billing,
-        patch.object(meta_webhook, "_fire", AsyncMock()) as paperclip_fire,
     ):
         billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         r = client.post("/api/v1/hooks/meta", content=body, headers={"X-Hub-Signature-256": "sha256=x"})
         r2 = client.post("/api/v1/hooks/meta", content=body, headers={"X-Hub-Signature-256": "sha256=x"})
     assert r.status_code == r2.status_code == 200
-    assert not paperclip_fire.called
     assert [s[2] for s in env.temporal.started] == [f"hook:{WS}:{PID}:17841:1700000000:0"]

@@ -129,6 +129,7 @@ function commit(): void {
 export function attachShell(resolveDefaultAgentId: () => string | undefined): () => void {
   _attached = true;
   _resolveDefaultAgentId = resolveDefaultAgentId;
+  _pane = null; // one a shell-less page left open; the URL names what the shell shows
   commit();
   return () => {
     _attached = false;
@@ -165,7 +166,8 @@ function clearPaneFromUrl(previous: Slot | null): void {
 
 function show(descriptor: PanelDescriptor, extra?: Record<string, string>, clearReplacedPane = false,
   url?: Slot["url"]): void {
-  if (!_attached) return;
+  // No shell: only the pane exists, drawn by the page that mounted the room (LightbulbPage renders RightPane).
+  if (!_attached && !opensInPane(descriptor)) return;
   if (descriptor.component === "chat") {
     _chatParams = nextParams({ panelId: MESSAGES_PANEL_ID, component: "chat", title: "", params: _chatParams }, descriptor, extra);
     _main = null;
@@ -192,7 +194,8 @@ export function openPanel(
   if (!descriptor) return;
   if (descriptor.component === "chat" && descriptor.params.agentId) openChatPanel(descriptor.params.agentId);
   else show(descriptor, opts.oneShots, !opts.pushUrl, { key: panelKey, params: { ...params } });
-  if (opts.pushUrl) {
+  // No shell, no URL grammar: nothing would read it back.
+  if (opts.pushUrl && _attached) {
     pushSearchParams(descriptor.component === "chat" ? new URLSearchParams(buildPanelUrl(panelKey, params).split("?")[1]) : slotsUrl());
   }
 }

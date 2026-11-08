@@ -9,7 +9,7 @@ from temporalio.testing import ActivityEnvironment
 
 from core import tasks_schema as ts
 from core.repositories import tasks_repo as repo
-from core.services import runtime_runs
+from core.services import runtime_runs, tasks_access
 from core.temporal import activities as acts
 from core.temporal.types import AttemptRef, WorkerTurnIn
 
@@ -193,6 +193,40 @@ async def test_worker_turn_stores_token_and_goes_async(world):
     identity, request = world["runs"][0]
     assert request.effects == "required" and request.to_wire()["effects"] == "required"  # Lane Q: the checkpoint is on
     assert identity.run_id == ref.run_id and "Pay Acme $40" in request.input
+
+
+async def test_worker_turn_casts_its_browser_to_the_origin_room(world, monkeypatch):
+    # The requester's room gets the run's live browser frames (Lightbulb page, task pane), addressed by the runId the
+    # task's attempts now carry.
+    async def get_room(room_id):
+        return {"roomId": room_id, "deliveryKey": "dk1", "workspaceId": "ws_1"} if room_id == ROOM else None
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
+    monkeypatch.setattr(acts.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.example")
+    tid = await _task()
+    ref = await _attempt(tid)
+    with pytest.raises(activity._CompleteAsyncError):
+        await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    identity, _ = world["runs"][0]
+    assert identity.to_wire()["frames"] == {
+        "endpoint": "https://events.example",
+        "channel": f"/ws/ws_1/rooms/{ROOM}/dk1",
+        "roomId": ROOM,
+    }
+    assert tasks_access.attempt_view(await repo.get_attempt(WS, tid, 1))["runId"] == ref.run_id
+
+
+async def test_worker_turn_without_a_room_channel_casts_nowhere(world, monkeypatch):
+    async def get_room(room_id):
+        raise RuntimeError("table down")
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
+    monkeypatch.setattr(acts.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.example")
+    tid = await _task()
+    ref = await _attempt(tid)
+    with pytest.raises(activity._CompleteAsyncError):
+        await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    assert "frames" not in world["runs"][0][0].to_wire()
 
 
 async def test_worker_brief_carries_the_requesters_local_time(world, monkeypatch):

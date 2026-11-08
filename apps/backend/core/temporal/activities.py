@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import secrets
 import logging
 import time
@@ -25,6 +26,7 @@ from temporalio.exceptions import ApplicationError
 
 from core import tasks_schema as ts
 from core.auth import is_org_owner_id
+from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import container_repo, effects_repo, messaging_repo, tasks_repo
 from core.services import (
@@ -157,6 +159,27 @@ async def _input_text(ws: str, trigger_id: str) -> str:
 
 def _identity(ws: str, task_id: str, att: dict) -> runtime_runs.RunIdentity:
     return runtime_runs.RunIdentity.for_attempt(ws, task_id, att)
+
+
+async def _frames_target(tree: dict) -> dict | None:
+    """Where a Worker run casts its browser tab: the room the task came from (the one its requester has open), so
+    the task's pane there shows it live (`room.browser.frame`, by the attempt's runId). None: no cast."""
+    room_id = tasks_access._origin_room(tree.get("subscriptions") or [], tree["task"].get("audience") or {})
+    if not room_id or not settings.APPSYNC_EVENTS_HTTP_ENDPOINT:
+        return None
+    try:
+        meta = await messaging_repo.get_room(room_id)
+        if not meta or not meta.get("deliveryKey"):
+            return None
+        workspace = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(room_id), "META", meta)
+    except Exception:  # noqa: BLE001 -- the live picture is a nicety, never a reason to fail the run
+        logger.warning("no frames channel for room %s", room_id, exc_info=True)
+        return None
+    return {
+        "endpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+        "channel": f"/ws/{workspace}/rooms/{room_id}/{meta['deliveryKey']}",
+        "roomId": room_id,
+    }
 
 
 async def _agent_for(ws: str, task: dict) -> str:
@@ -341,10 +364,11 @@ async def worker_turn(inp: WorkerTurnIn) -> WorkerTurnOut:
         )
         await _store_output(inp.ws, inp.task_id, inp.n, canned)
         return WorkerTurnOut("completed", None)
+    identity = dataclasses.replace(_identity(inp.ws, inp.task_id, att), frames=await _frames_target(tree))
     started = time.monotonic()
     while True:
         try:
-            status = await runtime_runs.create_run(inp.ws, _identity(inp.ws, inp.task_id, att), request)
+            status = await runtime_runs.create_run(inp.ws, identity, request)
             break
         except runtime_runs.RunRefused:
             return WorkerTurnOut("refused", "RunRefused")

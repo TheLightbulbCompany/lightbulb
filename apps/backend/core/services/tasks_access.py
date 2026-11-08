@@ -305,7 +305,7 @@ def result_text(tree: dict, room: str | None, humans: Collection[str] = ()) -> s
 
 #: What a client reads of an Attempt (web TaskPane, mobile TaskDetailsSheet, `TaskAttempt` in packages/shared). An
 #: allow-list, never the raw row: the row holds the run's credentials (`runSecret`, `taskToken`) and runtime internals.
-ATTEMPT_FIELDS = ("n", "status", "outcome", "startedAt", "endedAt", "usage", "output")
+ATTEMPT_FIELDS = ("n", "runId", "status", "outcome", "startedAt", "endedAt", "usage", "output")
 
 
 def attempt_view(att: dict) -> dict[str, Any]:

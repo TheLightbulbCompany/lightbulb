@@ -15,6 +15,7 @@ import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat"
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
+import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
@@ -102,12 +103,15 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
   const live = view.word === "Working";
   const trace = useLatestTrace(detail, live);
   const tools = trace && !("error" in trace) ? trace.recentTools : null;
+  // The latest run's id addresses its live browser frames (GET /tasks/{id} carries it; the shared type does not yet).
+  const runId = (detail.attempts.reduce<TaskDetail["attempts"][number] | null>((a, b) => (!a || b.n > a.n ? b : a), null) as { runId?: string } | null)?.runId;
   // Top to bottom (dev walk 13, W13-5/W13-9): while it runs, its latest step; then what it said and made, once each
   // (the result's file cards are the output chips); one quiet times line; Steps, the one box and Details right under it.
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} error={actionError} />
     {live && <p role="status" aria-live="polite" className="flex items-center gap-2 px-1 text-ui text-muted-foreground">
       <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />{tools ? stepNow(tools, task.title) : "Getting started…"}</p>}
+    {live && runId && tools?.some(isBrowserTool) && <LiveBrowser runId={runId} />}
     {open && <DecisionCard key={open.id} task={task} question={open} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {decided.map((d) => <li key={d.id}>{d.line}</li>)}
@@ -128,6 +132,26 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
     {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} followUp={done} />}
     <TaskDetails detail={detail} />
   </div>;
+}
+
+/** A step in the browser (the bridge's `browser_*` tools, and `computer_use` on its screen). */
+export const isBrowserTool = (tool: unknown): boolean => {
+  const name = typeof tool === "string" ? tool : (tool as { name?: unknown } | null)?.name;
+  return typeof name === "string" && (name.startsWith("browser_") || name === "computer_use");
+};
+
+/** The Worker's browser tab while it browses: its frames are cast to the room the task came from, and a click, scroll
+ *  or keys on the picture go to that tab, so the owner can watch it and take over (the agent waits while they do).
+ *  ponytail: mounted only while the run's recent steps are in the browser, because the viewing beat starts a stopped
+ *  browser; a run-scoped beat if a lingering pane ever restarts one. */
+function LiveBrowser({ runId }: { runId: string }): ReactElement {
+  return <section aria-label="Browser" className="grid gap-1.5 px-1">
+    <div className="relative aspect-[16/10] overflow-hidden rounded-lg border" style={{ borderColor: "var(--edge)" }}>
+      <BrowserFrameView runId={runId} interactive
+        empty={<p role="status" className="text-ui text-muted-foreground">Waiting for the page…</p>} />
+    </div>
+    <p className="text-caption text-muted-foreground">Live. Click or type on the page to take over; Lightbulb waits while you do.</p>
+  </section>;
 }
 
 /** "Started 3:19 · Done 3:21": one quiet line in place of the transcript's day and lifecycle rules (W12-17). */

@@ -454,7 +454,8 @@ async def test_task_detail_attempts_are_allow_listed(world):
     resp = await world["client"].get(f"/api/v1/tasks/{task}")
     assert resp.status_code == 200
     (att,) = resp.json()["attempts"]
-    assert set(att) == {"n", "status", "outcome", "startedAt", "endedAt", "usage", "output"}
+    # runId addresses the run's live browser frames (room.browser.frame); it grants nothing, the runSecret does.
+    assert set(att) == {"n", "runId", "status", "outcome", "startedAt", "endedAt", "usage", "output"}
     assert "runSecret" not in resp.text and "taskToken" not in resp.text
     assert "LEAKCANARY" not in resp.text
 

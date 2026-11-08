@@ -62,6 +62,9 @@ class RunIdentity:
     # and the bridge latches task mode (read-only specialist profile, task-prefix writes). Decided per attempt
     # by `session_kind_for`, written on the Attempt row by O's `begin_attempt`, never cached on the task.
     session_kind: SessionKind = "workspace"
+    # Worker runs: the origin room's AppSync channel ({endpoint, channel, roomId}) its browser tab is cast to, so the
+    # people in that room can watch it live. Not a routing key: the bridge's idempotency fingerprint ignores it.
+    frames: dict | None = None
 
     @classmethod
     def for_attempt(cls, owner_id: str, task_id: str, att: dict) -> "RunIdentity":
@@ -99,6 +102,7 @@ class RunIdentity:
             "mode": self.mode,
             "session": {"kind": self.session_kind},
             **({"runSecret": self.run_secret} if self.run_secret else {}),
+            **({"frames": self.frames} if self.frames else {}),
         }
         if self.mode == "router":
             wire["lane"] = self.lane or "shared"

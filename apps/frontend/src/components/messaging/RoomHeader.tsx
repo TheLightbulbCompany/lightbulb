@@ -53,6 +53,8 @@ interface RoomHeaderProps {
   onSettingsOpened?: () => void;
   /** False on /voice/lightbulb, where the orb above is the room's only voice control: no Live marker, strip or Go live. */
   voiceControls?: boolean;
+  /** The Lightbulb page's own DM with the assistant: no People (menu rows, facepile); Add people is not passed. */
+  oneToOne?: boolean;
 }
 
 function liveNames(userIds: readonly string[], participants: readonly RoomParticipant[]) {
@@ -86,6 +88,7 @@ export function RoomHeader({
   openSettings = null,
   onSettingsOpened,
   voiceControls = true,
+  oneToOne = false,
 }: RoomHeaderProps) {
   const id = useId();
   const huddle = useHuddle();
@@ -289,10 +292,10 @@ export function RoomHeader({
             <DropdownMenuItem onSelect={() => setSettings("general")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>
             {/* What Lightbulb knows here, one pick from the header (W16-8), not Settings › Memory. */}
             {memoryClient && <DropdownMenuItem onSelect={() => setSettings("memory")}><Brain aria-hidden="true" />Memory</DropdownMenuItem>}
-            <DropdownMenuItem onSelect={() => setSettings("people")}><Users aria-hidden="true" />People</DropdownMenuItem>
+            {!oneToOne && <DropdownMenuItem onSelect={() => setSettings("people")}><Users aria-hidden="true" />People</DropdownMenuItem>}
           </> : <>
             <DropdownMenuItem onSelect={() => onOpenDetails("about")}><Info aria-hidden="true" />Details</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onOpenDetails("members")}><Users aria-hidden="true" />People</DropdownMenuItem>
+            {!oneToOne && <DropdownMenuItem onSelect={() => onOpenDetails("members")}><Users aria-hidden="true" />People</DropdownMenuItem>}
           </>}
           {/* Add people sits in every chat's ▾, as in prod and Slack (W18-3); the same dialog as Settings › People. */}
           {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><UserPlus aria-hidden="true" />Add people</DropdownMenuItem>}
@@ -318,11 +321,11 @@ export function RoomHeader({
       {goLive && <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={Boolean(huddle.joining)}
         aria-label={huddle.joining === room.roomId ? "Joining…" : "Go live"} title="Go live"
         onClick={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}><Mic aria-hidden="true" /></Button>}
-      <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} here`} title="People"
+      {!oneToOne && <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} here`} title="People"
         onClick={() => projectSettings ? setSettings("people") : onOpenDetails("members")}>
         {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
         <span className="room-facepile-more text-ui text-muted-foreground">{participantCount}</span>
-      </Button>
+      </Button>}
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-label="More" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">

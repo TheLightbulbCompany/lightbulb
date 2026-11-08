@@ -346,7 +346,7 @@ async def test_onboarding_fields_absent_round_trip_as_none(repo):
 
 async def test_put_without_onboarding_kwargs_wipes_previously_set_fields(repo):
     """Documents the exact hazard the writer-safety fix in
-    paperclip_provisioning.py guards against: put() is a raw PutItem, so a
+    workspace_provisioning.py guards against: put() is a raw PutItem, so a
     workspace built without onboarding fields SILENTLY WIPES them on
     a row that previously had them. This is why every put site in
     provisioning must read-merge or deliberately mint."""
@@ -355,10 +355,8 @@ async def test_put_without_onboarding_kwargs_wipes_previously_set_fields(repo):
 
     # A put that forgot to carry onboarding fields forward...
     await repo.put_workspace(_make_company(user_id="u1", status="provisioning"))
-    # ...wipes them. (This is the exact bug the provisioning module's
-    # _carry_forward_onboarding_fields helper exists to prevent at every
-    # call site — see tests/unit/services/test_paperclip_provisioning_moto.py for the
-    # end-to-end proof that provision_org's real puts do NOT do this.)
+    # ...wipes them. (provision_org carries the row forward with dataclasses.replace —
+    # see tests/unit/services/test_workspace_provisioning.py for the proof.)
     fetched = await repo.get_workspace("u1")
     assert fetched.onboarding_generation is None
     assert fetched.funnel_state is None

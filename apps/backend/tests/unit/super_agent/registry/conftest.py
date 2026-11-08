@@ -1,7 +1,7 @@
 """Lane R fixtures: a moto `tasks` table built from `tasks_schema` (keys + GSIs) and a Paperclip roster.
 
 `paperclip_roster.json` has the shape `GET /api/companies/{id}/agents` returns for a provisioned workspace (the
-six starters from `paperclip_provisioning.STARTER_ROSTER`, one marketplace hire, one terminated agent), ids fresh
+six starters from `workspace_provisioning.STARTER_ROSTER`, one marketplace hire, one terminated agent), ids fresh
 UUIDs, personas placeholder text."""
 
 import json

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from core.services.hermes_profiles import VOICE_NOTES_MAX
-from core.services.paperclip_provisioning import STARTER_ROSTER
+from core.services.workspace_provisioning import STARTER_ROSTER
 
 # ---- Option D: each agent is its own voice (spec 2026-10-02 §1, §2) ----------------------------
 

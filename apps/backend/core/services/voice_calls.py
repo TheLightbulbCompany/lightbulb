@@ -634,7 +634,8 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
             "kind": "huddle",
             "roomId": room_id,
             "roomName": meta.get("name"),
-            "companyId": row.company_id,
+            # The bridge's call envelope requires a non-empty companyId; a native workspace has none.
+            "companyId": row.company_id or owner_id,
             "ceoId": (getattr(row, "starter_agent_ids", None) or {}).get("ceo"),
             "startedAt": now,
             "deadline": now + budget,

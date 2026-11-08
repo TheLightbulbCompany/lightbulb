@@ -14,25 +14,14 @@ check is skipped only when ENVIRONMENT is unset (bare local dev), where no
 Clerk instance signs anything. Any deployed stage sets ENVIRONMENT, so the
 fail-closed path is the only one that runs off a laptop.
 
-**Paperclip provisioning dispatch**:
+**Workspace dispatch**:
 
   * ``organization.created``           -> ``provision_new_workspace`` (trial row + gate + provision dispatch)
-  * ``organizationMembership.created`` -> log + idempotent Paperclip JOIN via
-    ``_ensure_paperclip_for_member`` (join-only: never creates a company; a
-    still-provisioning org self-heals on the member's next /teams request)
-  * ``organizationMembership.deleted`` -> ``archive_member`` from THAT org's company only
+  * ``organizationMembership.created`` -> idempotent workspace JOIN via ``_ensure_workspace_member``
+    (join-only; a still-provisioning org self-heals on the member's next /teams request)
+  * ``organizationMembership.deleted`` -> ``remove_member`` from THAT org's workspace only
   * ``organization.deleted``           -> ``disable_workspace`` (purged after the grace window)
-  * ``user.deleted``                   -> delete that user's Paperclip identity row
-
-Retry semantics: if provisioning raises an exception with
-``retryable=True`` (``OrgNotProvisionedError`` always; ``PaperclipApiError``
-on 5xx + 429), we enqueue a row in the ``pending-updates`` table for the
-cleanup cron to re-drive. Either way we return 200 to Clerk so the svix
-delivery is acked — we own retries from this point onward.
-
-Non-retryable errors (4xx state errors, programmer errors) are logged
-and swallowed; returning 5xx would just have Clerk retry the same
-permanently-broken event.
+  * ``user.deleted``                   -> delete that user's stored identity row
 """
 
 import base64
@@ -48,13 +37,9 @@ from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.repositories import billing_repo, channel_link_repo
+from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import network_member
-from core.services.paperclip_provisioning import (
-    build_paperclip_provisioning,
-    close_paperclip_provisioning,
-)
-from core.services.update_service import PAPERCLIP_RETRY_KIND
 from core.services.webhook_dedup import MembershipLifecycleSuperseded
 
 logger = logging.getLogger(__name__)
@@ -182,60 +167,6 @@ async def _renew_member_lifecycle(owner_id: str, user_id: str, claim_id: str | N
     await renew_membership_lifecycle(owner_id, _membership_alias(user_id), claim_id)
 
 
-# The canonical home for ``PAPERCLIP_RETRY_KIND`` is
-# ``core.services.update_service.PAPERCLIP_RETRY_KIND``. Both this
-# webhook router (which enqueues retries) and the scheduled worker
-# (which consumes them) read the same constant — keeping them in
-# lockstep is the only way the retry cron actually picks up the
-# rows we wrote. The import lives at the top of this file alongside
-# the other ``core.*`` imports.
-#
-# The Paperclip provisioning factory (build_paperclip_provisioning +
-# close_paperclip_provisioning) lives in core/services/paperclip_provisioning.py
-# — imported at the top of this file. Service-layer ownership keeps the
-# routers→services dependency direction one-way.
-
-
-async def _enqueue_paperclip_retry(*, op: str, payload: dict, owner_id: str) -> None:
-    """Enqueue a Paperclip provisioning retry row in pending-updates.
-
-    ``owner_id`` is the partition key of the pending-updates table —
-    we use the affected user_id (or org owner) so T13 can group
-    retries per-tenant. ``op`` distinguishes which provisioning entry
-    point T13 should call back into.
-
-    Failure to enqueue is logged but not re-raised: enqueueing is
-    best-effort, and the alternative (5xx-ing the webhook) would just
-    have Clerk retry the original event, which has the same retryable
-    classification.
-    """
-    try:
-        await update_repo.create(
-            owner_id=owner_id,
-            update_type=PAPERCLIP_RETRY_KIND,
-            description=f"Retry {op} (Paperclip)",
-            changes={"op": op, **payload},
-        )
-        put_metric("paperclip.webhook.retry_enqueued", dimensions={"op": op})
-    except Exception:
-        logger.exception(
-            "paperclip retry enqueue failed (op=%s, owner_id=%s)",
-            op,
-            owner_id,
-        )
-
-
-def _is_retryable(exc: BaseException) -> bool:
-    """Read the ``retryable`` attribute from a Paperclip exception.
-
-    ``OrgNotProvisionedError`` carries a class-level ``retryable=True``;
-    ``PaperclipApiError`` sets ``retryable`` in __init__ from the
-    status code (5xx + 429 => True). Anything else is treated as
-    non-retryable.
-    """
-    return bool(getattr(exc, "retryable", False))
-
-
 # ----------------------------------------------------------------------
 # Clerk org event payload helpers
 # ----------------------------------------------------------------------
@@ -348,7 +279,7 @@ async def _handle_organization_created(data: dict) -> None:
     """Start the new workspace's first provision without waiting for a browser poll.
 
     ``provision_new_workspace`` creates the trial row, checks the provision gate and
-    dispatches the provision funnel (Paperclip is seeded INSIDE the provision execution,
+    dispatches the provision funnel (the workspace is seeded INSIDE the provision execution,
     so no half-state). Nothing else starts a first provision, so a failure RAISES: the
     dedup row is rolled back and the 5xx makes Svix redeliver. A gate that is up is a
     normal return.
@@ -399,19 +330,18 @@ async def _handle_organization_membership_created(
     *,
     lifecycle_claim_id: str | None = None,
 ) -> None:
-    """Record a membership lifecycle event, then join the org's Paperclip company.
+    """Record a membership lifecycle event, then join the org's workspace.
 
     Room admission remains explicit; the member receives an opaque user stream
     when they first request messaging live-config or are added to a room. The
     one exception is the vendor shared channel, which ``on_org_member_joined``
     keeps in step with org membership.
 
-    The Paperclip join itself is delegated to
-    ``core.services.user_provision._ensure_paperclip_for_member`` — the same
+    The join itself is delegated to
+    ``core.services.user_provision._ensure_workspace_member`` — the same
     join-only, idempotent helper ``ensure_user_ready`` calls from the member's
-    own ``/teams`` requests. It returns gracefully when the org's company isn't
-    active yet (the member's next ``/teams`` request self-heals), treats a
-    409 as success, and records a 422 as a durable failure. Any exception is
+    own ``/teams`` requests. It returns gracefully when the org's workspace isn't
+    active yet (the member's next ``/teams`` request self-heals). Any exception is
     logged and metered here but never re-raised: this must not turn into a
     non-2xx that makes Clerk retry the whole event — the lifecycle bookkeeping
     above already happened and must still be acknowledged. Without this call,
@@ -440,22 +370,18 @@ async def _handle_organization_membership_created(
         owner_user_id,
     )
 
-    from core.services.user_provision import _ensure_paperclip_for_member
+    from core.services.user_provision import _ensure_workspace_member
 
     try:
-        await _ensure_paperclip_for_member(
-            org_id=org_id,
-            member_user_id=user_id,
-            member_email=email,
-        )
+        await _ensure_workspace_member(org_id=org_id, member_user_id=user_id)
     except Exception:
         logger.exception(
-            "membership.created: paperclip membership-add failed org=%s user=%s "
+            "membership.created: workspace membership-add failed org=%s user=%s "
             "— the member's next /teams request retries",
             org_id,
             user_id,
         )
-        put_metric("paperclip.member_add", dimensions={"outcome": "webhook_error"})
+        put_metric("workspace.member_add", dimensions={"outcome": "webhook_error"})
 
     # A real (re)join is the ONE door that turns a removed member's private stream back on
     # (fresh key); every other ensure_user_stream caller leaves an inactive stream off.
@@ -513,7 +439,7 @@ async def _handle_organization_membership_deleted(
     lifecycle_claim_id: str | None = None,
     lifecycle_event_id: str | None = None,
 ) -> None:
-    """Revoke canonical room/user streams, then archive the Paperclip member."""
+    """Revoke canonical room/user streams, then drop the workspace membership."""
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
     org_id = (data.get("organization") or {}).get("id", "")
@@ -551,53 +477,23 @@ async def _handle_organization_membership_deleted(
 
         revoke_member_soon(org_id, user_id, still_current)
     except Exception as exc:
-        # Paperclip cleanup still gets its turn, but the event is not marked
+        # The membership drop still gets its turn, but the event is not marked
         # complete until canonical revocation succeeds on a retry.
         revocation_error = exc
 
-    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-    provisioning = await build_paperclip_provisioning()
+    # Dropping the workspace membership is the Teams authorization fence. A failure raises below,
+    # so the redelivery retries it.
     try:
-        try:
-            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-            await provisioning.archive_member(user_id=user_id, org_id=org_id)
-            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-            put_metric(
-                "paperclip.webhook.archive_member",
-                dimensions={"trigger": "membership_deleted", "result": "ok"},
-            )
-        except MembershipLifecycleSuperseded:
-            raise
-        except Exception as exc:
-            retryable = _is_retryable(exc)
-            put_metric(
-                "paperclip.webhook.archive_member",
-                dimensions={
-                    "trigger": "membership_deleted",
-                    "result": "retryable" if retryable else "error",
-                },
-            )
-            # Dropping the DDB membership is the immediate Teams authorization
-            # fence even when the upstream Paperclip archive is unavailable.
-            try:
-                await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-                from core.repositories.paperclip_repo import PaperclipRepo
-
-                await PaperclipRepo(table_name="paperclip-companies").remove_member(org_id, user_id)
-                await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-            except MembershipLifecycleSuperseded:
-                raise
-            except Exception:
-                logger.exception("Paperclip membership fence failed for user=%s org=%s", user_id, org_id)
-            if retryable:
-                await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-                await _enqueue_paperclip_retry(
-                    op="archive_member",
-                    payload={"user_id": user_id, "org_id": org_id},
-                    owner_id=user_id,
-                )
-    finally:
-        await close_paperclip_provisioning(provisioning)
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+        await PaperclipRepo(table_name="paperclip-companies").remove_member(org_id, user_id)
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+        put_metric("workspace.webhook.remove_member", dimensions={"result": "ok"})
+    except MembershipLifecycleSuperseded:
+        raise
+    except Exception as exc:
+        put_metric("workspace.webhook.remove_member", dimensions={"result": "error"})
+        logger.exception("workspace membership fence failed for user=%s org=%s", user_id, org_id)
+        revocation_error = revocation_error or exc
 
     # Their private agent memory (1:1 DM facts) goes at once, no grace period. Its own try, so a
     # failure neither skips the Mac revocation nor completes the event: records never expire, so
@@ -709,14 +605,13 @@ async def _handle_organization_deleted(data: dict) -> None:
     except Exception:
         logger.exception("runtime teardown on organization.deleted failed for org %s", org_id)
 
-    provisioning = await build_paperclip_provisioning()
     try:
-        await provisioning.disable_workspace(org_id=org_id)
-        put_metric("paperclip.webhook.disable", dimensions={"trigger": "organization_deleted"})
+        from core.services.workspace_provisioning import disable_workspace
+
+        await disable_workspace(org_id)
+        put_metric("workspace.webhook.disable", dimensions={"trigger": "organization_deleted"})
     except Exception:
         logger.exception("disable_workspace on organization.deleted failed for org=%s", org_id)
-    finally:
-        await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_user_deleted_paperclip(user_id: str) -> None:

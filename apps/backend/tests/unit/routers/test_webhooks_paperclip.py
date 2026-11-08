@@ -1,9 +1,7 @@
-"""Tests for the Clerk webhook handlers wired to PaperclipProvisioning (T12).
+"""Tests for the Clerk webhook handlers' workspace membership writes.
 
-The webhook handler builds a fresh ``PaperclipProvisioning`` per
-request via ``build_paperclip_provisioning``. We patch that factory to
-hand back an ``AsyncMock`` provisioning instance so the test never
-touches a real httpx client / DynamoDB repo.
+``PaperclipRepo.remove_member`` (the META store) is patched by the autouse
+``remove_member`` fixture so no test touches DynamoDB.
 
 Svix signature verification is bypassed via monkeypatch on the
 private ``_verify_svix_signature`` symbol — same pattern used by the
@@ -21,7 +19,6 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from core.services.paperclip_admin_client import PaperclipApiError
 from core.services import webhook_dedup as _webhook_dedup
 
 _REAL_BEGIN_EVENT_PROCESSING = _webhook_dedup.begin_event_processing
@@ -49,6 +46,13 @@ def lifecycle_io(monkeypatch):
     return revoke
 
 
+@pytest.fixture(autouse=True)
+def remove_member(monkeypatch):
+    mock = AsyncMock()
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", mock)
+    return mock
+
+
 def _bypass_svix(monkeypatch):
     monkeypatch.setattr(
         "routers.webhooks._verify_svix_signature",
@@ -65,9 +69,8 @@ def _svix_headers() -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("archive_failure", [False, True])
 async def test_membership_revocation_failure_redelivers_same_svix_and_still_deauthorizes(
-    lifecycle_io, monkeypatch, archive_failure
+    lifecycle_io, monkeypatch, remove_member
 ):
     from core.services import webhook_dedup
     from routers import webhooks
@@ -76,15 +79,6 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
     monkeypatch.setattr(webhook_dedup, "begin_event_processing", _REAL_BEGIN_EVENT_PROCESSING)
     monkeypatch.setattr(webhook_dedup, "complete_event_processing", _REAL_COMPLETE_EVENT_PROCESSING)
     lifecycle_io.side_effect = [RuntimeError("canonical revocation failed"), None]
-    provisioning = AsyncMock()
-    if archive_failure:
-        provisioning.archive_member.side_effect = PaperclipApiError("retry", 503, "")
-    remove_member = AsyncMock()
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
-    enqueue = AsyncMock()
-    monkeypatch.setattr(webhooks, "_enqueue_paperclip_retry", enqueue)
     request = SimpleNamespace(
         headers=_svix_headers(),
         body=AsyncMock(
@@ -106,10 +100,7 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "clerk-dedup-test")
         with pytest.raises(RuntimeError, match="canonical revocation failed"):
             await webhooks.handle_clerk_webhook(request)
-        provisioning.archive_member.assert_awaited_once_with(user_id="member", org_id="org_acme")
-        if archive_failure:
-            remove_member.assert_awaited_once_with("org_acme", "member")
-            enqueue.assert_awaited_once()
+        remove_member.assert_awaited_once_with("org_acme", "member")  # deauthorized even so
         assert (
             webhook_dedup._table().get_item(Key={"event_id": "msg_test"}).get("Item", {}).get("state") == "processing"
         )
@@ -125,20 +116,19 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
 
 
 @pytest.mark.asyncio
-async def test_membership_delete_revokes_canonical_rooms_before_paperclip(lifecycle_io, monkeypatch):
+async def test_membership_delete_revokes_canonical_rooms_before_the_membership(
+    lifecycle_io, monkeypatch, remove_member
+):
     from routers import webhooks
 
     events = []
     lifecycle_io.side_effect = lambda owner_id, user_id: events.append("canonical-revoked")
-    provisioning = AsyncMock()
-    provisioning.archive_member.side_effect = lambda **kwargs: events.append("paperclip-archived")
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    remove_member.side_effect = lambda *a: events.append("member-removed")
 
     await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"})
 
     lifecycle_io.assert_awaited_once_with("org_acme", "member")
-    assert events[:2] == ["canonical-revoked", "paperclip-archived"]
+    assert events[:2] == ["canonical-revoked", "member-removed"]
 
 
 @pytest.mark.asyncio
@@ -147,8 +137,6 @@ async def test_membership_delete_unlinks_the_members_phone_from_the_texting_line
 
     unlink = AsyncMock()
     monkeypatch.setattr("core.services.text_lines.unlink_member", unlink)
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
 
     await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"})
     unlink.assert_awaited_once_with("org_acme", "member")
@@ -158,46 +146,38 @@ async def test_membership_delete_unlinks_the_members_phone_from_the_texting_line
 
 
 @pytest.mark.asyncio
-async def test_membership_delete_wipes_the_members_private_memory_at_once(lifecycle_io, monkeypatch):
+async def test_membership_delete_wipes_the_members_private_memory_at_once(lifecycle_io, monkeypatch, remove_member):
     from core.services import workspace_memory
     from routers import webhooks
 
     wiped = AsyncMock()
     monkeypatch.setattr(workspace_memory, "delete_member_memory", wiped)
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
 
     await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "user_a"})
     wiped.assert_awaited_once_with("org_acme", "user_a", still_gone=None)
 
-    # Records never expire: a failed wipe must not complete the event, but Paperclip still ran.
-    provisioning = AsyncMock()
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    # Records never expire: a failed wipe must not complete the event, but the membership still went.
+    remove_member.reset_mock()
     wiped.side_effect = RuntimeError("memory down")
     with pytest.raises(RuntimeError, match="memory down"):
         await webhooks._handle_organization_membership_deleted(
             {"organization": {"id": "org_acme"}, "user_id": "user_a"}
         )
-    provisioning.archive_member.assert_awaited_once()
+    remove_member.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_newer_admission_stops_old_delete_during_paperclip_cleanup(
-    monkeypatch,
-):
+async def test_newer_admission_stops_old_delete_during_membership_cleanup(monkeypatch, remove_member):
     from routers import webhooks
 
     events = []
-    provisioning = AsyncMock()
-    provisioning.archive_member.side_effect = lambda **kwargs: events.append("paperclip-archived")
+    remove_member.side_effect = lambda *a: events.append("member-removed")
 
     async def renew(org_id, user_id, claim_id):
-        if "paperclip-archived" in events:
+        if "member-removed" in events:
             raise _webhook_dedup.MembershipLifecycleSuperseded("newer create owns lifecycle")
 
     monkeypatch.setattr(webhooks, "_renew_member_lifecycle", AsyncMock(side_effect=renew))
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
 
     with pytest.raises(_webhook_dedup.MembershipLifecycleSuperseded):
         await webhooks._handle_organization_membership_deleted(
@@ -216,8 +196,6 @@ async def test_a_failed_membership_revocation_schedules_no_mac_revocation(monkey
     monkeypatch.setattr(
         "core.services.messaging.revoke_human_membership", AsyncMock(side_effect=RuntimeError("ddb down"))
     )
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
     with pytest.raises(RuntimeError):
         await webhooks._handle_organization_membership_deleted(
             {"organization": {"id": "org_acme"}, "user_id": "member"}
@@ -235,8 +213,6 @@ async def test_member_deleted_then_re_added_and_re_paired_keeps_the_pairing_and_
     lifecycle = {"lifecycle_event_id": "evt_delete", "access_state": "revoked", "lifecycle_status": "completed"}
     monkeypatch.setattr(_webhook_dedup, "_read_event", AsyncMock(side_effect=lambda key: dict(lifecycle)))
     monkeypatch.setattr("core.services.messaging.revoke_human_membership", AsyncMock())
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
     pairing = {"dev_1": {"userId": "member", "clientId": "node-host"}}
     get_row = AsyncMock(return_value={"paired_devices": pairing})
     mark = AsyncMock()
@@ -267,17 +243,11 @@ async def test_member_deleted_then_re_added_and_re_paired_keeps_the_pairing_and_
 @pytest.mark.asyncio
 async def test_organization_created_dispatches_the_first_provision():
     """The webhook hands the org to ``provision_new_workspace`` (trial row + gate +
-    provision dispatch) and never calls Paperclip itself -- the company is seeded
-    inside the provision execution.
+    provision dispatch) -- the workspace is seeded inside the provision execution.
     """
     from routers.webhooks import _handle_organization_created
 
     with (
-        patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
-        patch(
-            "routers.webhooks._enqueue_paperclip_retry",
-            new=AsyncMock(),
-        ) as mock_retry,
         patch("core.services.user_provision.provision_new_workspace", new=AsyncMock()) as mock_provision,
         patch("core.repositories.company_slug_repo.claim_hold", new=AsyncMock()) as mock_claim,
     ):
@@ -289,8 +259,6 @@ async def test_organization_created_dispatches_the_first_provision():
             }
         )
 
-    mock_factory.assert_not_called()
-    mock_retry.assert_not_awaited()
     # The creator rides along so the trial events land on their PostHog person.
     mock_provision.assert_awaited_once_with("org_acme", created_by="user_owner")
     # The agent-email slug the owner held at "Create your workspace" moves to the workspace.
@@ -328,18 +296,15 @@ async def test_a_failed_organization_created_rolls_back_its_dedup_row_so_svix_re
 
 @pytest.mark.asyncio
 async def test_membership_created_does_not_create_company_but_does_join():
-    """The membership webhook never creates a company (that stays behind the
-    provision gate — no direct ``build_paperclip_provisioning``/
-    ``_enqueue_paperclip_retry`` call from this router), but it DOES drive
-    the idempotent ``_ensure_paperclip_for_member`` JOIN inline, rather than
-    waiting on the member's own ``/container/status`` poll."""
+    """The membership webhook never provisions a workspace (that stays behind the
+    provision gate), but it DOES drive the idempotent ``_ensure_workspace_member``
+    JOIN inline, rather than waiting on the member's own poll."""
     from routers.webhooks import _handle_organization_membership_created
 
     with (
-        patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
-        patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
         patch("routers.webhooks.billing_repo.get_by_owner_id", new=AsyncMock()) as mock_billing,
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()) as mock_join,
+        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()) as mock_join,
+        patch("core.services.workspace_provisioning.provision_org", new=AsyncMock()) as mock_provision,
     ):
         await _handle_organization_membership_created(
             {
@@ -351,27 +316,22 @@ async def test_membership_created_does_not_create_company_but_does_join():
             }
         )
 
-    mock_factory.assert_not_called()
-    mock_retry.assert_not_awaited()
+    mock_provision.assert_not_awaited()
     mock_billing.assert_not_awaited()
-    mock_join.assert_awaited_once_with(
-        org_id="org_x",
-        member_user_id="user_member",
-        member_email="m@example.com",
-    )
+    mock_join.assert_awaited_once_with(org_id="org_x", member_user_id="user_member")
 
 
 @pytest.mark.asyncio
 async def test_membership_created_join_error_still_acks_webhook_2xx(lifecycle_io, monkeypatch):
-    """A raising Paperclip join must not turn into a non-2xx: the full
+    """A raising workspace join must not turn into a non-2xx: the full
     ``handle_clerk_webhook`` route must still return ``{"status": "ok"}`` so
     Clerk does not retry the whole event, while the error is logged + metered."""
     from routers import webhooks
 
     _bypass_svix(monkeypatch)
     monkeypatch.setattr(
-        "core.services.user_provision._ensure_paperclip_for_member",
-        AsyncMock(side_effect=RuntimeError("paperclip is down")),
+        "core.services.user_provision._ensure_workspace_member",
+        AsyncMock(side_effect=RuntimeError("ddb is down")),
     )
     metric_calls = []
     monkeypatch.setattr(webhooks, "put_metric", lambda name, **kw: metric_calls.append((name, kw)))
@@ -393,55 +353,31 @@ async def test_membership_created_join_error_still_acks_webhook_2xx(lifecycle_io
     result = await webhooks.handle_clerk_webhook(request)
 
     assert result == {"status": "ok"}
-    assert ("paperclip.member_add", {"dimensions": {"outcome": "webhook_error"}}) in metric_calls
+    assert ("workspace.member_add", {"dimensions": {"outcome": "webhook_error"}}) in metric_calls
 
 
 # ----------------------------------------------------------------------
-# organizationMembership.deleted -> archive_member
+# organizationMembership.deleted -> remove_member
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_evaluator_wipe")
-async def test_membership_deleted_calls_archive_member(async_client, monkeypatch, request):
-    """``organizationMembership.deleted`` should drive
-    ``PaperclipProvisioning.archive_member`` scoped to THAT org, so a
-    human in two workspaces keeps the other one.
-    """
+async def test_membership_deleted_removes_the_member(async_client, monkeypatch, request, remove_member):
+    """``organizationMembership.deleted`` drops the member from THAT org's workspace only,
+    so a human in two workspaces keeps the other one."""
     _bypass_svix(monkeypatch)
-
-    mock_provisioning = AsyncMock()
-    mock_provisioning.archive_member = AsyncMock(return_value=None)
     durable_revoke = AsyncMock()
-
     payload = {
         "type": "organizationMembership.deleted",
-        "data": {
-            "id": "orgm_1",
-            "organization": {"id": "org_acme"},
-            "public_user_data": {"user_id": "user_member"},
-        },
+        "data": {"id": "orgm_1", "organization": {"id": "org_acme"}, "public_user_data": {"user_id": "user_member"}},
     }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch(
-            "core.services.messaging.revoke_human_membership",
-            new=durable_revoke,
-        ),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
+    with patch("core.services.messaging.revoke_human_membership", new=durable_revoke):
+        resp = await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
 
     assert resp.status_code == 200
     durable_revoke.assert_awaited_once()
-    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
     # The member wipe ran every step, scoped to this workspace.
     wipe = request.getfixturevalue("no_evaluator_wipe")
     wipe["delete_sessions"].assert_awaited_once_with("user_member", workspace_id="org_acme")
@@ -454,205 +390,17 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_evaluator_wipe")
-async def test_membership_deleted_retryable_failure_enqueues(async_client, monkeypatch):
-    """Paperclip 5xx during ``archive_member`` should enqueue a
-    pending-updates retry row keyed on ``op="archive_member"``.
+async def test_membership_deleted_fence_failure_redelivers(lifecycle_io, remove_member):
+    """The membership drop is the Teams authorization fence: when it fails, the event is not
+    completed (it raises), so Clerk redelivers and the drop is retried."""
+    from routers import webhooks
 
-    Auth-bypass guard: the handler MUST also call ``remove_member`` BEFORE
-    enqueueing the retry so the user leaves the workspace row's
-    ``member_user_ids`` immediately. Otherwise ``resolve_teams_context``
-    would keep authorizing the removed user against ``/api/v1/teams/*``
-    for the entire retry window (minutes to hours). The retry payload
-    carries the org id so the later archive stays org-scoped.
-    """
-    _bypass_svix(monkeypatch)
-
-    err = PaperclipApiError("server-down", 503, "")
-    mock_provisioning = AsyncMock()
-    mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    remove_member = AsyncMock(return_value=None)
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
-
-    captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
-
-    payload = {
-        "type": "organizationMembership.deleted",
-        "data": {
-            "id": "orgm_1",
-            "organization": {"id": "org_acme"},
-            "public_user_data": {"user_id": "user_member"},
-        },
-    }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
+    remove_member.side_effect = RuntimeError("ddb-down")
+    with pytest.raises(RuntimeError, match="ddb-down"):
+        await webhooks._handle_organization_membership_deleted(
+            {"organization": {"id": "org_acme"}, "user_id": "user_member"}
         )
-
-    assert resp.status_code == 200
-    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
-    # Auth-bypass guard: DDB membership must be dropped even on retryable.
-    remove_member.assert_awaited_once_with("org_acme", "user_member")
-    captured_create.assert_awaited_once()
-    kwargs = captured_create.call_args.kwargs
-    assert kwargs["owner_id"] == "user_member"
-    assert kwargs["update_type"] == "paperclip_provision"
-    assert kwargs["changes"]["op"] == "archive_member"
-    assert kwargs["changes"]["user_id"] == "user_member"
-    assert kwargs["changes"]["org_id"] == "org_acme"
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("no_evaluator_wipe")
-async def test_membership_deleted_non_retryable_failure_swallowed(async_client, monkeypatch):
-    """4xx (non-429) on archive_member should NOT enqueue a retry —
-    the user is already gone from Clerk, and Clerk redelivery would
-    just hit the same 4xx. We still return 200 so Clerk stops retrying.
-
-    Critically (auth-bypass guard): the handler MUST also call
-    ``remove_member`` to drop the DDB membership even when
-    Paperclip archive failed non-retryably — otherwise the removed
-    Clerk-org member can still hit ``/api/v1/teams/*`` because
-    ``resolve_teams_context`` only checks DDB state.
-    """
-    _bypass_svix(monkeypatch)
-
-    err = PaperclipApiError("not-found", 404, "")
-    mock_provisioning = AsyncMock()
-    mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    remove_member = AsyncMock(return_value=None)
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
-    captured_create = AsyncMock()
-
-    payload = {
-        "type": "organizationMembership.deleted",
-        "data": {
-            "id": "orgm_1",
-            "organization": {"id": "org_acme"},
-            "public_user_data": {"user_id": "user_member"},
-        },
-    }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    mock_provisioning.archive_member.assert_awaited_once()
-    captured_create.assert_not_awaited()
-    # Auth-bypass guard: DDB membership must be dropped.
-    remove_member.assert_awaited_once_with("org_acme", "user_member")
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("no_evaluator_wipe")
-async def test_membership_deleted_non_retryable_fence_failure_is_swallowed(async_client, monkeypatch):
-    """If the defensive ``remove_member`` call after a non-retryable archive
-    failure itself raises, we still return 200 — the webhook must not
-    bubble exceptions back to Clerk, which would just redeliver the
-    same event. The exception is logged for ops to investigate.
-    """
-    _bypass_svix(monkeypatch)
-
-    err = PaperclipApiError("not-found", 404, "")
-    mock_provisioning = AsyncMock()
-    mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
-    captured_create = AsyncMock()
-
-    payload = {
-        "type": "organizationMembership.deleted",
-        "data": {
-            "id": "orgm_1",
-            "organization": {"id": "org_acme"},
-            "public_user_data": {"user_id": "user_member"},
-        },
-    }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    mock_provisioning.archive_member.assert_awaited_once()
-    remove_member.assert_awaited_once_with("org_acme", "user_member")
-    captured_create.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("no_evaluator_wipe")
-async def test_membership_deleted_retryable_fence_failure_is_swallowed(async_client, monkeypatch):
-    """On retryable archive failure, the handler tries ``remove_member``
-    BEFORE enqueueing the retry to close the auth-bypass window. If
-    that defensive ``remove_member`` itself raises (e.g. DDB transient), we
-    must still enqueue the retry and return 200 — the webhook must not
-    bubble exceptions back to Clerk, and we still want the retry
-    pending so the next pass re-attempts archive.
-    """
-    _bypass_svix(monkeypatch)
-
-    err = PaperclipApiError("server-down", 503, "")
-    mock_provisioning = AsyncMock()
-    mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
-    captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
-
-    payload = {
-        "type": "organizationMembership.deleted",
-        "data": {
-            "id": "orgm_1",
-            "organization": {"id": "org_acme"},
-            "public_user_data": {"user_id": "user_member"},
-        },
-    }
-
-    with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-        patch("core.repositories.update_repo.create", new=captured_create),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    mock_provisioning.archive_member.assert_awaited_once()
-    remove_member.assert_awaited_once_with("org_acme", "user_member")
-    # Even when remove_member raises, the retry row is still enqueued so
-    # the next worker pass re-attempts the Paperclip-side archive.
-    captured_create.assert_awaited_once()
+    lifecycle_io.assert_awaited_once()  # the canonical revocation still ran first
 
 
 # ----------------------------------------------------------------------
@@ -662,22 +410,19 @@ async def test_membership_deleted_retryable_fence_failure_is_swallowed(async_cli
 
 @pytest.mark.asyncio
 async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
-    """``user.deleted`` sweeps channel_links AND deletes the user's
-    Paperclip identity row; no provisioning/company call is made (their
-    memberships leave with each org's ``organizationMembership.deleted``).
+    """``user.deleted`` sweeps channel_links AND deletes the user's stored
+    identity row (their memberships leave with each org's ``organizationMembership.deleted``).
     """
     _bypass_svix(monkeypatch)
 
     sweep = AsyncMock(return_value=0)
     repo_delete = AsyncMock(return_value=None)
-    factory = AsyncMock()
 
     payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
     person_wipe = AsyncMock()
 
     with (
         patch("core.services.workspace_memory.delete_person_memory", new=person_wipe),
-        patch("routers.webhooks.build_paperclip_provisioning", new=factory),
         patch("core.repositories.paperclip_repo.PaperclipRepo.delete", new=repo_delete),
         patch(
             "core.repositories.channel_link_repo.sweep_by_member",
@@ -693,7 +438,6 @@ async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
     assert resp.status_code == 200
     sweep.assert_awaited_once_with("user_x")
     repo_delete.assert_awaited_once_with("user_x")
-    factory.assert_not_awaited()
     person_wipe.assert_awaited_once_with("user_x")  # their sessions, drafts, episodes and keys
 
 
@@ -780,15 +524,15 @@ async def test_user_created_persist_failure_is_non_fatal(async_client, monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_evaluator_wipe")
-async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
+async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch, remove_member):
     """Two retries from svix on the same Clerk event must NOT both
     drive provisioning — verify the second delivery returns early
-    without invoking the provisioning factory.
+    without dropping the membership twice.
 
     Uses ``organizationMembership.deleted`` because
     ``organizationMembership.created`` no longer drives provisioning and
     ``organization.created`` dispatches through ``provision_new_workspace``.
-    Membership.deleted still calls ``archive_member`` so the dedupe
+    Membership.deleted still calls ``remove_member`` so the dedupe
     wrapper has something observable to gate.
     """
     _bypass_svix(monkeypatch)
@@ -806,10 +550,6 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
         _fake_dedupe,
     )
 
-    mock_provisioning = AsyncMock()
-    mock_provisioning.archive_member = AsyncMock(return_value=None)
-    factory = AsyncMock(return_value=mock_provisioning)
-
     payload = {
         "type": "organizationMembership.deleted",
         "data": {
@@ -819,22 +559,13 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
         },
     }
 
-    with patch("routers.webhooks.build_paperclip_provisioning", new=factory):
-        resp1 = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-        resp2 = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
+    resp1 = await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
+    resp2 = await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
 
     assert resp1.status_code == 200
     assert resp2.status_code == 200
-    # Provisioning ran exactly once across both retries.
-    mock_provisioning.archive_member.assert_awaited_once()
+    # The handler ran exactly once across both retries.
+    remove_member.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -865,8 +596,6 @@ async def test_stripe_subscription_deleted_makes_no_paperclip_call(async_client,
         lambda body, sig, secret: fake_event,
     )
 
-    factory = AsyncMock()
-
     fake_account = {
         "owner_id": "user_owner",
         "stripe_customer_id": "cus_existing",
@@ -889,10 +618,6 @@ async def test_stripe_subscription_deleted_makes_no_paperclip_call(async_client,
             "core.services.billing_service.BillingService.cancel_subscription",
             new=AsyncMock(return_value=None),
         ),
-        patch(
-            "core.services.paperclip_provisioning.build_paperclip_provisioning",
-            new=factory,
-        ),
         # Teardown now asks whether ANY provider still pays before running —
         # Stripe ending is no longer the same question as the entitlement
         # ending. Nothing else pays here, so teardown proceeds.
@@ -908,7 +633,6 @@ async def test_stripe_subscription_deleted_makes_no_paperclip_call(async_client,
         )
 
     assert resp.status_code == 200
-    factory.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
@@ -1049,8 +773,6 @@ async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on
 
     monkeypatch.setattr(mac_browser, "clear_member", slow_clear)
     monkeypatch.setattr(mac_browser.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
 
     await asyncio.wait_for(
         webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"}),
@@ -1144,8 +866,6 @@ async def test_last_member_leaving_a_parked_workspace_still_reaches_the_teardown
     monkeypatch.setattr(network_member, "wake", wake)
     teardown = AsyncMock()
     monkeypatch.setattr(webhooks, "_teardown_if_no_members_left", teardown)
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
 
     await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "user_a"})
 

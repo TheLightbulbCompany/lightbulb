@@ -123,12 +123,10 @@ async def resolve_teams_context(
         raise TeamsContextError(status_code=503, detail="team workspace provisioning failed")
     if ws is not None and ws.status != "active":
         raise TeamsContextError(status_code=503, detail=f"team workspace status={ws.status}")
-    joined = (
-        ws is not None
-        and auth.user_id in ws.member_user_ids
-        and identity is not None
-        and bool(identity.paperclip_user_id)
-    )
+    # Membership is the META row's member set. A workspace provisioned natively has no
+    # Paperclip identity (and no session to mint), so only an old identity mints one below.
+    joined = ws is not None and auth.user_id in ws.member_user_ids
+    paperclip_user_id = identity.paperclip_user_id if identity is not None else ""
     if not joined:
         if reconcile is not None:
             # Self-heal: drive provisioning. reconcile() evaluates the provision
@@ -142,13 +140,15 @@ async def resolve_teams_context(
             raise TeamsContextError(status_code=202, detail="team workspace provisioning")
         raise TeamsContextError(status_code=409, detail="team workspace not provisioned")
 
+    cookie = ""
     try:
-        cookie = await resolve_session_cookie(
-            cookies=cookies,
-            response=response,
-            user_id=auth.user_id,
-            mint=lambda: session_factory(auth.user_id),
-        )
+        if paperclip_user_id:
+            cookie = await resolve_session_cookie(
+                cookies=cookies,
+                response=response,
+                user_id=auth.user_id,
+                mint=lambda: session_factory(auth.user_id),
+            )
     except SessionRateLimited as e:
         # This owner is parked because their own sign-in drew Better Auth's 429
         # (see ``paperclip_session_cookie``: the limiter keys on IP and the
@@ -166,6 +166,6 @@ async def resolve_teams_context(
         org_id=auth.org_id,
         owner_id=owner_id,
         company_id=ws.company_id,
-        paperclip_user_id=identity.paperclip_user_id,
+        paperclip_user_id=paperclip_user_id,
         session_cookie=cookie,
     )

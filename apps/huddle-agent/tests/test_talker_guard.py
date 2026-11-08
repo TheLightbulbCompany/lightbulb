@@ -407,3 +407,31 @@ def test_a_team_message_is_the_conversations_newest_line(talker, session, text):
 
 def test_a_team_line_is_never_taken_for_the_callers():
     assert mouth.team_line(f"{mouth.TEAM}\n{FRONT_DESK[0]}") and not mouth.team_line("Yes, that's right.")
+
+
+async def test_one_delegated_line_makes_one_holding_reply(talker, session):
+    """8 Nov prod orb (room 4a239a09): one post, "Let me check." heard twice. In livekit-agents 1.8.11 one
+    generate_reply is one response.create (agent_activity._realtime_reply_task; the user_input item is a
+    conversation.item.create, which never starts a response), so code makes exactly one holding reply."""
+    talker.line("Maya", "Hey, how are you doing? What's going on today?")
+    await talker._turns.flush()
+    assert talker.backend.sent == ["Hey, how are you doing? What's going on today?"]
+    assert session.replies == [mouth.HOLD] and len(session.made) == 1
+
+
+@pytest.mark.parametrize("deltas", [("Let me check. ", "Let me check."), ("Let me check. ", "Let me ", "check.")])
+async def test_a_fixed_line_said_twice_in_its_one_response_is_cut_after_the_first(talker, session, deltas, capsys):
+    """The one response carried the line twice: the model's words, not a second speech. Cut once the line is said."""
+    session.current_speech = talker.say_fixed(mouth.HOLD)
+    await _speak(talker, *deltas)
+    assert session.current_speech.interrupted == 1 and len(session.replies) == 1  # cut, nothing said in its place
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["voice.talker.line_overrun"] == 1
+
+
+async def test_a_fixed_line_said_once_is_never_cut(talker, session):
+    session.current_speech = talker.say_fixed(mouth.HOLD)
+    await _speak(talker, "Let me ", "check.")
+    assert session.current_speech.interrupted == 0
+    session.current_speech = talker.say_fixed(mouth.fixed("Sure, one moment."))
+    await _speak(talker, "Sure, one ", "moment.")
+    assert session.current_speech.interrupted == 0

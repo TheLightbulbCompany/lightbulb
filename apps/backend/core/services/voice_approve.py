@@ -6,6 +6,8 @@ resolves who); in the app orb it is the signed-in member's.
 
 from typing import Literal
 
+from botocore.exceptions import ClientError
+
 from core.dynamodb import utc_now_iso
 from core.repositories import questions_repo
 from core.services import questions
@@ -47,7 +49,12 @@ async def approve(
     if q is None:
         return {"none": True}
     pending = {"by": speaker.get("name") or "", "seat": seat, "roomId": room_id, "at": utc_now_iso()}
-    await questions_repo.set_pending_confirm(ws, q["taskId"], q["qid"], pending)
+    try:
+        await questions_repo.set_pending_confirm(ws, q["taskId"], q["qid"], pending)
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return {"none": True}  # the card closed between the pick and the mark
     where = f" in {speaker['where']}" if speaker.get("where") else ""
     await _push_once(
         f"qconfirm:{ws}:{q['qid']}:{speaker['user_id']}",  # one push per card; a second yes only refreshes the mark

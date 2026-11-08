@@ -246,6 +246,20 @@ async def test_router_message_becomes_result():
     await s.close()
 
 
+async def test_events_item_without_kind_is_an_agent_line():
+    # /events items are {id, seq, text, inReplyTo?, action?, question?}: no kind
+    t = FakeTransport()
+    q, events = queue_events()
+    s = session(Router(delay=0), events=events, transport=t)
+    s.on_delegate(delegation(1, "a"))
+    await asyncio.sleep(0.01)
+    await q.put({"id": "k1", "seq": 6, "text": "Answer to a.", "inReplyTo": "m_1"})
+    await q.put({"id": "k2", "seq": 7, "kind": "user", "text": "typed"})
+    await asyncio.sleep(0.02)
+    assert t.appends == [("Answer to a.", "item_1")]
+    await s.close()
+
+
 async def test_events_loop_retries_after_a_failure(monkeypatch):
     # review I2: the first failure must not end results for the rest of the talk
     monkeypatch.setattr(live, "EVENTS_RETRY_S", 0.01)

@@ -199,7 +199,8 @@ class LiveSession:
 
     async def _result(self, m: dict) -> None:
         mid, text = m.get("id"), (m.get("text") or "").strip()
-        if m.get("kind") != "agent" or not text or (mid and mid in self._said):
+        # /events items carry no kind: every one is an agent line
+        if m.get("kind", "agent") != "agent" or not text or (mid and mid in self._said):
             return
         if mid:
             self._said.add(mid)

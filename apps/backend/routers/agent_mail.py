@@ -151,6 +151,10 @@ async def inbox(owner_id: str, agent_id: str, request: Request, since: str | Non
 def _project(row: dict) -> dict:
     return {
         "address": row.get("public_address") or row.get("address"),
+        # what people invite to a meeting and write to: the routing address, whose MX is SES. A public address
+        # reaches SES only through a forwarding rule set up outside AWS; agents@thelightbulb.company has none and
+        # bounced a Meet invite (8 Nov prod test).
+        "invite_address": row.get("address"),
         "verified_senders": row.get("verified_senders") or [],
         "send_to_anyone": bool(row.get("send_to_anyone")),
         "footer_enabled": row.get("footer_enabled") is not False,

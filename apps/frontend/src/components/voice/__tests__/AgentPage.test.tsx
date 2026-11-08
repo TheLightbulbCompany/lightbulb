@@ -9,6 +9,7 @@ const cfg = vi.hoisted(() => ({ value: {} as Record<string, unknown>, save: vi.f
 vi.mock("../data", async (orig) => ({
   ...(await orig<typeof import("../data")>()),
   useAgentConfig: () => ({ data: cfg.value, save: cfg.save }),
+  useInviteAddress: () => "agents@salon.thelightbulb.company",
 }));
 
 import { DEFAULT_CONFIG } from "../data";
@@ -56,4 +57,11 @@ it("agent page shows Check forwarding when keep path", () => {
   cfg.value = { ...cfg.value, numberChoice: { path: "new" } };
   render(<AgentPage />);
   expect(screen.queryByRole("button", { name: "Check forwarding" })).toBeNull();
+});
+
+it("tells people to invite the workspace's own address, the one that receives", () => {
+  // 8 Nov prod Meet: the hard-coded agents@thelightbulb.company bounced (that domain's mail goes to Google)
+  render(<AgentPage />);
+  expect(screen.getByText("agents@salon.thelightbulb.company")).toBeTruthy();
+  expect(screen.queryByText("agents@thelightbulb.company")).toBeNull();
 });

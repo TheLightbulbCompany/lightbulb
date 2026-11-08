@@ -172,3 +172,20 @@ async def test_only_a_dm_is_owner_mode_and_the_worker_secret_is_required(m):
     with patch("core.config.settings.HUDDLE_WORKER_SECRET", "s3cret"):  # no worker secret header
         r = await client.post(f"/internal/voice/owner/{ROOM}/turn", json=_turn().model_dump())
     assert r.status_code == 401
+
+
+async def test_the_orbs_line_after_a_said_question_answers_it(m):
+    from routers import questions as question_routes
+
+    qrow = {"kind": "question", "taskRefs": [{"taskId": "k1", "qid": "q-2"}]}
+    body = voice_owner.TurnIn(
+        **_turn("Nail gels.").model_dump(exclude={"answers"}), answers={"taskId": "k1", "qid": "q-2"}
+    )
+    with (
+        patch.object(voice_owner.messaging_repo, "list_messages_before", AsyncMock(return_value=[qrow])),
+        patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
+        patch.object(voice_owner.messaging, "create_human_message", AsyncMock()) as ch,
+    ):
+        assert await voice_owner.turn(ROOM, body) == {"answered": "q-2"}
+    ch.assert_not_awaited()
+    assert sa.await_args.args[:4] == ("org_1", "k1", "q-2", "user_maya") and sa.await_args.args[4].text == "Nail gels."

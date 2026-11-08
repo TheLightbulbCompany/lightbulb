@@ -573,3 +573,38 @@ async def test_a_failed_notes_run_of_an_advanced_series_still_mails_the_unsaid_a
     env.meta["meeting"] = {"title": "Next week", "startAt": 1791577200, "status": "scheduled"}  # advance()
     await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "error"})
     assert env.send.await_args.kwargs["body_text"].endswith(_SAID)
+
+
+async def test_the_notes_request_asks_for_action_items_not_paperclip_tasks(env):
+    """8 Nov prod Meet: the request asked for "Paperclip tasks"; the writer refused ("Nova is not on the current
+    Lightbulb team roster") and no action item became a thread."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    text = env.line.await_args.args[3]
+    assert "Paperclip" not in text and "Action items:" in text and "do not create" in text
+
+
+async def test_each_action_item_becomes_a_thread_through_the_meeting_rooms_router(env, monkeypatch):
+    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
+    env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
+    made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
+    monkeypatch.setattr(mod.messaging, "create_human_message", made)
+    notes = ("Decisions: ship Friday.\n\nAction items:\n- Pat: send the holiday post\n* Ada: order nail gels\n\n"
+             "Thanks all.")  # fmt: skip
+    await ended_and_noted(env, notes)
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    auth, room, req = made.await_args.args
+    assert (auth.user_id, auth.org_id, room) == ("user_1", "org_1", ROOM)  # the meeting's room, the inviter
+    assert req.text == ("Action items from the meeting Weekly sync, one thread each:\n- Pat: send the holiday post\n"
+                        "- Ada: order nail gels")  # fmt: skip
+    assert made.await_args.kwargs == {"via": "voice"}
+    ids = {c.args[2].client_message_id for c in made.await_args_list}
+    assert len(ids) == 1  # the reply and the run's end: one message
+
+
+async def test_notes_with_no_action_items_file_nothing(env, monkeypatch):
+    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
+    made = AsyncMock()
+    monkeypatch.setattr(mod.messaging, "create_human_message", made)
+    await ended_and_noted(env, "Decisions: none. Action items: none.")
+    made.assert_not_awaited()

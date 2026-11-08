@@ -203,3 +203,65 @@ async def test_start_gives_the_first_cursor(m):
 def test_the_meeting_has_no_tool_routes():
     paths = {r.path.rsplit("/", 1)[-1] for r in voice_meet.router.routes}
     assert paths == {"start", "ask", "events", "end"}
+
+
+QROW = {"messageId": "q1", "messageSeq": 8, "author": {"kind": "agent"}, "kind": "question",
+        "text": "**Pulse** asks: What holiday hours should the post announce?", "threadRootMessageId": "t",
+        "taskRefs": [{"taskId": "k1", "role": "started", "qid": "q-17b4"}]}  # fmt: skip
+
+
+async def test_a_worker_question_in_a_thread_is_said_with_its_ref():
+    """8 Nov prod Meet: Pulse's question (msg 8) went to the meeting room's thread and was never said."""
+    rows = [QROW, {"messageId": "a3", "messageSeq": 9, "author": {"kind": "agent"}, "text": "x",
+                   "threadRootMessageId": "t"}]  # fmt: skip
+    with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
+        out = await voice_meet.agent_lines(ROOM, 4)
+    assert out["messages"] == [{"id": "q1", "seq": 8, "text": QROW["text"],
+                                "question": {"taskId": "k1", "qid": "q-17b4"}}]  # fmt: skip
+
+
+def _ask(**over):
+    return voice_meet.AskIn(ownerId="org_1", roomToken="t", text="We close at 2 on Christmas Eve.", participantId="12",
+                            answers={"taskId": "k1", "qid": "q-17b4"}, **over)  # fmt: skip
+
+
+async def test_the_line_after_a_said_question_answers_it_like_a_typed_answer(m):
+    """The spoken hours left LB-10 waiting (a message never answers a Question): now they answer it through the
+    card's own path, as the inviting member, and no message wakes the Router to claim progress."""
+    from routers import questions as question_routes
+
+    with (
+        patch.object(voice_meet.messaging_repo, "list_messages_before", AsyncMock(return_value=[QROW])),
+        patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
+        patch.object(voice_meet.messaging, "create_human_message", AsyncMock()) as ch,
+    ):
+        assert await voice_meet.ask(ROOM, _ask()) == {"posted": False, "answered": "q-17b4"}
+    ch.assert_not_awaited()
+    ws, task_id, qid, me, body = sa.await_args.args
+    assert (ws, task_id, qid, me, body.option_id) == ("org_1", "k1", "q-17b4", "user_maya", "answer")
+    assert body.text == "Sam said in the meeting: We close at 2 on Christmas Eve."
+
+
+async def test_a_refused_or_foreign_question_falls_back_to_a_message(m):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from routers import questions as question_routes
+
+    posted = AsyncMock(return_value=SimpleNamespace(message_id="m9"))
+    refused = AsyncMock(side_effect=HTTPException(status_code=403, detail={"code": "not_answerer"}))
+    with (
+        patch.object(voice_meet.messaging_repo, "list_messages_before", AsyncMock(return_value=[QROW])),
+        patch.object(question_routes, "submit_answer", refused),
+        patch.object(voice_meet.messaging, "create_human_message", posted),
+    ):
+        assert (await voice_meet.ask(ROOM, _ask()))["posted"] is True
+    other = {**QROW, "taskRefs": [{"taskId": "k2", "qid": "q-other"}]}
+    with (
+        patch.object(voice_meet.messaging_repo, "list_messages_before", AsyncMock(return_value=[other])),
+        patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
+        patch.object(voice_meet.messaging, "create_human_message", posted),
+    ):
+        assert (await voice_meet.ask(ROOM, _ask()))["posted"] is True  # not a question said in this room
+    sa.assert_not_awaited()

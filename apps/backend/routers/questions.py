@@ -193,8 +193,12 @@ def _not_open(q: dict) -> HTTPException:
 
 @router.post("/tasks/{task_id}/questions/{qid}/answer")
 async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthContext, Depends(person_only)]):
-    ws = await _workspace(auth)
-    me = auth.user_id
+    return await submit_answer(await _workspace(auth), task_id, qid, auth.user_id, body)
+
+
+async def submit_answer(ws: str, task_id: str, qid: str, me: str, body: AnswerBody) -> dict[str, Any]:
+    """`me` answers Question `qid`: the card's press, and a line said to the voice right after it said the question
+    (routers/voice_meet.answer_said_question). Raises the route's HTTPExceptions."""
     task = await tasks_repo.get_task(ws, task_id)
     if task is None or not await tasks_access.can_view(task, me):
         raise _not_found()

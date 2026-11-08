@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+import uuid
 
+from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -178,8 +181,10 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 owner_id,
                 target,
                 f"meeting:{room_id}:{occurrence}:notes",
-                f"Write the meeting notes for {title}: decisions, open questions, action items as Paperclip "
-                "tasks for their owners, two paragraphs max; the transcript is attached" + _unsaid_text(meeting),
+                f"Write the meeting notes for {title}: decisions, open questions, two paragraphs max, then a last "
+                'section headed "Action items:" with one line per item ("- <owner>: <what>"); do not create tasks '
+                "yourself, each action item becomes a thread for the team; the transcript is attached"
+                + _unsaid_text(meeting),
                 dispatch_targets=[{"agentId": writer, "eventKind": "user_request"}],
             )
             if message:
@@ -375,6 +380,53 @@ async def _posted_notes(request: dict, trigger: str) -> str | None:
     return next((t for t in reversed(replies) if t.strip()), None)
 
 
+_ACTIONS_HEAD = re.compile(r"^\W*action items\W*$", re.I)
+_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+(.+)$")
+
+
+def action_items(notes: str) -> list[str]:
+    """The bullets under the notes' "Action items:" heading (the notes request asks for that section)."""
+    items: list[str] = []
+    lines = iter(notes.splitlines())
+    for line in lines:
+        if _ACTIONS_HEAD.match(line.strip()):
+            for item in lines:
+                if not (m := _BULLET.match(item)):
+                    if items or item.strip():
+                        break
+                    continue
+                items.append(" ".join(m.group(1).replace("**", "").split()))
+            break
+    return [i for i in items if i]
+
+
+async def _file_action_items(owner_id: str, message_id: str, request: dict, notes: str) -> None:
+    """Action items -> threads (super-agent plan: "meeting action items → Requests, not Paperclip"): one message in
+    the meeting's own room as the inviting member, which its Router starts a thread for each, like an addressed line
+    in the call (voice_meet.ask). Keyed on the notes request, so the reply and the run's end post it once."""
+    from routers.voice_meet import inviting_member
+
+    items = action_items(notes)
+    room_id = request["roomId"]
+    meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+    member = inviting_member(meeting, await messaging_repo.list_members(room_id)) if items else None
+    if member is None:
+        return
+    title = (request.get("meeting") or {}).get("title") or meeting.get("title") or "Meeting"
+    await messaging.create_human_message(
+        AuthContext(user_id=member, org_id=owner_id),
+        room_id,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"meeting-actions:{owner_id}:{message_id}"),
+            text=f"Action items from the meeting {' '.join(title.split())}, one thread each:\n"
+            + "\n".join(f"- {i}" for i in items)[:3800],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+        via="voice",
+    )
+
+
 async def _mail_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
     room_id, occurrence = request["roomId"], request.get("occurrence")
     meeting = request.get("meeting") or {}
@@ -391,3 +443,9 @@ async def _mail_notes(owner_id: str, message_id: str, request: dict, notes: str 
         await meeting_invites._patch_meeting(
             room_id, {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
         )
+    if notes:
+        try:
+            await _file_action_items(owner_id, message_id, request, notes)
+        except Exception:  # noqa: BLE001 -- the notes and their mail stand; the items are in the notes
+            put_metric("meeting.notes.actions_failed")
+            logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)

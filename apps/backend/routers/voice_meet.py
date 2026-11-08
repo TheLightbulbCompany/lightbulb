@@ -4,7 +4,7 @@ secret and the room token: `/ask` posts a line addressed to the assistant as a m
 Router room, admission), and `/events` hands back the agent messages that room gets, which the voice says.
 
 The meeting's record lives on the room META's ``meeting`` map, where the owner's timeline reads it:
-``asked`` [{t, who, q, a}], ``followUps`` [{text, status, taskId}], ``summary``.
+``asked`` [{t, who, q, a}], ``followUps`` [{text, status, taskId}], ``summary``, ``linksSaid`` [taskId].
 
 Who may act: everyone in the meeting, with the powers of the inviting member (the organizer who sent the invite;
 the host member when there is none); the line is theirs, naming who said it. A task started from a meeting carries
@@ -247,3 +247,39 @@ async def task_moved(task: dict, to: str) -> None:
             await _tile_phase(parts[1], "drafting" if status == "working" else "")
     except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
         logger.warning("meet follow-up not updated task=%s to=%s", task.get("taskId"), to, exc_info=True)
+
+
+def task_link(task_id: str) -> str:
+    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task&taskId={task_id}"
+
+
+async def with_link(room_id: str, task: dict, line: str) -> str:
+    """A finished thread that made something (an output: a document, a page) and came from a meeting's room: its
+    result line in that room carries the link, and the line goes to the Meet's chat while the bot is in the call, once
+    a task (8 Nov prod Meet re-run: "put the link in chat" was never delivered: the result line had only a task card,
+    and `task_moved` says a link only for `followUps`, which nothing writes since the one-Router design). Any other
+    room, or a thread with no output (an answer): the line as it is."""
+    if not task.get("outputs"):
+        return line
+    tid, linked = task["taskId"], f"{line} {task_link(task['taskId'])}"
+    try:
+        meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting")
+    except Exception:  # noqa: BLE001 -- the line must still post
+        logger.warning("meet room %s: room not read for the result link task=%s", room_id, tid, exc_info=True)
+        return line
+    if not meeting:
+        return line
+    try:
+        fresh = await meeting_invites._patch_meeting(
+            room_id,
+            lambda m: {"linksSaid": [*(m.get("linksSaid") or []), tid]},
+            when=lambda m: (
+                m.get("status") == "in_call" and m.get("recallBotId") and tid not in (m.get("linksSaid") or [])
+            ),
+        )  # None: not in the call, or already said (a retried Activity)
+        if fresh is not None:
+            await meeting_bots.say(fresh["recallBotId"], linked)
+            await _tile_phase(room_id, "page_ready")
+    except Exception:  # noqa: BLE001 -- a lost read, CAS race or RecallError: the room line still posts
+        logger.warning("meet room %s: result link not said task=%s", room_id, tid, exc_info=True)
+    return linked

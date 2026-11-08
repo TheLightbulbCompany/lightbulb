@@ -5,26 +5,26 @@ call (PHONE_ENGINE=gemini: Gemini Live, the flag-only fallback).
 
 Dispatched by a LiveKit SIP dispatch rule: in prod to the one deployed agent, `lightbulb-huddle` (agent.py
 routes `phone-` rooms here); on a dev Mac to its own name (`lightbulb-phone-dev`). It opens with the
-disclosure (its name, an AI assistant, recorded). The talker's one tool, `delegate`, posts each caller request, with
-the call's turns since the last delegation, to the call's room as the caller's line (`/turn`): the Router decides it
-with the caller's scope and the Business profile, and its Front desk threads book, move, cancel and take messages
-as the caller. The Router's and the Front desk's messages come back through `/events` and are said once, adding
-nothing (mouth.py). A wait gets a holding line at once, another at HOLD_S, an offer to take a message at OFFER_S.
-The talker still owns the call itself: a hand-off to a person (`delegate(kind="person")`) and a message it took
-(`kind="message"`) go to the existing /transfer and /message routes (apps/backend/routers/voice_phone.py), which
-also keep the call record.
+disclosure (its name, an AI assistant, recorded). The talker has no tools and never replies on its own: code decides
+every caller line (`Receptionist.line`). Small talk gets a short reply; a request for a person goes to the existing
+/transfer route; a message (asked for, offered, or the only thing a paused line takes) goes to /message; every other
+line is posted to the call's room as the caller's line (`/turn`) with the holding line said: the Router decides it
+with the caller's scope and the Business profile, and its Front desk threads book, move and cancel as the caller.
+The Router's and the Front desk's messages come back through `/events` and are said once, faithfully, adding nothing
+(mouth.py). A wait gets another holding line at HOLD_S and an offer to take a message at OFFER_S. /transfer and
+/message (apps/backend/routers/voice_phone.py) also keep the call record.
 Run: `AGENT_MODULE=huddle_agent.phone uv run python -m huddle_agent.phone dev`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import time
-from typing import Literal
 
 import httpx
 from livekit import api
@@ -33,7 +33,6 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     cli,
-    function_tool,
     room_io,
 )
 from livekit.plugins import google, noise_cancellation, openai
@@ -42,7 +41,7 @@ from openai.types.beta.realtime.session import TurnDetection
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import BackendError
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import Mouth, Talker, small_talk
+from huddle_agent.mouth import Mouth, Talker, fixed
 
 logger = logging.getLogger("phone")
 # One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
@@ -79,7 +78,8 @@ OFFER_MESSAGE = (
 )
 
 # Server-side turns on silence (developers.openai.com/api/docs/guides/realtime-vad): talking over the voice stops it.
-SERVER_TURNS = TurnDetection(type="server_vad", silence_duration_ms=500, create_response=True, interrupt_response=True)
+# create_response off: code answers each line (Receptionist.line), never the model on its own.
+SERVER_TURNS = TurnDetection(type="server_vad", silence_duration_ms=500, create_response=False, interrupt_response=True)
 
 # The opening is the model's own words (founder, 8 Nov): it must name the assistant, say it is an AI assistant and
 # that the call is recorded. The owner's greeting is its style, not a script. DisclosureGuard checks the result.
@@ -93,16 +93,14 @@ script: "{greeting}" Greet once and never again; after it, answer what the calle
 disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller.
 Never say your reasoning, plans or notes out loud ("Okay, let me think...", "Game plan:"): every word you speak is
 for the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk.
-{caller}You own only the conversation; the front desk team behind you owns every fact, booking and decision.
-- Greetings, thanks, "are you there?", "can you hear me?": answer yourself, in a few words.
-- Everything else -- a question about the business, its hours, prices or services, a booking, a change or cancel,
-  a yes or a no -- call delegate with what the caller said, in their own words; a short holding line is said for
-  you. Never answer it yourself, never guess a price, time, opening or policy, never say anything is booked, moved
-  or done.
-- The caller asks for a person: call delegate with kind "person".
-- The caller wants to leave a message: once you have it (and their name), call delegate with kind "message" and
-  the message as request.
-- When a message from the team arrives, say it as you are told, adding nothing.
+{caller}The front desk team behind you answers every question, booking and change; each caller line goes to them
+before you hear it, and a holding line is said for you.
+- Greetings, thanks, "are you there?", "can you hear me?": answer in a few words.
+- When a message from the team arrives, say what it says, faithfully and briefly. When it says the team is booking,
+  moving or cancelling something, or that it is done, say so plainly ("I'm moving it to Sunday now.", "You're booked
+  for 3 pm Saturday."). Never turn it into a refusal, never tell the caller to contact anyone else (they are talking
+  to the front desk), and never say an outcome the message does not say.
+- Otherwise say only what you are told to say.
 {can}Never share anything about other customers."""
 
 #: The model's planning said aloud (8 Nov prod calls): an opening that starts like this is cut, and the guard says
@@ -112,13 +110,22 @@ NARRATION = re.compile(
     r"|the (user|caller) (is|wants|said|asked))\b",
     re.IGNORECASE,
 )
-AFTER_OPENING_S = 1.0  # after the opening: a reply already taking the caller's line has started by then
 
-DELEGATE_DOC = """Hand the caller's request to the front desk team, who answer it on this call: every question, booking,
-change, cancel, yes or no. `request` is what they said, in their own words. It returns at once and a short holding
-line is said for you: say nothing more; never answer it yourself, the answer arrives later.
-kind "person": the caller asked for a person; they are transferred when someone is available.
-kind "message": the caller's message for the team (request is the message; name if they gave it)."""
+#: A caller asking for a person: the existing /transfer route, decided in code.
+PERSON = re.compile(
+    r"\b(speak|talk|put me through|transfer|connect)\b.*\b(person|human|someone|somebody|anyone|manager|owner|staff)\b"
+    r"|\b(real person|human being|transfer me)\b",
+    re.IGNORECASE,
+)
+#: A caller leaving a message: the existing /message route.
+MESSAGE = re.compile(r"\b(leave|take|pass on|give them) (a |the |my )?message\b", re.IGNORECASE)
+MESSAGE_WORDS = 10  # a message line this long carries the message itself; a shorter one only asks to leave one
+YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay|please)\b", re.IGNORECASE)
+CONNECTING = "One moment, I'll connect you."
+NOBODY = "Nobody can take the call right now. I can take a message for the team."
+ASK_MESSAGE = "Sure. What's the message, and your name?"
+TAKEN = "Thanks, I've passed your message on to the team."
+PAUSED = "Thanks. I can only take messages right now, so I've passed that on to the team."
 
 
 def e164(number: str) -> str:
@@ -369,8 +376,8 @@ class Ending:
 
 
 class Receptionist(Talker):
-    """The talker: no tool but `delegate`. Talker (mouth.py) holds its rules in code: an undelegated answer is cut
-    and delegated, a result that adds a number or name is said again word for word."""
+    """The talker: no tools. `line` decides each caller line in code (mouth.Talker.line, plus the phone's own
+    hand-off and message routes); Talker._cut holds what it says to the team's messages."""
 
     where = "phone"
 
@@ -380,8 +387,8 @@ class Receptionist(Talker):
             "greeting": info["greeting"],
             "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
             "can": (
-                'This line is not taking bookings or questions right now: you can only take a message (delegate with '
-                'kind "message"), and the owner will call back.\n'
+                "This line is not taking bookings or questions right now: it only takes messages, and the owner will "
+                "call back.\n"
                 if info.get("mode") == "message_only" else ""
             ),
         }))  # fmt: skip
@@ -389,8 +396,11 @@ class Receptionist(Talker):
         self.allow = tuple(n for n in (info["assistantName"], info["businessName"], info.get("callerName")) if n)
         self.turns, self.hold = Turns(backend), hold
         self.did: list[str] = []  # what the call did itself, the record's summary (the Front desk adds its steps)
-        # the opening's speech id; whether the caller talked while it was firm
-        self.assistant, self.opening, self.spoke_over = info["assistantName"], "", False
+        self.assistant, self.opening = info["assistantName"], ""  # the opening's speech id
+        self.caller_name = info.get("callerName") or ""
+        # the next line is the caller's message: they asked to leave one, or said yes to an offer (`offered`)
+        self.taking, self.offered = False, False
+        self._tasks: set[asyncio.Task] = set()
 
     async def transcription_node(self, text, model_settings):
         """The opening as it is spoken: firm until its disclosure has played, then interruptible (cut now if the
@@ -421,64 +431,74 @@ class Receptionist(Talker):
             return True
         return False
 
-    def caller_speaking(self) -> None:
-        """The caller started talking. A line said over the firm disclosure may get no reply (8 Nov prod); it is taken
-        after the opening (`after_opening`)."""
+    def line(self, who: str, text: str, user_input: str | None = None) -> str:
+        """A caller's final line, decided in code: "chat", "person", "message", "ask_message" or "asked". A line
+        said over the opening is decided the same way and answered once the opening has played (speech queue)."""
+        if not (text := " ".join(text.split())):
+            return ""
+        offered, self.offered = self.offered, False
+        if self.taking or (not self._live and not self.chat(text)):
+            self.context.add(who, text)
+            self.taking = False
+            self._spawn(self._message(text, TAKEN if self._live else PAUSED))
+            return "message"
+        if offered and YES.match(text) and len(text.split()) < MESSAGE_WORDS:
+            self.context.add(who, text)
+            self.taking = True
+            self.say_fixed(fixed(ASK_MESSAGE))
+            return "ask_message"
+        if PERSON.search(text) and self._live:
+            self.context.add(who, text)
+            self._spawn(self._hand_off())
+            return "person"
+        if MESSAGE.search(text):
+            self.context.add(who, text)
+            if len(text.split()) >= MESSAGE_WORDS:
+                self._spawn(self._message(text, TAKEN))
+                return "message"
+            self.taking = True
+            self.say_fixed(fixed(ASK_MESSAGE))
+            return "ask_message"
         speech = self._speech()
-        if speech is not None and speech.id == self.opening and not speech.allow_interruptions:
-            self.spoke_over = True
+        if speech is not None and speech.id == self.opening and self.chat(text):
+            self.context.add(who, text)
+            return ""  # a "hi" over the opening: the opening answers it
+        return super().line(who, text, user_input)
 
-    def after_opening(self) -> None:
-        """The caller spoke over the disclosure and nothing has taken their line: delegate it now, with a holding
-        line (`_hold`; `held` keeps a late delegate call from posting it twice). A greeting needs nothing."""
-        if not self.spoke_over:
-            return
-        self.spoke_over = False
-        if self.asked or self.held or self.session.agent_state in ("speaking", "thinking"):
-            return  # a reply already has it
-        if self.session.user_state == "speaking" or (self.line and small_talk(self.line, self.allow)):
-            return  # still talking: their turn is answered when it ends; a "hi" was answered by the opening
-        self._hold()
+    def _spawn(self, coro) -> None:
+        t = asyncio.create_task(coro)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
 
-    @function_tool(description=DELEGATE_DOC)
-    async def delegate(
-        self, request: str, kind: Literal["ask", "person", "message"] = "ask", name: str = ""
-    ) -> dict:
-        if kind != "ask":
-            self.asked = True  # the talker's reply to a hand-off or a message is not an undelegated answer
-            if kind == "person":
-                return await self._hand_off()
-            self.did.append(f"Message: {request[:120]}")  # the existing take-message path: always open
-            return await self._b.post("message", {"text": request, "name": name, "callbackNumber": ""})
-        if not self._live:
-            self.asked = True
-            return {"error": "not_allowed", "say": "offer to take a message"}
-        return self.tool_delegate(request)
+    async def _message(self, text: str, then: str) -> None:
+        """The existing take-message path (always open, paused or not), then its fixed confirmation."""
+        self.did.append(f"Message: {text[:120]}")
+        out = await self._b.post("message", {"text": text, "name": self.caller_name, "callbackNumber": ""})
+        if out.get("error"):
+            logger.warning("phone %s: message not taken (%s)", self._b.call_id, out["error"])
+        self.say_fixed(fixed(then))
 
     def post(self, request: str) -> None:
         """Talker's send: a task of its own, so an interruption cancels the talker's reply, never the post."""
-        if not self._live:
-            return  # a paused line only takes messages
         self.turns.add(self.context.take(request))
         if self.hold:
             self.hold.start()
 
-    async def _hand_off(self) -> dict:
-        """Hand the caller to a person at the business. If none is available, offer to take a message."""
+    async def _hand_off(self) -> None:
+        """Hand the caller to a person at the business; if none is available, offer to take a message."""
         out = await self._b.post("transfer")
-        if not out.get("transferTo"):
-            return {
-                "transferred": False,
-                "reason": "nobody is available to take calls right now",
-            }
-        try:
-            await self._transfer(out["transferTo"])
-        except Exception:  # noqa: BLE001 -- a SIP refusal: the record says the hand-off was missed
-            logger.warning("phone %s: transfer failed", self._b.call_id, exc_info=True)
-            await self._b.post("transfer", {"failed": True})
-            return {"transferred": False, "reason": "the transfer didn't go through"}
-        self.did.append("Transferred to a person")
-        return {"transferred": True}
+        if out.get("transferTo"):
+            with contextlib.suppress(Exception):  # the connecting line is a courtesy: never hold the transfer
+                await asyncio.wait_for(self.say_fixed(fixed(CONNECTING)), 6)
+            try:
+                await self._transfer(out["transferTo"])
+                self.did.append("Transferred to a person")
+                return
+            except Exception:  # noqa: BLE001 -- a SIP refusal: the record says the hand-off was missed
+                logger.warning("phone %s: transfer failed", self._b.call_id, exc_info=True)
+                await self._b.post("transfer", {"failed": True})
+        self.offered = True
+        self.say_fixed(fixed(NOBODY))
 
 
 # Standalone (`python -m huddle_agent.phone dev`, a dev line): its own dispatch name; this kwarg wins over
@@ -545,10 +565,9 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(
         user_away_timeout=AWAY_S,
         **(
-            # vad=None (as owner.py): user_state comes from the realtime model's own speech_started/stopped, so
-            # speaking -> listening is the end of the turn it answers, before its transcript (Talker.turn_ended
-            # depends on that order). server_vad, not semantic_vad: the plugin's semantic_vad took 5-7 s to answer
-            # (book eval, 7 Nov). Gemini keeps its own turn-taking.
+            # vad=None (as owner.py): user_state comes from the realtime model's own speech_started/stopped.
+            # server_vad, not semantic_vad: the plugin's semantic_vad took 5-7 s to answer (book eval, 7 Nov).
+            # Gemini keeps its own turn-taking (and replies on its own: the flag-only fallback is not code-driven).
             dict(llm=openai.realtime.RealtimeModel(model=MODEL, voice=VOICE, turn_detection=SERVER_TURNS), vad=None)
             if OPENAI
             else dict(llm=google.realtime.RealtimeModel(model=MODEL, voice=VOICE, api_version="v1beta"))
@@ -579,7 +598,7 @@ async def entrypoint(ctx: JobContext) -> None:
             )
             guard.seen(items)
             if ev.item.role == "user":
-                agent.heard("Caller", text)
+                agent.line("Caller", text)  # code decides: small talk, a person, a message, else the Router
             elif ev.item.role == "assistant" and not ev.item.interrupted:
                 agent.context.add(info["assistantName"], text)
 
@@ -646,8 +665,6 @@ async def entrypoint(ctx: JobContext) -> None:
         elif ev.new_state != "away" and silent:
             silent.pop().cancel()
 
-    session.on("user_state_changed", lambda ev: ev.old_state == "speaking" and agent.turn_ended())
-    session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and agent.caller_speaking())
 
     limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up, agent.unchecked))
 
@@ -657,6 +674,7 @@ async def entrypoint(ctx: JobContext) -> None:
     def hold_line(text: str) -> None:
         if session.user_state != "speaking":  # the caller talking over the wait is answered, not held
             agent.unchecked(line(session, text))  # a holding line, never an answer
+            agent.offered = agent.offered or text == OFFER_MESSAGE  # a "yes" next is a message to take
 
     hold_lines.append(hold_line)
 
@@ -730,7 +748,6 @@ async def entrypoint(ctx: JobContext) -> None:
     opening = greet(session)  # the opening: DisclosureGuard judges it
     agent.unchecked(opening)
     agent.opening = opening.id
-    opening.add_done_callback(lambda _: asyncio.get_running_loop().call_later(AFTER_OPENING_S, agent.after_opening))
 
 
 if __name__ == "__main__":

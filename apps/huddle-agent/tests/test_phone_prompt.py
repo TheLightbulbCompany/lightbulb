@@ -84,7 +84,7 @@ async def _speak(r, *deltas):
     return "".join([d async for d in r.transcription_node(stream(), None)])
 
 
-def _receptionist(monkeypatch, speech, user_state="listening", agent_state="listening"):
+def _receptionist(monkeypatch, speech, user_state="listening", agent_state="listening", mode="live", transfer=None):
     replies = []
 
     class Session:
@@ -98,7 +98,7 @@ def _receptionist(monkeypatch, speech, user_state="listening", agent_state="list
     s.user_state, s.agent_state = user_state, agent_state
     monkeypatch.setattr(phone.Receptionist, "session", property(lambda _self: s))
     b = FakeBackend()
-    r = phone.Receptionist(b, {**INFO, "mode": "live"}, None)
+    r = phone.Receptionist(b, {**INFO, "mode": mode}, transfer)
     r.opening = speech.id
     return r, s, b, replies
 
@@ -120,39 +120,24 @@ async def test_only_the_disclosure_is_firm_then_a_caller_talking_over_it_wins(mo
     assert speech.interrupted == 1  # narration: cut, and the guard says the disclosure sentence
 
 
-async def test_a_line_said_over_the_firm_opening_is_delegated_after_it(monkeypatch):
-    """8 Nov prod: LiveKit skipped the reply to every line said over the uninterruptible opening."""
+async def test_a_line_said_over_the_firm_opening_is_delegated_in_code(monkeypatch):
+    """8 Nov prod: LiveKit skipped the reply to every line said over the uninterruptible opening. Now code decides the
+    line the moment its transcript lands; the holding line queues behind the opening. A "hi" over it gets nothing."""
     speech = _Speech(allow=False)
     r, _s, b, replies = _receptionist(monkeypatch, speech)
-    r.caller_speaking()  # while the disclosure plays
-    r.turn_ended()
-    r.heard("Caller", "Can I book Saturday afternoon?")
-    r.after_opening()
+    assert r.line("Caller", "Can I book Saturday afternoon?") == "asked"
     await r.turns.flush()
     assert [(p, body["text"].split("\n\n")[0]) for p, body in b.calls] == [("turn", "Can I book Saturday afternoon?")]
     assert replies == [{"instructions": mouth.HOLD, "tool_choice": "none"}]
-    assert r.held and r.tool_delegate("Can I book Saturday afternoon?").output == {"sent": True}
-    await r.turns.flush()
-    assert len(b.calls) == 1  # the model's own delegate call for the same line posts nothing more
-    r.after_opening()
-    assert len(b.calls) == 1  # once
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech(allow=False))
+    assert r.line("Caller", "Hi") == "" and b.calls == [] and replies == []
 
-    for state, line, why in (("speaking", "Can I book?", "a reply has it"), ("listening", "Hi", "a greeting")):
-        speech = _Speech(allow=False)
-        r, _s, b, replies = _receptionist(monkeypatch, speech, agent_state=state)
-        r.caller_speaking()
-        r.turn_ended()
-        r.heard("Caller", line)
-        r.after_opening()
-        await r.turns.flush()
-        assert b.calls == [] and replies == [], why
-    speech = _Speech(allow=True)  # the disclosure had played: LiveKit answers the line itself
-    r, _s, b, replies = _receptionist(monkeypatch, speech)
-    r.caller_speaking()
-    r.heard("Caller", "Can I book?")
-    r.after_opening()
+
+async def _settle(r):
+    import asyncio
+
+    await asyncio.gather(*r._tasks)
     await r.turns.flush()
-    assert b.calls == []
 
 
 async def test_the_call_ends_once_at_hang_up_billed_from_answer():
@@ -354,17 +339,22 @@ def test_message_only_mode_says_to_take_a_message():
         return " ".join(r.instructions.split())
 
     text = prompt(mode="message_only", can={"book": False, "move": False})
-    assert "can only take a message" in text and "owner will call back" in text
-    assert "can only take a message" not in prompt(mode="live")
+    assert "it only takes messages" in text and "owner will call back" in text
+    assert "only takes messages" not in prompt(mode="live")
 
 
-def test_the_talkers_only_tool_is_delegate_and_it_answers_nothing_itself():
+def test_the_talker_has_no_tools_and_says_the_teams_messages_faithfully():
+    """8 Nov prod phone re-run: "the front desk team owns every booking... never say anything is booked or moved" made
+    the talker say "Customer Operations will move your booking" as "please contact our front desk"."""
     r = phone.Receptionist(None, INFO, None)
-    assert [t.info.name for t in r.tools] == ["delegate"]
+    assert r.tools == []
     text = " ".join(r.instructions.split())
-    assert "Never answer it yourself, never guess a price, time, opening or policy" in text
-    assert "say it as you are told, adding nothing" in text
+    assert "never say anything is booked, moved or done" not in text and "delegate" not in text
+    assert "Never turn it into a refusal, never tell the caller to contact anyone else" in text
+    assert '("I\'m moving it to Sunday now.", "You\'re booked for 3 pm Saturday.")' in text
+    assert "never say an outcome the message does not say" in text
     assert "What you may tell callers" not in text  # no facts of its own: the Router and Front desk own them
+    assert phone.SERVER_TURNS.create_response is False  # code answers every line, never the model on its own
 
 
 class FakeBackend:
@@ -383,8 +373,8 @@ async def test_delegate_posts_the_callers_line_with_the_talk_since_the_last_ask(
     r = phone.Receptionist(b, {**INFO, "mode": "live"}, None)
     r.context.add("Caller", "Hi, it's Priya.")
     r.context.add("Lightbulb", "Hi Priya!")
-    assert (await r.delegate("Can I book a gel manicure Saturday at 2?")).output == {"sent": True}
-    await r.delegate("And how much is it?")
+    r.delegate("Can I book a gel manicure Saturday at 2?")
+    r.delegate("And how much is it?")
     await r.turns.flush()
     assert [p for p, _ in b.calls] == ["turn", "turn"]
     first, second = (body for _, body in b.calls)
@@ -393,37 +383,69 @@ async def test_delegate_posts_the_callers_line_with_the_talk_since_the_last_ask(
     assert second == {"n": 1, "text": "And how much is it?"}  # the context went with the first ask only
 
 
-async def test_a_paused_line_delegates_no_question_and_a_message_is_always_taken():
-    b = FakeBackend({"message": {"taken": True}})
-    r = phone.Receptionist(b, {**INFO, "mode": "message_only"}, None)
-    assert (await r.delegate("Are you open Sunday?"))["error"] == "not_allowed"
-    assert await r.delegate("Please call me back about a bridal party", kind="message", name="Priya") == {"taken": True}
-    assert b.calls == [("message", {"text": "Please call me back about a bridal party", "name": "Priya",
+async def test_a_paused_line_takes_every_line_as_a_message(monkeypatch):
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"), mode="message_only")
+    b.answers = {"message": {"taken": True}}
+    assert r.line("Caller", "Are you open Sunday? Call me back please, it's Priya.") == "message"
+    await _settle(r)
+    assert b.calls == [("message", {"text": "Are you open Sunday? Call me back please, it's Priya.", "name": "",
                                     "callbackNumber": ""})]  # fmt: skip
-    assert r.did == ["Message: Please call me back about a bridal party"]
+    assert r.did == ["Message: Are you open Sunday? Call me back please, it's Priya."]
+    assert replies == [{"instructions": mouth.fixed(phone.PAUSED), "tool_choice": "none"}]
 
 
-async def test_a_person_is_the_existing_transfer():
+async def test_a_message_asked_for_is_taken_on_the_next_line(monkeypatch):
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"))
+    assert r.line("Caller", "Can I leave a message?") == "ask_message"
+    assert replies[-1]["instructions"] == mouth.fixed(phone.ASK_MESSAGE)
+    assert r.line("Caller", "Tell Maya I'll be ten minutes late. It's Priya.") == "message"
+    await _settle(r)
+    assert [(p, body["text"]) for p, body in b.calls] == [("message", "Tell Maya I'll be ten minutes late. It's Priya.")]
+    assert replies[-1]["instructions"] == mouth.fixed(phone.TAKEN)
+    r, _s, b, _ = _receptionist(monkeypatch, _Speech("sp_x"))  # the message in the same line: taken at once
+    assert r.line("Caller", "Can I leave a message for Maya that I'll be ten minutes late?") == "message"
+    await _settle(r)
+    assert [p for p, _ in b.calls] == ["message"]
+
+
+async def test_a_yes_to_the_message_offer_takes_a_message(monkeypatch):
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"))
+    r.offered = True  # the hold's OFFER_MESSAGE, or a failed hand-off, was said
+    assert r.line("Caller", "Yes please.") == "ask_message"
+    assert r.line("Caller", "Ask her to call me about the bridal party.") == "message"
+    await _settle(r)
+    assert [p for p, _ in b.calls] == ["message"]
+    r, _s, b, _ = _receptionist(monkeypatch, _Speech("sp_x"))
+    assert r.line("Caller", "Yes please.") == "asked"  # no offer: a yes answers the team (the Router)
+
+
+async def test_a_person_is_the_existing_transfer(monkeypatch):
     sip = []
 
     async def transfer(to):
         sip.append(to)
 
-    b = FakeBackend({"transfer": {"transferTo": "+14155550199"}})
-    r = phone.Receptionist(b, INFO, transfer)
-    assert await r.delegate("Can I talk to someone?", kind="person") == {"transferred": True}
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"), transfer=transfer)
+    b.answers = {"transfer": {"transferTo": "+14155550199"}}
+    assert r.line("Caller", "Can I talk to someone?") == "person"
+    await _settle(r)
     assert b.calls == [("transfer", {})] and sip == ["+14155550199"] and r.did == ["Transferred to a person"]
+    assert replies[0]["instructions"] == mouth.fixed(phone.CONNECTING)
 
     async def refused(_to):
         raise RuntimeError("SIP 486")
 
-    b = FakeBackend({"transfer": {"transferTo": "+14155550199"}})
-    out = await phone.Receptionist(b, INFO, refused).delegate("a person please", kind="person")
-    assert out == {"transferred": False, "reason": "the transfer didn't go through"}
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"), transfer=refused)
+    b.answers = {"transfer": {"transferTo": "+14155550199"}}
+    r.line("Caller", "I want to speak to a real person.")
+    await _settle(r)
     assert b.calls == [("transfer", {}), ("transfer", {"failed": True})]
-    b = FakeBackend({"transfer": {"transferTo": None}})
-    out = await phone.Receptionist(b, INFO, transfer).delegate("a person", kind="person")
-    assert out["transferred"] is False and b.calls == [("transfer", {})]
+    assert replies[-1]["instructions"] == mouth.fixed(phone.NOBODY) and r.offered
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"), transfer=transfer)
+    b.answers = {"transfer": {"transferTo": None}}
+    r.line("Caller", "Transfer me please")
+    await _settle(r)
+    assert b.calls == [("transfer", {})] and replies[-1]["instructions"] == mouth.fixed(phone.NOBODY)
 
 
 async def test_holding_lines_fire_on_time_and_stop_when_the_team_speaks():
@@ -458,7 +480,7 @@ async def test_delegate_starts_the_hold():
             started.append(True)
 
     r = phone.Receptionist(FakeBackend(), INFO, None, H())
-    await r.delegate("Open Sunday?")
+    r.delegate("Open Sunday?")
     await r.turns.flush()
     assert started == [True]
 

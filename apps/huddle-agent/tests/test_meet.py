@@ -136,14 +136,14 @@ def test_only_an_addressed_line_goes_to_the_router():
     assert meet.addressed(gate, "Nova", "maya", "Nova, stop", 2) == "stop"
 
 
-async def test_the_meeting_talker_has_one_tool_and_answers_only_when_asked(monkeypatch):
+async def test_the_meeting_talker_has_no_tools_and_answers_only_when_code_asks(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     monkeypatch.setenv("LIGHTBULB_API_URL", "http://x")
     monkeypatch.setenv("LIGHTBULB_HUDDLE_SECRET", "s")
     from huddle_agent.backend import Backend
 
     t = meet.MeetTalker(Backend("r", "o", "t"), {"name": "Nova", "company": "C", "title": "T", "today": "d"})
-    assert [tool.info.name for tool in t.tools] == ["delegate"]
+    assert t.tools == [] and "delegate" not in t.instructions
     td = meet.realtime_model()._opts.turn_detection
     assert td.create_response is False and meet.MODEL == "gpt-realtime-2.1-mini"
 
@@ -160,8 +160,8 @@ async def test_a_meeting_delegation_posts_the_ask_with_its_speaker_and_context()
     t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
     t.asker = ("12", "Sam")
     t.context.add("Sam", "Nova, what shipped this week?")
-    out = await t.delegate("what shipped this week")
-    assert out.output == {"sent": True} and sent == []  # it returns at once; the post runs on its own
+    t.delegate("what shipped this week")
+    assert sent == []  # it returns at once; the post runs on its own
     await asyncio.gather(*t._posts)
     [(op, body)] = sent
     assert op == "ask" and (body["participantId"], body["speakerName"]) == ("12", "Sam")
@@ -215,22 +215,6 @@ def test_a_handoff_item_has_no_text_for_the_record():
     assert meet.assistant_text(ChatMessage(role="assistant", content=["cut"], interrupted=True)) is None
 
 
-async def test_the_speaker_is_named_once_in_the_ask():
-    """8 Nov prod Meet: "Isol8 Admin said in the meeting: Isol8 Admin: Nova, ..." (the talker's `who:` prefix)."""
-    sent = []
-
-    class B:
-        async def meet(self, op, body):
-            sent.append(body)
-            return {}
-
-    t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
-    t.asker = ("12", "Isol8 Admin")
-    await t.delegate("Isol8 Admin: Nova, what shipped?")
-    await asyncio.gather(*t._posts)
-    assert sent[0]["text"] == "Nova, what shipped?"
-
-
 async def test_the_line_after_a_spoken_question_answers_it():
     """8 Nov prod Meet: Pulse asked "What holiday hours?" in a thread; the meeting never heard it, and the spoken
     hours could not answer it. Now the question is said, and the next line asked carries it to be answered."""
@@ -253,8 +237,8 @@ async def test_the_line_after_a_spoken_question_answers_it():
     said = []
     m.speak(said.append, ready=True, live=True)
     assert said == [["Pulse asks: What holiday hours?"]]
-    await t.delegate("We close at 2 on Christmas Eve.")
-    await t.delegate("And what shipped?")
+    t.delegate("We close at 2 on Christmas Eve.")
+    t.delegate("And what shipped?")
     await asyncio.gather(*t._posts)
     assert sent[0]["answers"] == {"taskId": "t1", "qid": "q-1"} and "answers" not in sent[1]
 
@@ -286,11 +270,41 @@ async def test_a_line_long_after_a_spoken_question_is_a_new_ask_not_its_answer()
     t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
     m = await _said_question(t)
     m.question_at -= mouth.ANSWER_WITHIN_S + 1
-    await t.delegate("What's on my calendar?")
+    t.delegate("What's on my calendar?")
     await asyncio.gather(*t._posts)
     assert "answers" not in sent[0]
     m = await _said_question(t)  # said again: the next line inside the window answers it
     m.question_at -= mouth.ANSWER_WITHIN_S - 5
-    await t.delegate("We close at 2.")
+    t.delegate("We close at 2.")
     await asyncio.gather(*t._posts)
     assert sent[1]["answers"] == {"taskId": "t1", "qid": "q-1"} and mouth.ANSWER_WITHIN_S == 60
+
+
+async def test_an_addressed_line_is_posted_by_code_and_only_the_holding_line_is_said(monkeypatch):
+    """8 Nov prod Meet re-run: the talker spoke "I don't have access to a list... ask the team", a made-up draft and
+    20 s of advice before the guard cut it. Now code posts the line; the model says only the fixed holding line."""
+    from huddle_agent import mouth
+
+    sent, replies = [], []
+
+    class B:
+        async def meet(self, op, body):
+            sent.append(body)
+            return {}
+
+    class Session:
+        def generate_reply(self, **kw):
+            replies.append(kw)
+            return type("S", (), {"id": f"sp_{len(replies)}"})()
+
+    s = Session()
+    monkeypatch.setattr(meet.MeetTalker, "session", property(lambda _self: s))
+    t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
+    t.asker, t.allow = ("12", "Sam"), ("Nova", "Sam")
+    line = "Nova, draft a holiday-hours post and put the link in chat."
+    assert t.line("Sam", line, user_input=f"Sam: {line}") == "asked"
+    await asyncio.gather(*t._posts)
+    assert [b["text"] for b in sent] == [line] and replies == [{"instructions": mouth.HOLD, "tool_choice": "none"}]
+    assert t.line("Sam", "Thanks, Nova.", user_input="Sam: Thanks, Nova.") == "chat"
+    assert replies[-1] == {"instructions": mouth.SMALL_TALK_RULE, "tool_choice": "none", "user_input": "Sam: Thanks, Nova."}
+    assert len(sent) == 1

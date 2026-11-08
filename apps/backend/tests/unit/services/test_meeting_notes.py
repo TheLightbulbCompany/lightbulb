@@ -78,6 +78,8 @@ def env(monkeypatch):
     monkeypatch.setattr(mod.container_repo, "try_claim_owner_lifecycle", m.claim)
     monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
+    m.task_titles = AsyncMock(return_value=[])
+    monkeypatch.setattr(mod, "_meeting_task_titles", m.task_titles)
     monkeypatch.setattr(mod.meeting_invites, "_post_line", m.line)
     monkeypatch.setattr(mod.messaging, "store_attachment", m.store)
     monkeypatch.setattr(mod.agent_email, "team_address", AsyncMock(return_value="agents@acme.thelightbulb.company"))
@@ -139,13 +141,14 @@ async def test_on_ended_dispatches_exactly_one_notes_run(env):
     assert args[1:3] == (DEFAULT, f"meeting:{ROOM}:1790972400:notes")
     env.members.assert_awaited_with(DEFAULT)
     assert args[3].startswith("Write the meeting notes for Weekly sync: decisions, open questions")
-    assert args[3].endswith("the transcript is attached")
+    assert args[3].endswith("The transcript is attached")
     assert kwargs["dispatch_targets"] == [{"agentId": CEO, "eventKind": "user_request"}]
     assert env.meta["meeting"]["notesRunId"] == mod.messaging_repo.run_id_for(CEO, "msg-1")
     env.send.assert_not_awaited()  # the mail waits for the notes themselves
     assert env.requests["msg-1"] == {
         "roomId": ROOM, "occurrence": 1790972400, "targetRoomId": DEFAULT, "agentId": CEO, "triggerSeq": 7,
-        "meeting": {"title": "Weekly sync", "organizer": "pat@acme.com", "transcriptAttachedAt": 1},
+        "meeting": {"title": "Weekly sync", "organizer": "pat@acme.com", "transcriptAttachedAt": 1,
+                    "inCallAt": 1790972500},
     }  # fmt: skip
     env.sleep.assert_not_awaited()
     await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
@@ -608,3 +611,62 @@ async def test_notes_with_no_action_items_file_nothing(env, monkeypatch):
     monkeypatch.setattr(mod.messaging, "create_human_message", made)
     await ended_and_noted(env, "Decisions: none. Action items: none.")
     made.assert_not_awaited()
+
+
+async def test_action_items_the_meeting_already_started_are_not_filed_again(env, monkeypatch):
+    """8 Nov prod Meet re-run: LB-24 "Finalize and share holiday-hours post" duplicated LB-19, which had finished."""
+    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
+    env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
+    made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
+    monkeypatch.setattr(mod.messaging, "create_human_message", made)
+    env.task_titles.return_value = ["Draft the holiday-hours post", "Order more gel colors from OPI"]
+    notes = ("Action items:\n- Pulse: Finalize and share holiday-hours post\n- Vera: order the gel colours\n"
+             "- Pat: book the venue for the party")  # fmt: skip
+    await ended_and_noted(env, notes)
+    assert made.await_args.args[2].text.endswith("one thread each:\n- Pat: book the venue for the party")
+    assert env.task_titles.await_args.args == ("org_1", ROOM, 1790972500)  # the meeting room's, since the call
+    env.task_titles.return_value = ["Draft the holiday-hours post", "Order more gel colors", "Book the venue"]
+    made.reset_mock()
+    env.meta["meeting"].pop("notesMailedAt", None)
+    await mod._file_action_items("org_1", "msg-2", {"roomId": ROOM, "meeting": {}}, notes)
+    made.assert_not_awaited()  # all covered: nothing to file
+
+
+def test_covered_matches_content_words_not_any_overlap():
+    assert mod.covered("Pulse: Finalize and share holiday-hours post", ["Draft the holiday-hours post"])
+    assert not mod.covered("Pat: send the holiday post", ["Update the holiday hours on Google"])  # one word: post
+    assert not mod.covered("Ada: order nail gels", ["Book a nail appointment"])
+    assert not mod.covered("Ada: order nail gels", [])
+
+
+async def test_the_meeting_tasks_are_the_rooms_since_the_call(monkeypatch):
+    rows = {
+        "working": [{"taskId": "t1", "title": "Order gels", "createdAt": "2026-11-08T14:00:29+00:00",
+                     "audience": {"kind": "workspace"}}],
+        "idle": [{"taskId": "t2", "title": "Holiday post", "createdAt": "2026-11-08T13:57:42+00:00",
+                  "audience": {"kind": "room", "roomId": ROOM}},
+                 {"taskId": "t3", "title": "Old", "createdAt": "2026-11-07T10:00:00+00:00",
+                  "audience": {"kind": "room", "roomId": ROOM}}],
+    }  # fmt: skip
+    monkeypatch.setattr(
+        mod.tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=lambda _w, s, **_: (rows.get(s, []), None))
+    )
+    trees = {"t1": {"task": {}, "subscriptions": [{"createdBy": "router", "threadKey": f"room:{ROOM}"}]}}
+    monkeypatch.setattr(
+        mod.tasks_repo, "get_task_tree", AsyncMock(side_effect=lambda _w, t: trees.get(t, {"task": {}}))
+    )
+    since = 1794146120  # 2026-11-08T13:55:20Z, when Recall joined
+    assert sorted(await mod._meeting_task_titles("org_1", ROOM, since)) == ["Holiday post", "Order gels"]
+
+
+def test_the_assistants_lines_are_marked_and_never_action_items():
+    text = mod._render([_line(0, "Pat", "Nova, draft the post", 1.0),
+                        {**_line(1, "Nova", "Add the link once it's ready.", 2.0), "kind": "agent"}])  # fmt: skip
+    assert "] Pat: Nova, draft the post" in text and "] Nova (the assistant): Add the link" in text
+
+
+async def test_the_notes_request_says_the_assistants_lines_are_not_action_items(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    text = " ".join(env.line.await_args.args[3].split())
+    assert "never from a line marked (the assistant)" in text

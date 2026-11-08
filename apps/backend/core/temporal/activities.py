@@ -726,6 +726,8 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
         if to in ("idle", "failed") and root and room and _is_uuid(room) and not person_only:
             # A short result whole, else one plain line; bare when someone in the room can't open the task.
             line = tasks_access.result_text(tree, room, humans) or ("Done." if to == "idle" else "Didn't finish.")
+            if to == "idle":  # a meeting's thread that made something: its link here and in the Meet's chat
+                line = await voice_meet.with_link(room, task, line)
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,

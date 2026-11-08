@@ -1,5 +1,5 @@
-"""Owner mode (owner.py, mouth.py), shape 1: a realtime talker whose one tool, delegate, posts the request with the
-talk's context as the member's woken message; results are said once, only in a live talk, adding nothing."""
+"""Owner mode (owner.py, mouth.py), shape 1: a realtime talker with no tools; code posts each request with the talk's
+context as the member's woken message; results are said once, only in a live talk, adding nothing."""
 
 import asyncio
 
@@ -33,14 +33,14 @@ def _agent(backend):
     return owner.OwnerAgent(owner.Turns(backend, "user_maya", "job_1"), INFO)
 
 
-async def test_the_talkers_only_tool_is_delegate():
+async def test_the_talker_has_no_tools_and_never_replies_on_its_own():
     a = _agent(_Backend())
-    assert [t.info.name for t in a.tools] == ["delegate"]
+    assert a.tools == []
     td = owner.realtime_model()._opts.turn_detection
-    assert (td.type, td.eagerness, td.create_response, td.interrupt_response) == ("semantic_vad", "low", True, True)
+    assert (td.type, td.eagerness, td.create_response, td.interrupt_response) == ("semantic_vad", "low", False, True)
     assert owner.realtime_model().model == "gpt-realtime-2.1-mini" and owner.OWNER_MAX_S == 55 * 60
     text = a.instructions
-    assert "Greetings, thanks" in text and "call delegate" in text and "You cannot approve anything" in text
+    assert "Greetings, thanks" in text and "delegate" not in text
 
 
 async def test_delegate_posts_a_woken_message_with_the_turns_since_the_last_ask():
@@ -49,13 +49,13 @@ async def test_delegate_posts_a_woken_message_with_the_turns_since_the_last_ask(
     a.context.add("Maya", "Hi Nova")
     a.context.add("Nova", "Hi Maya!")
     a.context.add("Maya", "What have we shipped in the last week?")
-    assert (await a.delegate("What have we shipped in the last week?")).output == {"sent": True}
+    a.delegate("What have we shipped in the last week?")
     await a._turns.flush()
     [(op, body)] = b.sent
     assert op == "turn" and (body["speakerUserId"], body["sessionId"], body["n"]) == ("user_maya", "job_1", 0)
     assert body["text"] == ("What have we shipped in the last week?\n\nSaid in the talk since the last ask:\n"
                             "> Maya: Hi Nova\n> Nova: Hi Maya!")  # fmt: skip
-    await a.delegate("And the week before?")  # the context starts again after each delegation
+    a.delegate("And the week before?")  # the context starts again after each delegation
     await a._turns.flush()
     assert b.sent[1][1]["text"] == "And the week before?" and b.sent[1][1]["n"] == 1
 
@@ -63,7 +63,7 @@ async def test_delegate_posts_a_woken_message_with_the_turns_since_the_last_ask(
 async def test_the_fragment_is_is_only_a_delegated_message():
     b = _Backend()
     a = _agent(b)
-    await a.delegate("Is")
+    a.delegate("Is")
     await a._turns.flush()
     assert [(op, body["text"]) for op, body in b.sent] == [("turn", "Is")]  # no approve route exists to call
 
@@ -79,11 +79,9 @@ async def test_an_interruption_stops_the_speech_never_the_post():
             self.interrupted += 1
 
     s = Session()
-    reply = asyncio.create_task(a.delegate("Draft the holiday post"))
-    await reply
+    a.delegate("Draft the holiday post")
     assert b.sent == []  # delegate returned before the post landed
-    assert owner.interrupt(s) == "ok" and s.interrupted == 1
-    reply.cancel()  # LiveKit cancels the interrupted reply's tool task: the post is its own task
+    assert owner.interrupt(s) == "ok" and s.interrupted == 1  # the post is its own task
     await a._turns.flush()
     assert [op for op, _ in b.sent] == ["turn"]
 
@@ -201,7 +199,7 @@ async def test_the_orbs_line_after_a_spoken_question_answers_it():
     agent.mouth = m = mouth.Mouth(fetch, 2)
     await m.poll()
     m.speak(lambda texts: None, ready=True, live=True)
-    await agent.delegate("Nail gels.")
-    await agent.delegate("Thanks, what else?")
+    agent.delegate("Nail gels.")
+    agent.delegate("Thanks, what else?")
     await agent._turns.flush()
     assert backend.sent[0][1]["answers"] == {"taskId": "t1", "qid": "q-2"} and "answers" not in backend.sent[1][1]

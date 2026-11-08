@@ -4,10 +4,10 @@ in a Google Meet in front of the meeting room's Router, the one brain (agent.py 
 dispatch).
 
 Ears: a per-person transcriber (one stream per Meet track, so every line has its exact speaker) and the wake gate
-(`Gate` and `wakes`, over transcript.py's rules). The talker answers only when the gate hands it a line (OpenAI with
-create_response off: no reply to side talk), as text with the speaker's name. Its one tool, `delegate`, posts the
-request, with the turns since the last delegation, to the meeting's room as a message (`/meet/{room}/ask`), which the
-Router decides like any other; it may answer a greeting or thanks itself. "<name>, stop" cuts the voice off.
+(`Gate` and `wakes`, over transcript.py's rules). The talker (OpenAI, create_response off, no tools) never decides a
+line: code does (mouth.Talker.line). An addressed line is posted to the meeting's room as a message
+(`/meet/{room}/ask`), with the turns since the last ask, and the fixed holding line said; only a greeting or thanks
+gets a short model reply. The Router decides the message like any other. "<name>, stop" cuts the voice off.
 Mouth: each new agent message in the meeting's room (`/meet/{room}/events`, mouth.py) is said once, briefly, adding
 nothing, when the room has paused.
 
@@ -26,13 +26,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from livekit import rtc
-from livekit.agents import AgentSession, JobContext, function_tool, room_io, stt
+from livekit.agents import AgentSession, JobContext, room_io, stt
 from livekit.plugins import noise_cancellation, openai
 from openai.types.beta.realtime.session import TurnDetection
 
 from huddle_agent import end_after, usage_log
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import DELEGATE_DOC, Mouth, Talker
+from huddle_agent.mouth import Mouth, Talker
 from huddle_agent.transcript import (
     _LEADS,
     _LIGHTBULB,
@@ -65,13 +65,9 @@ STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "si
 JOIN_S = 1.5
 INSTRUCTIONS = """You are {name}, the voice of {company}'s AI assistant, in the Google Meet "{title}". Today is {today}.
 You hear only the lines said to you, as "<who>: <words>". You own only the conversation; the team behind you owns
-every fact, tool and decision.
-- A greeting, thanks or "are you there?": answer yourself, in a few words.
-- Everything else -- any question, request, action item, an answer to the team's question, a yes or a no, "stop that
-  thread" -- call delegate with what they said in their own words (without the "<who>:" label); a holding line is said
-  for you. Never answer it yourself, never guess, never say anything is done or approved. You cannot approve
-  anything: a yes is delegated.
-- When a message from the team arrives, say it as you are told, adding nothing.
+every fact, tool and decision, and every request goes to them before you hear it.
+- A greeting or thanks: answer it in a few words.
+- Otherwise say only what you are told to say: the holding line, or a message from the team, adding nothing.
 Speak briefly, one or two short sentences."""
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
@@ -174,7 +170,7 @@ class Gate:
 
 
 def realtime_model():
-    """Replies only when asked (create_response off): the gate hands the talker each addressed line as text."""
+    """Replies only when code asks (create_response off): the gate hands the talker each addressed line."""
     return openai.realtime.RealtimeModel(
         model=MODEL, voice=VOICE, input_audio_transcription=None,
         turn_detection=TurnDetection(type="server_vad", create_response=False, interrupt_response=False),
@@ -182,7 +178,7 @@ def realtime_model():
 
 
 class MeetTalker(Talker):
-    """The talker: no tool but `delegate`. `asker` is the addressed line it is answering (participant id, name)."""
+    """The talker: no tools. `asker` is the addressed line it is answering (participant id, name)."""
 
     where = "meet"
 
@@ -192,14 +188,9 @@ class MeetTalker(Talker):
         self.asker = ("", "")
         self._posts: set[asyncio.Task] = set()
 
-    @function_tool(description=DELEGATE_DOC)
-    async def delegate(self, request: str) -> dict:
-        return self.tool_delegate(request)
-
     def post(self, request: str) -> None:
-        # a task of its own: "<name>, stop" cuts the talker's reply, never the post. The speaker is named by the
-        # backend ("<who> said in the meeting: ..."), so the talker's "<who>:" label is dropped.
-        request = request.strip().removeprefix(f"{self.asker[1]}:").strip() if self.asker[1] else request
+        # a task of its own: "<name>, stop" cuts the talker's reply, never the post. The backend names the speaker
+        # ("<who> said in the meeting: ...").
         t = asyncio.create_task(self._ask(self.context.take(request), *self.asker, self.take_question()))
         self._posts.add(t)
         t.add_done_callback(self._posts.discard)
@@ -328,10 +319,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
             asked.append({"t": int(time.monotonic() - started), "who": label(who), "q": text, "a": ""})
             talker.asker = (who.rsplit(":", 1)[-1], label(who))
             talker.allow = (name, label(who))
-            talker.turn_ended()
-            talker.heard(label(who), text)
-            try:
-                session.generate_reply(user_input=f"{label(who)}: {text}")
+            try:  # code decides: posted with the holding line, or (a greeting) a short reply, tools off
+                talker.line(label(who), text, user_input=f"{label(who)}: {text}")
             except RuntimeError:  # the session is closed: nothing to answer with
                 logger.warning("meet: line not handed to the talker")
         lines.append({"mark": len(lines), "kind": "person", "name": label(who)[:200], "text": text[:4000],

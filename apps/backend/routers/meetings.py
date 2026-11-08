@@ -84,10 +84,15 @@ async def _publish(room_id: str, status: str) -> None:
 
 
 async def _count_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
-    """The meeting's time in the call, onto the workspace's month of voice minutes (GET /voice/usage)."""
+    """Report the occurrence to Metronome and count it toward the workspace's voice allowance."""
     meta = await messaging_repo.get_room(room_id) or {}
     if meta.get("ownerId"):
         at = datetime.fromtimestamp(in_call_at, UTC)
+        # A recurring meeting reuses its room. Its original in-call time identifies this occurrence
+        # across callback retries, without deduping the next occurrence against this one.
+        await voice_billing.report_minutes(
+            meta["ownerId"], f"meeting:{room_id}:{in_call_at}", at.isoformat(), int(seconds), "meeting"
+        )
         await voice_billing.add_month_seconds(meta["ownerId"], int(seconds), at)
 
 

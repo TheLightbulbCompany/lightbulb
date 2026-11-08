@@ -20,6 +20,7 @@ import logging
 import sys
 
 from core.repositories import container_repo
+from core.services.runtime_transport import runtime_arn
 from core.services import container_rpc, network_member
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def _owners(args: argparse.Namespace) -> list[str]:
     if args.owner_id:
         return [args.owner_id]
     rows = await container_repo.scan_all(consistent=True)
-    return sorted(r["owner_id"] for r in rows if r.get("agentcore_runtime_arn") and r.get("owner_id"))
+    return sorted(r["owner_id"] for r in rows if runtime_arn(r) and r.get("owner_id"))
 
 
 async def _needs_team_id(owner_id: str) -> bool:

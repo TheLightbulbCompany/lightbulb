@@ -528,7 +528,7 @@ class OpenClawWorkWorker:
         run_key = message["messageId"] if follow_up is None else f"{message['messageId']}:followup:{follow_up['id']}"
         run_id = messaging_repo.run_id_for(member["id"], run_key)
         container = await container_repo.get_by_owner_id(owner_id)
-        if not container or not container.get("agentcore_runtime_arn"):
+        if not container or not runtime_transport.runtime_arn(container):
             # Nothing to wake: AgentCore starts the microVM on the invoke below, so the only
             # reason there is no addressable runtime is that provisioning has not finished.
             # Retry rather than drop -- the queue's own backoff is the wait.

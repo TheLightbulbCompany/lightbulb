@@ -1383,6 +1383,8 @@ async def get_agent_message_receipt(owner_id: str, event_id: str, request: Reque
 @router.post("/internal/messaging/runs/{owner_id}/events", response_model=RunEventResponse)
 async def post_run_event(owner_id: str, body: RunEventRequest, request: Request):
     await _require_hook_token(owner_id, request, run_event_id=str(body.run_id))
+    if body.type == "run.heartbeat":  # a room turn's session is alive: keep it on its runtime at cut-over
+        await run_in_thread(runtime_transport.note_alive, owner_id)
     return await service.handle_run_event(owner_id, body)
 
 
@@ -1401,7 +1403,10 @@ async def recycle_runtime_session(owner_id: str, request: Request):
     8 h maxLifetime SIGTERM that kills a busy microVM mid-turn. The bridge already refuses new
     turns (a TTL'd hold), so the retried work cold-starts a fresh microVM."""
     container = await _require_hook_token(owner_id, request)
-    arn = (container or {}).get("agentcore_runtime_arn")
+    from core.dynamodb import run_in_thread
+    from core.services.runtime_transport import live_arn
+
+    arn = await run_in_thread(live_arn, container or {})  # the session asking: its own runtime at cut-over
     if not arn:
         raise HTTPException(status_code=409, detail="no runtime to recycle")
     from core.services.hermes_provisioning import stop_runtime_session

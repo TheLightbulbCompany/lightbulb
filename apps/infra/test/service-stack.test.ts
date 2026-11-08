@@ -1790,3 +1790,56 @@ describe("ServiceStack — Hermes tenant vending role (#5088)", () => {
     });
   }
 });
+
+describe("ServiceStack — the tier's shared Hermes runtime (shared runtime step 3)", () => {
+  const HERMES_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../hermes-version.json"), "utf8"));
+  for (const environment of ["dev", "prod"] as const) {
+    const template = environment === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
+    const runtimes = template.findResources("AWS::BedrockAgentCore::Runtime");
+    const [[runtimeId, runtime]] = Object.entries(runtimes) as [string, any][];
+    const roles = template.findResources("AWS::IAM::Role", {
+      Properties: { RoleName: `lightbulb-${environment}-hermes-pool` },
+    });
+    const [[roleId, role]] = Object.entries(roles) as [string, any][];
+
+    test(`${environment}: one runtime, on the pinned image, booted with no owner`, () => {
+      expect(Object.keys(runtimes)).toHaveLength(1);
+      const p = runtime.Properties;
+      expect(p.AgentRuntimeName).toBe(`lightbulb_${environment}_hermes_pool`);
+      expect(JSON.stringify(p.AgentRuntimeArtifact)).toContain(
+        `hermes-agent-arm64:${environment === "dev" ? HERMES_VERSION.dev.tag : HERMES_VERSION.prod.tag}`,
+      );
+      expect(p.RoleArn).toEqual({ "Fn::GetAtt": [roleId, "Arn"] });
+      expect(p.NetworkConfiguration.NetworkMode).toBe("VPC");
+      expect(p.LifecycleConfiguration).toEqual({ IdleRuntimeSessionTimeout: 300, MaxLifetime: 28800 });
+      const envKeys = Object.keys(p.EnvironmentVariables);
+      for (const perOwner of ["ISOL8_OWNER_ID", "S3_PREFIX", "LIGHTBULB_SECRET_ID", "AGENTCORE_PROFILE_ID"]) {
+        expect(envKeys).not.toContain(perOwner);
+      }
+      expect(p.EnvironmentVariables.S3_BUCKET).toBe(`lightbulb-${environment}-openclaw-replicas`);
+    });
+
+    test(`${environment}: its execution role reaches no tenant data`, () => {
+      const actions = JSON.stringify(role.Properties.Policies);
+      for (const denied of ["s3:", "secretsmanager:", "CreateEvent", "RetrieveMemoryRecords", "BrowserProfile", "BrowserSession", "kms:"]) {
+        expect(actions).not.toContain(denied);
+      }
+      expect(actions).toContain("appsync:EventPublish");
+      expect(actions).toContain("bedrock-agentcore:InvokeBrowser"); // the screen driver, as each owner role has it
+      expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+    });
+
+    test(`${environment}: the backend gets its ARN as HERMES_SHARED_RUNTIME_ARN`, () => {
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Name: "backend",
+            Environment: Match.arrayWith([
+              { Name: "HERMES_SHARED_RUNTIME_ARN", Value: { "Fn::GetAtt": [runtimeId, "AgentRuntimeArn"] } },
+            ]),
+          }),
+        ]),
+      });
+    });
+  }
+});

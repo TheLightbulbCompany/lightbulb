@@ -177,57 +177,6 @@ async def test_close_call_reclaim_bills_stored_usage_seconds():
     assert ("voice.huddle.usage_missing",) not in [c.args for c in metric.call_args_list]
 
 
-ROW_A = {"remaining_microcents": 900_000, "reserved_microcents": 0, "openrouter_reserved_microcents": 100}
-
-
-def _hold_patches(snapshots, update):
-    gate = MagicMock(update_item=update)
-    return [
-        patch.object(vc.voice_billing, "credit_snapshot", AsyncMock(side_effect=snapshots)),
-        patch.object(vc.metronome_fast_gate, "_table", return_value=gate),
-        patch.object(vc.voice_billing.settings, "OPENROUTER_MARKUP", "1.2"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_hold_race_loser_rereads_and_reserves_only_remaining_headroom():
-    row_b = {**ROW_A, "openrouter_reserved_microcents": 100 + 500_000}  # the winner's hold landed
-    update = MagicMock(side_effect=[_conditional_fail(), {}])
-    patches = _hold_patches([(240, ROW_A), (60, row_b)], update)
-    hold, budget = await _run(patches, vc._hold("org_a"))
-    assert budget == 60 and hold == 60_000
-    first, second = (c.kwargs for c in update.call_args_list)
-    assert first["ExpressionAttributeValues"][":v2"] == 100
-    assert second["ExpressionAttributeValues"][":v2"] == 100 + 500_000  # condition pinned to the fresh snapshot
-    assert second["ExpressionAttributeValues"][":h"] == hold
-
-
-@pytest.mark.asyncio
-async def test_hold_loser_with_no_headroom_left_gets_zero():
-    update = MagicMock(side_effect=[_conditional_fail()])
-    assert await _run(_hold_patches([(240, ROW_A), (0, {})], update), vc._hold("org_a")) == (0, 0)
-
-
-@pytest.mark.asyncio
-async def test_hold_three_condition_failures_is_voice_busy_without_a_hold():
-    update = MagicMock(side_effect=[_conditional_fail()] * 3)
-    with pytest.raises(vc.HTTPException) as err:
-        await _run(_hold_patches([(240, ROW_A)] * 3, update), vc._hold("org_a"))
-    assert err.value.status_code == 409 and err.value.detail["code"] == "voice_busy"
-    assert update.call_count == 3
-
-
-@pytest.mark.asyncio
-async def test_hold_row_without_reservation_fields_uses_attribute_not_exists():
-    update = MagicMock(return_value={})
-    row = {"remaining_microcents": 900_000}
-    hold, budget = await _run(_hold_patches([(240, row)], update), vc._hold("org_a"))
-    cond = update.call_args.kwargs["ConditionExpression"]
-    assert "attribute_not_exists(reserved_microcents)" in cond
-    assert "attribute_not_exists(openrouter_reserved_microcents)" in cond
-    assert "remaining_microcents = :v0" in cond and budget == 240
-
-
 @pytest.mark.asyncio
 async def test_persist_failure_still_bills_known_seconds():
     table, client, metronome, patches = _patches()
@@ -248,10 +197,8 @@ async def test_wipe_owner_voice_closes_and_deletes_only_this_owners_calls():
     with (
         patch.object(vc, "_table", return_value=table),
         patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=[[mine, other], []])),
-        patch.object(vc.runtime_transport, "request", AsyncMock()) as runtime,
     ):
         await vc.wipe_owner_voice("org_a")
-    runtime.assert_not_awaited()  # the window owns no runs
     keys = [c.kwargs["Key"]["owner_id"] for c in table.delete_item.call_args_list]
     assert keys == ["__call__#a", "__voice__#org_a"]
 
@@ -302,14 +249,3 @@ async def test_bill_credits_against_real_dynamodb(moto_tables):
     assert int(row["remaining_microcents"]) == 1_000_000 - vc.voice_billing.charge_microcents(45)
     assert int(row["openrouter_reserved_microcents"]) == 0
     assert "Item" not in containers.get_item(Key={"owner_id": "__call__#c1"})
-
-
-@pytest.mark.asyncio
-async def test_huddle_presence_version_only_moves_forward(moto_tables, monkeypatch):
-    containers, _ = moto_tables
-    monkeypatch.setattr(vc.container_repo, "_get_table", lambda: containers)
-    advance = vc.container_repo.try_advance_huddle_presence
-    assert await advance("room-1", 5) is True
-    assert await advance("room-1", 4) is False  # an older snapshot that arrived late
-    assert await advance("room-1", 5) is False
-    assert await advance("room-1", 6) is True

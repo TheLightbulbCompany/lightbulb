@@ -2807,30 +2807,6 @@ def voice_run_may_post(owner_id: str, run_id: str) -> dict:
     }
 
 
-async def update_voice_run(owner_id: str, run_id: str, fields: dict[str, Any]) -> bool:
-    """Atomic SET of ``fields`` on an existing run row (no read-modify-write, so it cannot drop a
-    concurrent writer's fields, e.g. noPost). False when the row is missing or expired."""
-    names = {f"#f{i}": k for i, k in enumerate(fields)}
-    values = {f":v{i}": v for i, v in enumerate(fields.values())}
-    values[":exp"] = int(time.time()) + VOICE_RUN_TTL_S
-    values[":now"] = int(time.time())
-    sets = ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))) + ", expiresAt = :exp"
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": voice_run_sk(run_id)},
-            UpdateExpression=f"SET {sets}",
-            ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues=values,
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-
-
 #: A meeting's "write the notes" request message -> everything its after-meeting mail needs (the
 #: meeting room, occurrence, where the request sits, and a snapshot of the meeting), so the mail no
 #: longer depends on the live meeting record, which a recurring series rewrites when it advances.

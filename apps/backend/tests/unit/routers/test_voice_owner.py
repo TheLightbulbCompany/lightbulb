@@ -179,3 +179,26 @@ async def test_a_retried_end_keeps_the_row_it_made(m):
         with patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(side_effect=[META, None])):
             with pytest.raises(voice_owner.messaging_repo.MessagingRepoError):
                 await voice_owner.end(ROOM, body)  # no row behind the error: it is raised
+
+
+async def test_owner_route_auth_like_siblings(m):
+    import httpx
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(voice_owner.router)
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+    body = {"ownerId": "org_1", "roomToken": "t", "speakerUserId": "user_maya", "phrase": "yes", "hint": "order"}
+    with patch("core.config.settings.HUDDLE_WORKER_SECRET", "s3cret"):  # no worker secret header
+        assert (await client.post(f"/internal/voice/owner/{ROOM}/approve", json=body)).status_code == 401
+    with pytest.raises(HTTPException) as e:  # seated in the DM, like start-work
+        await voice_owner.approve(ROOM, voice_owner.ApproveIn(**{**body, "speakerUserId": "user_other"}))
+    assert e.value.status_code == 403
+    with (
+        patch.object(voice_owner, "human_display_name", AsyncMock(return_value="Maya")),
+        patch.object(voice_owner.voice_approve, "approve", AsyncMock(return_value={"confirm_sent": True})) as ap,
+    ):
+        assert await voice_owner.approve(ROOM, voice_owner.ApproveIn(**body)) == {"confirm_sent": True}
+    assert ap.await_args.args == ("org_1", "app", {"user_id": "user_maya", "name": "Maya", "where": ""}, "yes",
+                                  "order")  # fmt: skip
+    assert ap.await_args.kwargs == {"room_id": ROOM}

@@ -86,6 +86,7 @@ def _view(q: dict, viewer: str, names: dict[str, str]) -> dict[str, Any]:
         "cancelledBy": None if q.get("cancelledBy") in _NOT_A_PERSON else person(q.get("cancelledBy")),
         "cancelledAt": q.get("cancelledAt"),
         "govRef": q.get("govRef"),
+        "pendingConfirm": q.get("pendingConfirm") if is_open else None,  # a voice yes waiting for this tap
         "createdAt": q["createdAt"],
         "version": q["version"],
     }

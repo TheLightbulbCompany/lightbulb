@@ -86,6 +86,7 @@ def _view(q: dict, viewer: str, names: dict[str, str]) -> dict[str, Any]:
         "cancelledBy": None if q.get("cancelledBy") in _NOT_A_PERSON else person(q.get("cancelledBy")),
         "cancelledAt": q.get("cancelledAt"),
         "govRef": q.get("govRef"),
+        "pendingConfirm": q.get("pendingConfirm") if is_open else None,  # a voice yes waiting for this tap
         "createdAt": q["createdAt"],
         "version": q["version"],
     }
@@ -203,6 +204,7 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
         raise _not_found()
     if q["state"] != "open":
         if q["state"] == "answered" and q.get("clientAnswerId") == body.client_answer_id and q.get("answeredBy") == me:
+            await _remember(ws, q, body, me)  # finishes a write a failed first press left
             return await _answered_view(ws, task, qid, me)  # the same press again
         raise _not_open(q)
     if task.get("status") in _CLOSED:
@@ -239,6 +241,7 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
         codes = _failure_codes(err)
         now = await questions_repo.get_question(ws, task_id, qid)
         if now and now["state"] == "answered" and now.get("clientAnswerId") == body.client_answer_id:
+            await _remember(ws, q, body, me)
             return await _answered_view(ws, task, qid, me)
         if now and now["state"] != "open":
             raise _not_open(now) from err
@@ -251,4 +254,19 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
         if "VersionConflict" in codes:
             raise _problem(409, "stale_version") from err
         raise _problem(502, "answer_failed") from err
+    await _remember(ws, q, body, me)
     return await _answered_view(ws, task, qid, me)
+
+
+async def _remember(ws: str, q: dict, body: AnswerBody, me: str) -> None:
+    """A phone call's Question (voice_phone.call_ask) answered: the call is handled, and a "didn't know" answered with
+    text goes into the Agent page's Knowledge."""
+    from routers import voice_phone
+
+    room = (q.get("preview") or {}).get("roomId")
+    if q.get("subkind") not in voice_phone.CALL_OPTIONS or not room:
+        return
+    if q["subkind"] == "didnt_know" and body.option_id == "answer" and (body.text or "").strip():
+        question = q["preview"].get("question") or q["title"]
+        await voice_phone.remember_answer(ws, question, body.text.strip(), me)
+    await voice_phone.resolve_call(ws, room, me)

@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { CEO_IDENTITY, useHuddle } from "@/components/huddle/HuddleProvider";
 import { useAssistantDm } from "@/components/huddle/TalkButton";
 import { Onboarding } from "./Onboarding";
+import { useApi } from "@/lib/api";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
   callNeedsYou, mmss, monthMinutes, nameOf, needsOnboarding, useAgentConfig, useTimeline, who,
@@ -132,7 +133,16 @@ function ReachBack({ number }: { number?: string }) {
 
 function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClose: () => void }) {
   const [all, setAll] = useState(false);
+  const [forget, setForget] = useState<"idle" | "busy" | "gone" | "error">("idle");
+  const api = useApi();
+  const { mutate } = useTimeline();
   const tx = call.transcript ?? [];
+  const forgetCaller = async () => {
+    if (!call.caller || !(await window.confirm(`Forget what ${name} remembers about ${call.callerName || "this caller"}? This can't be undone.`))) return;
+    setForget("busy");
+    try { await api.del(`/voice/callers/${encodeURIComponent(call.caller)}/memory`); setForget("gone"); void mutate(); }
+    catch { setForget("error"); }
+  };
   return <>
     <div className="vx-pane-head">
       <div><h2 className="vx-title" style={{ fontSize: "var(--text-ui)" }}>{call.ownerMode ? `You and ${name}` : who(call)}</h2>
@@ -145,8 +155,11 @@ function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClo
     {!!call.steps?.length && <section><h3>What {name} did</h3>
       <ol className="vx-steps">{call.steps.map((s, n) => <li key={n}><time>{mmss(s.t)}</time><span>{s.text}
         {s.guessed && <> <span className="vx-tag" data-tone="warn">guessed, not in Knowledge</span></>}</span></li>)}</ol></section>}
-    {!!call.callerMemory?.length && <section><h3>What {name} remembers about {call.callerName || "this caller"}</h3>
-      <ul className="vx-tx">{call.callerMemory.map((m) => <li key={m}>{m}</li>)}</ul></section>}
+    {!!call.callerMemory?.length && forget !== "gone" && <section><h3>What {name} remembers about {call.callerName || "this caller"}</h3>
+      <ul className="vx-tx">{call.callerMemory.map((m) => <li key={m}>{m}</li>)}</ul>
+      <div className="vx-actions" style={{ alignItems: "center" }}>
+        <Button type="button" size="sm" variant="outline" disabled={forget === "busy"} onClick={forgetCaller}>Forget</Button>
+        <span className="vx-save" role="status" data-err="true">{forget === "error" ? "Couldn't forget. Try again." : ""}</span></div></section>}
     {tx.length > 0 && <section><h3>Transcript</h3>
       <div className="vx-tx">{(all ? tx : tx.slice(0, 6)).map((l, n) => <p key={n}><b>{l.who === "assistant" ? name : call.ownerMode ? "You" : "Caller"}:</b> {l.text}</p>)}</div>
       {tx.length > 6 && <Button type="button" size="sm" variant="ghost" onClick={() => setAll(!all)}>{all ? "Show less" : `Show all ${tx.length} lines`}</Button>}
@@ -200,7 +213,7 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
     </section>
     {!!meeting.followUps?.length && <section><h3>Follow-ups</h3>
       <ul className="vx-tx">{meeting.followUps.map((f, n) => <li key={n} style={{ display: "flex", gap: 8 }}>
-        <span className="vx-tag" data-tone={f.status === "done" ? "ok" : undefined}>{f.status === "done" ? "Done" : "Working"}</span>{f.text}</li>)}</ul>
+        <span className="vx-tag" data-tone={f.status === "done" ? "ok" : f.status === "needs_you" ? "warn" : undefined}>{f.status === "done" ? "Done" : f.status === "needs_you" ? "Needs you" : "Working"}</span>{f.text}</li>)}</ul>
     </section>}
   </>;
 }

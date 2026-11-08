@@ -31,6 +31,8 @@ from pathlib import Path
 import numpy as np
 from livekit import api, rtc
 
+from tests.evals import passk
+
 RATE, FRAME = 48000, 480  # 10 ms
 VOICES = {"p1": "Samantha", "p2": "Daniel", "p3": "Karen"}
 SPOKE_RMS = 300  # the assistant's track is "speaking" above this (int16 RMS)
@@ -296,7 +298,7 @@ def score(sid: str, sc: dict, seeded: dict, heard: dict, rec: dict, log: str) ->
                 best = max(asked, key=lambda a: len(words(a.get("q", "")) & words(text)), default={})
                 row["answer"] = best.get("a", "") if len(words(best.get("q", "")) & words(text)) >= 3 else ""
                 pattern = fill(line.get("says", ""), ctx)
-                good = bool(re.search(pattern, row["answer"], re.I)) if pattern else True
+                good = bool(re.search(pattern, row["answer"].replace("\u2019", "'"), re.I)) if pattern else True  # "don’t"
                 row["ok"] = lat <= ANSWER_S and good
                 row["why"] = "" if row["ok"] else ("slow" if lat > ANSWER_S else
                                                     "no text on the record" if not row["answer"] else "wrong answer")
@@ -340,24 +342,38 @@ async def main() -> None:
     ap.add_argument("scenarios", nargs="*", default=["core", "interrupt"])
     ap.add_argument("--log", required=True, help="the worker's log file")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--k", type=int, default=3, help="runs per scenario; a scenario passes only if all k pass")
+    ap.add_argument("--check", action="store_true", help="exit 1 unless every scenario passes pass^k and the aggregate is >= 90%")
     a = ap.parse_args()
+    results: dict[str, list[bool]] = {}
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    for sid in a.scenarios:
+    for sid, n in [(sid, n) for sid in a.scenarios for n in range(a.k)]:
         seeded = dev("seed", f"{sid}-{int(time.time())}")
         at = Path(a.log).stat().st_size
         heard = await play(sid, SCENARIOS[sid], seeded, out)
-        await asyncio.sleep(8)  # the worker's shutdown: final transcript, then /end
+        for _ in range(12):  # the worker's shutdown: final transcript, then /end (OpenAI's close takes longer)
+            await asyncio.sleep(5)
+            rec = dev("record", seeded["dispatch"]["roomId"])
+            if rec["meeting"].get("summary"):
+                break
+        if SCENARIOS[sid].get("notes"):
+            rec = dev("end", seeded["dispatch"]["roomId"])
         log = Path(a.log).read_text(errors="replace")[at:]
-        rec = dev("end" if SCENARIOS[sid].get("notes") else "record", seeded["dispatch"]["roomId"])
         card = score(sid, SCENARIOS[sid], seeded, heard, rec, log)
-        (out / f"{sid}.json").write_text(json.dumps(card, indent=1, default=str))
+        (out / f"{sid}-{n + 1}.json").write_text(json.dumps(card, indent=1, default=str))
         print(f"{sid}: {card['passed']}/{card['of']} false_wakes={card['false_wakes']} answered={card['answered']} "
               f"latency={card['latency_s']}")  # fmt: skip
         for r in card["lines"] + card["checks"]:
             if not r["ok"]:
                 print("  FAIL", r.get("line") or r.get("check"), "->", r.get("why") or r.get("got"))
+        results.setdefault(sid, []).append(card["passed"] == card["of"])
         sys.stdout.flush()
+    v = passk.score(results, a.k)
+    print(f"pass^{a.k}: {v['scenarios']} aggregate {v['rate']:.0%}")
+    print(passk.write_card("meet", v, time.strftime("%Y%m%d-%H%M")))
+    if a.check:
+        sys.exit(passk.exit_code(v))
 
 
 if __name__ == "__main__":

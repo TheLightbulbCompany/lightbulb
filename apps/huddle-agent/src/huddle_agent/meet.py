@@ -1,5 +1,9 @@
-"""The meeting agent (voice-agents spec §4.4, §4.4b, §5 "The meeting agent"): ONE listening Gemini Live
-session per Google Meet, in the huddle worker (agent.py hands it every `source: "meet"` dispatch).
+"""The meeting agent (voice-agents spec §4.4, §4.4b, §5 "The meeting agent"): ONE listening realtime session per
+Google Meet, in the huddle worker (agent.py hands it every `source: "meet"` dispatch). OpenAI's realtime model by
+default; MEET_ENGINE=gemini is Gemini Live, the flag-only fallback. OpenAI answers only when the gate asks it to
+(create_response
+off): Gemini decides itself and the gate drops what it should not say; OpenAI has no decide-not-to-respond and
+would reply to every line of side talk, each reply billed.
 
 It hears the room (every Meet person's track, mixed here: a realtime session takes one input stream) and
 speaks only when addressed by the assistant's name. Two gates: Gemini's own decide-not-to-respond, and
@@ -24,17 +28,19 @@ import re
 import logging
 import os
 import time
+from typing import Literal
 from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
 from google.genai import types
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io, stt
+from livekit.agents import Agent, AgentSession, JobContext, StopResponse, function_tool, room_io, stt
 from livekit.agents.voice import io
 from livekit.plugins import google, noise_cancellation, openai
+from openai.types.beta.realtime.session import TurnDetection
 
-from huddle_agent import end_after
+from huddle_agent import end_after, usage_log
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.transcript import (
     _LEADS,
@@ -46,8 +52,12 @@ from huddle_agent.transcript import (
 )
 
 logger = logging.getLogger("meet")
-MODEL = os.environ.get("MEET_MODEL", "gemini-3.8-live")
-VOICE = os.environ.get("MEET_VOICE", "Kore")
+OPENAI = os.environ.get("MEET_ENGINE", "openai") == "openai"  # one voice vendor (founder, 7 Nov 2026)
+MODEL = os.environ.get("MEET_MODEL", "gpt-realtime-2.1-mini" if OPENAI else "gemini-3.8-live")
+VOICE = os.environ.get("MEET_VOICE", "marin" if OPENAI else "Kore")
+# the gate's per-person transcriber: gpt-4o-mini-transcribe shuts down 26 Feb 2027; gpt-transcribe is its successor
+# for committed turns, $0.0045/min (developers.openai.com/api/docs/deprecations, .../models/gpt-transcribe)
+TRANSCRIBE = os.environ.get("MEET_TRANSCRIBE_MODEL", "gpt-transcribe")
 ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
 MEET_QUIET_S = 3.0  # huddle.py: a reply waits for a real pause in the room
@@ -224,6 +234,7 @@ class MeetAgent(Agent):
         self.reply_turn: dict | None = None  # the turn the reply now playing answers
         self.replying = False  # a reply for reply_turn is under way (its tools are that turn's)
         self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
+        self.asked = None  # the SpeechHandle of the last reply asked for: one at a time
         self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
         self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused and replies dropped...
         self.goodbye_id = ""  # ...except the time limit's goodbye: the SpeechHandle id end_after made
@@ -298,6 +309,23 @@ class MeetAgent(Agent):
         ):
             return True, "tool follow-on"
         return None, "no transcript yet"
+
+    def ask(self, session, line: str) -> None:
+        """The reply to an ask, uninterruptible by room sound: LiveKit cut a reply held for quiet at the next voice
+        or end of turn, and nothing asked again (#5025 review). Only the gate's stop cuts it (force)."""
+        self.asked = session.generate_reply(user_input=line, allow_interruptions=False)
+
+    def asking(self) -> bool:
+        """A reply asked for is still under way. It ends when it played, was dropped or was cut: a dropped reply
+        must not hold up the next ask (#5025 review)."""
+        return self.asked is not None and not self.asked.done()
+
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        """OpenAI with create_response off hands turn-taking to LiveKit, which would answer every line of side talk
+        (8 Nov self-test: replies made for lines nobody addressed, dropped by the gate, each billed). The gate asks
+        for each reply instead (nudge). Gemini answers by itself."""
+        if OPENAI:
+            raise StopResponse()
 
     async def realtime_audio_output_node(self, audio, model_settings):
         """A reply's audio is held until its turn's final transcript says the assistant was addressed (see the
@@ -404,6 +432,14 @@ class MeetAgent(Agent):
         return await self._post("chat", {"text": text, "participantId": self.asker()})
 
     @function_tool
+    async def approve(self, phrase: Literal["yes", "no", "undo"], hint: str = "") -> dict:
+        """Call only when the person clearly says yes, no or undo to a pending ask you raised, or one on the
+        Needs-you list; hint is a few words naming it. A yes never approves anything: it sends a one-tap confirm to
+        the owner's phone. On confirm_sent say "I've sent it to <owner>'s phone to confirm"; on none say "There's
+        nothing waiting for an OK"; otherwise say the returned `say`. Never claim something was approved or done."""
+        return await self._post("approve", {"phrase": phrase, "hint": hint, "participantId": self.asker()})
+
+    @function_tool
     async def start_work(self, title: str, brief: str) -> dict:
         """Hand open-ended work or an action item to the team: a short title and a self-contained brief.
         Don't wait for it; say you're on it."""
@@ -440,7 +476,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     # the huddle's per-person transcriber (agent.py): the gate's ears, with the exact speaker of each line
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
-        model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=STT_VAD,
+        model=TRANSCRIBE, use_realtime=True, turn_detection=STT_VAD,
         prompt=f'A meeting at {meta.get("company") or "a business"}. People ask the AI assistant "{name}" things '
         f'by name: "{name}, ...".',
     )  # fmt: skip
@@ -490,12 +526,19 @@ async def run(ctx: JobContext, meta: dict) -> None:
             if pub.track is not None:
                 on_track(pub.track, pub, p)
 
-    key = os.environ["GOOGLE_API_KEY"]
     session = AgentSession(
-        llm=google.realtime.RealtimeModel(
+        llm=openai.realtime.RealtimeModel(
             model=MODEL,
             voice=VOICE,
-            api_key=key,
+            # replies only when the gate asks (nudge); the gate hears through the per-person transcriber
+            turn_detection=TurnDetection(type="server_vad", threshold=0.5, prefix_padding_ms=600,
+                                         silence_duration_ms=400, create_response=False, interrupt_response=False),
+            # interrupt_response off too: a voice in the room cancelled the reply asked for, and nothing re-asks
+            # (#5025 review); the gate's stop still cuts it (session.interrupt(force=True))
+            input_audio_transcription=None,
+        ) if OPENAI else google.realtime.RealtimeModel(
+            model=MODEL,
+            voice=VOICE,
             api_version="v1beta",
             # a meeting outlives Gemini's 10-minute connection and 15-minute audio session
             session_resumption=types.SessionResumptionConfig(),
@@ -505,6 +548,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             ),
         )  # fmt: skip
     )
+    usage_log(session, f"meet {room_id}")
     lines: list[dict] = []
     asked: list[dict] = []  # {turn, a}: built into the record at the end, when the turn's text is whole
 
@@ -517,8 +561,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
         t = agent.heard(item, text, final, time.monotonic(), who=who)
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", final)
         if t["kind"] == "stop":
-            session.interrupt()
-        if final and t["kind"] in ADDRESSED and wakes(name, text, gate.people):  # the nudge: strict wake only
+            session.interrupt(force=True)  # the reply asked for is not interruptible by room noise; "stop" is
+        # the nudge, on the strict wake only (no billed reply to "Thanks, Nova."); on OpenAI at once: it answers
+        # only when asked to
+        if final and t["kind"] in ADDRESSED and wakes(name, text, gate.people):
             asyncio.create_task(nudge(t, text))
         if final:
             lines.append({"mark": len(lines), "kind": "person", "name": label(t["who"])[:200],
@@ -528,13 +574,16 @@ async def run(ctx: JobContext, meta: dict) -> None:
         """The line opens with the name and asks (`wakes`); Gemini's own hearing may have missed the name and
         stayed silent (self-test 7 Nov: a guest's two asks, unanswered). If nothing is under way for this
         line by NUDGE_S, Gemini is given the line, as said, to answer."""
-        await asyncio.sleep(NUDGE_S)
+        await asyncio.sleep(0 if OPENAI else NUDGE_S)
         busy = session.current_speech is not None or agent.tool_at >= (t["final_at"] or 0)
+        # a reply asked for and not yet over: a second ask while it (or its tool) runs gave "the tool is still
+        # running" answers, said twice (self-test 8 Nov)
+        busy = busy or agent.asking() or agent.replying
         if busy or agent.consumed >= t["seq"] or agent.turns[-1] is not t or time.monotonic() >= agent.ends_at:
             return
         logger.info("meet: turn %d nudged", t["seq"])
         try:
-            session.generate_reply(user_input=f'{label(t["who"])}: {text}')
+            agent.ask(session, f'{label(t["who"])}: {text}')
         except RuntimeError:  # the session is closed (Gemini refused it): nothing to nudge
             logger.warning("meet: nudge refused, the session is not running")
 

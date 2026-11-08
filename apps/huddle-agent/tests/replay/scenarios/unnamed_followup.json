@@ -1,5 +1,5 @@
 {
- "about": "A request to Friday; after her answer the same person asks a follow-up with no name ('And what are they called?'): it is for her, and she answers it.",
+ "about": "A request to Friday; after her answer the same person asks a follow-up with no name ('And what are they called?'). Two engines judge this file: the huddle engine (tests.replay, the backend router's engagement rule) treats the follow-up as hers and answers it (`expect`); the one-voice Meet gate (tests.replay.gate) speaks only when named, so it stays silent (`meet_expect`).",
  "people": {
   "a": {"name": "Prasiddha", "voice": "Daniel"},
   "b": {"name": "Leonardo", "voice": "Fred"}
@@ -8,7 +8,7 @@
   {"at": 3, "who": "a", "say": "Friday, how many agents come with a new workspace?"},
   {"at": 55, "who": "a", "say": "And what are they called?"}
  ],
- "notes": "Leonardo is in the meeting and says nothing, so the follow-up is not for her just because nobody else is there. The follow-up is at a fixed 55 s: if the first answer is not out by then (answer_contains ... before 1 fails), the follow-up was not a follow-up and the other verdicts do not count.",
+ "notes": "Leonardo is in the meeting and says nothing, so the follow-up is not for her just because nobody else is there. The follow-up is at a fixed 55 s: if the first answer is not out by then (answer_contains ... before 1 fails), the follow-up was not a follow-up and the other verdicts do not count. The Meet gate has no follow-up rule (removed 7 Nov), so under `meet_expect` the silence after line 1 is what is judged.",
  "tail": 55,
  "timeout": 80,
  "expect": [
@@ -24,6 +24,21 @@
   {"said_once": {"min_words": 7}, "why": "no sentence twice; the short fixed acknowledgement is said once per request"},
   {"no_talk_over": {"max": 1.0}},
   {"max_agent_lines": {"max": 7}, "why": "2 acknowledgements + 2 answers; the list of six may take a few lines"},
+  {"no_text": {"pattern": "\\b(Jev|Hermes|Paperclip)\\b"}, "why": "internal names (the agents' own names were asked for here)"}
+ ],
+ "meet_expect": [
+  {"one_run": {"line": 0}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"answer_contains": {"after": 0, "contains": ["six (starter )?agents|6 agents"], "before": 1}, "why": "the first answer, before the follow-up (this also proves the script timing held)"},
+  {"max_runs": {"max": 1}},
+  {"silent_between": {"from": 1}, "why": "the unnamed follow-up is not a request to her: she speaks only when named"},
+  {"no_new_run": {"line": 1}, "why": "no run for an unnamed line"},
+  {"nothing_after": {"line": 1}, "why": "no agent audio after the follow-up"},
+  {"no_agent_overlap": {}, "why": "one agent answers, not several"},
+  {"max_agent_lines": {"max": 0, "who": "^(?!Friday$)"}, "why": "no other agent speaks"},
+  {"said_once": {"min_words": 7}, "why": "no sentence twice; the short fixed acknowledgement is said once per request"},
+  {"no_talk_over": {"max": 1.0}},
+  {"max_agent_lines": {"max": 4}, "why": "1 acknowledgement + 1 answer; the list of six may take a few lines"},
   {"no_text": {"pattern": "\\b(Jev|Hermes|Paperclip)\\b"}, "why": "internal names (the agents' own names were asked for here)"}
  ]
 }

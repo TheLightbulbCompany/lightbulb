@@ -1,19 +1,18 @@
 "use client";
 
-// The four places on web (rail) and phone (bottom tabs): Home · Needs you · Agent · Settings (spec 2026-11-07 §5).
+// The places on web (rail) and phone (bottom tabs): Home · Needs you · Agent · Settings · Workspace (spec 2026-11-07 §5;
+// Workspace is the existing /chat super-agent UI, founder 7 Nov: it stays reachable from the voice shell).
 // Settings is /voice/settings: the existing Settings panels, rendered here beside the rail.
 import "./voice.css";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { OrganizationList, UserButton, useOrganization } from "@clerk/nextjs";
-import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
+import { CircleAlert, Home, LayoutGrid, PhoneCall, Settings } from "lucide-react";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
-import { callNeedsYou, useQuestions, useTimeline } from "./data";
+import { useQuestions } from "./data";
 
 export function useNeedsYouTotal(): number {
-  const { data: qs } = useQuestions();
-  const { data: items } = useTimeline();
-  return (qs?.length ?? 0) + (items?.filter(callNeedsYou).length ?? 0);
+  return useQuestions().data?.length ?? 0;
 }
 
 const PLACES = [
@@ -21,6 +20,8 @@ const PLACES = [
   { href: "/voice/needs-you", label: "Needs you", Icon: CircleAlert },
   { href: "/voice/agent", label: "Agent", Icon: PhoneCall },
   { href: "/voice/settings", label: "Settings", Icon: Settings },
+  // The super-agent workspace (rooms, tasks, Knowledge, connections, approvals) is one place away, not gone.
+  { href: "/chat", label: "Workspace", Icon: LayoutGrid },
 ] as const;
 
 export function VoiceShell({ children }: { children: React.ReactNode }) {

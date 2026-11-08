@@ -546,7 +546,7 @@ async def _start_driven(room, huddle: Huddle, agent_id, persona, voice, speaker,
     agent = _Mouth(instructions=f"{persona}\n\n{DRIVEN}", chat_ctx=_seeded(seed))
     # turn_detection=None and no audio input: nothing but an order makes it speak. No vad: nothing to detect.
     session = AgentSession(
-        llm=_DrivenModel(model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None)
+        llm=_DrivenModel(model="gpt-realtime-2.1-mini", voice=realtime_voice(voice), turn_detection=None)
     )
     await _open(session, agent, room, huddle, agent_id, speaker)
     live = _DrivenLive(
@@ -652,9 +652,9 @@ async def entrypoint(ctx: JobContext) -> None:
     if ctx.job.room.name.startswith("phone-"):
         return await phone.entrypoint(ctx)
     meta = json.loads(ctx.job.metadata)
-    # A Google Meet: one listening Gemini Live session (meet.py). MEET_ENGINE=huddle is the old mouths, until
-    # the new one has a live meeting behind it.
-    if meta.get("source") == "meet" and os.environ.get("MEET_ENGINE", "gemini") == "gemini":
+    # A Google Meet: one listening realtime session (meet.py; MEET_ENGINE openai, or gemini). MEET_ENGINE=huddle
+    # is the old mouths, until the new one has a live meeting behind it.
+    if meta.get("source") == "meet" and os.environ.get("MEET_ENGINE", "openai") != "huddle":
         return await meet.run(ctx, meta)
     # Live in a member's DM with the assistant: the Router session (owner.py), not the mouths below.
     if meta.get("mode") == "owner":
@@ -665,7 +665,7 @@ async def entrypoint(ctx: JobContext) -> None:
     recorder = record.start(meta["roomId"])  # HUDDLE_RECORD_DIR: this call's inputs, for an offline replay
     backend = recorder.backend(Backend(meta["roomId"], meta["ownerId"], meta["roomToken"]))
     # streaming: interims tell a listening sound from words as they come (huddle `_only_listening`)
-    stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=MEET_VAD)
+    stt_engine = openai.STT(model="gpt-live-transcribe", use_realtime=True, turn_detection=MEET_VAD)
 
     @stt_engine.on("metrics_collected")
     def _stt_metrics(m) -> None:

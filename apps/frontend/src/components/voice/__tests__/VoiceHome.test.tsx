@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { TimelineItem } from "../data";
 
@@ -17,10 +17,11 @@ vi.mock("@/components/huddle/TalkButton", () => ({
   useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "human", id: "u" }, { kind: "agent", id: "a1" }] }),
 }));
 vi.mock("../VoiceShell", () => ({ useNeedsYouTotal: () => 0 }));
-const items = vi.hoisted(() => ({ list: [] as TimelineItem[] }));
+const items = vi.hoisted(() => ({ list: [] as TimelineItem[], del: vi.fn(), revalidate: vi.fn() }));
+vi.mock("@/lib/api", () => ({ useApi: () => ({ del: items.del }) }));
 vi.mock("../data", async (orig) => ({
   ...(await orig<typeof import("../data")>()),
-  useTimeline: () => ({ data: items.list, isLoading: false }),
+  useTimeline: () => ({ data: items.list, isLoading: false, mutate: items.revalidate }),
   useAgentConfig: () => ({ data: { name: "Nova" }, isNew: false, save: vi.fn() }),
   needsOnboarding: () => false,
 }));
@@ -28,7 +29,7 @@ vi.mock("../data", async (orig) => ({
 import { VoiceHome } from "../VoiceHome";
 
 beforeEach(() => {
-  lk.attrs = {}; lk.agent = { identity: "agent-ceo" }; lk.lines = []; items.list = [];
+  lk.attrs = {}; lk.agent = { identity: "agent-ceo" }; lk.lines = []; items.list = []; items.del.mockReset(); items.revalidate.mockReset();
   huddle.roomId = "dm1"; huddle.room = connectedRoom; mic.mockClear();
 });
 
@@ -83,4 +84,51 @@ it("Yours chip lists the in-app talk", () => {
   const pane = screen.getByRole("complementary", { name: "Details" });
   expect(within(pane).getByText("Anything I need to handle?").closest("p")).toHaveTextContent("You: Anything I need to handle?");
   expect(within(pane).getByText("One thing: the post.").closest("p")).toHaveTextContent("Nova: One thing: the post.");
+});
+
+it("call pane Forget clears memory", async () => {
+  items.list = [{ type: "call", roomId: "c1", at: Date.now(), caller: "+14155550100", callerName: "Maya", callerMemory: ["Prefers mornings"] }];
+  items.del.mockResolvedValueOnce({ ok: true });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Maya/ }));
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  fireEvent.click(within(pane).getByRole("button", { name: "Forget" }));
+  await waitFor(() => expect(within(pane).queryByText("Prefers mornings")).not.toBeInTheDocument());
+  expect(items.del).toHaveBeenCalledWith("/voice/callers/%2B14155550100/memory");
+  expect(items.revalidate).toHaveBeenCalled();
+});
+
+it("call pane Forget shows an error and keeps the memory", async () => {
+  items.list = [{ type: "call", roomId: "c1", at: Date.now(), caller: "+14155550100", callerName: "Maya", callerMemory: ["Prefers mornings"] }];
+  items.del.mockRejectedValueOnce(new Error("boom"));
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Maya/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+  expect(await screen.findByText("Couldn't forget. Try again.")).toBeInTheDocument();
+  expect(screen.getByText("Prefers mornings")).toBeInTheDocument();
+});
+
+it("meeting pane shows follow-up status", () => {
+  items.list = [{ type: "meeting", roomId: "m1", at: Date.now(), title: "Standup",
+    followUps: [{ text: "Send deck", status: "done" }, { text: "Pick vendor", status: "needs_you" }, { text: "Book room", status: "running" }] }];
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Standup/ }));
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).getByText("Send deck").closest("li")).toHaveTextContent("Done");
+  expect(within(pane).getByText("Pick vendor").closest("li")).toHaveTextContent("Needs you");
+  expect(within(pane).getByText("Book room").closest("li")).toHaveTextContent("Working");
+});
+
+it("call pane Forget does nothing when the (async, desktop) confirm resolves false", async () => {
+  items.list = [{ type: "call", roomId: "c1", at: Date.now(), caller: "+14155550100", callerName: "Maya", callerMemory: ["Prefers mornings"] }];
+  const confirm = vi.spyOn(window, "confirm").mockResolvedValue(false as never);
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Maya/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+  await waitFor(() => expect(confirm).toHaveBeenCalled());
+  await Promise.resolve();
+  expect(items.del).not.toHaveBeenCalled();
+  expect(screen.getByText("Prefers mornings")).toBeInTheDocument();
 });

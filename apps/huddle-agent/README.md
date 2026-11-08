@@ -60,10 +60,12 @@ The worker reads (LiveKit Cloud agent secrets, set per project):
 - `LIGHTBULB_API_URL` -- the backend, e.g. `https://api-dev.flickmeon.ai` (`/api/v1` optional)
 - `LIGHTBULB_HUDDLE_SECRET` -- the value of the backend's `lightbulb/{env}/huddle_worker_secret`,
   sent as `X-Lightbulb-Huddle-Secret`
-- `OPENAI_API_KEY` -- transcription and GPT-Live
-- `GOOGLE_API_KEY` -- Gemini Live, for Meet (`meet.py`) and phone calls (`phone.py`)
+- `OPENAI_API_KEY` -- transcription, GPT-Live, and the realtime model of Meet (`meet.py`) and phone calls
+  (`phone.py`): `gpt-realtime-2.1-mini`, the phone greeting in `gpt-4o-mini-tts`
+- `PHONE_ENGINE` / `MEET_ENGINE` -- `openai` (default) or `gemini`, the fallback, which needs `GOOGLE_API_KEY`
+  (Gemini Live). `MEET_ENGINE=huddle` is the old huddle engine for Meet.
 - `OWNER_ENGINE` -- owner mode (`owner.py`, Live in a member's DM with the assistant): `openai` (default,
-  `gpt-realtime` on `OPENAI_API_KEY`) or `gemini` (Gemini Live on `GOOGLE_API_KEY`)
+  `gpt-realtime-2.1` on `OPENAI_API_KEY`) or `gemini` (Gemini Live on `GOOGLE_API_KEY`)
 
 LiveKit itself injects `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`.
 Nothing a huddle says is stored.
@@ -92,9 +94,9 @@ Prerequisites (checked 7 Nov 2026):
   `LIVEKIT_API_SECRET_PROD`: all set (1 Oct).
 - Agent secrets (`lk agent secrets` with `livekit.prod.toml` as `livekit.toml`): `LIGHTBULB_API_URL`
   (should be `https://api.thelightbulb.company`), `LIGHTBULB_HUDDLE_SECRET` (= `lightbulb/prod/huddle_worker_secret`),
-  `OPENAI_API_KEY` are set. **`GOOGLE_API_KEY` is missing**: without it every Meet and phone call fails at
-  session start. `lightbulb/prod/gemini_api_key` does not exist in Secrets Manager (only `lightbulb/dev/...`).
-  Add it before the deploy (restarts the agent):
+  `OPENAI_API_KEY` are set. `GOOGLE_API_KEY` is needed only for the `gemini` fallback
+  (`PHONE_ENGINE` / `MEET_ENGINE`). `lightbulb/prod/gemini_api_key` does not exist in Secrets Manager (only `lightbulb/dev/...`).
+  To use the fallback, add it (restarts the agent):
 
       lk agent update-secrets --secrets "GOOGLE_API_KEY=$(aws secretsmanager get-secret-value \
         --secret-id lightbulb/prod/gemini_api_key --profile isol8-admin --region us-east-1 \

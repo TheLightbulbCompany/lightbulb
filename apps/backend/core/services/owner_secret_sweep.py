@@ -18,9 +18,7 @@ disk, and those are exactly the ones nobody would think to delete.
 
 Integration credentials written under ``CREDENTIAL_KMS_KEY_ARN`` live in the
 ``credential-envelopes`` table instead; both sweeps cover that owner partition too and report
-those rows as ``credential-envelopes/<owner>/<provider>``. The legacy secret such a write retired
-sits scheduled for deletion, so listing includes planned deletions and the sweep force-deletes those
-too.
+those rows as ``credential-envelopes/<owner>/<provider>``.
 
 `force_delete_without_recovery` because the point is removal, not a 30-day
 soft-delete that keeps the plaintext retrievable and — more practically —
@@ -66,8 +64,6 @@ def _list_names_with_prefix(sm, prefix: str) -> list[str]:
         kwargs: dict = {
             "MaxResults": 100,
             "Filters": [{"Key": "name", "Values": [prefix]}],
-            # A sealed put soft-deletes the legacy secret; a wipe must not leave it recoverable.
-            "IncludePlannedDeletion": True,
         }
         if token:
             kwargs["NextToken"] = token
@@ -100,7 +96,7 @@ async def delete_owner_secrets(owner_id: str) -> list[str]:
         for prefix in owner_secret_prefixes(owner_id):
             for name in _list_names_with_prefix(sm, prefix):
                 try:
-                    integration_secret_store.force_delete_secret(sm, name)
+                    sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
                     deleted.append(name)
                 except Exception:
                     logger.exception("owner_secret_sweep: failed to delete %s", name)

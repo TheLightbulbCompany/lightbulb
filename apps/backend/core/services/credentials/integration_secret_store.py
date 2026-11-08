@@ -15,9 +15,9 @@ so a later re-inject (marketplace slot-fill, reconnect) round-trips it unchanged
 When ``CREDENTIAL_KMS_KEY_ARN`` is set (infra sets it in dev and prod), ``put`` writes the
 ``credential-envelopes`` table instead: the JSON sealed with AES-256-GCM under a fresh KMS data key
 whose encryption context is ``{owner_id, provider}``, so a row copied under another owner fails to
-decrypt. No new secret is created, and the legacy secret is scheduled for deletion (default
-recovery window, never forced). ``get`` reads the table (consistently) and falls back to the
-legacy secret, so existing credentials migrate on their next write; ``delete`` removes both.
+decrypt. No new secret is created and the legacy secret is left alone, so a revert still reads it.
+``get`` reads the table (consistently) and falls back to the legacy secret; ``delete`` removes both.
+Legacy secrets are removed by the credential migration script, not here.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ import base64
 import os
 
 import boto3
-from botocore.exceptions import ClientError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from core.config import settings
@@ -86,28 +85,9 @@ def _envelopes_enabled() -> bool:
     return bool(settings.CREDENTIAL_KMS_KEY_ARN)
 
 
-def force_delete_secret(sm, name: str) -> None:
-    """Delete ``name`` with no recovery window. A secret already scheduled for deletion (the
-    legacy copy a sealed ``put`` retired) may refuse with InvalidRequestException ("The secret is
-    scheduled for deletion", DeleteSecret API reference); RestoreSecret cancels the schedule, then
-    the forced delete goes through. Raises ResourceNotFoundException when absent."""
-    try:
-        sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-    except sm.exceptions.InvalidRequestException:
-        sm.restore_secret(SecretId=name)
-        sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-
-
 def _envelope_op(fn):
-    """``fn(table)``, or None when this stage has no envelope table (no key ARN, or not deployed yet)."""
-    if not _envelopes_enabled():
-        return None
-    try:
-        return fn(_envelope_table())
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-            return None
-        raise
+    """``fn(table)``, or None on a local run with no key ARN (the table ships with the code in dev and prod)."""
+    return fn(_envelope_table()) if _envelopes_enabled() else None
 
 
 async def put(owner_id: str, provider: str, credential: dict[str, Any]) -> str:
@@ -118,13 +98,6 @@ async def put(owner_id: str, provider: str, credential: dict[str, Any]) -> str:
 
     def _put_envelope() -> str:
         _envelope_table().put_item(Item=_seal(owner_id, provider, payload))
-        # Retire the legacy secret so a stale read never serves it. Default recovery window,
-        # never force: a bad rollout can still be restored by hand.
-        sm = _client()
-        try:
-            sm.delete_secret(SecretId=name)
-        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
-            pass  # absent, or already scheduled for deletion
         return f"{ENVELOPE_TABLE}/{owner_id}/{provider}"
 
     def _put_secret() -> str:
@@ -181,8 +154,9 @@ async def delete(owner_id: str, provider: str) -> bool:
         )
         sm = _client()
         try:
-            force_delete_secret(sm, name)
-        except sm.exceptions.ResourceNotFoundException:
+            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+            # Absent, or scheduled for deletion by the 8 Nov envelope put (already unreadable).
             return had_envelope
         return True
 

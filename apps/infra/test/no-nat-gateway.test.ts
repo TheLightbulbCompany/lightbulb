@@ -31,6 +31,24 @@ function assertNoNat(t: { network: Template; service: Template }) {
   // A fresh logical id forces a new instance, so the first-boot user data (iptables MASQUERADE) runs.
   expect(Object.keys(t.network.findResources("AWS::EC2::Instance"))).toEqual(["NatInstanceV2"]);
   t.network.resourceCountIs("AWS::EC2::EIP", 1);
+  // A failed host check recovers the same instance (keeps its id, ENI and EIP, so routes survive)
+  // and pages; a failed guest check pages.
+  const nat = { Dimensions: [{ Name: "InstanceId", Value: { Ref: "NatInstanceV2" } }] };
+  t.network.hasResourceProperties("AWS::CloudWatch::Alarm", {
+    ...nat,
+    MetricName: "StatusCheckFailed_System",
+    AlarmName: Match.stringLikeRegexp("^lightbulb-(dev|prod)-nat-instance-system-check$"),
+    AlarmActions: Match.arrayWith([
+      Match.stringLikeRegexp("^arn:aws:sns:us-east-1:877352799272:lightbulb-(dev|prod)-alerts-page$"),
+      { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":automate:us-east-1:ec2:recover"]] },
+    ]),
+  });
+  t.network.hasResourceProperties("AWS::CloudWatch::Alarm", {
+    ...nat,
+    MetricName: "StatusCheckFailed_Instance",
+    AlarmName: Match.stringLikeRegexp("^lightbulb-(dev|prod)-nat-instance-status-check$"),
+    AlarmActions: [Match.stringLikeRegexp("^arn:aws:sns:us-east-1:877352799272:lightbulb-(dev|prod)-alerts-page$")],
+  });
   // The NAT instance admits the VPC only; CDK's default would open it to 0.0.0.0/0.
   const natSgs = Object.values(
     t.network.findResources("AWS::EC2::SecurityGroup", {

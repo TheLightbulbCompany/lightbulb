@@ -165,7 +165,6 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
               "secretsmanager:CreateSecret",
               "secretsmanager:PutSecretValue",
               "secretsmanager:DeleteSecret",
-              "secretsmanager:RestoreSecret",
               "secretsmanager:GetSecretValue",
             ]),
             // stringLikeRegexp anchors with ^…$, so wrap with .* to assert the
@@ -177,6 +176,10 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
         ]),
       },
     });
+  });
+
+  test("no RestoreSecret grant: a sealed put leaves the legacy secret alone, so nothing restores one", () => {
+    expect(JSON.stringify(template.toJSON())).not.toContain("secretsmanager:RestoreSecret");
   });
 
   test("DynamoDbOwnedTables statement covers the lightbulb-dev-integrations table and its indexes", () => {

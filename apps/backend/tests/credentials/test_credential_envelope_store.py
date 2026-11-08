@@ -1,6 +1,7 @@
 """Phase 2 task 5: with the stage KMS key set (every deployed stage), integration credentials go to
 DynamoDB under a KMS envelope and no new per-owner Secrets Manager secret is created. Legacy secrets
-stay readable until the next write retires them."""
+stay readable; a sealed put leaves them in place (reads prefer the table), and the migration script
+removes them later."""
 
 import json
 import os
@@ -43,9 +44,6 @@ class _FakeSM:
         self._writable(SecretId)
         self.secrets[SecretId] = SecretString
 
-    def restore_secret(self, SecretId):
-        self.scheduled.discard(SecretId)
-
     def describe_secret(self, SecretId):
         return {"ARN": f"arn:sm:{SecretId}"}
 
@@ -55,10 +53,10 @@ class _FakeSM:
             raise _NotFound()
         return {"SecretString": self.secrets[SecretId]}
 
-    def list_secrets(self, Filters, IncludePlannedDeletion=False, **kwargs):
+    def list_secrets(self, Filters, **kwargs):
         prefix = Filters[0]["Values"][0]
         names = [n for n in self.secrets if n.startswith(prefix)]
-        return {"SecretList": [{"Name": n} for n in names if IncludePlannedDeletion or n not in self.scheduled]}
+        return {"SecretList": [{"Name": n} for n in names if n not in self.scheduled]}
 
     def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
         self.deletes.append((SecretId, ForceDeleteWithoutRecovery))
@@ -158,15 +156,27 @@ async def test_legacy_only_credential_is_still_readable(stores):
 
 
 @pytest.mark.asyncio
-async def test_put_retires_the_legacy_secret(stores):
+async def test_put_leaves_the_legacy_secret_and_reads_prefer_the_envelope(stores):
+    # A revert to the pre-envelope code must still find a live legacy secret (gate C3).
     secrets, _, table = stores
     secrets[LEGACY] = json.dumps({"token": "old"})
     await store.put("org_a", "github", {"token": "new"})
-    assert table.deletes == [(LEGACY, False)]  # default recovery window, never forced
-    assert LEGACY in table.scheduled
+    assert table.deletes == [] and table.scheduled == set()
+    assert secrets[LEGACY] == json.dumps({"token": "old"})
     assert await store.get("org_a", "github") == {"token": "new"}
-    await store.put("org_a", "github", {"token": "newer"})  # already scheduled: still fine
-    assert await store.get("org_a", "github") == {"token": "newer"}
+
+
+@pytest.mark.asyncio
+async def test_missing_envelope_table_raises(stores, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _Missing:
+        def get_item(self, **kwargs):
+            raise ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "GetItem")
+
+    monkeypatch.setattr(store, "_envelope_table", lambda: _Missing())
+    with pytest.raises(ClientError):
+        await store.get("org_a", "github")
 
 
 @pytest.mark.asyncio
@@ -187,26 +197,27 @@ async def test_envelope_read_is_consistent(stores):
 
 
 @pytest.mark.asyncio
-async def test_delete_removes_both_copies_even_when_legacy_is_scheduled(stores):
+async def test_delete_removes_both_copies(stores):
     secrets, _, table = stores
     secrets[LEGACY] = json.dumps({"token": "old"})
-    await store.put("org_a", "github", {"token": "new"})  # schedules the legacy secret
+    await store.put("org_a", "github", {"token": "new"})
     assert await store.delete("org_a", "github") is True
-    assert secrets == {} and table.items == {} and table.scheduled == set()
+    assert secrets == {} and table.items == {}
+    assert table.deletes == [(LEGACY, True)]
     assert await store.get("org_a", "github") is None
     assert await store.delete("org_a", "github") is False
 
 
 @pytest.mark.asyncio
-async def test_owner_wipe_sweeps_envelopes_and_scheduled_legacy_secrets(stores, monkeypatch):
+async def test_owner_wipe_sweeps_envelopes_and_legacy_secrets(stores, monkeypatch):
     secrets, _, table = stores
     secrets[LEGACY] = json.dumps({"token": "old"})
-    await store.put("org_a", "github", {"token": "a"})  # legacy now scheduled for deletion
+    await store.put("org_a", "github", {"token": "a"})
     await store.put("org_b", "github", {"token": "b"})
     sm = _FakeSM(secrets, table.deletes, table.scheduled)
     monkeypatch.setattr(owner_secret_sweep.boto3, "client", lambda *a, **k: sm)
     expected = [LEGACY, "credential-envelopes/org_a/github"]
     assert await owner_secret_sweep.list_owner_secret_names("org_a") == expected
     assert await owner_secret_sweep.delete_owner_secrets("org_a") == expected
-    assert secrets == {} and table.scheduled == set()  # force-deleted, not left recoverable
+    assert secrets == {} and (LEGACY, True) in table.deletes  # force-deleted, not left recoverable
     assert list(table.items) == [("org_b", "github")]

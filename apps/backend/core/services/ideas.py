@@ -12,7 +12,6 @@ its Work item is open (a quick one for a day).
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import re
@@ -23,18 +22,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
 
-import httpx
 import yaml
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
-from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +42,8 @@ AppKind = Literal[
     "landing_page", "content_site", "form", "internal_tool",
     "dashboard", "customer_portal", "product_with_payments", "automation",
 ]  # fmt: skip
-#: A project in one of these is finished: its idea can be started again.
-CLOSED_PROJECT_STATUSES = frozenset({"completed", "cancelled"})
-#: A task in one of these is finished.
-CLOSED_ISSUE_STATUSES = frozenset({"done", "cancelled"})
 #: A quick idea (nothing in Work) is hidden this long after someone starts it.
 QUICK_HIDDEN = timedelta(hours=24)
-#: A start's project or task was deleted in Work: finished too.
-GONE = "__gone__"
 #: Open agent suggestions per workspace.
 SUGGESTION_CAP = 10
 SUGGESTION_PREFIX = "s-"
@@ -351,11 +341,9 @@ async def list_ideas(auth: AuthContext) -> dict:
 
 
 async def _started(auth: AuthContext, rows: list[dict]) -> set[str]:
-    """Ideas hidden because someone started them: while the start's project or task is open in
-    Work (it comes back once that is finished or deleted), or for QUICK_HIDDEN after a quick one
-    (nothing in Work: it was answered in one go). A Work item that cannot be read counts as open."""
-    issues = await _issue_statuses(auth, [r["issueId"] for r in rows if r.get("issueId")])
-    projects = await _project_statuses(auth, [r["projectId"] for r in rows if r.get("projectId")])
+    """Ideas hidden because someone started them: while the start's request is open, or for
+    QUICK_HIDDEN after a quick one (answered in one go). A Paperclip-era start (a Work project or
+    task) is finished: that Work no longer runs."""
     now = datetime.now(timezone.utc)
     started = set()
     owner_id = resolve_owner_id(auth)
@@ -364,10 +352,8 @@ async def _started(auth: AuthContext, rows: list[dict]) -> set[str]:
             from core.services import proactive
 
             open_ = await proactive.request_open(owner_id, r["taskId"])
-        elif r.get("projectId"):
-            open_ = projects.get(r["projectId"]) not in CLOSED_PROJECT_STATUSES | {GONE}
-        elif r.get("issueId"):
-            open_ = issues.get(r["issueId"]) not in CLOSED_ISSUE_STATUSES | {GONE}
+        elif r.get("projectId") or r.get("issueId"):
+            open_ = False
         else:
             at = _parse_time(r.get("createdAt"))
             open_ = at is not None and now - at < QUICK_HIDDEN
@@ -382,86 +368,6 @@ def _parse_time(value: object) -> datetime | None:
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-class _NoCookieJar:
-    """No browser here: a minted Paperclip session stays in the in-process backstop."""
-
-    def set_cookie(self, *args, **kwargs) -> None:
-        return None
-
-
-async def _teams_context(auth: AuthContext):
-    """The caller's Teams context: workspace company, membership and Paperclip session.
-    No self-heal: a person not yet joined gets the Teams 409/202, not a provision."""
-    from routers.teams import agents as teams_agents
-    from routers.teams import deps as teams_deps
-
-    return await teams_deps.resolve_teams_context(
-        auth=auth,
-        repo=teams_agents._repo(),
-        session_factory=teams_agents.get_user_session_cookie_for,
-        cookies={},
-        response=_NoCookieJar(),
-    )
-
-
-async def _issue_statuses(auth: AuthContext, issue_ids: list[str]) -> dict[str, str]:
-    """{issue: status} from Paperclip; a deleted one (404) is GONE, one that could not be read is
-    left out (never failing the read)."""
-    if not issue_ids:
-        return {}
-    from core.services.paperclip_admin_client import shared_admin_client
-
-    try:
-        ctx = await _teams_context(auth)
-        admin = shared_admin_client()
-        found = await asyncio.gather(
-            *(admin.get_issue(session_cookie=ctx.session_cookie, issue_id=i) for i in issue_ids), return_exceptions=True
-        )
-    except Exception:  # noqa: BLE001 -- progress is optional on this read
-        logger.info("ideas: Work task status unavailable", exc_info=True)
-        return {}
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    statuses = {}
-    for issue_id, found_issue in zip(issue_ids, found):
-        if isinstance(found_issue, PaperclipApiError) and found_issue.status_code == 404:
-            statuses[issue_id] = GONE
-        elif isinstance(found_issue, dict) and found_issue.get("status"):
-            statuses[issue_id] = found_issue["status"]
-    return statuses
-
-
-async def _project_statuses(auth: AuthContext, project_ids: list[str]) -> dict[str, str]:
-    """{project: status} from Paperclip; {} when Work does not answer (never failing the read).
-    A project the list leaves out (deleted, or one this caller cannot list) is read on its own: a
-    404 is GONE; anything else leaves it unknown, which counts as open."""
-    if not project_ids:
-        return {}
-    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
-
-    try:
-        ctx = await _teams_context(auth)
-        admin = shared_admin_client()
-        projects = await admin.list_projects(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
-        rows = projects if isinstance(projects, list) else (projects or {}).get("projects") or []
-        statuses = {p["id"]: p.get("status") for p in rows if isinstance(p, dict) and "id" in p}
-        unlisted = [pid for pid in project_ids if pid not in statuses]
-        read = await asyncio.gather(
-            *(admin.get_project(session_cookie=ctx.session_cookie, project_id=pid) for pid in unlisted),
-            return_exceptions=True,
-        )
-    except Exception:  # noqa: BLE001 -- an unknown project counts as open
-        logger.info("ideas: Work projects unavailable", exc_info=True)
-        return {}
-    for pid, found_project in zip(unlisted, read):
-        if isinstance(found_project, PaperclipApiError) and found_project.status_code == 404:
-            statuses[pid] = GONE
-        elif isinstance(found_project, dict):
-            archived = bool(found_project.get("archivedAt"))
-            statuses[pid] = "completed" if archived else found_project.get("status")
-    return statuses
 
 
 async def dismiss(auth: AuthContext, idea_id: str) -> None:
@@ -533,18 +439,6 @@ def work_description(job: Job) -> str:
     return text
 
 
-async def start(auth: AuthContext, idea_id: str) -> dict:
-    """Start an idea for the caller; idempotent per (workspace, idea, starter) while its Work item
-    is open. Returns ``{roomId, projectId?, issueId?}``. A Paperclip failure is a 502 to retry."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    try:
-        return await _start(auth, idea_id)
-    except (PaperclipApiError, httpx.HTTPError) as exc:
-        logger.warning("ideas: start %s failed on Paperclip: %s", idea_id, type(exc).__name__)
-        raise HTTPException(status_code=502, detail="Work did not answer. Try again in a moment.") from exc
-
-
 def _ids(start: dict) -> dict:
     return {"roomId": start["roomId"], **{k: start[k] for k in ("projectId", "issueId", "taskId") if start.get(k)}}
 
@@ -596,7 +490,9 @@ async def _start_request(auth: AuthContext, owner_id: str, idea_id: str, job: Jo
     return {"roomId": room_id, "taskId": task_id}
 
 
-async def _start(auth: AuthContext, idea_id: str) -> dict:
+async def start(auth: AuthContext, idea_id: str) -> dict:
+    """Start an idea for the caller; idempotent per (workspace, idea, starter) while its request
+    is open. Returns ``{roomId, taskId}``."""
     owner_id = resolve_owner_id(auth)
     _row, agents, names = await _workspace(owner_id)
     job = await _job(owner_id, idea_id, agents, names)  # an unknown idea is a 404 first
@@ -615,74 +511,3 @@ async def _usable_dm(owner_id: str, user_id: str, agent_id: str) -> str:
             AuthContext(user_id=user_id, org_id=owner_id), room_id, messaging.PatchRoomRequest(archived=False)
         )
     return room_id
-
-
-async def resume_after_connect(owner_id: str, provider_key: str) -> int:
-    """A service was connected: one comment on each open idea start that needs it, which wakes
-    the assignee through Paperclip's own comment wake (spec 2026-10-15 §2.3). No approval card,
-    no extra step. Idempotent per (start, provider). Returns the number of comments posted."""
-    from core.services.credentials import registry
-    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
-
-    waiting = []
-    for row in await messaging_repo.open_idea_starts(owner_id):
-        idea = catalog().get(row.get("ideaId", ""))
-        if idea is None or provider_key in (row.get("resumed") or []):
-            continue
-        if any(n.service == provider_key for n in idea.needs):
-            waiting.append(row)
-    if not waiting:
-        return 0
-    try:
-        label = registry.get_provider(provider_key).display_name
-    except Exception:  # noqa: BLE001
-        label = provider_key.replace("_", " ").title()
-    text = f"{label} is connected. Carry on with this; ask again only if something else is missing."
-    admin = shared_admin_client()
-    posted = 0
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
-        cookie = await get_admin_session_cookie(http)
-        ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-        for row in waiting:
-            try:
-                # A project's own task when we stored it and it is still open; else its first open
-                # task with an assignee.
-                target = row.get("firstIssueId") or row.get("issueId")
-                if target:  # firstIssueId or the task start's issueId: skip it when already closed
-                    try:
-                        first = await admin.get_issue(session_cookie=cookie, issue_id=target)
-                        if (first or {}).get("status") in CLOSED_ISSUE_STATUSES:
-                            target = None
-                    except PaperclipApiError as exc:
-                        if exc.status_code != 404:
-                            raise
-                        target = None
-                if not target and row.get("projectId") and ws is not None:
-                    listed = await admin.list_issues(
-                        session_cookie=cookie,
-                        company_id=ws.company_id,
-                        params={"projectId": row["projectId"], "status": "todo,in_progress,in_review,blocked"},
-                    )
-                    rows = listed if isinstance(listed, list) else (listed.get("issues") or listed.get("items") or [])
-                    target = next(
-                        (
-                            i["id"]
-                            for i in rows
-                            if i.get("assigneeAgentId") and i.get("status") not in CLOSED_ISSUE_STATUSES
-                        ),
-                        None,
-                    )
-                if not target:
-                    continue  # nothing open to wake: leave it unmarked so a later connect can nudge
-                # Reserve before posting: a racing connect finds it taken and posts nothing.
-                if not await messaging_repo.claim_idea_resume(owner_id, row["ideaId"], row["userId"], provider_key):
-                    continue
-                try:
-                    await admin.add_issue_comment(session_cookie=cookie, issue_id=target, body={"body": text})
-                except Exception:
-                    await messaging_repo.release_idea_resume(owner_id, row["ideaId"], row["userId"], provider_key)
-                    raise
-                posted += 1
-            except Exception:  # noqa: BLE001 - one bad start never blocks the rest
-                logger.warning("ideas: resume failed owner=%s idea=%s", owner_id, row.get("ideaId"), exc_info=True)
-    return posted

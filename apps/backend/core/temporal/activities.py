@@ -41,6 +41,7 @@ from core.services import (
     source_replies,
     super_agent_faults,
     task_conversation,
+    task_asks,
     tasks_access,
 )
 from core.temporal import client as temporal_client
@@ -282,6 +283,10 @@ async def _local_now(ws: str, user_id: str | None) -> str:
     return router_prompt.local_now(tz)
 
 
+#: A phone caller's task (and every sub-task of it) gets this much Worker time per attempt (end-state Task 4).
+CONTACT_RUN_BUDGET_S = 600
+
+
 async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.RunRequest:
     # The request's room id: a Worker hands an app over from it (`lightbulb app start --room`, skill references/apps.md).
     parts = [
@@ -306,13 +311,15 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         # A group chat's task (any audience kind): the Worker's own events would land in team memory (workspace-wide). Its posts reach the
         # chat's own scope through room ingestion; recall still reads that scope (founder ruling, 6 Nov 2026).
         memory["sync"] = "none"
-    if await tasks_repo.from_contact(ws, task):  # a phone caller's words (the brief) never sync into team memory
+    contact = await tasks_repo.from_contact(ws, task)
+    if contact:  # a phone caller's words (the brief) never sync into team memory
         memory["sync"] = "none"
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS,
         memory=memory,
         effects="required",
+        run_budget_seconds=CONTACT_RUN_BUDGET_S if contact else None,  # the bridge's own hard stop
     )
 
 
@@ -609,6 +616,9 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             return
         if to == "idle" and task.get("watchUntil"):  # still working: it wakes itself (watches.py)
             return
+        from routers import voice_meet  # a meeting's follow-up and its Meet chat line (Task 21)
+
+        await voice_meet.task_moved(task, to)
         n = int(task.get("attemptCount") or 0)
         await task_conversation.ensure_task_room(ws, task)
         await task_conversation.post_as_lightbulb(
@@ -938,6 +948,21 @@ async def _deliver(
     )
 
 
+async def _work_origin(ws: str, task_id: str, trig: dict, parent_id: str | None) -> str | None:
+    """Who a new task's work is for: its trigger's `ref.origin`, else the task it came from (the parent a `start_task`
+    names, the task a job result or input belongs to, the task whose room the trigger was in). A caller's origin wins
+    over any other, so a sub-task of a caller's task, at any depth, is the caller's too (audit H, OWASP ASI03)."""
+    ref = trig.get("ref") or {}
+    room = ts.trigger_room(trig)
+    room_task = ((await messaging_repo.get_room(room) or {}).get("task") or {}).get("taskId") if room else None
+    origins = [ref.get("origin")]
+    for pid in dict.fromkeys(p for p in (parent_id, ref.get("taskId"), room_task) if p and p != task_id):
+        parent = await tasks_repo.get_task(ws, pid)
+        if parent:
+            origins.append("phone_contact" if await tasks_repo.from_contact(ws, parent) else parent.get("origin"))
+    return "phone_contact" if "phone_contact" in origins else next((o for o in origins if o), None)
+
+
 async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str, **fields) -> dict:
     """The task a decision names, created once (deterministic id) with its room and memory card."""
     existing = await tasks_repo.get_task(ws, task_id)
@@ -973,10 +998,16 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     elif kind == "room":
         audience["roomId"] = room
     parent = fields.get("parentTaskId")
-    confirm_all = ref.get("confirmAll") or (parent and (await tasks_repo.get_task(ws, parent) or {}).get("confirmAll"))
+    origin = await _work_origin(ws, task_id, trig, parent)
+    confirm_all = (
+        ref.get("confirmAll")
+        or origin == "meeting"  # a meeting's work at any depth, also when started from its task room (/voice-start)
+        or (parent and (await tasks_repo.get_task(ws, parent) or {}).get("confirmAll"))
+    )
     row = {
         "taskId": task_id,
         "identifier": await tasks_repo.next_identifier(ws),
+        "origin": origin,
         "status": status,
         "audience": audience,
         "lane": "private" if private else "shared",
@@ -1173,7 +1204,10 @@ async def _apply(
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
             try:
-                await temporal_client.start_task_workflow(ws, task_id, "router")
+                if ref.get("ask"):  # a phone call's Question (voice_phone.call_ask): the task waits on it, no attempt
+                    await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **ref["ask"])
+                else:
+                    await temporal_client.start_task_workflow(ws, task_id, "router")
             except Exception:  # noqa: BLE001 -- one bad start never skips the batch's other starts
                 logger.warning("start_task_workflow failed for task %s", task_id, exc_info=True)
                 failed.append(task_id)

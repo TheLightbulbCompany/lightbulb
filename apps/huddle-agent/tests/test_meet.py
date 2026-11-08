@@ -244,15 +244,25 @@ def test_the_name_may_open_any_sentence_of_a_joined_turn():
     assert gate.heard("p2", "We should ask Nova about it later.", 9, new_turn=True) == ""
 
 
-def test_replay_scenarios_against_the_gate():
+def test_replay_scenarios_against_the_gate(monkeypatch):
     """The live order: the reply's audio is held until its turn's transcript arrives (TRANSCRIPT_LAG_S). The
-    assistant must stay silent where it should, at any lag; how soon it answers (ack_within) depends on the lag
-    and is a measurement, reported by `python -m tests.replay.gate`, not asserted here."""
+    assistant must stay silent where it should, at any lag; it must answer in time (ack_within) at the live lag
+    (lag changes how soon, so ack_within is judged only there)."""
     assert len(set(SCENARIOS)) == 17
-    for lag in (0.0, 2.0, replay_gate.TRANSCRIPT_LAG_S, 8.0):
-        replay_gate.TRANSCRIPT_LAG_S = lag
+    live = replay_gate.TRANSCRIPT_LAG_S
+    for lag in (0.0, 2.0, live, 8.0):
+        monkeypatch.setattr(replay_gate, "TRANSCRIPT_LAG_S", lag)
         results = [r for name in SCENARIOS for r in replay_gate.judge(name)]
         assert [r for r in results if r[0] == "FAIL" and r[1] == "silent_between"] == [], lag
+    monkeypatch.setattr(replay_gate, "TRANSCRIPT_LAG_S", live)
+    late = [n for n in SCENARIOS for r in replay_gate.judge(n) if r[:2] == ("FAIL", "ack_within")]
+    assert late == []
+
+
+def test_replay_gate_fails_on_late_ack(monkeypatch):
+    monkeypatch.setattr(replay_gate, "TRANSCRIPT_LAG_S", 8.0)  # the transcript lands far too late: acks miss their 4 s
+    assert any(r[:2] == ("FAIL", "ack_within") for n in SCENARIOS for r in replay_gate.judge(n))
+    assert replay_gate.main() != 0
 
 
 async def test_reads_and_chat_name_the_asker():
@@ -287,3 +297,63 @@ async def test_call_stats_sends_a_date_range():
     a._post = post
     await a.call_stats(from_date="2026-10-01", to_date="2026-10-31")
     assert sent == [{"kind": "calls", "days": 7, "from": "2026-10-01", "to": "2026-10-31"}]
+
+
+def test_an_ask_right_after_a_dropped_reply_is_answered():
+    """#5025 review: a reply asked for and then dropped or cut must not hold up the next ask."""
+    agent = _agent()
+    assert not agent.asking()
+
+    class Handle:
+        def __init__(self, done):
+            self._done = done
+
+        def done(self):
+            return self._done
+
+    agent.asked = Handle(done=False)  # asked for, still under way: the next ask waits
+    assert agent.asking()
+    agent.asked = Handle(done=True)  # it was dropped unheard (or cut): the next ask goes ahead
+    assert not agent.asking()
+
+
+def test_the_nudge_asks_for_a_reply_room_sound_cannot_cut():
+    """#5025 review: a reply held for quiet was cut by the next voice; only the gate's stop (force) may cut it."""
+    calls = []
+
+    class Session:
+        def generate_reply(self, **kw):
+            calls.append(kw)
+            return "handle"
+
+    agent = _agent()
+    agent.ask(Session(), "Maya: Lightbulb, how many calls today?")
+    assert calls == [{"user_input": "Maya: Lightbulb, how many calls today?", "allow_interruptions": False}]
+    assert agent.asked == "handle"
+
+
+def test_meet_has_approve_tool():
+    assert "approve" in {t.info.name for t in _agent().tools}
+
+
+async def test_meet_approve_posts_route():
+    a, sent = _agent(), []
+
+    async def meet_op(op, body):
+        sent.append((op, body))
+        return {"none": True}
+
+    a._b.meet = meet_op
+    assert await a.approve("no", "") == {"none": True}
+    assert sent[0][0] == "approve" and sent[0][1]["phrase"] == "no" and "participantId" in sent[0][1]
+
+
+def test_the_name_as_its_own_sentence_then_the_ask_wakes():
+    """8 Nov sim: the transcriber wrote "Lightbulb. How many phone calls did we get today?" and the nudge never came,
+    so OpenAI (which answers only when asked) said nothing."""
+    for line in ("Lightbulb. How many phone calls did we get today?", "Light bulb. How many phone calls today?",
+                 "Nova. Read me the bookings.", "Hey Nova. What's on Wednesday?"):  # fmt: skip
+        assert meet.wakes("Nova", line), line
+    for line in ("Nova. That was great.", "Thanks, Nova. How was your weekend?", "I asked Nova. What did she say?",
+                 "Nova. Is it."):  # fmt: skip
+        assert not meet.wakes("Nova", line), line

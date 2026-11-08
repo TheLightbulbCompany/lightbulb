@@ -28,8 +28,9 @@ async def open_ask(
     text: str,
     options: list[dict],
     blocking: bool,
-    attempt: int,
+    attempt: int | None,
     run_id: str | None,
+    preview: dict | None = None,
 ) -> dict:
     """The Question row (an existing one replays). Raises `AskRefused`."""
     from temporalio.service import RPCError
@@ -57,6 +58,7 @@ async def open_ask(
                 "blocking": blocking,
                 "attempt": attempt,
                 "runId": run_id,
+                **({"preview": preview} if preview else {}),
             },
             "admission": "respond",
             "lane": task.get("lane") or "shared",

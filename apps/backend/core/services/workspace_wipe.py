@@ -24,9 +24,8 @@ This module snapshots by ORG id instead:
 
 Layers (each independently selectable): ``runtime`` (gate tokens, AgentCore
 runtime + S3 profiles + containers row, provisioning workflows,
-usage counters), ``paperclip`` (company, per-member Aurora users, the
-workspace row + deleted members' identity rows + pending briefs, agent-key
-secrets), ``messaging``
+usage counters), ``paperclip`` (the workspace row + deleted members'
+identity rows + pending briefs, old agent-key secrets), ``messaging``
 (room partitions + owner partition), ``secrets`` (owner secrets, OpenRouter
 key, integrations, OAuth tokens, agent email, slack installs), ``identity``
 (per-member users rows, slug, join link, per-member Clerk users, Clerk org —
@@ -37,16 +36,16 @@ Members are the union of the org's Clerk memberships and the workspace row's
 ``member_user_ids``, read ONCE into the snapshot before any delete, so a re-run
 after a partial failure still finds everyone (and the Clerk org is kept while
 any member delete failed). A member who also belongs to another org keeps their
-account AND their Paperclip identity row — only this org's membership goes,
+account AND their identity row — only this org's membership goes,
 with the org — unless ``delete_shared_members``. The vendor org
 (``VENDOR_ORG_ID``) and an org the acting admin belongs to are refused. The
 managed OpenRouter key is retired (entitlement_teardown's path) and its row +
 secrets deleted only once the settlement worker has disabled it; until then
 that step fails and asks for a re-run.
 
-The Paperclip company deleted is the one named on the workspace row — one
-workspace = one company, keyed by org — and the workspace row goes with it. A
-read failure of that row stops preview/execute with nothing deleted.
+The wipe calls neither the Paperclip server nor its Aurora database (Paperclip
+exit, task 8b.7). A read failure of the workspace row stops preview/execute
+with nothing deleted.
 
 Billing/Stripe default PRESERVE: the billing layer runs only with
 ``include_billing=True`` AND ``confirm_billing="DELETE-BILLING"``. Anything
@@ -112,11 +111,8 @@ from core.services.account_wipe import (
     WipeReport,
     WipeStep,
     _archive_metronome_customer,
-    _delete_paperclip_company_call,
-    _NO_PAPERCLIP_ROW,
     _preview_step,
     _runtime_detail,
-    _refuse_bootstrap_account,
     _skip,
     _step,
     cancel_open_workflows,
@@ -132,7 +128,6 @@ from core.services.owner_secret_sweep import (
     list_owner_agent_key_secret_names,
     list_owner_secret_names,
 )
-from core.services.paperclip_user_delete import delete_paperclip_user
 
 logger = logging.getLogger(__name__)
 
@@ -222,11 +217,9 @@ class WorkspaceSnapshot:
     billing: dict | None
     #: Every person in the workspace: the union of Clerk memberships and the
     #: workspace row's ``member_user_ids``, read ONCE before any delete. Each carries user_id,
-    #: email, emails (every known address, for the bootstrap guard),
-    #: paperclip_user_id and other_orgs — so no step re-derives its member list
+    #: email, other_orgs and in_clerk — so no step re-derives its member list
     #: from rows an earlier step deletes, and a re-run still finds them via Clerk.
     members: list[dict]
-    company_id: str | None
     room_ids: list[str]
     secret_names: list[str]
     agent_key_names: list[str]
@@ -244,7 +237,7 @@ class WorkspaceSnapshot:
     include_billing: bool = False
     delete_shared_members: bool = False
     fingerprint: str = ""
-    #: Execute-time: member ids (and "paperclip_company") whose delete failed.
+    #: Execute-time: member ids (and failed money/member-keyed steps) whose delete failed.
     #: Steps that would destroy the handle a re-run needs check this first.
     unfinished: set[str] = field(default_factory=set)
 
@@ -290,8 +283,6 @@ async def _read_members(org_id: str, repo: PaperclipRepo, joined: set[str]) -> l
             {
                 "user_id": uid,
                 "email": emails[0] if emails else "",
-                "emails": emails,
-                "paperclip_user_id": identity.paperclip_user_id if identity else "",
                 "other_orgs": [o["id"] for o in orgs if o.get("id") and o["id"] != org_id],
                 "in_clerk": uid in clerk,
             }
@@ -311,10 +302,6 @@ async def _read_workspace_snapshot(
     paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
     # Before any step: a read failure here stops preview/execute with nothing deleted.
     workspace = await paperclip_repo.get_workspace(org_id)
-    # ponytail: once the workspace row is gone (a prior half-wipe), the company
-    # id is unrecoverable from DDB and the Aurora company survives; there is no
-    # org->company lookup against Paperclip itself to fall back on.
-    company_id = (workspace.company_id or None) if workspace is not None else None
     members = await _read_members(org_id, paperclip_repo, workspace.member_user_ids if workspace else set())
     room_ids = await messaging_repo.list_owner_room_ids(org_id)
     secret_names = await list_owner_secret_names(org_id)
@@ -332,7 +319,6 @@ async def _read_workspace_snapshot(
         container=container,
         billing=billing,
         members=members,
-        company_id=company_id,
         room_ids=room_ids,
         secret_names=secret_names,
         agent_key_names=agent_key_names,
@@ -368,7 +354,6 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
             for k in ("metronome_customer_id", "stripe_customer_id", "company_stripe_account_id")
         },
         "billing_row": snapshot.billing is not None,
-        "company_id": snapshot.company_id or "",
         "members": sorted([m["user_id"], sorted(m["other_orgs"])] for m in snapshot.members),
         "room_ids": sorted(snapshot.room_ids),
         "secret_names": sorted(snapshot.secret_names),
@@ -446,56 +431,6 @@ class WorkspaceStepDef:
     layer: str
     preview: Callable[[WorkspaceSnapshot], tuple[bool, str]]
     run: Callable[[WorkspaceSnapshot], Awaitable[str]]
-
-
-def _company_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
-    if not snap.company_id:
-        return False, _NO_PAPERCLIP_ROW
-    members = member_user_ids(snap)
-    return True, f"company_id={snap.company_id} ({len(members)} member(s): {', '.join(members) or 'none'})"
-
-
-async def _company_run(snap: WorkspaceSnapshot) -> str:
-    if not snap.company_id:
-        return "no paperclip company for workspace " + _NO_PAPERCLIP_ROW
-    try:
-        await _delete_paperclip_company_call(snap.company_id)
-    except Exception:
-        snap.unfinished.add("paperclip_company")
-        raise
-    return f"company_id={snap.company_id}"
-
-
-def _aurora_targets(snap: WorkspaceSnapshot) -> list[dict]:
-    deletable = set(deletable_member_ids(snap))
-    return [m for m in snap.members if m["user_id"] in deletable and m["paperclip_user_id"]]
-
-
-def _aurora_users_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
-    ids = [m["paperclip_user_id"] for m in _aurora_targets(snap)]
-    if not ids:
-        return False, _NO_PAPERCLIP_ROW
-    return True, f"{len(ids)} Better Auth user(s): {', '.join(ids)}"
-
-
-async def _aurora_users_run(snap: WorkspaceSnapshot) -> str:
-    env = settings.ENVIRONMENT or "dev"
-    failures: list[str] = []
-    deleted = 0
-    for m in _aurora_targets(snap):
-        try:
-            await delete_paperclip_user(paperclip_user_id=m["paperclip_user_id"], email=m["email"], env=env)
-            deleted += 1
-        except Exception as e:  # noqa: BLE001 -- per-member partial failure, aggregated below
-            # Keep this member's paperclip row: it is the only record of the
-            # paperclip_user_id a re-run needs.
-            snap.unfinished.add(m["user_id"])
-            failures.append(f"{m['user_id']}: {e}")
-    if failures:
-        raise RuntimeError(f"deleted {deleted} Better Auth user(s); failures: {'; '.join(failures)}")
-    if not deleted:
-        return "no Better Auth users for workspace"
-    return f"deleted {deleted} Better Auth user(s)"
 
 
 def _gate_tokens_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
@@ -637,28 +572,19 @@ def _paperclip_rows_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 
 
 async def _paperclip_rows_run(snap: WorkspaceSnapshot) -> str:
-    if "paperclip_company" in snap.unfinished:
-        raise RuntimeError("kept paperclip-companies rows: company delete failed and they carry its id; re-run")
     repo = PaperclipRepo(table_name="paperclip-companies")
     deleted: list[str] = []
-    kept: list[str] = []
     await repo.delete(snap.org_id)
     deleted.append(f"{snap.org_id}: workspace row")
     # Identity rows only for accounts this wipe deletes: a member who keeps
     # their account is still in other workspaces' companies under it.
     for uid in deletable_member_ids(snap):
-        if uid in snap.unfinished:
-            kept.append(uid)
-            continue
         await repo.delete(uid)
         deleted.append(f"{uid}: identity row")
     for owner in [snap.org_id, *deletable_member_ids(snap)]:
         if await repo.delete_pending_brief(owner):
             deleted.append(f"{owner}: pending_brief")
-    detail = ("deleted " + "; ".join(deleted)) if deleted else "no paperclip-companies or pending_brief rows"
-    if kept:
-        detail += f"; kept row(s) for re-run (Better Auth delete failed): {', '.join(kept)}"
-    return detail
+    return "deleted " + "; ".join(deleted)
 
 
 async def _billing_row_run(snap: WorkspaceSnapshot) -> str:
@@ -862,7 +788,7 @@ async def _clerk_org_run(snap: WorkspaceSnapshot) -> str:
     # ALWAYS LAST: leaving the org alive lets everything regrow on the next
     # /container/status poll. But a failed member delete keeps it: the org's
     # Clerk member list is what lets a re-run find that member again.
-    if snap.unfinished - {"paperclip_company"}:
+    if snap.unfinished:
         raise RuntimeError(
             f"kept Clerk org: member delete(s) failed for {', '.join(sorted(snap.unfinished))}; re-run to finish"
         )
@@ -884,10 +810,6 @@ _HELD_BY_MONEY = frozenset({"billing_row", "clerk_user", "clerk_org"})
 
 
 WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
-    WorkspaceStepDef("paperclip_company", "delete_company", LAYER_PAPERCLIP, _company_preview, _company_run),
-    WorkspaceStepDef(
-        "paperclip_aurora_user", "delete_paperclip_user", LAYER_PAPERCLIP, _aurora_users_preview, _aurora_users_run
-    ),
     WorkspaceStepDef(
         "bedrock_gate_tokens", "delete_gate_token_rows", LAYER_RUNTIME, _gate_tokens_preview, _gate_tokens_run
     ),
@@ -1139,8 +1061,7 @@ async def wipe_workspace(
 
     Guards, in order, before anything is deleted: org shape, ``confirm_org``
     match (the typed workspace id must name THIS workspace), billing override
-    (``include_billing`` + ``confirm_billing == "DELETE-BILLING"``), bootstrap
-    (any member email on the protection list refuses the whole wipe), stale
+    (``include_billing`` + ``confirm_billing == "DELETE-BILLING"``), stale
     preview (fresh re-snapshot vs ``expected_fingerprint``, which is REQUIRED —
     an empty one would skip the drift check), acting admin not a member.
     Clerk org delete runs last so nothing regrows.
@@ -1172,14 +1093,6 @@ async def wipe_workspace(
             raise WorkspaceWipeError(f"{actor_admin_id} is not the sole member of {org_id}; refusing to wipe it.")
     elif actor_admin_id in member_user_ids(snap):
         raise WorkspaceWipeError(f"acting admin {actor_admin_id} is a member of {org_id}; refusing to wipe it.")
-
-    # Bootstrap guard up front, before any teardown: any member carrying a
-    # bootstrap admin identity (under ANY known email: paperclip row, Clerk,
-    # users row) refuses the whole wipe (deleting it breaks the
-    # PaperclipAdminClient session every provision depends on).
-    for m in snap.members:
-        if m["emails"]:
-            _refuse_bootstrap_account(m["user_id"], m["emails"])
 
     logger.info(
         "workspace_wipe.wipe_workspace: starting for org=%s actor=%s layers=%s billing_armed=%s",
@@ -1262,9 +1175,7 @@ async def wipe_own_workspace(org_id: str, *, user_id: str) -> WorkspaceWipeRepor
     and the teardown, and the full wipe runs: every layer, billing armed
     (``delete_stripe_customer`` cancels the subscription before deleting the
     customer), the caller's account deleted even if they are in other orgs.
-    Every ``wipe_workspace`` guard still applies (bootstrap, vendor org,
-    fingerprint); the org row names exactly one company, which is the only
-    one the wipe deletes (#3097).
+    Every ``wipe_workspace`` guard still applies (vendor org, fingerprint).
     """
     _refuse_org(org_id)
     options = {"layers": ALL_LAYERS, "include_billing": True, "delete_shared_members": True}

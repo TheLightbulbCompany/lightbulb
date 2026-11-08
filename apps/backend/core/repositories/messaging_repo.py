@@ -2997,44 +2997,6 @@ async def update_idea_start(owner_id: str, idea_id: str, user_id: str, fields: d
     )
 
 
-async def claim_idea_resume(owner_id: str, idea_id: str, user_id: str, provider: str) -> bool:
-    """Reserve ``provider`` in the start's ``resumed`` list; False when it was already reserved
-    (or the start is gone), so two racing connects post one comment."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key=_idea_start_key(owner_id, idea_id, user_id),
-            UpdateExpression="SET resumed = list_append(if_not_exists(resumed, :empty), :p)",
-            ConditionExpression="attribute_exists(pk) AND (attribute_not_exists(resumed) OR NOT contains(resumed, :s))",
-            ExpressionAttributeValues={":empty": [], ":p": [provider], ":s": provider},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return False
-    return True
-
-
-async def release_idea_resume(owner_id: str, idea_id: str, user_id: str, provider: str) -> None:
-    """Undo ``claim_idea_resume`` (the comment failed), so a later connect can post it."""
-    key = _idea_start_key(owner_id, idea_id, user_id)
-    row = await _get(**key)
-    resumed = list((row or {}).get("resumed") or [])
-    if provider not in resumed:
-        return
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key=key,
-            UpdateExpression=f"REMOVE resumed[{resumed.index(provider)}]",
-            ConditionExpression="resumed[%d] = :p" % resumed.index(provider),
-            ExpressionAttributeValues={":p": provider},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-
 async def close_idea_start(owner_id: str, idea_id: str, user_id: str, start_token: str) -> None:
     """Forget a finished start (its project or task done, or a quick one), so the idea can be
     started again. Fenced on the claim's token: a racing Start that already replaced it is left alone."""

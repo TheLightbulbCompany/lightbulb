@@ -665,6 +665,23 @@ async def test_deterministic_start_skips_router_run(world):
 
 
 @pytest.mark.asyncio
+async def test_a_scripted_start_with_an_ask_waits_on_its_question(world, monkeypatch):
+    """A phone call's per-call task (voice_phone end): the Question opens through the Worker-ask path
+    (`task_asks.open_ask`, update-with-start) instead of a Router start, so no attempt runs before the answer."""
+    asked = []
+
+    async def open_ask(ws, task, **ask):
+        asked.append((task["taskId"], ask))
+
+    monkeypatch.setattr(acts.task_asks, "open_ask", open_ask)
+    ask = {"qid": "q-call", "kind": "question", "subkind": "didnt_know", "title": "Answer Priya: parking?"}
+    t1 = await _trig("voice:c1:r1", source="voice", ref={"deliverRoomId": ROOM, "start": _start([]), "ask": ask})
+    out = await _run([t1])
+    task_id = ts.router_task_id(t1, 0, 0)
+    assert asked == [(task_id, ask)] and world["starts"] == [] and out.started_task_ids == [task_id]
+
+
+@pytest.mark.asyncio
 async def test_second_automation_run_task_row_carries_previous_run(world):
     first = ts.router_task_id("sched:s1:100", 0, 0)
     start = {"kind": "start_task", "triggerIds": ["sched:s1:200"], "title": "Weekly digest", "brief": "Write it"}

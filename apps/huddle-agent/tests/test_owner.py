@@ -75,3 +75,19 @@ async def test_the_talk_is_kept_with_its_transcript_and_started_tasks():
                        {"who": "assistant", "text": "Drafting it.", "t": 2.0}],
         "work": [{"title": "Post", "taskId": "k-1"}],
     }  # fmt: skip
+
+
+def test_owner_has_approve_tool():
+    assert "approve" in {t.info.name for t in _agent().tools}
+
+
+async def test_approve_posts_route():
+    a, sent = _agent(), []
+
+    async def owner_op(op, body):
+        sent.append((op, body))
+        return {"confirm_sent": True, "title": "x"}
+
+    a._b.owner = owner_op
+    assert await a.approve("yes", "the supply order") == {"confirm_sent": True, "title": "x"}
+    assert sent == [("approve", {"phrase": "yes", "hint": "the supply order", "speakerUserId": "user_maya"})]

@@ -3,19 +3,16 @@
 Emitted from the run-completion callers (the room chat path's
 ``handle_run_event``, the operator relay tap, and the usage callback for
 non-room runs) — the one signal billing already trusts for EVERY session
-type (webchat, channel, cron, Paperclip issue). It
+type (webchat, channel, cron, room). It
 carries the owner, initiation type (autonomous vs human), trigger provider and
 outcome, powering the activation gate, the North Star (successful autonomous
 runs / active owner / week) and retention cohorts.
 
-Session-key classification is synchronous; everything with I/O (the Paperclip
-enrichment join, the internal-owner lookup, the capture itself) runs in a
+Session-key classification is synchronous; everything with I/O (the internal-owner lookup, the capture itself) runs in a
 spawned task the caller tracks and cancels on connection close (best-effort —
 an emit lost at teardown is the same accepted loss class as backend-down). The whole path is
 best-effort by contract: no failure here may ever raise into or slow the run
-path. On enrichment failure the event is still emitted, degraded
-(``initiation_type: "unknown"``, ``enrichment_failed: true``) — the event
-COUNT stays truthful; only properties degrade.
+path.
 
 Dedup stance: effectively-once with an at-least-once floor. OpenClaw's
 ``lifecycleEnded`` guard means one terminal per run; the bounded runId FIFO
@@ -32,17 +29,12 @@ import logging
 import time
 import uuid
 
-import httpx
 
 from core.auth import is_org_owner_id, is_internal_email
 from core.config import settings
-from core.repositories.paperclip_repo import PaperclipRepo
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.services import clerk_admin
-from core.services.inbound_triggers import automation_from_title
-from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +49,6 @@ _CAPTURE_UUID_NS = uuid.uuid5(uuid.NAMESPACE_URL, "isol8:agent_run_completed")
 # North Star numerator sources. Everything else classified is human-initiated;
 # only an unresolved source stays "unknown".
 _AUTONOMOUS_SOURCES = frozenset({"routine_schedule", "routine_webhook", "cron", "heartbeat_timer"})
-
-_ROUTINE_RUN_SOURCES = frozenset({"schedule", "webhook", "manual", "api"})
-
-# Total budget for the Paperclip enrichment join (admin cookie + up to three
-# GETs). One attempt, no retries — over budget the event emits degraded.
-_ENRICH_TIMEOUT_S = 5.0
 
 # Bounded FIFO set of already-emitted owner:runId pairs (same idiom as
 # product_analytics._daily_dedup_seen). Owner-scoped because runId is
@@ -79,15 +65,10 @@ _internal_cache: dict[str, tuple[bool, float]] = {}
 
 
 def _coarse_source(source: str) -> str:
-    """Coarse run origin for the CloudWatch ``run.completed`` metric.
-
-    The fine-grained routine-schedule / issue-assignment split needs the async
-    Paperclip join and lives in PostHog; the metric keeps the synchronously-known
-    bucket (all Paperclip-driven runs collapse to ``paperclip``, which is exactly
-    the autonomous-work bucket to alarm on)."""
+    """Coarse run origin for the CloudWatch ``run.completed`` metric."""
     if source in ("dm", "group", "channel"):
         return "channel"
-    if source in ("webchat", "cron", "paperclip", "room"):
+    if source in ("webchat", "cron", "room"):
         return source
     return "unknown"
 
@@ -103,7 +84,7 @@ def schedule_run_completed(
     person (``capture_product_event``'s identity rule). Deduped on ``owner:run_id`` so a run
     seen by both the chat reader loop and the operator relay tap emits once.
     Fires the ``run.completed`` CloudWatch metric; returns the PostHog
-    enrichment+capture task (for the caller's drain set), or None when the run
+    capture task (for the caller's drain set), or None when the run
     was already emitted or the PostHog write key is unset. Synchronous and
     I/O-free — safe on the reader loop.
     """
@@ -130,9 +111,7 @@ def schedule_run_completed(
     # CloudWatch run-outcome metric — the alarmable reliability signal. Emitted
     # for EVERY run terminal, INDEPENDENT of the PostHog write key (a
     # product-analytics switch must never blind ops), and deduped above.
-    # ``source`` is intentionally coarse — webchat / channel / cron / paperclip;
-    # the fine-grained routine-vs-issue split needs the async Paperclip join and
-    # stays in PostHog. For storm detection, paperclip+failure is the signal.
+    # ``source`` is intentionally coarse — webchat / channel / cron / room.
     put_metric("run.completed", dimensions={"outcome": outcome, "source": _coarse_source(parsed.get("source", ""))})
 
     # PostHog product event — fine-grained, gated on the analytics write key.
@@ -157,8 +136,6 @@ def schedule_run_completed(
             props["duration_ms"] = int(ended - started)
 
     source = parsed.get("source", "")
-    issue_id = parsed.get("issue_id")
-    needs_enrichment = False
     if source == "webchat":
         props["run_source"] = "webchat"
     elif source == "room":
@@ -171,54 +148,16 @@ def schedule_run_completed(
         props["run_source"] = "cron"
         if parsed.get("cron_id"):
             props["cron_id"] = parsed["cron_id"]
-    elif source == "paperclip" and issue_id:
-        # schedule/webhook/manual/api vs issue-assignment lives only in
-        # Paperclip's DB — resolved by the async join below.
-        props["issue_id"] = issue_id
-        needs_enrichment = True
-    elif source == "paperclip":
-        props["run_source"] = "paperclip_other"
-        # An issue-less Paperclip run is keyed ``run:<paperclip run id>`` -- a timer
-        # heartbeat wake is one; the join reads the run's invocationSource.
-        needs_enrichment = bool(parsed.get("run_id"))
     else:
         props["run_source"] = "unknown"
 
     props["workspace_id"] = owner_id
-    return asyncio.create_task(
-        _enrich_and_capture(owner_id=owner_id, props=props, needs_enrichment=needs_enrichment, person_id=person_id)
-    )
+    return asyncio.create_task(_capture(owner_id=owner_id, props=props, person_id=person_id))
 
 
-async def _enrich_and_capture(
-    *, owner_id: str, props: dict, needs_enrichment: bool, person_id: str | None = None
-) -> None:
+async def _capture(*, owner_id: str, props: dict, person_id: str | None = None) -> None:
     """Task body — never raises (same posture as the billing task wrapper)."""
     try:
-        if needs_enrichment:
-            try:
-                enrich = (
-                    _enrich_from_paperclip(props["issue_id"])
-                    if props.get("issue_id")
-                    else _enrich_from_heartbeat_run(owner_id, props["run_id"], props.get("agent_id"))
-                )
-                props.update(await asyncio.wait_for(enrich, timeout=_ENRICH_TIMEOUT_S))
-            except Exception:
-                logger.warning(
-                    "run_analytics: paperclip enrichment failed for owner %s issue %s run %s",
-                    owner_id,
-                    props.get("issue_id"),
-                    props.get("run_id"),
-                    exc_info=True,
-                )
-                # An issue-less run keeps its paperclip_other category; only the
-                # issue join degrades the event.
-                if props.get("issue_id"):
-                    props["run_source"] = "unknown"
-                    props["enrichment_failed"] = True
-        if props.get("is_nightly_ceo"):
-            # The only per-run signal that the retention loop actually fired and how it ended.
-            put_metric("nightly_ceo.run", dimensions={"outcome": props["outcome"]})
         props["initiation_type"] = _initiation_type(props["run_source"])
         props["is_internal"] = await _is_internal_owner(owner_id)
         run_id = props.get("run_id")
@@ -236,89 +175,6 @@ def _initiation_type(run_source: str) -> str:
     if run_source == "unknown":
         return "unknown"
     return "autonomous" if run_source in _AUTONOMOUS_SOURCES else "human"
-
-
-async def _enrich_from_paperclip(issue_id: str) -> dict:
-    """The two-call join: issue -> origin routine -> dispatching run row.
-
-    Uses the process-wide instance-admin cookie (cross-company, same as
-    agent_export's routine-detail fetch). Returns the property delta; raises
-    on any failure so the caller emits the degraded event instead.
-    """
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_ENRICH_TIMEOUT_S) as http:
-        admin = PaperclipAdminClient(http_client=http)
-        cookie = await get_admin_session_cookie(http)
-
-        issue = await admin.get_issue(session_cookie=cookie, issue_id=issue_id)
-        issue_title = issue.get("title")
-        delta: dict = {}
-        if issue.get("originKind") != "routine_execution":
-            delta["run_source"] = "issue_assignment"
-            return delta
-
-        routine_id = issue.get("originId")
-        if not routine_id:
-            raise LookupError(f"routine_execution issue {issue_id} has no originId")
-        delta["routine_id"] = routine_id
-        detail = await admin.get_routine(session_cookie=cookie, routine_id=routine_id)
-        runs = detail.get("recentRuns") if isinstance(detail, dict) else None
-        run = _match_dispatching_run(runs or [], issue_id)
-        if run is None:
-            # Outside the detail's 25-row recentRuns window — pull full history.
-            runs = await admin.list_routine_runs(routine_id=routine_id, session_cookie=cookie)
-            run = _match_dispatching_run(runs, issue_id)
-        if run is None:
-            raise LookupError(f"no dispatching routine run matched issue {issue_id}")
-
-        source = run.get("source")
-        if source not in _ROUTINE_RUN_SOURCES:
-            raise LookupError(f"unrecognized routine-run source {source!r} for issue {issue_id}")
-        delta["run_source"] = f"routine_{source}"
-
-        # Provider via the seed-title inversion: trigger label first, then the
-        # issue title (== the routine title, interpolated verbatim). The
-        # fallback matters for poll-shaped automations — gmail.poll's seeded
-        # schedule trigger carries NO label, but its routine title is exactly
-        # what the inversion keys on. An owner-renamed ROUTINE still inverts
-        # to None -> provider stays null, same accepted limitation as
-        # agent_export.
-        trigger = run.get("trigger")
-        label = trigger.get("label") if isinstance(trigger, dict) else None
-        automation = (automation_from_title(label) if label else None) or (
-            automation_from_title(issue_title) if issue_title else None
-        )
-        if automation:
-            delta["trigger_provider"] = automation[0]
-        return delta
-
-
-async def _enrich_from_heartbeat_run(owner_id: str, run_id: str, agent_id: str | None) -> dict:
-    """An issue-less Paperclip run: a timer heartbeat wake (``invocationSource ==
-    "timer"``) is autonomous, and the CEO's is the retention loop ``is_nightly_ceo``
-    counts. Any other issue-less run keeps ``paperclip_other``."""
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_ENRICH_TIMEOUT_S) as http:
-        admin = PaperclipAdminClient(http_client=http)
-        cookie = await get_admin_session_cookie(http)
-        run = await admin.get_heartbeat_run(session_cookie=cookie, run_id=run_id)
-    if run.get("invocationSource") != "timer":
-        return {}
-    ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    ceo_id = (ws.starter_agent_ids or {}).get("ceo") if ws is not None else None
-    return {"run_source": "heartbeat_timer", "is_nightly_ceo": bool(ceo_id) and ceo_id == agent_id}
-
-
-def _match_dispatching_run(runs: list, issue_id: str) -> dict | None:
-    """The routine_runs row that DISPATCHED this issue. A coalesced/skipped
-    fire is finalized with the LIVE issue's linkedIssueId, so several rows can
-    share it — only a non-coalesced/skipped row is the dispatcher."""
-    for run in runs:
-        if (
-            isinstance(run, dict)
-            and run.get("linkedIssueId") == issue_id
-            and run.get("status") not in ("coalesced", "skipped")
-        ):
-            return run
-    return None
 
 
 async def resolve_internal_owner(owner_id: str) -> bool:

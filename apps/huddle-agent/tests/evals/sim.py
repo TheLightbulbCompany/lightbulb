@@ -12,10 +12,10 @@ What it does:
 2. Starts the worker (`huddle_agent.phone`) on this Mac as agent `lightbulb-phone-qa`, with the dev secrets read from
    AWS and never printed. Set `PHONE_QA_AGENT` to use another name.
 3. For each scenario, it dispatches that agent to a fresh room. A caller then joins with the SIP attributes the worker
-   reads (`sip.phoneNumber`, `sip.trunkPhoneNumber`). The caller is a second Gemini Live session with a persona and
-   a goal, and it hangs up through a tool.
+   reads (`sip.phoneNumber`, `sip.trunkPhoneNumber`). The caller is a second realtime session (OpenAI, the same
+   vendor-neutral caller for either engine) with a persona and a goal, and it hangs up through a tool.
 4. Reads `META.call` and the calendar rows back from dev, measures latency and silence from the agent's audio,
-   asks a text Gemini judge the soft questions, and writes `tests/evals/out/scorecard-<time>.{json,md}`.
+   asks a text OpenAI judge the soft questions, and writes `tests/evals/out/scorecard-<time>.{json,md}`.
 
 Needs: AWS profile isol8-admin, the `lk` CLI's project config (~/.livekit/cli-config.yaml). Spend: two Live sessions
 per scenario, each capped at `max_s`; the estimate is printed in the scorecard.
@@ -38,6 +38,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import passk
+
 HERE = Path(__file__).parent
 OUT = HERE / "out"
 AGENT = os.environ.get("PHONE_QA_AGENT", "lightbulb-phone-qa")
@@ -46,8 +48,8 @@ assert AGENT != "lightbulb-huddle" and "qa" in AGENT, f"PHONE_QA_AGENT must be a
 API ="https://api-dev.thelightbulb.company"
 TABLE = "lightbulb-dev-messaging"
 AWS = ["--profile", "isol8-admin", "--region", "us-east-1"]
-MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")
-JUDGE = os.environ.get("PHONE_JUDGE_MODEL", "gemini-3.8-flash")
+MODEL = os.environ.get("CALLER_MODEL", "gpt-realtime-2.1-mini")  # the caller
+JUDGE = os.environ.get("PHONE_JUDGE_MODEL", "gpt-4.1-mini")
 TZ = ZoneInfo("America/New_York")
 OPEN, CLOSED = "+15550109001", "+15550109002"
 OWNERS = {OPEN: "qa_phone_open", CLOSED: "qa_phone_closed"}
@@ -69,7 +71,7 @@ def agent_page(closed_today: bool) -> dict:
     hours = {d: {"open": "10:00", "close": "19:00", "closed": d in ("Sun", "Mon")} for d in DAYS}
     if closed_today:
         hours[today]["closed"] = True
-    return {"name": "Nova", "greeting": "", "paused": False, "instructions": "",
+    return {"name": "Nova", "greeting": "", "paused": False, "live": True, "instructions": "",
             "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
             "knowledge": KNOWLEDGE, "hours": hours, "services": SERVICES, "bufferMin": 10,
             "handoff": {"number": "", "onlyOpenHours": True}}  # fmt: skip
@@ -212,7 +214,9 @@ def seed() -> None:
     for number, owner in OWNERS.items():
         assert owner.startswith("qa_phone_"), owner  # never sweep a real workspace's rows
         for row in calendar(owner):
-            if row["sk"].startswith(("VOICEBOOK#", "VOICECALLER#")):
+            # VOICECELL#: the slot cells a booking holds since #5024; left behind, they refuse the next run's
+            # bookings as slot_taken
+            if row["sk"].startswith(("VOICEBOOK#", "VOICECALLER#", "VOICECELL#")):
                 t.delete_item(Key={"pk": row["pk"], "sk": row["sk"]})
         t.put_item(Item={"pk": f"PHONE#{number}", "sk": "LINE", "ownerId": owner, "ownerUserId": f"{owner}_user"})
         t.put_item(Item={"pk": f"OWNER#{owner}", "sk": "VOICEAGENT", "updatedBy": "phone-evals",
@@ -249,7 +253,7 @@ def start_worker(env: dict) -> subprocess.Popen:
     log = open(OUT / "worker.log", "w")
     env = {**os.environ, **env, "PHONE_AGENT_NAME": AGENT, "LIGHTBULB_API_URL": API, "PHONE_LOAD_THRESHOLD": "1.01",
            "LIGHTBULB_HUDDLE_SECRET": secret("lightbulb/dev/huddle_worker_secret")}  # fmt: skip
-    proc = subprocess.Popen([sys.executable, __file__, "worker", "start"], env=env, stdout=log, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen([sys.executable, __file__, "worker", "start", "--log-level", "INFO"], env=env, stdout=log, stderr=subprocess.STDOUT)
     for _ in range(90):
         time.sleep(1)
         if "registered worker" in (OUT / "worker.log").read_text():
@@ -290,10 +294,10 @@ class Speech:
 
 
 async def run_scenario(sc: dict, lk: dict) -> dict:
-    from google.genai import types
     from livekit import api, rtc
     from livekit.agents import Agent, AgentSession, function_tool, room_io
-    from livekit.plugins import google
+    from livekit.plugins import openai
+    from openai.types.beta.realtime.session import TurnDetection
 
     room_name = f"phone-qa-{sc['name']}-{int(time.time())}"
     line, max_s = sc.get("line", OPEN), sc.get("max_s", 150)
@@ -347,9 +351,10 @@ async def run_scenario(sc: dict, lk: dict) -> dict:
                 done.set()
                 return "ok"
 
-        model = google.realtime.RealtimeModel(
-            model=MODEL, voice="Puck", api_version="v1beta",
-            realtime_input_config=types.RealtimeInputConfig(activity_handling=types.ActivityHandling.NO_INTERRUPTION),
+        model = openai.realtime.RealtimeModel(  # the caller is never cut off by the agent
+            model=MODEL, voice="cedar",
+            turn_detection=TurnDetection(type="server_vad", silence_duration_ms=500, create_response=True,
+                                         interrupt_response=False),
         )  # fmt: skip
         session = AgentSession(llm=model)
         speaking_since: list[float] = []
@@ -370,7 +375,7 @@ async def run_scenario(sc: dict, lk: dict) -> dict:
 
         @session.on("conversation_item_added")
         def _said(ev) -> None:
-            if ev.item.role == "assistant" and ev.item.text_content:
+            if getattr(ev.item, "role", None) == "assistant" and ev.item.text_content:  # not an AgentHandoff
                 said.append({"t": round(time.monotonic() - t0, 1), "text": ev.item.text_content,
                              "interrupted": ev.item.interrupted})
 
@@ -466,8 +471,7 @@ def judge(sc: dict, run: dict) -> dict:
     qs = sc["expect"].get("judge", [])
     if not qs:
         return {}
-    from google import genai
-    from google.genai import types
+    from openai import OpenAI
 
     rec = run["record"]
     prompt = (
@@ -480,14 +484,13 @@ def judge(sc: dict, run: dict) -> dict:
         f"Answer each question strictly from the transcript and steps. Questions: {json.dumps(qs)}\n"
         'Reply as JSON: {"answers": [{"q": <question>, "yes": true|false, "why": <one short sentence>}]}'
     )
-    client = genai.Client()  # kept in a name: a temporary Client is closed mid-request
-    r = client.models.generate_content(
-        model=JUDGE, contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json")
-    )
+    r = OpenAI().chat.completions.create(model=JUDGE, messages=[{"role": "user", "content": prompt}],
+                                         response_format={"type": "json_object"})
+    text = r.choices[0].message.content or ""
     try:
-        return {a["q"]: {"yes": bool(a["yes"]), "why": a.get("why", "")} for a in json.loads(r.text)["answers"]}
+        return {a["q"]: {"yes": bool(a["yes"]), "why": a.get("why", "")} for a in json.loads(text)["answers"]}
     except (ValueError, KeyError, TypeError):
-        return {q: {"yes": False, "why": f"judge reply unreadable: {r.text[:200]}"} for q in qs}
+        return {q: {"yes": False, "why": f"judge reply unreadable: {text[:200]}"} for q in qs}
 
 
 def readback_before_book(rec: dict) -> bool | None:
@@ -504,11 +507,14 @@ def readback_before_book(rec: dict) -> bool | None:
     return True
 
 
-GREETING = "Thanks for calling the business. This is Nova, the business's AI assistant. This call is recorded. How can I help?"
-
-
 def norm(text: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
+def opening_ok(text: str) -> bool:
+    """Founder, 8 Nov: the opening names the assistant, says AI assistant and recorded (any wording)."""
+    t = f" {norm(text)} "
+    return all(f" {w} " in t for w in ("nova", "ai assistant", "recorded"))
 
 
 def score(sc: dict, run: dict) -> dict:
@@ -527,16 +533,17 @@ def score(sc: dict, run: dict) -> dict:
                 "usage": run["usage"], "room": run["room"], "hung_up_by": run["hung_up_by"]}  # fmt: skip
     checks = {
         "record_ended": rec.get("status") == "ended",
-        "greeting is the first line, verbatim": bool(said) and norm(said[0]) == norm(GREETING),
-        "no second greeting": not any("thanks for calling" in norm(x) for x in said[1:]),
+        "opening has name + AI assistant + recorded, no guard": bool(said) and opening_ok(said[0])
+            and not rec.get("disclosureRepeated"),
+        "no second greeting": not any("thanks for calling" in norm(x) or opening_ok(x) for x in said[1:]
+                                      if not rec.get("disclosureRepeated")),
         "outcome": rec.get("outcome") in exp["outcome"],
         "disclosure": bool(first) and not first.get("assumed") and all(
             w in first.get("text", "").lower() for w in ("ai assistant", "recorded")),
     }  # fmt: skip
     if run["heard"]:  # the caller's own transcription of what it heard first
         checks["disclosure_heard"] = "ai" in greet_heard and "record" in greet_heard
-        heard = set(norm(run["heard"][0]["text"]).split())
-        checks["greeting heard ≈ verbatim"] = len(heard & set(norm(GREETING).split())) >= 0.8 * len(heard)
+        checks["opening heard with all three (caller STT)"] = opening_ok(" ".join(h["text"] for h in run["heard"][:2]))
     for pat in exp.get("steps", []):
         checks[f"step /{pat}/"] = any(re.search(pat, s, re.I) for s in steps)
     for pat in exp.get("not", []):
@@ -555,6 +562,7 @@ def score(sc: dict, run: dict) -> dict:
     rb = readback_before_book(rec)
     if rb is not None:
         checks["read-back before book"] = rb
+    run["agent_usage"] = agent_usage(run["room"])
     t = timing(run)
     if t["p50_response_s"] is not None:  # caller stops -> agent audio starts; includes Gemini's end-of-speech wait
         checks["median response ≤ 2 s"] = t["p50_response_s"] <= 2
@@ -570,22 +578,37 @@ def score(sc: dict, run: dict) -> dict:
     return {"name": sc["name"], "pass": all(checks.values()), "checks": checks, "timing": t, "judge": j,
             "outcome": rec.get("outcome"), "durationSec": rec.get("durationSec"), "steps": steps,
             "transcript": lines, "heard": run["heard"], "said": run["said"], "usage": run["usage"], "room": run["room"],
+            "agent_usage": run["agent_usage"], "agent_cost": cost(run["agent_usage"]) if run["agent_usage"] else None,
             "hung_up_by": run["hung_up_by"]}  # fmt: skip
 
 
-def cost(usage: dict) -> float:
-    """Dollars, at Gemini Live native-audio list prices ($3/M audio in, $0.5/M text in, $12/M audio out, $2/M text
-    out). The caller's session is measured; the agent's is assumed the same size, so this doubles it."""
-    return 2 * (usage["in_audio"] * 3 + usage["in_text"] * 0.5 + usage["out_audio"] * 12 + usage["out_text"] * 2) / 1e6
+def cost(u: dict) -> float:
+    """Dollars at gpt-realtime-2.1-mini list prices (per M: audio in $10, cached $0.30; text in $0.60, cached $0.06;
+    audio out $20; text out $2.40). For the agent's own usage (the worker's `usage` log line) and the caller's."""
+    ca, ct = u.get("cached_audio", 0), u.get("cached_text", 0)
+    return ((u["in_audio"] - ca) * 10 + ca * 0.3 + (u["in_text"] - ct) * 0.6 + ct * 0.06
+            + u["out_audio"] * 20 + u["out_text"] * 2.4) / 1e6
+
+
+def agent_usage(room: str) -> dict:
+    """The agent's tokens for one call, from the worker log (`phone <callId> usage {...}`)."""
+    import ast
+
+    call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{room}"))
+    for line in (OUT / "worker.log").read_text().splitlines():
+        if f"phone {call_id} usage" in line:
+            msg = json.loads(line)["message"] if line.startswith("{") else line
+            return ast.literal_eval(msg[msg.index("{") : msg.rindex("}") + 1])
+    return {}
 
 
 def write(results: list[dict]) -> Path:
     OUT.mkdir(exist_ok=True)
     stamp = datetime.now(TZ).strftime("%Y%m%d-%H%M")
-    total = sum(cost(r["usage"]) for r in results)
+    total = sum((r.get("agent_cost") or 0) + cost(r["usage"]) for r in results)
     (OUT / f"scorecard-{stamp}.json").write_text(json.dumps(results, indent=1, default=str))
     ok = sum(r["pass"] for r in results)
-    md = [f"# Phone evals {stamp} — {ok}/{len(results)} passed · est. Gemini ${total:.2f}\n",
+    md = [f"# Phone evals {stamp} — {ok}/{len(results)} passed · OpenAI agent+caller ${total:.2f}\n",
           "| scenario | pass | outcome | first resp s | max silence s | failed checks |", "|---|---|---|---|---|---|"]  # fmt: skip
     for r in results:
         bad = "; ".join(k for k, v in r["checks"].items() if not v) or "—"
@@ -602,13 +625,15 @@ def write(results: list[dict]) -> Path:
     return path
 
 
-async def main(names: list[str]) -> None:
-    os.environ.setdefault("GOOGLE_API_KEY", secret("lightbulb/dev/gemini_api_key"))
+async def main(names: list[str], k: int = 3, check: bool = False) -> None:
+    os.environ.setdefault("OPENAI_API_KEY", secret("lightbulb/dev/openai_api_key"))
+    if os.environ.get("PHONE_ENGINE") == "gemini":
+        os.environ.setdefault("GOOGLE_API_KEY", secret("lightbulb/dev/gemini_api_key"))
     lk = livekit_env()
     chosen = [s for s in SCENARIOS if not names or s["name"] in names]
-    chosen = [s for s in chosen for _ in range(s.get("repeat", 1) if names else 1)]  # repeats only when asked by name
+    chosen = [s for s in chosen for _ in range(max(s.get("repeat", 1) if names else 1, k))]  # k runs each: pass^k
     seed()
-    worker = start_worker({**lk, "GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"]})
+    worker = start_worker({**lk})  # the keys ride in os.environ
     results = []
     try:
         for sc in chosen:
@@ -632,6 +657,14 @@ async def main(names: list[str]) -> None:
             worker.wait(30)
         except subprocess.TimeoutExpired:
             worker.kill()
+    by_name: dict[str, list[bool]] = {}
+    for r in results:
+        by_name.setdefault(r["name"], []).append(r["pass"])
+    v = passk.score(by_name, k)
+    print(f"pass^{k}: {v['scenarios']} aggregate {v['rate']:.0%}")
+    print(passk.write_card("phone", v, datetime.now(TZ).strftime("%Y%m%d-%H%M")))
+    if check:
+        sys.exit(passk.exit_code(v))
 
 
 if __name__ == "__main__":
@@ -644,4 +677,6 @@ if __name__ == "__main__":
         server._port = int(os.environ.get("PHONE_QA_PORT", "8083"))
         cli.run_app(server)
     else:
-        asyncio.run(main(sys.argv[1:]))
+        args = sys.argv[1:]
+        k = int(args.pop(args.index("--k") + 1)) if "--k" in args else 3
+        asyncio.run(main([x for x in args if x not in ("--k", "--check")], k, "--check" in args))

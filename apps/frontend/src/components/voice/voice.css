@@ -58,6 +58,18 @@
   .vx-orb { width: 88px; height: 88px; }
   .vx-talk .vx-more { display: none; }
 }
+.vx-talk-text { flex: 1; min-width: 0; }
+/* Compact (the Workspace rail): a rail item, quiet until a talk is on; its state reads as the orb's ring. The status
+   and caption open in a bubble beside the rail (fixed: the rail scrolls, so it would clip), over the sidebar's top,
+   never over a composer. Closed, the bubble stays readable to screen readers. */
+.vx-talk[data-compact] { display: block; padding: 0; border: 0; border-radius: 0; background: none; text-align: start; }
+.vx-talk[data-compact] .vx-orb { width: 44px; height: auto; min-height: 40px; flex-direction: column; gap: 3px; border-radius: 7px; background: none; color: var(--midnight-muted); font-size: var(--text-2xs); font-weight: 500; }
+.vx-talk[data-compact] .vx-orb:hover:not(:disabled) { color: var(--midnight); background: var(--cream-deeper); }
+.vx-talk[data-compact] .vx-orb:not([data-state="idle"]) { color: var(--midnight); }
+.vx-talk[data-compact] .vx-orb:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
+.vx-talk[data-compact] .vx-talk-text { position: fixed; top: 12px; left: 64px; z-index: calc(var(--z-overlay) + 1); width: min(320px, calc(100vw - 80px)); padding: 12px 14px; border: 1px solid var(--plane-edge); border-radius: var(--radius-lg); background: var(--plane-pane); color: var(--fg); box-shadow: var(--shadow-lift); }
+.vx-talk[data-compact] .vx-talk-text > button { margin-top: 10px; }
+.vx-talk[data-compact] .vx-talk-text[data-open="false"] { width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Touch: every control gets a 44px hit area (DESIGN.md). */
 @media (pointer: coarse), (max-width: 640px) {
   .vx-shell [data-slot="button"], .vx-chip, .vx-field, .vx-check { min-height: 44px; }

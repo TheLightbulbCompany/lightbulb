@@ -18,36 +18,31 @@ Two entry points:
   re-reads for exactly that reason). Then runs each teardown step in its own
   try/except. A step that raises is recorded
   ``status="failed"`` with the error and execution CONTINUES — this
-  partial-failure tolerance is the load-bearing property: a Paperclip
-  timeout must not block the Clerk delete (step 12, always last, so a
+  partial-failure tolerance is the load-bearing property: one
+  collaborator's timeout must not block the Clerk delete (step 12, always last, so a
   killed account can never regrow on the next ``/container/status`` poll).
 
 Refuses org owner ids (``OrgWipeUnsupportedError``) — the target is always a
-Clerk USER. Wiping a whole workspace (N Paperclip rows + N Better Auth users,
-one shared company) is ``core.services.workspace_wipe`` — the workspace-keyed
+Clerk USER. Wiping a whole workspace (its rows and every member) is
+``core.services.workspace_wipe`` — the workspace-keyed
 orchestrator that snapshots by ORG id; see its module docstring and the design
 spec's "Out of scope: Org accounts" follow-up note. When a user-keyed wipe
 finds no containers row but the member belongs to a workspace,
 ``_org_hint_for_missing_container`` names the org and points at it.
 
-A human's wipe NEVER deletes a Paperclip company: one workspace = one
-company, owned by the workspace row, and the human's own paperclip-companies
-row is their Better Auth identity only. For every workspace the human belongs
-to (Clerk memberships, read strict before any step) the company delete is
-REFUSED (status ``"refused"``) and only this human's membership is archived
-(``"paperclip_membership"``). On 2026-09-15 an admin wipe of a joined member
-hard-deleted the founder workspace's company — every agent, issue and routine
-— under the old per-user row shape.
+A human's wipe NEVER deletes a workspace: for every workspace the human
+belongs to (Clerk memberships, read strict before any step) only this human is
+dropped from the workspace row's members (``"paperclip_membership"``). The
+wipe calls neither the Paperclip server nor its Aurora database (Paperclip
+exit, task 8b.7).
 
 Step-to-spec-row mapping. The design spec's teardown map lists 12 rows;
 this orchestrator emits one ``WipeStep`` per row EXCEPT rows 5 and 11,
 which fold into sibling steps because no standalone collaborator exists
 for them (see the inline notes at those call sites):
 
-  spec #1  -> "paperclip_company"     (always "refused" or "skipped": a company is
-              the workspace's; each workspace gets
-              "paperclip_membership" -> PaperclipRepo.remove_member)
-  spec #2  -> "paperclip_aurora_user" (paperclip_user_delete.delete_paperclip_user)
+  spec #1  -> "paperclip_membership" (PaperclipRepo.remove_member, per workspace)
+  spec #2  -> gone (the Better Auth user lived in Paperclip's Aurora)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
   (no spec row) -> "provisioning" (provisioning_workflow_repo.transition -> "cancelled")
   spec #3  -> "runtime"               (hermes_provisioning.delete_workspace_runtime)
@@ -74,12 +69,6 @@ for any of them. A trial_local account has none of these rows, so this does
 not block the trial-account dogfood use case, but it IS a real gap for paid
 Bedrock-managed, ChatGPT-OAuth, and BYOK accounts — those credentials
 survive a wipe today. Follow-up work, not yet built.
-
-KNOWN GAP — DDB-orphaned Paperclip state: the Better Auth user delete
-resolves its target from the DDB identity row, so a Better Auth user whose
-identity row is missing survives the wipe. It is now reported loudly rather than
-skipped silently (``_NO_PAPERCLIP_ROW``) — see that constant
-for why enumerating from Aurora instead is not a safe fix.
 
 Also NOT wiped: the ``company-slugs`` table (a wiped account keeps its slug
 reservation permanently — there is no delete path, so the name can never be
@@ -118,8 +107,6 @@ from core.repositories import (
 from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
 from core.services import clerk_admin, company_stripe, message_search, text_lines, voice_onboarding
 from core.services.billing_service import delete_stripe_customer
-from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
     delete_owner_agent_key_secrets,
@@ -127,7 +114,6 @@ from core.services.owner_secret_sweep import (
     list_owner_agent_key_secret_names,
     list_owner_secret_names,
 )
-from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
 
 logger = logging.getLogger(__name__)
 
@@ -162,41 +148,14 @@ def text_release_note(released: int, failed: list[str]) -> str:
     return note
 
 
-# "refused" = a guard kept the resource on purpose (a shared workspace company).
-# Neither a success nor a failure, and never a delete.
+# "refused" = a guard kept the resource on purpose. Neither a success nor a
+# failure, and never a delete.
 WipeStatus = Literal["ok", "skipped", "failed", "would_delete", "refused"]
-
-# The Better Auth user delete resolves its target from the DDB identity row and
-# NOTHING else, so a Better Auth user whose identity row never landed (partial
-# provision, prior partial wipe, duplicate-signup debris) is left behind. That
-# is not fixable by "enumerate from Aurora instead": Aurora carries no Isol8
-# owner id, and an email-keyed lookup cannot tell debris from a LIVE account.
-# Until Paperclip carries an owner-id attribution column, the honest move is to
-# say so in the report instead of reporting a clean skip.
-_NO_COMPANY = "no workspace membership — a human's wipe never deletes a Paperclip company"
-
-_NO_PAPERCLIP_ROW = (
-    "no paperclip identity row — Aurora may still hold a Better Auth user for this owner "
-    "(partial provision / prior partial wipe). Not resolvable from the owner id; check "
-    "Aurora by the owner's email before treating the Paperclip side as gone."
-)
-
-
-class BootstrapAccountProtectedError(Exception):
-    """Raised up front (before any teardown step) by preview_wipe/wipe_account when
-    the target account's email is a bootstrap Paperclip admin identity
-    (admin@isol8.co / admin+paperclip@isol8.co). Deleting either breaks the
-    PaperclipAdminClient bootstrap-admin session every provision depends on. The
-    router turns this into a 400."""
-
-    def __init__(self, owner_id: str):
-        super().__init__(f"Account wipe refuses bootstrap Paperclip admin account {owner_id!r}.")
-        self.owner_id = owner_id
 
 
 async def resolve_account_emails(owner_id: str) -> list[str]:
     """Every email address known for the owner, Clerk first. Clerk is the source of
-    truth for the type-to-confirm match and the bootstrap refusal: the users DDB
+    truth for the type-to-confirm match: the users DDB
     row's email is written by an unreliable webhook and is frequently absent, so
     matching against it alone can make a legitimate wipe impossible to confirm.
     Falls back to the users-row email (deduped) when Clerk is unavailable
@@ -215,21 +174,13 @@ async def resolve_account_emails(owner_id: str) -> list[str]:
     return emails
 
 
-def _refuse_bootstrap_account(owner_id: str, emails: list[str]) -> None:
-    lowered = {e.lower() for e in emails}
-    if lowered & {b.lower() for b in BOOTSTRAP_EMAILS}:
-        raise BootstrapAccountProtectedError(owner_id)
-
-
 class OrgWipeUnsupportedError(Exception):
     """Raised by preview_wipe/wipe_account when ``owner_id`` names a Clerk
     organization.
 
-    The wipe targets one Clerk user — org accounts have per-member fan-out
-    (N Paperclip rows + N Better Auth users, shared company), which needs a
-    looping per-member teardown that is a documented follow-up (design
-    spec's "Out of scope: Org accounts"). A user who is a MEMBER of an org is
-    accepted; no company is ever deleted by a human's wipe. The
+    The wipe targets one Clerk user — an org is wiped by
+    ``core.services.workspace_wipe``. A user who is a MEMBER of an org is
+    accepted; no workspace is ever deleted by a human's wipe. The
     router (Task 4) turns this into a 400.
     """
 
@@ -300,7 +251,7 @@ class _Identifiers:
     inside the ``runtime`` step off the containers row's own ALL_OLD image,
     so an AIP minted mid-wipe is caught as long as the row named it when it
     died. Still snapshot-gated, and knowingly: the ``runtime`` step itself,
-    and the ``billing_row`` / ``user_row`` / paperclip-company deletes.
+    and the ``billing_row`` / ``user_row`` deletes.
     None of those rows is the sole handle on anything else, so the residue is
     findable and a re-run clears it.
     """
@@ -308,7 +259,7 @@ class _Identifiers:
     user_row: dict | None
     container: dict | None
     paperclip: PaperclipIdentity | None
-    """The human's identity row (their Better Auth account)."""
+    """The human's identity row in paperclip-companies."""
     workspaces: list[str]
     """Every workspace (Clerk org id) the human belongs to — read strict, so a
     Clerk blip stops the wipe before its first step."""
@@ -424,39 +375,9 @@ async def resolve_workspace_memberships(owner_id: str) -> list[dict]:
     return await _workspace_memberships(await _workspaces_of(owner_id), owner_id)
 
 
-def _refused_detail(memberships: list[dict]) -> str:
-    parts = []
-    for m in memberships:
-        owner = m["owner_user_id"] or "unknown"
-        if m["owner_email"]:
-            owner += f" <{m['owner_email']}>"
-        name = f'workspace "{m["workspace_name"]}"' if m["workspace_name"] else "a workspace"
-        parts.append(
-            f"company {m['company_id'] or '-'} of {name} ({m['org_id']}, owner {owner}, {m['member_count']} member(s))"
-        )
-    return "refused: a human's wipe never deletes a company — kept: " + "; ".join(parts)
-
-
 # ---------------------------------------------------------------------------
 # Compound collaborators — wrapped so each is a single mockable async unit.
 # ---------------------------------------------------------------------------
-#
-# Both PaperclipAdminClient.delete_company and MetronomeClient.archive_customer
-# need an httpx.AsyncClient the caller owns the lifecycle of (mirrors
-# metronome_gate.read_net_balance_microcents elsewhere in this codebase). Wrapping the open/call/close sequence here
-# keeps the orchestrator's own step list to one call per collaborator.
-
-
-async def _delete_paperclip_company_call(company_id: str) -> None:
-    """PaperclipAdminClient.delete_company, authenticated as the bootstrap
-    admin. 404 (already gone) is swallowed by delete_company itself."""
-    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
-    try:
-        admin = PaperclipAdminClient(http_client=http)
-        cookie = await get_admin_session_cookie(http)
-        await admin.delete_company(session_cookie=cookie, company_id=company_id)
-    finally:
-        await http.aclose()
 
 
 async def _archive_paperclip_member_call(user_id: str, org_id: str) -> None:
@@ -593,33 +514,20 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     method — every read here is a GetItem/Query (or, for the EFS workspace
     directory, a filesystem existence check)."""
     _refuse_org_owners(owner_id)
-    _refuse_bootstrap_account(owner_id, await resolve_account_emails(owner_id))
 
     ids = await _read_identifiers(owner_id)
     memberships = await _workspace_memberships(ids.workspaces, owner_id)
     steps: list[WipeStep] = []
 
     if memberships:
-        steps.append(WipeStep("paperclip_company", "delete_company", "refused", _refused_detail(memberships)))
         steps.append(
             WipeStep(
                 "paperclip_membership",
                 "archive_member",
                 "would_delete",
-                f"only this member's membership is archived in {', '.join(ids.workspaces)} "
-                "(Paperclip reassigns their issues); every company is kept",
+                f"only this member is removed from {', '.join(ids.workspaces)}; every workspace is kept",
             )
         )
-    else:
-        _skip(steps, "paperclip_company", "delete_company", _NO_COMPANY)
-    _preview_step(
-        steps,
-        system="paperclip_aurora_user",
-        action="delete_paperclip_user",
-        exists=ids.paperclip is not None,
-        detail_if_exists=(f"paperclip_user_id={ids.paperclip.paperclip_user_id}" if ids.paperclip else ""),
-        detail_if_absent=_NO_PAPERCLIP_ROW,
-    )
     gate_token_hashes = owner_gate_token_hashes(ids.container)
     _preview_step(
         steps,
@@ -841,7 +749,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
 # ---------------------------------------------------------------------------
 
 
-async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: list[str] | None = None) -> WipeReport:
+async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     """Execute the ordered teardown (design spec steps 1-12).
 
     ``actor_admin_id`` is not used for a delete decision here — it exists so
@@ -849,24 +757,13 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     without threading it through every step. The router (Task 4) is the one
     that writes the admin-actions audit row with this id + the returned
     report.
-
-    ``account_emails`` may be pre-resolved by the caller (the router already
-    resolves them for the type-to-confirm match) to avoid a second Clerk call;
-    when None we resolve them here. Either way the bootstrap-admin refusal
-    fires up front, before any teardown step, off the Clerk-authoritative list.
     """
     _refuse_org_owners(owner_id)
-
-    emails = account_emails if account_emails is not None else await resolve_account_emails(owner_id)
-    _refuse_bootstrap_account(owner_id, emails)
 
     ids = await _read_identifiers(owner_id)
     # Before any step runs: a raise here stops the wipe with nothing deleted.
     memberships = await _workspace_memberships(ids.workspaces, owner_id)
     steps: list[WipeStep] = []
-
-    email = emails[0] if emails else ""
-    env = settings.ENVIRONMENT or "dev"
 
     logger.info(
         "account_wipe.wipe_account: starting for owner=%s actor=%s",
@@ -874,41 +771,17 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         actor_admin_id,
     )
 
-    # --- Step 1 (spec #1): Paperclip company ------------------------------
-    # A company is its workspace's: a human's wipe never deletes one. Remove
-    # only this human from each workspace's company (the Better Auth user
-    # delete in step 2 is their own identity; its FKs only cascade sessions).
+    # --- Step 1 (spec #1): workspace memberships ---------------------------
+    # A human's wipe never deletes a workspace: it only drops this human from
+    # each workspace's members.
     if memberships:
-        logger.warning(
-            "account_wipe: owner=%s belongs to %s — delete_company REFUSED, archiving membership",
-            owner_id,
-            ids.workspaces,
-        )
-        steps.append(WipeStep("paperclip_company", "delete_company", "refused", _refused_detail(memberships)))
 
         async def _s1m() -> str:
             for org_id in ids.workspaces:
                 await _archive_paperclip_member_call(owner_id, org_id)
-            return f"membership archived in {', '.join(ids.workspaces)}; companies kept"
+            return f"removed from {', '.join(ids.workspaces)}; workspaces kept"
 
         await _step(steps, system="paperclip_membership", action="archive_member", fn=_s1m)
-    else:
-        _skip(steps, "paperclip_company", "delete_company", _NO_COMPANY)
-
-    # --- Step 2 (spec #2): Paperclip Aurora (Better Auth) user ------------
-    # BootstrapUserProtectedError (the two bootstrap admin emails) is caught
-    # by _step's generic except like any other failure -- it must not abort
-    # the rest of the wipe, per the design spec's partial-failure model.
-    if ids.paperclip is not None:
-        paperclip_user_id = ids.paperclip.paperclip_user_id
-
-        async def _s2(paperclip_user_id: str = paperclip_user_id) -> str:
-            await delete_paperclip_user(paperclip_user_id=paperclip_user_id, email=email, env=env)
-            return f"paperclip_user_id={paperclip_user_id}"
-
-        await _step(steps, system="paperclip_aurora_user", action="delete_paperclip_user", fn=_s2)
-    else:
-        _skip(steps, "paperclip_aurora_user", "delete_paperclip_user", _NO_PAPERCLIP_ROW)
 
     # --- Step 2b: bedrock-gate token rows ----------------------------------
     # The gate-tokens table is keyed on the token hash with NO owner index, so
@@ -922,7 +795,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     #
     # THE SNAPSHOT IS NOT AUTHORITATIVE HERE, and ordering alone does not make
     # it so. ``_read_identifiers`` reads the containers row eventually
-    # consistently, and reads it before the Paperclip steps above run — so a
+    # consistently, and reads it before the membership step above runs — so a
     # ``mint_gate_token`` that landed just before the wipe, or concurrently with
     # those steps, can leave its ``denied=False`` hash off ``ids.container``
     # entirely. Re-read STRONGLY CONSISTENT at the moment of use and delete the
@@ -1093,7 +966,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     # paperclip-companies row" wipe with a live pending_brief.
     #
     # Nor is it gated on the pending_brief snapshot. ``_read_identifiers`` runs
-    # before every Paperclip step above, so an onboarding submission that lands
+    # before every step above, so an onboarding submission that lands
     # during the wipe leaves ``ids.pending_brief`` None while its item sits in
     # the table — the exact residue this exists to remove. The delete is
     # idempotent, so it is simply always attempted, and the step reports what

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import time
+from typing import Literal
 
 from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io
 from livekit.plugins import google, openai
@@ -41,7 +42,8 @@ never say it is done. If a tool returns an error, say plainly that you couldn't 
 
 
 def realtime_model():
-    """OWNER_ENGINE=gemini runs the spec's Gemini Live; by default gpt-realtime (the key the prod worker has)."""
+    """OWNER_ENGINE=gemini runs the spec's Gemini Live; by default gpt-realtime-2.1 (the key the prod worker
+    has; gpt-realtime shuts down 20 Jan 2027, developers.openai.com/api/docs/deprecations)."""
     if os.environ.get("OWNER_ENGINE", "openai") == "gemini":
         from google.genai import types
 
@@ -53,7 +55,7 @@ def realtime_model():
             session_resumption=types.SessionResumptionConfig(),  # outlives Gemini's 10-minute connection
         )
     return openai.realtime.RealtimeModel(
-        model=os.environ.get("OWNER_MODEL", "gpt-realtime"), voice=os.environ.get("OWNER_VOICE", "marin")
+        model=os.environ.get("OWNER_MODEL", "gpt-realtime-2.1"), voice=os.environ.get("OWNER_VOICE", "marin")
     )
 
 
@@ -103,6 +105,14 @@ class OwnerAgent(Agent):
         "" for the next events). Say "one moment" first: a connected app's read can take up to six seconds.
         Bigger, or when it returns start_work: start_work with the question."""
         return await self._post("integration-read", {"provider": provider, "query": query})
+
+    @function_tool
+    async def approve(self, phrase: Literal["yes", "no", "undo"], hint: str = "") -> dict:
+        """Call only when the person clearly says yes, no or undo to a pending ask you raised, or one on the
+        Needs-you list; hint is a few words naming it. A yes never approves anything: it sends a one-tap confirm to
+        the owner's phone. On confirm_sent say "I've sent it to <owner>'s phone to confirm"; on none say "There's
+        nothing waiting for an OK"; otherwise say the returned `say`. Never claim something was approved or done."""
+        return await self._post("approve", {"phrase": phrase, "hint": hint})
 
     @function_tool
     async def start_work(self, title: str, brief: str) -> dict:

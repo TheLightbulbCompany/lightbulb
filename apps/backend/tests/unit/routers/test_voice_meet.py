@@ -37,10 +37,12 @@ def m():
         patch.object(voice_meet.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
         patch.object(voice_meet.messaging_repo, "get_voice_run", AsyncMock(return_value=None)) as get_run,
         patch.object(voice_meet.messaging_repo, "put_voice_run", AsyncMock()) as put_run,
+        patch.object(voice_meet.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
         patch.object(voice_meet, "start_voice_work", AsyncMock(return_value={"triggerId": "t", "taskId": "k1"})) as sw,
     ):
-        patched.update(meeting=meeting, say=say, get_run=get_run, put_run=put_run, sw=sw)
+        patched.update(phase=phase, meeting=meeting, say=say, get_run=get_run, put_run=put_run, sw=sw)
         yield patched
+    voice_meet._clears.clear()
 
 
 def _work(pid: str, title="Draft the holiday-hours post"):
@@ -219,3 +221,82 @@ async def test_a_read_nothing_here_can_do_is_handed_to_work(m):
     ):
         body = voice_meet.IntegrationIn(ownerId="org_1", roomToken="t", provider="x", query="q", participantId="11")
         assert await voice_meet.integration_read(ROOM, body) == {"start_work": True, "say": "I'll get that"}
+
+
+async def test_meet_approve_counts_as_the_inviters_yes(m):
+    body = voice_meet.ApproveIn(ownerId="org_1", roomToken="t", phrase="yes", hint="supplies", participantId="12")
+    with patch.object(voice_meet.voice_approve, "approve", AsyncMock(return_value={"confirm_sent": True})) as ap:
+        assert await voice_meet.approve(ROOM, body) == {"confirm_sent": True}
+    assert ap.await_args.args == ("org_1", "meet", {"user_id": "user_maya", "name": "Sam", "where": "Monday"}, "yes",
+                                  "supplies")  # fmt: skip
+    assert ap.await_args.kwargs == {"room_id": ROOM}
+
+
+# --- Task 21: a meeting's task answers back in the Meet ------------------------------------------------------
+
+
+def _meet_task(status="idle"):
+    return {"taskId": "k1", "title": "Draft the holiday-hours post", "status": status,
+            "triggerId": f"voice:{ROOM}:run1", "attemptCount": 1}  # fmt: skip
+
+
+async def test_meeting_task_done_posts_link_in_chat(m):
+    """Through the lifecycle hook every status change runs (activities._announce)."""
+    from core.temporal import activities
+
+    m["meeting"].update(status="in_call", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
+    with (
+        patch.object(activities.tasks_repo, "get_task_tree", AsyncMock(return_value={"task": _meet_task()})),
+        patch.object(activities.task_conversation, "ensure_task_room", AsyncMock()),
+        patch.object(activities.task_conversation, "post_as_lightbulb", AsyncMock()),
+        patch.object(voice_meet, "_tile_phase", AsyncMock()),  # no real 60 s clear task
+    ):
+        await activities._announce("org_1", "k1", "idle")
+    m["say"].assert_awaited_once()
+    line = m["say"].await_args.args[1]
+    assert m["say"].await_args.args[0] == "bot_1"
+    assert line.startswith("Draft ready: Draft the holiday-hours post — ") and line.endswith("panel=task&taskId=k1")
+    assert m["meeting"]["followUps"][0]["status"] == "done"
+    await voice_meet.task_moved(_meet_task(), "idle")  # a retried Activity: said once
+    m["say"].assert_awaited_once()
+
+
+@pytest.mark.parametrize(("to", "status"), [("waiting", "needs_you"), ("working", "working"), ("idle", "done")])
+async def test_followup_status_follows_task(m, to, status):
+    other = {"text": "Other", "status": "working", "taskId": "k2"}
+    m["meeting"].update(status="ended", followUps=[{"text": "Draft", "status": "x", "taskId": "k1"}, other])
+    await voice_meet.task_moved(_meet_task(to), to)
+    assert [f["status"] for f in m["meeting"]["followUps"]] == [status, "working"]
+
+
+async def test_ended_meeting_updates_status_only(m):
+    m["meeting"].update(status="ended", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
+    await voice_meet.task_moved(_meet_task(), "idle")
+    assert m["meeting"]["followUps"][0]["status"] == "done"
+    m["say"].assert_not_awaited()
+
+
+async def test_tile_states(m):
+    """Drafting while the follow-up works; page_ready once the link posts, cleared after 60 s."""
+    await voice_meet.start_work(ROOM, _work("11"))
+    m["phase"].assert_awaited_with(ROOM, "drafting")
+    m["meeting"].update(status="in_call", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
+    with patch.object(voice_meet.asyncio, "sleep", AsyncMock()):
+        await voice_meet.task_moved(_meet_task(), "idle")
+        m["phase"].assert_awaited_with(ROOM, "page_ready")
+        await voice_meet._clears[ROOM]
+    m["phase"].assert_awaited_with(ROOM, "")
+
+
+async def test_single_announcement(m):
+    """The Recall join chat is gone (test_meeting_bots), so the chat gets only voice_meet's line, with no opt-out
+    that does not exist."""
+    from core.services import meeting_bots
+
+    assert not hasattr(meeting_bots, "CONSENT_LINE")
+    assert "transcribe" not in voice_meet.ANNOUNCE
+
+
+def test_announcement_says_recorded_and_fits_the_chat():
+    longest = voice_meet.ANNOUNCE.format(name="N" * 30, company="C" * 50)
+    assert "This meeting is recorded and notes are saved to " in longest and len(longest) <= voice_meet.CHAT_CHARS

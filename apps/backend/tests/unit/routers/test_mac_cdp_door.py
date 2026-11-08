@@ -194,14 +194,6 @@ def test_door_recheck_closes_4403_on_revocation(mac, monkeypatch, code):
     assert _closed_with(_url())[0] == 4403
 
 
-def test_door_recheck_retries_a_paperclip_blip(mac, monkeypatch):
-    monkeypatch.setattr(mac_cdp, "RECHECK_SECONDS", 0.02)
-    blip = DesktopError("paperclip_unavailable", 503)
-    mac_cdp.check.side_effect = [TARGET, blip, blip, TARGET, blip, blip, blip]
-    assert _closed_with(_url()) == (1011, "")
-    assert mac_cdp.check.await_count == 7
-
-
 def test_door_first_check_failure_mapping(mac):
     mac_cdp.check.side_effect = DesktopError("desktop_not_ready", 409)
     assert _closed_with(_url())[0] == 4409
@@ -245,21 +237,6 @@ def test_ticket_never_logged(mac, caplog):
     assert "owner=org_1" in caplog.text
     for secret in (ticket, "frame-body", "user_1", "rm1", "p1"):
         assert secret not in caplog.text
-
-
-def test_door_paperclip_open_carries_the_owner_notice(mac, monkeypatch):
-    from core.services import mac_browser
-
-    async def name(agent_id):
-        return "Friday"
-
-    monkeypatch.setattr(mac_browser, "_agent_name", name)
-    paperclip = {"ownerId": "org_1", "companyId": "c1", "runId": "r1", "agentId": "a1", "family": "paperclip"}
-    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=paperclip)
-    with _client().websocket_connect("/api/v1/internal/mac-cdp/" + ticket) as ws:
-        ws.send_text("one")
-        assert ws.receive_text() == "echo:one"
-    assert mac.notices == ["Friday is using your Mac's browser for a team task."]
 
 
 SESSION = {

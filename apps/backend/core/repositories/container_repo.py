@@ -574,13 +574,6 @@ async def try_claim_owner_deploy(
     but must serialize with those paths so concurrent recommendations cannot
     file duplicate approvals for one logical hire.
 
-    ``company_deploy_service.run_company_deploy`` is fenced too, but its wall
-    clock is N x a single deploy's — longer than one ``DEPLOY_CLAIM_STALE_S``
-    lease. It holds the claim across the whole run by calling
-    ``extend_owner_deploy_claim`` at each per-agent step, so the lease only
-    goes stale if the process actually dies mid-run (the takeover posture a
-    single-deploy timeout gets).
-
     Also NOT fenced, and out of scope for this claim: the two BARE agent creates
     (``routers/teams/agents.create_agent`` and ``routers/websocket_chat``), which
     drive the same ``agents.create``/``agents.update`` pair against the same
@@ -726,73 +719,6 @@ def _held_listing_id(raw_item: dict | None) -> str | None:
     except Exception:
         logger.warning("_held_listing_id: failed to parse ALL_OLD item — falling back to unknown holder")
         return None
-
-
-async def set_deployed_company(owner_id: str, *, listing_id: str, name: str) -> None:
-    """Record that this owner's workspace holds a deployed company package.
-
-    Written by ``run_company_deploy`` on REAL success only (agents were
-    created and materialized — never on the creating-nothing early returns),
-    and read by the deploy route to enforce ONE company package per workspace:
-    a second company deploy — same listing or a different one — is refused
-    409, because a whole second org grafted onto the same Friday duplicates
-    role structures.
-
-    A workspace wipe/reprovision deletes the row, so a fresh slate can deploy
-    again — that is the intended semantics, not a leak.
-
-    **Never raises**: the deploy has already succeeded when this runs; a
-    marker miss just means the fence is open for this owner (logged loudly).
-    """
-    try:
-        await update_fields(
-            owner_id,
-            {
-                "deployed_company": {
-                    "listing_id": listing_id,
-                    "name": name,
-                    "deployed_at": int(time.time()),
-                }
-            },
-        )
-    except Exception as e:  # noqa: BLE001 — see docstring
-        logger.error(
-            "set_deployed_company: marker write failed for owner=%s listing=%s (%s: %s) "
-            "— one-company fence is OPEN for this owner",
-            owner_id,
-            listing_id,
-            type(e).__name__,
-            e,
-        )
-
-
-async def extend_owner_deploy_claim(owner_id: str, *, token: str) -> None:
-    """Refresh the claim's ``claimed_at`` so a long-running holder keeps its
-    lease. Company deploys call this once per agent step: each step is bounded
-    well under ``DEPLOY_CLAIM_STALE_S``, so a live run never goes stale, while
-    a dead one stops extending and is taken over on the normal cutoff.
-
-    Conditioned on ``tok`` — a holder that already lost its lease to takeover
-    cannot resurrect it. **Never raises**: a failed extension just means the
-    lease can go stale mid-run, which is the pre-existing takeover posture.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET deploy_claims.#lid.claimed_at = :now",
-            ConditionExpression="deploy_claims.#lid.tok = :tok",
-            ExpressionAttributeNames={"#lid": _DEPLOY_CLAIM_KEY},
-            ExpressionAttributeValues={":now": int(time.time()), ":tok": token},
-        )
-    except Exception as e:  # noqa: BLE001 — see docstring
-        logger.warning(
-            "extend_owner_deploy_claim: could not extend for owner=%s (%s: %s) — lease may go stale",
-            owner_id,
-            type(e).__name__,
-            e,
-        )
 
 
 def _has_timeout_cause(exc: BaseException | None) -> bool:

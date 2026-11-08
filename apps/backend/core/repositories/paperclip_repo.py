@@ -1590,17 +1590,14 @@ class PaperclipRepo:
         publish_status_changed(org_id)
 
     async def complete_funnel_submission(self, org_id: str, *, onboarding_generation: str) -> bool:
-        """Complete the generation after its goal, project, and BRIEF.md exist."""
+        """Complete the claimed generation once its BRIEF.md is staged."""
         table = self._ws_table()
         try:
             await self._ws_call(
                 "update_item",
                 self._ws_key(org_id),
                 UpdateExpression="SET funnel_state = :complete, funnel_completed_at = :t, updated_at = :t",
-                ConditionExpression=(
-                    "onboarding_generation = :gen AND funnel_state = :submitted "
-                    "AND attribute_exists(onboarding_goal_id) AND attribute_exists(onboarding_project_id)"
-                ),
+                ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
                 ExpressionAttributeValues={
                     ":complete": "complete",
                     ":submitted": "submitted",

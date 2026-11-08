@@ -18,10 +18,6 @@ from core.services import livekit_huddles, standard_webhooks
 
 logger = logging.getLogger(__name__)
 
-CONSENT_LINE = (
-    "Lightbulb agents are in this meeting for {company}. They listen for their names; notes and a "
-    "transcript go to {company}'s Lightbulb workspace. Recall.ai relays the call and stores nothing."
-)
 _REASONS = {
     "402": "the meeting-bot account is out of credit",
     "507": "no meeting bots are free right now",
@@ -127,7 +123,6 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
             "noone_joined_timeout": 1200,
             "everyone_left_timeout": {"timeout": 300},
         },
-        "chat": {"on_bot_join": {"send_to": "everyone", "message": CONSENT_LINE.format(company=company), "pin": True}},
         # env: Recall's status webhook is account-wide; the other environment ignores this bot (routers/meetings._bot).
         "metadata": {"roomId": room_id, "nonce": meeting["ticketNonce"], "env": settings.ENVIRONMENT},
     }

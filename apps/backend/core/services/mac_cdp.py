@@ -36,15 +36,13 @@ PATH = "/api/v1/internal/mac-cdp/"
 SKEW_SECONDS = 5
 PURPOSE = "mac-cdp-v1"
 _STR_CLAIMS = (
-    "purpose", "use", "family", "ownerId", "memberId", "companyId", "deviceId", "generation",
+    "purpose", "use", "family", "ownerId", "memberId", "deviceId", "generation",
     "address", "profileId", "runId", "agentId", "roomId", "nonce",
 )  # fmt: skip
 _CLAIMS = frozenset(_STR_CLAIMS) | {"iat", "exp"}
-_RUN_FIELDS = ("family", "memberId", "runId", "agentId", "roomId", "companyId")
+_RUN_FIELDS = ("family", "memberId", "runId", "agentId", "roomId")
 #: The Mac slept, reconnected or moved task: the bridge re-acquires (4409), never "access ended".
 _TASK_CODES = {"desktop_generation_stale", "desktop_task_moved", "desktop_not_ready"}
-#: A dependency blip (Paperclip), not a revocation: retried like any other transient error.
-_TRANSIENT_CODES = {"paperclip_unavailable"}
 _clock = time.time
 _redeemed: dict[str, int] = {}  # nonce -> exp; this task only (the ticket is bound to it)
 
@@ -66,8 +64,7 @@ def _cipher() -> Fernet:
 
 def mint(*, target: dict, profile_id: str, auth: dict, use: str = "agent") -> str:
     """`target` is the NATIVE device's resolve_desktop_target() dict; `auth` is exactly what
-    authorize_run returned. Room `memberId` is the run's human (== the pairer); Paperclip's is ""
-    and is re-derived from the pairing on every check. `use` "session": a shared session's relay
+    authorize_run returned. Room `memberId` is the run's human (== the pairer). `use` "session": a shared session's relay
     to the cloud browser (session_browser): the door joins the runtime to the channel its Mac offered."""
     if not valid_auth(auth) or auth["ownerId"] != target["ownerId"]:
         raise ValueError("mac-cdp ticket auth invalid")
@@ -104,8 +101,7 @@ def _well_formed(claims) -> bool:
         return False
     use, family = claims["use"], claims["family"]
     return (
-        (use == "agent" and family in {"room", "paperclip", "call", "session"})
-        or (use == "session" and family == "session")
+        (use == "agent" and family in {"room", "call", "session"}) or (use == "session" and family == "session")
     ) and valid_auth(auth_from_claims(claims))
 
 
@@ -134,12 +130,7 @@ def redeem(ticket: str) -> dict:
 
 def auth_from_claims(claims: dict) -> dict:
     """The exact authorize_run dict for the claim's family."""
-    keys = desktop_execution.PAPERCLIP_AUTH_FIELDS if claims["family"] == "paperclip" else desktop_execution.AUTH_FIELDS
-    auth = {key: claims[key] for key in keys}
-    for key in ("memberId", "roomId", "companyId"):  # the other family's fields must be empty
-        if key not in keys and claims[key]:
-            return {}
-    return auth
+    return {key: claims[key] for key in desktop_execution.AUTH_FIELDS}
 
 
 async def check(claims: dict) -> dict:
@@ -149,11 +140,7 @@ async def check(claims: dict) -> dict:
     if not desktop_execution.submissions_enabled(owner):
         raise DesktopError("desktop_disabled", 403)
     auth = auth_from_claims(claims)
-    member = (
-        await desktop_execution._paperclip_member(auth, claims["deviceId"])
-        if auth["family"] == "paperclip"
-        else auth["memberId"]
-    )
+    member = auth["memberId"]
     relay = claims["use"] == "session"
     try:
         # A relay to the cloud browser drives nothing on the Mac: no browser grant, no profile.
@@ -220,7 +207,7 @@ async def _downstream(websocket, session, channel, target) -> tuple:
 
 async def _recheck(claims: dict) -> tuple:
     """Authority gone closes at once (4403); a Mac that slept or moved closes 4409 so the bridge
-    re-acquires; a transient error (Clerk, DynamoDB, Paperclip) retries next tick and closes only
+    re-acquires; a transient error (Clerk, DynamoDB) retries next tick and closes only
     after RECHECK_FAILURES in a row."""
     failures = 0
     while True:
@@ -231,12 +218,7 @@ async def _recheck(claims: dict) -> tuple:
         except DesktopError as exc:
             if exc.code in _TASK_CODES:
                 return 4409, "", "lost"
-            if exc.code not in _TRANSIENT_CODES:
-                return 4403, "", "forbidden"
-            failures += 1
-            logger.warning("mac-cdp recheck failed owner=%s error=%s", claims["ownerId"], exc.code)
-            if failures >= RECHECK_FAILURES:
-                return 1011, "", "error"
+            return 4403, "", "forbidden"
         except Exception as exc:  # noqa: BLE001
             failures += 1
             logger.warning("mac-cdp recheck failed owner=%s error=%s", claims["ownerId"], type(exc).__name__)
@@ -264,8 +246,6 @@ async def serve(websocket, ticket: str) -> None:
         except DesktopError:
             _meter("lost")
             return await _close(websocket, 4409)
-        from core.services import mac_browser
-
         try:
             if claims["use"] == "session":
                 from core.services import session_browser  # it imports this module
@@ -276,7 +256,7 @@ async def serve(websocket, ticket: str) -> None:
                     return await _close(websocket, 4404)
                 await session.cdp_accept(channel, {"relay": True})
             else:
-                channel = await session.cdp_open(claims["profileId"], await mac_browser.notice(claims))
+                channel = await session.cdp_open(claims["profileId"])
         except CdpClosed as exc:
             _meter("refused")
             return await _close(websocket, 4502, exc.code)

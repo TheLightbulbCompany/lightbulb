@@ -114,3 +114,17 @@ async def test_unknown_task_404(world):
     # Not conftest's seeded TASK: that one exists (with Sam in its audience) since the audience fix.
     resp = await world["client"].get("/api/v1/tasks/0b9e2d1c-5a6f-4e3d-8c7b-112233445566/questions")
     assert resp.status_code == 404
+
+
+async def test_needs_you_exposes_pending_confirm(world):
+    task = await _task({"kind": "person", "userIds": [SAM]})
+    await questions_repo.open_question(WS, _q(task))
+    pending = {"by": "Ada", "seat": "meet", "roomId": "r1", "at": "2026-11-07T10:00:00+00:00"}
+    await questions_repo.set_pending_confirm(WS, task, "q-1", pending)
+    [item] = (await world["client"].get("/api/v1/needs-you")).json()["items"]
+    assert item["pendingConfirm"] == pending and item["state"] == "open"  # still the tap's to answer
+    await questions_repo.record_answer(
+        WS, task, "q-1", option_id="allow_once", trigger_id=None, by=SAM, client_answer_id="c", expected_version=None
+    )
+    with pytest.raises(Exception):  # an answered card takes no voice confirm
+        await questions_repo.set_pending_confirm(WS, task, "q-1", pending)

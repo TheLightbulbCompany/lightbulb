@@ -528,6 +528,18 @@
           "default": null,
           "title": "Budgetusd"
         },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Origin"
+        },
         "previousRunTaskId": {
           "anyOf": [
             {
@@ -539,6 +551,11 @@
           ],
           "default": null,
           "title": "Previousruntaskid"
+        },
+        "confirmAll": {
+          "default": false,
+          "title": "Confirmall",
+          "type": "boolean"
         },
         "hidden": {
           "default": false,

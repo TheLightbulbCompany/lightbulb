@@ -187,6 +187,54 @@ async def test_handoff_and_needs_you_outcomes(client):
     assert qend.json()["outcome"] == "silent"
 
 
+async def test_unknown_creates_question_and_to_add(client):
+    """Didn't know: the question waits in the Agent page's `toAdd`, and the call ends with a per-call task whose
+    Question (subkind `didnt_know`) carries the caller's own words, so answering it resumes that task."""
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    q = "Do you do bridal parties?"
+    assert client.post(f"{base}/unknown", json={"question": q}, headers=W).status_code == 200
+    assert client.post(f"{base}/unknown", json={"question": q}, headers=W).status_code == 200  # a retried tool call
+    assert (await messaging_repo.get_voice_agent("org_1"))["toAdd"] == [q]
+    assert client.post(f"{base}/end", json={"durationSec": 30}, headers=W).json()["outcome"] == "needs_you"
+    [(args, kwargs)] = [(c.args, c.kwargs) for c in client.start_work.await_args_list]
+    assert args[0] == "org_1" and args[1].title == f"Answer +14155550133: {q}" and kwargs["origin"] == "phone_contact"
+    assert voice_phone.CONTACT_NOTE in args[1].brief and q in args[1].brief
+    ask = kwargs["ask"]
+    assert ask["kind"] == "question" and ask["subkind"] == "didnt_know" and ask["blocking"] is True
+    assert ask["preview"] == {"kind": "didnt_know", "roomId": call["callId"], "caller": "+14155550133", "question": q}
+    assert [o["id"] for o in ask["options"]] == ["answer", "call_myself", "done"]
+    run = await messaging_repo.get_voice_run("org_1", args[1].run_id)
+    assert run["requesterUserId"] == "user_owner" and run["roomId"] == call["callId"]
+
+
+async def test_handoff_missed_creates_question(client):
+    missed = await _start(client, room="phone-dev-_h", handoff={"number": "", "onlyOpenHours": True})
+    base = f"/api/v1/internal/voice/calls/{missed['callId']}"
+    assert client.post(f"{base}/transfer", headers=W).json() == {"transferTo": None}
+    assert client.post(f"{base}/end", json={"durationSec": 30}, headers=W).json()["outcome"] == "handoff_missed"
+    ask = client.start_work.await_args.kwargs["ask"]
+    assert ask["subkind"] == "handoff" and ask["preview"]["roomId"] == missed["callId"]
+    assert [o["id"] for o in ask["options"]] == ["call_myself", "done"]
+
+    failed = await _start(client, room="phone-dev-_f")
+    fbase = f"/api/v1/internal/voice/calls/{failed['callId']}"
+    assert client.post(f"{fbase}/transfer", json={"failed": True}, headers=W).json() == {"transferTo": None}
+    client.post(f"{fbase}/end", json={"durationSec": 30}, headers=W)
+    assert client.start_work.await_args.kwargs["ask"]["subkind"] == "handoff"  # line_problem is for system issues
+
+
+async def test_to_add_is_capped_oldest_first(client):
+    """Caller text: at most TO_ADD_MAX questions of TO_ADD_CHARS each reach the Agent page; the oldest drop."""
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    for i in range(voice_phone.TO_ADD_MAX + 5):
+        assert client.post(f"{base}/unknown", json={"question": f"q{i} " + "x" * 400}, headers=W).status_code == 200
+    to_add = (await messaging_repo.get_voice_agent("org_1"))["toAdd"]
+    assert len(to_add) == voice_phone.TO_ADD_MAX and to_add[0].startswith("q5 ") and to_add[-1].startswith("q24 ")
+    assert all(len(t) == voice_phone.TO_ADD_CHARS for t in to_add)
+
+
 async def test_start_work_runs_as_the_owner_and_is_marked_a_contacts(client):
     call = await _start(client)
     base = f"/api/v1/internal/voice/calls/{call['callId']}"

@@ -272,3 +272,51 @@ async def test_hook_token_401(bare):
     assert resp.status_code in (401, 503)  # not a Clerk JWT (503 only when JWKS is unreachable in the sandbox)
     resp = await bare.post(_url("q-1"), json={"optionId": "allow_once", "clientAnswerId": "c"})
     assert resp.status_code == 401
+
+
+async def test_answer_writes_knowledge_as_member(world, monkeypatch):
+    """A call's "didn't know" Question (voice_phone.call_ask, opened through the Worker-ask path) answered with text by
+    a member who is not an admin: the answer lands in the Agent page's Knowledge server-side and leaves `toAdd`."""
+    from core.repositories import messaging_repo
+    from core.services import task_asks
+    from routers import voice_phone
+
+    q = "Do you do bridal parties?"
+    docs = {WS: {"name": "Nova", "knowledge": [], "toAdd": [q, "Parking?"]}}
+    monkeypatch.setattr(messaging_repo, "get_voice_agent", AsyncMock(side_effect=lambda ws: docs.get(ws)))
+
+    async def put(ws, config, by):
+        docs[ws] = config
+
+    monkeypatch.setattr(messaging_repo, "put_voice_agent", put)
+    room = {"roomId": "call-1", "ownerId": WS, "kind": "call", "revision": 3, "call": {"resolvedAt": None}}
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: room if r == "call-1" else None))
+
+    async def patch_meta(room_id, change, expected_revision):
+        assert expected_revision == room["revision"]
+        room.update(change, revision=room["revision"] + 1)
+
+    monkeypatch.setattr(messaging_repo, "patch_room_meta", patch_meta)
+    answer_update = temporal_client.update_task
+
+    async def ask_update(ws, task_id, name, ref):
+        return (await ActivityEnvironment().run(tq.open_asked_question, ws, task_id, ref)).qid
+
+    monkeypatch.setattr(temporal_client, "update_task", ask_update)
+    ask = voice_phone.call_ask("call-1", {"caller": "+14155550133"}, "didnt_know", q)
+    opened = await task_asks.open_ask(WS, await tasks_repo.get_task(WS, TASK), **ask)
+    monkeypatch.setattr(temporal_client, "update_task", answer_update)
+    assert opened["answerers"] == [SAM] and opened["subkind"] == "didnt_know"  # the requester, an org:member
+
+    world["who"]["user"] = SAM
+    resp = await _press(world, opened["qid"], "answer", text="Yes, up to eight people.")
+    assert resp.status_code == 200, resp.text
+    view = resp.json()["question"]
+    assert view["subkind"] == "didnt_know" and view["preview"]["question"] == q
+    assert docs[WS]["knowledge"] == [
+        {"q": q, "a": "Yes, up to eight people.", "source": "you answered this in Needs you"}
+    ]
+    assert docs[WS]["toAdd"] == ["Parking?"]
+    assert room["call"]["resolvedBy"] == SAM and room["call"]["resolvedAt"]  # Home stops listing it as Needs you
+    assert (await _press(world, opened["qid"], "answer", text="Yes, up to eight people.")).status_code == 200
+    assert len(docs[WS]["knowledge"]) == 1  # the same press again writes nothing twice

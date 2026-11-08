@@ -222,6 +222,15 @@ async def test_a_read_nothing_here_can_do_is_handed_to_work(m):
         assert await voice_meet.integration_read(ROOM, body) == {"start_work": True, "say": "I'll get that"}
 
 
+async def test_meet_approve_counts_as_the_inviters_yes(m):
+    body = voice_meet.ApproveIn(ownerId="org_1", roomToken="t", phrase="yes", hint="supplies", participantId="12")
+    with patch.object(voice_meet.voice_approve, "approve", AsyncMock(return_value={"confirm_sent": True})) as ap:
+        assert await voice_meet.approve(ROOM, body) == {"confirm_sent": True}
+    assert ap.await_args.args == ("org_1", "meet", {"user_id": "user_maya", "name": "Sam", "where": "Monday"}, "yes",
+                                  "supplies")  # fmt: skip
+    assert ap.await_args.kwargs == {"room_id": ROOM}
+
+
 # --- Task 21: a meeting's task answers back in the Meet ------------------------------------------------------
 
 
@@ -284,3 +293,8 @@ async def test_single_announcement(m):
 
     assert not hasattr(meeting_bots, "CONSENT_LINE")
     assert "transcribe" not in voice_meet.ANNOUNCE
+
+
+def test_announcement_says_recorded_and_fits_the_chat():
+    longest = voice_meet.ANNOUNCE.format(name="N" * 30, company="C" * 50)
+    assert "This meeting is recorded and notes are saved to " in longest and len(longest) <= voice_meet.CHAT_CHARS

@@ -69,6 +69,20 @@ async def test_provision_org_idempotent():
     assert len(await agent_registry.roster(ORG)) == 6
 
 
+async def test_active_row_with_a_missing_starter_is_reseeded():
+    """The old ``starter_incomplete`` reconcile: an active row missing a starter gets it back."""
+    first = await provision_org(ORG, provisioner="user_1")
+    await _repo().remove_starter_agent_id(ORG, first.starter_agent_ids["growth"])
+    await agent_registry.delete(ORG, first.starter_agent_ids["growth"])
+
+    again = await provision_org(ORG, provisioner="user_1")
+    assert set(again.starter_agent_ids) == set(STARTER_ROLE_KEYS)
+    growth = again.starter_agent_ids["growth"]
+    assert growth != first.starter_agent_ids["growth"]  # the deleted id stays reserved
+    assert growth in {a["id"] for a in await agent_registry.roster(ORG)}
+    assert (await _repo().resolve_owner_row(ORG)).starter_agent_ids == again.starter_agent_ids
+
+
 async def test_old_failed_row_keeps_company_and_fields():
     """A workspace provisioned before this change keeps its company_id and onboarding fields."""
     now = datetime.now(timezone.utc)

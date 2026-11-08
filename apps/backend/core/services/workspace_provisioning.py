@@ -115,7 +115,7 @@ def starter_agent_id(org_id: str, starter_key: str) -> str:
 async def provision_org(owner_id: str, *, provisioner: str) -> PaperclipWorkspace:
     """Make ``owner_id``'s workspace active with the full starter roster. Idempotent.
 
-    An active row returns as is. Otherwise each missing starter is created in the registry
+    An active row with the full starter set returns as is. Otherwise each missing starter is created in the registry
     (deterministic id, so a retry or a concurrent run adopts the same row) and the META row is
     written ``active`` with ``provisioner`` as a member. A non-active row's other fields
     (``company_id`` on old rows, onboarding, name) are carried forward. Any failure marks the
@@ -123,21 +123,22 @@ async def provision_org(owner_id: str, *, provisioner: str) -> PaperclipWorkspac
     """
     repo = _repo()
     ws = await repo.get_workspace(owner_id, consistent_read=True)
-    if ws is not None and ws.status == "active":
+    starters = dict((ws.starter_agent_ids if ws is not None else None) or {})
+    if ws is not None and ws.status == "active" and all(starters.get(k) for k in STARTER_ROLE_KEYS):
         return ws
     try:
-        starters = dict((ws.starter_agent_ids if ws is not None else None) or {})
         for starter_key, name, role, title, parent_key in STARTER_ROSTER:
             if not starters.get(starter_key):
-                agent = await agent_registry.create(
-                    owner_id,
-                    name=name,
-                    role=role,
-                    title=title,
-                    persona=STARTER_CAPABILITIES[starter_key],
-                    reports_to=starters[parent_key] if parent_key else None,
-                    agent_id=starter_agent_id(owner_id, starter_key),
-                )
+                spec = {
+                    "name": name,
+                    "role": role,
+                    "title": title,
+                    "persona": STARTER_CAPABILITIES[starter_key],
+                    "reports_to": starters[parent_key] if parent_key else None,
+                }
+                agent = await agent_registry.create(owner_id, agent_id=starter_agent_id(owner_id, starter_key), **spec)
+                if agent.get("status") == "deleted":  # the owner deleted this starter: its id stays reserved
+                    agent = await agent_registry.create(owner_id, **spec)
                 starters[starter_key] = agent["id"]
         now = datetime.now(timezone.utc)
         fields = {

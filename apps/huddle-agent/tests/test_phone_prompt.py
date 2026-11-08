@@ -36,6 +36,7 @@ def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
     """Founder, 8 Nov: no script. The prompt names what the opening must say; the owner's greeting is a style."""
     text = " ".join(phone.Receptionist(phone.Backend(), INFO, None).instructions.split())
     assert "You speak first. Your opening line, in your own words, must say all three: your name, Lightbulb; that you are an AI assistant; and that this call is recorded." in text
+    assert "It is your very first words: no preamble before it." in text  # gpt-realtime-2 preambles by default
     assert f'a guide, not a script: "{GREETING}"' in text
     assert "If you are told the disclosure was missed, say the one disclosure sentence exactly as given" in text
     replies = []
@@ -45,7 +46,7 @@ def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
             replies.append(kw)
 
     phone.greet(Session())
-    assert replies == [{}]  # no per-response instructions: Gemini would keep them as a turn
+    assert replies == [{"allow_interruptions": False}]  # no instructions (Gemini keeps them); nobody cuts it off
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():
@@ -244,3 +245,4 @@ def test_booking_tools_say_to_act_only_after_the_yes_and_once():
         doc = " ".join(tool.__doc__.split()) if tool.__doc__ else " ".join(tool.info.description.split())
         assert "only after the caller has said yes to your read-back" in doc
         assert "never call it again for the same booking" in doc
+    assert "to move one the caller has, use reschedule_or_cancel" in " ".join(phone.Receptionist.book.__doc__.split())

@@ -15,6 +15,7 @@ from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
+from core import tasks_schema as ts
 from core.repositories import agent_email_repo, container_repo, messaging_repo, tasks_repo
 from core.services import (
     agent_email,
@@ -407,50 +408,60 @@ def action_items(notes: str) -> list[str]:
     return [i for i in items if i]
 
 
-_TASK_STATUSES = ("queued", "working", "waiting", "idle", "resolved", "failed")
-_TASKS_PAGE = 50
+#: Not part of an action item's object ("Order **more** gel colors **from** OPI"). "post" and "email" are objects.
 _STOP = frozenset(
-    """the and for with from that this then them they their your our out into about after before
-more some will should would could have has had been what when were also just only than over make made send share
-finalize finish draft write post""".split()
+    "the a an and or for with from to of on in at by more some our their his her my your it this that".split()
+)
+#: Verbs that name the same work ("Finalize and share the post" is the drafted post's thread).
+_VERBS = (
+    frozenset("draft write prepare create make finalize finish complete".split()),
+    frozenset("send share email mail publish".split()),
+    frozenset("order buy purchase".split()),
+    frozenset("book schedule reserve".split()),
 )
 
 
-def _words(text: str) -> set[str]:
-    """The content words of a line: lowercase, plural "s" dropped, short and common words left out."""
-    return {w.rstrip("s") for w in re.findall(r"[a-z]+", text.lower().replace("colour", "color")) if len(w) > 2} - _STOP
+def _stem(word: str) -> str:
+    word = word.lower().replace("colour", "color")
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
+def _verb_object(text: str) -> tuple[set[str], set[str]]:
+    """(the verbs, the object's words) of an imperative line: its first word, a second after "and" ("Finalize and
+    share ..."), then the rest without `_STOP` words."""
+    words = [_stem(w) for w in re.findall(r"[A-Za-z]+", text)]
+    verbs = set(words[:1])
+    rest = words[1:]
+    if len(rest) >= 2 and rest[0] == "and":
+        verbs.add(rest[1])
+        rest = rest[2:]
+    return verbs, {w for w in rest if w not in _STOP}
+
+
+def _same_verb(a: set[str], b: set[str]) -> bool:
+    return bool(a & b) or any(a & g and b & g for g in _VERBS)
 
 
 def covered(item: str, titles: list[str]) -> bool:
-    """A task already started in the meeting covers the item: at least two of the item's content words (the owner
-    prefix "<owner>:" aside), and half of the fewer, are in its title ("Finalize and share holiday-hours post" is
-    "Draft the holiday-hours post", 8 Nov prod Meet re-run LB-24 vs LB-19)."""
-    want = _words(item.split(":", 1)[-1])
+    """A task already started in the meeting covers the item: the same verb (or one naming the same work) and every
+    word of the item's object in the task's title ("Finalize and share holiday-hours post" is "Draft the holiday-hours
+    post", 8 Nov prod Meet re-run LB-24 vs LB-19; "Book the venue" is not "book the venue for the party")."""
+    verbs, obj = _verb_object(item.split(":", 1)[-1])
     for title in titles:
-        have = _words(title)
-        shared = want & have
-        if len(shared) >= 2 and 2 * len(shared) >= min(len(want), len(have)):
+        t_verbs, t_obj = _verb_object(title)
+        if obj and _same_verb(verbs, t_verbs) and obj <= t_obj:
             return True
     return False
 
 
 async def _meeting_task_titles(owner_id: str, room_id: str, since: int) -> list[str]:
-    """Titles of the tasks the meeting's room started since the call began (open or done): its Router's threads
-    (their room subscription) and the room's own tasks."""
-    from core.temporal.activities import _origin  # the room a task came from (its Router subscription)
-
+    """Titles of the meeting room's tasks started since the call began (open or done): the tasks holding, or that
+    held, the room's threads (`list_room_threads`), never a workspace-wide scan."""
     after = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(since))
-    titles = []
-    for status in _TASK_STATUSES:
-        # ponytail: one page per status, newest first; a meeting starts far fewer than 50 threads
-        page, _ = await tasks_repo.list_tasks_by_status(owner_id, status, limit=_TASKS_PAGE)
-        for t in page:
-            if (t.get("createdAt") or "") < after:
-                continue
-            here = (t.get("audience") or {}).get("roomId") == room_id
-            if here or _origin(await tasks_repo.get_task_tree(owner_id, t["taskId"]))[0] == room_id:
-                titles.append(t.get("title") or "")
-    return titles
+    threads = await tasks_repo.list_room_threads(owner_id, room_id)
+    ids = dict.fromkeys(tid for t in threads for tid in (t["taskId"], *(t.get("history") or [])))
+    rows = await tasks_repo.batch_get(owner_id, [ts.task_sk(tid) for tid in ids])
+    return [r.get("title") or "" for r in rows if (r.get("createdAt") or "") >= after]
 
 
 async def _file_action_items(owner_id: str, message_id: str, request: dict, notes: str) -> None:
@@ -463,24 +474,32 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
     room_id = request["roomId"]
     meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
     since = int((request.get("meeting") or {}).get("inCallAt") or meeting.get("inCallAt") or 0)
-    if items:  # work the meeting already started, open or done, is not filed again (LB-24 duplicated finished LB-19)
+    done: list[str] = []
+    if items and since:  # work the meeting already started, open or done, is not filed again (LB-24 vs LB-19)
         titles = await _meeting_task_titles(owner_id, room_id, since)
-        items = [i for i in items if not covered(i, titles)]
-    member = inviting_member(meeting, await messaging_repo.list_members(room_id)) if items else None
+        done = [i for i in items if covered(i, titles)]
+        items = [i for i in items if i not in done]
+    member = inviting_member(meeting, await messaging_repo.list_members(room_id)) if items or done else None
     if member is None:
         return
-    title = (request.get("meeting") or {}).get("title") or meeting.get("title") or "Meeting"
+    title = " ".join(((request.get("meeting") or {}).get("title") or meeting.get("title") or "Meeting").split())
+    already = "\n".join(f"Already a thread: {i}" for i in done)
+    if items:
+        text = f"Action items from the meeting {title}, one thread each:\n" + "\n".join(f"- {i}" for i in items)
+        text += f"\n\n{already}" if already else ""
+    else:
+        text = f"Action items from the meeting {title} are already threads:\n{already}"
     await messaging.create_human_message(
         AuthContext(user_id=member, org_id=owner_id),
         room_id,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"meeting-actions:{owner_id}:{message_id}"),
-            text=f"Action items from the meeting {' '.join(title.split())}, one thread each:\n"
-            + "\n".join(f"- {i}" for i in items)[:3800],
+            text=text[:3800],
             reply_to_message_id=None,
             thread_root_message_id=None,
         ),
         via="meeting_notes",  # nobody spoke it: no spoken-reply hint (admission still tags origin=meeting)
+        **({} if items else {"wake": False}),  # only "already a thread" lines: nothing for the Router to start
     )
 
 

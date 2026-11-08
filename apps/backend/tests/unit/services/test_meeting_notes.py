@@ -614,7 +614,8 @@ async def test_notes_with_no_action_items_file_nothing(env, monkeypatch):
 
 
 async def test_action_items_the_meeting_already_started_are_not_filed_again(env, monkeypatch):
-    """8 Nov prod Meet re-run: LB-24 "Finalize and share holiday-hours post" duplicated LB-19, which had finished."""
+    """8 Nov prod Meet re-run: LB-24 "Finalize and share holiday-hours post" duplicated LB-19, which had finished.
+    A dropped item is still in the notes message, as "Already a thread: ..."."""
     env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
     env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
     made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
@@ -623,40 +624,77 @@ async def test_action_items_the_meeting_already_started_are_not_filed_again(env,
     notes = ("Action items:\n- Pulse: Finalize and share holiday-hours post\n- Vera: order the gel colours\n"
              "- Pat: book the venue for the party")  # fmt: skip
     await ended_and_noted(env, notes)
-    assert made.await_args.args[2].text.endswith("one thread each:\n- Pat: book the venue for the party")
+    assert made.await_args.args[2].text == (
+        "Action items from the meeting Weekly sync, one thread each:\n- Pat: book the venue for the party\n\n"
+        "Already a thread: Pulse: Finalize and share holiday-hours post\n"
+        "Already a thread: Vera: order the gel colours"
+    )
+    assert made.await_args.kwargs == {"via": "meeting_notes"}
     assert env.task_titles.await_args.args == ("org_1", ROOM, 1790972500)  # the meeting room's, since the call
-    env.task_titles.return_value = ["Draft the holiday-hours post", "Order more gel colors", "Book the venue"]
+    env.task_titles.return_value = [
+        "Draft the holiday-hours post",
+        "Order more gel colors",
+        "Book the venue for the party",
+    ]
     made.reset_mock()
-    env.meta["meeting"].pop("notesMailedAt", None)
-    await mod._file_action_items("org_1", "msg-2", {"roomId": ROOM, "meeting": {}}, notes)
-    made.assert_not_awaited()  # all covered: nothing to file
+    await mod._file_action_items("org_1", "msg-2", {"roomId": ROOM, "meeting": {"inCallAt": 1790972500}}, notes)
+    text = made.await_args.args[2].text  # all covered: the notes say so, and wake no Router
+    assert text.startswith("Action items from the meeting Weekly sync are already threads:\n")
+    assert "Already a thread: Pat: book the venue for the party" in text and "one thread each" not in text
+    assert made.await_args.kwargs == {"via": "meeting_notes", "wake": False}
 
 
-def test_covered_matches_content_words_not_any_overlap():
-    assert mod.covered("Pulse: Finalize and share holiday-hours post", ["Draft the holiday-hours post"])
-    assert not mod.covered("Pat: send the holiday post", ["Update the holiday hours on Google"])  # one word: post
-    assert not mod.covered("Ada: order nail gels", ["Book a nail appointment"])
-    assert not mod.covered("Ada: order nail gels", [])
-
-
-async def test_the_meeting_tasks_are_the_rooms_since_the_call(monkeypatch):
-    rows = {
-        "working": [{"taskId": "t1", "title": "Order gels", "createdAt": "2026-11-08T14:00:29+00:00",
-                     "audience": {"kind": "workspace"}}],
-        "idle": [{"taskId": "t2", "title": "Holiday post", "createdAt": "2026-11-08T13:57:42+00:00",
-                  "audience": {"kind": "room", "roomId": ROOM}},
-                 {"taskId": "t3", "title": "Old", "createdAt": "2026-11-07T10:00:00+00:00",
-                  "audience": {"kind": "room", "roomId": ROOM}}],
-    }  # fmt: skip
-    monkeypatch.setattr(
-        mod.tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=lambda _w, s, **_: (rows.get(s, []), None))
+async def test_without_in_call_at_every_action_item_is_filed(env, monkeypatch):
+    """No call start: no window to match against, so no scan of the workspace's tasks."""
+    env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
+    env.meta["meeting"].update(invitedBy="pat@acme.com")
+    env.meta["meeting"].pop("inCallAt")
+    made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
+    monkeypatch.setattr(mod.messaging, "create_human_message", made)
+    env.task_titles.return_value = ["Draft the holiday-hours post"]
+    await mod._file_action_items(
+        "org_1", "msg-3", {"roomId": ROOM, "meeting": {}}, "Action items:\n- Pulse: draft the holiday-hours post"
     )
-    trees = {"t1": {"task": {}, "subscriptions": [{"createdBy": "router", "threadKey": f"room:{ROOM}"}]}}
+    env.task_titles.assert_not_awaited()
+    assert made.await_args.args[2].text.endswith("one thread each:\n- Pulse: draft the holiday-hours post")
+
+
+@pytest.mark.parametrize(
+    ("item", "title", "hit"),
+    [
+        ("Pulse: Finalize and share holiday-hours post", "Draft the holiday-hours post", True),  # LB-24 vs LB-19
+        ("Vera: order the gel colours", "Order more gel colors from OPI", True),
+        ("Pat: email the holiday post", "Send the holiday post", True),
+        ("Pat: send the holiday post", "Draft the holiday post", False),  # another verb: other work
+        ("Pat: draft the email", "Draft the post", False),  # "email" and "post" are objects, not stop words
+        ("Ada: order nail gels", "Order nail polish", False),  # another object
+        ("Pat: book the venue for the party", "Book the venue", False),  # only part of the object
+        ("Ada: order nail gels", "Book a nail appointment", False),
+    ],
+)
+def test_covered_needs_the_verb_and_the_object(item, title, hit):
+    assert mod.covered(item, [title]) is hit
+    assert not mod.covered(item, [])
+
+
+async def test_the_meeting_tasks_are_the_rooms_threads_since_the_call(monkeypatch):
+    """Only the meeting room's tasks are read (its THREAD rows), never a workspace-wide scan."""
+    threads = [{"threadKey": f"room:{ROOM}:r1", "taskId": "t1", "history": ["t0"]},
+               {"threadKey": f"room:{ROOM}", "taskId": "t2", "history": []}]  # fmt: skip
+    tasks = {
+        "TASK#t0": {"taskId": "t0", "title": "Old", "createdAt": "2026-11-07T10:00:00+00:00"},
+        "TASK#t1": {"taskId": "t1", "title": "Order gels", "createdAt": "2026-11-08T14:00:29+00:00"},
+        "TASK#t2": {"taskId": "t2", "title": "Holiday post", "createdAt": "2026-11-08T13:57:42+00:00"},
+    }
+    rooms = AsyncMock(return_value=threads)
+    monkeypatch.setattr(mod.tasks_repo, "list_room_threads", rooms)
     monkeypatch.setattr(
-        mod.tasks_repo, "get_task_tree", AsyncMock(side_effect=lambda _w, t: trees.get(t, {"task": {}}))
+        mod.tasks_repo, "batch_get", AsyncMock(side_effect=lambda _w, sks: [tasks[k] for k in sks if k in tasks])
     )
+    monkeypatch.setattr(mod.tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=AssertionError("no scan")))
     since = 1794146120  # 2026-11-08T13:55:20Z, when Recall joined
     assert sorted(await mod._meeting_task_titles("org_1", ROOM, since)) == ["Holiday post", "Order gels"]
+    rooms.assert_awaited_once_with("org_1", ROOM)
 
 
 def test_the_assistants_lines_are_marked_and_never_action_items():

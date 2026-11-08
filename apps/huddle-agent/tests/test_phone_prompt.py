@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 os.environ.setdefault("LIGHTBULB_API_URL", "http://x")
 os.environ.setdefault("LIGHTBULB_HUDDLE_SECRET", "x")
 
@@ -507,3 +509,30 @@ def test_every_scripted_line_is_said_with_tools_off():
     for used in ("line(session, STILL_THERE)", "line(session, SILENT_BYE)", "line(session, text)"):
         assert used in src  # every phone-only instruction line goes through `line`
     assert "generate_reply(instructions=" not in src
+
+
+@pytest.mark.parametrize("said", ["Never mind.", "No thanks.", "Actually, forget it.", "No, that's fine."])
+async def test_a_message_asked_for_can_be_called_off(monkeypatch, said):
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"))
+    assert r.line("Caller", "Can I leave a message?") == "ask_message"
+    assert r.line("Caller", said) == "cancel"
+    await _settle(r)
+    assert b.calls == [] and not r.taking
+    assert replies[-1]["instructions"] == mouth.fixed(phone.NO_MESSAGE)
+
+
+async def test_a_yes_with_a_request_after_the_offer_goes_to_the_team(monkeypatch):
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"))
+    r.offered = True
+    assert r.line("Caller", "Yes, book me at 3.") == "asked"
+    await _settle(r)
+    assert [(p, body["text"].split("\n\n")[0]) for p, body in b.calls] == [("turn", "Yes, book me at 3.")]
+    assert not r.taking
+
+
+async def test_what_was_that_while_taking_a_message_asks_for_it_again(monkeypatch):
+    r, _s, b, replies = _receptionist(monkeypatch, _Speech("sp_x"))
+    r.line("Caller", "Can I leave a message?")
+    assert r.line("Caller", "Sorry, what was that?") == "ask_message"
+    await _settle(r)
+    assert b.calls == [] and r.taking and replies[-1]["instructions"] == mouth.fixed(phone.ASK_MESSAGE)

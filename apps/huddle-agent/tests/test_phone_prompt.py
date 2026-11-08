@@ -131,7 +131,7 @@ async def test_a_line_said_over_the_firm_opening_is_delegated_after_it(monkeypat
     await r.turns.flush()
     assert [(p, body["text"].split("\n\n")[0]) for p, body in b.calls] == [("turn", "Can I book Saturday afternoon?")]
     assert replies == [{"instructions": mouth.HOLD, "tool_choice": "none"}]
-    assert r.held and r.tool_delegate("Can I book Saturday afternoon?") == {"sent": True}
+    assert r.held and r.tool_delegate("Can I book Saturday afternoon?").output == {"sent": True}
     await r.turns.flush()
     assert len(b.calls) == 1  # the model's own delegate call for the same line posts nothing more
     r.after_opening()

@@ -87,6 +87,7 @@ class Transport(Protocol):
 
     def history(self) -> list[tuple[str, str, str]]: ...  # (item id, role, text), the chat context
     def commentary(self, text: str, delegation_id: str | None) -> None: ...
+    def context(self, text: str) -> None: ...
     async def close(self) -> None: ...
 
 
@@ -118,6 +119,7 @@ class LiveSession:
         self.billed_s = 0.0
         self.session: AgentSession | None = None  # the real session, for the surface's own event hooks
         self.agent: Agent | None = None
+        self._closed = False
         self._seen: set[str] = set()  # chat-context item ids already sent with an ask
         self._last: asyncio.Task | None = None  # the newest post: each waits for the one before it
         self._posts: set[asyncio.Task] = set()
@@ -179,6 +181,13 @@ class LiveSession:
         for chunk in _chunks(speakable(text)):  # several appends with one id continue the same work
             self.transport.commentary(chunk, delegation_id)
 
+    def send_context(self, text: str) -> None:
+        """Silent context for a session already open: e.g. results fetched while a Meet voice was asleep. Thinking
+        appends update GPT-Live without asking it to say old replies or answering a current delegation."""
+        if not self._closed:
+            for chunk in _chunks(text.strip()):
+                self.transport.context(chunk)
+
     async def _read(self, events: Events) -> None:
         """Each new agent message in the room, once by its id, becomes a result: the answer to the delegation whose
         posted message it replies to (`inReplyTo`), else unsolicited. A failure restarts `events` after a capped
@@ -219,12 +228,14 @@ class LiveSession:
 
     def ended(self, *_args) -> None:
         """The AgentSession closed (the member left, an error): stop reading results and keep the usage so far."""
+        self._closed = True
         self._events.cancel()
         self.billed_s = self.transport.billed_s
 
     async def close(self) -> None:
         """Lets posts in flight finish, then really ends the GPT-Live session (idle seconds are billed, contract §8)
         and keeps its final usage."""
+        self._closed = True
         self._events.cancel()
         if self._posts:
             await asyncio.wait(set(self._posts), timeout=CLOSE_WAIT_S)
@@ -253,6 +264,9 @@ class _GPTLive:
 
     def commentary(self, text: str, delegation_id: str | None) -> None:
         self.live.append_commentary(text, delegation_id=delegation_id)
+
+    def context(self, text: str) -> None:
+        self.live.append_thinking(text)
 
     async def close(self) -> None:
         await self.session.aclose()  # sends session.close and waits for session.closed with the final usage
@@ -283,9 +297,19 @@ async def start(
     # no tools: client delegation refuses them. The agent's chat context is the plugin's startup history (session.start)
     agent = Agent(instructions=prompt, **({"chat_ctx": startup_context(history)} if history else {}))
     session = AgentSession(llm=model, vad=None, user_away_timeout=user_away_timeout)
-    await session.start(
-        agent=agent, room=ctx.room, record=record, **({"room_options": room_options} if room_options else {})
-    )
+    try:
+        await session.start(
+            agent=agent, room=ctx.room, record=record, **({"room_options": room_options} if room_options else {})
+        )
+    except (Exception, asyncio.CancelledError):
+        # Startup can fail after opening the paid model session. Close both resources even if one cleanup fails,
+        # and preserve the original error/cancellation. No delegations are wired until startup succeeds.
+        for resource in (session, model):
+            try:
+                await asyncio.wait_for(resource.aclose(), timeout=CLOSE_WAIT_S)
+            except (Exception, asyncio.CancelledError):
+                logger.warning("live %s: startup cleanup failed", surface, exc_info=True)
+        raise
     live = LiveSession(_GPTLive(session, agent, model), surface, post, events, on_spoken)
     live.session, live.agent = session, agent
     live._seen.update(i for i, _r, _t in live.transport.history())  # the startup history was never asked

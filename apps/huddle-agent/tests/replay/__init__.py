@@ -1,4 +1,5 @@
-"""The live rig's scenarios (`scenarios/`), judged offline against the Meet gate by `gate.py`."""
+"""The live rig's Meet scenarios (`scenarios/`): side talk, mentions, follow-ups, stops. Their offline judge went with
+the code gate (Task 3, GPT-Live decides); they are the cases to measure GPT-Live against in a real Meet."""
 
 import json
 import os

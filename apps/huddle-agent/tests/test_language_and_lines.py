@@ -20,20 +20,14 @@ def env(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
 
 
-def test_phone_and_orb_transcribe_english_and_meet_stt_does():
-
-    assert meet.realtime_model()._opts.input_audio_transcription is None  # Meet hears through its STT
+def test_meet_stt_transcribes_english():
     assert meet.STT_LANGUAGE == "en"
 
 
 def test_every_voice_replies_in_english():
-    texts = (
-        phone.prompt(INFO),
-        owner.prompt(),
-        meet.INSTRUCTIONS,
-    )
-    for t in texts:
-        assert mouth.ENGLISH in t
+    texts = (phone.prompt(INFO), owner.prompt(), meet.prompt({"name": "Nova", "company": "C", "title": "T", "today": "d"}))
+    for text in texts:
+        assert mouth.ENGLISH in text
 
 
 class _Speech:

@@ -28,7 +28,7 @@ def test_propose_automation_router_only(monkeypatch):
 
     rt.register(Ctx())
     assert ("propose_automation", "lightbulb_router") in seen
-    assert all(toolset == "lightbulb_router" for _, toolset in seen)  # never on a Worker toolset
+    assert all(toolset.startswith("lightbulb_router") for _, toolset in seen)  # never on a Worker toolset
     monkeypatch.setattr(rt.turn_context, "read", lambda sid: {"runId": RUN, "mode": "worker"})
     assert _call(trigger_ids=["chat:m1"], name="n", instructions="i", cron=["0 9 * * 1"]) == rt.NOT_ROUTER
 

@@ -897,7 +897,7 @@ async def _meter_router(ws: str, user_id: str | None, status: runtime_runs.RunSt
         await _meter(ws, user_id, status.usage, "router")
 
 
-async def _router_identity(ws: str, inp: RouterTurnIn, scope: str) -> runtime_runs.RunIdentity:
+async def _router_identity(ws: str, inp: RouterTurnIn, scope: str, call: bool = False) -> runtime_runs.RunIdentity:
     return runtime_runs.RunIdentity(
         ts.router_run_id(ws, inp.batch_id),
         ws,
@@ -908,6 +908,7 @@ async def _router_identity(ws: str, inp: RouterTurnIn, scope: str) -> runtime_ru
         lane=inp.lane,
         room=ts.router_room_key(scope),  # the batch's conversation: a batch is one (lane, trigger_scope)
         model=await _cheap_model(ws),
+        call=call,  # a phone caller's batch: the bridge adds transfer_call
     )
 
 
@@ -920,11 +921,12 @@ async def _router_run(
     user_id: str | None,
     settled: Callable[[runtime_runs.RunStatus], bool] = lambda _status: False,
     progress: Callable[[runtime_runs.RunStatus], Awaitable[None]] | None = None,
+    call: bool = False,
 ) -> runtime_runs.RunStatus:
     """One Router run in the lane's session, polled to its end (Router runs post no events), its usage metered.
     Returned still running, unmetered, once `settled(status)` holds: the decisions are in and the rest of the run
     is the Router's closing word, so the ack need not wait for it (`_finish_router_run` meters it)."""
-    identity = await _router_identity(ws, inp, scope)
+    identity = await _router_identity(ws, inp, scope, call)
     request = runtime_runs.RunRequest(
         input=prompt,
         instructions=router_prompt.ROUTER_INSTRUCTIONS,
@@ -964,12 +966,12 @@ async def _router_run(
 
 
 async def _finish_router_run(
-    ws: str, inp: RouterTurnIn, scope: str, user_id: str | None, deadline: float
+    ws: str, inp: RouterTurnIn, scope: str, user_id: str | None, deadline: float, call: bool = False
 ) -> runtime_runs.RunStatus | None:
     """A run applied before it ended (`settled`): wait for its end, until `deadline` (monotonic: the turn's own
     budget, under the Activity's 5 min), and meter it. None when it never ended cleanly; its decisions are already
     applied, so that is only logged."""
-    identity = await _router_identity(ws, inp, scope)
+    identity = await _router_identity(ws, inp, scope, call)
     try:
         status = await _poll_run(ws, identity)
         while status.status in _RUNNING and time.monotonic() < deadline:
@@ -1186,7 +1188,8 @@ async def _apply(
     # A trigger answered by an automation's confirm card (propose_automation, during the run): the card's own line
     # is the answer, so no Router reply or fallback line is posted beside it (dev walk R7: one line above the card,
     # another below).
-    carded = {tid for tid, t in triggers.items() if (t.get("routedTo") or {}).get("automationId")}
+    # transfer_call's line likewise answers a phone caller who asked for a person (routedTo.transfer).
+    carded = {tid for tid, t in triggers.items() if {"automationId", "transfer"} & set(t.get("routedTo") or {})}
     replies: list[tuple[dict, str]] = []
     covered.update(carded)
     ignored: set[str] = set()  # the Router chose silence for these (people talking to each other)
@@ -1576,7 +1579,9 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         stage = _StageLine(ws, list(to_model.values()))
         hold = asyncio.create_task(stage.hold())
         try:
-            status = await _router_run(ws, inp, prompt, memory, scope, user_id, settled, stage.update)
+            status = await _router_run(
+                ws, inp, prompt, memory, scope, user_id, settled, stage.update, call=bool(_callers(to_model))
+            )
         except Exception:
             hold.cancel()  # before the clear, or a last tick could put the line back
             await stage.clear()
@@ -1595,7 +1600,9 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             applied = decisions + validated(status.decisions)
             out = await _apply(ws, inp, triggers, applied, run_text)
             await stage.clear()  # after the posts, so the line goes as the answer lands (not back to "reading…")
-            final = await _finish_router_run(ws, inp, scope, user_id, turn_started + ROUTER_BUDGET_S)
+            final = await _finish_router_run(
+                ws, inp, scope, user_id, turn_started + ROUTER_BUDGET_S, call=bool(_callers(to_model))
+            )
             # Validation keeps order and drops item by item, so the applied decisions are a prefix of the final ones.
             tail = validated(final.decisions or [])[len(applied) - len(decisions) :] if final else []
             late = [d for d in tail if not _silent(d, triggers)]

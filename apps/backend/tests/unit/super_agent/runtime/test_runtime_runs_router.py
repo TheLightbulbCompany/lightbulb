@@ -52,3 +52,12 @@ def test_router_identity_without_a_room_is_refused():
     with pytest.raises(ValueError):
         runtime_runs.RunIdentity("r1", "org_1", BATCH, 1, CEO, mode="router", lane="shared").to_wire()
     assert not re.fullmatch(ts.ROUTER_SESSION_KEY_PATTERN, f"agent:{CEO}:lightbulb:router:shared")
+
+
+def test_a_callers_router_run_says_so_on_the_wire():
+    """transfer_call is offered on a phone caller's batch only: the bridge adds its toolset on `call`."""
+    room = "r:0123456789abcdef"
+    wire = runtime_runs.RunIdentity("r1", "org_1", BATCH, 1, CEO, mode="router", lane="shared", room=room, call=True)
+    assert wire.to_wire()["call"] is True
+    plain = runtime_runs.RunIdentity("r1", "org_1", BATCH, 1, CEO, mode="router", lane="shared", room=room)
+    assert "call" not in plain.to_wire()

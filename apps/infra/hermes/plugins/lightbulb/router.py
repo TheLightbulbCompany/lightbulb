@@ -15,6 +15,8 @@ import urllib.error
 from . import turn_context
 
 TOOLSET = "lightbulb_router"
+#: A phone caller's batch only (the backend's `call` identity flag; bridge.turn adds it to ROUTER_RUN_LIMITS).
+CALL_TOOLSET = "lightbulb_router_call"
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 NOT_ROUTER = "Router tools are only available in a Lightbulb Router run."
 
@@ -213,6 +215,44 @@ def _propose_automation(args: dict, *, session_id: str = "", **_kw) -> str:
     return "proposed"
 
 
+TRANSFER_SCHEMA = {
+    "name": "transfer_call",
+    "description": "The caller on the phone asked to talk to a person: hand the call to one. `text` is the one short "
+    "line the caller hears first (\"Let me put you through to someone.\"). It is that trigger's answer: make no "
+    "other decision for it.",
+    "parameters": {
+        "type": "object",
+        "properties": {"trigger_ids": _TRIGGERS, "text": {"type": "string", "maxLength": 500}},
+        "required": ["trigger_ids", "text"],
+    },
+}
+
+
+def _transfer_call(args: dict, *, session_id: str = "", **_kw) -> str:
+    """`POST /api/v1/internal/runtime/{owner}/transfer-call`: one Lightbulb line in the call room marked
+    `action: "transfer"`; the phone worker sees it and transfers the caller (huddle-agent phone.py `hand_off`).
+    The backend refuses any trigger that is not a caller's in their own live call."""
+    from . import _post  # the package is initialised by the time a tool runs
+
+    ctx = turn_context.read(session_id)
+    if not ctx or ctx.get("mode") != "router":
+        return NOT_ROUTER
+    args = args or {}
+    tids = args.get("trigger_ids")
+    if not isinstance(tids, list) or not tids or not all(isinstance(t, str) and t for t in tids):
+        return json.dumps({"error": "trigger_ids must list the batch's trigger ids"})
+    if not isinstance(args.get("text"), str) or not args["text"].strip():
+        return json.dumps({"error": "text is required"})
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/transfer-call"
+    try:
+        _post(url, ctx["hookToken"], {"triggerIds": tids, "text": args["text"].strip()})
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"error": f"not transferred: {_backend_code(exc)}"})
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"not transferred: {type(exc).__name__}"})
+    return "transferring"
+
+
 def _problem(kind: str, args: dict) -> str | None:
     if (
         not isinstance(args.get("trigger_ids"), list)
@@ -277,4 +317,12 @@ def register(ctx) -> None:
         _propose_automation,
         description=PROPOSE_SCHEMA["description"],
         emoji="🗓️",
+    )
+    ctx.register_tool(
+        "transfer_call",
+        CALL_TOOLSET,
+        TRANSFER_SCHEMA,
+        _transfer_call,
+        description=TRANSFER_SCHEMA["description"],
+        emoji="📞",
     )

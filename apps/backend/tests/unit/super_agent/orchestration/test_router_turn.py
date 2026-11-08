@@ -1355,6 +1355,24 @@ async def test_recently_closed_scan_stops_at_its_cap(world, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_transfer_line_is_the_only_answer(world, monkeypatch):
+    """transfer_call posts the call room's transfer line (and marks the trigger) during the run: no Router reply,
+    prose or fallback line beside it."""
+    t1 = await _trig("chat:m1")
+    create = acts.runtime_runs.create_run
+
+    async def run_transfers(ws, identity, request):
+        await repo.set_trigger_routed_to(WS, t1, {"transfer": "msg-1"})  # what the transfer-call route does
+        return await create(ws, identity, request)
+
+    monkeypatch.setattr(acts.runtime_runs, "create_run", run_transfers)
+    world["decisions"] = []
+    world["output"] = "Transferring the caller."
+    await _run([t1])
+    assert world["posts"] == []
+
+
+@pytest.mark.asyncio
 async def test_an_automation_card_is_the_only_answer(world, monkeypatch):
     """Dev walk R7: propose_automation posts its confirm card (and marks the trigger) during the run; the Router's
     reply line, or its prose fallback, would be a second ack beside the card. The other ask still gets its reply."""

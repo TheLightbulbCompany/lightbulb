@@ -41,6 +41,8 @@ asker's own time and omit tz; omit deliver_to for "here". Add no reply or ask be
 other: start_task, with the specialist whose title fits building software (Engineering) when the roster has one, and \
 their words as written in the brief. Its builder works on it in Canvas; publishing it stays the person's approval.
 - pass_through when an open task listed below already covers the message: give its task id.
+- transfer_call, on a phone caller's batch only, when the caller asks to talk to a person: it hands the call to one, \
+with one short line for them; make no other decision for that trigger.
 - reply only when the batch below shows the answer: this conversation's lines, its open and recently closed \
 tasks, the trigger itself and, on a phone caller's batch, its Business profile. The status of a thread listed \
 below is a reply. A Business profile answers what it states: hours, prices, services and how long they take, \

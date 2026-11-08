@@ -23,6 +23,7 @@ import { TrialRecapCard } from "../../../components/billing/TrialRecapCard";
 import { RoomChatRow, SessionChatRow, type ChatRowAction } from "../../../components/chats/ChatRow";
 import { SessionRenameSheet } from "../../../components/session/SessionRenameSheet";
 import { LogoMark } from "../../../components/LogoMark";
+import { VoiceHome } from "../../../components/voice/VoiceHome";
 import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
 import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
@@ -281,6 +282,7 @@ export default function Chats() {
         // A failure is shown ABOVE the rows.
         ListHeaderComponent={
           <>
+            <VoiceHome rooms={rooms.rooms} agentId={frontAgentId} />
             <TrialRecapCard />
             <View style={styles.filters} accessibilityRole="radiogroup" accessibilityLabel="Filter chats">
               {filters.map(({ id, label }) => (

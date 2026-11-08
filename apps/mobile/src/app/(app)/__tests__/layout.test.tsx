@@ -162,12 +162,12 @@ it("anchors the stack on the tabs so a cold-start deep link can go back", () => 
 // back to Chats for the first render, before the tab navigator has state.
 it("titles the tabs header from the focused tab", async () => {
   await render(<AppLayout />);
-  expect(titleOf("(tabs)")).toBe("Chats");
+  expect(titleOf("(tabs)")).toBe("Home");
 
   mockFocusedTab = "teams";
   mockScreens.length = 0;
   await render(<AppLayout />);
-  expect(titleOf("(tabs)")).toBe("Teams");
+  expect(titleOf("(tabs)")).toBe("Agent");
 });
 
 // The cold-start loop: a tap routed while the gates still hid the Stack made

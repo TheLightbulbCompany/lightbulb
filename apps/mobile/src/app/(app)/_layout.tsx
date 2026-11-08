@@ -34,9 +34,9 @@ export const unstable_settings = { anchor: "(tabs)" };
 
 /** The tab bar's four roots, by route name, for the shared stack header. */
 const TAB_TITLES: Record<string, string> = {
-  chats: "Chats",
-  activity: "Activity",
-  teams: "Teams",
+  chats: "Home",
+  activity: "Needs you",
+  teams: "Agent",
   settings: "Settings",
 };
 
@@ -132,7 +132,7 @@ export default function AppLayout() {
                     options={({ route }) => ({
                       // undefined until the tab navigator has state — i.e. the first
                       // render, which is always Chats.
-                      title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats",
+                      title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Home",
                       // Telegram/Signal-style: the tab's title sits in the top row,
                       // left-aligned in Satoshi, beside the tab's own buttons — not a
                       // centred title and not a large title a row further down.
@@ -147,7 +147,7 @@ export default function AppLayout() {
                               maxFontSizeMultiplier={1.2}
                               style={{ fontFamily: fonts.loraMedium, fontSize: 28, lineHeight: 34, color: headerTint }}
                             >
-                              {TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats"}
+                              {TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Home"}
                             </Text>
                           ),
                         },

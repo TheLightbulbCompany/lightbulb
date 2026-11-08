@@ -7,7 +7,7 @@ would reply to every line of side talk, each reply billed.
 
 It hears the room (every Meet person's track, mixed here: a realtime session takes one input stream) and
 speaks only when addressed by the assistant's name. Two gates: Gemini's own decide-not-to-respond, and
-`Gate` -- the wake rules of transcript.py over each person's own transcript (the huddle's per-person
+`Gate` -- the wake rules of transcript.py over each person's own transcript (a per-person
 transcriber, one stream per Meet track, so every line has its exact speaker). Gemini's input transcript is
 not used: after it declines to answer side talk it sends none for the talk that follows, for as long as half a
 minute (self-test 7 Nov: an ask and a guest's question in that gap were never seen). A reply's audio is HELD
@@ -28,7 +28,6 @@ import re
 import logging
 import os
 import time
-from typing import Literal
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -60,7 +59,7 @@ VOICE = os.environ.get("MEET_VOICE", "marin" if OPENAI else "Kore")
 TRANSCRIBE = os.environ.get("MEET_TRANSCRIBE_MODEL", "gpt-transcribe")
 ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
-MEET_QUIET_S = 3.0  # huddle.py: a reply waits for a real pause in the room
+MEET_QUIET_S = 3.0  # a reply waits for a real pause in the room
 STALE_S = 20.0  # spec §4.4b.4: a reply not started this long after its ask is dropped
 MEETING_IDLE_S = 60 * 60  # spec §4.4b: leave after an hour of silence
 MEETING_MAX_S = float(os.environ.get("MEET_MAX_S", 90 * 60))  # cost cap: leave after 90 minutes whatever happens
@@ -71,7 +70,6 @@ NUDGE_S = 3.0  # an ask Gemini has not started answering this long after its fin
 ADDRESSED = ("ask",)
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
 STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 400}
-# agent.MEET_VAD; not imported: agent.py imports this module
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
 INSTRUCTIONS = """You are {name}, the AI assistant of {company}, listening in the Google Meet "{title}". Today is
@@ -432,14 +430,6 @@ class MeetAgent(Agent):
         return await self._post("chat", {"text": text, "participantId": self.asker()})
 
     @function_tool
-    async def approve(self, phrase: Literal["yes", "no", "undo"], hint: str = "") -> dict:
-        """Call only when the person clearly says yes, no or undo to a pending ask you raised, or one on the
-        Needs-you list; hint is a few words naming it. A yes never approves anything: it sends a one-tap confirm to
-        the owner's phone. On confirm_sent say "I've sent it to <owner>'s phone to confirm"; on none say "There's
-        nothing waiting for an OK"; otherwise say the returned `say`. Never claim something was approved or done."""
-        return await self._post("approve", {"phrase": phrase, "hint": hint, "participantId": self.asker()})
-
-    @function_tool
     async def start_work(self, title: str, brief: str) -> dict:
         """Hand open-ended work or an action item to the team: a short title and a self-contained brief.
         Don't wait for it; say you're on it."""
@@ -473,7 +463,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         "today": time.strftime("%A %Y-%m-%d"),
     }, names)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
-    # the huddle's per-person transcriber (agent.py): the gate's ears, with the exact speaker of each line
+    # the per-person transcriber: the gate's ears, with the exact speaker of each line
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
         model=TRANSCRIBE, use_realtime=True, turn_detection=STT_VAD,

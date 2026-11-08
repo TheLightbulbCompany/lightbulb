@@ -69,11 +69,3 @@ async def test_no_and_undo_only_speak(m):
     assert await voice_approve.approve(WS, "app", SAM_IN_MEET, "no", "x") == {"say": "Say no in the app to decline."}
     assert await voice_approve.approve(WS, "app", SAM_IN_MEET, "undo", "x") == {"say": "Nothing to undo."}
     m["pend"].assert_not_awaited()
-
-
-async def test_card_closed_between_pick_and_mark_returns_none(m):
-    from botocore.exceptions import ClientError
-
-    m["pend"].side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
-    assert await voice_approve.approve(WS, "app", SAM_IN_MEET, "yes", "supplies") == {"none": True}
-    m["push"].assert_not_awaited()

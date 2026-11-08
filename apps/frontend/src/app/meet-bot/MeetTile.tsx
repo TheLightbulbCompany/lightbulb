@@ -59,19 +59,17 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
     const s = agentLiveStatus(attrs, id);
     return s === "working" || ((s === "listening" || s === "joining") && !!agentWorking(attrs, id));
   };
-  // The backend sets `.phase` while a meeting task drafts, and for 60 s after its page is ready.
-  const phaseLine = (id: string) => ({ drafting: "Drafting…", page_ready: "Page ready" })[attrs[`lightbulb.agent.${id}.phase`] as string] ?? "";
   const isHand = (id: string) => agentLiveStatus(attrs, id) === "has_news";
   // Hand first: with nobody speaking, the first raised hand is the hero. A Recall bot cannot raise Meet's own
   // hand (no API; our own guest is refused, 10-06), so the tile is the hand. No topic and no instruction
   // (owner ruling 10-06): it speaks in the next gap by itself.
   const raised = speaker ? undefined : roster.find(isHand);
-  const busy = roster.filter((id) => id !== speaker && id !== raised && (isHand(id) || isWorking(id) || !!phaseLine(id)));
+  const busy = roster.filter((id) => id !== speaker && id !== raised && (isHand(id) || isWorking(id)));
   const activity = [...busy.filter(isHand), ...busy.filter((id) => !isHand(id))];
-  const rowLine = (id: string) => phaseLine(id) || (isHand(id)
+  const rowLine = (id: string) => isHand(id)
     ? "Hand up"
-    // no request text (owner ruling 10-06): "Thinking", or "Listening to <name>" for a name it just heard
-    : agentWorking(attrs, id).startsWith("listening to ") ? agentStateLine("working", { working: agentWorking(attrs, id) }) : "Thinking");
+    // no request text (owner ruling 10-06): "Working", or "Listening to <name>" for a name it just heard
+    : agentWorking(attrs, id).startsWith("listening to ") ? agentStateLine("working", { working: agentWorking(attrs, id) }) : "Working";
   const onStage = (id: string) => id === speaker || id === raised || activity.includes(id);
   const stageBusy = !!speaker || !!raised || activity.length > 0;
   const hero = speaker ?? raised;
@@ -115,7 +113,6 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
                 <li key={id} className="flex flex-col items-center" style={{ width: 150, gap: 8 }}>
                   <Avatar id={id} name={nameOf(id)} url={agents[id]?.avatarUrl} size={96} />
                   <span data-name className="w-full truncate text-center" style={{ fontSize: 28, lineHeight: "34px" }}>{nameOf(id)}</span>
-                  <span style={{ fontSize: 24, lineHeight: "30px", ...soft }}>Listening</span>
                 </li>
               ))}
               {roster.length > 10 && <li className="self-center" style={{ fontSize: 28, ...soft }}>+{roster.length - 10}</li>}

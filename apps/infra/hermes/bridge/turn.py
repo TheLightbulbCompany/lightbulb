@@ -2281,8 +2281,8 @@ def _backend_publish(endpoint: str):
     import bridge
 
     def publish(_endpoint, _channel, *events: dict) -> int:
-        # Only what the huddle worker reads (huddle_agent/frames.py Turns._handle): reasoning
-        # deltas and the rest would each cost a relay round trip for nothing.
+        # Only the frame types a voice run reads (HUDDLE_FRAMES): reasoning deltas and the rest
+        # would each cost a relay round trip for nothing.
         events = tuple(e for e in events if ((e.get("payload") or {}).get("frame") or {}).get("type") in HUDDLE_FRAMES)
         if not events:
             return 200

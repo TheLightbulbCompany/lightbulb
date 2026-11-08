@@ -214,9 +214,7 @@ def seed() -> None:
     for number, owner in OWNERS.items():
         assert owner.startswith("qa_phone_"), owner  # never sweep a real workspace's rows
         for row in calendar(owner):
-            # VOICECELL#: the slot cells a booking holds since #5024; left behind, they refuse the next run's
-            # bookings as slot_taken
-            if row["sk"].startswith(("VOICEBOOK#", "VOICECALLER#", "VOICECELL#")):
+            if row["sk"].startswith(("VOICEBOOK#", "VOICECALLER#")):
                 t.delete_item(Key={"pk": row["pk"], "sk": row["sk"]})
         t.put_item(Item={"pk": f"PHONE#{number}", "sk": "LINE", "ownerId": owner, "ownerUserId": f"{owner}_user"})
         t.put_item(Item={"pk": f"OWNER#{owner}", "sk": "VOICEAGENT", "updatedBy": "phone-evals",

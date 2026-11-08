@@ -61,7 +61,7 @@ it("backs off 30 s after a failed read", async () => {
     expect(h.get).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(h.get).toHaveBeenCalledTimes(2);
-    expect(result.current).toEqual({ userIds: ["user_b"], available: true });
+    expect(result.current).toEqual({ userIds: ["user_b"], available: true, lightbulb: false });
   } finally {
     vi.useRealTimers();
   }

@@ -55,6 +55,11 @@ function QuestionCard({ q, name }: { q: QuestionView; name: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const ok = q.kind !== "question";
+  // #5028: a call's Question carries subkind didnt_know | handoff | line_problem and preview {caller, question}.
+  const label = ok ? "Needs your OK" : q.subkind === "handoff" ? "Caller wanted a person"
+    : q.subkind === "line_problem" ? "Line problem" : `${name} didn't know`;
+  const caller = (q.preview as { caller?: string } | null | undefined)?.caller;
+  const google = q.subkind === "line_problem" && /google|calendar/i.test(`${q.title} ${q.text}`);
   const send = async (optionId: string, typed?: string) => {
     setBusy(true); setErr(null);
     try {
@@ -68,12 +73,16 @@ function QuestionCard({ q, name }: { q: QuestionView; name: string }) {
     } finally { setBusy(false); }
   };
   return <article className="vx-card" data-done={done}>
-    <p className="vx-kind"><b>{ok ? "Needs your OK" : `${name} didn't know`}</b> · {time(Date.parse(q.createdAt))}</p>
+    <p className="vx-kind"><b>{label}</b> · {time(Date.parse(q.createdAt))}</p>
     <h2>{q.title}</h2>
     {q.text && q.text !== q.title && <p style={{ whiteSpace: "pre-wrap" }}>{q.text}</p>}
     {done ? <p>Done.</p> : !q.canAnswer ? <p>{q.waitingLabel}</p> : q.options.length
-      ? <div className="vx-actions">{q.options.map((o) => <Button key={o.id} type="button" size="sm" disabled={busy}
-        variant={o.style === "primary" ? "default" : "outline"} onClick={() => void send(o.id)}>{o.label}</Button>)}</div>
+      ? <div className="vx-actions">
+        {google && <Button asChild size="sm"><Link href="/voice/settings#connections">Reconnect Google</Link></Button>}
+        {q.options.map((o) => o.id === "call_myself" && caller
+          ? <Button key={o.id} asChild size="sm" variant="outline"><a href={`tel:${caller}`}>{o.label}</a></Button>
+          : <Button key={o.id} type="button" size="sm" disabled={busy}
+            variant={o.style === "primary" ? "default" : "outline"} onClick={() => void send(o.id)}>{o.label}</Button>)}</div>
       : <form className="vx-grid" onSubmit={(e) => { e.preventDefault(); if (text.trim()) void send("answer", text.trim()); }}>
         <textarea className="vx-field" rows={2} maxLength={4000} value={text} onChange={(e) => setText(e.target.value)} aria-label="Your answer" />
         <div><Button type="submit" size="sm" disabled={busy || !text.trim()}>Answer</Button></div>

@@ -615,6 +615,9 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             return
         if to == "idle" and task.get("watchUntil"):  # still working: it wakes itself (watches.py)
             return
+        from routers import voice_meet  # a meeting's follow-up and its Meet chat line (Task 21)
+
+        await voice_meet.task_moved(task, to)
         n = int(task.get("attemptCount") or 0)
         await task_conversation.ensure_task_room(ws, task)
         await task_conversation.post_as_lightbulb(

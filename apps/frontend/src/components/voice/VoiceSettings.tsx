@@ -7,6 +7,7 @@ import "@/components/settings/settings-place.css";
 import { PANELS } from "@/components/settings/SettingsPlace";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
 import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useAgentConfig, useUsage } from "./data";
 
 export function BillingMinutes() {
@@ -34,17 +35,23 @@ export function BillingMinutes() {
   </section>;
 }
 
+/** One section failing (7 Nov: the whole page went to "Something went wrong") must not take the others with it. */
+function Section({ name, children }: { name: string; children: React.ReactNode }) {
+  return <ErrorBoundary fallback={<section className="vx-card" role="alert"><h2 className="vx-h">{name}</h2>
+    <p className="vx-sub">This section couldn&apos;t load. The rest of Settings still works.</p></section>}>{children}</ErrorBoundary>;
+}
+
 export function VoiceSettings() {
   const { members: Members, approvals: Approvals, connections: Connections } = PANELS;
   return <div className="vx-page vx-settings">
     <h1 className="vx-title">Settings</h1>
-    <BillingMinutes />
-    <Members />
-    <Connections />
-    <Approvals />
-    <div className="settings-panel" id="panel-notifications">
+    <Section name="Billing & minutes"><BillingMinutes /></Section>
+    <Section name="Members"><Members /></Section>
+    <Section name="Connections"><Connections /></Section>
+    <Section name="Approvals"><Approvals /></Section>
+    <Section name="Notifications"><div className="settings-panel" id="panel-notifications">
       <h2 className="settings-page-title">Notifications</h2>
       <div className="settings-rows"><DailySummaryCard rows /><SessionNotificationsCard rows /></div>
-    </div>
+    </div></Section>
   </div>;
 }

@@ -2,13 +2,14 @@
 
 Numbers (docs/marketing/15 §B, plan Appendix C), over the 30 days before ``trial_end``:
 
-- ``approvals``: Paperclip approval cards a person approved.
-- ``handoffs``: approval cards a person answered (approved or rejected; a rejection is a handoff).
+- ``approvals``: approval and review Questions a person said yes to (any answer but ``deny`` or
+  ``request_changes``, as ``task_questions._DENYING``).
+- ``handoffs``: Questions a person answered (a no is a handoff too).
 - ``agents``: distinct agents that posted in a room.
 - ``people``: distinct humans that posted in a room.
-- ``top_item``: the title of the most recently approved card.
+- ``top_item``: the title of the most recently allowed approval.
 
-ponytail: handoffs count approval answers only; session pick-ups and moved tasks join when their
+ponytail: handoffs count Question answers only; session pick-ups and moved tasks join when their
 events exist (T03). Room scans stop after ``_MAX_PAGES`` per room, so a very busy room undercounts.
 """
 
@@ -18,11 +19,12 @@ import logging
 import time
 from datetime import UTC, datetime
 
-from core.repositories import messaging_repo
+from core.repositories import messaging_repo, questions_repo
 
 logger = logging.getLogger(__name__)
 
 WINDOW_S = 30 * 86400
+_DENYING = ("deny", "request_changes")  # task_questions._DENYING (that module imports Temporal)
 _MAX_PAGES = 20
 _cache: dict[tuple[str, str], dict] = {}
 
@@ -57,34 +59,33 @@ async def room_activity(owner_id: str, since_s: float) -> tuple[int, int]:
     return len(people), len(agents)
 
 
-def approval_numbers(approvals: list[dict], since_s: float) -> tuple[int, int, str | None]:
-    """(handoffs, approvals, top_item) from Paperclip approval rows."""
-    decided = [
-        a
-        for a in approvals
-        if a.get("status") in ("approved", "rejected")
-        and a.get("decidedByUserId")
-        and (_epoch(a.get("decidedAt")) or 0) >= since_s
-    ]
-    approved = sorted(
-        (a for a in decided if a.get("status") == "approved"), key=lambda a: _epoch(a.get("decidedAt")) or 0
+def question_numbers(questions: list[dict]) -> tuple[int, int, str | None]:
+    """(handoffs, approvals, top_item) from answered Question rows."""
+    allowed = sorted(
+        (
+            q
+            for q in questions
+            if q.get("kind") in ("approval", "review") and (q.get("answer") or {}).get("optionId") not in _DENYING
+        ),
+        key=lambda q: q.get("answeredAt") or "",
     )
-    top = None
-    if approved:
-        payload = approved[-1].get("payload") if isinstance(approved[-1].get("payload"), dict) else {}
-        top = payload.get("title") or payload.get("summary") or None
-    return len(decided), len(approved), top
+    return len(questions), len(allowed), (allowed[-1].get("title") or None) if allowed else None
 
 
-async def recap(owner_id: str, trial_end: int, approvals: list[dict] | None) -> dict:
-    """The recap numbers, cached per owner per UTC day. ``approvals`` None = Paperclip unreachable."""
+async def recap(owner_id: str, trial_end: int) -> dict:
+    """The recap numbers, cached per owner per UTC day."""
     day = datetime.now(UTC).date().isoformat()
     cached = _cache.get((owner_id, day))
     if cached is not None:
         return cached
     since = trial_end - WINDOW_S
     people, agents = await room_activity(owner_id, since)
-    handoffs, approved, top = approval_numbers(approvals or [], since)
+    try:
+        answered = await questions_repo.answered_since(owner_id, datetime.fromtimestamp(since, UTC).isoformat())
+    except Exception:  # noqa: BLE001 -- a tasks-table blip never hides the recap; its numbers just read 0
+        logger.warning("trial recap: questions unavailable owner=%s", owner_id, exc_info=True)
+        answered = None
+    handoffs, approved, top = question_numbers(answered or [])
     result = {
         "trial_end": trial_end,
         "handoffs": handoffs,
@@ -93,7 +94,7 @@ async def recap(owner_id: str, trial_end: int, approvals: list[dict] | None) -> 
         "people": people,
         "top_item": top,
     }
-    if approvals is not None:  # never cache a Paperclip outage as zeros
+    if answered is not None:  # never cache an outage as zeros
         _cache[(owner_id, day)] = result
     return result
 

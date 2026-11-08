@@ -150,10 +150,7 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     ):
         report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
-    # The company step is "refused" by design (a human's wipe never deletes a
-    # workspace's company); everything else succeeds.
-    assert report.steps[0].system == "paperclip_company" and report.steps[0].status == "refused"
-    assert all(s.status == "ok" for s in report.steps[1:]), report.steps
+    assert all(s.status == "ok" for s in report.steps), report.steps
 
     # Our copies go — including the rail's NAMESPACED row and blob, which ride
     # the same two wholesale calls (row: `delete_all_for_owner` deletes each

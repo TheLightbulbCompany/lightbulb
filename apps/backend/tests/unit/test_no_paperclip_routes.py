@@ -3,7 +3,10 @@ no route path may start with one of these prefixes again."""
 
 from main import app
 
-GONE = tuple(f"/api/v1/teams/{p}" for p in ("issues", "inbox", "runs", "approvals", "routines", "goals", "cases"))
+GONE = (
+    *(f"/api/v1/teams/{p}" for p in ("issues", "inbox", "runs", "approvals", "routines", "goals", "cases")),
+    "/api/v1/internal/paperclip",  # the hermes_gateway run facade (task 8b.6)
+)
 
 
 def test_no_paperclip_teams_routes():

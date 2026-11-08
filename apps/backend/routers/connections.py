@@ -41,7 +41,7 @@ from core.services.credentials import (
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
-from core.services import ideas, rules_builtins
+from core.services import rules_builtins
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
 from core.services import owner_lifecycle
@@ -811,8 +811,8 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
 
 async def _after_connect(owner_id: str, provider: str) -> None:
     """Once a service reads connected: tell an open Activity view to drop a stale Reconnect item
-    (``access_token._announce_reconnect`` filed it; the item closes when the row flips back), and
-    wake the idea starts waiting on it. Best-effort and outside the revoke fence: a slow upstream
+    (``access_token._announce_reconnect`` filed it; the item closes when the row flips back).
+    Best-effort and outside the revoke fence: a slow upstream
     must not spend the lease, and a connect never fails because a nudge did."""
     try:
         from core.services.live_events import publish_owner_users
@@ -821,10 +821,6 @@ async def _after_connect(owner_id: str, provider: str) -> None:
         await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"}))
     except Exception:
         logger.warning("activity invalidation after connect failed owner=%s provider=%s", owner_id, provider)
-    try:
-        await ideas.resume_after_connect(owner_id, provider)
-    except Exception:
-        logger.warning("ideas: resume after connect failed owner=%s provider=%s", owner_id, provider, exc_info=True)
 
 
 async def _seed_identity_best_effort(owner_id: str, agent_id: str) -> None:

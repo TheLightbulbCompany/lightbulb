@@ -92,7 +92,7 @@ async def _start(session, channel, claims=CLAIMS):
 
 async def test_non_room_or_uncastable_is_not_registered(env):
     channel = FakeChannel()
-    await mac_live.run(CLAIMS | {"family": "paperclip", "roomId": ""}, FakeSession(), channel)
+    await mac_live.run(CLAIMS | {"family": "call", "roomId": ""}, FakeSession(), channel)
     await mac_live.run(CLAIMS | {"roomId": ""}, FakeSession(), channel)
     await mac_live.run(CLAIMS, FakeSession(can_cast=False), channel)
     assert mac_live._live == {}

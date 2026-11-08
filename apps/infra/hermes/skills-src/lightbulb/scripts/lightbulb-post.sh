@@ -13,7 +13,7 @@ Target, first that applies:
             channel of that name you are in
   --feed    the workspace feed (Activity); see references/feed.md
   --user / --handle   that workspace member's DM with you (created if missing)
-  --issue   the DM of the human who created that Paperclip issue
+  --issue   accepted and ignored (older routines pass it); the post goes to #general
   (none)    the workspace's #general channel
 Options:
   --why "<reason>"  "Why I created this post": one or two plain sentences, <= 280 characters.

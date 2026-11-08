@@ -2,20 +2,14 @@
 (``core/services/run_analytics.py``):
 
 - sessionKey classification -> run_source / initiation_type for every session
-  shape the gateway sees (webchat, channel, cron, paperclip, unknown).
+  shape the gateway sees (webchat, channel, cron, unknown).
 - outcome mapping from the lifecycle terminal (end / end+aborted / error).
-- the Paperclip enrichment join (issue -> origin routine -> dispatching run):
-  schedule/webhook/manual/api sources, coalesced-row skip, the
-  recentRuns-window fallback, provider inversion via trigger label (renamed
-  label -> null), issue_assignment for non-routine origins.
-- degraded emission on enrichment failure (event still captured).
-- timer-heartbeat tagging (run_source heartbeat_timer; is_nightly_ceo for the CEO).
 - runId dedup FIFO, deterministic capture uuid, and the disabled short-circuit.
 - internal-owner tagging via the platform-admin email rule + its TTL cache.
 """
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -31,7 +25,6 @@ def _analytics_enabled(monkeypatch):
     run_analytics._seen_run_ids.clear()
     run_analytics._internal_cache.clear()
     monkeypatch.setattr(settings, "POSTHOG_PROJECT_WRITE_KEY", "phc_test")
-    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.test")
 
 
 def _payload(run_id="run-1", phase="end", **data_extra):
@@ -58,23 +51,6 @@ async def _emit(parsed, payload=None, phase="end", owner_id=OWNER, is_internal=F
     return mock_capture.call_args.kwargs
 
 
-def _admin_stub(*, issue, routine=None, runs_page=None):
-    admin = MagicMock()
-    admin.get_issue = AsyncMock(return_value=issue)
-    admin.get_routine = AsyncMock(return_value=routine if routine is not None else {})
-    admin.list_routine_runs = AsyncMock(return_value=runs_page if runs_page is not None else [])
-    return admin
-
-
-def _paperclip(admin):
-    """Patch the enrichment's Paperclip surface onto *admin*."""
-    return patch.multiple(
-        run_analytics,
-        PaperclipAdminClient=MagicMock(return_value=admin),
-        get_admin_session_cookie=AsyncMock(return_value="pc.sid=abc"),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Synchronous classification: run_source / initiation_type matrix
 # ---------------------------------------------------------------------------
@@ -88,8 +64,6 @@ async def test_session_key_classification_matrix():
         ({"agent_id": "a", "source": "group", "channel": "discord", "group_id": "g"}, "channel", "human"),
         ({"agent_id": "a", "source": "channel", "channel": "slack", "channel_id": "c"}, "channel", "human"),
         ({"agent_id": "a", "source": "cron", "cron_id": "cron-1"}, "cron", "autonomous"),
-        # Adapter fallback session without an issue id (the run-keyed shape joins Paperclip; below).
-        ({"agent_id": "a", "source": "paperclip"}, "paperclip_other", "human"),
         # Malformed / keyless -> fail open into unknown, still counted.
         ({}, "unknown", "unknown"),
     ]
@@ -148,199 +122,6 @@ async def test_duration_ms_from_explicit_field_when_no_timestamps():
         payload=_payload(run_id="r-cron", durationMs=1200),
     )
     assert kwargs["properties"]["duration_ms"] == 1200
-
-
-# ---------------------------------------------------------------------------
-# Paperclip enrichment
-# ---------------------------------------------------------------------------
-
-_ISSUE_PARSED = {"agent_id": "a", "source": "paperclip", "issue_id": "iss-1"}
-
-
-def _dispatch_run(source, *, label=None, status="succeeded", linked="iss-1"):
-    return {
-        "id": f"rr-{source}",
-        "linkedIssueId": linked,
-        "status": status,
-        "source": source,
-        "trigger": {"id": "tr-1", "kind": "schedule", "label": label} if label else None,
-    }
-
-
-async def test_schedule_fired_routine_with_provider_inversion_and_coalesced_skip():
-    """The dispatching row is matched past a coalesced fire sharing the same
-    linkedIssueId; the trigger label inverts to a provider via the real
-    registry inversion."""
-    admin = _admin_stub(
-        issue={"originKind": "routine_execution", "originId": "rt-1", "title": "t", "description": "d"},
-        routine={
-            "recentRuns": [
-                _dispatch_run("webhook", status="coalesced", label="GitHub: Issue opened or changed"),
-                _dispatch_run("schedule", label="GitHub: Issue opened or changed"),
-            ]
-        },
-    )
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    props = kwargs["properties"]
-    assert props["run_source"] == "routine_schedule"
-    assert props["initiation_type"] == "autonomous"
-    assert props["trigger_provider"] == "github"
-    assert props["routine_id"] == "rt-1"
-    assert props["issue_id"] == "iss-1"
-    assert props["enrichment_failed"] is False
-    admin.list_routine_runs.assert_not_awaited()
-
-
-async def test_webhook_manual_api_sources():
-    for source, want_initiation in (("webhook", "autonomous"), ("manual", "human"), ("api", "human")):
-        admin = _admin_stub(
-            issue={"originKind": "routine_execution", "originId": "rt-1"},
-            routine={"recentRuns": [_dispatch_run(source)]},
-        )
-        with _paperclip(admin):
-            kwargs = await _emit(_ISSUE_PARSED, payload=_payload(run_id=f"r-{source}"))
-        props = kwargs["properties"]
-        assert props["run_source"] == f"routine_{source}"
-        assert props["initiation_type"] == want_initiation
-
-
-async def test_renamed_trigger_label_inverts_to_null_provider():
-    admin = _admin_stub(
-        issue={"originKind": "routine_execution", "originId": "rt-1"},
-        routine={"recentRuns": [_dispatch_run("webhook", label="My renamed trigger")]},
-    )
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    assert kwargs["properties"]["run_source"] == "routine_webhook"
-    assert kwargs["properties"]["trigger_provider"] is None
-
-
-async def test_poll_automation_with_unlabeled_schedule_trigger_inverts_via_issue_title():
-    """A seeded schedule trigger can carry NO label — the provider
-    comes from the issue title (== the seed-rendered routine title)."""
-    admin = _admin_stub(
-        issue={
-            "originKind": "routine_execution",
-            "originId": "rt-1",
-            "title": "Google: Calendar changed",
-        },
-        routine={
-            "recentRuns": [{**_dispatch_run("schedule"), "trigger": {"id": "tr-1", "kind": "schedule", "label": None}}]
-        },
-    )
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    props = kwargs["properties"]
-    assert props["run_source"] == "routine_schedule"
-    assert props["trigger_provider"] == "google"
-
-
-async def test_hand_made_routine_inverts_to_null_provider():
-    """Neither the trigger label nor the issue title is seed-rendered."""
-    admin = _admin_stub(
-        issue={"originKind": "routine_execution", "originId": "rt-1", "title": "Nightly sweep"},
-        routine={"recentRuns": [{**_dispatch_run("schedule"), "trigger": None}]},
-    )
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    assert kwargs["properties"]["trigger_provider"] is None
-
-
-async def test_recent_runs_window_miss_falls_back_to_full_history():
-    admin = _admin_stub(
-        issue={"originKind": "routine_execution", "originId": "rt-1"},
-        routine={"recentRuns": [_dispatch_run("schedule", linked="other-issue")]},
-        runs_page=[_dispatch_run("webhook")],
-    )
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    assert kwargs["properties"]["run_source"] == "routine_webhook"
-    admin.list_routine_runs.assert_awaited_once()
-
-
-async def test_non_routine_origin_is_issue_assignment():
-    admin = _admin_stub(issue={"originKind": "user", "originId": None, "title": "Fix the header"})
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    props = kwargs["properties"]
-    assert props["run_source"] == "issue_assignment"
-    assert props["initiation_type"] == "human"
-    admin.get_routine.assert_not_awaited()
-
-
-async def test_enrichment_failure_emits_degraded_event():
-    admin = _admin_stub(issue={})
-    admin.get_issue = AsyncMock(side_effect=RuntimeError("paperclip down"))
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    props = kwargs["properties"]
-    assert props["run_source"] == "unknown"
-    assert props["initiation_type"] == "unknown"
-    assert props["enrichment_failed"] is True
-    assert props["issue_id"] == "iss-1"
-
-
-async def test_no_matching_run_row_emits_degraded_event():
-    admin = _admin_stub(
-        issue={"originKind": "routine_execution", "originId": "rt-1"},
-        routine={"recentRuns": []},
-        runs_page=[_dispatch_run("schedule", status="coalesced")],
-    )
-    with _paperclip(admin):
-        kwargs = await _emit(_ISSUE_PARSED)
-    props = kwargs["properties"]
-    assert props["initiation_type"] == "unknown"
-    assert props["enrichment_failed"] is True
-
-
-# ---------------------------------------------------------------------------
-# Nightly-CEO tagging
-# ---------------------------------------------------------------------------
-
-
-_RUN_PARSED = {"agent_id": "ceo-1", "source": "paperclip", "run_id": "hb-1"}
-
-
-def _timer_paperclip(invocation_source, ceo_id="ceo-1"):
-    admin = MagicMock()
-    admin.get_heartbeat_run = AsyncMock(return_value={"id": "hb-1", "invocationSource": invocation_source})
-    repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(starter_agent_ids={"ceo": ceo_id}))
-    return patch.multiple(
-        run_analytics,
-        PaperclipAdminClient=MagicMock(return_value=admin),
-        get_admin_session_cookie=AsyncMock(return_value="pc.sid=abc"),
-        PaperclipRepo=MagicMock(return_value=repo),
-    )
-
-
-async def test_ceo_timer_heartbeat_run_is_the_nightly_ceo_loop():
-    with _timer_paperclip("timer"), patch.object(run_analytics, "put_metric") as metric:
-        kwargs = await _emit(_RUN_PARSED, payload=_payload(run_id="hb-1"), phase="error")
-    props = kwargs["properties"]
-    assert (props["run_source"], props["initiation_type"], props["is_nightly_ceo"]) == (
-        "heartbeat_timer",
-        "autonomous",
-        True,
-    )
-    metric.assert_any_call("nightly_ceo.run", dimensions={"outcome": "failure"})
-
-
-async def test_specialist_timer_run_is_autonomous_but_not_the_ceo_loop():
-    with _timer_paperclip("timer", ceo_id="someone-else"):
-        props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-1")))["properties"]
-    assert (props["run_source"], props["is_nightly_ceo"]) == ("heartbeat_timer", False)
-
-
-async def test_non_timer_issueless_run_stays_paperclip_other():
-    with _timer_paperclip("on_demand"):
-        props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-1")))["properties"]
-    assert (props["run_source"], props["initiation_type"], props["is_nightly_ceo"]) == (
-        "paperclip_other",
-        "human",
-        False,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +278,7 @@ async def _emit_with_metric(parsed, *, run_id="rc-1", phase="end"):
     # CloudWatch metric, not the PostHog enrichment.
     with (
         patch.object(run_analytics, "put_metric") as metric,
-        patch.object(run_analytics, "_enrich_and_capture", AsyncMock()),
+        patch.object(run_analytics, "_capture", AsyncMock()),
     ):
         task = run_analytics.schedule_run_completed(
             owner_id=OWNER, parsed=parsed, payload=_payload(run_id=run_id, phase=phase), phase=phase
@@ -512,35 +293,25 @@ async def test_run_completed_metric_success_webchat():
     metric.assert_any_call("run.completed", dimensions={"outcome": "success", "source": "webchat"})
 
 
-async def test_run_completed_metric_failure_for_paperclip_issue_run():
-    # Headline case: a Paperclip issue/routine run (needs_enrichment path). run_source
-    # is resolved async, so the metric uses the coarse 'paperclip' bucket
-    # synchronously — still the right autonomous-work bucket to alarm on.
-    metric = await _emit_with_metric(
-        {"agent_id": "a", "source": "paperclip", "issue_id": "i1"}, run_id="rc-2", phase="error"
-    )
-    metric.assert_any_call("run.completed", dimensions={"outcome": "failure", "source": "paperclip"})
-
-
 async def test_run_completed_metric_fires_even_when_posthog_disabled(monkeypatch):
     # The reliability metric must NOT be gated by the product-analytics write key.
     monkeypatch.setattr(settings, "POSTHOG_PROJECT_WRITE_KEY", "")
     with patch.object(run_analytics, "put_metric") as metric:
         task = run_analytics.schedule_run_completed(
             owner_id=OWNER,
-            parsed={"agent_id": "a", "source": "paperclip", "issue_id": "i1"},
+            parsed={"agent_id": "a", "source": "cron", "cron_id": "c1"},
             payload=_payload(run_id="rc-off", phase="end"),
             phase="end",
         )
     assert task is None  # no PostHog capture when disabled
-    metric.assert_any_call("run.completed", dimensions={"outcome": "success", "source": "paperclip"})
+    metric.assert_any_call("run.completed", dimensions={"outcome": "success", "source": "cron"})
 
 
 async def test_run_completed_metric_deduped_on_owner_run_id():
     payload = _payload(run_id="rc-dup", phase="end")
     with (
         patch.object(run_analytics, "put_metric") as metric,
-        patch.object(run_analytics, "_enrich_and_capture", AsyncMock()),
+        patch.object(run_analytics, "_capture", AsyncMock()),
     ):
         for _ in range(2):
             task = run_analytics.schedule_run_completed(
@@ -550,18 +321,6 @@ async def test_run_completed_metric_deduped_on_owner_run_id():
                 await task
     run_completed = [c for c in metric.call_args_list if c.args and c.args[0] == "run.completed"]
     assert len(run_completed) == 1
-
-
-async def test_failed_timer_lookup_keeps_the_paperclip_other_category():
-    admin = MagicMock()
-    admin.get_heartbeat_run = AsyncMock(side_effect=RuntimeError("paperclip down"))
-    with patch.multiple(
-        run_analytics,
-        PaperclipAdminClient=MagicMock(return_value=admin),
-        get_admin_session_cookie=AsyncMock(return_value="pc.sid=abc"),
-    ):
-        props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-fail")))["properties"]
-    assert (props["run_source"], props["enrichment_failed"]) == ("paperclip_other", False)
 
 
 @pytest.mark.asyncio

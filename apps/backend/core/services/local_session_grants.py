@@ -1,9 +1,8 @@
 """Short-lived local-session authority for one agent turn; never a provider credential.
 
-Three kinds (spec 2026-10-07-agent-session-approval §3.1): a room turn's grant, minted per room
-dispatch; a Paperclip run's (run, heartbeat or routine), minted at the facade; and a task run's
-(contracts-v2 §14.3), minted by runtime_runs.create_run. Paperclip and task grants are background
-grants: no room and no requester."""
+Two kinds (spec 2026-10-07-agent-session-approval §3.1): a room turn's grant, minted per room
+dispatch, and a task run's (contracts-v2 §14.3), minted by runtime_runs.create_run. Task grants
+are background grants: no room and no requester."""
 
 from dataclasses import dataclass
 import re
@@ -22,15 +21,13 @@ MAX_LIFETIME = 1800
 
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,256}")
 _AGENT_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_RUN_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
-_ISSUE_RE = re.compile(r"[A-Za-z0-9-]{1,128}")
 _CLAIMS = {"kind", "aud", "ownerId", "roomId", "agentId", "eventId", "requesterId", "sessionKey", "iat", "exp", "jti"}
 
 
 @dataclass(frozen=True)
 class AgentInvocation:
     owner_id: str
-    # None (or "") for a Paperclip run: it has no room.
+    # None (or "") for a task run: it has no room.
     room_id: str | None
     agent_id: str
     expires_at: int
@@ -39,7 +36,7 @@ class AgentInvocation:
     # message author -- never from the agent. None for agent-authored or routine triggers.
     requester_id: str | None = None
     origin: dict | None = None
-    # One run: the room trigger's message id, or the Paperclip run id. A decline holds for it.
+    # One run: the room trigger's message id, or the task run id. A decline holds for it.
     turn_id: str | None = None
     # Whose access the turn READS rooms with when nobody signed in asked (owner ruling 2026-10-13: a
     # Google Meet reads as the member who invited the agents). Rooms only: every other right a grant
@@ -77,23 +74,8 @@ def mint(owner: str, room: str, agent: str, event: str, requester: str | None = 
     )
 
 
-def mint_paperclip(owner: str, agent: str, hermes_session_key: str, run_id: str, issue_id: str | None) -> str:
-    """The grant for one verified Paperclip run (``create_paperclip_hermes_run``)."""
-    return _sign(
-        {
-            "ownerId": owner,
-            "roomId": None,
-            "agentId": agent,
-            "eventId": None,
-            "requesterId": None,
-            "sessionKey": hermes_session_key,
-            "origin": {"kind": "paperclip", "runId": run_id, "issueId": issue_id},
-        }
-    )
-
-
 def mint_task(owner: str, agent: str, session_key: str, run_id: str, task_id: str) -> str:
-    """The grant for one task run (``runtime_runs.create_run``): background, like a Paperclip run's."""
+    """The grant for one task run (``runtime_runs.create_run``): background."""
     return _sign(
         {
             "ownerId": owner,
@@ -130,26 +112,7 @@ def _turn(claims: dict) -> str:
         ):
             raise ValueError()
         return run
-    if not (isinstance(origin, dict) and set(origin) == {"kind", "runId", "issueId"} and origin["kind"] == "paperclip"):
-        raise ValueError()
-    run, issue = origin["runId"], origin["issueId"]
-    if (
-        room is not None
-        or claims["eventId"] is not None
-        or claims["requesterId"] is not None
-        or not (isinstance(run, str) and _RUN_RE.fullmatch(run))
-        or not (issue is None or (isinstance(issue, str) and _ISSUE_RE.fullmatch(issue)))
-    ):
-        raise ValueError()
-    # The facade's verified X-Hermes-Session-Key, bound to this agent and this run or issue.
-    scope = f"issue:{issue}" if issue else f"run:{run}"
-    key = claims["sessionKey"]
-    if not (
-        isinstance(key, str)
-        and re.fullmatch(rf"paperclip:company:[A-Za-z0-9-]+:agent:{re.escape(agent)}:{re.escape(scope)}", key)
-    ):
-        raise ValueError()
-    return run
+    raise ValueError()
 
 
 def verify(token: str) -> AgentInvocation:

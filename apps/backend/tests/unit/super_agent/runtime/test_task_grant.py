@@ -44,13 +44,7 @@ def test_task_grant_round_trip_and_binding():
             grants.verify(_tampered(token, **bad))
 
 
-def test_paperclip_and_room_grants_unchanged():
-    key = "paperclip:company:co-1:agent:ceo:run:run-1"
-    assert grants.verify(grants.mint_paperclip(OWNER, "ceo", key, "run-1", None)).origin == {
-        "kind": "paperclip",
-        "runId": "run-1",
-        "issueId": None,
-    }
+def test_room_grants_unchanged():
     room, event = "11111111-2222-4333-8444-555555555555", "66666666-7777-4888-9999-000000000000"
     got = grants.verify(grants.mint(OWNER, room, "ceo", event, "user_1"))
     assert (got.room_id, got.requester_id, got.turn_id) == (room, "user_1", event)

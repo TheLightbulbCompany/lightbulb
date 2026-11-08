@@ -99,9 +99,6 @@ every one of these:**
   and no stack imports the repo any more.)
 - **Historical issue/PR references** (`Isol8AI/isol8#2053`, `isol8 #2016`) — quote
   verbatim, always; GitHub web URLs redirect.
-- **`BOOTSTRAP_EMAILS`** — renaming it silently disarms the guard that stops an
-  admin wipe from deleting the Paperclip bootstrap admin, which is a fleet-wide
-  provisioning outage.
 - **`isol8` stays reserved** in the slug and handle allowlists, so nobody can claim
   the retired brand.
 - **The internal dispatch header `X-Isol8-Public-Host`** — API Gateway parameter

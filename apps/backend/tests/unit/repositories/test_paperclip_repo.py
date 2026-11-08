@@ -764,6 +764,21 @@ async def test_revert_funnel_submission_is_a_noop_against_a_superseded_generatio
     assert fetched.funnel_state == "not_started"
 
 
+async def test_complete_funnel_submission_needs_no_goal_or_project(repo):
+    """The drain no longer seeds a Paperclip goal or project (task 8b.6): a claimed generation
+    completes with neither id on the row."""
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    assert (
+        await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="m1")
+        is FunnelClaimResult.WON
+    )
+    assert await repo.complete_funnel_submission("u1", onboarding_generation="01G") is True
+    fetched = await repo.get_workspace("u1")
+    assert fetched.funnel_state == "complete" and not fetched.onboarding_goal_id
+    # A superseded generation still cannot complete.
+    assert await repo.complete_funnel_submission("u1", onboarding_generation="02G") is False
+
+
 async def test_revert_funnel_submission_does_not_downgrade_complete(repo):
     """A best-effort revert fenced on funnel_state=="submitted" must never
     downgrade a funnel that has already advanced to "complete" (e.g. a

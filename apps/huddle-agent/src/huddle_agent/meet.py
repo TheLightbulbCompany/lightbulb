@@ -110,7 +110,8 @@ def wakes(name: str, text: str, people: list[dict] | None = None) -> bool:
     mine = tuple(_tokens(name))
     if any(tuple(_tokens(p.get("name") or ""))[: len(mine)] == mine for p in people or []):
         return False
-    for sentence in re.split(r"(?<=[.?!])\s+", text.strip()):
+    sentences = re.split(r"(?<=[.?!])\s+", text.strip())
+    for k, sentence in enumerate(sentences):
         tok = _tokens(sentence)
         i = 1 if len(tok) > 1 and tok[0] in _LEADS else 0
         i += 1 if i and tok[i] == "," else 0
@@ -122,6 +123,11 @@ def wakes(name: str, text: str, people: list[dict] | None = None) -> bool:
             if rest[0] == "," and len(said) >= 2:
                 return True
             if rest[0] in REQUEST_WORDS or (rest[0] in QUESTION_WORDS and sentence.rstrip().endswith("?")):
+                return True
+            # the name as a sentence of its own, the ask in the next ("Lightbulb. How many calls today?": the
+            # transcriber's full stop after the name, 8 Nov sim)
+            nxt = _tokens(sentences[k + 1]) if rest[0] == "." and len(said) == 0 and k + 1 < len(sentences) else []
+            if nxt and (nxt[0] in REQUEST_WORDS or (nxt[0] in QUESTION_WORDS and sentences[k + 1].rstrip().endswith("?"))):
                 return True
     return False
 

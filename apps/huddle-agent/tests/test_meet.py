@@ -161,7 +161,7 @@ async def test_a_meeting_delegation_posts_the_ask_with_its_speaker_and_context()
     t.asker = ("12", "Sam")
     t.context.add("Sam", "Nova, what shipped this week?")
     out = await t.delegate("what shipped this week")
-    assert out == {"sent": True} and sent == []  # it returns at once; the post runs on its own
+    assert out.output == {"sent": True} and sent == []  # it returns at once; the post runs on its own
     await asyncio.gather(*t._posts)
     [(op, body)] = sent
     assert op == "ask" and (body["participantId"], body["speakerName"]) == ("12", "Sam")
@@ -172,3 +172,125 @@ def test_a_voiced_frame_is_someone_speaking():
     loud = rtc.AudioFrame((np.full(320, 2000, dtype=np.int16)).tobytes(), 16000, 1, 320)
     quiet = rtc.AudioFrame((np.full(320, 10, dtype=np.int16)).tobytes(), 16000, 1, 320)
     assert meet.voiced(loud) and not meet.voiced(quiet)
+
+
+async def test_a_line_split_at_the_name_is_joined_before_the_gate():
+    """8 Nov prod Meet 12:24:45: "Nova, what have we shipped..." at normal pace came as two finals, "Nova." and
+    "what have we shipped in the last week?", each gated alone (kind=-): missed."""
+    got = []
+    j = meet.Joiner(lambda who, text: got.append((who, text)), wait=0.05)
+    j.final("maya", "Nova.")
+    await asyncio.sleep(0.02)
+    j.final("maya", "what have we shipped in the last week?")
+    j.final("leo", "Sounds good.")
+    await asyncio.sleep(0.1)
+    assert got == [("maya", "Nova. what have we shipped in the last week?"), ("leo", "Sounds good.")]
+    gate = g()
+    assert meet.addressed(gate, "Nova", "maya", got[0][1], 0) == "ask"
+
+
+async def test_a_long_line_with_pauses_is_one_line():
+    """8 Nov prod Meet 12:28:35: a long answer was cut at a pause and only its first part was asked."""
+    got = []
+    j = meet.Joiner(lambda who, text: got.append(text), wait=0.05)
+    j.final("maya", "Nova, for the gel colors, they are nail gels.")
+    await asyncio.sleep(0.04)
+    j.speaking("maya")  # an interim: still talking, so the line waits for its next final
+    await asyncio.sleep(0.1)
+    assert got == []
+    j.final("maya", "We have none of red. Pink are nearly gone.")
+    await asyncio.sleep(0.1)
+    assert got == ["Nova, for the gel colors, they are nail gels. We have none of red. Pink are nearly gone."]
+    j.speaking("leo")  # nothing pending for them: nothing held
+    j.close()
+
+
+def test_a_handoff_item_has_no_text_for_the_record():
+    """8 Nov prod Meet: AttributeError 'AgentHandoff' object has no attribute 'role' on every session start."""
+    from livekit.agents.llm import AgentHandoff, ChatMessage
+
+    assert meet.assistant_text(AgentHandoff(new_agent_id="talker")) is None
+    assert meet.assistant_text(ChatMessage(role="assistant", content=["We shipped it."])) == "We shipped it."
+    assert meet.assistant_text(ChatMessage(role="user", content=["Hi"])) is None
+    assert meet.assistant_text(ChatMessage(role="assistant", content=["cut"], interrupted=True)) is None
+
+
+async def test_the_speaker_is_named_once_in_the_ask():
+    """8 Nov prod Meet: "Isol8 Admin said in the meeting: Isol8 Admin: Nova, ..." (the talker's `who:` prefix)."""
+    sent = []
+
+    class B:
+        async def meet(self, op, body):
+            sent.append(body)
+            return {}
+
+    t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
+    t.asker = ("12", "Isol8 Admin")
+    await t.delegate("Isol8 Admin: Nova, what shipped?")
+    await asyncio.gather(*t._posts)
+    assert sent[0]["text"] == "Nova, what shipped?"
+
+
+async def test_the_line_after_a_spoken_question_answers_it():
+    """8 Nov prod Meet: Pulse asked "What holiday hours?" in a thread; the meeting never heard it, and the spoken
+    hours could not answer it. Now the question is said, and the next line asked carries it to be answered."""
+    from huddle_agent import mouth
+
+    sent = []
+
+    class B:
+        async def meet(self, op, body):
+            sent.append(body)
+            return {}
+
+    async def fetch(after, handled):
+        return {"messages": [{"id": "q1", "seq": 8, "text": "**Pulse** asks: What holiday hours?",
+                              "question": {"taskId": "t1", "qid": "q-1"}}], "after": 8}  # fmt: skip
+
+    t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
+    t.mouth = m = mouth.Mouth(fetch, 7)
+    await m.poll()
+    said = []
+    m.speak(said.append, ready=True, live=True)
+    assert said == [["Pulse asks: What holiday hours?"]]
+    await t.delegate("We close at 2 on Christmas Eve.")
+    await t.delegate("And what shipped?")
+    await asyncio.gather(*t._posts)
+    assert sent[0]["answers"] == {"taskId": "t1", "qid": "q-1"} and "answers" not in sent[1]
+
+
+async def _said_question(t):
+    from huddle_agent import mouth
+
+    async def fetch(after, handled):
+        return {"messages": [{"id": "q1", "seq": 8, "text": "**Pulse** asks: What holiday hours?",
+                              "question": {"taskId": "t1", "qid": "q-1"}}], "after": 8}  # fmt: skip
+
+    t.mouth = m = mouth.Mouth(fetch, 7)
+    await m.poll()
+    m.speak(lambda texts: None, ready=True, live=True)
+    return m
+
+
+async def test_a_line_long_after_a_spoken_question_is_a_new_ask_not_its_answer():
+    """Review of #5112: "Nova, what's on my calendar?" ten minutes later must not become Pulse's answer."""
+    from huddle_agent import mouth
+
+    sent = []
+
+    class B:
+        async def meet(self, op, body):
+            sent.append(body)
+            return {}
+
+    t = meet.MeetTalker(B(), {"name": "Nova", "company": "Acme", "title": "Standup", "today": "Sunday"})
+    m = await _said_question(t)
+    m.question_at -= mouth.ANSWER_WITHIN_S + 1
+    await t.delegate("What's on my calendar?")
+    await asyncio.gather(*t._posts)
+    assert "answers" not in sent[0]
+    m = await _said_question(t)  # said again: the next line inside the window answers it
+    m.question_at -= mouth.ANSWER_WITHIN_S - 5
+    await t.delegate("We close at 2.")
+    await asyncio.gather(*t._posts)
+    assert sent[1]["answers"] == {"taskId": "t1", "qid": "q-1"} and mouth.ANSWER_WITHIN_S == 60

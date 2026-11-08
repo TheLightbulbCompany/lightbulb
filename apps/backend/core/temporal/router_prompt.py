@@ -88,6 +88,7 @@ at once), then end your turn with the single word "Done" and nothing else: no su
 FALLBACK = "I couldn't get to this, ask me again."
 NOTED = "Noted — I'll keep that in mind for this channel."
 PARTIAL = "Some of this couldn't start; ask me again for the rest."
+WAITING = "That thread is waiting for an answer or an OK on its card in the thread; it does nothing more until then."
 
 _TEXT_MAX = 2000
 _RECENT_LINE_MAX = 300  # a person's line under "Recent"

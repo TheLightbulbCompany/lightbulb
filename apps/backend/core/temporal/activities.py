@@ -1218,7 +1218,10 @@ async def _apply(
             sl["passes"].append(dec.task_id)
             for tid in dec.trigger_ids:
                 routed_to.setdefault(tid, []).append(dec.task_id)
-            ack(sl, dec.ack)
+            # a waiting task holds its input behind an open Question or approval (task_questions.py): the model's
+            # ack claimed progress there ("Pulse ... is updating the post", 8 Nov prod Meet), so the line is fixed
+            waiting = ((await tasks_repo.get_task(ws, dec.task_id)) or {}).get("status") == "waiting"
+            ack(sl, router_prompt.WAITING if waiting else dec.ack)
         elif isinstance(dec, ts.Note):
             # Walk 14: an FYI is visibly received. Addressed to Lightbulb: one line. A room message nobody addressed
             # to it: a ✅ on the message, no line. The Router writes no memory (spec 07 §3.1): room ingestion already

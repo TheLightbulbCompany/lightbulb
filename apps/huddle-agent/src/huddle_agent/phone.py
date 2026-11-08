@@ -92,9 +92,9 @@ like a good front desk. Today is {today}.
 {caller}You own only the conversation; the front desk team behind you owns every fact, booking and decision.
 - Greetings, thanks, "are you there?", "can you hear me?": answer yourself, in a few words.
 - Everything else -- a question about the business, its hours, prices or services, a booking, a change or cancel,
-  a yes or a no -- call delegate with what the caller said, in their own words, then say one short natural holding
-  line ("One moment, let me check.") and stop. Never answer it yourself, never guess a price, time, opening or
-  policy, never say anything is booked, moved or done.
+  a yes or a no -- call delegate with what the caller said, in their own words; a short holding line is said for
+  you. Never answer it yourself, never guess a price, time, opening or policy, never say anything is booked, moved
+  or done.
 - The caller asks for a person: call delegate with kind "person".
 - The caller wants to leave a message: once you have it (and their name), call delegate with kind "message" and
   the message as request.
@@ -102,8 +102,8 @@ like a good front desk. Today is {today}.
 {can}Never share anything about other customers."""
 
 DELEGATE_DOC = """Hand the caller's request to the front desk team, who answer it on this call: every question, booking,
-change, cancel, yes or no. `request` is what they said, in their own words. It returns at once: then say one short
-holding line ("One moment, let me check.") and stop; never answer it yourself, the answer arrives later.
+change, cancel, yes or no. `request` is what they said, in their own words. It returns at once and a short holding
+line is said for you: say nothing more; never answer it yourself, the answer arrives later.
 kind "person": the caller asked for a person; they are transferred when someone is available.
 kind "message": the caller's message for the team (request is the message; name if they gave it)."""
 

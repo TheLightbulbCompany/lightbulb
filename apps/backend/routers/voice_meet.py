@@ -16,8 +16,8 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter
-from pydantic import Field
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext
 from core.config import settings
@@ -55,18 +55,57 @@ async def latest_seq(room_id: str) -> int:
     return int(rows[-1]["messageSeq"]) if rows else 0
 
 
+def _question_ref(row: dict) -> dict | None:
+    """{taskId, qid} of a Worker's question line (task_questions.relay_question posts it in the origin thread)."""
+    if row.get("kind") != "question":
+        return None
+    ref = next((t for t in row.get("taskRefs") or [] if t.get("qid") and t.get("taskId")), None)
+    return {"taskId": ref["taskId"], "qid": ref["qid"]} if ref else None
+
+
 async def agent_lines(room_id: str, after: int) -> dict:
-    """The agent messages in the room's main chat after seq `after`, oldest first (a thread's and a progress line
-    are not said), and the next cursor. The voice says these word for word (huddle-agent mouth.py)."""
+    """The agent messages in the room's main chat after seq `after`, oldest first, and the next cursor. A thread's
+    lines and progress lines are not said, except a Worker's question in a thread this room started (with its
+    `question` ref: the next line said to the voice answers it, `answer_said_question`); the meeting never heard
+    one and the task waited on it (8 Nov prod Meet). The voice says these word for word (huddle-agent mouth.py)."""
     rows, _ = await messaging_repo.list_messages(room_id, after, 100)
-    said = [
-        {"id": r["messageId"], "seq": int(r["messageSeq"]), "text": r.get("editedText") or r["text"]}
-        for r in rows
-        if (r.get("author") or {}).get("kind") == "agent"
-        and not (r.get("progress") or r.get("deletedAt") or r.get("threadRootMessageId"))
-        and (r.get("editedText") or r.get("text") or "").strip()
-    ]
+    said = []
+    for r in rows:
+        text, question = r.get("editedText") or r.get("text") or "", _question_ref(r)
+        if (r.get("author") or {}).get("kind") != "agent" or r.get("progress") or r.get("deletedAt"):
+            continue
+        if text.strip() and (question or not r.get("threadRootMessageId")):
+            said.append({"id": r["messageId"], "seq": int(r["messageSeq"]), "text": text,
+                         **({"question": question} if question else {})})  # fmt: skip
     return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
+
+
+class QuestionRef(BaseModel):
+    taskId: str = Field(min_length=1, max_length=64)
+    qid: str = Field(min_length=1, max_length=64)
+
+
+async def answer_said_question(owner_id: str, room_id: str, member: str, ref: QuestionRef | None, text: str,
+                               key: str) -> bool:  # fmt: skip
+    """The line said right after the voice said a Worker's question answers it, as `member`, through the card's own
+    path (routers/questions.submit_answer): a message in the room never answers a Question (task_questions.py).
+    False (the line then goes to the Router as a message): no ref, a question this room never got, or a refused
+    answer (closed, not an answerer, an approval: a spoken yes never approves)."""
+    if ref is None:
+        return False
+    from routers import questions as question_routes
+
+    rows = await messaging_repo.list_messages_before(room_id, 10**19, 100)
+    if not any(_question_ref(r) == ref.model_dump() for r in rows):
+        return False
+    body = question_routes.AnswerBody(option_id="answer", text=text[:4000],
+                                      client_answer_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex)  # fmt: skip
+    try:
+        await question_routes.submit_answer(owner_id, ref.taskId, ref.qid, member, body)
+    except HTTPException as e:
+        logger.info("voice room %s: question %s not answered by voice (%s)", room_id, ref.qid, e.detail)
+        return False
+    return True
 
 
 class StartIn(RoomBody):
@@ -103,6 +142,7 @@ class AskIn(RoomBody):
     text: Annotated[str, Field(min_length=1, max_length=4000)]
     participantId: str = Field(default="", max_length=128)
     speakerName: str = Field(default="", max_length=120)
+    answers: QuestionRef | None = None  # the Worker question the voice said last: this line answers it
 
 
 @router.post("/internal/voice/meet/{room_id}/ask")
@@ -115,18 +155,23 @@ async def ask(room_id: str, body: AskIn) -> dict:
         return {"posted": False, "reason": "no_inviter"}
     who = body.speakerName or ((meeting.get("roster") or {}).get(body.participantId) or {}).get("name") or "Someone"
     key = f"meet-ask:{room_id}:{meeting.get('inCallAt', 0)}:{body.participantId}:{body.text}"
+    text = f"{who} said in the meeting: {body.text}"
+    # an answer to the question just said is still the chat's line, but wakes nobody: the answer is the input
+    answered = await answer_said_question(body.ownerId, room_id, member, body.answers, text, key)
     msg = await messaging.create_human_message(
         AuthContext(user_id=member, org_id=body.ownerId),
         room_id,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
-            text=f"{who} said in the meeting: {body.text}",
+            text=text,
             reply_to_message_id=None,
             thread_root_message_id=None,
         ),
         via="voice",
+        **({"wake": False} if answered else {}),
     )
-    return {"posted": True, "messageId": str(msg.message_id)}
+    out = {"posted": True, "messageId": str(msg.message_id)}
+    return {**out, "answered": body.answers.qid} if answered else out
 
 
 class EventsIn(RoomBody):

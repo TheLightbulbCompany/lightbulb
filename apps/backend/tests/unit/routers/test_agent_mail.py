@@ -237,6 +237,7 @@ def test_get_address_returns_the_single_row(client):
     assert ensure.call_args.args == ("org_test_456", "o@x.y")
     assert r.json() == {
         "address": TEAM,
+        "invite_address": TEAM,
         "verified_senders": ["o@x.y"],
         "send_to_anyone": False,
         "footer_enabled": True,
@@ -571,6 +572,14 @@ def test_the_card_shows_the_public_address(client):
     a, b, c = _mailbox({"address": TEAM, "public_address": PUBLIC})
     with a, b, c:
         assert client.get("/api/v1/agent-mail/address").json()["address"] == PUBLIC
+
+
+def test_people_invite_the_routing_address_which_always_reaches_ses(client):
+    """8 Nov prod Meet: the Agent page said to invite agents@thelightbulb.company; that domain's mail goes to
+    Google, which bounced it. The routing address (MX on SES) received the same invite."""
+    a, b, c = _mailbox({"address": TEAM, "public_address": PUBLIC})
+    with a, b, c:
+        assert client.get("/api/v1/agent-mail/address").json()["invite_address"] == TEAM
 
 
 async def test_the_team_inbox_shows_the_public_address_and_reads_the_routing_one(async_client_org_member):

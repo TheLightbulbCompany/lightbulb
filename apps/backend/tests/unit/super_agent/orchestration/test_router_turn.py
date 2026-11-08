@@ -1850,6 +1850,20 @@ async def test_a_question_start_is_stored_as_a_question(world):
     assert rows[0]["question"] is True and rows[1]["question"] is False
 
 
+@pytest.mark.asyncio
+async def test_a_pass_through_to_a_waiting_task_never_claims_progress(world):
+    """8 Nov prod Meet: LB-10 waited on its question; the spoken hours were passed to it and the Router said "Pulse
+    has the holiday hours and is updating the post". Input waits behind an open Question, so nothing was updating."""
+    open_id = await _open_task({"kind": "room", "roomId": ROOM}, status="working")
+    await repo.transition_task(WS, open_id, to="waiting")
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [{"kind": "pass_through", "triggerIds": [t1], "taskId": open_id,
+                           "ack": "Pulse has the holiday hours and is updating the post."}]  # fmt: skip
+    await _run([t1])
+    assert world["inputs"] == [(open_id, t1, "message")]
+    assert world["posts"][0]["text"] == acts.router_prompt.WAITING
+
+
 def test_a_fact_question_repeated_after_an_hour_gets_a_fresh_thread():
     rule = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
     assert "A fact question asked again more than 1 hour after the earlier answer is a fresh thread" in rule

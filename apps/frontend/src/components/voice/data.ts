@@ -102,6 +102,13 @@ export function useAgentConfig() {
   return { data: swr.data?.config, isNew: swr.data?.isNew, error: swr.error, isLoading: swr.isLoading, save };
 }
 
+/** The workspace's own team address, the one a Meet invite reaches (GET /agent-mail/address `invite_address`). */
+export function useInviteAddress(): string | undefined {
+  const api = useApi();
+  const { data } = useSWR("/agent-mail/address", () => api.get("/agent-mail/address") as Promise<{ invite_address?: string }>);
+  return data?.invite_address;
+}
+
 /** Onboarding shows until Go live: for a workspace with no document, or one that stopped part-way. */
 export const needsOnboarding = (c: AgentConfig | undefined, isNew: boolean | undefined) =>
   !!c && (!!isNew || (!c.live && !!c.onboardingStep));

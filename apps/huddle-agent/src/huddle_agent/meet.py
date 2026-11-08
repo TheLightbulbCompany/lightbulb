@@ -60,13 +60,17 @@ RATE = 16000
 ADDRESSED = ("ask",)
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
 STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 400}
+# STT_VAD's 400 ms silence splits a line at normal pace ("Nova." + "what have we shipped...?", 8 Nov prod Meet): a
+# person's finals are one line until they stay quiet this long after one
+JOIN_S = 1.5
 INSTRUCTIONS = """You are {name}, the voice of {company}'s AI assistant, in the Google Meet "{title}". Today is {today}.
 You hear only the lines said to you, as "<who>: <words>". You own only the conversation; the team behind you owns
 every fact, tool and decision.
 - A greeting, thanks or "are you there?": answer yourself, in a few words.
-- Everything else -- any question, request, action item, a yes or a no, "stop that thread" -- call delegate with what
-  they asked in their own words, then say one short holding line ("Let me check.") and stop. Never answer it yourself,
-  never guess, never say anything is done or approved. You cannot approve anything: a yes is delegated.
+- Everything else -- any question, request, action item, an answer to the team's question, a yes or a no, "stop that
+  thread" -- call delegate with what they said in their own words (without the "<who>:" label); a holding line is said
+  for you. Never answer it yourself, never guess, never say anything is done or approved. You cannot approve
+  anything: a yes is delegated.
 - When a message from the team arrives, say it as you are told, adding nothing.
 Speak briefly, one or two short sentences."""
 # ponytail: fixed threshold; tune from a real meeting's levels.
@@ -193,16 +197,62 @@ class MeetTalker(Talker):
         return self.tool_delegate(request)
 
     def post(self, request: str) -> None:
-        # a task of its own: "<name>, stop" cuts the talker's reply, never the post
-        t = asyncio.create_task(self._ask(self.context.take(request), *self.asker))
+        # a task of its own: "<name>, stop" cuts the talker's reply, never the post. The speaker is named by the
+        # backend ("<who> said in the meeting: ..."), so the talker's "<who>:" label is dropped.
+        request = request.strip().removeprefix(f"{self.asker[1]}:").strip() if self.asker[1] else request
+        t = asyncio.create_task(self._ask(self.context.take(request), *self.asker, self.take_question()))
         self._posts.add(t)
         t.add_done_callback(self._posts.discard)
 
-    async def _ask(self, text: str, pid: str, who: str) -> None:
+    async def _ask(self, text: str, pid: str, who: str, answers: dict | None = None) -> None:
+        body = {"text": text[:4000], "participantId": pid, "speakerName": who}
         try:
-            await self._b.meet("ask", {"text": text[:4000], "participantId": pid, "speakerName": who})
+            await self._b.meet("ask", {**body, "answers": answers} if answers else body)
         except BackendError as e:
             logger.warning("meet: ask not posted (%s)", e.code)
+
+
+class Joiner:
+    """One person's consecutive final transcripts as one line: each final waits JOIN_S for the next, and an interim
+    (`speaking`: they are talking again) holds it until that next final lands. `on_line(who, text)` gets the whole
+    line once, so the gate judges "Nova." + "what have we shipped?" together and a long answer is never cut."""
+
+    def __init__(self, on_line, wait: float = JOIN_S) -> None:
+        self._on_line, self._wait = on_line, wait
+        self._parts: dict[str, list[str]] = {}
+        self._timers: dict[str, asyncio.TimerHandle] = {}
+
+    def final(self, who: str, text: str) -> None:
+        self._parts.setdefault(who, []).append(text.strip())
+        self._hold(who)
+        self._timers[who] = asyncio.get_running_loop().call_later(self._wait, self._flush, who)
+
+    def speaking(self, who: str) -> None:
+        if who in self._parts:
+            self._hold(who)
+
+    def _hold(self, who: str) -> None:
+        if (t := self._timers.pop(who, None)) is not None:
+            t.cancel()
+
+    def _flush(self, who: str) -> None:
+        self._timers.pop(who, None)
+        if parts := self._parts.pop(who, None):
+            self._on_line(who, " ".join(parts))
+
+    def close(self) -> None:
+        for t in self._timers.values():
+            t.cancel()
+        self._timers.clear()
+
+
+def assistant_text(item) -> str | None:
+    """What the voice said, from a conversation item: None for anything else. Not every item has a role: the
+    session's first item is an AgentHandoff (AttributeError on every start, 8 Nov prod Meet)."""
+    text = getattr(item, "text_content", None)
+    if getattr(item, "role", None) != "assistant" or not text or getattr(item, "interrupted", False):
+        return None
+    return text
 
 
 def voiced(frame: rtc.AudioFrame) -> bool:
@@ -261,10 +311,15 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if not text.strip():
             return
         agents = [{"id": ASSISTANT_ID, "name": name, "defaultName": False}]
-        if not final:
-            if stop_request(text, agents):  # a partial may stop the voice, never wake it
-                stop()
-            return
+        if stop_request(text, agents):  # a partial or a final may stop the voice at once, never wake it
+            stop()
+        if final:
+            joiner.final(who, text)
+        else:
+            joiner.speaking(who)
+
+    def on_line(who: str, text: str) -> None:
+        """A person's whole line (Joiner): gated once."""
         kind = addressed(gate, name, who, text, time.monotonic())
         logger.info("meet: line kind=%s", kind or "-")
         if kind == "stop":
@@ -281,6 +336,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
                 logger.warning("meet: line not handed to the talker")
         lines.append({"mark": len(lines), "kind": "person", "name": label(who)[:200], "text": text[:4000],
                       "at": time.time()})  # fmt: skip
+
+    joiner = Joiner(on_line)
 
     async def read(track: rtc.Track, identity: str) -> None:
         stream = rtc.AudioStream.from_track(
@@ -326,8 +383,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     @session.on("conversation_item_added")
     def _item(ev) -> None:
-        text = getattr(ev.item, "text_content", None)
-        if ev.item.role != "assistant" or not text or ev.item.interrupted:
+        if (text := assistant_text(ev.item)) is None:
             return
         talker.context.add(name, text)
         lines.append({"mark": len(lines), "kind": "agent", "name": name[:200], "text": text[:4000], "at": time.time()})
@@ -341,6 +397,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         return await backend.meet("events", {"after": after})
 
     mouth = Mouth(fetch, int(info.get("after") or 0))
+    talker.mouth = mouth
 
     async def speak_loop() -> None:
         while True:
@@ -375,6 +432,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
     async def on_end(_reason: str = "") -> None:
         limit.cancel()
         speaking.cancel()
+        joiner.close()
         for t in readers.values():
             t.cancel()
         summary = f"Asked {len(asked)} time{'s' if len(asked) != 1 else ''}"

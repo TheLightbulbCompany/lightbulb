@@ -22,7 +22,7 @@ from core.repositories import messaging_repo
 from core.services import messaging
 from core.services.voice_calls import _voice_requester
 from routers.huddles import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
-from routers.voice_meet import agent_lines, assistant_name, latest_seq
+from routers.voice_meet import QuestionRef, agent_lines, answer_said_question, assistant_name, latest_seq
 from routers.voice_phone import transcript_lines
 
 router = APIRouter(dependencies=[_Worker])
@@ -66,6 +66,7 @@ class TurnIn(OwnerIn):
     sessionId: Annotated[str, Field(min_length=1, max_length=200)]
     n: int = Field(ge=0, le=100000)  # the line's place in the talk: with sessionId, its one message
     text: Annotated[str, Field(min_length=1, max_length=4000)]
+    answers: QuestionRef | None = None  # the Worker question the voice said last: this line answers it
 
 
 @router.post("/internal/voice/owner/{room_id}/turn")
@@ -74,6 +75,8 @@ async def turn(room_id: str, body: TurnIn) -> dict:
     Router (admission), which decides it like any other. Keyed on the talk and line: a retry is the same message."""
     room_id, member, _agent = await _owner(room_id, body)
     key = f"voice-turn:{room_id}:{body.sessionId}:{body.n}"
+    # an answer to the question just said is still the DM's line, but wakes nobody: the answer is the input
+    answered = await answer_said_question(body.ownerId, room_id, member, body.answers, body.text, key)
     msg = await messaging.create_human_message(
         AuthContext(user_id=member, org_id=body.ownerId),
         room_id,
@@ -84,8 +87,10 @@ async def turn(room_id: str, body: TurnIn) -> dict:
             thread_root_message_id=None,
         ),
         via="voice",
+        **({"wake": False} if answered else {}),
     )
-    return {"messageId": str(msg.message_id)}
+    out = {"messageId": str(msg.message_id)}
+    return {**out, "answered": body.answers.qid} if answered else out
 
 
 class EventsIn(OwnerIn):

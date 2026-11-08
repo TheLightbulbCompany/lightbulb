@@ -8,12 +8,13 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, useAgentConfig, type AgentConfig } from "./data";
+import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
 
 type Save = "idle" | "saving" | "saved" | "error" | "forbidden";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
+  const invite = useInviteAddress();
   const { organization } = useOrganization();
   const business = organization?.name || "your business";
   const [draft, setDraft] = useState<AgentConfig | null>(null);
@@ -119,7 +120,7 @@ export function AgentPage() {
       <Check label="Only during opening hours" on={c.handoff.onlyOpenHours} set={(onlyOpenHours) => set({ handoff: { ...c.handoff, onlyOpenHours } })} />
     </Sec>
 
-    <Sec title="Meetings" hint={<>Invite <span className="vx-code">agents@thelightbulb.company</span> to any Google Meet. {name} joins, listens, and speaks only when someone says &ldquo;{name}&rdquo;. Guests are told it&apos;s there; anyone can say &ldquo;{name}, don&apos;t transcribe me&rdquo;.</>}>
+    <Sec title="Meetings" hint={<>Invite {invite ? <span className="vx-code">{invite}</span> : "the assistant's team address (Mail)"} to any Google Meet. {name} joins, listens, and speaks only when someone says &ldquo;{name}&rdquo;. Guests are told it&apos;s there; anyone can say &ldquo;{name}, don&apos;t transcribe me&rdquo;.</>}>
       <div>
         <Check label="Turn action items into follow-ups" on={c.meetings.followUps} set={(followUps) => set({ meetings: { ...c.meetings, followUps } })} />
       </div>

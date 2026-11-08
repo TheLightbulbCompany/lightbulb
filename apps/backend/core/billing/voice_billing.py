@@ -131,9 +131,9 @@ async def counted_seconds(owner_id: str, tz_name: str | None) -> int | None:
 
 
 async def report_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int, kind: str) -> None:
-    """One ``voice_minutes`` event per call (transaction_id = the call: Metronome dedupes a retry). Nothing in
-    Metronome prices it yet: that needs a billable metric on this event and the $250 / 1,500-minute plan.
-    Run after the response (a background task): never raises, a lost event is unbilled minutes, logged."""
+    """One ``voice_minutes`` event per call or meeting occurrence; Metronome dedupes transaction_id retries.
+    Pricing requires a voice-minutes metric and plan on the customer's contract. Best effort: an ingest
+    failure is logged and never raises, so provider downtime cannot prevent call or meeting cleanup."""
     if not settings.METRONOME_API_KEY or seconds <= 0:
         return
     at = datetime.fromisoformat(started_at).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

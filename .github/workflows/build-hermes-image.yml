@@ -1,6 +1,6 @@
 name: build-hermes-image
 
-# Hermes bridge image (M4 Task 20). Mirrors build-paperclip-image.yml:
+# Hermes bridge image (M4 Task 20):
 # OIDC role, ECR login, path-filtered.
 #
 # M4-R34: this workflow pushes exactly ONE tag per build, unique to the commit

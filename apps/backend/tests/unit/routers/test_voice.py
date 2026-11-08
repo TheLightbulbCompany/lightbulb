@@ -48,6 +48,8 @@ async def test_timeline_lists_calls_and_meetings_newest_first(repos, async_clien
         meeting={
             "title": "Team",
             "startAt": 1794070800,
+            "notes": "Ship Friday.",
+            "decisions": ["Ship Friday"],
             "ticketNonce": "secret",
             "recallBotId": "b",
             "roster": {"p1": {"name": "Ana", "in": True}},
@@ -60,6 +62,7 @@ async def test_timeline_lists_calls_and_meetings_newest_first(repos, async_clien
 
     assert [i["roomId"] for i in items] == ["m1", "c1"]  # by when it happened, not when the room was made
     assert items[1] | {"type": "call", "outcome": "booked"} == items[1]
+    assert items[0]["notes"] == "Ship Friday." and items[0]["decisions"] == ["Ship Friday"]
     assert items[0]["people"] == ["Ana"] and "ticketNonce" not in items[0] and "recallBotId" not in items[0]
 
 

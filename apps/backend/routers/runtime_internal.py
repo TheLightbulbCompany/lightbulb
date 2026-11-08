@@ -32,9 +32,17 @@ from temporalio.client import AsyncActivityCancelledError
 from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
-from core.dynamodb import utc_now_iso
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
-from core.services import purchases, questions, runtime_runs, task_asks, task_conversation, tasks_access
+from core.services import (
+    purchases,
+    questions,
+    runtime_runs,
+    runtime_transport,
+    task_asks,
+    task_conversation,
+    tasks_access,
+)
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.temporal import activities as acts
@@ -155,6 +163,10 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
             )
         if label:
             await _progress_line(owner_id, body.task_id, body.attempt, label)
+        identity = runtime_runs.RunIdentity.for_attempt(owner_id, body.task_id, att)
+        await run_in_thread(
+            runtime_transport.note_alive, owner_id, body.task_id if identity.session_kind == "task" else None
+        )
         if body.credentials_due:
             _refresh_credentials(owner_id, body.task_id, att)
         try:
@@ -564,6 +576,47 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
             business_profile.forget(owner_id)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+
+
+class TransferCallBody(BaseModel):
+    trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
+    text: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/{owner_id}/transfer-call")
+async def transfer_call(owner_id: str, body: TransferCallBody, request: Request) -> dict:
+    """The Router's transfer_call (a phone caller asked for a person): one Lightbulb line in the call room marked
+    `action: "transfer"`, the trigger's answer. The phone worker sees it on /events and runs /transfer and the SIP
+    transfer itself (huddle-agent phone.py `hand_off`); nothing is transferred here. Only a caller's triggers, all
+    from one call, in that call's own room while the line is live."""
+    from routers import voice_phone as vp
+
+    await _gate(owner_id, request)
+    triggers = [await tasks_repo.get_trigger(owner_id, t) for t in body.trigger_ids]
+    refs = [(t or {}).get("ref") or {} for t in triggers]
+    calls = {r.get("callId") if r.get("origin") == "phone_contact" else None for r in refs}
+    call_id = next(iter(calls)) if len(calls) == 1 else None
+    if not call_id or any(r.get("roomId") != call_id for r in refs):
+        raise HTTPException(status_code=403, detail="not_a_caller")
+    meta = await vp.messaging_repo.get_room(call_id) if call_id else None
+    if not meta or meta.get("kind") != "call" or meta.get("ownerId") != owner_id:
+        raise HTTPException(status_code=403, detail="not_a_caller")
+    caller = (meta.get("call") or {}).get("caller", "")
+    if vp._line_state(await vp.agent_config(owner_id), caller) != "live":
+        raise HTTPException(status_code=403, detail="not_allowed")  # a paused line only takes messages
+    message_id = await task_conversation.post_as_lightbulb(
+        owner_id,
+        call_id,
+        text=vp.redact_cards(body.text),
+        event_id=f"call-transfer:{body.trigger_ids[0]}",
+        attrs={"action": "transfer"},
+        remember=False,
+    )
+    for t in triggers:  # the line is this ask's answer: the Router posts no second line for it
+        await tasks_repo.set_trigger_routed_to(
+            owner_id, t["triggerId"], {**(t.get("routedTo") or {}), "transfer": message_id}
+        )
+    return {"messageId": message_id}
 
 
 NOTE_CAP = 20  # notes per attempt

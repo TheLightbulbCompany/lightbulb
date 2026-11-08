@@ -1431,7 +1431,9 @@ async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, 
         "startAt": _epoch(2026, 11, 7, 15, 0),
         "transcriptId": "t1",
         "transcriptRoomId": "default-room",
-        **{k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "unsaid")},  # _ended_series sets each to 1
+        **{
+            k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+        },  # _ended_series sets each to 1
     }
 
 
@@ -1440,12 +1442,22 @@ async def test_history_keeps_each_occurrences_end_notes_and_unsaid_but_unsaid_on
     unsaid = [{"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "q", "answer": "a", "at": 5}]
     old = [{"startAt": i, "transcriptId": f"t{i}", "unsaid": unsaid} for i in range(5)]
     _ended_series(
-        room, transcriptId="t9", endedAt=99, notesRunId="run-1", notesSkipped=None, unsaid=unsaid, history=old
+        room,
+        transcriptId="t9",
+        endedAt=99,
+        notesRunId="run-1",
+        notes="Meeting notes",
+        decisions=["Ship Friday"],
+        notesSkipped=None,
+        unsaid=unsaid,
+        history=old,
     )
     now["t"] = _epoch(2026, 11, 7, 15, 40)
     await meeting_invites.advance("r")
     history = room.state["meta"]["meeting"]["history"]
     assert history[0]["endedAt"] == 99 and history[0]["notesRunId"] == "run-1"
+    assert history[0]["notes"] == "Meeting notes" and history[0]["decisions"] == ["Ship Friday"]
+    assert "notes" not in room.state["meta"]["meeting"] and "decisions" not in room.state["meta"]["meeting"]
     assert "notesSkipped" not in history[0]  # only the fields the occurrence has
     assert [bool(h.get("unsaid")) for h in history] == [True, True, True, False, False, False]
     assert "unsaid" not in room.state["meta"]["meeting"]  # the next occurrence starts clean
@@ -1521,7 +1533,9 @@ async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots
             "startAt": started,
             "transcriptId": "t1",
             "transcriptRoomId": "default-room",
-            **{k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "unsaid")},  # _ended_series sets each to 1
+            **{
+                k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+            },  # _ended_series sets each to 1
         }
     ]
 

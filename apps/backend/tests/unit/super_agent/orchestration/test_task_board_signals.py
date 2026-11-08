@@ -134,7 +134,6 @@ def test_task_wording_is_super_agent_only():
         "A handoff that needs work is a Paperclip task"
         in (SKILL_DIR / "references" / "platform-primitives.md").read_text()
     )
-    assert "--assignee-user <userId>" in (SKILL_DIR / "references" / "ideas.md").read_text()
 
 
 @pytest.mark.asyncio

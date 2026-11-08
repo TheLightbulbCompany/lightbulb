@@ -16,7 +16,7 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `request_approval`, `suggest_idea`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — read-only, `resources` and `read`;
+(`send_room_message`, `hire_suggestion`, `request_approval`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — read-only, `resources` and `read`;
 an agent messages a session with `lightbulb_network`, through the engine).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
@@ -445,7 +445,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Meetings (invite the team address) references/email.md ("Meetings")
                               <- backend core/services/meeting_invites.py (handle_team_mail: member's Meet invite -> hidden room with every agent, RSVP, bot; output_room; advance for series),
                                  meeting_bots.py (bot_name), routers/meetings.py (Recall status, endedAt, roster relay), meeting_notes.py (transcript + notes run to the
-                                 default room by the CEO or a fallback agent in it, notesSkipped, organizer mail), voice_calls.post_late_answer (a Meet's unheard
+                                 default room by the CEO or a fallback agent in it, notesSkipped, app-only notes and occurrence history), voice_calls.post_late_answer (a Meet's unheard
                                  answers -> meeting.unsaid); who an agent answers in a Meet: apps/huddle-agent huddle.py (_mine, MEET_FOLLOWUP_S)
   - Teammates in a room ..... references/platform-primitives.md ("Teammates in a room") + SKILL.md non-negotiable + routing row
                               <- backend core/services/messaging.py (AGENT_REPLY_CAP, the hop on create_agent_message: human 0,
@@ -467,14 +467,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/lambda/messaging-projector/index.py _is_feed_room. Agents are the feed's
                                  authors, never members: messaging.room_agent (roster stand-in) and the feed rule in
                                  select_dispatch_targets (a Discuss @mention wakes that agent). Spec 2026-10-14 §4.2.
-  - Ideas ................... references/ideas.md + SKILL.md routing row
-                              <- backend core/services/ideas.py (catalog size: project | task | quick; start: a Paperclip
-                                 project (project), one todo issue assigned to the agent (task) or nothing (quick), claim and
-                                 idempotency rows IDEA#START; start_text = the person's own message via "ideas": the idea
-                                 quoted, "Let's do it!", "Tracked in Work: [<title>](work_link)" for project/task; suggest =
-                                 suggest_idea's store IDEA#SUGGESTED, deduped by title, SUGGESTION_CAP) + apps/backend/ideas/
-                                 *.yaml + routers/ideas.py (GET /ideas, POST start/dismiss, POST /internal/ideas/suggestions
-                                 hook token) + plugins/lightbulb suggest_idea. Approvals stay in For you. Spec 2026-10-14 §4.4.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run
@@ -518,4 +510,4 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  spec docs/superpowers/specs/2026-09-16-proactive-agents-design.md (delete when shipped).
 - Roster + connected integrations routing row ("Who is on the team?" / "What's connected?") — `references/boundaries.md` Quick answers; source: `core/services/owner_facts.py` (`teammates`, `connected_integrations`, #3851). Added 2026-10-08 after a dev check where the CEO answered a roster question from the room's member list.
 - Ask and count rules (SKILL.md, the two lines after "A person's decision is an approval in Needs you") — tool `ask_person` in `apps/infra/hermes/plugins/lightbulb/__init__.py`; the paperclip skill's `references/interactions.md` "When you need an answer, not a sign-off: ask_person". Added 2026-10-30 from G1's failures (comments nobody read; "3 open cards" with 55 open). The count rule points at the paperclip skill's list route; the `lightbulb_board` wrapper was removed 30 Oct (same route, same key). Test: `tests/test_ask_and_count_skill.py`.
-- Task handoffs (super-agent only) — `references/tasks.md`, deliberately NOT in SKILL.md's routing table: only a super-agent Worker run loads it, because its instructions name it (`WORKER_INSTRUCTIONS` in `apps/backend/core/temporal/activities.py`). Every other run keeps the Paperclip handoffs in platform-primitives.md, company-and-plans.md, ideas.md, software-projects.md. Added 2026-11-05 after #4760 rewrote the global text (skills are fleet-wide). Test: `apps/backend/tests/unit/super_agent/orchestration/test_task_board_signals.py::test_task_wording_is_super_agent_only`.
+- Task handoffs (super-agent only) — `references/tasks.md`, deliberately NOT in SKILL.md's routing table: only a super-agent Worker run loads it, because its instructions name it (`WORKER_INSTRUCTIONS` in `apps/backend/core/temporal/activities.py`). Every other run keeps the Paperclip handoffs in platform-primitives.md, company-and-plans.md, software-projects.md. Added 2026-11-05 after #4760 rewrote the global text (skills are fleet-wide). Test: `apps/backend/tests/unit/super_agent/orchestration/test_task_board_signals.py::test_task_wording_is_super_agent_only`.

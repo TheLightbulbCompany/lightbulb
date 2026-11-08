@@ -8,7 +8,6 @@ Google Meets (`meet.py`) and Live in a member's DM with the assistant (`owner.py
 
     uv sync
     uv run pytest tests -q
-    uv run python -m tests.replay.gate    # the rig's scenarios against the Meet gate, offline
     uv run python -m huddle_agent.agent dev
 
 ## Deploy

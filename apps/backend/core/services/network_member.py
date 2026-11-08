@@ -168,17 +168,29 @@ def rpc_error(exc: RuntimeError) -> dict:
 
 async def _session_is_warm(owner_id: str) -> bool:
     """The ``__session__#<owner>`` estimate ``runtime_transport`` keeps, for THIS runtime.
-    False with no runtime yet (a fresh provision writes profiles before CreateAgentRuntime)."""
+    Includes the conservative drain window: a signed-out computer must be revoked in an old
+    microVM that may still be serving. False with no runtime yet."""
     from core.repositories import container_repo
+    from core.services.runtime_transport import LIVE_GRACE_S, runtime_arn
 
-    arn, row = await asyncio.gather(_runtime_arn(owner_id), run_in_thread(container_repo.get_session_sync, owner_id))
-    return bool(arn) and int(row.get("warm_until") or 0) > int(time.time()) and row.get("arn") == arn
+    container, row = await asyncio.gather(
+        container_repo.get_by_owner_id(owner_id), run_in_thread(container_repo.get_session_sync, owner_id)
+    )
+    arn = row.get("arn")
+    desired = runtime_arn(container or {})
+    pool_route = settings.HERMES_SHARED_RUNTIME_ARN or (container or {}).get("agentcore_shared_runtime_arn")
+    draining = bool(pool_route and arn and arn != desired)
+    warm_after = time.time() - (LIVE_GRACE_S if draining else 0)
+    return bool(arn and desired and (arn == desired or draining)) and int(row.get("warm_until") or 0) > warm_after
 
 
 async def _runtime_arn(owner_id: str) -> str | None:
     from core.repositories import container_repo
 
-    return ((await container_repo.get_by_owner_id(owner_id)) or {}).get("agentcore_runtime_arn")
+    from core.services.runtime_transport import live_arn
+
+    # The live one: at the cut-over a session still warm on the workspace's own runtime is there.
+    return await run_in_thread(live_arn, (await container_repo.get_by_owner_id(owner_id)) or {})
 
 
 async def join_network(owner_id: str, ticket: str) -> dict:

@@ -7,6 +7,7 @@ import pathlib
 import re
 from types import SimpleNamespace
 
+import pytest
 from livekit import rtc
 
 from huddle_agent import live
@@ -20,6 +21,7 @@ class FakeTransport:
     def __init__(self):
         self.items: list[tuple[str, str, str]] = []  # (id, role, text), the chat context
         self.appends: list[tuple[str, str | None]] = []  # (text, delegation_id)
+        self.thoughts: list[str] = []
         self.closed = False
         self.billed_s = 0.0
 
@@ -31,6 +33,9 @@ class FakeTransport:
 
     def commentary(self, text, delegation_id):
         self.appends.append((text, delegation_id))
+
+    def context(self, text):
+        self.thoughts.append(text)
 
     async def close(self):
         self.closed = True
@@ -224,6 +229,22 @@ async def test_send_result_none_is_unsolicited_and_keeps_the_pending_delegation(
     await s.close()
 
 
+async def test_context_is_silent_chunked_and_does_not_answer_pending_work():
+    t = FakeTransport()
+    s = session(Router(delay=0), transport=t)
+    s.on_delegate(delegation(1, "a"))
+    await asyncio.sleep(0.01)
+    text = "Team: " + "The booking is confirmed. " * 100
+    s.send_context(text)
+    assert t.thoughts and all(len(chunk) <= live.APPEND_CHARS for chunk in t.thoughts)
+    assert " ".join(t.thoughts) == text.strip()
+    assert t.appends == [] and s.pending == {"item_1": "m_1"}
+    s.ended()
+    s.send_context("An old fetch finished after close.")
+    assert "An old fetch finished after close." not in t.thoughts
+    await s.close()
+
+
 async def test_router_message_becomes_result():
     t = FakeTransport()
     q, events = queue_events()
@@ -336,9 +357,13 @@ class StubDuplex(rtc.EventEmitter):
     def __init__(self):
         super().__init__()
         self.appends = []
+        self.thoughts = []
 
     def append_commentary(self, text, *, delegation_id=None):
         self.appends.append((text, delegation_id))
+
+    def append_thinking(self, text, *, delegation_id=None):
+        self.thoughts.append((text, delegation_id))
 
 
 class StubAgent:
@@ -381,6 +406,45 @@ async def _start(monkeypatch, router, events=_none, **kw):
     monkeypatch.setattr(live, "AgentSession", StubSession)
     ctx = SimpleNamespace(room="the-room")
     return await live.start(ctx, prompt="the prompt", surface="owner", post=router.post, events=events, **kw)
+
+
+async def test_context_uses_the_plugins_silent_thinking_append(monkeypatch):
+    s = await _start(monkeypatch, Router())
+    s.send_context("Team: The calendar is updated.")
+    assert s.agent.duplex_session.thoughts == [("Team: The calendar is updated.", None)]
+    assert s.agent.duplex_session.appends == []
+    await s.close()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("startup refused"), asyncio.CancelledError()])
+async def test_failed_start_closes_session_and_model_without_hiding_the_original_error(monkeypatch, failure):
+    sessions, models = [], []
+
+    class Model(StubModel):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            models.append(self)
+
+    class Session(StubSession):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            sessions.append(self)
+
+        async def start(self, **kw):
+            self.started = kw  # the adapter may have partially opened before startup fails
+            raise failure
+
+        async def aclose(self):
+            self.closed = True
+            raise RuntimeError("session cleanup also failed")
+
+    monkeypatch.setattr(live, "GPTLiveModel", Model)
+    monkeypatch.setattr(live, "Agent", StubAgent)
+    monkeypatch.setattr(live, "AgentSession", Session)
+    with pytest.raises(type(failure)) as caught:
+        await live.start(SimpleNamespace(room="the-room"), prompt="p", surface="phone", post=Router().post, events=_none)
+    assert caught.value is failure
+    assert sessions[0].closed and models[0].closed
 
 
 async def test_start_wires_gpt_live_to_the_router(monkeypatch):
@@ -473,8 +537,8 @@ async def test_interrupt_never_cancels_post(monkeypatch):
 def test_no_scripted_speech():
     src = pathlib.Path(live.__file__).read_text()
     assert not re.search(r"\.(say|generate_reply|speak)\(", src)
-    # results reach the model only as commentary built from the Router's text
-    assert re.findall(r"append_\w+\(", src) == ["append_commentary("]
+    # Replies are commentary; caught-up context is silent thinking. Neither is scripted speech.
+    assert re.findall(r"append_\w+\(", src) == ["append_commentary(", "append_thinking("]
 
 
 def test_delegation_policy_renders_the_template():

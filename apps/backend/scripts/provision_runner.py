@@ -51,8 +51,8 @@ async def _seed_owner_workspace(owner_id: str) -> int:
     creator is a Clerk blip, so transient. A seed failure is classified like a runtime failure
     (``classify_provision_error``). Org-only: a non-org owner is refused (deterministic).
 
-    After the seed, ``proactive.ensure`` starts the workspace's proactive layer; its failure
-    is logged, not classified: the daily schedule reconcile ensures it again.
+    After the seed, ``proactive.ensure`` retires old Ideas/Feed schedules; its failure
+    is logged, not classified: the daily schedule reconcile retries the cleanup.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error

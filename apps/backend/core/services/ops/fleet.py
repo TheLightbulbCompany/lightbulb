@@ -102,18 +102,20 @@ async def _display_names(owner_ids: list[str]) -> dict[str, str | None]:
 
 
 async def _build_grid() -> list[dict]:
+    from core.services.runtime_transport import runtime_arn
+
     rows = [r for r in await container_repo.scan_all() if r.get("owner_id")]
     display_names = await _display_names([r["owner_id"] for r in rows])
     return [
         {
             "owner_id": r["owner_id"],
             "display_name": display_names.get(r["owner_id"]),
-            "runtime_arn": r.get("agentcore_runtime_arn"),
+            "runtime_arn": runtime_arn(r),
             # The row's own status, unmapped: the provisioner writes
             # provisioning/running/error/stopped and nothing else can observe a truer
             # value. An unprovisioned row (no runtime ARN yet) reads "unknown" rather
             # than borrowing "stopped" from an absent service.
-            "status": (r.get("status") or "unknown") if r.get("agentcore_runtime_arn") else "unknown",
+            "status": (r.get("status") or "unknown") if runtime_arn(r) else "unknown",
         }
         for r in rows
     ]

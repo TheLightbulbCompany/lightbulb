@@ -8,7 +8,8 @@ import types
 if importlib.util.find_spec("huddle_agent.live") is None:
     stub = types.ModuleType("huddle_agent.live")
 
-    async def start(ctx, *, prompt, surface, post, events, room_options=None):  # noqa: ARG001
+    async def start(ctx, *, prompt, surface, post, events, room_options=None, on_spoken=None, record=False,  # noqa: ARG001
+                    user_away_timeout=None):
         raise NotImplementedError("tests patch live.start")
 
     def delegation_policy(backend_tools: list[str]) -> str:

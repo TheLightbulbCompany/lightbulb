@@ -847,6 +847,8 @@ CALLER_TOOLSETS = [TASK_TOOLSET, FRONT_DESK_TOOLSET]
 # `_init_memory`: the built-in store loads only without skip_memory or with the memory toolset).
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET], "disabled_toolsets": None,
                      "skip_background_review": True, "skip_memory": True}
+#: transfer_call (plugins/lightbulb/router.py): a Router run for a phone caller's batch only (identity `call`).
+ROUTER_CALL_TOOLSET = "lightbulb_router_call"
 MAX_DECISIONS = 40
 #: A Router turn never reads or writes memory (founder ruling A, 8 Nov 2026): a Worker reads the source.
 _ROUTER_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_router_turn", default=False)
@@ -3965,7 +3967,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     # A private-lane turn (a person's Router lane, a private task's Worker) never writes shared notes (L3).
     _PRIVATE_DM.set((chat_type == "dm" and bool(_PERSON_ID.fullmatch(user_id)))
                     or (block or {}).get("lane") == "private")
-    _ROUTER_TURN.set(limits.get("enabled_toolsets") == ROUTER_RUN_LIMITS["enabled_toolsets"])
+    _ROUTER_TURN.set(ROUTER_TOOLSET in (limits.get("enabled_toolsets") or ()))  # a caller's batch adds one toolset
     callbacks = {}
     if frames is not None:
         # stream_delta_callback / reasoning_callback are the per-token text streams (Task 11).
@@ -4383,6 +4385,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                     extra["enabled_toolsets"] = [*(t for t in enabled if t not in strip), TASK_TOOLSET]
             if router:  # decisions only: no execution tools, no background review, no side session
                 extra |= ROUTER_RUN_LIMITS
+                if identity.get("call") is True:  # a phone caller's batch: it may hand the call to a person
+                    extra["enabled_toolsets"] = [*ROUTER_RUN_LIMITS["enabled_toolsets"], ROUTER_CALL_TOOLSET]
                 extra["tool_gen_callback"] = router_stage_recorder(run_id)
                 if identity.get("model"):  # the cheaper Router model (§9), chosen by the backend
                     extra["model"] = identity["model"]

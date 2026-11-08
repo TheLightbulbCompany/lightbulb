@@ -5,7 +5,8 @@ is the caller's line in the call's room (`/turn`, the caller principal: the call
 Router with the Business profile, whose Front desk threads book, move and cancel as the caller). The room's agent
 messages come back through `/events` as results. Our code says nothing of its own: it runs the call (SIP, the
 disclosure check, the record, billing at hang-up, the run-out forward) and the two routes only the worker can do:
-the SIP transfer (an events item of kind `transfer`) and a paused line's message (`/turn` refuses: `/message`).
+the SIP transfer (the Router's transfer_call line, an events item with `action: "transfer"`) and a paused line's
+message (`/turn` refuses: `/message`).
 
 Dispatched by a LiveKit SIP dispatch rule: in prod to the one deployed agent, `lightbulb-huddle` (agent.py
 routes `phone-` rooms here); on a dev Mac to its own name (`lightbulb-phone-dev`).
@@ -29,12 +30,13 @@ from livekit.plugins import noise_cancellation
 
 from huddle_agent import GOODBYE, live
 from huddle_agent.metrics import emit_metric
-from huddle_agent.mouth import speakable
 
 logger = logging.getLogger("phone")
-AWAY_S = float(os.environ.get("PHONE_AWAY_S", "15"))  # silence before GPT-Live hears the line is quiet; again: hang up
+AWAY_S = float(os.environ.get("PHONE_AWAY_S", "15"))  # caller silence before GPT-Live hears it; again: hang up
 CALL_MAX_S = float(os.environ.get("PHONE_MAX_S", 20 * 60))  # cost cap: a call ends after 20 minutes
 BYE_S = 8.0  # the goodbye's time to play at the cost cap
+CONNECT_S = 3.0  # the transfer line's time to play before the SIP transfer
+OPENING_GAP_S = 1.5  # the voice quiet this long after speaking: its opening turn is over
 WAIT_S = 90.0  # a pending delegation keeps a quiet line open this long (a Front desk thread: 69-95 s on dev, 8 Nov)
 POLL_S = 1.0  # how often the call asks what Lightbulb posted in its room
 # One warm process is plenty for a line; a busy host gets a longer start and its own load ceiling.
@@ -44,13 +46,15 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-#: What the backend does for a caller (GPT-Live's `Backend tools`): the caller-scoped Front desk, nothing more.
+#: What the backend does for a caller (GPT-Live's `Backend tools`): the Router's Business profile and transfer_call,
+#: and the caller-scoped Front desk thread's actions (front_desk: availability, book, my_bookings, move, cancel,
+#: message), nothing more.
 TOOLS = [
-    "Availability: check open times for the business's services.",
-    "Bookings: book, move or cancel the caller's own appointment.",
-    "Messages: take a message for the team.",
-    "A person: transfer the caller to a person at the business.",
-    "Business profile: answer questions about the business's services, prices, hours and policies.",
+    "Business profile: answer the business's services, prices, how long they take, hours and policies.",
+    "Availability: find open times for a service on a day.",
+    "Bookings: book a time, or list, move or cancel the caller's own bookings.",
+    "Messages: take a message for the owner, with the caller's name and a callback number.",
+    "A person: hand the call to a person at the business, when someone is available.",
 ]
 MESSAGE_ONLY_TOOLS = ["Messages: take a message for the team; the owner will call back."]
 
@@ -207,34 +211,60 @@ class Ending:
 
 
 class DisclosureGuard:
-    """Judges the opening once it has finished: after the agent's first speaking -> listening change, on the
-    assistant lines transcribed so far (an interrupted one holds only what played). No line that discloses makes
-    `say` have the disclosure sentence said once; a caller talking over the opening before its disclosure is such a
-    miss (Review Focus 4). PHONE_TEST_FAIL_DISCLOSURE=1 fails it (scripted runs)."""
+    """Judges the opening once its turn is over: the voice spoke, then stayed quiet for `gap_s`, or the caller
+    spoke. Every assistant line of that turn counts (an interrupted one holds only what played), so an opening said
+    in several bursts is judged whole. No line that discloses makes `say` have the disclosure sentence said once; a
+    caller talking over the opening before its disclosure is such a miss (Review Focus 4). PHONE_TEST_FAIL_DISCLOSURE=1
+    fails it (scripted runs)."""
 
-    def __init__(self, assistant: str, say) -> None:
+    def __init__(self, assistant: str, say, gap_s: float | None = None) -> None:
         self.assistant, self._say = assistant, say
+        self._gap = OPENING_GAP_S if gap_s is None else gap_s
         self.line = f"I'm {assistant}, an AI assistant, and this call is recorded."
-        self.corrected = self._done = self._greeted = self._spoke = False
+        self.corrected = self._done = self._spoke = self._over = False
+        self._items: list[dict] = []
+        self._timer: asyncio.TimerHandle | None = None
 
     def state(self, old: str, new: str) -> None:
+        if self._done:
+            return
         if new == "speaking":
             self._spoke = True
+            if self._timer:
+                self._timer.cancel()
         elif self._spoke and old == "speaking":
-            self._greeted = True  # the greeting finished (or was cut off) playing
+            self._timer = asyncio.get_running_loop().call_later(self._gap, self._end)
 
     def seen(self, items: list[dict]) -> None:
-        if self._done or not self._greeted:
+        self._items = items
+        if self._done:
             return
-        said = [i["text"] for i in items if i["role"] == "assistant"]
-        if os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1":
-            ok = False
-        elif not said:
-            return  # the opening's line is still on its way
-        else:
-            ok = any(discloses(t, self.assistant) for t in said)
+        if self._fail():
+            pass
+        elif discloses(self._said(), self.assistant):
+            self._done = True  # disclosed: nothing to judge
+            return
+        if self._spoke and any(i["role"] == "user" for i in items):
+            self._over = True  # the caller's turn: the opening's is over
+        self._judge()
+
+    def _end(self) -> None:
+        self._over = True
+        self._judge()
+
+    def _said(self) -> str:
+        """The opening turn's words: every assistant line so far, in order (bursts are one opening)."""
+        return " ".join(i["text"] for i in sorted(self._items, key=lambda i: i["t"]) if i["role"] == "assistant")
+
+    @staticmethod
+    def _fail() -> bool:
+        return os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1"
+
+    def _judge(self) -> None:
+        if self._done or not self._over or not self._items:
+            return  # the opening's line may still be on its way
         self._done = True
-        if not ok:
+        if self._fail() or not discloses(self._said(), self.assistant):
             logger.info("phone: the opening lacked the disclosure; saying it once")
             self.corrected = True
             self._say(self.line)
@@ -288,8 +318,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
     did: list[str] = []  # what the call did itself, the record's summary (the Front desk adds its steps)
     tasks: set[asyncio.Task] = set()
-    turn_n, order = itertools.count(), asyncio.Lock()
-    asked = [0.0]  # when GPT-Live last delegated (monotonic)
+    turn_n = itertools.count()
+    asked: dict[str, float] = {}  # each posted ask's message id -> when it was posted (monotonic)
     ls: list[live.LiveSession] = []  # bound once started; post and events run only after
 
     def spawn(coro) -> None:
@@ -297,26 +327,29 @@ async def entrypoint(ctx: JobContext) -> None:
         tasks.add(t)
         t.add_done_callback(tasks.discard)
 
-    async def post(text: str, turns: list[str]) -> str:
-        """One delegation: the caller's line in the call's room, numbered in the order asked (a retry is the same
-        message). A paused line refuses it (`not_allowed`): it is a message for the team."""
-        asked[0] = time.monotonic()
+    async def post(text: str, turns: list[str]) -> str | None:
+        """One delegation: the caller's line in the call's room, numbered in the order asked (live.py posts one at a
+        time, in order; a retry is the same message). Its message id, or None: not posted. A paused line refuses it
+        (`not_allowed`): it is a message for the team."""
         said = "\n".join(f"> {t}" for t in turns)
         body = (text.strip() + (f"\n\nSaid on the call since the last ask:\n{said}" if said else ""))[:4000]
         n = next(turn_n)
-        async with order:
-            out = await backend.post("turn", {"n": n, "text": body})
+        out = await backend.post("turn", {"n": n, "text": body})
         if out.get("error") == "not_allowed":
             did.append(f"Message: {text[:120]}")
             await backend.post("message", {"text": body, "name": info.get("callerName") or "", "callbackNumber": ""})
             ls[0].send_result(None, PAUSED)
-            return ""
+            return None
         if out.get("error"):
             logger.warning("phone %s: line %d not posted (%s)", backend.call_id, n, out["error"])
-        return out.get("messageId", "")
+        if mid := out.get("messageId") or None:
+            asked[mid] = time.monotonic()
+        return mid
 
     async def hand_off() -> None:
-        """The backend asked for a person: the existing /transfer route, then the SIP transfer."""
+        """The Router's transfer_call: its line plays first, then the existing /transfer route and the SIP
+        transfer."""
+        await asyncio.sleep(CONNECT_S)
         out = await backend.post("transfer")
         if out.get("transferTo"):
             try:
@@ -339,14 +372,14 @@ async def entrypoint(ctx: JobContext) -> None:
                 continue
             after = max(after, int(out.get("after") or 0))
             for m in out.get("messages", []):
-                if m.get("kind") == "transfer":
+                if m.get("action") == "transfer":
                     spawn(hand_off())
-                    continue
-                # a card's Choice said as its options, links and markdown dropped: the caller only hears it
-                yield {"kind": "agent", **m, "text": speakable(m.get("text") or "")}
+                yield {"kind": "agent", **m}
 
     live_session = await live.start(
         ctx, prompt=prompt(info), surface="phone", post=post, events=events,
+        user_away_timeout=AWAY_S,  # caller silence only: the voice's own words never reset it
+        record=True,  # the opening says the call is recorded
         room_options=room_io.RoomOptions(
             participant_identity=caller.identity,
             close_on_disconnect=True,
@@ -359,7 +392,6 @@ async def entrypoint(ctx: JobContext) -> None:
     session = live_session.session
     items: list[dict] = []
     t0 = time.time()
-    heard = [time.monotonic()]  # the last sign of life on the line: the caller, the voice, or a pending ask
     guard = DisclosureGuard(info["assistantName"], lambda line: live_session.send_result(None, say_exactly(line)))
 
     @session.on("conversation_item_added")
@@ -367,7 +399,6 @@ async def entrypoint(ctx: JobContext) -> None:
         if text := getattr(ev.item, "text_content", None):
             at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
             items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
-            heard[0] = time.monotonic()
             guard.seen(items)
 
     @session.on("agent_state_changed")
@@ -400,30 +431,38 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx.shutdown(reason)
 
     silent_end: list[bool] = []
+    silent: list[asyncio.Task] = []
 
-    def holding() -> bool:
-        """GPT-Live is waiting on the team (a delegation is pending, for up to WAIT_S): a quiet caller is holding."""
-        return bool(live_session.pending) and time.monotonic() - asked[0] < WAIT_S
+    def holding() -> float:
+        """How long GPT-Live may still wait on the team: the youngest pending ask's time left under WAIT_S (one being
+        posted counts as new). 0: none pending, or all older than WAIT_S (a lost answer never holds the line)."""
+        now, left = time.monotonic(), 0.0
+        for mid in live_session.pending.values():
+            left = max(left, WAIT_S - (now - asked.get(mid, now)) if mid else WAIT_S)
+        return max(left, 0.0)
 
-    async def watch_silence() -> None:
-        """Quiet for AWAY_S: GPT-Live is told (it decides what to say); quiet for AWAY_S more: the call ends
-        (8 Nov sims: a silent line stayed open, billed, until the 20-minute cap). live.start sets no
-        user_away_timeout, so the line's silence is measured here."""
-        told = False
-        while True:
-            await asyncio.sleep(min(1.0, AWAY_S / 4))
-            if session.user_state == "speaking" or session.agent_state == "speaking" or holding():
-                heard[0] = time.monotonic()
-            quiet = time.monotonic() - heard[0]
-            if quiet < AWAY_S:
-                told = False
-            elif quiet >= 2 * AWAY_S and told:
-                silent_end.append(True)
-                await hang_up("caller silent")
-                return
-            elif not told:
-                told = True
-                live_session.send_result(None, QUIET)
+    async def hang_up_silent() -> None:
+        """Still no caller AWAY_S after GPT-Live heard the line is quiet: the call ends (8 Nov sims: a silent line
+        stayed open, billed, until the 20-minute cap)."""
+        await asyncio.sleep(AWAY_S)
+        silent_end.append(True)
+        await hang_up("caller silent")
+
+    def still_away() -> None:
+        if session.user_state == "away":
+            _away(type("Ev", (), {"new_state": "away"}))
+
+    @session.on("user_state_changed")
+    def _away(ev) -> None:
+        """The caller's state only (user_away_timeout): the voice's own "are you still there?" never resets it."""
+        if ev.new_state == "away" and (wait := holding()):  # holding for the team's answer is not gone
+            asyncio.get_running_loop().call_later(wait + 0.01, still_away)
+            return
+        if ev.new_state == "away" and not silent:
+            live_session.send_result(None, QUIET)
+            silent.append(asyncio.create_task(hang_up_silent()))
+        elif ev.new_state != "away" and silent:
+            silent.pop().cancel()
 
     async def time_cap() -> None:
         await asyncio.sleep(CALL_MAX_S)
@@ -431,13 +470,15 @@ async def entrypoint(ctx: JobContext) -> None:
         await asyncio.sleep(BYE_S)
         await hang_up("call max length")
 
-    watchers = [asyncio.create_task(watch_silence()), asyncio.create_task(time_cap())]
+    limit = asyncio.create_task(time_cap())
 
     async def on_end(duration: int) -> None:
-        for task in (*watchers, *tasks):
-            if task is not asyncio.current_task():
-                task.cancel()
-        await live_session.close()  # GPT-Live bills every open second; a post in flight still reaches the room
+        for task in (limit, *silent, *tasks):
+            task.cancel()
+        try:
+            await live_session.close()  # GPT-Live bills every open second; a post in flight still reaches the room
+        except Exception:  # noqa: BLE001 -- the record and the minutes are posted whatever the close did
+            logger.warning("phone %s: voice session close failed", backend.call_id, exc_info=True)
         out = await backend.post(
             "end",
             {

@@ -58,6 +58,7 @@ class RunIdentity:
     lane: str | None = None
     room: str | None = None  # Router runs: `router_room_key(trigger_scope)`, one session per lane and conversation
     model: str | None = None  # Router runs: the cheaper model (§9); the bridge overrides the profile's
+    call: bool = False  # Router runs: a phone caller's batch, which may hand the call to a person (transfer_call)
     # "task": the run lives in its own AgentCore session (`runtime_transport.session_id_for(owner, task_id)`)
     # and the bridge latches task mode (read-only specialist profile, task-prefix writes). Decided per attempt
     # by `session_kind_for`, written on the Attempt row by O's `begin_attempt`, never cached on the task.
@@ -110,6 +111,8 @@ class RunIdentity:
                 wire["room"] = self.room
             if self.model:
                 wire["model"] = self.model
+            if self.call:
+                wire["call"] = True
         return wire
 
 

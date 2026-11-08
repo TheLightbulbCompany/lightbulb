@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 
@@ -89,51 +90,47 @@ def test_the_transcript_keeps_final_lines_in_spoken_order_once():
 
 
 def _guard(greeted=True):
+    """A guard whose opening turn ends as soon as the voice stops (gap 0); `await _turn_over()` lets it."""
     said = []
-    guard = phone.DisclosureGuard("Lightbulb", said.append)
+    guard = phone.DisclosureGuard("Lightbulb", said.append, gap_s=0)
     if greeted:  # the greeting played: listening -> speaking -> listening
         guard.state("listening", "speaking")
         guard.state("speaking", "listening")
     return guard, said
 
 
-def test_nothing_is_judged_until_the_greeting_has_finished_playing():
+async def _turn_over():
+    await asyncio.sleep(0.01)
+
+
+async def test_nothing_is_judged_until_the_greetings_turn_is_over():
     paraphrase = [{"role": "assistant", "text": "Hi there, how can I help?", "t": 1.0}]
     guard, said = _guard(greeted=False)
     guard.state("initializing", "listening")
     guard.seen(paraphrase)
     guard.state("listening", "speaking")  # the greeting is playing
     guard.seen(paraphrase)
+    await _turn_over()
     assert said == []
     guard.state("speaking", "listening")
-    guard.seen(paraphrase)
+    await _turn_over()
     assert said == [guard.line]
 
 
-def test_a_paraphrased_greeting_is_missing_and_the_disclosure_is_said_once():
-    items = [
-        {
-            "role": "assistant",
-            "text": "Hi there, Super Agent Test, how can I help?",
-            "t": 1.0,
-        }
-    ]
+async def test_a_paraphrased_greeting_is_missing_and_the_disclosure_is_said_once():
+    items = [{"role": "assistant", "text": "Hi there, Super Agent Test, how can I help?", "t": 1.0}]
     assert phone.disclosure_of(items, "Lightbulb") == "missing"
     guard, said = _guard()
     guard.seen(items)
+    await _turn_over()
     items.append({"role": "user", "text": "Hi", "t": 6.0})
     guard.seen(items)
-    assert (
-        said == ["I'm Lightbulb, an AI assistant, and this call is recorded."]
-        and guard.corrected
-    )
-    cut_off = [
-        {"role": "assistant", "text": GREETING[:40], "t": 1.0, "interrupted": True}
-    ]
+    assert said == ["I'm Lightbulb, an AI assistant, and this call is recorded."] and guard.corrected
+    cut_off = [{"role": "assistant", "text": GREETING[:40], "t": 1.0, "interrupted": True}]
     assert phone.disclosure_of(cut_off, "Lightbulb") == "missing"
 
 
-def test_a_greeting_or_any_disclosing_variant_is_ok_and_nothing_extra_is_said():
+async def test_a_greeting_or_any_disclosing_variant_is_ok_and_nothing_extra_is_said():
     loud = GREETING.upper().replace(".", "!").replace("  ", " ")
     variant = "Hi, you've reached Lightbulb, the AI assistant here; heads up, this call is recorded."
     for text in (GREETING, loud, variant):
@@ -141,10 +138,11 @@ def test_a_greeting_or_any_disclosing_variant_is_ok_and_nothing_extra_is_said():
         assert phone.disclosure_of(items, "Lightbulb") == "ok", text
         guard, said = _guard()
         guard.seen(items)
+        await _turn_over()
         assert said == [] and not guard.corrected
 
 
-def test_nothing_transcribed_before_the_caller_is_unknown_for_the_record_and_corrected():
+async def test_nothing_transcribed_before_the_caller_is_unknown_for_the_record_and_corrected():
     items = [
         {"role": "user", "text": "Hi", "t": 6.0},
         {"role": "assistant", "text": "Hello!", "t": 8.0},
@@ -161,17 +159,17 @@ def test_nothing_transcribed_before_the_caller_is_unknown_for_the_record_and_cor
     assert said == [guard.line] and guard.corrected
 
 
-def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monkeypatch):
+async def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monkeypatch):
     monkeypatch.setenv("PHONE_TEST_FAIL_DISCLOSURE", "1")
     guard, said = _guard(greeted=False)
     guard.state("listening", "speaking")
     guard.seen([{"role": "assistant", "text": GREETING, "t": 1.0}])
     assert said == []  # still speaking
     guard.state("speaking", "listening")
-    guard.seen([{"role": "assistant", "text": GREETING, "t": 1.0}])
+    await _turn_over()
     guard.state("listening", "speaking")
     guard.state("speaking", "listening")
-    guard.seen([])
+    await _turn_over()
     assert said == [guard.line] and guard.corrected
 
 

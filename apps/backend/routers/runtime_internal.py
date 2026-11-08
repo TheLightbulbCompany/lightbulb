@@ -566,6 +566,45 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
 
 
+class TransferCallBody(BaseModel):
+    trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
+    text: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/{owner_id}/transfer-call")
+async def transfer_call(owner_id: str, body: TransferCallBody, request: Request) -> dict:
+    """The Router's transfer_call (a phone caller asked for a person): one Lightbulb line in the call room marked
+    `action: "transfer"`, the trigger's answer. The phone worker sees it on /events and runs /transfer and the SIP
+    transfer itself (huddle-agent phone.py `hand_off`); nothing is transferred here. Only a caller's triggers, all
+    from one call, in that call's own room while the line is live."""
+    from routers import voice_phone as vp
+
+    await _gate(owner_id, request)
+    triggers = [await tasks_repo.get_trigger(owner_id, t) for t in body.trigger_ids]
+    refs = [(t or {}).get("ref") or {} for t in triggers]
+    calls = {r.get("callId") if r.get("origin") == "phone_contact" else None for r in refs}
+    call_id = next(iter(calls)) if len(calls) == 1 else None
+    meta = await vp.messaging_repo.get_room(call_id) if call_id else None
+    if not meta or meta.get("kind") != "call" or meta.get("ownerId") != owner_id:
+        raise HTTPException(status_code=403, detail="not_a_caller")
+    caller = (meta.get("call") or {}).get("caller", "")
+    if vp._line_state(await vp.agent_config(owner_id), caller) != "live":
+        raise HTTPException(status_code=403, detail="not_allowed")  # a paused line only takes messages
+    message_id = await task_conversation.post_as_lightbulb(
+        owner_id,
+        call_id,
+        text=vp.redact_cards(body.text),
+        event_id=f"call-transfer:{body.trigger_ids[0]}",
+        attrs={"action": "transfer"},
+        remember=False,
+    )
+    for t in triggers:  # the line is this ask's answer: the Router posts no second line for it
+        await tasks_repo.set_trigger_routed_to(
+            owner_id, t["triggerId"], {**(t.get("routedTo") or {}), "transfer": message_id}
+        )
+    return {"messageId": message_id}
+
+
 NOTE_CAP = 20  # notes per attempt
 
 

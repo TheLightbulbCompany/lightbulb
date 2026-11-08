@@ -394,3 +394,42 @@ async def test_business_facts_reads_only_the_runs_own_workspace(api, monkeypatch
     assert bad.status_code == 403
     other = await api.post("/api/v1/internal/runtime/org_other/business-facts", json=body, headers=H)
     assert other.status_code in (401, 403) and "org_other" not in seen
+
+
+async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch):
+    """The Router's transfer_call: one Lightbulb line in the caller's own live call room with action "transfer" (the
+    phone worker transfers on it), the trigger marked answered; any other trigger, room or a paused line: 403."""
+    from unittest.mock import AsyncMock
+
+    from routers import voice_phone as vp
+
+    call = "11111111-2222-3333-4444-555555555555"
+    rooms = {call: {"kind": "call", "ownerId": WS, "call": {"caller": "+16105550100"}}}
+    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
+    state = {"line": "live"}
+    monkeypatch.setattr(vp, "agent_config", AsyncMock(return_value={}))
+    monkeypatch.setattr(vp, "_line_state", lambda cfg, caller: state["line"])
+    trig = {"voice:c1:turn-0": {"triggerId": "voice:c1:turn-0", "ref": {"origin": "phone_contact", "callId": call}},
+            "chat:m1": {"triggerId": "chat:m1", "ref": {"roomId": call, "text": "hi"}}}  # fmt: skip
+    monkeypatch.setattr(repo, "get_trigger", AsyncMock(side_effect=lambda _ws, t: trig.get(t)))
+    routed = AsyncMock()
+    monkeypatch.setattr(repo, "set_trigger_routed_to", routed)
+    posted = AsyncMock(return_value="msg-1")
+    monkeypatch.setattr(ri.task_conversation, "post_as_lightbulb", posted)
+    url = f"/api/v1/internal/runtime/{WS}/transfer-call"
+
+    r = await api.post(url, json={"triggerIds": ["voice:c1:turn-0"], "text": "Let me put you through."}, headers=H)
+    assert r.status_code == 200 and r.json() == {"messageId": "msg-1"}
+    ((args, kw),) = [(c.args, c.kwargs) for c in posted.await_args_list]
+    assert args == (WS, call) and kw["attrs"] == {"action": "transfer"} and kw["text"] == "Let me put you through."
+    assert routed.await_args.args == (WS, "voice:c1:turn-0", {"transfer": "msg-1"})
+
+    for body in ({"triggerIds": ["chat:m1"], "text": "x"}, {"triggerIds": ["voice:c1:turn-0", "chat:m1"], "text": "x"},
+                 {"triggerIds": ["nope"], "text": "x"}):  # fmt: skip
+        r = await api.post(url, json=body, headers=H)
+        assert r.status_code == 403 and r.json()["detail"] == "not_a_caller", body
+    state["line"] = "message_only"
+    r = await api.post(url, json={"triggerIds": ["voice:c1:turn-0"], "text": "x"}, headers=H)
+    assert r.status_code == 403 and r.json()["detail"] == "not_allowed"
+    assert posted.await_count == 1
+    assert (await api.post(url, json={"triggerIds": ["voice:c1:turn-0"], "text": "x"})).status_code in (401, 403)

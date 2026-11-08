@@ -200,3 +200,4 @@ async def test_contact_run_has_a_budget(monkeypatch):
     assert contact.run_budget_seconds == 600 and contact.memory["sync"] == "none"
     owner = await acts._request(WS, task | {"origin": "owner_voice"}, {"n": 1}, {"attempts": []})
     assert owner.run_budget_seconds is None  # the owner's work keeps today's limits
+    assert "Connected apps" not in contact.input and "Connected apps: none" in owner.input  # never the caller's

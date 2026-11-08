@@ -33,9 +33,10 @@ def _workspace_session_by_default(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_connected_apps(monkeypatch):
-    """A Worker brief lists the workspace's connected apps (`integrations_repo`, a table these suites do not create)."""
+    """A Worker brief lists the workspace's connected apps and MCP servers (`integrations_repo`, a table these suites do not create)."""
     from unittest.mock import AsyncMock as _AsyncMock
 
     from core.repositories import integrations_repo
 
     monkeypatch.setattr(integrations_repo, "list_for_owner", _AsyncMock(return_value=[]))
+    monkeypatch.setattr(integrations_repo, "get_manual_mcp_servers", _AsyncMock(return_value={}))

@@ -266,17 +266,27 @@ async def test_worker_brief_carries_the_requesters_local_time(world, monkeypatch
 
 async def test_worker_brief_lists_connected_apps_and_says_when_one_is_missing(world, monkeypatch):
     async def rows(owner_id):
-        return [{"provider": "stripe", "status": "connected"}, {"provider": "github", "status": "disconnected"}]
+        return [
+            {"provider": "stripe", "status": "connected"},
+            {"provider": "github", "status": "disconnected"},
+            {"provider": "projects/neon", "status": "connected", "provider_resources": ["db"]},
+            {"provider": "slack_channel", "status": "connected"},  # not a catalog integration
+        ]
+
+    async def manual(owner_id):
+        return {"acme-crm": {"url": "https://mcp.acme.example"}}
 
     monkeypatch.setattr(acts.integrations_repo, "list_for_owner", rows)
+    monkeypatch.setattr(acts.integrations_repo, "get_manual_mcp_servers", manual)
     tid = await _task()
     ref = await _attempt(tid)
     with pytest.raises(activity._CompleteAsyncError):
         await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
     request = world["runs"][0][1]
-    assert "Connected apps: stripe\n" in request.input + "\n"
+    assert "Connected apps: acme-crm, neon, stripe\n" in request.input + "\n"
     rule = " ".join(request.instructions.split())
-    assert "say plainly it isn't connected" in rule and "Settings → Connections" in rule
+    assert "If the source you need isn't connected (check Connected apps" in rule and "Settings → Connections" in rule
+    assert "Name the specific items you found (PR numbers, figures, names), never a summary of themes" in rule
 
 
 async def test_worker_turn_refused_maps_outcome(world):

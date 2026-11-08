@@ -13,7 +13,7 @@ const mic = vi.hoisted(() => vi.fn());
 const connectedRoom = vi.hoisted(() => ({ localParticipant: { setMicrophoneEnabled: mic } }));
 const huddle = vi.hoisted(() => ({ roomId: "dm1" as string | null, joining: null, room: connectedRoom as object | null, error: null, join: vi.fn(), leave: vi.fn() }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ CEO_IDENTITY: "agent-ceo", useHuddle: () => huddle }));
-vi.mock("@/components/huddle/TalkButton", () => ({
+vi.mock("@/components/huddle/useAssistantDm", () => ({
   useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "human", id: "u" }, { kind: "agent", id: "a1" }] }),
 }));
 vi.mock("../VoiceShell", () => ({ useNeedsYouTotal: () => 0 }));

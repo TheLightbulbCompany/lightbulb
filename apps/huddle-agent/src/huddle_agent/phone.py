@@ -173,8 +173,10 @@ def say_disclosure(session, line: str) -> None:
 
 def greet(session) -> None:
     """The opening turn: the model speaks first, from the prompt (docs.livekit.io/agents/build/audio, "generate_reply"
-    greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov)."""
-    session.generate_reply()
+    greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov).
+    Not interruptible, as in LiveKit's greeting example (`allow_interruptions=False`): a caller's "hi" over it cut the
+    disclosure off (8 Nov evals). Gemini's server-side turns ignore the flag (LiveKit logs a warning)."""
+    session.generate_reply(allow_interruptions=False)
 
 
 class Backend:

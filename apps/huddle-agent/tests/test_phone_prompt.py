@@ -46,7 +46,7 @@ def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
             replies.append(kw)
 
     phone.greet(Session())
-    assert replies == [{}]  # no per-response instructions: Gemini would keep them as a turn
+    assert replies == [{"allow_interruptions": False}]  # no instructions (Gemini keeps them); nobody cuts it off
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():

@@ -246,7 +246,7 @@ async def test_delegate_posts_the_callers_line_with_the_talk_since_the_last_ask(
     r = phone.Receptionist(b, {**INFO, "mode": "live"}, None)
     r.context.add("Caller", "Hi, it's Priya.")
     r.context.add("Lightbulb", "Hi Priya!")
-    assert await r.delegate("Can I book a gel manicure Saturday at 2?") == {"sent": True}
+    assert (await r.delegate("Can I book a gel manicure Saturday at 2?")).output == {"sent": True}
     await r.delegate("And how much is it?")
     await r.turns.flush()
     assert [p for p, _ in b.calls] == ["turn", "turn"]

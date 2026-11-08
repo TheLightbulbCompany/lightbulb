@@ -98,7 +98,7 @@ async def test_a_line_after_delegate_is_not_cut(talker, session):
     talker.heard("Maya", "What shipped this week?")
     await talker.delegate("What shipped this week?")
     await _speak(talker, "Let me check with the team on what shipped this week, ", "one moment while they look.")
-    assert session.current_speech.interrupted == 0 and session.replies == []
+    assert session.current_speech.interrupted == 0 and session.replies == [mouth.HOLD]
 
 
 async def test_a_late_transcript_after_delegate_is_not_delegated_again(talker, session):
@@ -112,7 +112,7 @@ async def test_a_late_transcript_after_delegate_is_not_delegated_again(talker, s
 async def test_a_tool_call_after_the_cut_posts_nothing(talker, session):
     talker.heard("Maya", "Did Acme pay?")
     await _speak(talker, "Yes, Acme paid.")
-    assert await talker.delegate("Did Acme pay?") == {"sent": True}
+    assert (await talker.delegate("Did Acme pay?")).output == {"sent": True}
     await talker._turns.flush()
     assert talker.backend.sent == ["Did Acme pay?"]
 
@@ -270,3 +270,41 @@ async def test_a_phone_message_or_hand_off_reply_is_not_an_undelegated_answer(re
     assert await receptionist.delegate("I'll be late.", kind="message", name="Priya") == {"taken": True}
     await _speak(receptionist, "Got it, Priya, I've passed on that you'll be late.")
     assert session.current_speech.interrupted == 0
+async def test_a_result_is_said_with_no_tools(talker, session):
+    """8 Nov prod Meet: with the delegate tool on, the result turn said "On it." / "Let me check." and once called
+    delegate with the person's last line again (msg 14, a duplicate ask)."""
+    talker.say(["We shipped phone reception."])
+    talker.say(["We shipped phone reception."], verbatim=True)
+    assert [kw.get("tool_choice") for kw in session.kw] == ["none", "none"]
+    assert "Say only this message" in session.replies[0]
+
+
+@pytest.mark.parametrize("said", ["Let me check.", "On it.", "One sec, let me check."])
+async def test_a_holding_line_in_place_of_a_result_is_cut_and_said_word_for_word(talker, session, capsys, said):
+    session.current_speech = talker.say(["In the last week we shipped phone reception."])
+    await _speak(talker, said)
+    assert session.current_speech.interrupted == 1
+    assert session.replies[-1] == mouth.verbatim_instructions(["In the last week we shipped phone reception."])
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])  # "On " is cut as an added name first
+    assert line.get("voice.talker.unsaid_result", line.get("voice.talker.added_fact")) == 1
+
+
+async def test_a_result_that_says_on_it_itself_is_not_cut(talker, session):
+    session.current_speech = talker.say(["Pulse is on it."])
+    await _speak(talker, "Pulse is on it.")
+    assert session.current_speech.interrupted == 0
+
+
+async def test_delegate_says_one_holding_line_and_asks_for_no_tool_reply(talker, session):
+    """8 Nov prod Meet: "Let me check. Let me check." -- one from the turn that called delegate, one from the reply
+    LiveKit generates after every tool output."""
+    out = await talker.delegate("What shipped this week?")
+    assert out.reply_required is False and session.replies == [mouth.HOLD]
+    assert session.kw == [{"tool_choice": "none"}]
+
+
+async def test_no_second_holding_line_when_the_turn_already_said_one(talker, session):
+    talker.heard("Maya", "What shipped this week?")
+    await _speak(talker, "Let me check.")
+    await talker.delegate("What shipped this week?")
+    assert session.replies == []

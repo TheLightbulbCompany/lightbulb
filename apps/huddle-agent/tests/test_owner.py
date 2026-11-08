@@ -49,7 +49,7 @@ async def test_delegate_posts_a_woken_message_with_the_turns_since_the_last_ask(
     a.context.add("Maya", "Hi Nova")
     a.context.add("Nova", "Hi Maya!")
     a.context.add("Maya", "What have we shipped in the last week?")
-    assert await a.delegate("What have we shipped in the last week?") == {"sent": True}
+    assert (await a.delegate("What have we shipped in the last week?")).output == {"sent": True}
     await a._turns.flush()
     [(op, body)] = b.sent
     assert op == "turn" and (body["speakerUserId"], body["sessionId"], body["n"]) == ("user_maya", "job_1", 0)
@@ -188,3 +188,20 @@ def test_the_talk_is_kept_with_its_transcript():
         "transcript": [{"who": "caller", "text": "What shipped?", "t": 0.5},
                        {"who": "assistant", "text": "We shipped 5095.", "t": 2.0}],
     }  # fmt: skip
+
+
+async def test_the_orbs_line_after_a_spoken_question_answers_it():
+    backend = _Backend()
+    agent = _agent(backend)
+
+    async def fetch(after, handled):
+        return {"messages": [{"id": "q1", "seq": 3, "text": "**Vera** asks: Nail or food gels?",
+                              "question": {"taskId": "t1", "qid": "q-2"}}], "after": 3}  # fmt: skip
+
+    agent.mouth = m = mouth.Mouth(fetch, 2)
+    await m.poll()
+    m.speak(lambda texts: None, ready=True, live=True)
+    await agent.delegate("Nail gels.")
+    await agent.delegate("Thanks, what else?")
+    await agent._turns.flush()
+    assert backend.sent[0][1]["answers"] == {"taskId": "t1", "qid": "q-2"} and "answers" not in backend.sent[1][1]

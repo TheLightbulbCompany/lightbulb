@@ -99,7 +99,7 @@ class OwnerAgent(Talker):
 
     def post(self, request: str) -> None:
         # a task of its own: an interruption cancels the talker's reply, never the post
-        self._turns.add(self.context.take(request))
+        self._turns.add(self.context.take(request), self.take_question())
         self.delegated_at = time.monotonic()
 
 
@@ -113,15 +113,17 @@ class Turns:
         self._n = 0
         self._last: asyncio.Task | None = None
 
-    def add(self, text: str) -> None:
-        self._last = asyncio.create_task(self._post(self._last, self._n, text[:4000]))
+    def add(self, text: str, answers: dict | None = None) -> None:
+        """`answers`: the Worker question the voice last said ({taskId, qid}), which this line answers."""
+        self._last = asyncio.create_task(self._post(self._last, self._n, text[:4000], answers))
         self._n += 1
 
-    async def _post(self, prev: asyncio.Task | None, n: int, text: str) -> None:
+    async def _post(self, prev: asyncio.Task | None, n: int, text: str, answers: dict | None = None) -> None:
         if prev:
             await asyncio.gather(prev, return_exceptions=True)  # in the order asked
+        body = {"speakerUserId": self._speaker, "sessionId": self._sid, "n": n, "text": text}
         try:
-            await self._b.owner("turn", {"speakerUserId": self._speaker, "sessionId": self._sid, "n": n, "text": text})
+            await self._b.owner("turn", {**body, "answers": answers} if answers else body)
         except BackendError as e:
             logger.warning("owner: turn %d not posted (%s)", n, e.code)
 
@@ -228,7 +230,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     session.on("close", lambda _ev: ctx.shutdown("session closed"))
     limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length"), agent.unchecked))
-    reports = asyncio.create_task(speak_loop(Mouth(fetch, int(info.get("after") or 0))))
+    agent.mouth = Mouth(fetch, int(info.get("after") or 0))
+    reports = asyncio.create_task(speak_loop(agent.mouth))
     record = lambda: talk_record(member.identity, items, ctx.job.id, time.time() - t0)  # noqa: E731
     ctx.add_shutdown_callback(lambda _reason="": (quiet_timer.cancel(), _close(limit, backend, record, turns, reports))[1])
     # the web's Talk RPC (HuddleProvider.talkStart): nothing to summon here, the session already listens

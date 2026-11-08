@@ -296,7 +296,7 @@ def score(sid: str, sc: dict, seeded: dict, heard: dict, rec: dict, log: str) ->
                 best = max(asked, key=lambda a: len(words(a.get("q", "")) & words(text)), default={})
                 row["answer"] = best.get("a", "") if len(words(best.get("q", "")) & words(text)) >= 3 else ""
                 pattern = fill(line.get("says", ""), ctx)
-                good = bool(re.search(pattern, row["answer"], re.I)) if pattern else True
+                good = bool(re.search(pattern, row["answer"].replace("\u2019", "'"), re.I)) if pattern else True  # "don’t"
                 row["ok"] = lat <= ANSWER_S and good
                 row["why"] = "" if row["ok"] else ("slow" if lat > ANSWER_S else
                                                     "no text on the record" if not row["answer"] else "wrong answer")

@@ -99,13 +99,13 @@ export function VoiceHome() {
   </div>;
 }
 
-function Row({ item, name, current, onOpen }: { item: TimelineItem; name: string; current: boolean; onOpen: () => void }) {
+function Row({ item, name, current, now, onOpen }: { item: TimelineItem; name: string; current: boolean; now: number; onOpen: () => void }) {
   if (item.type === "meeting") {
     const mins = item.endAt && item.startAt ? Math.round((item.endAt - item.startAt) / 60) : null;
     const did = item.summary || [item.asked?.length && `Asked ${item.asked.length === 1 ? "once" : `${item.asked.length} times`}`,
       item.followUps?.length && `${item.followUps.length} follow-up${item.followUps.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
-      || (item.at > Date.now() ? `Upcoming. ${name} will join.`
-        : item.endAt && item.endAt > Date.now() ? `In progress.`
+      || (item.at > now ? `Upcoming. ${name} will join.`
+        : item.endAt && item.endAt > now ? `In progress.`
         : `${name} listened.`);  // a calendar meeting that has not happened is not one Nova listened to
     return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
       <time>{time(item.at)}</time><Video size={16} aria-label="Meeting" />

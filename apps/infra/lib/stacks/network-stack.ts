@@ -15,6 +15,17 @@ const ENV_CONFIG: Record<string, { maxAzs: number; cidr: string }> = {
   prod: { maxAzs: 3, cidr: "10.2.0.0/16" },
 };
 
+/**
+ * No managed NAT gateway ($32.85/mo + $0.045/GB each). Fargate tasks get a public IP in the
+ * public subnets (ECS: "When using a public subnet, you can assign a public IP address to the
+ * task ENI"); the private subnets keep egress through one t4g.nano NAT instance, because the
+ * AgentCore runtimes, the workspace browser and the VPC Lambdas cannot hold a public IP.
+ * Dev first; prod follows when the repo variable NO_NAT_GATEWAY_PROD is "true".
+ */
+export function noNatGateway(env: string): boolean {
+  return env === "dev" || process.env[`NO_NAT_GATEWAY_${env.toUpperCase()}`] === "true";
+}
+
 export class NetworkStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
   public readonly alb: elbv2.ApplicationLoadBalancer;
@@ -34,10 +45,22 @@ export class NetworkStack extends cdk.Stack {
     const env = props.environment;
     const config = ENV_CONFIG[env] ?? ENV_CONFIG.dev;
 
+    // ponytail: one NAT instance, no auto-recovery -- a dead instance cuts runtime/browser/Lambda
+    // egress until it is replaced (the API and Temporal tasks keep their own public IPs). Add an
+    // ASG of 1 or fck-nat's HA mode if that outage starts to matter.
+    const natInstance = noNatGateway(env)
+      ? ec2.NatProvider.instanceV2({
+          instanceType: new ec2.InstanceType("t4g.nano"),
+          // CDK's default admits 0.0.0.0/0 on every port; only the VPC routes through it.
+          defaultAllowedTraffic: ec2.NatTrafficDirection.OUTBOUND_ONLY,
+        })
+      : undefined;
+
     this.vpc = new ec2.Vpc(this, "Vpc", {
       ipAddresses: ec2.IpAddresses.cidr(config.cidr),
       maxAzs: config.maxAzs,
       natGateways: 1,
+      natGatewayProvider: natInstance,
       subnetConfiguration: [
         {
           name: "Public",
@@ -52,6 +75,16 @@ export class NetworkStack extends cdk.Stack {
       ],
       restrictDefaultSecurityGroup: true,
     });
+
+    if (natInstance) {
+      natInstance.connections.allowFrom(ec2.Peer.ipv4(config.cidr), ec2.Port.allTraffic(), "VPC egress via NAT instance");
+      // A fixed address: the workspace browser leaves from it (sites that bind a sign-in to an IP),
+      // and it survives the instance being replaced on an AMI update.
+      new ec2.CfnEIP(this, "NatInstanceEip", {
+        domain: "vpc",
+        instanceId: natInstance.gatewayInstances[0].instanceId,
+      });
+    }
 
     // S3 Gateway Endpoint — free, routes S3 traffic (incl. ECR image layers)
     // through AWS instead of the NAT gateway ($0.045/GB data processing)

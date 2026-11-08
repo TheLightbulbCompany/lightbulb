@@ -1607,7 +1607,7 @@ describe("ServiceStack — super-agent temporal-worker (dev + prod, contracts-v2
     expect(svc.LoadBalancers).toBeUndefined();
     expect(svc.DeploymentConfiguration.DeploymentCircuitBreaker).toEqual({ Enable: true, Rollback: true });
     expect(svc.CapacityProviderStrategy.map((s: any) => s.CapacityProvider)).toContain("FARGATE_SPOT");
-    expect(svc.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp).toBe("DISABLED");
+    expect(svc.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp).toBe("ENABLED"); // dev has no NAT gateway (no-nat-gateway.test.ts)
 
     const [tdId] = Object.keys(
       SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition", {

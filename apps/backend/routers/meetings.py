@@ -91,14 +91,17 @@ async def _count_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
         await voice_billing.add_month_seconds(meta["ownerId"], int(seconds), at)
 
 
-async def _finish(room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None) -> None:
+async def _finish(
+    room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None, ended_at: int | None = None
+) -> None:
     """The rest of the one end path, once ``status`` is written. Never raises: the written status
     turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
     Notes first (only for a call the bot was in; a series advances after them, or at once without
     them), the room's close last. Presence is a metric only: we pay for the bot's time, the
     workspace's allowance pays only for agent speech (voice_billing). Both are fired, never awaited:
     the caller may hold the meeting lease that ``advance`` waits for."""
-    presence = time.time() - in_call_at if in_call_at else None
+    # From the written endedAt (the event's own time): a redelivery or leave retry is not time in the call.
+    presence = max(0, (ended_at or time.time()) - in_call_at) if in_call_at else None
     notes = notes and bool(in_call_at)
     steps = [
         ("presence", lambda: put_metric("meeting.presence.seconds", presence, unit="Seconds") if presence else None),
@@ -194,7 +197,9 @@ async def _on_status(
             # the event's own time: a retried or late delivery is not when the call ended.
             fields = {"status": "ended", "lastBotStatus": code, "endedAt": int(at or time.time())}
             await meeting_invites._patch_meeting(room_id, fields)
-            await _finish(room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"))
+            await _finish(
+                room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"), ended_at=fields["endedAt"]
+            )
         else:
             title = meeting.get("title") or "Meeting"
             text = (
@@ -212,7 +217,12 @@ async def _on_status(
             await meeting_invites._patch_meeting(room_id, fields)
             # A bot that dies mid-call still leaves a conversation worth its notes.
             await _finish(
-                room_id, "bot_failed", sub_code, notes=status == "in_call", in_call_at=meeting.get("inCallAt")
+                room_id,
+                "bot_failed",
+                sub_code,
+                notes=status == "in_call",
+                in_call_at=meeting.get("inCallAt"),
+                ended_at=fields["endedAt"],
             )
 
 
@@ -358,5 +368,7 @@ async def leave(room_id: str, body: RoomBody):
             # Recall's automatic_leave makes a bot leave after 5 minutes alone; the LiveKit room still closes below.
             put_metric("meeting.leave_failed")
             logger.warning("meeting room %s: bot leave failed", room_id, exc_info=True)
-    await _finish(room_id, "ended", "idle_leave", notes=True, in_call_at=meeting.get("inCallAt"))
+    await _finish(
+        room_id, "ended", "idle_leave", notes=True, in_call_at=meeting.get("inCallAt"), ended_at=fields["endedAt"]
+    )
     return {"ok": True}

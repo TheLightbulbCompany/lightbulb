@@ -525,3 +525,18 @@ async def test_call_end_reports_minutes_to_metronome(client):
     assert event["transaction_id"] == call["callId"] and event["customer_id"] == "org_1"
     assert event["event_type"] == "voice_minutes" and event["properties"] == {"seconds": "160", "kind": "phone"}
     assert event["timestamp"].endswith("Z")
+
+
+async def test_a_failed_minutes_counter_still_ends_the_call(client):
+    from core.billing import voice_billing
+
+    call = await _start(client)
+    with patch.object(voice_billing, "add_month_seconds", AsyncMock(side_effect=RuntimeError("ddb down"))):
+        r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 60}, headers=W)
+    assert r.status_code == 200 and r.json()["status"] == "ended"
+
+
+async def test_a_failed_run_out_check_answers_the_call(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(side_effect=RuntimeError("ddb down"))):
+        call = await _start(client, runOut="forward")
+    assert call["forwardTo"] is None and call["mode"] == "live"

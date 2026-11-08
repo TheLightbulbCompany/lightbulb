@@ -198,8 +198,13 @@ async def start_call(body: StartIn) -> dict:
     forward_to = _e164(str(cfg["handoff"]["number"] or "")) if cfg.get("runOut") == "forward" else None
     if forward_to in {_e164(str(cfg.get("forwardFrom") or "")), _e164(body.calledNumber)}:
         forward_to = None
-    if forward_to and await month_seconds(owner_id, cfg.get("timezone")) < voice_billing.INCLUDED_MINUTES * 60:
-        forward_to = None
+    if forward_to:
+        try:
+            if await month_seconds(owner_id, cfg.get("timezone")) < voice_billing.INCLUDED_MINUTES * 60:
+                forward_to = None
+        except Exception:  # metering never drops a live call: answer as normal
+            logger.warning("run-out check failed for %s; answering", owner_id, exc_info=True)
+            forward_to = None
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     call = {
         "caller": body.callerNumber,
@@ -334,9 +339,12 @@ async def end_call(call_id: str, body: EndIn, background: BackgroundTasks) -> di
 
     out = await _patch_call(call_id, change)
     if before.get("status") != "ended":  # a retried end counts nothing twice
-        await voice_billing.add_month_seconds(
-            meta["ownerId"], body.durationSec, datetime.fromisoformat(out["startedAt"])
-        )
+        try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
+            await voice_billing.add_month_seconds(
+                meta["ownerId"], body.durationSec, datetime.fromisoformat(out["startedAt"])
+            )
+        except Exception:
+            logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
         background.add_task(
             voice_billing.report_minutes, meta["ownerId"], call_id, out["startedAt"], body.durationSec, "phone"
         )

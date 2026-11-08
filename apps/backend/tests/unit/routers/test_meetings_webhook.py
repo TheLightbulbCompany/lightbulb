@@ -558,3 +558,12 @@ def test_the_previous_occurrences_bot_cannot_touch_the_next_one(env, booked):
     env["dispatch"].assert_not_awaited()
     env["advance"].assert_not_called()
     env["notes"].assert_not_called()
+
+
+def test_a_late_redelivery_counts_the_meetings_own_minutes_not_the_delay(env):
+    """Recall redelivers for up to 24 h: the minutes are endedAt (the event's time) minus inCallAt."""
+    in_call = int(time.time()) - 7200
+    env["meta"]["meeting"].update(status="in_call", inCallAt=in_call)
+    stamp = datetime.fromtimestamp(in_call + 600, timezone.utc).isoformat().replace("+00:00", "Z")
+    _post(env["client"], _at_time(_status("call_ended"), stamp))  # lands two hours after a 10-minute call
+    assert env["minutes"].await_args.args[1] == 600

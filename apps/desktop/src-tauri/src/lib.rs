@@ -31,6 +31,7 @@ mod shell_integration;
 pub mod desktop_permissions;
 pub mod subprocess;
 mod tray;
+mod voice_key;
 
 // Moved to `lightbulb-core`; re-exported so `crate::keychain::…` and friends keep resolving.
 pub use lightbulb_core::{device_token, keychain, pair_client, pair_state};
@@ -1717,7 +1718,9 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
 /// must grant only the prod origin, and a plain build from source must BE prod.
 #[cfg(test)]
 mod flavor_origin_tests {
+    use super::is_oauth_url;
     use serde_json::{json, Value};
+    use tauri::Url;
 
     fn parse(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
@@ -1922,6 +1925,11 @@ pub fn run() {
         // there is always something for `focus_or_recreate_main_window` to
         // show. Quit stays one click away in the tray.
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(_) = event {
+                if window.label() == "main" {
+                    voice_key::refresh_pill(window.app_handle()); // "Mic on" shows while the window is behind
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
@@ -1972,6 +1980,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -2078,6 +2087,7 @@ end tell"#,
             network_connect::network_notice_seen,
             local_sessions::enrollment::share_engine_session,
             engine::engine_fix,
+            voice_key::voice_mic_live,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");
@@ -2141,6 +2151,7 @@ end tell"#,
             }
 
             tray::create_tray(app.handle())?;
+            voice_key::install(app.handle()); // tap or hold 🌐 to talk to Lightbulb
 
             // Screen granted at pairing but macOS still says no: ask (or open the
             // pane) once per launch.

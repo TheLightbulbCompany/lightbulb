@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 
-from bridge import OWNER
+import bridge
 
 OVERLAY_ROOT = "hermes-tasks"
 
@@ -77,4 +77,4 @@ def check_agent(agent_id: str) -> None:
 def overlay_prefix() -> str:
     """``<owner>/hermes-tasks/<task>/<agent>`` (no trailing slash, like ``S3_PREFIX``)."""
     assert TASK is not None, "overlay_prefix outside task mode"
-    return f"{OWNER}/{OVERLAY_ROOT}/{TASK['taskId']}/{TASK['agentId']}"
+    return f"{bridge.OWNER}/{OVERLAY_ROOT}/{TASK['taskId']}/{TASK['agentId']}"

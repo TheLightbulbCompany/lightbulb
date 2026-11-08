@@ -153,6 +153,7 @@ class TestAgentCoreTransport:
         with patch.object(rt, "_ensure_session", lambda owner_id, arn, deadline, wake: wake()):
             await rt.request(row, "/plugins/lightbulb-channel/rpc", json_body={})
         from core.billing.bedrock_gate_tokens import derive_gate_bearer
+        from core.services import network_proof
 
         boots = [json.loads(e["headers"][rt.BOOT_HEADER]) for e in captured]
         assert len(boots) == 2 and boots[0] == boots[1] == {
@@ -163,6 +164,7 @@ class TestAgentCoreTransport:
             "browserProfileId": "prof-a",
             "networkWorkers": True,
             "maxConcurrentTurns": 6,
+            **({"issuerKey": network_proof.public_key()["env"]} if settings.NETWORK_PROOF_KEY else {}),
         }
 
     def test_no_gateway_token_no_boot_values(self):

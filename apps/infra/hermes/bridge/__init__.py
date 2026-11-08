@@ -108,6 +108,8 @@ def _adopt_boot(raw: str) -> bool:
         os.environ.update(AGENTCORE_PROFILE_ID=text["browserProfileId"],
                           AGENT_BROWSER_EXECUTABLE_PATH="/opt/lightbulb/no-local-browser")
         _browser_env()
+    if "issuerKey" in text:  # the network sidecar verifies members' sign-in proofs against it (public)
+        os.environ["LIGHTBULB_ISSUER_KEY"] = text["issuerKey"]
     if boot.get("networkWorkers") is True:
         os.environ["LIGHTBULB_NETWORK_WORKERS"] = "1"
     cap, turn = boot.get("maxConcurrentTurns"), sys.modules.get("bridge.turn")
@@ -141,9 +143,8 @@ def now() -> str:
 
 # The runtime's environmentVariables are plaintext to anyone with GetAgentRuntime (spec §4.9
 # "Secrets"), so they carry only this one Secrets Manager id, never the tokens themselves.
-# HOOK_TOKEN/GATEWAY_TOKEN are mutable module state so this overwrites them in place -- before
-# `server`/`turn` do `from bridge import HOOK_TOKEN`/`GATEWAY_TOKEN`, so what they capture at
-# their own import is already the boot-fetched value. Dev scripts that never set
+# HOOK_TOKEN/GATEWAY_TOKEN are module state every bridge module reads as ``bridge.HOOK_TOKEN`` at
+# call time, so this boot fetch (and a shared runtime's bind_tenant) is the only writer. Dev scripts that never set
 # LIGHTBULB_SECRET_ID keep using the plain env-var tokens above, unchanged.
 _secret_id = os.environ.get("LIGHTBULB_SECRET_ID", "")
 if _secret_id:

@@ -857,9 +857,10 @@ def invoke(action: dict) -> dict:
 
     import boto3
 
-    # The session's scoped credentials (a shared runtime's execution role has no browser grant).
-    client = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or "us-east-1",
-                          **bridge.aws_session_kwargs())
+    # The execution role, on a shared runtime too: InvokeBrowser authorizes on the browser, never a
+    # profile, so no per-owner credential narrows it (sessions are found only by id; only the
+    # backend lists them), and the session policy has no room left under STS's 2,048 characters.
+    client = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or "us-east-1")
     (_, out), = client.invoke_browser(**ref, action=action)["result"].items()
     if isinstance(out.get("data"), bytes):
         out = {**out, "data": base64.b64encode(out["data"]).decode()}

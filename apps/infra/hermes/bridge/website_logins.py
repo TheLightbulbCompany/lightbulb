@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 import bridge
-from bridge import API, OWNER, browser_control
+from bridge import API, browser_control
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def _call(method: str, path: str, body: dict | None = None, timeout: float = 20.
     """One backend call under the vault token (never the hook token the agent's shell holds). 404 → None; anything else raises (never with a secret:
     the body is only ever sent, and error text is the status line)."""
     request = urllib.request.Request(
-        f"{API}/api/v1/internal/website-logins/{OWNER}{path}",
+        f"{API}/api/v1/internal/website-logins/{bridge.OWNER}{path}",
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.VAULT_TOKEN}"},
         method=method,

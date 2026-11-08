@@ -17,6 +17,7 @@ number at Go live (core/services/voice_onboarding.py).
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -28,8 +29,8 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import run_in_thread, utc_now_iso
-from core.billing import voice_billing
-from core.repositories import messaging_repo
+from core.billing import voice_billing, voice_plan
+from core.repositories import messaging_repo, billing_repo
 from core.services import voice_onboarding, voice_outbound
 
 router = APIRouter()
@@ -140,6 +141,17 @@ async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
     """The Settings "Billing & minutes" card: this month's minutes, the plan, and what happens when they run out."""
     ws = resolve_owner_id(auth)
     cfg = await messaging_repo.get_voice_agent(ws) or {}
+    account = await billing_repo.get_by_owner_id(ws, consistent_read=True) or {}
+    if account.get("metronome_voice_contract_id"):
+        try:
+            measured = await voice_plan.usage(account)
+        except (voice_plan.VoicePlanError, httpx.HTTPError) as exc:
+            raise HTTPException(status_code=503, detail={"code": "voice_usage_unavailable"}) from exc
+        return {
+            **measured,
+            "planStatus": voice_plan.status(account),
+            "runOut": "forward" if cfg.get("runOut") == "forward" else "keep",
+        }
     return {
         "used": round(await month_seconds(ws, cfg.get("timezone")) / 60),
         "included": voice_billing.INCLUDED_MINUTES,

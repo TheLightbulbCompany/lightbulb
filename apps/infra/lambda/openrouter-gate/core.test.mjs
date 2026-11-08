@@ -7,12 +7,12 @@ const policy = { revision: 'test-1', models: ['anthropic/claude-sonnet-4.5', 'op
 const env = { TOKENS_TABLE: 'tokens', BILLING_TABLE: 'billing', FAST_GATE_TABLE: 'fast', OPENROUTER_KEYS_TABLE: 'keys', REQUESTS_TABLE: 'requests', RESERVE_ESTIMATE_MICROCENTS: '300000', RESERVE_TTL_SECONDS: '1200', MODEL_POLICY_JSON: JSON.stringify(policy), MAX_BODY_BYTES: '100000', MAX_OUTPUT_TOKENS: '8192', OPENROUTER_MARKUP: '1.2' };
 const AV = (s) => ({ S: s });
 
-function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active', cappedDay, metronome = true, trialEnd } = {}) {
+function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active', cappedDay, metronome = true, trialEnd, voice = {} } = {}) {
   const calls = { forwards: [], puts: [], updates: [], errors: [], chunks: [], logs: [] };
   const ddb = {
     async getItem(p) {
       if (p.TableName === 'tokens') return { Item: token === 'good' ? { owner_id: AV('owner-1') } : undefined };
-      if (p.TableName === 'billing') return { Item: { ...(provider ? { provider_choice: AV(provider) } : {}), ...(plan ? { plan: AV(plan) } : {}), ...(cappedDay ? { openrouter_capped_day: AV(cappedDay) } : {}), ...(trialEnd !== undefined ? { trial_end: { N: String(trialEnd) } } : {}), subscription_status: AV(status), ...(metronome ? { metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } : {}) } };
+      if (p.TableName === 'billing') return { Item: { ...(provider ? { provider_choice: AV(provider) } : {}), ...(plan ? { plan: AV(plan) } : {}), ...(cappedDay ? { openrouter_capped_day: AV(cappedDay) } : {}), ...(trialEnd !== undefined ? { trial_end: { N: String(trialEnd) } } : {}), subscription_status: AV(status), ...(metronome ? { metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } : {}), ...voice } };
       if (p.TableName === 'fast') return { Item: balance == null ? undefined : { remaining_microcents: { N: String(balance) }, reserved_microcents: { N: '0' } } };
       if (p.TableName === 'keys') return { Item: { state: AV(keyState), key_hash: AV('hash-1'), secret_name: AV('secret-1') } };
     },
@@ -31,6 +31,32 @@ function fixture({ token = 'good', status = 'active', balance = 1000000, provide
   const event = (body = { model: policy.models[0], messages: [{ role: 'user', content: 'Hi' }], stream: true }, headers = {}) => ({ rawPath: '/v1/chat/completions', requestContext: { http: { method: 'POST' } }, headers: { authorization: `Bearer ${token}`, ...headers }, body: JSON.stringify(body) });
   return { calls, deps, responder, event };
 }
+
+const collectedVoice = { metronome_voice_contract_id: AV('voice'), voice_plan_paid_periods: { M: {
+  paid: { M: { start: AV('2000-01-01T00:00:00Z'), end: AV('2099-01-01T00:00:00Z') } },
+} } };
+test('fresh collected voice works after local trial expiry on included key budget without a credits ledger', async () => {
+  const f = fixture({ status: 'trial_local', trialEnd: 1, provider: null, balance: null, metronome: false, voice: collectedVoice });
+  await handleRequest(f.event(), f.responder, f.deps);
+  assert.equal(f.calls.errors.length, 0);
+  assert.equal(f.calls.forwards.length, 1);
+  assert.equal(f.calls.puts[0].Item.billing_mode.S, 'capped');
+  assert.equal(f.calls.puts[0].Item.reservation_microcents.N, '0');
+});
+test('failed or ended voice cannot revive an expired local trial at the money fence', async () => {
+  for (const extra of [{ voice_plan_unpaid_invoice_ids: { SS: ['in_debt'] } }, { voice_plan_ending_at: AV('2000-01-01T00:00:00Z') }]) {
+    const f = fixture({ status: 'trial_local', trialEnd: 1, provider: null, voice: { ...collectedVoice, ...extra } });
+    await handleRequest(f.event(), f.responder, f.deps);
+    assert.equal(f.calls.errors[0].status, 403);
+    assert.equal(f.calls.forwards.length, 0);
+  }
+});
+test('explicit premium managed choice on voice still needs owner-funded credits', async () => {
+  const f = fixture({ status: 'trial_local', trialEnd: 1, provider: 'openrouter_managed', metronome: false, voice: collectedVoice });
+  await handleRequest(f.event(), f.responder, f.deps);
+  assert.equal(f.calls.errors[0].status, 429);
+  assert.equal(f.calls.forwards.length, 0);
+});
 
 test('authenticateOwner resolves a per-agent bearer to {ownerId, agentId}; a legacy owner bearer gets agentId null; unknown 401s; denied 403s', async () => {
   const hashOf = (t) => createHash('sha256').update(t).digest('hex');

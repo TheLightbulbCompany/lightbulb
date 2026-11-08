@@ -13,21 +13,34 @@ def env(monkeypatch):
         "METRONOME_API_KEY": "key",
         "METRONOME_VOICE_RATE_CARD_ID": "voice-card",
         "METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID": "voice-sub",
+        "METRONOME_VOICE_METRIC_ID": "voice-metric",
+        "STRIPE_SECRET_KEY": "sk_test_fake",
     }.items():
         monkeypatch.setattr(voice_plan.settings, key, value)
     client = MagicMock()
     client.list_contracts = AsyncMock(return_value=[])
     client.create_voice_contract = AsyncMock(return_value="voice-contract")
+    client.get_contract = AsyncMock(return_value={"starting_at": "2026-11-08T00:00:00Z"})
     account = {
         "stripe_customer_id": "cus-1",
         "metronome_customer_id": "mc-1",
         "metronome_contract_id": "credits-contract",
+        "owner_id": "org-1",
+        "voice_plan_accepted_version": "voice-agents-v1",
+        "voice_plan_accepted_by": "user-1",
     }
+
+    async def save_plan(_owner, **fields):
+        account.update(metronome_voice_contract_id=fields["contract_id"], voice_plan_status="pending_payment")
+
     with (
         patch.object(voice_plan.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="token")),
         patch.object(voice_plan.container_repo, "release_owner_lifecycle_claim", AsyncMock()),
         patch.object(voice_plan.billing_repo, "get_by_owner_id", AsyncMock(return_value=account)),
-        patch.object(voice_plan.billing_repo, "set_voice_plan", AsyncMock()) as save,
+        patch.object(voice_plan.billing_repo, "set_voice_plan", AsyncMock(side_effect=save_plan)) as save,
+        patch.object(voice_plan.voice_plan_payments, "default_card", AsyncMock(return_value=True)),
+        patch.object(voice_plan.voice_plan_payments, "reconcile", AsyncMock(side_effect=lambda *_a, **_k: account)),
+        patch.object(voice_plan.voice_plan_payments, "refresh", AsyncMock()),
         patch.object(voice_plan.metronome_provisioning, "_maybe_link_stripe", AsyncMock(return_value=True)) as link,
     ):
         yield account, client, save, link
@@ -35,7 +48,10 @@ def env(monkeypatch):
 
 async def test_explicit_enrollment_preserves_credit_contract_and_records_scoped_entitlement(env):
     account, client, save, link = env
-    assert await voice_plan.enroll("org-1", client=client) == {"status": "active", "planVersion": "voice-agents-v1"}
+    assert await voice_plan.enroll("org-1", client=client) == {
+        "status": "pending_payment",
+        "planVersion": "voice-agents-v1",
+    }
     key = "lightbulb-voice:mc-1:voice-agents-v1"
     client.create_voice_contract.assert_awaited_once_with(
         customer_id="mc-1",
@@ -43,7 +59,9 @@ async def test_explicit_enrollment_preserves_credit_contract_and_records_scoped_
         subscription_product_id="voice-sub",
         uniqueness_key=key,
     )
-    save.assert_awaited_once_with("org-1", customer_id="mc-1", contract_id="voice-contract", usage_key=key)
+    save.assert_awaited_once_with(
+        "org-1", customer_id="mc-1", contract_id="voice-contract", usage_key=key, started_at="2026-11-08T00:00:00Z"
+    )
     assert account["metronome_contract_id"] == "credits-contract"
     link.assert_awaited_once()
 
@@ -68,7 +86,11 @@ async def test_stripe_link_failure_cannot_create_a_paid_contract(env):
 
 async def test_existing_entitlement_is_idempotent(env):
     account, client, save, link = env
-    account.update(voice_plan_status="active", metronome_voice_contract_id="voice-contract")
+    account.update(
+        voice_plan_status="active",
+        metronome_voice_contract_id="voice-contract",
+        voice_plan_paid_through="2099-01-01T00:00:00Z",
+    )
     await voice_plan.enroll("org-1", client=client)
     client.create_voice_contract.assert_not_awaited()
     link.assert_not_awaited()
@@ -102,7 +124,12 @@ async def test_concurrent_create_409_adopts_winner(env):
 
 
 def test_voice_entitlement_selects_plan_without_legacy_credit_or_trial_billing():
-    account = {"voice_plan_status": "active", "metronome_voice_contract_id": "voice-contract"}
+    account = {
+        "voice_plan_status": "active",
+        "metronome_voice_contract_id": "voice-contract",
+        "voice_plan_paid_through": "2099-01-01T00:00:00Z",
+        "voice_plan_paid_periods": {"fee": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}},
+    }
     assert voice_billing.billing_mode(account) == "plan"
     assert voice_billing.billing_mode({**account, "voice_plan_status": "canceled"}) is None
     assert (

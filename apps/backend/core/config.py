@@ -226,6 +226,7 @@ class Settings(BaseSettings):
     METRONOME_API_KEY: str = ""
     """Bearer token. Sandbox token in dev, prod token in prod. From Secrets Manager."""
     METRONOME_VOICE_RATE_CARD_ID: str = ""
+    METRONOME_VOICE_METRIC_ID: str = ""
     METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID: str = ""
     METRONOME_VOICE_ENROLLMENT_ENABLED: bool = False
     OPENAI_API_KEY: str = ""

@@ -22,7 +22,9 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
     keep in sync). Falls back to the managed gate when no row or no choice is
     persisted — the retired ``bedrock_claude`` default is never produced.
     """
-    if (row or {}).get("subscription_status") == "trial_local":
+    from core.billing.voice_billing import has_voice_plan
+
+    if (row or {}).get("subscription_status") == "trial_local" and not has_voice_plan(row):
         # Cardless Free rows intentionally store no provider_choice. Resolve
         # them through the managed gate so provisioning/key/profile code has
         # one path; the owner's OpenRouter per-key daily limit is the valve.

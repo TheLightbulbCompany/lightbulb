@@ -54,6 +54,7 @@ async def test_voice_contract_is_monthly_advance_and_scopes_usage_to_one_enrollm
     assert payload["subscriptions"] == [
         {
             "collection_schedule": "ADVANCE",
+            "billing_cycle_config": {"invoice_placement": "ON_SCHEDULED_INVOICE"},
             "initial_quantity": 1,
             "proration": {"invoice_behavior": "BILL_IMMEDIATELY", "is_prorated": True},
             "subscription_rate": {"billing_frequency": "MONTHLY", "product_id": "voice-sub"},

@@ -39,6 +39,7 @@ def client():
             BillingMode="PAY_PER_REQUEST",
         )
         with (
+            patch.object(voice_phone.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)),
             patch("core.dynamodb._dynamodb_resource", resource),
             patch.object(messaging_repo.settings, "MESSAGING_TABLE", "test-messaging"),
             patch.object(messaging_repo.settings, "HUDDLE_WORKER_SECRET", SECRET),
@@ -121,6 +122,21 @@ async def test_a_custom_greeting_missing_the_disclosures_falls_back_to_ours(clie
     for bad in ("Hi, Nova here at Maya's. How can I help?", "Hi, the AI assistant here. This call is recorded."):
         got = (await _start(client, room=f"phone-dev-_g{len(bad)}", greeting=bad))["greeting"]
         assert got.startswith("Hi, I'm Nova, Maya's Nail Studio's AI assistant") and "recorded" in got
+
+
+async def test_pending_voice_payment_cannot_use_owner_test_bypass_or_business_tools(client):
+    with patch.object(
+        voice_phone.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"metronome_voice_contract_id": "voice", "voice_plan_status": "pending_payment"}),
+    ):
+        call = await _start(client, caller=CONFIG["handoff"]["number"])
+        assert call["mode"] == "message_only" and call["forwardTo"] is None
+        assert not any(call["can"].values())
+        result = client.post(
+            f"/api/v1/internal/voice/calls/{call['callId']}/availability", json={"date": _tomorrow()}, headers=W
+        )
+        assert result.status_code == 403
 
 
 async def test_the_record_keeps_each_lines_time_and_the_disclosure_verdict(client):

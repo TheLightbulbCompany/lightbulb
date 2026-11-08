@@ -42,14 +42,18 @@ def _containers():
 
 
 def has_voice_plan(account: dict | None) -> bool:
-    if (
-        not account
-        or account.get("voice_plan_status") not in {"active", "canceling"}
-        or not account.get("metronome_voice_contract_id")
+    if not account or not account.get("metronome_voice_contract_id") or account.get("voice_plan_status") == "canceled":
+        return False
+    if account.get("voice_plan_unpaid_invoice_ids"):
+        return False
+    now = datetime.now(UTC)
+    if not any(
+        datetime.fromisoformat(period["start"]) <= now < datetime.fromisoformat(period["end"])
+        for period in (account.get("voice_plan_paid_periods") or {}).values()
     ):
         return False
     ending_at = account.get("voice_plan_ending_at")
-    return not ending_at or datetime.fromisoformat(ending_at) > datetime.now(UTC)
+    return not ending_at or datetime.fromisoformat(ending_at) > now
 
 
 def billing_mode(account: dict | None) -> Literal["credits", "free", "plan"] | None:
@@ -57,6 +61,8 @@ def billing_mode(account: dict | None) -> Literal["credits", "free", "plan"] | N
     provider_choice_from_row, which reports openrouter_managed for trial_local."""
     if has_voice_plan(account):
         return "plan"
+    if account and account.get("metronome_voice_contract_id"):
+        return None  # a pending/failed voice invoice cannot fall back to legacy free/credit voice
     if not account or account.get("subscription_status") not in _LIVE_STATUSES:
         return None
     if account.get("subscription_status") == "trial_local" and trial_cap.is_trial_expired(account):
@@ -158,6 +164,10 @@ async def report_minutes(owner_id: str, transaction_id: str, started_at: str, se
             account
             and account.get("metronome_voice_contract_id")
             and account.get("voice_plan_usage_key")
+            and (
+                not account.get("voice_plan_started_at")
+                or datetime.fromisoformat(started_at) >= datetime.fromisoformat(account["voice_plan_started_at"])
+            )
             and (
                 not account.get("voice_plan_ending_at")
                 or datetime.fromisoformat(started_at) < datetime.fromisoformat(account["voice_plan_ending_at"])

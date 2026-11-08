@@ -31,9 +31,9 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
-from core.billing import voice_billing
+from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo, tasks_repo
+from core.repositories import messaging_repo, tasks_repo, billing_repo
 from core import tasks_schema as ts
 from core.services import (
     admission,
@@ -98,11 +98,17 @@ async def agent_config(owner_id: str) -> dict:
     cfg = {**DEFAULTS, **(await messaging_repo.get_voice_agent(owner_id) or {})}
     for k in ("allow", "hours", "handoff"):
         cfg[k] = {**DEFAULTS[k], **(cfg.get(k) or {})}
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    cfg["_paymentBlocked"] = bool(
+        account.get("metronome_voice_contract_id") and not voice_billing.has_voice_plan(account)
+    )
     return cfg
 
 
 def _line_state(cfg: dict, caller: str) -> Literal["live", "message_only"]:
     """Live after Go live and not paused; the owner's own number always gets the live line (the test call)."""
+    if cfg.get("_paymentBlocked"):
+        return "message_only"
     owner = {_e164(str(n or "")) for n in (cfg["handoff"]["number"], cfg.get("forwardFrom"))} - {None}
     return "live" if (cfg.get("live") and not cfg.get("paused")) or _e164(caller) in owner else "message_only"
 
@@ -269,12 +275,24 @@ async def start_call(body: StartIn) -> dict:
     seen = await _seen(owner_id, body.callerNumber)
     # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.
     # Never to the line that forwards here (the kept business number) or the one called: that rings us again.
-    forward_to = _e164(str(cfg["handoff"]["number"] or "")) if cfg.get("runOut") == "forward" else None
-    if forward_to in {_e164(str(cfg.get("forwardFrom") or "")), _e164(body.calledNumber)}:
+    forward_to = (
+        _e164(str(cfg["handoff"]["number"] or ""))
+        if cfg.get("runOut") == "forward" or cfg.get("_paymentBlocked")
+        else None
+    )
+    if forward_to in {_e164(str(cfg.get("forwardFrom") or "")), _e164(body.calledNumber)} or (
+        cfg.get("_paymentBlocked") and forward_to == _e164(body.callerNumber)
+    ):
         forward_to = None
-    if forward_to:
+    if forward_to and not cfg.get("_paymentBlocked"):
         try:
-            if await month_seconds(owner_id, cfg.get("timezone")) < voice_billing.INCLUDED_MINUTES * 60:
+            account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+            seconds = (
+                (await voice_plan.usage(account))["usedSeconds"]
+                if account.get("metronome_voice_contract_id")
+                else await month_seconds(owner_id, cfg.get("timezone"))
+            )
+            if seconds < voice_billing.INCLUDED_MINUTES * 60:
                 forward_to = None
         except Exception:  # metering never drops a live call: answer as normal
             logger.warning("run-out check failed for %s; answering", owner_id, exc_info=True)

@@ -84,6 +84,10 @@ def is_ledger_eligible(account: dict | None) -> bool:
     """
     if not account:
         return False
+    from core.billing.voice_billing import has_voice_plan
+
+    if has_voice_plan(account) and account.get("provider_choice") == "openrouter_managed":
+        return True  # explicit premium managed inference still needs its separate owner-funded credit ledger
     status = account.get("subscription_status")
     if status in LEDGER_ELIGIBLE_STATUSES:
         return True

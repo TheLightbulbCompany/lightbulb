@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { reserve, release, recordFree, releaseFree } from './ledger.mjs';
 import { forward } from './forward.mjs';
+import { hasVoicePlan } from './voice-plan.mjs';
 
 class GateError extends Error {
   constructor(status, message, code, extra) { super(message); this.status = status; this.code = code; this.extra = extra; }
@@ -154,18 +155,19 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     ({ ownerId, agentId } = await authenticateOwner(event, ddb, env));
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     const status = S(billing, 'subscription_status');
+    const voicePaid = hasVoicePlan(billing);
     // Capped traffic costs real money now: an EXPIRED trial and a lapsed Base are refused
     // here, not only by the backend's pre-send gates (a warm runtime can still call us).
     const trialEnd = Number(billing?.trial_end?.N);
-    const trial = status === 'trial_local' && !(Number.isFinite(trialEnd) && Date.now() / 1000 > trialEnd);
-    const base = S(billing, 'plan') === 'base' && ['active', 'trialing'].includes(status);
+    const trial = status === 'trial_local' && !voicePaid && !(Number.isFinite(trialEnd) && Date.now() / 1000 > trialEnd);
+    const base = !voicePaid && S(billing, 'plan') === 'base' && ['active', 'trialing'].includes(status);
     // Interim default: a paid Workspace/Ultra row that never chose a provider is
     // treated exactly like Base. Lockstep with trial_cap.is_managed_capped.
-    const paidDefault = ['standard', 'ultra_pro'].includes(S(billing, 'plan')) && !S(billing, 'provider_choice') && ['active', 'trialing'].includes(status);
+    const paidDefault = !S(billing, 'provider_choice') && (voicePaid || (['standard', 'ultra_pro'].includes(S(billing, 'plan')) && ['active', 'trialing'].includes(status)));
     // Capped owners run on OpenRouter's per-key daily $ limit, never Metronome.
     const capped = trial || base || paidDefault;
     const managed = S(billing, 'provider_choice') === 'openrouter_managed';
-    if (!capped && !(managed && status === 'active')) fail(403, 'Managed inference unavailable');
+    if (!capped && !(managed && (status === 'active' || voicePaid))) fail(403, 'Managed inference unavailable');
     const today = new Date().toISOString().slice(0, 10);
     if (capped && S(billing, 'openrouter_capped_day') === today) throw dailyCap();
     const raw = event.body == null ? '' : event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body;

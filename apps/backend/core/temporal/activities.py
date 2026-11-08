@@ -28,7 +28,7 @@ from core import tasks_schema as ts
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
-from core.repositories import container_repo, effects_repo, messaging_repo, tasks_repo
+from core.repositories import container_repo, effects_repo, integrations_repo, messaging_repo, tasks_repo
 from core.services import (
     business_profile,
     chat_gate,
@@ -76,9 +76,14 @@ WORKER_INSTRUCTIONS = (
     "few lines) and you made no file, put the piece itself after that sentence, ready to paste. When the task is "
     "a question (what shipped, a figure, what an email or calendar says), read the source and answer it: your whole "
     "answer is the answer, facts first, at most 100 words, no opening sentence about what you did; it is posted in "
-    "the chat as the reply. A question about this business (its hours, services, prices, policies) starts with "
-    "business_facts, never by asking which business. A request to make, buy or send something is not a "
-    'question, even when phrased as one ("Can you build me a booking page?"). Never write a placeholder link such as [Book]([BOOKING LINK]): when '
+    "the chat as the reply. Name the specific items you found (PR numbers, figures, names), never a summary of "
+    "themes. A question about this business (its hours, services, prices, policies) starts with business_facts, "
+    "never by asking which business. When the brief lists Connected apps: if the source the question needs isn't "
+    "in it (a calendar is google, for example), say it isn't connected and that they can connect it in Settings → "
+    "Connections. Don't answer from other threads, files or memory instead: those aren't a record of it. If it is "
+    "connected, use your tools to answer, and use memory for context. A request to make, buy or send something is "
+    'not a question, even when phrased as one ("Can you build me a booking page?"). Never write a placeholder link '
+    "such as [Book]([BOOKING LINK]): when "
     "you don't have the URL, write the call to action as "
     'plain text, e.g. "Book your spot: (link to add)". An email is its subject line and its body only: no '
     '"Preview text:", "Preheader:" or other meta lines in it.'
@@ -379,6 +384,12 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         trig = await tasks_repo.get_trigger(ws, task["triggerId"]) if task.get("triggerId") else None
         if profile := await business_profile.business_profile(ws, await business_profile.caller_of(trig)):
             parts.append("\n".join(router_prompt.profile_block(profile)))
+    else:  # a caller never sees the owner's connected apps
+        from core.services import owner_facts
+
+        apps = {e["provider"] for e in await owner_facts._lookup_connected_integrations(ws)}
+        apps |= set(await integrations_repo.get_manual_mcp_servers(ws))
+        parts.append(f"Connected apps: {', '.join(sorted(apps)) or 'none'}")
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS,

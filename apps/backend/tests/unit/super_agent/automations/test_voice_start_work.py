@@ -200,3 +200,21 @@ async def test_contact_run_has_a_budget(monkeypatch):
     assert contact.run_budget_seconds == 600 and contact.memory["sync"] == "none"
     owner = await acts._request(WS, task | {"origin": "owner_voice"}, {"n": 1}, {"attempts": []})
     assert owner.run_budget_seconds is None  # the owner's work keeps today's limits
+    assert "Connected apps" not in contact.input and "Connected apps: none" in owner.input  # never the caller's
+
+
+async def test_a_caller_brief_never_triggers_the_connect_it_in_settings_rule(monkeypatch):
+    from core.temporal import activities as acts
+
+    monkeypatch.setattr(acts, "_local_now", AsyncMock(return_value="now"))
+    monkeypatch.setattr(acts.room_memory, "group_room_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        acts.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+    )
+    task = {"taskId": ts.new_task_id(), "title": "x", "audience": {"kind": "room", "roomId": "r"}, "lane": "shared"}
+    caller = await acts._request(WS, task | {"origin": "phone_contact"}, {"n": 1}, {"attempts": []})
+    rule = " ".join(caller.instructions.split())
+    # The Settings → Connections rule is gated on the brief listing Connected apps, which a caller's never does.
+    assert "When the brief lists Connected apps:" in rule and "Connected apps" not in caller.input

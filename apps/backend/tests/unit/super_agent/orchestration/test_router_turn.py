@@ -1862,3 +1862,8 @@ async def test_a_pass_through_to_a_waiting_task_never_claims_progress(world):
     await _run([t1])
     assert world["inputs"] == [(open_id, t1, "message")]
     assert world["posts"][0]["text"] == acts.router_prompt.WAITING
+
+
+def test_a_fact_question_repeated_after_an_hour_gets_a_fresh_thread():
+    rule = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert "A fact question asked again more than 1 hour after the earlier answer is a fresh thread" in rule

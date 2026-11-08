@@ -466,3 +466,77 @@ async def test_inbound_probe_marks_forwarding_ok_and_ends(client):
     # the owner's own test call with no check pending is an ordinary call
     owner = await _start(client, caller="+14155550177", room="phone-dev-_p3", forwardFrom="(415) 555-0177")
     assert owner["mode"] == "live"
+
+
+async def test_minutes_used_up_and_run_out_forward_hands_the_call_to_the_owner(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward")
+    assert call["forwardTo"] == "+14155550199"
+    rec = (await messaging_repo.get_room(call["callId"]))["call"]
+    assert rec["outcome"] == "answered" and "transferredTo" not in rec  # nothing said until the transfer connects
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    rec = client.post(url, json={"durationSec": 0, "forwarded": True}, headers=W).json()
+    assert rec["outcome"] == "forwarded" and rec["transferredTo"] == "+14155550199"
+    assert rec["steps"][-1]["text"] == "Minutes used up: forwarded to you"
+
+
+async def test_a_failed_run_out_forward_is_an_ordinary_answered_call(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward")
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    rec = client.post(url, json={"durationSec": 90}, headers=W).json()  # the worker answered instead
+    assert rec["outcome"] == "answered" and "transferredTo" not in rec and not rec["steps"]
+
+
+@pytest.mark.parametrize("line", [{"forwardFrom": "(415) 555-0199"}, {"handoff": {"number": NUMBER}}])
+async def test_run_out_never_forwards_to_the_line_that_rings_us(client, line):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward", **line)
+    assert call["forwardTo"] is None
+
+
+async def test_call_end_adds_to_the_months_counter_once(client):
+    from core.billing import voice_billing
+
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    client.post(url, json={"durationSec": 160}, headers=W)
+    client.post(url, json={"durationSec": 160}, headers=W)  # a retried end
+    assert await voice_billing.counted_seconds("org_1", None) == 160
+
+
+async def test_minutes_used_up_and_run_out_keep_answers(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="keep")
+    assert call["forwardTo"] is None and call["mode"] == "live"
+
+
+async def test_call_end_reports_minutes_to_metronome(client):
+    from core.billing import voice_billing
+
+    mc = AsyncMock()
+    with (
+        patch.object(voice_billing.settings, "METRONOME_API_KEY", "k"),
+        patch.object(voice_billing.metronome_client, "for_settings", return_value=mc),
+    ):
+        call = await _start(client)
+        client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 160}, headers=W)
+    [event] = mc.ingest.await_args.args[0]
+    assert event["transaction_id"] == call["callId"] and event["customer_id"] == "org_1"
+    assert event["event_type"] == "voice_minutes" and event["properties"] == {"seconds": "160", "kind": "phone"}
+    assert event["timestamp"].endswith("Z")
+
+
+async def test_a_failed_minutes_counter_still_ends_the_call(client):
+    from core.billing import voice_billing
+
+    call = await _start(client)
+    with patch.object(voice_billing, "add_month_seconds", AsyncMock(side_effect=RuntimeError("ddb down"))):
+        r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 60}, headers=W)
+    assert r.status_code == 200 and r.json()["status"] == "ended"
+
+
+async def test_a_failed_run_out_check_answers_the_call(client):
+    with patch.object(voice_phone, "month_seconds", AsyncMock(side_effect=RuntimeError("ddb down"))):
+        call = await _start(client, runOut="forward")
+    assert call["forwardTo"] is None and call["mode"] == "live"

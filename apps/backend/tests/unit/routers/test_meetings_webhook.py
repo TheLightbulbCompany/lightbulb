@@ -42,7 +42,9 @@ def _status(code: str, bot_id: str = "bot-1", sub_code: str | None = None, room:
 
 
 @pytest.fixture
-def env():
+def env(monkeypatch):
+    minutes = AsyncMock()  # the meeting's minutes onto the month's counter
+    monkeypatch.setattr(mod.voice_billing, "add_month_seconds", minutes)
     meta = {
         "roomId": ROOM,
         "ownerId": "org_a",
@@ -99,6 +101,7 @@ def env():
             "line": line,
             "publisher": publisher,
             "metric": metric,
+            "minutes": minutes,
             "notes": notes,
             "release": release,
             "claim": claim,
@@ -145,6 +148,9 @@ def test_call_ended_closes_the_room_once(env):
     env["close"].assert_awaited_once_with(ROOM, meet=True)
     env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "call_ended_by_host"})
     env["notes"].assert_called_once_with(ROOM)
+    env["minutes"].assert_awaited_once()  # the meeting's time goes on the month's voice minutes
+    owner, seconds, _at = env["minutes"].await_args.args
+    assert owner == "org_a" and seconds > 0
 
 
 def _at_time(payload: dict, stamp) -> dict:
@@ -552,3 +558,12 @@ def test_the_previous_occurrences_bot_cannot_touch_the_next_one(env, booked):
     env["dispatch"].assert_not_awaited()
     env["advance"].assert_not_called()
     env["notes"].assert_not_called()
+
+
+def test_a_late_redelivery_counts_the_meetings_own_minutes_not_the_delay(env):
+    """Recall redelivers for up to 24 h: the minutes are endedAt (the event's time) minus inCallAt."""
+    in_call = int(time.time()) - 7200
+    env["meta"]["meeting"].update(status="in_call", inCallAt=in_call)
+    stamp = datetime.fromtimestamp(in_call + 600, timezone.utc).isoformat().replace("+00:00", "Z")
+    _post(env["client"], _at_time(_status("call_ended"), stamp))  # lands two hours after a 10-minute call
+    assert env["minutes"].await_args.args[1] == 600

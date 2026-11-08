@@ -8,7 +8,7 @@ import useSWR from "swr";
 import type { QuestionView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 
-export type Outcome = "booked" | "moved" | "cancelled" | "message" | "answered" | "needs_you" | "handoff_missed" | "spam" | "silent";
+export type Outcome = "booked" | "moved" | "cancelled" | "message" | "answered" | "needs_you" | "handoff_missed" | "spam" | "silent" | "forwarded";
 
 export interface CallItem {
   type: "call"; roomId: string; at: number;

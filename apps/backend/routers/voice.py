@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.billing import voice_billing
 from core.repositories import messaging_repo
 from core.services import voice_onboarding, voice_outbound
 
@@ -99,6 +100,43 @@ async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
     return {"items": sorted(items, key=lambda i: i["at"], reverse=True)}
 
 
+async def month_seconds(ws: str, tz_name: str | None) -> int:
+    """Seconds of calls and held meetings this month (the business's timezone): the month's counter row
+    (voice_billing.add_month_seconds at each end). A month whose counter doesn't exist yet (nothing has ended since
+    the counter shipped) is summed from the newest TIMELINE_ROOMS call and channel rooms instead.
+    ponytail: the fallback goes once every workspace has a counter for the month (December)."""
+    counted = await voice_billing.counted_seconds(ws, tz_name)
+    if counted is not None:
+        return counted
+    start = voice_billing.month_start(tz_name)
+    rows = [r for r in await messaging_repo.list_owner_rooms(ws) if r.get("kind") in ("call", "channel")]
+    rows = sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)[:TIMELINE_ROOMS]
+    total, since = 0, start.timestamp()
+    for m in await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows)):
+        if not m or m.get("ownerId") != ws:
+            continue
+        if m.get("kind") == "call":
+            call = m.get("call") or {}
+            if _epoch_ms(call.get("startedAt") or m["createdAt"]) >= since * 1000:
+                total += int(call.get("durationSec") or 0)
+        elif (mt := m.get("meeting") or {}).get("inCallAt") and mt.get("endedAt") and int(mt["inCallAt"]) >= since:
+            total += max(0, int(mt["endedAt"]) - int(mt["inCallAt"]))
+    return total
+
+
+@router.get("/voice/usage")
+async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
+    """The Settings "Billing & minutes" card: this month's minutes, the plan, and what happens when they run out."""
+    ws = resolve_owner_id(auth)
+    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    return {
+        "used": round(await month_seconds(ws, cfg.get("timezone")) / 60),
+        "included": voice_billing.INCLUDED_MINUTES,
+        "overageRate": voice_billing.OVERAGE_USD_PER_MINUTE,
+        "runOut": "forward" if cfg.get("runOut") == "forward" else "keep",
+    }
+
+
 @router.post("/voice/calls/{room_id}/done")
 async def call_done(room_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = resolve_owner_id(auth)
@@ -149,6 +187,8 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
         number = _e164(handoff["number"]) if isinstance(handoff["number"], str) else None
         if number is None:  # the worker dials tel:{number} as stored
             raise HTTPException(status_code=422, detail={"code": "handoff_number_invalid"})
+        if number == _e164(str(body.config.get("forwardFrom") or "")):  # forwarding there would ring us again
+            raise HTTPException(status_code=422, detail={"code": "handoff_is_forwarded_line"})
         body.config["handoff"] = {**handoff, "number": number}
     ws = resolve_owner_id(auth)
     if body.config.get("live") and not (await messaging_repo.get_voice_agent(ws) or {}).get("live"):

@@ -8,15 +8,23 @@ a per-workspace daily seconds counter in the containers table (``__voice__#<owne
 
 from __future__ import annotations
 
+import logging
 import math
+from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
+
+from core.billing import metronome_client
 from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
+from core.repositories import messaging_repo
 from core.services import metronome_gate, trial_cap
 
+logger = logging.getLogger(__name__)
 FREE_SECONDS_PER_DAY = 600
 MAX_CALL_SECONDS = 1800
 MIN_CALL_SECONDS = 60
@@ -24,6 +32,9 @@ FREE_KEY_PREFIX = "__voice__#"
 VOICE_PROVIDER_USD_PER_MINUTE = Decimal("0.05")
 _NANODOLLARS_PER_USD = Decimal(10**9)
 _LIVE_STATUSES = {"active", "trialing", "trial_local"}
+#: The voice-agents plan: $250 a month per business with these minutes, then this much a minute.
+INCLUDED_MINUTES = 1500
+OVERAGE_USD_PER_MINUTE = 0.35
 
 
 def _containers():
@@ -86,3 +97,51 @@ async def credit_snapshot(owner_id: str) -> tuple[int, dict]:
     )
     per_minute = charge_microcents(60)
     return max(0, min(math.floor(headroom * 60 / per_minute), MAX_CALL_SECONDS)), row
+
+
+def month_start(tz_name: str | None, at: datetime | None = None) -> datetime:
+    """The 1st of ``at``'s month (default now), midnight in the business's timezone (New York when unset or bad)."""
+    try:
+        tz = ZoneInfo(tz_name or "America/New_York")
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = ZoneInfo("America/New_York")
+    return (at or datetime.now(UTC)).astimezone(tz).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _month_key(owner_id: str, start: datetime) -> dict:
+    """``OWNER#<owner> VOICEMINUTES#YYYY-MM``: the month's call and meeting seconds, added at each end."""
+    return {"pk": messaging_repo.owner_pk(owner_id), "sk": f"VOICEMINUTES#{start:%Y-%m}"}
+
+
+async def add_month_seconds(owner_id: str, seconds: int, at: datetime) -> None:
+    """Add a finished call's or meeting's seconds to the month it started in (the business's timezone)."""
+    if seconds <= 0:
+        return
+    tz = (await messaging_repo.get_voice_agent(owner_id) or {}).get("timezone")
+    await run_in_thread(
+        messaging_repo._table().update_item, Key=_month_key(owner_id, month_start(tz, at)),
+        UpdateExpression="ADD #s :s", ExpressionAttributeNames={"#s": "seconds"}, ExpressionAttributeValues={":s": seconds},
+    )  # fmt: skip
+
+
+async def counted_seconds(owner_id: str, tz_name: str | None) -> int | None:
+    """This month's counter, or None before its first call or meeting ends."""
+    row = await messaging_repo._get(**_month_key(owner_id, month_start(tz_name)))
+    return int(row["seconds"]) if row else None
+
+
+async def report_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int, kind: str) -> None:
+    """One ``voice_minutes`` event per call (transaction_id = the call: Metronome dedupes a retry). Nothing in
+    Metronome prices it yet: that needs a billable metric on this event and the $250 / 1,500-minute plan.
+    Run after the response (a background task): never raises, a lost event is unbilled minutes, logged."""
+    if not settings.METRONOME_API_KEY or seconds <= 0:
+        return
+    at = datetime.fromisoformat(started_at).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
+            await metronome_client.for_settings(http).ingest(
+                [{"transaction_id": transaction_id, "customer_id": owner_id, "event_type": "voice_minutes",
+                  "timestamp": at, "properties": {"seconds": str(seconds), "kind": kind}}]
+            )  # fmt: skip
+    except Exception:
+        logger.warning("voice_minutes ingest failed for %s", transaction_id, exc_info=True)

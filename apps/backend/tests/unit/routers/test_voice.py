@@ -139,3 +139,60 @@ async def test_invalid_timezone_rejected_on_save(repos, async_client_org_admin):
     r = await put("Mars/Olympus")
     assert r.status_code == 422 and r.json()["detail"]["code"] == "timezone_invalid"
     assert (await put("America/Chicago")).status_code == 200
+
+
+async def _month_of_calls():
+    """This month: two calls (3 min) and a held meeting (5 min); last month's call and another workspace's are out."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("America/New_York"))
+    first = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    this, last = first.isoformat(), (first - timedelta(days=3)).isoformat()
+    await _room("c1", "call", this, call={"startedAt": this, "durationSec": 120})
+    await _room("c2", "call", this, call={"startedAt": this, "durationSec": 60})
+    await _room("c0", "call", last, call={"startedAt": last, "durationSec": 6000})
+    await _room("cx", "call", this, owner="other", call={"startedAt": this, "durationSec": 6000})
+    t = int(first.timestamp())
+    await _room("m1", "channel", last, meeting={"title": "Team", "inCallAt": t + 60, "endedAt": t + 360})
+
+
+@pytest.mark.asyncio
+async def test_usage_used_is_this_months_call_and_meeting_minutes(repos, async_client_org_admin):  # noqa: F811
+    await _month_of_calls()
+    assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["used"] == 8
+
+
+@pytest.mark.asyncio
+async def test_usage_included_minutes(repos, async_client_org_admin):  # noqa: F811
+    assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["included"] == 1500
+
+
+@pytest.mark.asyncio
+async def test_usage_overage_rate(repos, async_client_org_admin):  # noqa: F811
+    assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["overageRate"] == 0.35
+
+
+@pytest.mark.asyncio
+async def test_usage_run_out_comes_from_the_agent_page(repos, async_client_org_admin):  # noqa: F811
+    assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["runOut"] == "keep"
+    await messaging_repo.put_voice_agent(WS, {"runOut": "forward"}, "u")
+    assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["runOut"] == "forward"
+
+
+@pytest.mark.asyncio
+async def test_usage_reads_the_months_counter_row_when_there_is_one(repos, async_client_org_admin):  # noqa: F811
+    from datetime import UTC, datetime
+
+    from core.billing import voice_billing
+
+    await _month_of_calls()  # the scan would say 8
+    await voice_billing.add_month_seconds(WS, 600, datetime.now(UTC))
+    assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["used"] == 10
+
+
+@pytest.mark.asyncio
+async def test_handoff_number_cannot_be_the_forwarded_line(repos, async_client_org_admin):  # noqa: F811
+    cfg = {"forwardFrom": "(415) 555-0177", "handoff": {"number": "+14155550177"}}
+    r = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_is_forwarded_line"

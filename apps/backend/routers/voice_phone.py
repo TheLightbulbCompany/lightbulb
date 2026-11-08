@@ -27,15 +27,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.billing import voice_billing
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import clerk_admin, integration_reads, questions, voice_booking, voice_outbound
 from routers.huddles import _Worker
-from routers.voice import _e164
+from routers.voice import _e164, month_seconds
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,18 @@ async def start_call(body: StartIn) -> dict:
         _warming.add(t := asyncio.create_task(integration_reads.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
     seen = await _seen(owner_id, body.callerNumber)
+    # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.
+    # Never to the line that forwards here (the kept business number) or the one called: that rings us again.
+    forward_to = _e164(str(cfg["handoff"]["number"] or "")) if cfg.get("runOut") == "forward" else None
+    if forward_to in {_e164(str(cfg.get("forwardFrom") or "")), _e164(body.calledNumber)}:
+        forward_to = None
+    if forward_to:
+        try:
+            if await month_seconds(owner_id, cfg.get("timezone")) < voice_billing.INCLUDED_MINUTES * 60:
+                forward_to = None
+        except Exception:  # metering never drops a live call: answer as normal
+            logger.warning("run-out check failed for %s; answering", owner_id, exc_info=True)
+            forward_to = None
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     call = {
         "caller": body.callerNumber,
@@ -247,6 +260,7 @@ async def start_call(body: StartIn) -> dict:
         "callerMemory": call["callerMemory"],
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
+        "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
     }
 
@@ -275,6 +289,7 @@ class EndIn(BaseModel):
     disclosure: Literal["ok", "missing", "unknown"] | None = None
     disclosureRepeated: bool = False  # the worker said the disclosure sentence after a failed first line
     silent: bool = False  # the worker hung up a line nobody spoke on ("are you still there?", then goodbye)
+    forwarded: bool = False  # the run-out forward (start's forwardTo) connected; the assistant never answered
 
 
 def outcome_of(call: dict) -> str:
@@ -304,18 +319,35 @@ def transcript_lines(transcript: list[dict]) -> list[dict]:
 
 
 @router.post("/internal/voice/calls/{call_id}/end")
-async def end_call(call_id: str, body: EndIn) -> dict:
+async def end_call(call_id: str, body: EndIn, background: BackgroundTasks) -> dict:
     lines = transcript_lines(body.transcript)
+    meta, _ = await _call(call_id)
+    forwarded_to = (await agent_config(meta["ownerId"]))["handoff"]["number"] if body.forwarded else None
+    before: dict = {}
 
     def change(call: dict) -> dict:
+        before["status"] = call.get("status")
+        if forwarded_to:
+            return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
+                    "outcome": "forwarded", "transferredTo": forwarded_to,
+                    "steps": _step(call, "Minutes used up: forwarded to you")}  # fmt: skip
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
                 "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
                 "summary": body.summary, "transcript": lines,
                 **({"disclosure": body.disclosure, "disclosureRepeated": body.disclosureRepeated}
                    if body.disclosure else {})}  # fmt: skip
 
-    meta, _ = await _call(call_id)
     out = await _patch_call(call_id, change)
+    if before.get("status") != "ended":  # a retried end counts nothing twice
+        try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
+            await voice_billing.add_month_seconds(
+                meta["ownerId"], body.durationSec, datetime.fromisoformat(out["startedAt"])
+            )
+        except Exception:
+            logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
+        background.add_task(
+            voice_billing.report_minutes, meta["ownerId"], call_id, out["startedAt"], body.durationSec, "phone"
+        )
     if out.get("caller"):
         seen = await _seen(meta["ownerId"], out["caller"]) or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,

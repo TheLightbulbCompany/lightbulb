@@ -35,6 +35,7 @@ class _Backend:
 class _LiveSession:
     def __init__(self, kw):
         self.kw, self.closed, self.session, self.close_s = kw, 0, None, 0
+        self.billed_s = 0.0
 
     async def close(self):
         await asyncio.sleep(self.close_s)  # live.close() lets posts in flight finish first
@@ -63,11 +64,19 @@ def _talk(backend, after=2):
 async def test_orb_spoken_line_reaches_router_once():
     b = _Backend()
     t = _talk(b)
-    turns = ["user: Hi", "assistant: Hi Maya!", "user: What have we shipped in the last week?"]  # live.py's shape
+    turns = [
+        "user: Hi",
+        "assistant: Hi Maya!",
+        "user: What have we shipped in the last week?",
+    ]  # live.py's shape
     mid = await t.post("What have we shipped in the last week?", turns)
     assert mid == "m1"
     [(op, body)] = b.sent
-    assert op == "turn" and (body["speakerUserId"], body["sessionId"], body["n"]) == ("user_maya", "job_1", 0)
+    assert op == "turn" and (body["speakerUserId"], body["sessionId"], body["n"]) == (
+        "user_maya",
+        "job_1",
+        0,
+    )
     assert body["text"] == ("What have we shipped in the last week?\n\nSaid in the talk since the last ask:\n"
                             "> user: Hi\n> assistant: Hi Maya!")  # fmt: skip
     await t.post("And the week before?", [])
@@ -87,7 +96,11 @@ async def test_orb_posts_in_order_and_a_failure_does_not_stop_the_next():
 
     t = _talk(B())
     out = await asyncio.gather(*(t.post(text, []) for text in ("Draft the post", "On second thought", "Thanks")))
-    assert [(b["n"], b["text"]) for b in sent] == [(0, "Draft the post"), (1, "On second thought"), (2, "Thanks")]
+    assert [(b["n"], b["text"]) for b in sent] == [
+        (0, "Draft the post"),
+        (1, "On second thought"),
+        (2, "Thanks"),
+    ]
     assert out == ["m", None, "m"]
     assert set(t.asked) == {"m"}  # a failed post waits for nothing
 
@@ -113,7 +126,12 @@ async def test_orb_router_reply_sent_as_result(live):
     assert got == [{"kind": "agent", "id": "m1", "seq": 5, "text": "Checking GitHub.", "inReplyTo": "h1"},
                    {"kind": "agent", "id": "m2", "seq": 7, "text": "We shipped #5095.", "inReplyTo": "h1"}]  # fmt: skip
     asked = [(body["after"], body["spoken"]) for op, body in b.sent if op == "events"]
-    assert asked[:4] == [(2, 2), (2, 2), (5, 5), (7, 7)]  # `spoken` is reported, so the next Live starts after it
+    assert asked[:4] == [
+        (2, 2),
+        (2, 2),
+        (5, 5),
+        (7, 7),
+    ]  # `spoken` is reported, so the next Live starts after it
 
 
 async def test_orb_hears_only_voice_answers_that_landed_while_it_was_closed(live, monkeypatch):
@@ -170,7 +188,11 @@ async def test_orb_has_no_approve_path(live):
 def test_orb_prompt_has_no_business_facts(live):
     text = owner.prompt()
     assert text.startswith("You are Lightbulb,")
-    for heading in ("Backchannel policy:", "Interruption policy:", "Delegation policy:\nBackend tools:\n"):
+    for heading in (
+        "Backchannel policy:",
+        "Interruption policy:",
+        "Delegation policy:\nBackend tools:\n",
+    ):
         assert heading in text
     for tool in owner.ROUTER_TOOLS:
         assert f"- {tool}" in text
@@ -189,7 +211,13 @@ class _Pub:
 
 class _Ctx:
     def __init__(self):
-        self.handlers, self.rpc, self.shutdowns, self.data, self.callbacks = {}, {}, [], [], []
+        self.handlers, self.rpc, self.shutdowns, self.data, self.callbacks = (
+            {},
+            {},
+            [],
+            [],
+            [],
+        )
         self.member = types.SimpleNamespace(identity="user_maya", name="Maya", track_publications={})
         self.unpublished = []
         lp = types.SimpleNamespace(
@@ -291,6 +319,32 @@ async def test_orb_closes_gpt_live_when_the_talk_goes_quiet(live, monkeypatch):
     ctx.mic(False)
 
 
+async def test_owner_usage_waits_for_all_closes_and_excludes_muted_room_time(live, monkeypatch):
+    class B(_Backend):
+        async def owner(self, op, body):
+            return {"assistantName": "Nova"} if op == "start" else await super().owner(op, body)
+
+        async def aclose(self):
+            pass
+
+    b, ctx = B(), _Ctx()
+    monkeypatch.setattr(owner, "Backend", lambda *_a: b)
+    await owner.run(ctx, {"roomId": "r1", "ownerId": "o1", "roomToken": "t"})
+    ctx.mic(True)
+    await asyncio.sleep(0)
+    live.sessions[0].billed_s, live.sessions[0].close_s = 12.4, 0.03
+    ctx.mic(False)
+    ctx.mic(True)
+    await asyncio.sleep(0)
+    live.sessions[1].billed_s = 7.8
+    await ctx.callbacks[0]()  # the first session is still closing when the room ends
+    await ctx.callbacks[0]()  # repeated shutdown cannot double-close or double-report
+    assert [s.closed for s in live.sessions] == [1, 1]
+    [(_, body)] = [(op, body) for op, body in b.sent if op == "end"]
+    assert body["usageSec"] == 20 and body["durationSec"] == 0
+    assert body["usageStartedAt"].endswith("+00:00") and body["transcript"] == []
+
+
 async def test_each_result_is_said_once_and_only_in_a_live_talk():
     polls = [
         {"messages": [{"id": "m0", "seq": 3, "text": "A typed reply."}], "after": 3},
@@ -314,7 +368,11 @@ async def test_each_result_is_said_once_and_only_in_a_live_talk():
     await m.poll()  # m1 again, and a new one
     m.speak(said.append, ready=True, live=True)
     assert said == [["Checking GitHub."], ["We shipped 5095."]]
-    assert calls == [(2, 2), (3, 3), (5, 5)]  # `handled` is reported, so a reconnect starts after it
+    assert calls == [
+        (2, 2),
+        (3, 3),
+        (5, 5),
+    ]  # `handled` is reported, so a reconnect starts after it
 
 
 def test_a_result_is_said_under_a_rule_that_adds_nothing():
@@ -337,14 +395,22 @@ def test_what_the_talker_says_is_checked_against_the_message(spoken, added):
 
 
 def test_a_message_is_cleaned_for_speech():
-    assert mouth.speakable("**Shipped** [#5095](https://github.com/x/pull/5095): tap to talk.") == "Shipped 5095: tap to talk."
+    assert (
+        mouth.speakable("**Shipped** [#5095](https://github.com/x/pull/5095): tap to talk.")
+        == "Shipped 5095: tap to talk."
+    )
     assert mouth.speakable("- one\n- two") == "one two"
     assert len(mouth.speakable("x" * 5000)) == mouth.SPOKEN_CHARS
 
 
 async def test_quiet_ends_the_talk_only_while_the_mic_is_live():
     ended = []
-    q = owner.Quiet(lambda: ended.append("quiet"), lambda: ended.append("away"), quiet_s=0.02, away_s=0.05)
+    q = owner.Quiet(
+        lambda: ended.append("quiet"),
+        lambda: ended.append("away"),
+        quiet_s=0.02,
+        away_s=0.05,
+    )
     q.update(mic_live=False, user="listening", agent="listening")
     await asyncio.sleep(0.03)
     assert ended == []

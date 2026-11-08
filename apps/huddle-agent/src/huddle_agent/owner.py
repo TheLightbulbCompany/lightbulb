@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Callable
 
 from livekit import rtc
@@ -69,7 +70,10 @@ class Quiet:
     calls `on_quiet` (the web closes the mic, the room stays warm); with no live mic, AWAY_S calls `on_away`."""
 
     def __init__(self, on_quiet, on_away, quiet_s: float = QUIET_S, away_s: float = AWAY_S) -> None:
-        self._fire, self._s = {True: on_quiet, False: on_away}, {True: quiet_s, False: away_s}
+        self._fire, self._s = (
+            {True: on_quiet, False: on_away},
+            {True: quiet_s, False: away_s},
+        )
         self._timer: asyncio.TimerHandle | None = None
         self._key: bool | None = None
 
@@ -96,7 +100,10 @@ class Talk:
     def __init__(self, backend: Backend, speaker: str, session_id: str, after: int) -> None:
         self._b, self._speaker, self._sid = backend, speaker, session_id
         self.after = after  # the events cursor; kept across GPT-Live sessions in one room
-        self._n, self._lock = 0, asyncio.Lock()  # asyncio.Lock wakes waiters in order: posts land as asked
+        self._n, self._lock = (
+            0,
+            asyncio.Lock(),
+        )  # asyncio.Lock wakes waiters in order: posts land as asked
         self.question: dict | None = None  # {taskId, qid}: the last Worker question handed to the voice
         self.question_at = 0.0
         self.asked: dict[str, float] = {}  # this room's voice-asked message ids -> when posted, kept while warm
@@ -168,10 +175,22 @@ class Talk:
             await asyncio.sleep(POLL_S)
 
 
-def talk_record(speaker: str, items: list[dict], session_id: str, seconds: float) -> dict:
+def talk_record(
+    speaker: str,
+    items: list[dict],
+    session_id: str,
+    seconds: float,
+    *,
+    usage_seconds: float | None = None,
+    usage_started_at: float | None = None,
+) -> dict:
     """What `/owner/{room}/end` keeps as the "Yours" row: the transcript as phone calls keep it."""
-    return {"speakerUserId": speaker, "sessionId": session_id, "durationSec": int(seconds),
-            "transcript": clean_transcript(items)}  # fmt: skip
+    out = {"speakerUserId": speaker, "sessionId": session_id, "durationSec": int(seconds),
+           "transcript": clean_transcript(items)}  # fmt: skip
+    if usage_seconds is not None:
+        out["usageSec"] = int(max(0, usage_seconds))
+        out["usageStartedAt"] = datetime.fromtimestamp(usage_started_at or time.time(), UTC).isoformat()
+    return out
 
 
 async def run(ctx: JobContext, meta: dict) -> None:
@@ -189,7 +208,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
     name, tile = info["assistantName"], info.get("agentId") or "assistant"
     talk = Talk(backend, member.identity, ctx.job.id, int(info.get("after") or 0))
     talk.rewake = lambda: recount()  # noqa: PLW0108 -- recount is defined below
-    state: dict = {"open": None, "quiet": False}  # the GPT-Live session's start task, while the mic is live
+    state: dict = {"open": None, "quiet": False, "ending": False}
+    openings: dict[asyncio.Task, float] = {}
+    closing: dict[asyncio.Task, asyncio.Task] = {}
+    usage: list[tuple[float, float]] = []  # actual provider seconds, never the muted warm-room wall clock
     attrs = ctx.room.local_participant.set_attributes
 
     async def leave(reason: str) -> None:
@@ -204,7 +226,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         """GPT-Live closes now (idle seconds are billed) and the web closes the mic on quiet_ended; the room stays
         warm, and the next tap opens a new session. Tasks run on."""
         opening, state["open"], state["quiet"] = state["open"], None, True
-        asyncio.create_task(shut(opening))
+        close_live(opening)
         asyncio.create_task(ctx.room.local_participant.publish_data(
             json.dumps({"code": "quiet_ended"}), reliable=True, topic="huddle.error"))  # fmt: skip
 
@@ -241,15 +263,31 @@ async def run(ctx: JobContext, meta: dict) -> None:
             return
         lp = ctx.room.local_participant  # this session's track, taken now: close() takes up to ~10 s, and a quick
         old = [p.sid for p in lp.track_publications.values() if p.name == f"agent-{tile}"]  # reopen publishes anew
+        session = None
         try:
-            await (await opening).close()
+            session = await opening
+            await session.close()
         except Exception:  # noqa: BLE001 -- a failed start or close: nothing left open to bill
             logger.warning("owner: live session not closed cleanly", exc_info=True)
+        finally:
+            if session is not None:
+                seconds = getattr(
+                    getattr(session, "transport", None),
+                    "billed_s",
+                    getattr(session, "billed_s", 0.0),
+                )
+                usage.append((openings[opening], float(seconds or 0)))
         for sid in old:  # the closed session's track goes, so the strip finds the next one's
             with contextlib.suppress(Exception):
                 await lp.unpublish_track(sid)
 
+    def close_live(opening: asyncio.Task | None) -> None:
+        if opening is not None and opening not in closing:
+            closing[opening] = asyncio.create_task(shut(opening))
+
     def recount(*_args) -> None:
+        if state["ending"]:
+            return
         mic = any(p.kind == rtc.TrackKind.KIND_AUDIO and not p.muted for p in member.track_publications.values())
         state["quiet"] = state["quiet"] and mic  # after quiet, a new session only once the mic is off and on again
         if mic and state["open"] is None and not state["quiet"]:
@@ -261,27 +299,51 @@ async def run(ctx: JobContext, meta: dict) -> None:
                     audio_output=room_io.AudioOutputOptions(track_name=f"agent-{tile}"),  # the strip's bars read it
                 ),
             ))  # fmt: skip
+            openings[state["open"]] = time.time()
             state["open"].add_done_callback(hooks)
         elif not mic and state["open"] is not None:
             opening, state["open"] = state["open"], None
-            asyncio.create_task(shut(opening))
+            close_live(opening)
         s = current()
         session = s.session if s else None
         user, agent = (session.user_state, session.agent_state) if session else ("listening", "listening")
         quiet_timer.update(mic, user, "thinking" if talk.waiting() else agent)  # an answer on its way: stay open
 
-    for event in ("track_published", "track_unpublished", "track_muted", "track_unmuted"):
+    for event in (
+        "track_published",
+        "track_unpublished",
+        "track_muted",
+        "track_unmuted",
+    ):
         ctx.room.on(event, recount)
     limit = asyncio.create_task(asyncio.sleep(OWNER_MAX_S))
     limit.add_done_callback(lambda t: t.cancelled() or asyncio.create_task(leave("owner max length")))
 
     async def close() -> None:
+        if state["ending"]:
+            return
+        state["ending"] = True
         talk.rewake = None
         limit.cancel()
         quiet_timer.cancel()
-        await shut(state["open"])
+        close_live(state["open"])
+        state["open"] = None
+        if closing:
+            await asyncio.gather(*closing.values())
+        billed = sum(seconds for _, seconds in usage)
+        first_open = min((at for at, seconds in usage if seconds > 0), default=talk.t0)
         try:
-            await backend.owner("end", talk_record(member.identity, talk.items, ctx.job.id, time.time() - talk.t0))
+            await backend.owner(
+                "end",
+                talk_record(
+                    member.identity,
+                    talk.items,
+                    ctx.job.id,
+                    time.time() - talk.t0,
+                    usage_seconds=billed,
+                    usage_started_at=first_open,
+                ),
+            )
         except BackendError as e:
             logger.warning("owner: talk not kept (%s)", e.code)
         finally:
@@ -291,6 +353,11 @@ async def run(ctx: JobContext, meta: dict) -> None:
     # the web's RPCs (HuddleProvider): the session already listens, and GPT-Live stops itself when talked over
     ctx.room.local_participant.register_rpc_method("talk_start", lambda _data: "ok")
     ctx.room.local_participant.register_rpc_method("interrupt", lambda _data: "ok")
-    await attrs({f"lightbulb.agent.{tile}.status": "listening", f"lightbulb.agent.{tile}.name": name})
+    await attrs(
+        {
+            f"lightbulb.agent.{tile}.status": "listening",
+            f"lightbulb.agent.{tile}.name": name,
+        }
+    )
     recount()
     logger.info("owner: listening in room %s as %s", meta["roomId"], name)

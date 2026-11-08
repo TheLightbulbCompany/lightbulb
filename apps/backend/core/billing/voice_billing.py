@@ -23,6 +23,7 @@ from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.repositories import billing_repo, messaging_repo
 from core.services import metronome_gate, trial_cap
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 FREE_SECONDS_PER_DAY = 600
@@ -181,3 +182,16 @@ async def report_minutes(owner_id: str, transaction_id: str, started_at: str, se
             )  # fmt: skip
     except Exception:
         logger.warning("voice_minutes ingest failed for %s", transaction_id, exc_info=True)
+
+
+async def report_owner_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int) -> None:
+    """Freeze one room/job receipt before ingest; retries reuse its original start and provider seconds."""
+    key = {"pk": messaging_repo.owner_pk(owner_id), "sk": f"VOICEUSAGE#{transaction_id}"}
+    row = {**key, "startedAt": started_at, "seconds": seconds}
+    try:
+        await run_in_thread(messaging_repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(sk)")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        row = (await run_in_thread(messaging_repo._table().get_item, Key=key, ConsistentRead=True))["Item"]
+    await report_minutes(owner_id, transaction_id, row["startedAt"], int(row["seconds"]), "owner")

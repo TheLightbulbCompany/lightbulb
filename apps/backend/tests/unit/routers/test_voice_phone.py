@@ -653,3 +653,18 @@ async def test_a_placeholder_name_is_never_stored_as_the_caller(client):
     again = await _start(client, caller="+14155550177", room="phone-dev-_n_2")
     assert again["callerName"] == ""  # no "Unknown, a returning client"
     assert voice_phone.real_name(" Taylor  Test ") == "Taylor Test"
+
+
+async def test_an_answer_after_hang_up_is_kept_on_the_record_home_reads(client):
+    """8 Nov prod re-run #3, card-102109: the card answer landed 9 s after hang-up and only the room had it."""
+    call = await _start(client)
+    cid = call["callId"]
+    late = {"messageId": "m5", "text": "There's no deposit to pay. You'll securely put a card on file at setup."}
+    await voice_phone.after_call(cid, late)  # during the call: nothing (the voice says it)
+    assert "afterCall" not in (await messaging_repo.get_room(cid))["call"]
+    client.post(f"/api/v1/internal/voice/calls/{cid}/end", json={"durationSec": 56}, headers=W)
+    await voice_phone.after_call(cid, {"messageId": "m6", "text": "x", "progress": True})  # progress: not an answer
+    await voice_phone.after_call(cid, late)
+    rec = (await messaging_repo.get_room(cid))["call"]
+    assert rec["afterCall"] == [{"messageId": "m5", "text": late["text"]}]
+    assert rec["steps"][-1]["text"].startswith("After the call, not heard by the caller: There's no deposit")

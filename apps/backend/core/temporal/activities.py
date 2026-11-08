@@ -350,7 +350,8 @@ CONTACT_RUN_BUDGET_S = 600
 #: A phone caller's Front desk thread: its answer is read out on the call (8 Nov prod: six slots offered).
 CALLER_THREAD_NOTE = (
     " This task is for a caller on the phone: your answer is read out to them, so offer up to 3 open times, "
-    "never a longer list."
+    "never a longer list. Before you book, move or cancel, read the exact day and time back and wait for "
+    'their yes; a pick ("the first one works") is not a yes.'
 )
 
 

@@ -44,11 +44,11 @@ it("names the speaking agent and attaches the subscribed audio track", async () 
   expect(lk.attach).toHaveBeenCalled();
 });
 
-it("falls back to plain Working when the task text is absent", async () => {
+it("falls back to plain Thinking when the task text is absent", async () => {
   lk.remote = [{ attributes: A("w", "working") }];
   global.fetch = reply(200) as never;
   render(<MeetBotPage />);
-  expect(await screen.findByText("Working")).toBeInTheDocument();
+  expect(await screen.findByText("Thinking")).toBeInTheDocument();
 });
 
 it("shows the expired-link state on 401", async () => {

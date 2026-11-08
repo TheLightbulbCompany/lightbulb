@@ -205,6 +205,21 @@ async def remove_participant(room_id: str, identity: str) -> None:
     )
 
 
+async def set_meet_phase(room_id: str, phase: str) -> None:
+    """The tile's drafting / page_ready word, set on the meeting worker's participant (its identity is
+    LiveKit's to assign, so find it by the status attribute it publishes)."""
+    room, key = meet_room_name(room_id), "lightbulb.agent.assistant"
+
+    async def call(lk) -> None:
+        for p in (await lk.room.list_participants(api.ListParticipantsRequest(room=room))).participants:
+            if f"{key}.status" in p.attributes:
+                await lk.room.update_participant(
+                    api.UpdateParticipantRequest(room=room, identity=p.identity, attributes={f"{key}.phase": phase})
+                )
+
+    await _best_effort("set_meet_phase", room_id, call)
+
+
 async def close_room(room_id: str, *, meet: bool = False) -> None:
     """An archived or deleted channel's huddle (or an ended meeting's room) ends for everyone (the
     worker's shutdown closes its call)."""

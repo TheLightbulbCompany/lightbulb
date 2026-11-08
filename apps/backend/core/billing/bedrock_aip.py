@@ -78,11 +78,39 @@ def build_owner_litestream_s3_policy(owner_id: str, bucket: str) -> dict:
 def build_owner_session_policy(owner_id: str, bucket: str, memory_arn: str = "") -> dict:
     """The session policy on one owner's runtime credentials (runtime_transport): only that
     owner's ``<owner>/*`` objects and, with a memory, its own memory events and records. AWS
-    intersects it with the vending role, so everything this does not allow is denied. No
-    Sids: an inline session policy is capped at 2,048 characters."""
+    intersects it with the vending role, so everything this does not allow is denied.
+
+    STS caps the plaintext at 2,048 characters, so no Sids, and the memory grant is the two
+    statements ``_owner_memory_allows`` spells as four: each pair is one StringLike over the
+    owner's value and its ``:user_*`` members (a value with no wildcard matches exactly, as
+    StringEquals did). No browser grant: InvokeBrowser authorizes on the browser, never a
+    profile, so it sits on the runtime's execution role."""
+    from core.services.workspace_memory import owner_namespace
+
     statements = build_owner_litestream_s3_policy(owner_id, bucket)["Statement"]
     if memory_arn:
-        statements += _owner_memory_allows(owner_id, memory_arn)
+        namespace = owner_namespace(owner_id)
+        statements += [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:CreateEvent",
+                    "bedrock-agentcore:ListEvents",
+                    "bedrock-agentcore:GetEvent",
+                    "bedrock-agentcore:ListSessions",
+                ],
+                "Resource": memory_arn,
+                "Condition": {"StringLike": {"bedrock-agentcore:actorId": [owner_id, f"{owner_id}:user_*"]}},
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:ListMemoryRecords"],
+                "Resource": memory_arn,
+                "Condition": {
+                    "StringLike": {"bedrock-agentcore:namespace": [namespace, f"/owners/{owner_id}:user_*/"]}
+                },
+            },
+        ]
     return {"Version": "2012-10-17", "Statement": [{k: v for k, v in st.items() if k != "Sid"} for st in statements]}
 
 

@@ -16,7 +16,8 @@ from threading import Event
 import urllib.error
 import urllib.request
 
-from bridge import API, HOOK_TOKEN, OWNER, memory_ctx, task_mode, turn
+import bridge
+from bridge import API, memory_ctx, task_mode, turn
 
 log = logging.getLogger("bridge")
 
@@ -70,7 +71,7 @@ def validate_identity(identity, *, path_run_id: str | None = None) -> dict:
     )
     if not ok:
         raise _invalid("run_identity")
-    if identity["ownerId"] != OWNER:
+    if identity["ownerId"] != bridge.OWNER:
         raise Refused(403, {"error": "owner_mismatch"})
     return identity
 
@@ -220,13 +221,13 @@ EVENT_BACKOFF_S = 2.0
 
 def _post_event(identity: dict, body: dict) -> int:
     """POST one run event; retries 5xx and network errors with backoff, never throws."""
-    url = f"{API}/api/v1/internal/runtime/{OWNER}/runs/{identity['runId']}/events"
+    url = f"{API}/api/v1/internal/runtime/{bridge.OWNER}/runs/{identity['runId']}/events"
     payload = json.dumps({"taskId": identity["taskId"], "attempt": identity["attempt"],
                           "runSecret": identity.get("runSecret") or "", **body}).encode()
     status = 0
     for attempt in range(EVENT_ATTEMPTS):
         req = urllib.request.Request(url, data=payload, method="POST", headers={
-            "Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"})
+            "Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"})
         try:
             with urllib.request.urlopen(req, timeout=20) as res:
                 return res.status
@@ -246,8 +247,11 @@ def _heartbeats(identity: dict, stop: Event) -> None:
         status = turn.durable_run_status(identity["runId"], identity, kind="task") or {}
         if status.get("status") not in ("queued", "running", "stopping"):
             return
+        # credentialsDue: the backend answers with an invoke carrying a fresh scoped set (STS caps
+        # one at 1 h; a run lasts up to 6.5 h and sends no other invoke while it runs).
         _post_event(identity, {"kind": "heartbeat", "status": status["status"],
-                               "recentTools": status.get("recentTools") or []})
+                               "recentTools": status.get("recentTools") or [],
+                               "credentialsDue": bridge.aws_session_due()})
 
 
 def _run_and_report(identity: dict, request: dict) -> None:

@@ -238,6 +238,7 @@ async def _request_agentcore(
                     "Authorization": f"Bearer {container.get('gateway_token') or ''}",
                     **vault,
                     **_session_credentials_header(owner_id),
+                    **_boot_header(container),
                 },
                 "body": {"method": "health", "params": {}, "timeoutMs": int(AGENTCORE_INGRESS_TIMEOUT_S * 1000)},
             },
@@ -254,7 +255,8 @@ async def _request_agentcore(
         if remaining <= 0:
             # Waited out the whole budget on someone else's wake: the caller's retry path.
             raise httpx.ReadTimeout("agentcore session is still waking")
-        scoped = _session_credentials_header(owner_id)  # STS blocks: here on the pool, not the loop
+        # STS and SecretsManager block: here on the pool, not the loop.
+        scoped = {**_session_credentials_header(owner_id), **_boot_header(container)}
         sent = {**envelope, "headers": {**envelope.get("headers", {}), **scoped}} if scoped else envelope
         result, text = _invoke_envelope(arn, owner_id, sent, remaining + margin, task_id)
         _note_invoked(owner_id, session, task_id)
@@ -306,6 +308,56 @@ def _vault_header(container: dict) -> dict[str, str]:
         return {}
 
 
+BOOT_HEADER = "X-Lightbulb-Boot"
+#: (owner, row id) -> network seed: fixed for a row's life, so SecretsManager is read once per task.
+_NETWORK_SEEDS: dict[tuple[str, str], str | None] = {}
+
+
+def _network_seed(owner_id: str, row_id: str) -> str | None:
+    from core.services.agentcore_runtime import network_seed_sync
+
+    return network_seed_sync(owner_id, row_id)
+
+
+def _boot_header(container: dict) -> dict[str, str]:
+    """What a per-owner runtime reads from its boot secret and env, for a runtime that has neither
+    (the shared one): the bridge takes the values of the invoke that binds its session to this
+    owner and ignores them on every other (``bridge.bind_tenant``); a per-owner runtime ignores
+    them outright. Secrets, handled like the vault token and the session credentials: on the
+    invoke only, never logged, never in a runtime's env. Empty without a gateway token (the
+    bridge would bind nothing). Sync: runs on the invoke pool."""
+    from core.billing.bedrock_gate_tokens import derive_gate_bearer
+
+    owner_id, row_id = container.get("owner_id") or "", container.get("id") or ""
+    if not owner_id or not container.get("gateway_token"):
+        return {}
+    boot: dict[str, Any] = {"gatewayToken": container["gateway_token"], "hookToken": container.get("hook_token") or ""}
+    try:
+        boot["bedrockBearer"] = derive_gate_bearer(owner_id, row_id, int(container.get("gate_bearer_generation") or 0))
+    except (RuntimeError, ValueError):
+        pass  # no HMAC key or row id: the gate refuses, as on a boot secret without a bearer
+    if (owner_id, row_id) not in _NETWORK_SEEDS:
+        try:
+            _NETWORK_SEEDS[(owner_id, row_id)] = _network_seed(owner_id, row_id)
+        except Exception as exc:  # noqa: BLE001 -- no member this session; retried on the next task
+            logger.warning("network seed for owner %s unavailable: %s", owner_id, type(exc).__name__)
+    if seed := _NETWORK_SEEDS.get((owner_id, row_id)):
+        boot["networkKey"] = seed
+    from core.config import settings
+
+    if settings.NETWORK_PROOF_KEY:  # PUBLIC: the sidecar verifies members' sign-in proofs (build_hermes_runtime_env)
+        from core.services import network_proof
+
+        boot["issuerKey"] = network_proof.public_key()["env"]
+    if container.get("browser_profile_id"):
+        boot["browserProfileId"] = container["browser_profile_id"]
+    if container.get("network_workers"):
+        boot["networkWorkers"] = True
+    if container.get("max_concurrent_turns"):
+        boot["maxConcurrentTurns"] = int(container["max_concurrent_turns"])
+    return {BOOT_HEADER: json.dumps(boot, separators=(",", ":"))}
+
+
 SESSION_CREDENTIALS_HEADER = "X-Lightbulb-Aws-Session"
 #: STS caps a chained AssumeRole at 1 h; a fresh set rides any invoke made in the last 15 min.
 SESSION_CREDENTIALS_S = 3600
@@ -341,9 +393,9 @@ def _session_credentials_header(owner_id: str) -> dict[str, str]:
     from core.billing.bedrock_aip import build_owner_session_policy
 
     try:
+        account = role.split(":")[4]  # arn:aws:iam::<account>:role/<name>
         memory_arn = ""
         if settings.AGENTCORE_MEMORY_ID:
-            account = role.split(":")[4]  # arn:aws:iam::<account>:role/<name>
             memory_arn = (
                 f"arn:aws:bedrock-agentcore:{settings.AWS_REGION}:{account}:memory/{settings.AGENTCORE_MEMORY_ID}"
             )

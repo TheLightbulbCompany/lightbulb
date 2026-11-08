@@ -3,6 +3,7 @@
 Only an addressed room turn gets the callback. It posts through the reply's own POST, marked
 `progress`, at most once per PROGRESS_MIN_INTERVAL_S, and never after a stop or for a marker.
 """
+import bridge
 import pytest
 from bridge import turn
 from tests.test_run_outcome import silence_filter  # noqa: F401
@@ -37,7 +38,7 @@ def test_a_progress_line_goes_where_the_reply_will_go(posts):
     _later(posts, 61)
     post("Pulled the invoices; totals next.", already_streamed=True)
     [(path, body)] = posts
-    assert path == f"agent-messages/{turn.OWNER}"
+    assert path == f"agent-messages/{bridge.OWNER}"
     assert body == {"eventId": "evt-1:ceo:progress:1", "roomId": "room-1", "agentId": "ceo",
                     "replyToMessageId": "m1", "threadRootMessageId": "m1", "runId": RUN,
                     "progress": True, "text": "Pulled the invoices; totals next."}

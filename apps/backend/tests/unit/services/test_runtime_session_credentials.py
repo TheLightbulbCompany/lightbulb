@@ -35,15 +35,35 @@ def test_the_session_policy_reaches_only_the_owners_prefix():
 def test_the_session_policy_scopes_memory_to_the_owners_actors_and_namespaces():
     policy = build_owner_session_policy("org_a", BUCKET, MEMORY)
     memory = [st for st in policy["Statement"] if st["Resource"] == MEMORY]
-    assert memory and all("Condition" in st for st in memory)
-    keys = [v for st in memory for cond in st["Condition"].values() for v in cond.values()]
-    assert keys == ["org_a", "org_a:user_*", "/owners/org_a/", "/owners/org_a:user_*/"]
+    assert [st["Condition"] for st in memory] == [
+        {"StringLike": {"bedrock-agentcore:actorId": ["org_a", "org_a:user_*"]}},
+        {"StringLike": {"bedrock-agentcore:namespace": ["/owners/org_a/", "/owners/org_a:user_*/"]}},
+    ]
 
 
-def test_the_session_policy_fits_stss_inline_limit():
-    long_owner = "org_" + "x" * 28  # a real Clerk org id is 31 characters
-    policy = build_owner_session_policy(long_owner, BUCKET + "-111122223333", MEMORY)
-    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
+#: Real-length names: prod's memory ARN (CDK names it lightbulb_<env>_workspace_memory-<10>), the
+#: real bucket, and the longest owner id there is (a personal workspace, user_ + 27 = 32 characters).
+REAL_MEMORY = "arn:aws:bedrock-agentcore:us-east-1:877352799272:memory/lightbulb_prod_workspace_memory-AbCdEf1234"
+REAL_BUCKET = "lightbulb-prod-openclaw-replicas"
+LONGEST_OWNER = "user_" + "X" * 27
+
+
+def test_the_session_policy_fits_stss_inline_limit_with_margin():
+    assert len(LONGEST_OWNER) == 32
+    policy = build_owner_session_policy(LONGEST_OWNER, REAL_BUCKET, REAL_MEMORY)
+    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048 - 300  # room for one more statement
+
+
+def test_the_session_policy_carries_no_browser_grant():
+    assert "Browser" not in json.dumps(build_owner_session_policy("org_a", REAL_BUCKET, REAL_MEMORY))
+
+
+def test_owner_as_credentials_never_reach_owner_bs_prefix_or_memory():
+    """Tenant isolation, as the shared runtime relies on it: A's set names A everywhere, B nowhere."""
+    a = json.dumps(build_owner_session_policy("org_a", BUCKET, MEMORY))
+    assert "org_b" not in a and f"{BUCKET}/*" not in a
+    b = build_owner_session_policy("org_b", BUCKET, MEMORY)
+    assert {st["Resource"] for st in b["Statement"] if "/org_" in st["Resource"]} == {f"arn:aws:s3:::{BUCKET}/org_b/*"}
 
 
 class _Sts:
@@ -144,3 +164,26 @@ async def test_every_invoke_and_the_wake_carry_the_owners_credentials(sts, monke
         )
     assert len(captured) == 2  # the wake, then the call
     assert all(json.loads(e["headers"][rt.SESSION_CREDENTIALS_HEADER])["sessionToken"] == "token" for e in captured)
+
+
+def test_the_network_seed_is_the_boot_secrets_else_derived_per_row(monkeypatch):
+    """Owners provisioned before the shared runtime keep their member key (the boot secret's); one
+    with no boot secret gets a stable derived one, new with each row (a teardown rotates it)."""
+    from core.config import settings
+    from core.services import agentcore_runtime
+
+    monkeypatch.setattr(settings, "GATE_BEARER_HMAC_KEY", "k" * 32)
+    monkeypatch.setattr("boto3.client", lambda *a, **kw: object())
+    secrets = {"lightbulb/dev/hermes/org_old/boot": {"networkKey": "kept"}}
+    monkeypatch.setattr(agentcore_runtime, "_read_secret", lambda sm, name: secrets.get(name))
+    monkeypatch.setattr(agentcore_runtime, "boot_secret_name", lambda owner: f"lightbulb/dev/hermes/{owner}/boot")
+    assert agentcore_runtime.network_seed_sync("org_old", "row-1") == "kept"
+    new = agentcore_runtime.network_seed_sync("org_new", "row-1")
+    assert (
+        new
+        == agentcore_runtime.network_seed_sync("org_new", "row-1")
+        != agentcore_runtime.network_seed_sync("org_new", "row-2")
+    )
+    import base64
+
+    assert len(base64.b64decode(new)) == 32  # an Ed25519 seed

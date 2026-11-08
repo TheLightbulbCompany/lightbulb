@@ -20,7 +20,8 @@ import os
 import threading
 import time
 
-from bridge import OWNER, sync, turn
+import bridge
+from bridge import sync, turn
 
 log = logging.getLogger("bridge")
 
@@ -74,10 +75,10 @@ def check_once() -> bool:
         return False  # busy: the next idle pass takes it
     if disk:
         log.warning("recycle owner=%s: disk low (outer %d MB, inner %d MB free; %s floor); asking the "
-                    "backend to stop it", OWNER, outer, inner, disk)
+                    "backend to stop it", bridge.OWNER, outer, inner, disk)
     else:
         log.info("recycle: session age %.0fs%s; asking the backend to stop it", age, " (hard)" if hard else "")
-    status = turn._post_backend(f"runtime/{OWNER}/recycle", {"ageS": round(age)})
+    status = turn._post_backend(f"runtime/{bridge.OWNER}/recycle", {"ageS": round(age)})
     if not 200 <= status < 300:
         turn.release_hold()  # a failed stop must not wedge the workspace; retry next pass
         log.warning("recycle: stop request -> %s; turns re-admitted", status)

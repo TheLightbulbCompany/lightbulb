@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bridge import API, HOOK_TOKEN, OWNER, sync
+import bridge
+from bridge import API, sync
 
 log = logging.getLogger("bridge.credentials")
 
@@ -110,7 +111,7 @@ def _post(path: str, body: dict, timeout: float, *, api: str, hook_token: str) -
 def vend(agent_id: str, *, api: str | None = None, owner: str | None = None, hook_token: str | None = None) -> Vend | None:
     """One vend for a turn: the MCP bearers, with the brokered grants applied locally on the way.
     None when the route is unreachable or answers nonsense (the turn goes on without them)."""
-    api, owner, hook_token = api or API, owner or OWNER, hook_token or HOOK_TOKEN
+    api, owner, hook_token = api or API, owner or bridge.OWNER, hook_token or bridge.HOOK_TOKEN
     if not api or not owner or not hook_token:
         return None
     try:
@@ -218,7 +219,7 @@ def codex_refresh_delegate(access_token: str, refresh_token: str) -> dict:
     agent_id = _AGENT or ""
     body = {"agent_id": agent_id, "presented_sha256": hashlib.sha256(access_token.encode()).hexdigest(), "force": True}
     try:
-        status, payload = _post(f"/api/v1/runtime/credentials/u/{OWNER}/model", body, MODEL_TIMEOUT_S, api=API, hook_token=HOOK_TOKEN)
+        status, payload = _post(f"/api/v1/runtime/credentials/u/{bridge.OWNER}/model", body, MODEL_TIMEOUT_S, api=API, hook_token=bridge.HOOK_TOKEN)
     except Exception as exc:  # noqa: BLE001 -- unreachable/timeout: transient
         raise _auth_error("Lightbulb token broker unreachable", "lightbulb_broker_busy", relogin=False) from exc
     if status == 410:

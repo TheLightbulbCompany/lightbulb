@@ -175,6 +175,16 @@ def _runtime_session_gate_off():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_network_seed(monkeypatch):
+    """Every invoke's boot header reads the owner's network seed from SecretsManager; unit tests
+    have none (and real AWS where credentials exist). Tests of the seed itself patch over this."""
+    from core.services import runtime_transport
+
+    monkeypatch.setattr(runtime_transport, "_network_seed", lambda owner_id, row_id: None)
+    monkeypatch.setattr(runtime_transport, "_NETWORK_SEEDS", {})
+
+
+@pytest.fixture(autouse=True)
 def _room_receipt_events_off():
     """Unit tests have no DynamoDB/AppSync, and read-cursor moves, run starts and delivery
     advances now publish receipts on the room channel. Stubbed by default; tests asserting

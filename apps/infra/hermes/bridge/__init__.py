@@ -44,38 +44,82 @@ def default_s3_prefix(owner: str) -> str:
 
 
 S3_PREFIX = os.environ.get("S3_PREFIX", default_s3_prefix(OWNER)).strip("/")
+#: Booted with no owner: a shared runtime, whose execution role has no S3, memory or browser grant.
+SHARED = not OWNER
 
 #: The backend names the tenant on every invoke (runtime_transport). A per-owner runtime boots
 #: with ISOL8_OWNER_ID already set; a shared one boots with none and takes the first invoke's.
 TENANT_HEADER = "X-Lightbulb-Tenant"
+#: A shared runtime has no boot secret: the backend sends the owner's boot values (the same keys the
+#: boot secret holds, plus the per-owner env a per-owner runtime boots with) on every invoke
+#: (runtime_transport._boot_header). Only the binding invoke's are taken. Module state only, like
+#: the boot secret's values: never logged, never a file.
+BOOT_HEADER = "X-Lightbulb-Boot"
 _TENANT_LOCK = threading.Lock()
 
 
-def bind_tenant(owner: str | None) -> bool:
+def bind_tenant(owner: str | None, boot: str | None = None) -> bool:
     """Whether an invoke for ``owner`` may run in this session. AgentCore gives every session its
     own microVM, so this process serves one tenant: the boot env's, or else the first invoke's.
-    Any other tenant is refused. No header (an older backend) runs as before."""
+    Any other tenant is refused, and so is an invoke naming none before a shared runtime is bound
+    (it would run with no owner: keys outside every prefix). A per-owner runtime still takes an
+    older backend's untenanted invoke. The binding invoke's ``boot`` values (BOOT_HEADER) become
+    this session's tokens; without a gateway token in them nothing is bound, so a malformed first
+    invoke cannot strand the session. Modules read ``bridge.OWNER``/``bridge.HOOK_TOKEN`` and
+    ``sync.S3_PREFIX`` at call time, so binding is these assignments and nothing else."""
     global OWNER, S3_PREFIX
     if not owner:
-        return True
+        return bool(OWNER)
     with _TENANT_LOCK:
         if OWNER:
             return owner == OWNER
-        old_prefix = S3_PREFIX
+        if boot is not None and not _adopt_boot(boot):
+            return False
         OWNER = owner
         # Always from the bound owner: a prefix in a shared runtime's env would put every tenant
         # under one prefix.
         S3_PREFIX = default_s3_prefix(owner)
+        sync = sys.modules.get("bridge.sync")
+        if sync is not None:  # sync's own copy is its source of truth (tests re-point it there)
+            sync.S3_PREFIX = S3_PREFIX
         os.environ["ISOL8_OWNER_ID"] = owner  # the memory plugin and the skill scripts read it
-        # Every bridge module did `from bridge import OWNER` at import, before any invoke, so each
-        # holds the empty boot value: re-point those copies (and sync's prefix) once, here.
-        for name, mod in list(sys.modules.items()):
-            if name.startswith("bridge.") and mod is not None:
-                if getattr(mod, "OWNER", None) == "":
-                    mod.OWNER = owner
-                if getattr(mod, "S3_PREFIX", None) == old_prefix:
-                    mod.S3_PREFIX = S3_PREFIX
         return True
+
+
+def _adopt_boot(raw: str) -> bool:
+    """A shared runtime's first invoke: what a per-owner runtime reads from its boot secret and env.
+    False, nothing taken, without a gateway token."""
+    global HOOK_TOKEN, GATEWAY_TOKEN, NETWORK_KEY
+    try:
+        boot = json.loads(raw)
+    except ValueError:
+        return False
+    text = {k: v for k, v in boot.items() if isinstance(v, str) and v} if isinstance(boot, dict) else {}
+    if "gatewayToken" not in text:
+        return False
+    HOOK_TOKEN = text.get("hookToken", HOOK_TOKEN)
+    GATEWAY_TOKEN = text.get("gatewayToken", GATEWAY_TOKEN)
+    NETWORK_KEY = text.get("networkKey", NETWORK_KEY)
+    os.environ["OPENCLAW_HOOK_TOKEN"] = HOOK_TOKEN  # as the boot-secret path below
+    if "bedrockBearer" in text:
+        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = text["bedrockBearer"]
+    if "browserProfileId" in text:
+        # The gate a per-owner env carries with its profile (hermes_provisioning.build_hermes_runtime_env).
+        os.environ.update(AGENTCORE_PROFILE_ID=text["browserProfileId"],
+                          AGENT_BROWSER_EXECUTABLE_PATH="/opt/lightbulb/no-local-browser")
+        _browser_env()
+    if "issuerKey" in text:  # the network sidecar verifies members' sign-in proofs against it (public)
+        os.environ["LIGHTBULB_ISSUER_KEY"] = text["issuerKey"]
+    if boot.get("networkWorkers") is True:
+        os.environ["LIGHTBULB_NETWORK_WORKERS"] = "1"
+    cap, turn = boot.get("maxConcurrentTurns"), sys.modules.get("bridge.turn")
+    if isinstance(cap, int) and cap >= 2 and turn is not None:  # no turn has run yet: resize the slots
+        turn.MAX_CONCURRENT_TURNS = cap
+        turn._turn_slots = threading.BoundedSemaphore(cap)
+        turn._compaction_slots = threading.BoundedSemaphore(cap - 1)
+    return True
+
+
 STARTED = time.time()
 
 # A workspace with an AgentCore Browser profile browses its shared session through the bridge's
@@ -83,10 +127,14 @@ STARTED = time.time()
 # works its screen through Hermes's computer_use with our driver. Without a profile, neither is set,
 # so Hermes advertises no browser tools and no computer_use. Old runtime specs may still carry the
 # v1 provider; it is ignored when the workspace has a profile.
-if os.environ.get("AGENTCORE_PROFILE_ID"):
-    os.environ.pop("AGENT_BROWSER_PROVIDER", None)
-    os.environ.setdefault("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
-    os.environ.setdefault("HERMES_CUA_DRIVER_CMD", "/opt/lightbulb/bin/lightbulb-cua")
+def _browser_env() -> None:
+    if os.environ.get("AGENTCORE_PROFILE_ID"):
+        os.environ.pop("AGENT_BROWSER_PROVIDER", None)
+        os.environ.setdefault("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
+        os.environ.setdefault("HERMES_CUA_DRIVER_CMD", "/opt/lightbulb/bin/lightbulb-cua")
+
+
+_browser_env()
 
 
 def now() -> str:
@@ -95,9 +143,8 @@ def now() -> str:
 
 # The runtime's environmentVariables are plaintext to anyone with GetAgentRuntime (spec §4.9
 # "Secrets"), so they carry only this one Secrets Manager id, never the tokens themselves.
-# HOOK_TOKEN/GATEWAY_TOKEN are mutable module state so this overwrites them in place -- before
-# `server`/`turn` do `from bridge import HOOK_TOKEN`/`GATEWAY_TOKEN`, so what they capture at
-# their own import is already the boot-fetched value. Dev scripts that never set
+# HOOK_TOKEN/GATEWAY_TOKEN are module state every bridge module reads as ``bridge.HOOK_TOKEN`` at
+# call time, so this boot fetch (and a shared runtime's bind_tenant) is the only writer. Dev scripts that never set
 # LIGHTBULB_SECRET_ID keep using the plain env-var tokens above, unchanged.
 _secret_id = os.environ.get("LIGHTBULB_SECRET_ID", "")
 if _secret_id:
@@ -136,7 +183,9 @@ except ImportError:
 
 
 def set_aws_session(raw: str) -> None:
-    """Keep the invoke's scoped credentials; a malformed header is ignored (the last set stays)."""
+    """Keep the invoke's scoped credentials; a malformed header is ignored (the last set stays).
+    So is a set that expires before the one held: each backend task mints its own, and an older
+    task's set arriving after a newer one must not shorten the session's credentials."""
     global AWS_SESSION
     try:
         creds = json.loads(raw)
@@ -144,15 +193,33 @@ def set_aws_session(raw: str) -> None:
         keys = (creds["accessKeyId"], creds["secretAccessKey"], creds["sessionToken"])
     except (ValueError, TypeError, KeyError):
         return
-    if all(isinstance(k, str) and k for k in keys):
+    if all(isinstance(k, str) and k for k in keys) and (not AWS_SESSION or expires >= AWS_SESSION["expires"]):
         AWS_SESSION = {"keys": keys, "expires": expires}
 
 
+#: The backend refreshes its set this long before expiry (runtime_transport._SESSION_REFRESH_S).
+AWS_SESSION_DUE_S = 900
+
+
+def aws_session_due() -> bool:
+    """Whether the session needs a fresh set soon: none held, or it ends within AWS_SESSION_DUE_S.
+    A long run's heartbeat says so, and the backend answers with an invoke that carries one."""
+    creds = AWS_SESSION
+    return not creds or (creds["expires"] - datetime.now(timezone.utc)).total_seconds() < AWS_SESSION_DUE_S
+
+
+class NoScopedCredentials(RuntimeError):
+    """A shared runtime has no scoped set (none sent, or expired): its role must not stand in."""
+
+
 def aws_session_kwargs() -> dict:
-    """boto3 client kwargs for the scoped credentials, or {} (the execution role, today's path)
-    when no invoke brought any or they have expired."""
+    """boto3 client kwargs for the scoped credentials. Without a live set: {} (the execution role)
+    on a per-owner runtime, and NoScopedCredentials on a shared one -- fail closed, the call is
+    refused rather than made on a role that would have to cover every tenant."""
     creds = AWS_SESSION
     if not creds or creds["expires"] <= datetime.now(timezone.utc):
+        if SHARED:
+            raise NoScopedCredentials("no scoped AWS credentials for this session")
         return {}
     access, secret, token = creds["keys"]
     return {"aws_access_key_id": access, "aws_secret_access_key": secret, "aws_session_token": token}

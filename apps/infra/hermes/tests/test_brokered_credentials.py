@@ -1,5 +1,6 @@
 """Spec 13 §8.3: brokered credentials on the bridge (V11). Fake HTTP and S3; no token in a log."""
 
+import bridge
 import hashlib
 import json
 import sys
@@ -49,8 +50,8 @@ def backend(monkeypatch):
     monkeypatch.setattr(credentials.urllib.request, "urlopen", urlopen)
     for mod in (credentials, turn):
         monkeypatch.setattr(mod, "API", "https://api.example")
-        monkeypatch.setattr(mod, "OWNER", "org_test")
-        monkeypatch.setattr(mod, "HOOK_TOKEN", "hook")
+    monkeypatch.setattr(bridge, "OWNER", "org_test")
+    monkeypatch.setattr(bridge, "HOOK_TOKEN", "hook")
     return types.SimpleNamespace(calls=calls, answers=answers)
 
 

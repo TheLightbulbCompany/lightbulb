@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
-from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now, task_mode
+from bridge import PORT, STARTED, now, task_mode
 from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, runs, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
@@ -43,7 +43,7 @@ log = logging.getLogger("bridge")
 # ---- the two plugin paths ----------------------------------------------------------------------
 def _authorized(headers: dict) -> bool:
     raw = headers.get("authorization") or headers.get("Authorization") or ""
-    return bool(GATEWAY_TOKEN) and hmac.compare_digest(raw.strip().encode(), f"Bearer {GATEWAY_TOKEN}".encode())
+    return bool(bridge.GATEWAY_TOKEN) and hmac.compare_digest(raw.strip().encode(), f"Bearer {bridge.GATEWAY_TOKEN}".encode())
 
 
 def _header(headers: dict, name: str) -> str | None:
@@ -232,6 +232,17 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
 
 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
+    boot = _header(headers, bridge.BOOT_HEADER)
+    if boot and not bridge.GATEWAY_TOKEN:
+        # A shared runtime (no boot secret): the first invoke binds the tenant and brings its
+        # tokens, the gateway token included, which the check below then holds every invoke to.
+        # Only AgentCore reaches this before any agent runs in the microVM.
+        # Pre-claim denial of service: whoever sends the first invoke picks the session's owner, so a
+        # wrong first tenant would strand that one session (every later invoke 403s until it idles).
+        # Low risk, accepted: only backend IAM may InvokeAgentRuntime, the session id is derived from
+        # the owner the backend names, and the binder gains no data -- its own tokens and its own
+        # owner's scoped credentials are all a bound session ever holds.
+        bridge.bind_tenant(_header(headers, bridge.TENANT_HEADER), boot)
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
     if not bridge.bind_tenant(_header(headers, bridge.TENANT_HEADER)):
@@ -312,7 +323,7 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
                     return 200, {"eventId": event_id, "runId": run_id, "status": "replayed"}
                 registered_key = run_id
                 turn.mark_started(run_id)
-                turn._post_backend(f"runs/{OWNER}/events", {
+                turn._post_backend(f"runs/{bridge.OWNER}/events", {
                     "runId": run_id, "type": "run.started", "at": now(),
                     "sessionKey": turn._resolve_session_key(agent_id, body),
                 })
@@ -392,7 +403,7 @@ def _boot_ready() -> bool:
     """Ingress cannot be accepted without the hook token (run callbacks) and the profiles
     dir. This is the whole readiness answer: cheap, local, and true only when a turn would
     actually work — readiness_state treats any exception here as 'not ready'."""
-    return bool(HOOK_TOKEN) and (sync.HOME / "profiles").is_dir()
+    return bool(bridge.HOOK_TOKEN) and (sync.HOME / "profiles").is_dir()
 
 
 def _health(params: dict, **_kwargs) -> dict:
@@ -726,7 +737,7 @@ def _models_auth_status(params: dict, **_kwargs) -> dict:
     `bedrock` + the gate bearer, so a BYO-key or ChatGPT-OAuth owner got a permanently wrong dot
     (scan row 22).
 
-    ONE profile, not the roster (review I2). The provider is an OWNER-level choice: every
+    ONE profile, not the roster (review I2). The provider is an bridge.OWNER-level choice: every
     profile's `model.provider` is derived by `hermes_profiles.model_block` from
     `(provider_choice, byo_provider, …)`, which has no per-agent input -- only the model ID
     differs (the CEO's premium tier). So a second read cannot produce a second answer, and
@@ -980,7 +991,7 @@ def main() -> None:
     mcp_compat.install()
     turn.install_router_tool_search()
     browser_control.install()
-    log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)
+    log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, bridge.OWNER)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

@@ -125,6 +125,52 @@ class TestAgentCoreTransport:
         assert all(e["headers"][rt.TENANT_HEADER] == "org_a" for e in captured)
 
     @pytest.mark.asyncio
+    async def test_every_invoke_carries_the_owners_boot_values_the_wake_too(self, monkeypatch):
+        """A shared runtime has no boot secret: its session takes these from the invoke that binds it,
+        which may be the wake, so both carry them. Derived and read from the row, never a runtime env."""
+        from core.config import settings
+
+        captured = []
+
+        class Client:
+            def invoke_agent_runtime(self, **kwargs):
+                captured.append(json.loads(kwargs["payload"].decode()))
+                return {"statusCode": 200, "response": b'{"status":200,"body":{}}'}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
+        monkeypatch.setattr(settings, "GATE_BEARER_HMAC_KEY", "k" * 32)
+        monkeypatch.setattr(rt, "_network_seed", lambda owner, row: f"seed-{owner}-{row}")
+        row = {
+            "owner_id": "org_a",
+            "id": "row-1",
+            "agentcore_runtime_arn": "arn:runtime/abc",
+            "hook_token": "hook-a",
+            "gateway_token": "gw-a",
+            "browser_profile_id": "prof-a",
+            "network_workers": True,
+            "max_concurrent_turns": 6,
+        }
+        with patch.object(rt, "_ensure_session", lambda owner_id, arn, deadline, wake: wake()):
+            await rt.request(row, "/plugins/lightbulb-channel/rpc", json_body={})
+        from core.billing.bedrock_gate_tokens import derive_gate_bearer
+        from core.services import network_proof
+
+        boots = [json.loads(e["headers"][rt.BOOT_HEADER]) for e in captured]
+        assert len(boots) == 2 and boots[0] == boots[1] == {
+            "gatewayToken": "gw-a",
+            "hookToken": "hook-a",
+            "bedrockBearer": derive_gate_bearer("org_a", "row-1", 0),
+            "networkKey": "seed-org_a-row-1",
+            "browserProfileId": "prof-a",
+            "networkWorkers": True,
+            "maxConcurrentTurns": 6,
+            **({"issuerKey": network_proof.public_key()["env"]} if settings.NETWORK_PROOF_KEY else {}),
+        }
+
+    def test_no_gateway_token_no_boot_values(self):
+        assert rt._boot_header({"owner_id": "org_a", "hook_token": "h"}) == {}
+
+    @pytest.mark.asyncio
     async def test_unwraps_the_contract_server_envelope(self, monkeypatch):
         captured = {}
 

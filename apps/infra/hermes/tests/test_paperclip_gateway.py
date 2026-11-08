@@ -1,5 +1,6 @@
 """Native Paperclip Hermes run lifecycle inside the AgentCore bridge."""
 
+import bridge
 import json
 from contextlib import contextmanager
 
@@ -135,8 +136,8 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
         import hashlib
         root = turn._profile_dir(agent_id)
         state = json.loads(turn._desktop_state_path(root, RUN).read_text())
-        assert state["ctx"] == {"runId": RUN, "agentId": agent_id, "ownerId": turn.OWNER,
-                                "apiUrl": turn.API, "hookToken": turn.HOOK_TOKEN,
+        assert state["ctx"] == {"runId": RUN, "agentId": agent_id, "ownerId": bridge.OWNER,
+                                "apiUrl": turn.API, "hookToken": bridge.HOOK_TOKEN,
                                 "family": "paperclip", "sessionKey": SESSION}
         marker = root / turn.TURN_CONTEXT_DIRNAME / ("desktop-active-" + hashlib.sha256(SESSION.encode()).hexdigest() + ".json")
         assert json.loads(marker.read_text()) == {"runId": RUN}

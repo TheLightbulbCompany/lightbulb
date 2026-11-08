@@ -22,7 +22,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-from bridge import API, HOOK_TOKEN, OWNER, turn
+import bridge
+from bridge import API, turn
 
 log = logging.getLogger("bridge")
 
@@ -64,8 +65,8 @@ def _post_input(body: dict) -> int:
     """One POST to the task's `/inputs` (backend: a `job_result` trigger + a signal to the task's
     workflow). The drain's own pass is the retry loop; never throws."""
     req = urllib.request.Request(
-        f"{API}/api/v1/internal/runtime/{OWNER}/inputs", data=json.dumps(body).encode(), method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"})
+        f"{API}/api/v1/internal/runtime/{bridge.OWNER}/inputs", data=json.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"})
     try:
         with urllib.request.urlopen(req, timeout=20) as res:
             return res.status
@@ -269,5 +270,5 @@ def _deliver(session_key: str, last: dict | None, group: list[dict], ledger, fmt
             "triggerMessageId": last["triggerMessageId"], "eventKind": last["eventKind"],
             "reason": "delegation_completed", "text": text,
         }
-        status = turn._post_backend(f"followups/{OWNER}", body) if text else 200
+        status = turn._post_backend(f"followups/{bridge.OWNER}", body) if text else 200
         return _settle(status, claimed, ledger, f"follow-up {body['followUpId']}")

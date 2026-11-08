@@ -25,7 +25,8 @@ import uuid as _uuid
 from collections import namedtuple
 from pathlib import Path
 
-from bridge import API, HOME, HOOK_TOKEN, OWNER, now
+import bridge
+from bridge import API, HOME, now
 from bridge import credentials, sync, browser_control, memory_ctx, task_mode, website_logins, worktrees
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
@@ -453,7 +454,7 @@ def _voice_body(identity: dict, request: dict) -> dict:
 def call_turn_context(identity: dict) -> dict:
     """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it (and
     the Mac tool's active turn) by the session id Hermes hands them, which is the call's own."""
-    return {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": identity["agentId"],
+    return {"apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": identity["agentId"],
             "runId": identity["runId"], "sessionKey": call_session_key(identity["agentId"], identity["callId"]),
             "roomId": None, "voiceRoomId": identity["roomId"], "callId": identity["callId"],
             "localSessionToken": identity.get("localSessionToken"), "family": "call"}
@@ -780,7 +781,7 @@ def _post_late_call_answer(identity: dict, request: dict, output: str) -> None:
     asked = str((request.get("voice") or {}).get("utterance") or "").strip()[:160]
     text = f'From the Live call "{asked}":\n\n{output.strip()}' if asked else f"From the Live call:\n\n{output.strip()}"
     try:
-        _post_backend(f"agent-messages/{OWNER}", {
+        _post_backend(f"agent-messages/{bridge.OWNER}", {
             "eventId": f"live-late:{identity['runId']}", "roomId": identity["roomId"], "agentId": identity["agentId"],
             "replyToMessageId": None, "threadRootMessageId": None, "text": text})
     except Exception:  # noqa: BLE001 -- the run completed; losing the post is the old behaviour, logged
@@ -1141,7 +1142,7 @@ def report_usage(session_key, agent_id, run_id, success, duration_ms, usage, fam
             "usage": usage, **({"family": "voice"} if voice else {})}
     if isinstance(duration_ms, int):
         body["durationMs"] = duration_ms      # the error text is NEVER forwarded: it can carry model output
-    _post_backend(f"usage/{OWNER}", body)
+    _post_backend(f"usage/{bridge.OWNER}", body)
     return True
 
 
@@ -1725,7 +1726,7 @@ def _post_backend(path: str, body: dict) -> int:
         req = urllib.request.Request(
             f"{API}/api/v1/internal/messaging/{path}",
             data=payload,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
             method="POST",
         )
         try:
@@ -1745,7 +1746,7 @@ def _post_backend(path: str, body: dict) -> int:
 def runtime_mcp_env(agent_id: str) -> dict[str, str]:
     """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile. The same
     vend fills the backend-custodied grants in locally (bridge/credentials.py, spec 13)."""
-    vended = credentials.vend(agent_id, api=API, owner=OWNER, hook_token=HOOK_TOKEN)
+    vended = credentials.vend(agent_id, api=API, owner=bridge.OWNER, hook_token=bridge.HOOK_TOKEN)
     return vended.mcp_env() if vended is not None else {}
 
 
@@ -1885,7 +1886,7 @@ def _post_reply(agent_id: str, body: dict, reply: str) -> None:
     waiting on a prod backend promotion. The eventId is unchanged, so a re-post can only replay the
     stored message -- never create a second one."""
     if not any(line.startswith(MEDIA_PREFIX) for line in reply.splitlines()):
-        _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
+        _post_backend(f"agent-messages/{bridge.OWNER}", {**body, "text": reply})
         return
     root = _profile_dir(agent_id)
     text, attachments, uploads = extract_media(reply, root, HOME)
@@ -1897,19 +1898,19 @@ def _post_reply(agent_id: str, body: dict, reply: str) -> None:
         else:
             uploaded.append(entry)
     if not attachments and not uploaded:
-        _post_backend(f"agent-messages/{OWNER}", {**body, "text": text})
+        _post_backend(f"agent-messages/{bridge.OWNER}", {**body, "text": text})
         return
     payload = {**body, "text": text}
     if attachments:
         payload["attachments"] = attachments
     if uploaded:
         payload["uploadedAttachments"] = uploaded
-    status = _post_backend(f"agent-messages/{OWNER}", payload)
+    status = _post_backend(f"agent-messages/{bridge.OWNER}", payload)
     if status in REPLY_TEXT_FALLBACK_STATUSES:
         log.warning("agent-messages rejected %d attachment(s) with %s; re-posting as text",
                     len(attachments) + len(uploaded), status)
         names = ", ".join(a["fileName"] for a in [*attachments, *uploaded])
-        _post_backend(f"agent-messages/{OWNER}",
+        _post_backend(f"agent-messages/{bridge.OWNER}",
                       {**body, "text": f"{text}\n_(Couldn't attach {names}: the room refused the files.)_".strip()})
 
 
@@ -2889,7 +2890,7 @@ def _first_run(body: dict) -> bool:
     if welcome is not None:
         return agents_only(history[welcome + 1:])
     first = next((m for m in history if m.get("messageSeq") == 1), None)
-    return ((body.get("room") or {}).get("id") == default_room_id(OWNER)
+    return ((body.get("room") or {}).get("id") == default_room_id(bridge.OWNER)
             and first is not None and first.get("kind") != "team_welcome" and agents_only(history))
 
 
@@ -4344,7 +4345,7 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
     token = identity.get("localSessionToken")
     router = identity.get("mode") == "router"
-    ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
+    ctx = {"apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": agent_id,
            "runId": run_id, "sessionKey": session_id, "roomId": None,
            "localSessionToken": token, "family": family, "mode": identity.get("mode") or "worker",
            # Lane Q: a Worker run's ask_person / request_approval speak for this attempt (runtime_internal checks it)
@@ -4509,7 +4510,7 @@ def _run_paperclip_session(identity: dict, request: dict) -> tuple[str, str | No
     the person, by the task's run posting to the room named in its From section)."""
     agent_id, run_id = identity["agentId"], identity["runId"]
     _start_desktop_turn(_profile_dir(agent_id), {
-        "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
+        "apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
         "sessionKey": identity["sessionId"], "family": "paperclip",
     })
     try:
@@ -4523,7 +4524,7 @@ def _run_task_session(identity: dict, request: dict) -> tuple[str, str | None, s
     """A task's Worker turn: the Paperclip session's desktop ledger, under the task family."""
     agent_id, run_id = identity["agentId"], identity["runId"]
     _start_desktop_turn(_profile_dir(agent_id), {
-        "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
+        "apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
         "sessionKey": identity["sessionKey"], "family": "task",
         "taskId": identity.get("taskId") or "", "runSecret": identity.get("runSecret") or "",
     })
@@ -4653,7 +4654,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
 
     def _heartbeat() -> None:  # the backend sweeper closes a run silent for 90 s
         while not done.wait(30):
-            _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.heartbeat", "at": now(), "sessionKey": session_key})
+            _post_backend(f"runs/{bridge.OWNER}/events", {"runId": run_id, "type": "run.heartbeat", "at": now(), "sessionKey": session_key})
 
     try:
         try:
@@ -4665,7 +4666,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             # frame.
             if has_run:
                 if not RUNS.get(run_id, {}).get("started"):
-                    _post_backend(f"runs/{OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
+                    _post_backend(f"runs/{bridge.OWNER}/events", {"runId": run_id, "type": "run.started", "at": now(), "sessionKey": session_key})
                 frames.started()
                 threading.Thread(target=_heartbeat, name=f"hb-{run_id}", daemon=True).start()
             # Task 15b: a profile with no providers.openai-codex block of its own reads and
@@ -4686,7 +4687,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             # session_id _construct_agent hands the AIAgent (both this function's `session_key`) --
             # the plugin's tool handler reads it back by the session_id Hermes gives it.
             turn_ctx = {
-                "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
+                "apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
                 # the inbound message that triggered this turn (a follow-up's too): ask_session's origin
                 "messageId": (body.get("message") or {}).get("messageId"),
@@ -4761,7 +4762,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 reply,
             )
         if has_run:
-            _post_backend(f"runs/{OWNER}/events", run_ended_body(
+            _post_backend(f"runs/{bridge.OWNER}/events", run_ended_body(
                 run_id, session_key, outcome, error_kind, usage, getattr(_post_turn, "error_detail", None)))
         # A run-shaped turn correlates on its runId; agent_mail (Task 20) carries no run block
         # at all, so its own eventId is the closest thing to a correlation id for the usage

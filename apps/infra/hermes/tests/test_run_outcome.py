@@ -1,3 +1,4 @@
+import bridge
 from contextlib import nullcontext
 
 import pytest
@@ -74,7 +75,7 @@ def test_only_room_event_turns_are_offered_silence():
 
 def test_the_first_run_line_reaches_only_the_owners_first_message():
     welcome = [{"author": {"kind": "agent", "id": "ceo"}, "text": "Welcome", "messageSeq": 1}]
-    general = {"kind": "channel", "id": turn.default_room_id(turn.OWNER)}
+    general = {"kind": "channel", "id": turn.default_room_id(bridge.OWNER)}
     first = {"eventKind": "user_request", "sender": {"kind": "human"}, "room": general, "recentHistory": welcome}
     assert turn.FIRST_RUN_LINE in turn._observe_prompt("ceo", first)
     later = {**first, "recentHistory": [*welcome, {"author": {"kind": "human"}, "text": "hi"}]}
@@ -98,7 +99,7 @@ def test_with_the_switch_the_first_run_line_follows_the_welcome_into_the_lightbu
     answered = [*early, {"author": {"kind": "human"}, "text": "acme.com", "messageSeq": 3}]
     assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "recentHistory": answered})
     team = [{**welcome[0], "kind": "team_welcome"}]
-    general = {"kind": "channel", "id": turn.default_room_id(turn.OWNER)}
+    general = {"kind": "channel", "id": turn.default_room_id(bridge.OWNER)}
     assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "room": general, "recentHistory": team})
 
 

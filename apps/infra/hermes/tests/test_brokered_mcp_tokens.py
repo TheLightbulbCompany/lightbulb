@@ -1,3 +1,4 @@
+import bridge
 import json
 from contextlib import nullcontext
 
@@ -31,8 +32,8 @@ def test_runtime_mcp_env_vends_a_turn_scoped_bearer(monkeypatch):
 
     monkeypatch.setattr(turn.urllib.request, "urlopen", urlopen)
     monkeypatch.setattr(turn, "API", "https://api.example")
-    monkeypatch.setattr(turn, "OWNER", "org_123")
-    monkeypatch.setattr(turn, "HOOK_TOKEN", "hook-token")
+    monkeypatch.setattr(bridge, "OWNER", "org_123")
+    monkeypatch.setattr(bridge, "HOOK_TOKEN", "hook-token")
 
     assert turn.runtime_mcp_env("agent_123") == {"MCP_STRIPE_ACCESS_TOKEN": "access-token"}
     assert seen == {

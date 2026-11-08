@@ -592,6 +592,104 @@ async def test_a_caller_line_is_a_caller_principal_trigger_for_the_router(client
     assert "Offer at most three open times" in trig.ref["text"]
 
 
+T1 = "7e8bf6dd-9efb-52b8-ad56-6ed3f06754c0"
+
+
+async def _agent_line(cid: str, text: str, key: str, refs: list[dict] | None = None) -> None:
+    """A Lightbulb line in the call room (the Router's ack, a thread's answer), as `post_as_lightbulb` writes it."""
+    await messaging_repo.create_message(
+        room_id=cid, owner_id="org_1", idemp_pk=messaging_repo.owner_pk("org_1"), idemp_sk=key, req_hash=key,
+        author={"kind": "agent", "id": "agent_front", "displayName": "Lightbulb"}, text=text, mentions=[],
+        reply_to_message_id=None, thread_root_message_id=None, run_id=None, dispatch_targets=[],
+        source_agent_id=None, client_message_id=None, author_member_check=False,
+        attrs={"taskRefs": refs} if refs else None,
+    )  # fmt: skip
+
+
+async def _thread_in_call(cid: str, status: str) -> dict:
+    """The Router's ack in the call room, with the caller thread it started as its card."""
+    await _agent_line(cid, "Vera is checking Saturday.", "ack-1", [{"taskId": T1, "role": "started"}])
+    return {"taskId": T1, "origin": "phone_contact", "status": status, "audience": {"kind": "room", "roomId": cid}}
+
+
+async def test_a_callers_next_line_goes_to_the_calls_open_thread_not_a_new_one(client, router_seat):
+    """8 Nov prod final smoke, book-112005: "The first time you said works for me" and "Yes, that's right" each
+    started a new Front desk thread with no history; the "yes" thread asked again and picked 12:00 PM, a time never
+    offered. The call's open thread gets the line, as a typed reply in a task's thread does."""
+    _, enq = router_seat
+    call = await _start(client)
+    cid, url = call["callId"], f"/api/v1/internal/voice/calls/{call['callId']}/turn"
+    client.post(url, json={"n": 0, "text": "Anything Saturday afternoon?"}, headers=W)
+    assert enq.await_count == 1  # the first line: the Router
+    task = await _thread_in_call(cid, "idle")
+    with (
+        patch.object(voice_phone.tasks_repo, "get_task", AsyncMock(return_value=task)),
+        patch.object(voice_phone.tasks_repo, "put_trigger", AsyncMock(return_value=({}, True))) as put,
+        patch.object(voice_phone.task_conversation, "gate_input", AsyncMock(return_value=None)),
+        patch.object(voice_phone.admission, "_to_task", AsyncMock()) as to_task,
+    ):
+        out = client.post(url, json={"n": 1, "text": "The first time works."}, headers=W).json()
+    assert enq.await_count == 1  # no new Router turn, so no new thread
+    trig = put.await_args.args[1]
+    assert trig["routedTo"] == {"taskId": T1} and trig["triggerId"] == out["triggerId"]
+    assert trig["ref"]["origin"] == "phone_contact" and trig["ref"]["messageId"] == out["messageId"]
+    to_task.assert_awaited_once_with("org_1", T1, out["triggerId"])
+
+
+async def test_a_callers_line_after_the_thread_closed_goes_to_the_router(client, router_seat):
+    _, enq = router_seat
+    call = await _start(client)
+    task = await _thread_in_call(call["callId"], "failed")
+    with patch.object(voice_phone.tasks_repo, "get_task", AsyncMock(return_value=task)):
+        client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn", json={"n": 1, "text": "Hi?"}, headers=W)
+    assert enq.await_count == 1
+
+
+async def test_a_booking_under_way_is_said_only_once_the_call_has_one(client, router_seat):
+    """8 Nov prod final smoke: "Vera is booking your founding team setup for Saturday, November 14 at 12:00 PM" was
+    said while nothing was booked. Until the call's record (or the caller) has a booking, that sentence is replaced;
+    the rest of the line, and lines about bookings that exist, are said as written."""
+    call = await _start(client)
+    cid, base = call["callId"], f"/api/v1/internal/voice/calls/{call['callId']}"
+    lines = [
+        "Vera is booking your setup for Saturday at 12:00 PM.",
+        "Thanks, Taylor. You\u2019re all set for Saturday at 1 PM. Anything else?",
+        "You're booked Tuesday at 3 PM. Which new time works?",  # a booking from an earlier call, being moved
+        "That 2 PM slot is booked. We have 3:00 or 5:00 PM.",
+        "We have 1:00, 3:00 or 5:00 PM. Which works? Should I book it?",
+    ]
+    for i, text in enumerate(lines):
+        await _agent_line(cid, text, f"l{i}")
+    said = [m["text"] for m in client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]]
+    nb = voice_phone.NOT_BOOKED
+    assert said == [nb, f"Thanks, Taylor. {nb} Anything else?", *lines[2:]]
+    await voice_phone._patch_call(cid, lambda c: {"bookings": [{"start": "2026-11-14T13:00"}]})
+    said = [m["text"] for m in client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]]
+    assert said == lines
+
+
+async def test_a_callers_upcoming_booking_keeps_the_line(client, router_seat):
+    call = await _start(client)
+    cid, base = call["callId"], f"/api/v1/internal/voice/calls/{call['callId']}"
+    await _agent_line(cid, "Vera is booking the move to Sunday.", "l0")
+    with patch.object(voice_phone, "_has_upcoming", AsyncMock(return_value=True)) as has:
+        said = client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]
+    assert said[0]["text"] == "Vera is booking the move to Sunday."
+    has.assert_awaited_once_with("org_1", "+14155550133")
+
+
+async def test_another_calls_caller_thread_is_never_picked(client, router_seat):
+    _, enq = router_seat
+    call = await _start(client)
+    task = {**await _thread_in_call(call["callId"], "idle"), "audience": {"kind": "room", "roomId": "other-call"}}
+    with (
+        patch.object(voice_phone.tasks_repo, "get_task", AsyncMock(return_value=task)),
+        patch.object(voice_phone.admission, "_to_task", AsyncMock()) as to_task,
+    ):
+        client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn", json={"n": 1, "text": "Yes."}, headers=W)
+    assert enq.await_count == 1 and not to_task.called
+
+
 async def test_a_paused_line_sends_no_caller_line_to_the_router(client, router_seat):
     _, enq = router_seat
     call = await _start(client, paused=True)

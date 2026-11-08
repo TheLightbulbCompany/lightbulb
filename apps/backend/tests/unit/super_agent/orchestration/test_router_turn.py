@@ -487,6 +487,17 @@ async def test_workspace_actor_person_task_is_clamped_in_an_org_only(world):
 
 
 @pytest.mark.asyncio
+async def test_a_callers_task_is_the_call_rooms_never_a_persons(world):
+    """8 Nov prod final smoke, LB-37: a caller's question task was person-visible, so the call's next batch (shared
+    lane) never listed it and the caller's follow-up started a new thread with no history."""
+    ref = {"roomId": ROOM, "messageId": str(uuid.uuid4()), "origin": "phone_contact", "callId": ROOM}
+    trig = {"triggerId": "voice:c:turn-0", "source": "voice", "ref": ref, "actorUserId": SAM}
+    task = await acts._ensure_task(WS, ts.new_task_id(), trig, "shared", "queued", title="x", visibility="person")
+    assert (task["audience"]["kind"], task["audience"]["roomId"]) == ("room", ROOM)
+    assert acts._task_in_scope(task, "shared", SAM, ROOM)
+
+
+@pytest.mark.asyncio
 async def test_meeting_flag_inherited_by_subtask(world):
     trig = {"triggerId": "voice:m1", "source": "voice", "ref": {"confirmAll": True}, "actorUserId": SAM}
     parent = await acts._ensure_task(WS, ts.new_task_id(), trig, "shared", "queued", title="p", visibility="room")

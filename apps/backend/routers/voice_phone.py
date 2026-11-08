@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo
+from core.repositories import messaging_repo, tasks_repo
 from core import tasks_schema as ts
 from core.services import (
     admission,
@@ -925,8 +925,41 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
             "text": f"{body.text}\n\n{CALLER_HINT}",
         },
     )
-    await admission.enqueue_trigger(ws, trigger, room_id=call_id)
+    if task_id := await _open_thread(ws, call_id, int(msg["messageSeq"])):
+        # The call's open thread takes the line, as a typed reply in a task's thread does (admission's
+        # pass-through): it already holds the times it offered and the caller's answers (8 Nov prod final smoke:
+        # each line started a new thread, and the "yes" thread asked again and picked a time never offered).
+        trig = {**trigger.model_dump(by_alias=True), "routedTo": {"taskId": task_id}}
+        trig["ref"]["deliverRoomId"] = call_id
+        await tasks_repo.put_trigger(ws, trig)
+        if blocked := await task_conversation.gate_input(ws, task_id, trig):  # §14.10, as admission's pass-through
+            await task_conversation.post_as_lightbulb(
+                ws, call_id, text=blocked, event_id=f"task-gate:{task_id}:{trigger.trigger_id}", remember=False
+            )
+        else:
+            await admission._to_task(ws, task_id, trigger.trigger_id)
+    else:
+        await admission.enqueue_trigger(ws, trigger, room_id=call_id)
     return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id}
+
+
+_CLOSED = ("resolved", "failed")
+
+
+async def _open_thread(ws: str, call_id: str, before_seq: int) -> str | None:
+    """The call's latest caller thread still open (its card on a Lightbulb line in the call room), else None: a
+    call's first line, or a line after its thread failed or was closed, goes to the Router."""
+    for row in reversed(await messaging_repo.list_messages_before(call_id, before_seq, 50)):
+        for ref in reversed(row.get("taskRefs") or []):
+            task = await tasks_repo.get_task(ws, ref.get("taskId") or "")
+            if (
+                task
+                and task.get("origin") == "phone_contact"
+                and (task.get("audience") or {}).get("roomId") == call_id  # this call's, never another call's
+                and task.get("status") not in _CLOSED
+            ):
+                return task["taskId"]
+    return None
 
 
 async def after_call(room_id: str, item: dict) -> None:
@@ -955,5 +988,37 @@ class CallEventsIn(BaseModel):
 async def call_events(call_id: str, body: CallEventsIn) -> dict:
     """Lightbulb's messages in the call's room after seq `after` (the Router's ack and replies, the Front desk's
     answers), oldest first: the phone voice says each once (huddle-agent mouth.py)."""
-    await _call(call_id)
-    return await agent_lines(call_id, body.after)
+    meta, call = await _call(call_id)
+    out = await agent_lines(call_id, body.after)
+    claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
+    if claimed and not call.get("bookings") and not await _has_upcoming(meta["ownerId"], call.get("caller") or ""):
+        for m in claimed:
+            m["text"] = " ".join(
+                NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])
+            )
+    return out
+
+
+#: A line that says a booking is being made right now. Only `/book` and `/change` (the Front desk's booking tools)
+#: put one on the call's record; until then, and when the caller has no upcoming booking, that sentence is not said
+#: (8 Nov prod final smoke: "Vera is booking your founding team setup for Saturday, November 14 at 12:00 PM" was
+#: said, and nothing was ever booked). "You're booked Tuesday at 3 PM" (a booking from an earlier call, being moved)
+#: and "That 2 PM slot is booked" are not claims of this kind.
+BOOKING_NOW = re.compile(r"\b(is booking|are booking|will book|i'?ll book|i'?ve booked|you'?re (all )?set)\b", re.I)
+
+
+def _plain(text: str) -> str:
+    return text.replace("\u2019", "'")
+
+
+async def _has_upcoming(ws: str, caller: str) -> bool:
+    """The caller has a booking from now on (the one `business_profile` lists for them)."""
+    if not caller:
+        return False
+    from core.services import business_profile
+
+    now = f"{_now(await agent_config(ws)):%Y-%m-%dT%H:%M}"
+    return any(b.get("phone") == caller for b in await business_profile._upcoming(ws, now))
+
+
+NOT_BOOKED = "The team is still working on that and hasn't made the booking yet."

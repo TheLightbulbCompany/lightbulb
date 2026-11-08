@@ -169,6 +169,43 @@ async def test_a_faithful_result_is_not_cut(talker, session):
     assert session.current_speech.interrupted == 0 and len(session.replies) == 1
 
 
+SLOTS = "Yes, Taylor, we have Saturday afternoon availability at 1:00, 3:00, or 5:00 PM. Which time works best?"
+
+
+@pytest.mark.parametrize("said", [
+    # 8 Nov prod runs: each was cut as an added fact before a word played, and its word-for-word retry too, so the
+    # caller never heard the times (book-112005: the 1/3/5 PM slots and the read-back, four cuts)
+    "Got it. We have Saturday afternoon at 1, 3 or 5 PM.",
+    "Noted, thanks. We have 1:00, 3:00 or 5:00 PM on Saturday.",
+    "Great news, Taylor! We have Saturday afternoon at 1:00, 3:00, or 5:00 PM. Which works best?",
+    "Thank you for holding. We have Saturday at 1:00, 3:00 or 5:00 PM.",
+    "Perfect. Saturday afternoon has 1:00, 3:00, or 5:00 PM. Please pick one.",
+    "Your options Saturday afternoon are 1:00, 3:00, or 5:00 PM.",
+    "Hello again, TaylorTest. Saturday afternoon is open at 1:00, 3:00, or 5:00 PM.",  # the name, joined
+])  # fmt: skip
+def test_a_sentences_first_word_is_grammar_not_a_fact(said):
+    assert mouth.added_facts(said, SLOTS, ("Nova", "Glow Nails", "Taylor Test")) == []
+
+
+def test_a_new_name_or_time_at_a_sentences_start_is_still_a_fact():
+    assert mouth.added_facts("Sam merged 5095.", "Priya merged 5095.") == ["Sam"]
+    assert mouth.added_facts("Got it. 12:00 PM works.", SLOTS) == ["12:00"]
+    assert mouth.added_facts("Vera found 1:00, 3:00 or 5:00 PM.", SLOTS) == ["Vera"]
+
+
+async def test_a_booking_the_message_never_made_is_cut(talker, session, capsys):
+    """8 Nov prod final smoke: "Vera is booking… 12:00 PM" was said and nothing was booked. Only a message that
+    says it is booked (the backend passes one only once the call has a booking) may be said as booked."""
+    ask = "Just to confirm: Saturday at 1:00 PM. Should I book it?"
+    session.current_speech = talker.say([ask])
+    await _speak(talker, "You're booked for Saturday at 1:00 PM.")
+    assert session.current_speech.interrupted == 1
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["voice.talker.claimed"] == 1
+    session.current_speech = talker.say(["You're booked for Saturday at 1:00 PM."])
+    await _speak(talker, "You're all set: booked for Saturday at 1:00 PM.")
+    assert session.current_speech.interrupted == 0
+
+
 async def test_an_ack_said_as_a_refusal_is_cut_and_said_word_for_word(talker, session, capsys):
     """8 Nov prod phone re-run: "Customer Operations will check your booking and move it to Sunday." was said as "I
     can't change that booking directly from this call. Please contact our front desk or support team"."""

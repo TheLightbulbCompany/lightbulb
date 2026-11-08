@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from huddle_agent import mouth, owner
+from huddle_agent import mouth
 
 
 class _Speech:
@@ -57,12 +57,25 @@ def session(monkeypatch):
     return s
 
 
+class _Talker(mouth.Talker):
+    """A Talker as the orb's was (owner.py is on GPT-Live now; these go with mouth.py in Task 5)."""
+
+    where, allow = "owner", ("Nova", "Maya")
+
+    def __init__(self, backend):
+        super().__init__("test")
+        self.backend, self._turns = backend, self
+
+    def post(self, request):
+        self.backend.sent.append(self.context.take(request).split("\n\n")[0])
+
+    async def flush(self):
+        pass
+
+
 @pytest.fixture
 def talker(session):
-    backend = _Backend()
-    a = owner.OwnerAgent(owner.Turns(backend, "user_maya", "job_1"), {"name": "Nova", "who": "Maya", "today": "Sunday"})
-    a.backend = backend
-    return a
+    return _Talker(_Backend())
 
 
 async def _speak(agent, *deltas):
@@ -140,10 +153,6 @@ async def test_the_goodbye_is_never_checked(talker, session):
 async def test_sorry_i_didnt_catch_that_is_not_cut(talker, session):
     await _speak(talker, "Sorry, I didn't catch that. Could you say it again, please?")
     assert session.current_speech.interrupted == 0
-
-
-async def test_the_owner_session_has_no_separate_vad():
-    assert owner.talk_session().vad is None
 
 
 async def test_a_result_that_adds_a_fact_is_cut_and_said_word_for_word(talker, session, capsys):

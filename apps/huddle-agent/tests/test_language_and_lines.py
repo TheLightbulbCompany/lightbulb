@@ -9,7 +9,7 @@
 
 import pytest
 
-from huddle_agent import meet, mouth, owner, phone
+from huddle_agent import meet, mouth, phone
 from huddle_agent.mouth import Mouth
 
 INFO = {"assistantName": "Nova", "businessName": "The Lightbulb Company", "greeting": "Hi", "today": "Sunday"}
@@ -21,9 +21,8 @@ def env(monkeypatch):
 
 
 def test_phone_and_orb_transcribe_english_and_meet_stt_does():
-    for model in (phone.realtime_model(), owner.realtime_model()):
-        tr = model._opts.input_audio_transcription
-        assert tr is not None and tr.language == "en"
+    tr = phone.realtime_model()._opts.input_audio_transcription  # the orb is on GPT-Live (live.py)
+    assert tr is not None and tr.language == "en"
     assert meet.realtime_model()._opts.input_audio_transcription is None  # Meet hears through its STT
     assert meet.STT_LANGUAGE == "en"
 
@@ -31,7 +30,6 @@ def test_phone_and_orb_transcribe_english_and_meet_stt_does():
 def test_every_voice_replies_in_english():
     texts = (
         phone.INSTRUCTIONS,
-        owner.INSTRUCTIONS,
         meet.INSTRUCTIONS,
     )
     for t in texts:

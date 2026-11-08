@@ -1,14 +1,12 @@
-"""Owner mode in the app (founder ruling 8 Nov 2026, shape 1: talker plus delegated brain, on the DeepSeek one-Router
-design; super-agent-design/evidence/voice/voice-brain-architecture-research.md, patterns 1 and 3). When a member goes
-Live in their DM with the assistant (agent.py hands it every `mode: "owner"` dispatch), a realtime talker owns the
-spoken conversation and the DM's Router is the one brain.
+"""Owner mode in the app on GPT-Live (8 Nov 2026 plan, docs/superpowers/plans/2026-11-08-gpt-live-voice.md, Task 2;
+contract docs/superpowers/specs/2026-11-08-gpt-live-contract.md). When a member goes Live in their DM with the
+assistant (agent.py hands it every `mode: "owner"` dispatch), GPT-Live is the voice and the DM's Router the one brain.
 
-The talker has no tools and never replies on its own (create_response off): code decides every final line
-(mouth.Talker.line). A greeting or thanks gets a short reply; every other line goes to the DM as the member's message
-(`/owner/turn`, via voice, wake on), with the talk's turns since the last ask, and the fixed holding line is said. The
-Router's and its Workers' messages in the DM come back through `/events`, and the talker says each once, briefly,
-adding nothing (mouth.py). Approval is the one-tap card; a spoken "yes" is only a delegated message. Interrupting
-stops the speech, never the post.
+GPT-Live answers small talk itself and delegates the rest (live.py, client delegation, no agent tools). Each
+delegation is posted once to the DM as the member's message (`/owner/turn`, via voice, wake on), with the talk's turns
+since the last ask, so it shows in the chat as it is said. The Router's and its Workers' messages in the DM come back
+through `/events`, once each by message id, as results. Approval is the one-tap card; a spoken "yes" is only a
+delegated message. GPT-Live bills every open second, silence too: a session is open only while the member's mic is.
 """
 
 from __future__ import annotations
@@ -19,42 +17,49 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
 
 from livekit import rtc
-from livekit.agents import AgentSession, JobContext, room_io
-from livekit.plugins import openai
-from openai.types.realtime.realtime_audio_input_turn_detection import SemanticVad
+from livekit.agents import JobContext, room_io
 
-from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import ENGLISH, TRANSCRIPTION, Mouth, Talker, team_line
 from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
-OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 55 * 60))  # under OpenAI's 60-min realtime session cap
+OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 55 * 60))  # cost cap on one Live
 QUIET_S = float(os.environ.get("OWNER_QUIET_S", 15))  # mic live, the voice done, nobody spoke: close the mic
 AWAY_S = float(os.environ.get("OWNER_AWAY_S", 5 * 60))  # no live mic this long: leave; the next tap rejoins
 POLL_S = float(os.environ.get("OWNER_EVENTS_S", 1))  # how often the talk asks what the room's agents posted
 WAIT_S = 90.0  # after a delegation the talk stays open this long for its answer (Quiet does not count)
+ANSWER_WITHIN_S = 60.0  # a line delegated this soon after a Worker's question came back answers it; later, a new ask
 
-INSTRUCTIONS = """You are {name}, the voice of this business's AI assistant, talking with {who} in the Lightbulb app.
-Today is {today}. You own only the conversation; the team behind you owns every fact, tool and decision.
-Every request goes to the team before you hear it, and a holding line is said for you.
-- Greetings, thanks, "are you there?", "can you hear me?": answer in a few words.
-- Otherwise say only what you are told to say: the holding line, or a message from the team, adding nothing.
-Speak briefly and naturally, one or two short sentences. """ + ENGLISH
+#: The Router's capabilities, as the contract's prompt (§3) lists them: GPT-Live delegates by this list.
+ROUTER_TOOLS = [
+    "The Router: the team's brain. It knows the team's work across GitHub, email, calendar and docs.",
+    "Memory: the Router remembers and recalls what the team has said and decided.",
+    "Work threads: the Router starts work threads that hand tasks to the team's agents.",
+]
 
 
-def realtime_model():
-    """gpt-realtime-2.1-mini (gpt-realtime and -mini shut down 20 Jan 2027, developers.openai.com/api/docs/deprecations).
-    Semantic turns, low eagerness: owners pause mid-thought ("the invoice for... Acme"); silence-only VAD cuts them
-    off. create_response off: code answers each line (Talker.line), never the model on its own. interrupt_response:
-    talking over the voice stops it (developers.openai.com/api/docs/guides/realtime-vad)."""
-    return openai.realtime.RealtimeModel(
-        model=os.environ.get("OWNER_MODEL", "gpt-realtime-2.1-mini"), voice=os.environ.get("OWNER_VOICE", "marin"),
-        turn_detection=SemanticVad(type="semantic_vad", eagerness="low", create_response=False, interrupt_response=True),
-        input_audio_transcription=TRANSCRIPTION,  # English, as the phone: an unpinned language guessed wrong
-    )
+def prompt() -> str:
+    """OpenAI's live-prompting template (developers.openai.com/api/docs/guides/live-prompting), as the contract ran it:
+    style, delegation and the approval card only. No fact about the business: every fact comes from the Router."""
+    from huddle_agent import live  # noqa: PLC0415 -- Task 1's module; imported where used so tests stand it in
+
+    return f"""You are Lightbulb, a calm, friendly voice assistant for this team, talking in the Lightbulb app.
+Speak warmly and naturally, at an unhurried pace. Be clear and direct, not overly cheerful.
+If the user is frustrated, acknowledge it briefly and focus on the next helpful step.
+Speak only English, whatever language a line seems to be in.
+
+Backchannel policy: Use moderate backchannels. Acknowledge naturally without competing with the main response.
+
+Interruption policy: Stop speaking when the user interrupts. Listen to what they say.
+
+{live.delegation_policy(ROUTER_TOOLS)}
+
+Approvals happen on the card in the chat, never by voice: when something needs approval, say it is waiting on the card.
+A spoken yes approves nothing.
+Wait for the backend's result before stating a fact, confirming an action or saying something is done."""
 
 
 class Quiet:
@@ -84,62 +89,74 @@ class Quiet:
         self._timer = self._key = None
 
 
-class OwnerAgent(Talker):
-    """The talker: no tools."""
+class Talk:
+    """One Live in the DM: posts each delegation (`/owner/{room}/turn`) in order, so typed and spoken are one
+    conversation, and yields the DM's agent messages (`/events`) once each. `n` numbers the posts: with the job id,
+    each one's one message. A failed post is logged and the talk goes on. `items` is the talk's record."""
 
-    where = "owner"
-
-    def __init__(self, turns: "Turns", info: dict) -> None:
-        super().__init__(INSTRUCTIONS.format(**info))
-        self._turns, self.allow = turns, (info["name"], info["who"])
-        self.delegated_at = 0.0  # when the last request went to the Router (the talk waits for its answer)
-
-    def post(self, request: str) -> None:
-        # a task of its own: an interruption cancels the talker's reply, never the post
-        self._turns.add(self.context.take(request), self.take_question())
-        self.delegated_at = time.monotonic()
-
-
-class Turns:
-    """Each delegated request posted to the DM in order (`/owner/{room}/turn`), so typed and spoken are one
-    conversation. `n` numbers them: with the job id, each one's one message. A failed post is logged; the talk goes
-    on (the web's bubble clears on its own)."""
-
-    def __init__(self, backend: Backend, speaker: str, session_id: str) -> None:
+    def __init__(self, backend: Backend, speaker: str, session_id: str, after: int) -> None:
         self._b, self._speaker, self._sid = backend, speaker, session_id
-        self._n = 0
-        self._last: asyncio.Task | None = None
+        self.after = after  # the events cursor; kept across GPT-Live sessions in one room
+        self._n, self._lock = 0, asyncio.Lock()  # asyncio.Lock wakes waiters in order: posts land as asked
+        self.question: dict | None = None  # {taskId, qid}: the last Worker question handed to the voice
+        self.question_at = 0.0
+        self.asked_at = 0.0  # when the last delegation was posted: the talk waits WAIT_S for its answer
+        self.spoken_seq = after  # the last seq said or passed over: reported, so the next session starts there
+        self._unsaid: dict[str, int] = {}  # message id -> seq, handed to the voice but not yet said
+        self.items: list[dict] = []
+        self.t0 = time.time()
 
-    def add(self, text: str, answers: dict | None = None) -> None:
-        """`answers`: the Worker question the voice last said ({taskId, qid}), which this line answers."""
-        self._last = asyncio.create_task(self._post(self._last, self._n, text[:4000], answers))
-        self._n += 1
+    async def post(self, text: str, turns: list[str]) -> str:
+        """live.py's `post`: one delegation, the member's message. Returns its message id ("" if it failed)."""
+        n, self._n = self._n, self._n + 1
+        q, self.question = self.question, None
+        answers = q if q and time.monotonic() - self.question_at <= ANSWER_WITHIN_S else None
+        said = [f"> {t}" for t in turns if t.strip() and t.partition(": ")[2] not in text]  # the ask once
+        body = {"speakerUserId": self._speaker, "sessionId": self._sid, "n": n,
+                "text": (text.strip() + ("\n\nSaid in the talk since the last ask:\n" + "\n".join(said) if said else ""))[:4000]}  # fmt: skip
+        self.asked_at = time.monotonic()
+        async with self._lock:
+            try:
+                out = await self._b.owner("turn", {**body, "answers": answers} if answers else body)
+            except BackendError as e:
+                logger.warning("owner: turn %d not posted (%s)", n, e.code)
+                return ""
+        return str(out.get("messageId") or "")
 
-    async def _post(self, prev: asyncio.Task | None, n: int, text: str, answers: dict | None = None) -> None:
-        if prev:
-            await asyncio.gather(prev, return_exceptions=True)  # in the order asked
-        body = {"speakerUserId": self._speaker, "sessionId": self._sid, "n": n, "text": text}
-        try:
-            await self._b.owner("turn", {**body, "answers": answers} if answers else body)
-        except BackendError as e:
-            logger.warning("owner: turn %d not posted (%s)", n, e.code)
+    def spoken(self, event_id: str) -> None:
+        """live.py's `on_spoken`: the voice said the message `event_id`."""
+        if (seq := self._unsaid.pop(event_id, None)) is not None:
+            self.spoken_seq = self.after if not self._unsaid else max(self.spoken_seq, seq)
 
-    async def flush(self) -> None:
-        if self._last:
-            await asyncio.gather(self._last, return_exceptions=True)
-
-
-def talk_session() -> AgentSession:
-    """vad=None: no separate VAD (1.8.11 builds a silero one unless told not to, but leaves it unwired under server
-    turn detection), so user_state comes from the realtime model's own speech_started/stopped. Quiet ends the talk,
-    not user_away_timeout."""
-    return AgentSession(llm=realtime_model(), vad=None, user_away_timeout=None)
-
-
-def interrupt(session) -> str:
-    """A tap on the orb while the voice speaks: the speech stops; delegated work runs on."""
-    session.interrupt()
-    return "ok"
+    async def results(self) -> AsyncIterator[dict]:
+        """live.py's `events`: each agent message the DM gets while this session is open, once, as
+        {kind: "agent", id, seq, text[, question]}. What landed before the session opened is passed over, as typed
+        replies were (a reply read in the chat is never read out)."""
+        said: set[str] = set()
+        first = True
+        self._unsaid.clear()  # handed to a closed session and never said: passed over, or `spoken` sticks
+        while True:
+            try:
+                out = await self._b.owner("events", {"speakerUserId": self._speaker, "after": self.after,
+                                                     "spoken": self.spoken_seq})  # fmt: skip
+            except BackendError as e:
+                logger.warning("owner: events failed (%s)", e.code)
+                out = {}
+            for m in out.get("messages", []):
+                if m["id"] in said:
+                    continue
+                said.add(m["id"])
+                if first:
+                    continue
+                if m.get("question"):
+                    self.question, self.question_at = m["question"], time.monotonic()
+                self.asked_at = 0.0  # an answer came: Quiet counts again
+                self._unsaid[m["id"]] = int(m.get("seq") or 0)
+                yield {"kind": "agent", **m}
+            self.after, first = max(self.after, int(out.get("after") or 0)), False
+            if not self._unsaid:
+                self.spoken_seq = self.after
+            await asyncio.sleep(POLL_S)
 
 
 def talk_record(speaker: str, items: list[dict], session_id: str, seconds: float) -> dict:
@@ -149,7 +166,10 @@ def talk_record(speaker: str, items: list[dict], session_id: str, seconds: float
 
 
 async def run(ctx: JobContext, meta: dict) -> None:
-    """The member's Live in the DM, from the dispatch until they leave, go quiet or the cap."""
+    """The member's Live in the DM, from the dispatch until they leave, go quiet or the cap. GPT-Live is open only
+    while the mic is live (the orb open): the warm room costs nothing, and closing the orb ends the billed session."""
+    from huddle_agent import live  # noqa: PLC0415
+
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     await ctx.connect()
     member = await ctx.wait_for_participant()  # the DM's one person; LiveKit set the identity from Clerk
@@ -158,32 +178,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
     except BackendError as e:
         logger.error("owner: refused room %s (%s)", meta["roomId"], e.code)
         return ctx.shutdown("refused")
-    name, tile, who = info["assistantName"], info.get("agentId") or "assistant", member.name or "the owner"
-    turns = Turns(backend, member.identity, ctx.job.id)
-    agent = OwnerAgent(turns, {"name": name, "who": who, "today": time.strftime("%A %Y-%m-%d")})
-    session = talk_session()
-    items: list[dict] = []
-    t0 = time.time()
-    talk = {"live": False}  # the mic is open: only then is anything said
-
-    @session.on("conversation_item_added")  # LiveKit's documented per-turn event: each final user/agent line
-    def _item(ev) -> None:
-        text = getattr(ev.item, "text_content", None)
-        if text and ev.item.role in ("user", "assistant") and not (ev.item.role == "user" and team_line(text)):
-            at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
-            items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
-            if ev.item.role == "user":
-                agent.line(who, text)  # code decides: a short reply to small talk, else posted and held
-            elif not ev.item.interrupted:
-                agent.context.add(name, text)
-
+    name, tile = info["assistantName"], info.get("agentId") or "assistant"
+    talk = Talk(backend, member.identity, ctx.job.id, int(info.get("after") or 0))
+    state: dict = {"open": None, "quiet": False}  # the GPT-Live session's start task, while the mic is live
     attrs = ctx.room.local_participant.set_attributes
-
-    @session.on("agent_state_changed")
-    def _state(ev) -> None:
-        status = {"speaking": "speaking", "thinking": "working"}.get(ev.new_state, "listening")
-        asyncio.create_task(attrs({f"lightbulb.agent.{tile}.status": status}))
-        recount()
 
     async def leave(reason: str) -> None:
         """The web leaves on idle_ended, so the next press joins again and dispatches a fresh session."""
@@ -194,67 +192,91 @@ async def run(ctx: JobContext, meta: dict) -> None:
         ctx.shutdown(reason)
 
     def quiet() -> None:
-        """The web closes the mic on quiet_ended; the room stays, so the next tap is instant. Tasks run on."""
+        """GPT-Live closes now (idle seconds are billed) and the web closes the mic on quiet_ended; the room stays
+        warm, and the next tap opens a new session. Tasks run on."""
+        opening, state["open"], state["quiet"] = state["open"], None, True
+        asyncio.create_task(shut(opening))
         asyncio.create_task(ctx.room.local_participant.publish_data(
             json.dumps({"code": "quiet_ended"}), reliable=True, topic="huddle.error"))  # fmt: skip
 
-    quiet_timer = Quiet(quiet, lambda: asyncio.create_task(leave("member quiet")))
+    quiet_timer = Quiet(quiet, lambda: asyncio.create_task(leave("member quiet")), QUIET_S, AWAY_S)
+
+    def current():
+        t = state["open"]
+        return t.result() if t and t.done() and not t.cancelled() and not t.exception() else None
+
+    def hooks(opening: asyncio.Task) -> None:
+        """The live session's own events: the talk's record, the strip's status and the quiet count."""
+        if opening.cancelled() or opening.exception() or not (session := opening.result().session):
+            return
+
+        @session.on("conversation_item_added")  # LiveKit's documented per-turn event: each final user/agent line
+        def _item(ev) -> None:
+            text = getattr(ev.item, "text_content", None)
+            if text and ev.item.role in ("user", "assistant"):
+                at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
+                talk.items.append({"role": ev.item.role, "text": text, "t": at - talk.t0,
+                                   "interrupted": ev.item.interrupted})  # fmt: skip
+
+        @session.on("agent_state_changed")
+        def _state(ev) -> None:
+            status = {"speaking": "speaking", "thinking": "working"}.get(ev.new_state, "listening")
+            asyncio.create_task(attrs({f"lightbulb.agent.{tile}.status": status}))
+            recount()
+
+        session.on("user_state_changed", recount)
+        recount()
+
+    async def shut(opening: asyncio.Task | None) -> None:
+        if opening is None:
+            return
+        try:
+            await (await opening).close()
+        except Exception:  # noqa: BLE001 -- a failed start or close: nothing left open to bill
+            logger.warning("owner: live session not closed cleanly", exc_info=True)
 
     def recount(*_args) -> None:
-        talk["live"] = any(p.kind == rtc.TrackKind.KIND_AUDIO and not p.muted for p in member.track_publications.values())
-        waiting = time.monotonic() - agent.delegated_at < WAIT_S  # an answer is on its way: keep the talk open
-        quiet_timer.update(talk["live"], session.user_state, "thinking" if waiting else session.agent_state)
+        mic = any(p.kind == rtc.TrackKind.KIND_AUDIO and not p.muted for p in member.track_publications.values())
+        state["quiet"] = state["quiet"] and mic  # after quiet, a new session only once the mic is off and on again
+        if mic and state["open"] is None and not state["quiet"]:
+            state["open"] = asyncio.create_task(live.start(
+                ctx, prompt=prompt(), surface="owner", post=talk.post, events=talk.results, on_spoken=talk.spoken,
+                room_options=room_io.RoomOptions(
+                    participant_identity=member.identity,
+                    text_input=False,
+                    audio_output=room_io.AudioOutputOptions(track_name=f"agent-{tile}"),  # the strip's bars read it
+                ),
+            ))  # fmt: skip
+            state["open"].add_done_callback(hooks)
+        elif not mic and state["open"] is not None:
+            opening, state["open"] = state["open"], None
+            asyncio.create_task(shut(opening))
+        s = current()
+        session = s.session if s else None
+        user, agent = (session.user_state, session.agent_state) if session else ("listening", "listening")
+        waiting = time.monotonic() - talk.asked_at < WAIT_S  # an answer is on its way: keep the talk open
+        quiet_timer.update(mic, user, "thinking" if waiting else agent)
 
-    session.on("user_state_changed", recount)
     for event in ("track_published", "track_unpublished", "track_muted", "track_unmuted"):
         ctx.room.on(event, recount)
+    limit = asyncio.create_task(asyncio.sleep(OWNER_MAX_S))
+    limit.add_done_callback(lambda t: t.cancelled() or asyncio.create_task(leave("owner max length")))
 
-    async def fetch(after: int, handled: int) -> dict:
-        return await backend.owner("events", {"speakerUserId": member.identity, "after": after, "spoken": handled})
+    async def close() -> None:
+        limit.cancel()
+        quiet_timer.cancel()
+        await shut(state["open"])
+        try:
+            await backend.owner("end", talk_record(member.identity, talk.items, ctx.job.id, time.time() - talk.t0))
+        except BackendError as e:
+            logger.warning("owner: talk not kept (%s)", e.code)
+        finally:
+            await backend.aclose()
 
-    def say(texts: list[str]) -> None:
-        agent.delegated_at = 0.0  # the answer came: Quiet counts again
-        agent.say(texts)
-
-    async def speak_loop(mouth: Mouth) -> None:
-        while True:
-            await asyncio.sleep(POLL_S)
-            await mouth.poll()
-            recount()
-            idle = session.user_state != "speaking" and session.agent_state not in ("speaking", "thinking")
-            mouth.speak(say, ready=idle, live=talk["live"])
-
-    session.on("close", lambda _ev: ctx.shutdown("session closed"))
-    limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length"), agent.unchecked))
-    agent.mouth = Mouth(fetch, int(info.get("after") or 0))
-    reports = asyncio.create_task(speak_loop(agent.mouth))
-    record = lambda: talk_record(member.identity, items, ctx.job.id, time.time() - t0)  # noqa: E731
-    ctx.add_shutdown_callback(lambda _reason="": (quiet_timer.cancel(), _close(limit, backend, record, turns, reports))[1])
-    # the web's Talk RPC (HuddleProvider.talkStart): nothing to summon here, the session already listens
+    ctx.add_shutdown_callback(lambda _reason="": close())
+    # the web's RPCs (HuddleProvider): the session already listens, and GPT-Live stops itself when talked over
     ctx.room.local_participant.register_rpc_method("talk_start", lambda _data: "ok")
-    ctx.room.local_participant.register_rpc_method("interrupt", lambda _data: interrupt(session))
-    await session.start(
-        agent=agent,
-        room=ctx.room,
-        room_options=room_io.RoomOptions(
-            participant_identity=member.identity,
-            text_input=False,
-            audio_output=room_io.AudioOutputOptions(track_name=f"agent-{tile}"),  # the strip's bars read it
-        ),
-        record=False,
-    )
+    ctx.room.local_participant.register_rpc_method("interrupt", lambda _data: "ok")
     await attrs({f"lightbulb.agent.{tile}.status": "listening", f"lightbulb.agent.{tile}.name": name})
     recount()
     logger.info("owner: listening in room %s as %s", meta["roomId"], name)
-
-
-async def _close(limit: asyncio.Task, backend: Backend, record, turns: Turns, reports: asyncio.Task) -> None:
-    limit.cancel()
-    reports.cancel()
-    try:
-        await turns.flush()
-        await backend.owner("end", record())  # the talk becomes a "Yours" row on Home
-    except BackendError as e:
-        logger.warning("owner: talk not kept (%s)", e.code)
-    finally:
-        await backend.aclose()

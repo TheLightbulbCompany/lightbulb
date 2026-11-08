@@ -625,3 +625,25 @@ async def test_opt_out_removes_only_that_person_from_notes_and_audio_and_persist
     assert not restored.joiner._parts
     m.joiner.close()
     restored.joiner.close()
+
+
+async def test_opt_out_stays_local_and_retries_a_transient_persistence_failure():
+    b = _Backend()
+    saved = b.meet
+    attempts = []
+
+    async def flaky(op, body):
+        attempts.append((op, body))
+        if len(attempts) == 1:
+            raise OSError("temporary transport failure")
+        return await saved(op, body)
+
+    b.meet = flaky
+    m = _meeting(b, mix=meet.Mix())
+    m.heard(SAM, "Nova, stop transcribing me", final=True)
+    assert m.excluded(SAM)
+    m.heard(SAM, "Private words while persistence is retrying", final=True)
+    assert not m.lines
+    await m.close()
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    assert b.sent == [attempts[1]]

@@ -296,10 +296,15 @@ class Meeting:
         )
 
     async def _save_opt_out(self, body: dict) -> None:
-        try:
-            await self._b.meet("transcription", body)
-        except Exception:  # noqa: BLE001 -- local exclusion stands if persistence is unavailable
-            logger.exception("meet: opt-out not saved")
+        for attempt in range(3):
+            try:
+                await self._b.meet("transcription", body)
+                return
+            except Exception:  # noqa: BLE001 -- local exclusion stands while persistence retries
+                if attempt == 2:
+                    logger.exception("meet: opt-out not saved")
+                else:
+                    await asyncio.sleep(0.5 * (attempt + 1))
 
     def heard(self, who: str, text: str, final: bool) -> None:
         if not text.strip() or self.excluded(who):
@@ -426,7 +431,10 @@ class Meeting:
 
     async def close(self) -> None:
         if self._privacy_saves:
-            await asyncio.gather(*self._privacy_saves, return_exceptions=True)
+            _, pending = await asyncio.wait(tuple(self._privacy_saves), timeout=10)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
         if self.opening is not None:
             await asyncio.gather(self.opening, return_exceptions=True)
         if self.voice is not None:

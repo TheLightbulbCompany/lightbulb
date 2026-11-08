@@ -29,11 +29,15 @@ router = APIRouter(dependencies=[_Worker])
 logger = logging.getLogger(__name__)
 
 ANNOUNCE = (
-    '{name} is here for {company}. It listens and speaks only when someone says "{name}, ..."; '
-    'say "{name}, stop" to cut it off. Anything that spends, sends or publishes waits for the inviting member\'s OK. '
-    "This meeting is recorded and notes are saved to {company}'s workspace. "
-    'Say "{name}, stop transcribing me" to opt out.'
+    "{name} is here for {company}. Say its name to wake it; while awake it follows the conversation. "
+    "Spending, sending or publishing requires the inviter's approval in the app. "
+    "This meeting is recorded and notes are saved to your workspace. "
+    'Say "{name}, stop transcribing me" to exclude your voice from the assistant. The meeting recording continues.'
 )
+
+
+def announcement(name: str, company: str) -> str:
+    return ANNOUNCE.format(name=name[:40], company=company[:70])
 
 
 async def _meeting(room_id: str, body: RoomBody) -> tuple[str, dict, dict]:
@@ -135,7 +139,7 @@ async def start(room_id: str, body: StartIn) -> dict:
         )
         if mine is not None:
             try:  # best-effort: a refused chat line must not keep the worker from starting
-                await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
+                await meeting_bots.say(bot, announcement(name, body.company or "the team"))
             except Exception as e:  # noqa: BLE001 -- RecallError or a transport error alike
                 logger.warning("meet room %s: announce failed %s", room_id, getattr(e, "code", type(e).__name__))
     return {
@@ -327,7 +331,7 @@ async def transcription(room_id: str, body: TranscriptionIn) -> dict:
     meeting = await meeting_invites._patch_meeting(room_id, change) or meeting
     if bot := meeting.get("recallBotId"):
         who = name or "you"
-        line = (f"OK {who}: nothing more you say is transcribed or heard by the assistant." if body.optOut
+        line = (f"OK {who}: your voice is excluded from the assistant and its transcript. The meeting recording continues." if body.optOut
                 else f"OK {who}: you are transcribed again.")  # fmt: skip
         try:
             await meeting_bots.say(bot, line)

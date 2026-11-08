@@ -55,8 +55,8 @@ async def test_announce_once(m):
     [call] = m["say"].await_args_list
     assert (
         call.args[0] == "bot_1"
-        and 'says "Nova, ..."' in call.args[1]
-        and "waits for the inviting member" in call.args[1]
+        and "Say its name to wake it; while awake it follows the conversation" in call.args[1]
+        and "requires the inviter's approval in the app" in call.args[1]
     )
 
 
@@ -139,7 +139,7 @@ async def test_single_announcement(m):
 
 
 def test_announcement_says_recorded_and_fits_the_chat():
-    longest = voice_meet.ANNOUNCE.format(name="N" * 30, company="C" * 50)
+    longest = voice_meet.announcement(name="N" * 200, company="C" * 200)
     assert "This meeting is recorded and notes are saved to " in longest and len(longest) <= 500  # Meet's chat limit
 
 
@@ -395,7 +395,8 @@ def _tx(pid: str, name: str, opt_out: bool = True):
 async def test_opt_out_persists_by_id_and_name_through_rejoin_and_worker_restart(m):
     await voice_meet.transcription(ROOM, _tx("12", "Sam"))
     await voice_meet.transcription(ROOM, _tx("11", "Maya"))
-    assert "nothing more you say is transcribed" in m["say"].await_args.args[1]
+    assert "your voice is excluded from the assistant and its transcript" in m["say"].await_args.args[1]
+    assert "meeting recording continues" in m["say"].await_args.args[1]
     await voice_meet.transcription(ROOM, _tx("19", "sam"))
     assert m["meeting"]["notTranscribed"] == [{"id": "11", "name": "Maya"}, {"id": "19", "name": "sam"}]
     with patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")):

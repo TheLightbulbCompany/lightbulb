@@ -284,7 +284,6 @@ async def delete_my_account(
     # (runtime/Stripe clients) — keep it off users.py import time.
     from core.services import clerk_admin
     from core.services.account_wipe import (
-        BootstrapAccountProtectedError,
         OrgWipeUnsupportedError,
         resolve_account_emails,
         wipe_account,
@@ -313,7 +312,7 @@ async def delete_my_account(
     started = time.monotonic()
     try:
         if not auth.is_org_context:
-            report = await wipe_account(owner_id, actor_admin_id=owner_id, account_emails=account_emails)
+            report = await wipe_account(owner_id, actor_admin_id=owner_id)
         else:
             try:
                 # The wipe's own snapshot decides "sole member" (one member source).
@@ -323,11 +322,9 @@ async def delete_my_account(
                 # (the organizationMembership.deleted path — the workspace's
                 # runtime, company and billing are untouched) and deletes the
                 # caller's own rows and Clerk user.
-                report = await wipe_account(owner_id, actor_admin_id=owner_id, account_emails=account_emails)
+                report = await wipe_account(owner_id, actor_admin_id=owner_id)
     except OrgWipeUnsupportedError:
         raise HTTPException(status_code=403, detail="org_deletion_unsupported")
-    except BootstrapAccountProtectedError:
-        raise HTTPException(status_code=400, detail="account_protected")
     except SelfServeBlockedError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except WorkspaceWipeError:

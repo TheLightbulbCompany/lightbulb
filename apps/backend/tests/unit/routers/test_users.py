@@ -504,11 +504,7 @@ class TestDeleteMyAccount:
 
         assert response.status_code == 200
         assert response.json() == {"status": "deleted"}
-        mock_wipe.assert_awaited_once_with(
-            "user_test_123",
-            actor_admin_id="user_test_123",
-            account_emails=["Person@Example.com"],
-        )
+        mock_wipe.assert_awaited_once_with("user_test_123", actor_admin_id="user_test_123")
         assert mock_audit.create.await_args.kwargs["action"] == "account_wipe_self"
         assert mock_audit.create.await_args.kwargs["target_user_id"] == "user_test_123"
 
@@ -560,9 +556,7 @@ class TestDeleteMyAccount:
         assert response.status_code == 200
         assert response.json() == {"status": "deleted"}
         mock_ws_wipe.assert_awaited_once_with("org_test_456", user_id="user_test_123")
-        mock_wipe.assert_awaited_once_with(
-            "user_test_123", actor_admin_id="user_test_123", account_emails=["person@example.com"]
-        )
+        mock_wipe.assert_awaited_once_with("user_test_123", actor_admin_id="user_test_123")
 
     @pytest.mark.asyncio
     @patch("routers.users.admin_actions_repo")

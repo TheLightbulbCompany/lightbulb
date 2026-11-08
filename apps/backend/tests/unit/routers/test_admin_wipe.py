@@ -21,7 +21,6 @@ import pytest
 
 from core.auth import AuthContext, get_current_user
 from core.services.account_wipe import (
-    BootstrapAccountProtectedError,
     OrgWipeUnsupportedError,
     WipeReport,
     WipeStep,
@@ -71,7 +70,7 @@ def mock_audit_repo():
 
 def _sample_report(*, dry_run: bool, failed: bool = False) -> WipeReport:
     steps = [
-        WipeStep(system="paperclip_company", action="delete_company", status="would_delete" if dry_run else "ok"),
+        WipeStep(system="paperclip_membership", action="archive_member", status="would_delete" if dry_run else "ok"),
         WipeStep(
             system="clerk_user",
             action="delete_user",
@@ -149,11 +148,7 @@ class TestWipeExecute:
             )
         assert res.status_code == 200
         assert res.json() == report.to_dict()
-        # Router threads the pre-resolved emails into wipe_account so it doesn't
-        # re-call Clerk.
-        mock_wipe.assert_awaited_once_with(
-            "user_target", actor_admin_id="admin_1", account_emails=["owner@example.com"]
-        )
+        mock_wipe.assert_awaited_once_with("user_target", actor_admin_id="admin_1")
 
         mock_audit_repo.assert_awaited_once()
         kwargs = mock_audit_repo.await_args.kwargs
@@ -191,9 +186,7 @@ class TestWipeExecute:
                 json={"confirm_email": "Owner@Example.com"},
             )
         assert res.status_code == 200
-        mock_wipe.assert_awaited_once_with(
-            "user_target", actor_admin_id="admin_1", account_emails=["owner@example.com"]
-        )
+        mock_wipe.assert_awaited_once_with("user_target", actor_admin_id="admin_1")
         mock_audit_repo.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -213,9 +206,7 @@ class TestWipeExecute:
                 json={"confirm_email": "clerk-only@example.com"},
             )
         assert res.status_code == 200
-        mock_wipe.assert_awaited_once_with(
-            "user_target", actor_admin_id="admin_1", account_emails=["clerk-only@example.com"]
-        )
+        mock_wipe.assert_awaited_once_with("user_target", actor_admin_id="admin_1")
         mock_audit_repo.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -233,27 +224,6 @@ class TestWipeExecute:
             )
         assert res.status_code == 400
         mock_wipe.assert_not_awaited()
-        mock_audit_repo.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_account_refused_400_and_no_audit(self, async_client, admin_env, mock_audit_repo):
-        """A bootstrap Paperclip admin account -> wipe_account raises
-        BootstrapAccountProtectedError, which the router maps to 400
-        bootstrap_account_protected. No audit row for a refused wipe."""
-        with (
-            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["admin@isol8.co"])),
-            patch(
-                "routers.admin.wipe_account",
-                new=AsyncMock(side_effect=BootstrapAccountProtectedError("user_target")),
-            ) as mock_wipe,
-        ):
-            res = await async_client.post(
-                "/api/v1/admin/users/user_target/wipe",
-                json={"confirm_email": "admin@isol8.co"},
-            )
-        assert res.status_code == 400
-        assert res.json()["detail"] == "bootstrap_account_protected"
-        mock_wipe.assert_awaited_once()
         mock_audit_repo.assert_not_awaited()
 
     @pytest.mark.asyncio

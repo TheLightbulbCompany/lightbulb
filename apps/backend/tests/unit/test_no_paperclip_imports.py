@@ -27,6 +27,8 @@ DELETED = (
     "routers.paperclip_cost",
     "routers.company_board",
     "core.services.paperclip_api_key",
+    "core.services.paperclip_user_delete",
+    "core.services.paperclip_sql",
 )
 
 KEPT = {
@@ -41,8 +43,6 @@ KEPT = {
     "core/services/paperclip_owner_email.py": "agent mail sender identity",
     "core/services/paperclip_provisioning.py": "workspace provisioning seeds the company and starter agents",
     "core/services/paperclip_session_cookie.py": "/teams/* BFF session cookie and the 401 self-heal in main.py",
-    "core/services/paperclip_sql.py": "RDS Data API for paperclip_user_delete",
-    "core/services/paperclip_user_delete.py": "account and workspace wipe delete the Better Auth user",
     "core/services/paperclip_user_session.py": "/teams/* BFF per-user sign-in",
     "routers/teams/agents.py": "the shared /teams _ctx (session cookie) and /teams/members principal map; /agents routes are native",
     "routers/teams/deps.py": "TeamsContext for agents.py and settings.py",

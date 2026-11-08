@@ -33,7 +33,6 @@ from core.services import (
     system_health,
 )
 from core.services.account_wipe import (
-    BootstrapAccountProtectedError,
     OrgWipeUnsupportedError,
     preview_wipe,
     resolve_account_emails,
@@ -664,7 +663,7 @@ async def admin_agent_delete(
     "/users/{owner_id}/wipe/preview",
     description=(
         "Read-only dry-run: enumerate every resource that exists for the owner "
-        "and would be torn down by a wipe (Paperclip company + Aurora user, "
+        "and would be torn down by a wipe (workspace membership, "
         "ECS service + EFS, Bedrock AIP(s) + IAM role, Metronome, Stripe, "
         "DDB rows, Clerk user). Calls no delete method. Personal owners only — "
         "org owners get 400 org_wipe_unsupported."
@@ -678,8 +677,6 @@ async def admin_wipe_preview(
         report = await preview_wipe(owner_id)
     except OrgWipeUnsupportedError:
         raise HTTPException(status_code=400, detail="org_wipe_unsupported")
-    except BootstrapAccountProtectedError:
-        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
     return report.to_dict()
 
 
@@ -739,11 +736,9 @@ async def admin_wipe_execute(
 
     started = time.monotonic()
     try:
-        report = await wipe_account(owner_id, actor_admin_id=auth.user_id, account_emails=account_emails)
+        report = await wipe_account(owner_id, actor_admin_id=auth.user_id)
     except OrgWipeUnsupportedError:
         raise HTTPException(status_code=400, detail="org_wipe_unsupported")
-    except BootstrapAccountProtectedError:
-        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     report_dict = report.to_dict()
@@ -795,7 +790,7 @@ async def admin_wipe_execute(
     description=(
         "Read-only dry-run: enumerate every resource under the workspace org id "
         "that a workspace wipe would tear down (AgentCore runtime + S3 profiles "
-        "under the ORG id, Paperclip company + per-member Aurora users, rooms, "
+        "under the ORG id, the workspace and member rows, rooms, "
         "secrets/tokens, member Clerk users, Clerk org). Calls no delete method. "
         "Billing is shown preserved/skipped unless include_billing is set."
     ),
@@ -815,8 +810,6 @@ async def admin_workspace_wipe_preview(
         )
     except WorkspaceWipeError as e:
         raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
-    except BootstrapAccountProtectedError:
-        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
     return report.to_dict()
 
 
@@ -838,8 +831,8 @@ async def admin_workspace_wipe_execute(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    # Error details are "<code>: <message>" (bootstrap_account_protected has no
-    # message); the admin UI keys on the code before the separator.
+    # Error details are "<code>: <message>"; the admin UI keys on the code
+    # before the separator.
     if not body.preview_fingerprint.strip():
         raise HTTPException(status_code=400, detail="workspace_wipe_refused: preview_fingerprint required")
     started = time.monotonic()
@@ -860,8 +853,6 @@ async def admin_workspace_wipe_execute(
         raise HTTPException(status_code=400, detail=f"workspace_mismatch: {e}")
     except WorkspaceWipeError as e:
         raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
-    except BootstrapAccountProtectedError:
-        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     report_dict = report.to_dict()

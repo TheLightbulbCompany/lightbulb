@@ -13,7 +13,6 @@ the one shared registry.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import fields
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,7 +26,6 @@ from core.services.workspace_wipe import (
     StaleWorkspacePreviewError,
     WORKSPACE_STEP_ORDER,
     WorkspaceConfirmMismatchError,
-    WorkspaceSnapshot,
     WorkspaceWipeError,
     normalize_layers,
     preview_workspace_wipe,
@@ -132,8 +130,6 @@ def ws_mocks():
     usage_delete = AsyncMock(return_value=5)
     gate_tokens_delete = AsyncMock(return_value=2)
 
-    paperclip_company_delete = AsyncMock(return_value=None)
-    paperclip_user_delete_fn = AsyncMock(return_value=None)
     delete_runtime_fn = AsyncMock(return_value=_container_row())
     voice_wipe = AsyncMock()
     metronome_archive = AsyncMock(return_value=None)
@@ -183,8 +179,6 @@ def ws_mocks():
         ("core.services.workspace_wipe.provisioning_workflow_repo.transition", workflows_transition),
         ("core.services.workspace_wipe.usage_repo.delete_all_for_owner", usage_delete),
         ("core.services.workspace_wipe.delete_gate_token_rows", gate_tokens_delete),
-        ("core.services.workspace_wipe._delete_paperclip_company_call", paperclip_company_delete),
-        ("core.services.workspace_wipe.delete_paperclip_user", paperclip_user_delete_fn),
         ("core.services.workspace_wipe.delete_workspace_runtime", delete_runtime_fn),
         ("core.services.workspace_wipe.wipe_owner_voice", voice_wipe),
         ("core.services.workspace_wipe._archive_metronome_customer", metronome_archive),
@@ -228,8 +222,6 @@ def ws_mocks():
             workflows_transition=workflows_transition,
             usage_delete=usage_delete,
             gate_tokens_delete=gate_tokens_delete,
-            paperclip_company_delete=paperclip_company_delete,
-            paperclip_user_delete_fn=paperclip_user_delete_fn,
             delete_runtime=delete_runtime_fn,
             voice_wipe=voice_wipe,
             metronome_archive=metronome_archive,
@@ -263,9 +255,6 @@ async def test_preview_enumerates_org_blast_radius_and_preserves_billing(ws_mock
     # The incident shape: the containers row under the ORG id IS enumerated.
     assert by_system["runtime"].status == "would_delete"
     assert "agentcore_runtime_arn=arn:aws:bedrock-agentcore" in by_system["runtime"].detail
-    assert by_system["paperclip_company"].status == "would_delete"
-    assert "company_ws" in by_system["paperclip_company"].detail
-    assert MEMBER_A in by_system["paperclip_company"].detail
     assert by_system["messaging"].status == "would_delete"
     assert "2 owned room" in by_system["messaging"].detail
     # Counts + names, never values.
@@ -286,8 +275,6 @@ async def test_preview_writes_nothing(ws_mocks):
     await preview_workspace_wipe(ORG_ID)
 
     ws_mocks.delete_runtime.assert_not_awaited()
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
-    ws_mocks.paperclip_user_delete_fn.assert_not_awaited()
     ws_mocks.gate_tokens_delete.assert_not_awaited()
     ws_mocks.messaging_delete_room.assert_not_awaited()
     ws_mocks.messaging_delete_owner.assert_not_awaited()
@@ -356,9 +343,6 @@ async def test_execute_finds_and_deletes_runtime_under_org_id(ws_mocks):
     ws_mocks.voice_wipe.assert_awaited_once_with(ORG_ID)
     by_system = {s.system: s for s in report.steps}
     assert by_system["runtime"].status == "ok"
-    # Paperclip company deleted (workspace delete, not refused) + members archived by identity.
-    ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
-    assert ws_mocks.paperclip_user_delete_fn.await_count == 2
     # Messaging under the org partition gone, and the number's PHONE# line row (gate 13).
     ws_mocks.messaging_delete_owner.assert_awaited_once_with(ORG_ID)
     ws_mocks.phone_release.assert_awaited_once_with(ORG_ID)
@@ -426,7 +410,6 @@ async def test_execute_refuses_confirm_mismatch_before_any_delete(ws_mocks):
             expected_fingerprint=preview.fingerprint,
         )
     ws_mocks.delete_runtime.assert_not_awaited()
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
     ws_mocks.clerk_delete_org.assert_not_awaited()
 
 
@@ -442,7 +425,6 @@ async def test_stale_preview_aborts_before_any_delete(ws_mocks):
         )
 
     ws_mocks.delete_runtime.assert_not_awaited()
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
     ws_mocks.messaging_delete_room.assert_not_awaited()
     ws_mocks.clerk_delete_org.assert_not_awaited()
 
@@ -465,7 +447,6 @@ async def test_layer_selection_skips_unselected(ws_mocks):
     )
     ws_mocks.messaging_delete_owner.assert_awaited_once_with(ORG_ID)
     ws_mocks.delete_runtime.assert_not_awaited()
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
     ws_mocks.clerk_delete_org.assert_not_awaited()
     assert any(s.system == "runtime" and s.status == "skipped" for s in report.steps)
 
@@ -543,11 +524,9 @@ async def test_shared_member_keeps_account_unless_opted_in(ws_mocks):
     assert "remove membership only (also in org_other)" in _step(preview, "clerk_user").detail
     ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
     ws_mocks.user_delete.assert_awaited_once_with(MEMBER_A)
-    ws_mocks.paperclip_user_delete_fn.assert_awaited_once()
-    assert ws_mocks.paperclip_user_delete_fn.await_args.kwargs["paperclip_user_id"] == "pc_a"
     assert all(c.args != (MEMBER_B,) for c in ws_mocks.secrets_delete.await_args_list)
     # B keeps their account, so B keeps their Paperclip identity row too (it is
-    # their Better Auth login in org_other's company); A's and the workspace
+    # their identity in org_other); A's and the workspace
     # row go.
     deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
     assert MEMBER_B not in deleted_keys
@@ -801,16 +780,13 @@ async def test_member_secret_failure_keeps_clerk_org(ws_mocks):
 
 
 # ---------------------------------------------------------------------------
-# Paperclip: one workspace = one company, named on the ORG row
+# The workspace's rows in paperclip-companies
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_workspace_company_and_row_are_deleted(ws_mocks):
+async def test_workspace_row_and_identity_rows_are_deleted(ws_mocks):
     preview, report = await _preview_then_wipe()
-    assert _step(preview, "paperclip_company").status == "would_delete"
-    assert _step(report, "paperclip_company").status == "ok"
-    ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
     ws_mocks.paperclip_instance.get_workspace.assert_awaited_with(ORG_ID)
     # The org row and both deletable members' identity rows go.
     deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
@@ -835,9 +811,6 @@ async def test_members_are_the_union_of_clerk_and_the_workspace_row(ws_mocks):
     by_uid = {m["user_id"]: m for m in preview.members}
     assert by_uid[MEMBER_A]["email"] == "a@example.com"
     assert by_uid[MEMBER_B]["email"] == "b-clerk@example.com"
-    # Only A has a Better Auth user to delete.
-    assert "pc_a" in _step(preview, "paperclip_aurora_user").detail
-    assert "pc_b" not in _step(preview, "paperclip_aurora_user").detail
 
 
 @pytest.mark.asyncio
@@ -847,30 +820,10 @@ async def test_workspace_row_read_failure_aborts_before_any_step(ws_mocks):
         await preview_workspace_wipe(ORG_ID)
     with pytest.raises(RuntimeError):
         await wipe_workspace(ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint="x")
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
     ws_mocks.paperclip_instance.delete.assert_not_awaited()
     ws_mocks.delete_runtime.assert_not_awaited()
     ws_mocks.gate_tokens_delete.assert_not_awaited()
     ws_mocks.clerk_delete_org.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_company_change_after_preview_is_stale(ws_mocks):
-    """The company id is fingerprinted: a preview that named one company
-    never executes against another."""
-    preview = await preview_workspace_wipe(ORG_ID)
-    ws_mocks.workspaces[ORG_ID] = _workspace(company_id="company_new")
-    with pytest.raises(StaleWorkspacePreviewError):
-        await wipe_workspace(
-            ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint=preview.fingerprint
-        )
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
-
-
-def test_snapshot_carries_no_company_refusal():
-    """The cross-org company refusal is gone with the per-user row shape: the
-    workspace row names its one company."""
-    assert "company_refusal" not in {f.name for f in fields(WorkspaceSnapshot)}
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +847,6 @@ async def test_self_serve_sole_member_wipes_workspace_and_cancels_stripe(ws_mock
     assert report.billing_preserved is False
     ws_mocks.stripe_delete.assert_awaited_once_with(ORG_ID)  # cancels the subscription, then the customer
     ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True, report={})
-    ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
     ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
     ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
 
@@ -909,28 +861,6 @@ async def test_self_serve_account_in_another_org_is_still_deleted(ws_mocks):
     await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
 
     ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
-
-
-@pytest.mark.asyncio
-async def test_self_serve_deletes_exactly_the_orgs_own_company(ws_mocks):
-    """#3097 guarantee (replaces the #3082 cross-org refusal): the org row names
-    one company, and the self-serve wipe deletes that company and only this
-    org's Paperclip rows, never another workspace's."""
-    from core.services.workspace_wipe import wipe_own_workspace
-
-    _sole_member(ws_mocks)
-    ws_mocks.workspaces["org_founder"] = _workspace(org_id="org_founder", company_id="company_founder")
-    await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
-
-    ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
-    deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
-    assert ORG_ID in deleted_keys
-    # Only this org's rows: its workspace row, the caller's identity, and any
-    # key scoped to this org id. Never another workspace's row.
-    assert all(k in (ORG_ID, MEMBER_A) or k.endswith(f":{ORG_ID}") for k in deleted_keys), deleted_keys
-    assert "org_founder" not in deleted_keys
-    ws_mocks.paperclip_instance.get_workspace.assert_any_await(ORG_ID)
-    assert all(c.args[0] == ORG_ID for c in ws_mocks.paperclip_instance.get_workspace.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -998,21 +928,6 @@ async def test_failed_money_step_holds_back_billing_row_and_clerk(ws_mocks, fail
 
 
 @pytest.mark.asyncio
-async def test_self_serve_refuses_bootstrap_account(ws_mocks):
-    from core.services.account_wipe import BootstrapAccountProtectedError
-    from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS
-    from core.services.workspace_wipe import wipe_own_workspace
-
-    _sole_member(ws_mocks)
-    ws_mocks.identities[MEMBER_A] = PaperclipIdentity(
-        user_id=MEMBER_A, paperclip_user_id="pc_a", paperclip_email=sorted(BOOTSTRAP_EMAILS)[0]
-    )
-    with pytest.raises(BootstrapAccountProtectedError):
-        await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
-    ws_mocks.delete_runtime.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_self_serve_retry_after_partial_wipe_does_not_fail(ws_mocks):
     """A retry after the rows are gone (Clerk user delete failed last time) finishes cleanly."""
     from core.services.workspace_wipe import wipe_own_workspace
@@ -1060,3 +975,22 @@ async def test_deprovision_failure_does_not_abort(ws_mocks):
         out = await workspace_wipe._agent_email_run(SimpleNamespace(org_id=ORG_ID, email_rows=[TEXT_ROW]))
     ws_mocks.agent_email_delete.assert_awaited_once_with(ORG_ID)
     assert "released 0 text line(s)" in out and "FAILED to release: +15550001111" in out
+
+
+@pytest.mark.asyncio
+async def test_workspace_wipe_completes_without_aurora(ws_mocks):
+    from tests.unit.services.test_account_wipe import _paperclip_and_aurora_gone
+
+    with _paperclip_and_aurora_gone():
+        preview = await preview_workspace_wipe(ORG_ID)
+        report = await wipe_workspace(
+            ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint=preview.fingerprint
+        )
+
+    for r in (preview, report):
+        assert not {s.system for s in r.steps} & {"paperclip_company", "paperclip_aurora_user"}
+    assert [s for s in report.steps if s.status == "failed"] == []
+    deleted = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
+    assert sorted(deleted) == sorted([ORG_ID, MEMBER_A, MEMBER_B])
+    assert ws_mocks.user_delete.await_count == 2
+    ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)

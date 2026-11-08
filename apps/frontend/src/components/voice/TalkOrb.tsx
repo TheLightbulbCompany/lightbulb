@@ -10,6 +10,7 @@ import { agentLiveStatus, statusKey } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { CEO_IDENTITY, useHuddle } from "@/components/huddle/HuddleProvider";
 import { useAssistantDm } from "@/components/huddle/useAssistantDm";
+import { isTauri } from "@/lib/externalAuth";
 
 type Orb = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 type Heard = { status: string; caption: string } | null;
@@ -33,8 +34,11 @@ function AgentLines({ agent, tile, onHeard }: { agent: Participant; tile: string
 }
 
 /** The browser already lets this site use the mic. Pre-connecting with anything less would prompt (or fail with
- *  mic_denied) on page load; the first press stays the one that asks. No Permissions API: treated as not yet. */
+ *  mic_denied) on page load; the first press stays the one that asks. No Permissions API: treated as not yet.
+ *  The desktop app's webview (wry/WebKit) has no Permissions API for the mic and grants getUserMedia without a
+ *  prompt (#5040), so there the answer is yes. */
 async function micGranted(): Promise<boolean> {
+  if (isTauri()) return true;
   try { return (await navigator.permissions.query({ name: "microphone" as PermissionName })).state === "granted"; }
   catch { return false; }
 }
@@ -73,13 +77,15 @@ export function TalkOrb({ name, compact = false }: { name: string; compact?: boo
   // Once per mount, once the DM is known, and only if nothing is Live: never on a later change (after idle_ended
   // the provider leaves; rejoining then would loop until the quiet limit forever).
   const preconnected = useRef(false);
+  const mounted = useRef(false); // the permission check answers after this orb may be gone
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const dmId = room?.roomId, { roomId: liveId, joining, join } = huddle;
   useEffect(() => {
     if (!dmId || preconnected.current) return;
     preconnected.current = true;
     if (liveId || joining) return;
     void micGranted().then((ok) => {
-      if (!ok || started.current) return; // a press got there first
+      if (!ok || !mounted.current || started.current) return; // unmounted meanwhile, or a press got there first
       started.current = true; void join(dmId, name);
     });
   }, [dmId, liveId, joining, join, name]);

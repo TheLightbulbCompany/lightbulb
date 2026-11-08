@@ -192,3 +192,19 @@ it("after the agent left for quiet, the pre-connect does not rejoin; the next pr
   fireEvent.keyDown(screen.getByRole("button", { name: "Hold to talk to Nova" }), { key: " " });
   expect(huddle.join).toHaveBeenCalledTimes(2);
 });
+
+it("in the desktop app (wry: no Permissions API, getUserMedia without a prompt) it pre-connects without asking", async () => {
+  (window as Window & { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn() } };
+  try {
+    render(<TalkOrb name="Nova" compact />); // perm.state is "prompt": a browser would wait for the first press
+    await waitFor(() => expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova"));
+  } finally { delete (window as Window & { __TAURI__?: unknown }).__TAURI__; }
+});
+
+it("unmounted before the permission check answers, it does not join", async () => {
+  perm.state = "granted";
+  const { unmount } = render(<TalkOrb name="Nova" compact />);
+  unmount();
+  await settle();
+  expect(huddle.join).not.toHaveBeenCalled();
+});

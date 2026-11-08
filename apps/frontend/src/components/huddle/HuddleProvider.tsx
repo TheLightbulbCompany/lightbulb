@@ -70,7 +70,9 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
         serverUrl: string; token: string; lightbulb?: boolean;
       };
       if (mine !== attempt.current) return;
-      const room = new Room();
+      // stopMicTrackOnMute: a muted mic releases its capture track, so a pre-connected, idle orb (TalkOrb) does not
+      // keep the OS microphone indicator lit for minutes.
+      const room = new Room({ publishDefaults: { stopMicTrackOnMute: true } });
       room.on(RoomEvent.DataReceived, (payload, from, _kind, topic) => {
         if (topic === LIVE_NOTICE_TOPIC) {
           if (from?.identity !== CEO_IDENTITY) return; // only the worker may announce

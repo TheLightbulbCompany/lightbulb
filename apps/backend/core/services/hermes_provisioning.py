@@ -623,7 +623,15 @@ TEARDOWN_PK = "TEARDOWN#"
 TEARDOWN_DUE_S = 200
 TEARDOWN_TTL_S = 30 * 86400
 # ``status`` routes an ARN-less (shared-runtime) row to the pool: ``runtime_transport.runtime_arn``.
-_TEARDOWN_ROW_KEYS = ("owner_id", "id", "agentcore_runtime_arn", "status", "gateway_token", "bedrock_gate_token_hash")
+_TEARDOWN_ROW_KEYS = (
+    "owner_id",
+    "id",
+    "agentcore_runtime_arn",
+    "agentcore_shared_runtime_arn",
+    "status",
+    "gateway_token",
+    "bedrock_gate_token_hash",
+)
 
 
 def _teardown_key(owner_id: str, container: dict) -> dict:
@@ -1203,7 +1211,7 @@ async def roll_runtime_image(
         raise ValueError(f"roll_runtime_image: owner={owner_id} has no provisioned runtime")
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
-    if arn == settings.HERMES_SHARED_RUNTIME_ARN:
+    if arn == settings.HERMES_SHARED_RUNTIME_ARN or arn == row.get("agentcore_shared_runtime_arn"):
         # CDK owns the shared runtime's spec (the image pin and the tier env), and a deploy moves
         # it. What is left per owner is the session: a warm one that predates that update (or still
         # on the workspace's own runtime, at the cut-over) runs the old version until it is stopped.
@@ -1286,8 +1294,10 @@ async def _shared_session_to_roll(owner_id: str, row: dict, shared: str) -> tupl
     landed -- None: nothing to roll. On the pool that is the runtime's own ``lastUpdatedAt`` (CDK's
     deploy, not this process). At the cut-over a session still warm on the workspace's OWN runtime
     is old by definition: stopped at idle, its next invoke starts on the pool (``live_arn``)."""
+    from core.services.runtime_transport import LIVE_GRACE_S
+
     session = await run_in_thread(container_repo.get_session_sync, owner_id)
-    if int(session.get("warm_until") or 0) <= int(time.time()):
+    if int(session.get("warm_until") or 0) <= time.time() - LIVE_GRACE_S:
         return shared, None  # parked: its next start is on the current version
     own = row.get("agentcore_runtime_arn")
     if own and session.get("arn") == own:
@@ -1833,7 +1843,9 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         # loud guard as the image, one line up.
         raise RuntimeError("OWNER_STATE_BUCKET is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    if settings.HERMES_SHARED_RUNTIME_ARN:
+    if settings.HERMES_SHARED_RUNTIME_ARN or (
+        row.get("agentcore_shared_runtime_arn") and not row.get("agentcore_runtime_arn")
+    ):
         return await _join_shared_runtime(owner_id, row)
     arn = row.get("agentcore_runtime_arn")
     if arn and row.get("status") == "running":
@@ -1975,12 +1987,16 @@ async def _join_shared_runtime(owner_id: str, row: dict) -> str:
     credentials carry S3, memory and the browser), no CreateAgentRuntime. Idempotent like the
     per-owner path: a ``running`` row returns as-is, and a workspace that already has its own
     runtime keeps it (unused while the setting is set) for the per-owner cleanup."""
-    shared = settings.HERMES_SHARED_RUNTIME_ARN
+    shared = settings.HERMES_SHARED_RUNTIME_ARN or row["agentcore_shared_runtime_arn"]
     if row.get("status") == "running":
+        if not row.get("agentcore_runtime_arn") and row.get("agentcore_shared_runtime_arn") != shared:
+            await container_repo.update_fields(owner_id, {"agentcore_shared_runtime_arn": shared})
         return shared
     await _browser_profile_id(owner_id, row)  # records browser_profile_id: the boot header names it
     if not row.get("agentcore_runtime_arn"):
         await write_profiles(owner_id)  # as the per-owner path: never over a workspace that has them
-    await container_repo.update_fields(owner_id, {"runtime_host": "agentcore", "status": "running"})
+    await container_repo.update_fields(
+        owner_id, {"runtime_host": "agentcore", "agentcore_shared_runtime_arn": shared, "status": "running"}
+    )
     logger.info("hermes workspace on the shared runtime owner=%s", owner_id)
     return shared

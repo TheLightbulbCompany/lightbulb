@@ -104,6 +104,7 @@ export function buildApiStack(
     environment,
     vpc: network.vpc,
     alb: network.alb,
+    albV2: network.albV2,
     albHttpListenerArn: network.albHttpListenerArn,
     albSecurityGroup: network.albSecurityGroup,
     clerkIssuerSecretName: `lightbulb/${environment}/clerk_issuer`,

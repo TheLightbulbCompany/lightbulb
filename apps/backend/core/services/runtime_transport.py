@@ -114,14 +114,15 @@ def runtime_arn(container: dict) -> str | None:
     before, or a ``running`` row -- else the row's own. Session ids stay per owner
     (:func:`session_id_for`), so each workspace still gets its own microVM. The row's own runtime
     is kept, unused, until the per-owner cleanup; unsetting the setting moves those workspaces back.
-    A workspace provisioned onto the pool has no runtime of its own: after an unset it reads as
-    unprovisioned (None) until a reconcile (``provision_runner``) gives it one."""
+    A workspace born on the pool keeps that route on its row, so clearing the tier setting does
+    not leave a provisioned workspace without a runtime. That saved shared ARN is not an owned
+    runtime and is never deleted by workspace teardown."""
     from core.config import settings
 
     own = container.get("agentcore_runtime_arn")
     if settings.HERMES_SHARED_RUNTIME_ARN and (own or container.get("status") == "running"):
         return settings.HERMES_SHARED_RUNTIME_ARN
-    return own
+    return own or container.get("agentcore_shared_runtime_arn")
 
 
 #: How long past ``warm_until`` :func:`live_arn` still counts a session live on its own runtime. It
@@ -133,13 +134,14 @@ LIVE_GRACE_S = 190
 
 
 def live_arn(container: dict, task_id: str | None = None) -> str | None:
-    """:func:`runtime_arn`, except at the cut-over: a session still live on the workspace's OWN
+    """:func:`runtime_arn`, except at the cut-over: a session still live on the workspace's previous
     runtime stays there until it idles. A run in flight there is unknown to a fresh pool session,
     so a poll, steer or stop sent to the pool would read it as lost (RunLost) and retry it. "Live"
     is the wake gate's own estimate (``__session__#<owner>``: warm on that ARN, plus
     ``LIVE_GRACE_S``), which run and room-turn heartbeats keep current (:func:`note_alive`).
     Sync: a DynamoDB read, on the invoke pool."""
-    arn, own = runtime_arn(container), container.get("agentcore_runtime_arn")
+    arn = runtime_arn(container)
+    own = container.get("agentcore_runtime_arn") or container.get("agentcore_shared_runtime_arn")
     if not own or arn == own:
         return arn
     from botocore.exceptions import BotoCoreError, ClientError
@@ -149,7 +151,9 @@ def live_arn(container: dict, task_id: str | None = None) -> str | None:
     try:
         row = repo.get_session_sync(container.get("owner_id") or "", task_id=task_id)
     except (ClientError, BotoCoreError):
-        return arn
+        # An unavailable lease store cannot prove the old VM has drained. Keep its route
+        # rather than start a second writer on the pool while it may still be running.
+        return own
     return own if row.get("arn") == own and int(row.get("warm_until") or 0) > time.time() - LIVE_GRACE_S else arn
 
 

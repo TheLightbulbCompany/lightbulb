@@ -19,10 +19,12 @@
     "inlineSources": true,
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
-    "typeRoots": [
-      "./node_modules/@types"
-    ]
+    "types": ["node", "vitest/globals"],
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true
   },
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "test/**/*.ts", "vitest.config.ts"],
   "exclude": [
     "node_modules",
     "cdk.out"

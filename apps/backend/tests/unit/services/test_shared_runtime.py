@@ -34,6 +34,22 @@ def test_without_the_setting_each_workspace_keeps_its_own(monkeypatch):
     assert rt.runtime_arn({"status": "running"}) is None
 
 
+def test_a_pool_workspace_keeps_its_recorded_route_when_the_setting_is_cleared(monkeypatch):
+    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "")
+    assert rt.runtime_arn({"status": "running", "agentcore_shared_runtime_arn": SHARED}) == SHARED
+
+
+@pytest.mark.parametrize("route_field", ["agentcore_runtime_arn", "agentcore_shared_runtime_arn"])
+def test_a_failed_drain_read_never_starts_a_second_session_on_the_pool(shared, monkeypatch, route_field):
+    from botocore.exceptions import ClientError
+
+    def unavailable(*args, **kwargs):
+        raise ClientError({"Error": {"Code": "InternalServerError"}}, "GetItem")
+
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", unavailable)
+    assert rt.live_arn({"owner_id": "org_a", route_field: OWN, "status": "running"}) == OWN
+
+
 @pytest.mark.asyncio
 async def test_an_invoke_goes_to_the_shared_runtime_under_the_owners_own_session(shared, monkeypatch):
     sent = []
@@ -44,6 +60,7 @@ async def test_an_invoke_goes_to_the_shared_runtime_under_the_owners_own_session
             return {"statusCode": 200, "response": b'{"status":200,"body":{}}'}
 
     monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: {})  # no pre-pool session to drain
     for owner in ("org_a", "org_b"):
         await rt.request({"owner_id": owner, "agentcore_runtime_arn": OWN, "status": "running"}, "/x", json_body={})
     assert [kw["agentRuntimeArn"] for kw in sent] == [SHARED, SHARED]
@@ -64,7 +81,8 @@ async def test_a_new_workspace_gets_no_runtime_role_or_boot_secret(shared, monke
     monkeypatch.setattr(hp, "_create_runtime", lambda req: pytest.fail("CreateAgentRuntime"))
     assert await hp.provision_hermes_runtime("org_new") == SHARED
     hp.write_profiles.assert_awaited_once_with("org_new")
-    assert writes == [{"runtime_host": "agentcore", "status": "running"}]  # no ARN on the row
+    assert writes == [{"runtime_host": "agentcore", "agentcore_shared_runtime_arn": SHARED, "status": "running"}]
+    assert "agentcore_runtime_arn" not in writes[0]  # saved route, never an owned runtime to delete
 
     # prepare: tokens and the gate bearer, no role, no trust, no boot secret
     monkeypatch.setattr(
@@ -80,6 +98,16 @@ async def test_a_new_workspace_gets_no_runtime_role_or_boot_secret(shared, monke
     )
     monkeypatch.setattr(hp, "_ensure_network_member", AsyncMock())
     assert await hp.prepare_hermes_workspace("org_new") is False
+
+
+@pytest.mark.asyncio
+async def test_a_running_pool_workspace_records_its_route_without_rewriting_profiles(shared, monkeypatch):
+    row = {"owner_id": "org_new", "id": "row-1", "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "update_fields", AsyncMock())
+    monkeypatch.setattr(hp, "write_profiles", AsyncMock(side_effect=AssertionError("rewrote a live profile")))
+    monkeypatch.setattr(hp, "_browser_profile_id", AsyncMock(side_effect=AssertionError("recreated live browser")))
+    assert await hp._join_shared_runtime("org_new", row) == SHARED
+    hp.container_repo.update_fields.assert_awaited_once_with("org_new", {"agentcore_shared_runtime_arn": SHARED})
 
 
 @pytest.mark.asyncio
@@ -227,6 +255,31 @@ async def test_a_shared_roll_moves_a_session_still_warm_on_its_own_runtime_onto_
     assert stops == [OWN]
 
 
+@pytest.mark.asyncio
+async def test_the_roll_and_transport_agree_a_session_in_the_drain_grace_is_still_live(shared, monkeypatch):
+    import time
+
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    warm = {"warm_until": int(time.time()) - 1, "arn": OWN, "started_at": 1}
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: warm)
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    assert rt.live_arn(row) == OWN
+    assert await hp.roll_runtime_image("org_a", dry_run=True) == "would-update"
+
+
+@pytest.mark.asyncio
+async def test_a_saved_pool_route_is_never_respecced_as_an_owned_runtime(shared, monkeypatch):
+    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "")
+    row = {"owner_id": "org_a", "agentcore_shared_runtime_arn": SHARED, "status": "running"}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(hp, "_shared_session_to_roll", AsyncMock(return_value=(SHARED, None)))
+    monkeypatch.setattr(
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role", AsyncMock(side_effect=AssertionError("per-owner role"))
+    )
+    assert await hp.provision_hermes_runtime("org_a") == SHARED
+    assert await hp.roll_runtime_image("org_a") == "current"
+
+
 def test_the_drain_outlasts_agentcores_idle_timeout(shared):
     """live_arn leaves the own runtime only once its microVM has surely idled out: ``warm_until`` can lag
     the last invoke by WARM_EXTEND_STEP_S, so warm + grace must pass the last invoke + IDLE_TIMEOUT_S."""
@@ -257,6 +310,19 @@ async def test_a_network_reload_reaches_a_session_still_warm_on_its_own_runtime(
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
     with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: {"arn": OWN, "warm_until": 10**10}):
         assert await network_member._session_is_warm("org_a")
+
+
+@pytest.mark.asyncio
+async def test_a_network_revocation_reloads_the_old_runtime_through_the_drain_grace(shared, monkeypatch):
+    import time
+
+    from core.services import network_member
+
+    row = {"owner_id": "org_a", "agentcore_runtime_arn": OWN, "status": "running"}
+    warm = {"arn": OWN, "warm_until": int(time.time()) - 1}
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: warm)
+    assert await network_member._session_is_warm("org_a")
 
 
 @pytest.mark.asyncio

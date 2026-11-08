@@ -158,3 +158,28 @@ async def test_a_faithful_result_is_not_cut(talker, session):
     session.current_speech = talker.say(["We merged 5095 today."])
     await _speak(talker, "Maya, we merged ", "5095 today.")
     assert session.current_speech.interrupted == 0 and len(session.replies) == 1
+
+
+async def test_a_new_turn_that_answers_without_delegate_is_cut_after_a_delegated_turn(talker, session):
+    talker.turn_ended()  # turn 1
+    await talker.delegate("What shipped this week?")
+    talker.heard("Maya", "What shipped this week?")
+    talker.turn_ended()  # turn 2's speech ends, then its transcript lands
+    talker.heard("Maya", "Did Acme pay?")
+    await _speak(talker, "Yes, Acme paid on Monday.")
+    assert session.current_speech.interrupted == 1
+    await talker.delegate("Did Acme pay?")  # the model's own late call posts nothing
+    await talker._turns.flush()
+    assert talker.backend.sent == ["What shipped this week?", "Did Acme pay?"]
+
+
+async def test_a_late_transcript_while_idle_is_not_delegated_by_the_next_cut(talker, session):
+    talker.turn_ended()  # turn N, delegated before its transcript
+    await talker.delegate("What shipped this week?")
+    talker.heard("Maya", "What shipped this week?")  # lands late, nothing playing
+    talker.turn_ended()  # turn N+1: the reply is cut before its transcript lands
+    await _speak(talker, "Acme paid 300 dollars.")
+    assert session.current_speech.interrupted == 1
+    talker.heard("Maya", "Did Acme pay?")
+    await talker._turns.flush()
+    assert talker.backend.sent == ["What shipped this week?", "Did Acme pay?"]

@@ -112,8 +112,10 @@ class Talker(Agent):
     def __init__(self, instructions: str) -> None:
         super().__init__(instructions=instructions)
         self.context = Context()
-        self.line, self.asked, self.owed, self.held, self.holding = "", False, False, False, False
-        self.turn: set[str] = set()  # speech ids since this turn's delegation: a late transcript keeps `asked`
+        # this turn: the person's line, delegated, a cut delegated it, a holding line said; `owed`: a cut is waiting
+        # for the line's transcript. Turns start when the person stops speaking (`turn_ended`), not on the transcript,
+        # which lands late.
+        self.line, self.asked, self.held, self.holding, self.owed = "", False, False, False, False
         self.results: dict[str, tuple[list[str], bool]] = {}  # speech id -> (the messages it says, word for word)
         self.free: set[str] = set()  # speech ids never checked (the goodbye)
 
@@ -134,19 +136,20 @@ class Talker(Agent):
 
     def delegate_now(self, request: str) -> None:
         self.line, self.asked = "", True
-        self.turn = {s.id} if (s := self._speech()) else set()
         self.post(request)
 
+    def turn_ended(self) -> None:
+        """The person stopped speaking: a new turn."""
+        self.line, self.asked, self.held, self.holding = "", False, False, False
+
     def heard(self, who: str, text: str) -> None:
+        """A person's line (its transcript, maybe after the reply started): delegated now if a cut owes it."""
         self.context.add(who, text)
-        if self.asked and getattr(self._speech(), "id", None) in self.turn:
-            return  # the transcript of a line already delegated, landing late
-        self.line, self.asked, self.holding = text, False, False
         if self.owed:
             self.owed = False
             self.delegate_now(text)
-        else:
-            self.held = False
+        elif not self.asked:
+            self.line = text
 
     def unchecked(self, speech) -> None:
         self.free.add(speech.id)
@@ -160,14 +163,12 @@ class Talker(Agent):
 
     async def transcription_node(self, text, model_settings):
         speech, said, cut = self._speech(), "", False
-        if speech is not None and self.asked and speech.id not in self.results:
-            self.turn.add(speech.id)
         async for delta in text:
             said += str(delta)
             cut = cut or self._cut(said[: said.rfind(" ") + 1], speech)  # whole words only
             yield delta
-        if not (cut or self._cut(said, speech)) and getattr(speech, "id", None) not in self.results:
-            self.line = ""  # answered as small talk: a later cut must not delegate it
+        if not cut:
+            self._cut(said, speech)
 
     def _cut(self, words: str, speech) -> bool:
         sid = getattr(speech, "id", None)

@@ -273,6 +273,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             asked.append({"t": int(time.monotonic() - started), "who": label(who), "q": text, "a": ""})
             talker.asker = (who.rsplit(":", 1)[-1], label(who))
             talker.allow = (name, label(who))
+            talker.turn_ended()
             talker.heard(label(who), text)
             try:
                 session.generate_reply(user_input=f"{label(who)}: {text}")

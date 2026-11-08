@@ -199,6 +199,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         quiet_timer.update(talk["live"], session.user_state, "thinking" if waiting else session.agent_state)
 
     session.on("user_state_changed", recount)
+    session.on("user_state_changed", lambda ev: ev.old_state == "speaking" and agent.turn_ended())
     for event in ("track_published", "track_unpublished", "track_muted", "track_unmuted"):
         ctx.room.on(event, recount)
 

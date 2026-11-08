@@ -192,7 +192,7 @@ describe("Files", () => {
   it("an empty channel shows the tip at the foot; dismissed, it stays dismissed", async () => {
     const { unmount } = render(<Fresh><ProjectFiles roomId="r-walk7" viewerId="u1" messages={[]} onOpenTask={vi.fn()} /></Fresh>);
     const tip = await screen.findByRole("complementary", { name: "Tip" });
-    expect(tip).toHaveTextContent("Ask for a doc, an app or a file in any task. It lands here.");
+    expect(tip).toHaveTextContent("Ask for a doc, an app or a file in any thread. It lands here.");
     await userEvent.click(within(tip).getByRole("button", { name: "Dismiss tip" }));
     unmount();
     render(<Fresh><ProjectFiles roomId="r-walk7" viewerId="u1" messages={[]} onOpenTask={vi.fn()} /></Fresh>);

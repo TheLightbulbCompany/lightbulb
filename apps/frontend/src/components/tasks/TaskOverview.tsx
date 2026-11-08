@@ -43,7 +43,7 @@ export function RequestGroups({ scope, viewerId, onOpen }: { scope: TaskScope; v
   // the only group with tasks, where collapsing hides everything there is (dev walk 13, W13-11). A press wins.
   const [doneOpen, setDoneOpen] = useState<boolean | null>(null);
   if (!data) return error
-    ? <p role="alert" className="text-ui text-muted-foreground">Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+    ? <p role="alert" className="text-ui text-muted-foreground">Threads couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
   const groups = overviewGroups([...data.tasks, ...older]);
   const onlyDone = groups.every((g) => g.id === "done" ? g.tasks.length > 0 : !g.tasks.length);
@@ -68,7 +68,7 @@ export function RequestGroups({ scope, viewerId, onOpen }: { scope: TaskScope; v
       </section>;
     })}
     {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
-      disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older tasks"}</button>}
+      disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older threads"}</button>}
   </div>;
 }
 

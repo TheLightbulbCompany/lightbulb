@@ -461,7 +461,7 @@ describe("reduceTeamsActivityEvent — thread interactions (a paused task)", () 
       {
         kind: "attention",
         key: "interaction:int-1",
-        message: "A task is paused waiting for your confirmation",
+        message: "A thread is paused waiting for your confirmation",
         issueId: "issue-1",
         interactionId: "int-1",
       },
@@ -485,7 +485,7 @@ describe("reduceTeamsActivityEvent — thread interactions (a paused task)", () 
     ];
     const messages = kinds.map(copy);
     expect(new Set(messages).size).toBe(kinds.length);
-    expect(copy("some_future_kind")).toBe("A task is paused waiting for your input");
+    expect(copy("some_future_kind")).toBe("A thread is paused waiting for your input");
   });
 
   it("keys on the interaction, so two waits on one task do not replace each other", () => {

@@ -154,7 +154,7 @@ function DocOrigin({ task, from }: { task: string | null; from: string | null })
   if (!task && !channel) return null;
   return <p className="doc-origin">
     {channel && <span className="doc-origin__channel">From {channel}</span>}
-    {task && <button type="button" className="doc-origin__task" onClick={() => openTaskPane(task)}>Open task<ChevronRight size={14} aria-hidden="true" /></button>}
+    {task && <button type="button" className="doc-origin__task" onClick={() => openTaskPane(task)}>View thread<ChevronRight size={14} aria-hidden="true" /></button>}
   </p>;
 }
 

@@ -237,7 +237,7 @@ export function describePanel(
   // One super-agent task (TaskPane). Only reachable while the switch is on: nothing links here otherwise.
   if (key === "task-detail") {
     if (!params.taskId) return null;
-    return { panelId: "task-detail", component: "task", title: "Task", params: { taskId: params.taskId } };
+    return { panelId: "task-detail", component: "task", title: "Thread", params: { taskId: params.taskId } };
   }
 
   // Activity: the viewer's requests (super-agent: Needs you, mentions, Ideas, the feed, Working/Done/Closed; it was

@@ -662,8 +662,8 @@ function RoomContent({
   const composerPlaceholder = lightbulbDm ? "Ask Lightbulb…"
     : `Message ${visibleRoom?.kind === "channel" ? `#${roomName}` : roomName}`;
   // The pane's title is the label of what opened it (the room is beside it, so no " · <room>").
-  const sideTitle = taskSelection ? "Task" : !contextCollapsed ? "Details"
-    : filesViewShown ? "Files" : scheduledShown ? "Scheduled" : "Tasks";
+  const sideTitle = taskSelection ? "Thread" : !contextCollapsed ? "Details"
+    : filesViewShown ? "Files" : scheduledShown ? "Scheduled" : "Threads";
   /** One of the project's views in the pane (the item open over it goes; the pane is taken back from an automation). */
   const showView = (view: PaneView) => {
     closeDetail(); setContextCollapsed(true);
@@ -902,7 +902,7 @@ function RoomContent({
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
-      {!visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to tasks</button>}
+      {!visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to threads</button>}
       <RoomHeader voiceControls={voiceControls} room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable}
         search={<RoomMessageSearch roomId={roomId} openToken={searchToken} hideTrigger
@@ -934,9 +934,9 @@ function RoomContent({
             aria-label="Search in channel" title="Search (⌘F)" onClick={() => setSearchToken((token) => token + 1)}>
             <Search aria-hidden="true" /></Button>
           {!visibleRoom?.feed && <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
-            aria-label={waitingOnMe > 0 ? `Tasks, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Tasks"} title="Tasks"
+            aria-label={waitingOnMe > 0 ? `Threads, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Threads"} title="Threads"
             onClick={() => { if (!requestsShown) capture("overview_opened", { source: "room", count: waitingOnMe }); toggleView("tasks"); }}>
-            <ListChecks aria-hidden="true" /><span>Tasks</span>
+            <ListChecks aria-hidden="true" /><span>Threads</span>
             {waitingOnMe > 0 && !requestsShown && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn-hue" />}
           </Button>}
           {/* This room's files (attachments and what its tasks made), never the runtime's disk (W7-8). */}
@@ -1029,9 +1029,9 @@ function RoomContent({
         members={membersSection} />
     </aside>}
     {/* Super-agent: the project's three list views, each titled by the toggle that opened it, with the one ✕. */}
-    {requestsShown && !showDetail && <aside className="room-context" aria-label="Tasks"
+    {requestsShown && !showDetail && <aside className="room-context" aria-label="Threads"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>
-      <PaneHeader title="Tasks" headingRef={requestsHeading} onClose={closeView} />
+      <PaneHeader title="Threads" headingRef={requestsHeading} onClose={closeView} />
       <div className="room-context-body"><MadeHere roomId={roomId} onOpenTask={openTask} onAllFiles={() => showView("files")} />
         <RequestGroups scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
     </aside>}

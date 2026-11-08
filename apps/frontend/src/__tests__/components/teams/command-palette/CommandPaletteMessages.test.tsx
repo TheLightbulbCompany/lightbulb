@@ -32,7 +32,7 @@ afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
 async function typeQuery(value: string) {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
-  fireEvent.change(screen.getByPlaceholderText(/Search projects, tasks, files and messages/), { target: { value } });
+  fireEvent.change(screen.getByPlaceholderText(/Search projects, threads, files and messages/), { target: { value } });
   await act(async () => { await vi.advanceTimersByTimeAsync(300); });
 }
 
@@ -52,7 +52,7 @@ describe("palette Messages group", () => {
 
   test("Enter on the selected hit opens the target", async () => {
     await typeQuery("zzq");
-    fireEvent.keyDown(screen.getByPlaceholderText(/Search projects, tasks, files and messages/), { key: "Enter" });
+    fireEvent.keyDown(screen.getByPlaceholderText(/Search projects, threads, files and messages/), { key: "Enter" });
     expect(open).toHaveBeenCalledWith("r1", "t1", "m1");
   });
 

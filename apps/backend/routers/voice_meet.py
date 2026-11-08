@@ -22,7 +22,7 @@ from pydantic import AfterValidator, Field
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import integration_reads, meeting_bots, meeting_invites, memory_api
+from core.services import integration_reads, meeting_bots, meeting_invites, memory_api, voice_approve
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
 from routers.voice_phone import _TZ, _bookings
@@ -128,6 +128,25 @@ async def start_work(room_id: str, body: WorkIn) -> dict:
     }
     await meeting_invites._patch_meeting(room_id, lambda m: {"followUps": [*(m.get("followUps") or []), entry]})
     return {"started": True, **out}
+
+
+class ApproveIn(RoomBody):
+    phrase: Literal["yes", "no", "undo"]
+    hint: str = Field(default="", max_length=300)
+    participantId: str = Field(default="", max_length=128)
+    speakerName: str = Field(default="", max_length=120)
+
+
+@router.post("/internal/voice/meet/{room_id}/approve")
+async def approve(room_id: str, body: ApproveIn) -> dict:
+    """Anyone's yes in the meeting is the inviting member's, and only queues their one-tap confirm."""
+    room_id, _meta, meeting = await _meeting(room_id, body)
+    member = inviting_member(meeting, await messaging_repo.list_members(room_id))
+    if member is None:
+        return {"none": True}
+    who = body.speakerName or ((meeting.get("roster") or {}).get(body.participantId) or {}).get("name") or ""
+    speaker = {"user_id": member, "name": who, "where": meeting.get("title") or "the meeting"}
+    return await voice_approve.approve(body.ownerId, "meet", speaker, body.phrase, body.hint, room_id=room_id)
 
 
 class ReadIn(RoomBody):

@@ -857,7 +857,7 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
             "origin": "phone_contact",
             "from": who,
             "text": f"{body.text}\n\n{CALLER_HINT}",
-        },  # fmt: skip
+        },
     )
     await admission.enqueue_trigger(ws, trigger, room_id=call_id)
     return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id}

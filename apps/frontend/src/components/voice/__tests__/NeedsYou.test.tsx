@@ -23,7 +23,7 @@ const call = (over: object) => ({
 const qs = vi.hoisted(() => ({ data: [] as object[] }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("../data", () => ({
-  nameOf: () => "Nova",
+  LIGHTBULB: "Lightbulb",
   useAgentConfig: () => ({ data: { name: "Nova", knowledge: [], toAdd: [] }, save }),
   useQuestions: () => ({ data: qs.data, mutate: vi.fn() }),
   useTimeline: () => ({ data: [] }),
@@ -34,7 +34,7 @@ import { NeedsYou } from "../NeedsYou";
 it("a call's didn't-know Question answers with text, and the backend (not this admin-only save) writes Knowledge", async () => {
   qs.data = [q({})];
   render(<NeedsYou />);
-  expect(screen.getByText("Nova didn't know")).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb didn't know")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "I'll call them" })).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Your answer"), { target: { value: "Yes, up to eight." } });
   fireEvent.click(screen.getByRole("button", { name: "Answer" }));
@@ -55,7 +55,7 @@ it("four card kinds render their labels", () => {
   qs.data = [call({ id: "a" }), call({ id: "b", subkind: "handoff" }), call({ id: "c", subkind: "line_problem" }),
     call({ id: "d", kind: "approval", subkind: null })];
   render(<NeedsYou />);
-  for (const l of ["Nova didn't know", "Caller wanted a person", "Line problem", "Needs your OK"]) expect(screen.getByText(l)).toBeInTheDocument();
+  for (const l of ["Lightbulb didn't know", "Caller wanted a person", "Line problem", "Needs your OK"]) expect(screen.getByText(l)).toBeInTheDocument();
 });
 
 it("line problem links to reconnect", () => {

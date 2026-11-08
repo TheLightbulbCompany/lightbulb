@@ -11,7 +11,7 @@ import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, mmss, monthMinutes, nameOf, needsOnboarding, useAgentConfig, useTimeline, who,
+  callNeedsYou, mmss, monthMinutes, LIGHTBULB, needsOnboarding, useAgentConfig, useTimeline, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -47,7 +47,7 @@ const FILTERS: [Filter, string, (i: TimelineItem) => boolean][] = [
 export function VoiceHome() {
   const { data: items, error, isLoading } = useTimeline();
   const { data: config, isNew, save } = useAgentConfig();
-  const name = nameOf(config);
+  const name = LIGHTBULB;
   const needs = useNeedsYouTotal();
   const [filter, setFilter] = useState<Filter>("all");
   const [now] = useState(() => Date.now());  // one clock per render tree: "Upcoming" is judged against this
@@ -106,7 +106,7 @@ function Row({ item, name, current, now, onOpen }: { item: TimelineItem; name: s
       item.followUps?.length && `${item.followUps.length} follow-up${item.followUps.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
       || (item.at > now ? `Upcoming. ${name} will join.`
         : item.endAt && item.endAt * 1000 > now ? `In progress.`  // endAt/startAt are epoch seconds (meeting_invites.py); at is ms
-        : `${name} listened.`);  // a calendar meeting that has not happened is not one Nova listened to
+        : `${name} listened.`);  // a calendar meeting that has not happened is not one Lightbulb listened to
     return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
       <time>{time(item.at)}</time><Video size={16} aria-label="Meeting" />
       <span><span className="vx-who">{item.title || "Meeting"}<small>Google Meet{item.people?.length ? ` · ${item.people.join(", ")}` : ""}</small></span>

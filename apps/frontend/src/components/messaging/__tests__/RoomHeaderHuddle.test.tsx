@@ -89,3 +89,17 @@ it("Live in another room hides Go live here but keeps this room's marker", () =>
   expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
   expect(screen.getByText("Live — Ana")).toBeInTheDocument();
 });
+
+it("voiceControls={false} (the Lightbulb page) drops the marker, strip and Go live, keeps the views and people", () => {
+  huddle.ids = ["h1"];
+  const { unmount } = render(<RoomHeader {...base} room={room({ kind: "dm" })} voiceControls={false} views={<button type="button">Tasks</button>} />);
+  expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
+  expect(screen.queryByText("Live — Ana")).toBeNull();
+  expect(screen.queryByTestId("strip")).toBeNull();
+  expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "People, 4 here" })).toBeInTheDocument();
+  unmount();
+  huddle.room = {}; huddle.roomId = "room-1";
+  render(<RoomHeader {...base} room={room({ kind: "dm" })} voiceControls={false} />);
+  expect(screen.queryByTestId("strip")).toBeNull();
+});

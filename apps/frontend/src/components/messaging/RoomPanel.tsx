@@ -148,6 +148,8 @@ export interface RoomPanelProps {
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
   /** A card's click: posts the person's answer in reply to the card (MessagingWorkspaceContext builds it). */
   onCardReply?: (reply: CardReply) => Promise<void>;
+  /** RoomHeader's Live controls; false on the Lightbulb page, where the orb is the voice control. */
+  voiceControls?: boolean;
 }
 
 /** How long a silent ask reads "Lightbulb is reading…" at most: an ask Lightbulb must answer (a reply took ~2 min in the
@@ -333,6 +335,7 @@ function RoomContent({
   onDownloadAttachment,
   onAttachmentUrl,
   onCardReply,
+  voiceControls,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -896,7 +899,7 @@ function RoomContent({
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
       {!visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to tasks</button>}
-      <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
+      <RoomHeader voiceControls={voiceControls} room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable}
         search={<RoomMessageSearch roomId={roomId} openToken={searchToken} hideTrigger
           onSelect={(hit) => {

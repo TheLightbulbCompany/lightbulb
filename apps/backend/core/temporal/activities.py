@@ -77,8 +77,8 @@ WORKER_INSTRUCTIONS = (
     "a question (what shipped, a figure, what an email or calendar says), read the source and answer it: your whole "
     "answer is the answer, facts first, at most 100 words, no opening sentence about what you did; it is posted in "
     "the chat as the reply. Name the specific items you found (PR numbers, figures, names), never a summary of "
-    "themes. If the source the question needs isn't in Connected apps (a calendar is google, for example), say it "
-    "isn't connected and that they can connect it in Settings → Connections. Don't answer from other threads, files "
+    "themes. When the brief lists Connected apps: if the source the question needs isn't in it (a calendar is "
+    "google, for example), say it isn't connected and that they can connect it in Settings → Connections. Don't answer from other threads, files "
     "or memory instead: those aren't a record of it. If it is connected, use your tools to answer, and use memory "
     "for context. A request to make, buy or send something is not a question, even when phrased as one "
     '("Can you build me a booking page?"). Never write a placeholder link such as [Book]([BOOKING LINK]): when '

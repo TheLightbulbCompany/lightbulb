@@ -285,7 +285,10 @@ async def test_worker_brief_lists_connected_apps_and_says_when_one_is_missing(wo
     request = world["runs"][0][1]
     assert "Connected apps: acme-crm, neon, stripe\n" in request.input + "\n"
     rule = " ".join(request.instructions.split())
-    assert "If the source the question needs isn't in Connected apps" in rule and "Settings → Connections" in rule
+    assert (
+        "When the brief lists Connected apps: if the source the question needs isn't in it" in rule
+        and "Settings → Connections" in rule
+    )
     assert "Don't answer from other threads, files or memory instead" in rule
     assert "Name the specific items you found (PR numbers, figures, names), never a summary of themes" in rule
 

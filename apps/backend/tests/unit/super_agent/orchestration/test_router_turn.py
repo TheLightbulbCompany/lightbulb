@@ -4,6 +4,7 @@ Review focus 2: a retried `router_turn` applies once."""
 import re
 from datetime import datetime, timedelta, timezone
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -570,6 +571,23 @@ async def test_pinned_specialist_in_prompt(world):
     assert identity.run_id == ts.router_run_id(WS, BATCH) and identity.task_id == BATCH
     assert world["posts"][0]["thread_root"] == mid  # answered in the thread the ask came from
     assert await repo.task_for_thread(WS, f"room:{ROOM}:{mid}") == ts.router_task_id(BATCH, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_phone_callers_batch_carries_no_memory_block(world, monkeypatch):
+    """Owner memory must never reach a caller through the Router's reply: a batch with a phone_contact trigger runs
+    with no memory block (the Router itself is skip_memory, #5099), and a member's batch keeps its block."""
+    monkeypatch.setattr(acts, "_caller_profile", AsyncMock(return_value=None))
+    ref = {"roomId": ROOM, "messageId": str(uuid.uuid4()), "origin": "phone_contact", "callId": ROOM}
+    t1 = await _trig("voice:c:turn-0", source="voice", ref=ref)
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "We open at 10."}]
+    await _run([t1])
+    _identity, request = world["runs"][0]
+    assert request.memory is None and "memory" not in request.to_wire()
+    t2 = await _trig("chat:m2")
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t2], "text": "Hi."}]
+    await _run([t2], batch="b-member")
+    assert world["runs"][1][1].memory["audience"] == {"kind": "room", "roomId": ROOM}
 
 
 @pytest.mark.asyncio

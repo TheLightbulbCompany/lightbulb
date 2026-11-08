@@ -1489,8 +1489,13 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             instructions=await _project_instructions(room_id),
             profile=await _caller_profile(ws, to_model.values()),
         )
-        memory = memory_tags.block_for_router(
-            "private" if private and user_id else "shared", user_id if private else None, room_id
+        # A phone caller's batch gets no memory block at all: owner memory never reaches a caller through a reply.
+        memory = (
+            None
+            if _callers(to_model)
+            else memory_tags.block_for_router(
+                "private" if private and user_id else "shared", user_id if private else None, room_id
+            )
         )
         scope = ts.trigger_scope(next(iter(to_model.values())))
 

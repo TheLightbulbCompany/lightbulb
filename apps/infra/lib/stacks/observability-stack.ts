@@ -13,7 +13,6 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
-import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
@@ -109,9 +108,6 @@ export interface ObservabilityStackProps extends cdk.StackProps {
     projectorFunctionName: string;
     appsyncEventApiId: string;
   };
-  // Paperclip tier references (for Aurora + Paperclip-service alarms)
-  paperclipDbCluster: rds.IDatabaseCluster;
-  paperclipService: ecs.IBaseService;
 }
 
 /**
@@ -214,7 +210,7 @@ export class ObservabilityStack extends cdk.Stack {
     // A CloudWatch alarm action publishes as the CloudWatch SERVICE principal,
     // not as this stack's deploy role, so it needs an explicit resource-policy
     // grant. That is not belt-and-braces: attaching an EventBridge rule to a
-    // topic (the Aurora and GuardDuty rules further down both target the WARN
+    // topic (the GuardDuty rule further down targets the WARN
     // topic) makes CDK emit an `AWS::SNS::TopicPolicy`, and a TopicPolicy
     // REPLACES the topic's default account-owner statement rather than merging
     // with it. That is exactly how the warn topic ended up granting only
@@ -347,7 +343,7 @@ export class ObservabilityStack extends cdk.Stack {
     this.createMessagingAlarms();
     this.createWarnCustomMetricAlarms();
     this.createWarnAwsNativeAlarms(props);
-    this.createPaperclipTierAlarms(props);
+    this.createLateAlarms(props);
     this.createCostAlarms(props);
     this.createUptimeChecks();
     if (superAgentEnabled(this.envName)) {
@@ -672,26 +668,6 @@ def handler(event, context):
         "reconcile_runtime failed - a workspace runtime no longer matches its billing (provider/plan); the old runtime is still serving",
     });
 
-    // P24: paperclip-run-hook-auth-failed
-    // A Paperclip agent's hermes_gateway apiKey is a SNAPSHOT of the owner's
-    // hook token. When the container row re-mints it, every Paperclip-woken
-    // run (nightly CEO loop, issue runs, Teams Run/Retry) 401s at
-    // _require_hook_token while room chat keeps working — silent without this.
-    this.createAlarm({
-      id: "P24",
-      name: "paperclip-run-hook-auth-failed",
-      metricName: "internal_hook.auth_failed",
-      dimensions: { route: "paperclip_run" },
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 60,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "page",
-      description:
-        "Paperclip-woken runs rejected with a stale hook token - nightly CEO and issue runs are failing silently for an owner (see backend log 'internal hook auth failed')",
-    });
-
     // P26: jev-decision-error-rate
     // Jev routes ambient room traffic. An error/timeout/429 decision fails the
     // routing call (the message still lands; only the wake decision is lost), so
@@ -724,28 +700,6 @@ def handler(event, context):
       description:
         "Jev routing decisions failing (error/forbidden/timeout/429) > 50% over 1 h with >= 3 decisions - room messages are going to the blind fallback responder (see backend log 'Jev returned')",
     });
-
-    // P27: nightly-ceo-fleet-zero (prod only)
-    // The nightly CEO routine is the retention loop. Zero successful runs across
-    // the whole fleet in 24 h means it is broken for everyone (stale adapter
-    // token, Paperclip scheduler down, wake path failing) - the 09-22 dev 401s
-    // went unnoticed exactly this way. Missing data BREACHES: silence is the failure.
-    if (this.envName === "prod") {
-      this.createAlarm({
-        id: "P27",
-        name: "nightly-ceo-fleet-zero",
-        metricName: "nightly_ceo.run",
-        dimensions: { outcome: "success" },
-        threshold: 1,
-        evaluationPeriods: 1,
-        periodMinutes: 1440,
-        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
-        severity: "page",
-        description:
-          "No successful nightly CEO run anywhere in the fleet in 24 h - the retention loop is down",
-      });
-    }
 
     // P29: free-tier-first-turn-failures
     // A free-tier workspace's run failing before it has EVER had a reply is a new user's
@@ -1445,33 +1399,6 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // W67: agent-run-failure-storm
-    // run.completed{outcome=failure, source=paperclip} — the alarmable
-    // reliability signal for AUTONOMOUS work (nightly CEO + every Paperclip
-    // routine/issue run; those carry source="paperclip" per _parse_session_key).
-    // Human-initiated runs (webchat/channel) are excluded on purpose: their
-    // failures are visible to the person who triggered them, whereas an
-    // autonomous run fails with nobody watching — which is exactly the
-    // MyTrainer (104 gateway_timeouts) / KidShield (~325 failed runs) retry-loop
-    // storm class this catches. The full [env, service, outcome, source] set is
-    // published by put_metric, so this binds a real metric (no emitter change).
-    // GREATER_THAN + NOT_BREACHING: zero failures publishes no datapoint, so a
-    // quiet fleet never alarms (unlike the deleted W5 gauge-to-zero trap below).
-    // Threshold is a storm line, not a rate — recalibrate up as the armed fleet
-    // grows past a few dozen owners.
-    this.createAlarm({
-      id: "W67",
-      name: "agent-run-failure-storm",
-      metricName: "run.completed",
-      threshold: 20,
-      evaluationPeriods: 1,
-      periodMinutes: 15,
-      dimensions: { outcome: "failure", source: "paperclip" },
-      severity: "warn",
-      description:
-        "Autonomous (Paperclip) agent-run failures spiking: >20 failed runs in 15m — the nightly-CEO/routine retry-loop storm class.",
-    });
-
     // W5 (gateway-connection-drop) DELETED: absence-of-signal noise.
     // The `gateway.connection.open <= 0` design fired whenever no owner had a
     // chat tab open — which, on a launch-stage fleet, is most of the time. The
@@ -1735,39 +1662,6 @@ def handler(event, context):
       severity: "warn",
       description:
         "Metronome webhook signature verification failing - secret drift or forged-webhook probe; credit gate not getting trustworthy balance updates",
-    });
-
-    // W63: paperclip-down.
-    // Backend emits paperclip.upstream.error{kind:"unreachable"} in
-    // routers/paperclip_proxy.py + core/services/paperclip_admin_client.py
-    // when the Paperclip BFF raises an httpx connect/transport error. Replaces
-    // the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target
-    // group, so there is no HealthyHostCount to alarm on). Sum > 0 over a short
-    // window, NOT_BREACHING (absent metric = healthy, no error emissions).
-    //
-    // W63 measures IMPACT, not availability, and NOT_BREACHING is correct for
-    // that: no error emissions genuinely means nothing is being hurt. The cost
-    // is that a Paperclip outage in a quiet window produces no failed calls, so
-    // W63 stays OK while Paperclip is down (seen live in the 2026-06-19 FIS S5
-    // paperclip-kill run). AVAILABILITY is covered by its complement,
-    // W65-paperclip-no-running-task (createPaperclipTierAlarms), which alarms on
-    // the AWS/ECS LiveTaskCount of the Paperclip service — published on a timer
-    // regardless of traffic. Keep both: W63 says "users are being hurt", W65
-    // says "the container is gone". Neither subsumes the other.
-    this.createAlarm({
-      id: "W63",
-      name: "paperclip-down",
-      metricName: "paperclip.upstream.error",
-      dimensions: { kind: "unreachable" },
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 5,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      description:
-        "Paperclip BFF is unreachable from the backend (httpx connect/transport errors) - Teams/agent flows are degraded. Replaces the dropped ALB-HealthyHostCount W63 (PaperclipStack has no ALB target group).",
     });
 
     // W64: provision-gate-block-spike.
@@ -2211,7 +2105,7 @@ def handler(event, context):
     this.createAlarm({
       id: "W58",
       name: "per-user-crash-loop",
-      description: ">=3 unexpected task stops in 5 min on the platform cluster (backend, paperclip) - a crash/restart loop. Provisional threshold.",
+      description: ">=3 unexpected task stops in 5 min on the platform cluster (backend) - a crash/restart loop. Provisional threshold.",
       metric: crashLoopMetric,
       threshold: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
@@ -2372,140 +2266,10 @@ def handler(event, context):
   }
 
   // =========================================================================
-  // Paperclip tier alarms (W60, W61, AuroraFailoverRule, W62, W65)
+  // Funnel, voice and gate alarms (W66, W84, W85, P34, ...)
   // =========================================================================
 
-  private createPaperclipTierAlarms(props: ObservabilityStackProps): void {
-    const dbId = props.paperclipDbCluster.clusterIdentifier;
-    // W60: Aurora CPU
-    this.createAlarm({
-      id: "W60",
-      name: "aurora-cpu",
-      description: "Paperclip Aurora CPU >80% for 15 min",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/RDS",
-        metricName: "CPUUtilization",
-        statistic: "Average",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { DBClusterIdentifier: dbId },
-      }),
-      threshold: 80,
-      evaluationPeriods: 3,
-      severity: "warn",
-    });
-
-    // W61: Aurora connections — SATURATION only (high watermark). Provisional.
-    this.createAlarm({
-      id: "W61",
-      name: "aurora-connections",
-      description: "Paperclip Aurora DatabaseConnections >100 for 15 min - connection saturation. Provisional threshold.",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/RDS",
-        metricName: "DatabaseConnections",
-        statistic: "Maximum",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { DBClusterIdentifier: dbId },
-      }),
-      threshold: 100,
-      evaluationPeriods: 3,
-      severity: "warn",
-    });
-
-    // W61b: Aurora OUTAGE / FAILOVER — distinct from saturation. W60/W61 (CPU,
-    // high-connections, NOT_BREACHING) do NOT fire when a failover/outage drops
-    // connections toward zero or stops reporting. RDS publishes failover +
-    // failure events to EventBridge; route them straight to the warn topic so
-    // the 3C Aurora-failover scenario has a recovery signal. (Event categories:
-    // "failover" + "failure"; covers RDS-EVENT-0031/0071/0036 etc.)
-    const auroraEventRule = new events.Rule(this, "AuroraFailoverRule", {
-      ruleName: `lightbulb-${this.envName}-aurora-failover`,
-      description: "Paperclip Aurora failover/failure events -> warn",
-      eventPattern: {
-        source: ["aws.rds"],
-        detailType: ["RDS DB Cluster Event", "RDS DB Instance Event"],
-        detail: {
-          SourceIdentifier: [dbId],
-          EventCategories: ["failover", "failure"],
-        },
-      },
-    });
-    auroraEventRule.addTarget(new events_targets.SnsTopic(this.warnTopic));
-
-    // W62: Paperclip Fargate service CPU. The Paperclip service is singular +
-    // CDK-known, so a static per-service AWS/ECS alarm works (unlike the
-    // per-user fleet).
-    const clusterName = props.cluster.clusterName;
-    const pcServiceName = cdk.Fn.select(
-      2,
-      cdk.Fn.split("/", props.paperclipService.serviceArn),
-    );
-    this.createAlarm({
-      id: "W62",
-      name: "paperclip-service-cpu",
-      description: "Paperclip Fargate service CPU >80% for 15 min",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/ECS",
-        metricName: "CPUUtilization",
-        statistic: "Average",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ClusterName: clusterName, ServiceName: pcServiceName },
-      }),
-      threshold: 80,
-      evaluationPeriods: 3,
-      severity: "warn",
-    });
-
-    // W65: Paperclip service has NO running task — the AVAILABILITY half of
-    // "is Paperclip up?". W63 (paperclip.upstream.error) is the IMPACT half: it
-    // only fires when the backend actually fails a call, so a Paperclip outage
-    // during a window with no Teams traffic emits nothing and W63 stays OK.
-    // Observed live: the 2026-06-19 FIS S5 (paperclip-kill) run killed the task
-    // for ~2 min and W63 never fired — no concurrent traffic to fail. W65 closes
-    // exactly that gap; the two are complementary, not redundant.
-    //
-    // Metric choice — READ BEFORE CHANGING. `LiveTaskCount` is a real AWS/ECS
-    // metric, dimensioned {ClusterName, ServiceName} exactly like W62's
-    // CPUUtilization, published once a minute whether or not anyone calls
-    // Paperclip. It is NOT `RunningTaskCount`, which lives in
-    // ECS/ContainerInsights — deliberately OFF on this cluster (see
-    // container-stack.ts) because Container Insights bills ~15 metrics per
-    // service and this cluster carries the whole per-user fleet. Verified
-    // against the live account: AWS/ECS publishes exactly CPUUtilization,
-    // MemoryUtilization, LiveTaskCount, and both paperclip services report it.
-    //
-    // treatMissingData BREACHING is LOAD-BEARING, not defensive boilerplate.
-    // ECS does not publish LiveTaskCount=0 when a service drops to zero tasks —
-    // it STOPS PUBLISHING (verified on a scaled-to-zero per-user service: the
-    // datapoints simply end). Absence IS the outage, so NOT_BREACHING would
-    // rebuild the exact quiet-window blind spot this alarm exists to close.
-    // The `< 1` comparison therefore almost never trips on a live datapoint;
-    // it is the honest statement of "below the desiredCount floor of 1"
-    // (paperclip-stack.ts) and covers the case where ECS does report a 0.
-    //
-    // 3 × 1 min: PaperclipStack stops the old task before starting the new one
-    // (minHealthyPercent=0), so a deploy has a short zero-task gap; three
-    // consecutive minutes rides out that gap and a single CloudWatch delivery
-    // gap while still catching a silently-dead container long before a user
-    // hits Teams. A slow deploy can still trip it once; it clears on its own.
-    this.createAlarm({
-      id: "W65",
-      name: "paperclip-no-running-task",
-      description:
-        "Paperclip Fargate service has no running task for 3 min - the BFF is gone or crash-looping. Native AWS/ECS availability signal, published regardless of traffic; complements W63, which only fires when a real backend call fails. Missing data = breaching: ECS stops publishing LiveTaskCount at zero tasks rather than reporting 0.",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/ECS",
-        metricName: "LiveTaskCount",
-        statistic: "Minimum",
-        period: cdk.Duration.minutes(1),
-        dimensionsMap: { ClusterName: clusterName, ServiceName: pcServiceName },
-      }),
-      threshold: 1,
-      evaluationPeriods: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
-      severity: "warn",
-    });
-
+  private createLateAlarms(props: ObservabilityStackProps): void {
     // W66: onboarding-bootstrap-failed
     //
     // The activation funnel had NO alarm at all until this one. Four prod
@@ -2542,80 +2306,6 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // P30/P31/W82/W83: Paperclip run failures, by error code.
-    //
-    // routers/paperclip_events.py emits paperclip.run.failed{error_code} for
-    // EVERY agent.run.failed the fork plugin forwards, BEFORE the push
-    // cooldown/dedupe (the bounded code set lives there as _RUN_FAILED_CODES).
-    // Until this existed, nothing watched a Paperclip-woken run failing: on
-    // 2026-09-23 every one failed setup_failed for 15 h with no alarm, because
-    // W67 watches run.completed, which only the bridge's usage report emits —
-    // and a run that dies in Paperclip setup never reaches the bridge.
-    //
-    // setup_failed and hermes_gateway_auth_failed are platform faults (secret
-    // decryption, hook-token drift), never model faults, so ONE pages.
-    this.createAlarm({
-      id: "P30",
-      name: "paperclip-run-setup-failed",
-      metricName: "paperclip.run.failed",
-      dimensions: { error_code: "setup_failed" },
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 5,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      severity: "page",
-      description:
-        "PAGE: a Paperclip run failed with setup_failed - a platform fault before the agent ran (2026-09-23: secret decryption failed after a master-key change; every routine and issue run failed for 15 h). Check /lightbulb/{env}/paperclip for the setup error.",
-    });
-
-    this.createAlarm({
-      id: "P31",
-      name: "paperclip-run-gateway-auth-failed",
-      metricName: "paperclip.run.failed",
-      dimensions: { error_code: "hermes_gateway_auth_failed" },
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 5,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      severity: "page",
-      description:
-        "PAGE: a Paperclip run failed with hermes_gateway_auth_failed - the agent's adapter apiKey no longer matches the owner's hook token (token rotated without repoint/sync). Every run for that owner fails until the adapter config is re-synced.",
-    });
-
-    this.createAlarm({
-      id: "W82",
-      name: "paperclip-run-process-lost",
-      metricName: "paperclip.run.failed",
-      dimensions: { error_code: "process_lost" },
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 5,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      severity: "warn",
-      description:
-        "A Paperclip run failed with process_lost - usually a Paperclip task start/stop reaping in-flight runs (the fork orphan reaper is not task-aware).",
-    });
-
-    // No dimensions: reads the {env, service} rollup put_metric publishes
-    // alongside every coded datapoint, so it sums across all codes.
-    this.createAlarm({
-      id: "W83",
-      name: "paperclip-run-failed-rollup",
-      metricName: "paperclip.run.failed",
-      threshold: 10,
-      evaluationPeriods: 1,
-      periodMinutes: 15,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      severity: "warn",
-      description:
-        "10+ Paperclip runs failed in 15 min across all error codes - check paperclip.run.failed by error_code for the dominant cause.",
-    });
-
     // W84: open voice windows near the GPT-Live concurrent-session tier
     // (voice_calls.VOICE_SESSION_TIER = 25). The sweeper emits the gauge once
     // a minute; Maximum so a second backend task's sample cannot halve it.
@@ -2639,7 +2329,7 @@ def handler(event, context):
     // W85: ERROR lines from the voice routers (routers.voice, routers.voice_phone).
     // No existing 5xx metric carries the route, so this is a filter on the backend
     // log group. A JSON filter cannot set dimensions, so the env rides in the
-    // namespace (same reason as P32) and the alarm reads the filter's own metric.
+    // namespace (dev and prod share one account) and the alarm reads the filter's own metric.
     const voiceErrors = new logs.MetricFilter(this, "VoiceErrorsFilter", {
       logGroup: logs.LogGroup.fromLogGroupName(
         this,
@@ -2667,68 +2357,6 @@ def handler(event, context):
       severity: "warn",
       description:
         "3+ ERROR log lines from the voice routers in 5 min - check the backend log group for routers.voice / routers.voice_phone.",
-    });
-
-    // P32: Paperclip secret decryption failures, straight from its logs.
-    //
-    // A backstop that does not depend on the fork plugin forwarding events.
-    // A text-term filter pattern cannot set dimensions (a metric filter's
-    // dimension values must be fields of a JSON/space-delimited pattern), so
-    // this metric CANNOT carry the {env, service} pair createAlarm injects for
-    // the LightbulbAI namespace — binding them would be the classic alarm on
-    // an identity nothing publishes. Dev and prod share one account, so the
-    // env goes into the namespace instead, and the alarm is built from the
-    // filter's own metric so the two can never disagree.
-    // The log group is owned by paperclip-stack (this stack depends on it).
-    const decryptFailed = new logs.MetricFilter(
-      this,
-      "PaperclipSecretDecryptFailedFilter",
-      {
-        logGroup: logs.LogGroup.fromLogGroupName(
-          this,
-          "PaperclipLogGroupRef",
-          logGroupPath(this.envName, "paperclip"),
-        ),
-        filterPattern: logs.FilterPattern.literal('"Secret decryption failed"'),
-        metricNamespace: `LightbulbAI/Paperclip/${this.envName}`,
-        metricName: "paperclip.secret.decrypt_failed",
-        metricValue: "1",
-      },
-    );
-    this.createAlarm({
-      id: "P32",
-      name: "paperclip-secret-decrypt-failed",
-      metric: decryptFailed.metric({
-        statistic: "Sum",
-        period: cdk.Duration.minutes(5),
-      }),
-      threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      severity: "page",
-      description:
-        "PAGE: Paperclip logged 'Secret decryption failed' - its master key no longer decrypts stored company secrets, so every run that needs one fails at setup. Log-derived, independent of the plugin event path (see P30).",
-    });
-
-    // P33: an issue blocked by a platform fault that nobody live could take.
-    //
-    // core/services/paperclip_escalation.py hands a recovery-blocked issue on
-    // (failed agent -> escalation agent -> root CEO). When the root CEO itself
-    // failed, or no rung is invokable, the work stays blocked and needs a human.
-    this.createAlarm({
-      id: "P33",
-      name: "paperclip-escalation-exhausted",
-      metricName: "paperclip.escalation.exhausted",
-      threshold: 1,
-      evaluationPeriods: 1,
-      periodMinutes: 5,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      severity: "page",
-      description:
-        "PAGE: a Paperclip issue blocked by a platform-failed run (setup_failed/process_lost/timeout) ran out of escalation rungs - the root CEO failed too, or no escalation agent is invokable. The issue stays blocked until a human moves it.",
     });
 
     // P34: OpenRouter refusing keys that still have daily allowance. The gate
@@ -3815,8 +3443,7 @@ def handler(event, context):
       ...(
         [
           ["Jev decisions by outcome", "messaging.jev.decision", "outcome", ["ok", "error", "timeout", "rate_limited", "disabled"]],
-          ["Nightly CEO runs by outcome", "nightly_ceo.run", "outcome", ["success", "failure", "aborted"]],
-          ["Rejected hook tokens by route", "internal_hook.auth_failed", "route", ["paperclip_run", "other"]],
+          ["Rejected hook tokens by route", "internal_hook.auth_failed", "route", ["other"]],
         ] as const
       ).map(
         ([title, metricName, dim, values]) =>

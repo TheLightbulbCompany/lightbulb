@@ -8,7 +8,6 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as rds from "aws-cdk-lib/aws-rds";
 import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import {
@@ -66,30 +65,6 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       taskDefinition: taskDef,
     });
 
-    const paperclipService = new ecs.FargateService(
-      supportStack,
-      "PaperclipService",
-      {
-        cluster,
-        taskDefinition: taskDef,
-      },
-    );
-
-    const paperclipDbCluster = new rds.DatabaseCluster(
-      supportStack,
-      "PaperclipDb",
-      {
-        engine: rds.DatabaseClusterEngine.auroraPostgres({
-          version: rds.AuroraPostgresEngineVersion.VER_16_4,
-        }),
-        writer: rds.ClusterInstance.serverlessV2("writer"),
-        serverlessV2MinCapacity: 0,
-        serverlessV2MaxCapacity: 4,
-        vpc,
-        clusterIdentifier: "isol8-dev-paperclip-db",
-      },
-    );
-
     const makeTable = (id: string) =>
       new dynamodb.Table(supportStack, id, {
         partitionKey: {
@@ -128,8 +103,6 @@ function buildTemplate(envName: "dev" | "prod"): Template {
         projectorFunctionName: `${resourcePrefix(envName)}messaging-projector`,
         appsyncEventApiId: "test-event-api-id",
       },
-      paperclipDbCluster,
-      paperclipService,
     };
 
     const obsStack = new ObservabilityStack(
@@ -202,15 +175,15 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "watchdog.judge.cost": [[]],
   "marketplace.path_traversal_attempt": [[]],
   // routers/paperclip_events.py receive_paperclip_event, before the push
-  // decision. P30/P31/W82 bind one error_code each; W83 binds the rollup.
+  // decision. No alarm since the Paperclip exit.
   "paperclip.run.failed": [["error_code"]],
-  // core/services/paperclip_escalation.py escalate; P33 binds the rollup.
+  // core/services/paperclip_escalation.py escalate; no alarm since the Paperclip exit.
   "paperclip.escalation.exhausted": [[]],
-  // routers/messaging.py _count_hook_auth_failure; P24 binds route=paperclip_run.
+  // routers/messaging.py _count_hook_auth_failure; dashboard only.
   "internal_hook.auth_failed": [["route"]],
   // core/services/jev.py decide(); P26 binds the rollup and outcome=error|forbidden|timeout|rate_limited.
   "messaging.jev.decision": [["outcome"]],
-  // core/services/run_analytics.py _enrich_and_capture; P27 (prod) binds outcome=success.
+  // core/services/run_analytics.py _enrich_and_capture; no alarm since the Paperclip exit.
   "nightly_ceo.run": [["outcome"]],
   // core/services/messaging.py count_first_turn_failure; P29 binds the bare rollup.
   "messaging.run.first_turn_failed": [[]],
@@ -254,8 +227,7 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "provision.gate.blocked": [["code"]],
   // core/services/hermes_provisioning.py — reconcile_runtime's except arm.
   "provision.reconcile.failed": [[]],
-  // run_analytics.schedule_run_completed — full set {outcome, source}; W67
-  // binds {outcome=failure, source=paperclip} (autonomous-run reliability).
+  // run_analytics.schedule_run_completed — full set {outcome, source}.
   "run.completed": [["outcome", "source"]],
   "stripe.api.latency": [["op"]],
   "stripe.webhook.received": [["event_type"]],
@@ -394,9 +366,9 @@ describe("ObservabilityStack", () => {
   // rules are PROD-GATED (see ObservabilityStack.createAccountHardening) —
   // account-wide findings, so dev doesn't get a duplicate copy of them.
   test("creates EventBridge rules for security findings (dev, no account-wide rules)", () => {
-    // ECS TaskStopped (W39) + Aurora failover/failure (W61b) + the hourly
-    // alert-subscription monitor. GuardDuty + Access Analyzer are prod-only.
-    template.resourceCountIs("AWS::Events::Rule", 3);
+    // ECS TaskStopped (W39) + the hourly alert-subscription monitor.
+    // GuardDuty + Access Analyzer are prod-only.
+    template.resourceCountIs("AWS::Events::Rule", 2);
   });
 
   // The $1,500 account-wide Budget is PROD-GATED (see createCostAlarms) —
@@ -624,56 +596,15 @@ describe("ObservabilityStack", () => {
     }
   });
 
-  // W65 is the availability half of "is Paperclip up?" — W63 only fires when a
-  // real backend call fails, so it is blind to an outage in a quiet window.
-  // Every property below is load-bearing; see the comment block on the alarm:
-  //   - LiveTaskCount, NOT RunningTaskCount. The latter is an
-  //     ECS/ContainerInsights metric and Container Insights is off on this
-  //     cluster, so it would never receive a datapoint.
-  //   - TreatMissingData=breaching. ECS stops publishing LiveTaskCount at zero
-  //     tasks instead of reporting 0, so absence IS the outage. Flipping this
-  //     to notBreaching silently restores the blind spot the alarm closes.
-  //   - Both ClusterName and ServiceName. LiveTaskCount is per-service; an
-  //     alarm scoped to the cluster alone would read the whole per-user fleet.
-  test("W65 alarms on the Paperclip service's native ECS task count", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-W65-paperclip-no-running-task",
-      Namespace: "AWS/ECS",
-      MetricName: "LiveTaskCount",
-      Statistic: "Minimum",
-      Period: 60,
-      Threshold: 1,
-      EvaluationPeriods: 3,
-      ComparisonOperator: "LessThanThreshold",
-      TreatMissingData: "breaching",
-      Dimensions: Match.arrayWith([
-        Match.objectLike({ Name: "ClusterName" }),
-        Match.objectLike({ Name: "ServiceName" }),
-      ]),
-    });
-  });
-
-  // P32 reads a log-derived metric. A text-term filter publishes no
-  // dimensions, so the alarm must bind the filter's exact namespace/name and
-  // NO dimensions — anything else watches an identity nothing publishes.
-  test("P32 binds exactly the metric its Paperclip log filter publishes", () => {
-    template.hasResourceProperties("AWS::Logs::MetricFilter", {
-      LogGroupName: "/lightbulb/dev/paperclip",
-      FilterPattern: '"Secret decryption failed"',
-      MetricTransformations: [
-        Match.objectLike({
-          MetricNamespace: "LightbulbAI/Paperclip/dev",
-          MetricName: "paperclip.secret.decrypt_failed",
-        }),
-      ],
-    });
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P32-paperclip-secret-decrypt-failed",
-      Namespace: "LightbulbAI/Paperclip/dev",
-      MetricName: "paperclip.secret.decrypt_failed",
-      Dimensions: Match.absent(),
-      TreatMissingData: "notBreaching",
-    });
+  test("no Paperclip alarms or Aurora rule remain (Paperclip exit)", () => {
+    for (const t of [template, buildTemplate("prod")]) {
+      const names = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a: any) => a.Properties.AlarmName);
+      expect(names.filter((n) => /paperclip|nightly-ceo|agent-run-failure-storm|aurora/.test(n))).toEqual([]);
+      const rendered = JSON.stringify(t.toJSON());
+      expect(rendered).not.toContain("AWS/RDS");
+      expect(rendered).not.toContain("aws.rds");
+      expect(rendered).not.toContain("nightly_ceo.run");
+    }
   });
 
   test("W85 warns on ERROR lines from the voice routers", () => {
@@ -1083,9 +1014,9 @@ describe("ObservabilityStack — prod-only paths", () => {
   // $1,500 Budget) are PROD-GATED — dev and prod share one AWS account, so
   // these render exactly once, on the prod stack.
   test("prod creates EventBridge rules for security findings", () => {
-    // ECS TaskStopped (W39) + Aurora failover (W61b) + the alert-subscription
-    // monitor + GuardDuty + Access Analyzer.
-    template.resourceCountIs("AWS::Events::Rule", 5);
+    // ECS TaskStopped (W39) + the alert-subscription monitor + GuardDuty +
+    // Access Analyzer.
+    template.resourceCountIs("AWS::Events::Rule", 4);
   });
 
   test("prod creates the account-wide AWS Budget", () => {
@@ -1196,20 +1127,6 @@ describe("ObservabilityStack — prod-only paths", () => {
       buildTemplate("dev").findResources("AWS::CloudWatch::Alarm"),
     );
     expect(rendered).not.toContain("openrouter.account.balance_usd");
-  });
-
-  test("prod pages when no nightly CEO run succeeds fleet-wide in 24 h; dev has no such alarm", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-prod-P27-nightly-ceo-fleet-zero",
-      MetricName: "nightly_ceo.run",
-      Period: 86400,
-      Threshold: 1,
-      ComparisonOperator: "LessThanThreshold",
-      TreatMissingData: "breaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
-    });
-    const dev = JSON.stringify(buildTemplate("dev").findResources("AWS::CloudWatch::Alarm"));
-    expect(dev).not.toContain("nightly-ceo-fleet-zero");
   });
 
   test("P29 pages on 2+ free-tier first-turn failures in 2 h", () => {

@@ -17,7 +17,6 @@ import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
-import { PaperclipStack } from "./stacks/paperclip-stack";
 import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 import { resourcePrefix, tableName } from "./table-names";
@@ -73,8 +72,8 @@ const VENDOR_ORG_ID_BY_ENV: Record<string, string> = {
 export interface LightbulbStageProps extends cdk.StageProps {
   environment: string;
   /**
-   * Product root domain — every frontend, API, WebSocket, browser-view, Clerk
-   * and Paperclip-company hostname in the stage derives from it. Per-stage so
+   * Product root domain — every frontend, API, WebSocket, browser-view and Clerk
+   * hostname in the stage derives from it. Per-stage so
    * one environment can move independently of the other. Defaults to
    * ROOT_DOMAIN (see lib/domains.ts).
    */
@@ -321,35 +320,6 @@ export class LightbulbStage extends cdk.Stage {
     // Without this the generated workflow drops database from service's `needs`.
     service.addDependency(database);
 
-    // PaperclipStack — runs the pinned Paperclip image (extended overlay,
-    // apps/infra/paperclip-extended/) as a single Fargate service. Reachable from
-    // FastAPI via Cloud Map at
-    // `http://paperclip.lightbulb-${env}.local:3100/`. T6 wires the public
-    // host route on the existing ALB; T14 wires the FastAPI proxy router.
-    const paperclip = new PaperclipStack(this, `lightbulb-${env}-paperclip`, {
-      stackName: `lightbulb-${env}-paperclip`,
-      environment: env,
-      rootDomain,
-      vpc: network.vpc,
-      cluster: container.cluster,
-      // Paperclip registers as `paperclip.<namespace>` and
-      // PAPERCLIP_INTERNAL_URL is derived from namespaceName, so these must
-      // always name the same namespace ServiceStack gets.
-      cloudMapNamespace: container.cloudMapNamespace,
-      paperclipDbCluster: database.paperclipDbCluster,
-      paperclipDbSecurityGroup: database.paperclipDbSecurityGroup,
-      paperclipBetterAuthSecretName: auth.paperclipBetterAuthSecret.secretName,
-      paperclipEventsWebhookSecretName: auth.paperclipEventsWebhookSecret.secretName,
-      // Pass KMS key ARN (not Key object) so PaperclipStack can grant
-      // kms:Decrypt on its task execution roles without triggering CDK's
-      // cross-stack auto-grant cycle (same pattern as ApiStack).
-      paperclipKmsKeyArn: auth.kmsKey.keyArn,
-    });
-    paperclip.addDependency(database);
-    paperclip.addDependency(auth);
-    paperclip.addDependency(container);
-    paperclip.addDependency(network);
-
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
     const observability = new ObservabilityStack(
       this,
@@ -387,20 +357,15 @@ export class LightbulbStage extends cdk.Stage {
           projectorFunctionName: api.messagingProjectorFunctionName,
           appsyncEventApiId: api.appsyncEventApiId,
         },
-        paperclipDbCluster: database.paperclipDbCluster,
-        paperclipService: paperclip.service,
       },
     );
     observability.addDependency(database);
-    observability.addDependency(paperclip);
 
     // Both envs: a runtime resolved to openrouter_managed needs this stack's gate URL,
     // so the stack itself can't be env-gated.
     const openrouterGate = new OpenRouterGateStack(this, `lightbulb-${env}-openrouter-gate`, {
       stackName: `lightbulb-${env}-openrouter-gate`,
       environment: env,
-      apiDomain: env === "prod" ? `api.${rootDomain}` : `api-${env}.${rootDomain}`,
-      wsInternalSecretName: auth.wsInternalSecret.secretName,
     });
     openrouterGate.addDependency(database);
 

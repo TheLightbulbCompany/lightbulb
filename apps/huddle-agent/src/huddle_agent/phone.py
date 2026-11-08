@@ -422,7 +422,7 @@ class Receptionist(Talker):
         return False
 
     def caller_speaking(self) -> None:
-        """The caller started talking. Over the firm disclosure LiveKit skips the reply to that line; it is taken
+        """The caller started talking. A line said over the firm disclosure may get no reply (8 Nov prod); it is taken
         after the opening (`after_opening`)."""
         speech = self._speech()
         if speech is not None and speech.id == self.opening and not speech.allow_interruptions:

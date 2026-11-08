@@ -83,7 +83,8 @@ async def agent_lines(room_id: str, after: int) -> dict:
                 continue
         if text.strip() and (question or not r.get("threadRootMessageId")):
             said.append({"id": r["messageId"], "seq": int(r["messageSeq"]), "text": text,
-                         **({"question": question} if question else {})})  # fmt: skip
+                         **({"question": question} if question else {}),
+                         **({"inReplyTo": r["inReplyTo"]} if r.get("inReplyTo") else {})})  # fmt: skip
     return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
 
 

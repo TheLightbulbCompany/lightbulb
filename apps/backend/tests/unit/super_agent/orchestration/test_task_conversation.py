@@ -43,14 +43,14 @@ def chat(monkeypatch):
         members[meta["roomId"]].append({"kind": "human", "id": user_id})
         return meta
 
-    async def create_agent_message(owner_id, req, *, attrs=None):
+    async def create_agent_message(owner_id, req, *, attrs=None, in_reply_to=None):
         prior = next((p for p in posts if p["req"].event_id == req.event_id), None)
         if prior:
             return prior["receipt"]
         receipt = messaging.AgentMessageReceiptResponse(
             message_id=uuid.uuid4(), room_id=req.room_id, created_at="2026-11-04T10:00:00Z"
         )
-        posts.append({"req": req, "receipt": receipt, "attrs": attrs})
+        posts.append({"req": req, "receipt": receipt, "attrs": attrs, "in_reply_to": in_reply_to})
         return receipt
 
     async def create_message(**kw):
@@ -108,6 +108,12 @@ async def test_post_as_lightbulb_sets_specialist_label_and_attrs(chat):
     assert str(req.agent_id) == CEO and str(req.room_id) == ORIGIN
     assert chat["posts"][0]["attrs"] == {"taskRefs": refs, "specialist": "finance", "kind": "result"}
     assert mid == str(chat["posts"][0]["receipt"].message_id)
+
+
+async def test_post_as_lightbulb_passes_the_message_it_answers(chat):
+    await tc.post_as_lightbulb(WS, ORIGIN, text="Three PRs merged.", event_id="task-line:x:1", in_reply_to="m_voice")
+    await tc.post_as_lightbulb(WS, ORIGIN, text="Paid.", event_id="task:x:2")
+    assert [p["in_reply_to"] for p in chat["posts"]] == ["m_voice", None]
 
 
 async def test_post_as_lightbulb_same_event_id_once(chat):

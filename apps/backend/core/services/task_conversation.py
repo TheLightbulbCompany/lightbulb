@@ -156,9 +156,10 @@ async def post_as_lightbulb(
     attrs: dict | None = None,
     remember: bool = True,
     uploaded_attachments: list[dict] | None = None,
+    in_reply_to: str | None = None,
 ) -> str:
     """Post as Lightbulb; idempotent on `event_id`. Returns the message id. `attrs`: extra message attributes
-    (lane A's confirm card carries `automationId`). The post goes into room memory like a person's message
+    (lane A's confirm card carries `automationId`). `in_reply_to`: the human message it answers. The post goes into room memory like a person's message
     (agent posts write no admit row, so admission never ingests them); progress lines, question cards (the
     Question row holds them) and `remember=False` (the Router's ack-only or fallback posts) stay out."""
     if kind is None:  # Lane Q: never claim an approval a Question row doesn't show (spec 05 §3.5 layer 3)
@@ -185,6 +186,7 @@ async def post_as_lightbulb(
             **(attrs or {}),
             **{k: v for k, v in (("taskRefs", task_refs), ("specialist", specialist), ("kind", kind)) if v is not None},
         },
+        **({"in_reply_to": in_reply_to} if in_reply_to else {}),
     )
     if remember and not progress and kind != "question":  # a question card is already the Question row
         await room_memory.ingest_posted(

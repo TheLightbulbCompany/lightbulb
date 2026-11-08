@@ -105,6 +105,14 @@ async def test_a_room_turn_reply_stores_its_trigger_as_in_reply_to(room, created
 
 
 @pytest.mark.asyncio
+async def test_a_post_with_no_run_stores_the_message_it_answers(room, created):  # noqa: F811
+    """The Router's reply and a thread's answer line name no run: the caller passes the asking message, and the voice
+    matches a spoken ask's answer by it (voice_meet.agent_lines `inReplyTo`)."""
+    await messaging.create_agent_message(OWNER, _request("Three PRs merged."), in_reply_to="voice_turn_1")
+    assert created.await_args_list[-1].kwargs["in_reply_to"] == "voice_turn_1"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "event_kind,between,counted",
     [

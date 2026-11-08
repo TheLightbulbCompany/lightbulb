@@ -651,6 +651,7 @@ async def test_router_ask_is_plain_reply(world):
     world["decisions"] = [{"kind": "ask", "triggerIds": [t1], "text": "Which card?", "options": ["Amex", "Visa"]}]
     await _run([t1])
     assert world["posts"][0]["text"] == "Which card? (Amex / Visa)" and world["posts"][0]["task_refs"] is None
+    assert world["posts"][0]["in_reply_to"] == (await repo.get_trigger(WS, t1))["ref"]["messageId"]  # voice matches it
     for status in ("queued", "waiting"):
         assert (await repo.list_tasks_by_status(WS, status))[0] == []  # no task, no Question row (G27)
 

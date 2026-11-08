@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
 import { HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
+import { FORWARDING_CODES, IPHONE_NOTE, CHARGES_NOTE, forwardingCodes, type Carrier, type ForwardMode } from "./forwarding";
 import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
 
 const NAMES = ["Nova", "Sol", "Remy", "Juno"];
@@ -58,7 +59,9 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
       window.scrollTo?.({ top: 0 });
     } catch (e) {
       const status = (e as { status?: number }).status;
+      const code = (e as { body?: { detail?: { code?: string } } }).body?.detail?.code;
       setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
+        : status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
         : "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };
@@ -169,44 +172,69 @@ function Bookings({ c, set, go, busy, back }: StepProps) {
 
 function NumberStep({ c, set, go, busy, back }: StepProps) {
   const api = useApi();
-  const [state, setState] = useState<"loading" | "ok" | "taken" | "not_available" | "error">(c.number ? "ok" : "loading");
-  useEffect(() => {
-    if (c.number) return;
-    api.post("/voice/number", {}).then(
-      (r) => { set({ number: (r as { number: string }).number }); setState("ok"); },
-      (e: { status?: number; body?: { detail?: { code?: string } } }) =>
-        setState(e?.status === 409 ? (e.body?.detail?.code === "taken" ? "taken" : "not_available") : "error"),
-    );
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const shown = c.number ? usPhone(c.number) : "";
-  const dial = c.number.replace(/^\+1/, "").replace(/\D/g, "").replace(/(\d{3})(\d{3})(\d{4})/, "$1 $2 $3");
+  const saved = c.numberChoice;
+  const [path, setPath] = useState<"keep" | "new">(saved?.path ?? "keep");
+  const [carrier, setCarrier] = useState<Carrier>((saved?.carrier as Carrier) || "verizon");
+  const [mode, setMode] = useState<ForwardMode>(saved?.mode ?? "missed");
+  const [area, setArea] = useState(saved?.areaCode ?? "");
+  const [err, setErr] = useState("");
+  const info = FORWARDING_CODES[carrier];
+  const m = info.modes.includes(mode) ? mode : info.modes[0];
+  const digits = c.number.replace(/^\+1/, "").replace(/\D/g, "");
+  const codes = forwardingCodes(carrier, m, digits || "<assistant number>");
+  const note = info.note?.replace("<n>", c.number ? usPhone(c.number) : "your assistant's number");
+  const areaOk = /^[2-9]\d{2}$/.test(area);
+  // The server keeps the choice in the document; PUT replaces the document, so merge what it returns before saving.
+  const next = async () => {
+    setErr("");
+    try {
+      const r = (await api.post("/voice/number", path === "new" ? { path, areaCode: area } : { path, carrier, mode: m })) as { numberChoice: AgentConfig["numberChoice"] };
+      await go({ ...c, numberChoice: r.numberChoice }, 5);
+    } catch { setErr("Couldn't save your choice. Try again."); }
+  };
+  const pick = (value: "keep" | "new", title: string, sub: string) =>
+    <label className="vx-choice">
+      <input type="radio" name="numberPath" checked={path === value} onChange={() => setPath(value)} />
+      <span>{title}<small>{sub}</small></span><span />
+    </label>;
   return <>
     <h1 className="vx-title">Your number</h1>
-    <p className="vx-sub">Keep your number. Forward it to your assistant&apos;s line; nothing to port.</p>
+    <p className="vx-sub">Callers reach your assistant on a number. Keep yours, or get a new one.</p>
     <div className="vx-body">
-      {state === "loading" && <p className="vx-reading" role="status">Getting your assistant a number…</p>}
-      {state === "ok" && <>
-        <div><p className="vx-label">Your assistant&apos;s number</p><p className="vx-number">{shown}</p></div>
+      <div role="radiogroup" aria-label="Your number" style={{ display: "grid", gap: 8 }}>
+        {pick("keep", "Keep my number", "Forward your calls to your assistant. Nothing to port.")}
+        {pick("new", "Get a new number", "A new business line for your assistant.")}
+      </div>
+      {path === "keep" ? <>
+        <label className="vx-label">Your carrier
+          <select className="vx-field" value={carrier} onChange={(e) => setCarrier(e.target.value as Carrier)}>
+            {(Object.keys(FORWARDING_CODES) as Carrier[]).map((k) => <option key={k} value={k}>{FORWARDING_CODES[k].label}</option>)}
+          </select></label>
         <label className="vx-label">Your business line
           <input className="vx-field" type="tel" value={c.forwardFrom} placeholder="(415) 555-0199" onChange={(e) => set({ forwardFrom: e.target.value })} /></label>
+        <div role="radiogroup" aria-label="Which calls" style={{ display: "grid", gap: 8 }}>
+          {info.modes.includes("missed") && <label className="vx-choice"><input type="radio" name="fwdMode" checked={m === "missed"} onChange={() => setMode("missed")} /><span>Missed and busy calls only</span><span /></label>}
+          <label className="vx-choice"><input type="radio" name="fwdMode" checked={m === "all"} onChange={() => setMode("all")} /><span>All calls</span><span /></label>
+        </div>
         <div className="vx-card">
           <p className="vx-h">Forward your line</p>
-          <p>From your business phone, dial this and press call. Most carriers confirm with a beep.</p>
-          <span className="vx-dial">*72 {dial}</span>
-          <p>To stop forwarding, dial <span className="vx-code">*73</span>. Google Voice, VoIP or a carrier that doesn&apos;t take <span className="vx-code">*72</span>: turn on call forwarding in its settings and enter {shown}.</p>
+          <p>{c.number ? `Your assistant's number is ${usPhone(c.number)}.` : "Your assistant's number appears at Go live."}</p>
+          {codes ? <>
+            <p>From your phone, dial {codes.on.length > 1 ? "these, one at a time" : "this"} and press call.</p>
+            {codes.on.map((x) => <span key={x} className="vx-dial" style={{ overflowWrap: "anywhere" }}>{x}</span>)}
+            <p>To stop forwarding, dial {codes.off.map((x) => <span key={x} className="vx-code">{x} </span>)}</p>
+          </> : <p>{note}</p>}
+          <p>{IPHONE_NOTE} {CHARGES_NOTE}</p>
         </div>
-        <p className="vx-sub">Checking that it forwards: once forwarding checks are on, we&apos;ll ring your line here and you&apos;ll see it arrive.</p>
+        <p className="vx-sub">We&apos;ll check your forwarding once it&apos;s set.</p>
+      </> : <>
+        <label className="vx-label">Area code
+          <input className="vx-field" inputMode="numeric" maxLength={3} value={area} placeholder="415" style={{ width: 120 }} onChange={(e) => setArea(e.target.value.replace(/\D/g, ""))} /></label>
+        <p className="vx-sub">Your new business line is ready at Go live; put it on your Google Business Profile and website.</p>
       </>}
-      {(state === "taken" || state === "not_available" || state === "error") && <div className="vx-card" role="status">
-        <p className="vx-h">{state === "error" ? "Couldn't get a number just now" : "No number to give out here yet"}</p>
-        <p>{state === "taken" ? "This test environment has one number and another workspace is using it." : state === "error" ? "Try again later from the Agent page." : "Numbers are being set up. Finish the rest now; your number arrives on the Agent page."}</p>
-      </div>}
+      {err && <p className="vx-save" data-err="true" role="alert">{err}</p>}
     </div>
-    <Foot back={back}>
-      {state === "ok" ? <><Button variant="ghost" disabled={busy} onClick={() => go(c, 5)}>Skip, I&apos;ll forward later</Button>
-        <Button disabled={busy} onClick={() => go(c, 5)}>I&apos;ve forwarded it</Button></>
-        : <Button disabled={busy || state === "loading"} onClick={() => go(c, 5)}>Continue</Button>}
-    </Foot>
+    <Foot back={back}><Button disabled={busy || (path === "new" && !areaOk)} onClick={next}>Continue</Button></Foot>
   </>;
 }
 

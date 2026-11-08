@@ -9,10 +9,13 @@ comes from that record, never from the model. The assistant's settings are the A
 
 Rows in the messaging table:
     PHONE#<e164>    LINE                  the number's workspace (ownerId) and the member tasks run as (ownerUserId)
-    OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM")
+    OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM");
+                                          with bookingsGo "google" it is the hold, eventId its Google event
+                                          (core/services/voice_booking)
     OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
 """
 
+import asyncio
 import functools
 import hashlib
 import re
@@ -30,7 +33,7 @@ from pydantic import BaseModel, Field
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import clerk_admin, questions
+from core.services import clerk_admin, integration_reads, questions, voice_booking
 from routers.huddles import _Worker
 from routers.voice import _e164
 from routers.internal_automations import VoiceStartIn, start_voice_work
@@ -65,6 +68,7 @@ DEFAULTS: dict = {
 }
 _TZ = ZoneInfo("America/New_York")  # the call clock (startedAt, step times); bookings and hours use _tz(cfg)
 _GRID = timedelta(minutes=30)  # slot starts every half hour
+_warming: set[asyncio.Task] = set()  # held so the Google warm-up is not garbage-collected mid-flight
 
 
 def _err(status: int, code: str) -> HTTPException:
@@ -175,6 +179,9 @@ async def start_call(body: StartIn) -> dict:
     cfg = await agent_config(owner_id)
     org = await clerk_admin.get_organization(owner_id) if owner_id.startswith("org_") else None
     business, assistant = (org or {}).get("name") or "the business", cfg["name"].strip() or "Lightbulb"
+    if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
+        _warming.add(t := asyncio.create_task(integration_reads.warm_google(owner_id)))
+        t.add_done_callback(_warming.discard)
     seen = await _seen(owner_id, body.callerNumber)
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     call = {
@@ -497,8 +504,8 @@ async def availability(call_id: str, body: DateIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book", "move")
-    taken = await _taken(meta["ownerId"], body.date)
-    return {"date": body.date, "slots": free_slots(cfg, body.date, taken, _now(cfg), _minutes(cfg, body.service))}
+    slots = await voice_booking.free(meta["ownerId"], cfg, call_id, body.date, _minutes(cfg, body.service))
+    return {"date": body.date, "slots": slots}
 
 
 class BookIn(BaseModel):
@@ -570,7 +577,7 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    await _book(meta["ownerId"], call_id, call, cfg, body.start, body.service, body.name)
+    await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
     entry = {"start": body.start, "service": body.service, "name": body.name}
     line = f"{body.service} · {_pretty(body.start)} for {body.name}"
     await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
@@ -595,9 +602,9 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     if not row or not call.get("caller") or row.get("phone") != call["caller"]:
         raise _err(404, "booking_not_found")
     if body.newStart:
-        await _book(meta["ownerId"], call_id, call, cfg, body.newStart, row["service"], row["name"], old=row)
+        await voice_booking.move(meta["ownerId"], cfg, call_id, call, row, body.newStart)
     else:
-        await messaging_repo._transact(_release(messaging_repo.settings.MESSAGING_TABLE, owner_pk, row))
+        await voice_booking.cancel(meta["ownerId"], cfg, call_id, row)
     entry = {"start": body.start, "newStart": body.newStart, "service": row["service"], "name": row["name"]}
     line = (
         f"{row['service']} moved from {_pretty(body.start)} to {_pretty(body.newStart)}"

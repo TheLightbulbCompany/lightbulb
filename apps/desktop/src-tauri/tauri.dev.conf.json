@@ -1,7 +1,7 @@
 {
   "build": {
-    "devUrl": "https://dev.thelightbulb.company/chat",
-    "frontendDist": "https://dev.thelightbulb.company/chat"
+    "devUrl": "https://dev.thelightbulb.company/voice",
+    "frontendDist": "https://dev.thelightbulb.company/voice"
   },
   "app": {
     "windows": [
@@ -14,7 +14,7 @@
         "minHeight": 600,
         "titleBarStyle": "Visible",
         "dragDropEnabled": false,
-        "url": "https://dev.thelightbulb.company/chat"
+        "url": "https://dev.thelightbulb.company/voice"
       }
     ],
     "security": {

@@ -12,6 +12,14 @@ const q = (over: object) => ({
     { id: "done", label: "Done", style: "secondary" }],
   ...over,
 });
+const call = (over: object) => ({
+  id: "q-1", taskId: "t-1", kind: "question", subkind: "didnt_know", title: "Do you do bridal parties?", text: "",
+  preview: { kind: "didnt_know", roomId: "r1", caller: "+14155550133", question: "Do you do bridal parties?" },
+  state: "open", answerers: [], canAnswer: true, waitingLabel: "Waiting on you", answer: null, answeredBy: null,
+  answeredAt: null, createdAt: "2026-11-07T15:00:00Z", version: 1,
+  options: [{ id: "call_myself", label: "I'll call them", style: "secondary" }, { id: "done", label: "Done", style: "secondary" }],
+  ...over,
+});
 const qs = vi.hoisted(() => ({ data: [] as object[] }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("../data", () => ({
@@ -41,4 +49,27 @@ it("a call's handoff Question reads as the caller wanting a person", () => {
   render(<NeedsYou />);
   expect(screen.getByText("Caller wanted a person")).toBeInTheDocument();
   expect(screen.queryByLabelText("Your answer")).toBeNull();
+});
+
+it("four card kinds render their labels", () => {
+  qs.data = [call({ id: "a" }), call({ id: "b", subkind: "handoff" }), call({ id: "c", subkind: "line_problem" }),
+    call({ id: "d", kind: "approval", subkind: null })];
+  render(<NeedsYou />);
+  for (const l of ["Nova didn't know", "Caller wanted a person", "Line problem", "Needs your OK"]) expect(screen.getByText(l)).toBeInTheDocument();
+});
+
+it("line problem links to reconnect", () => {
+  qs.data = [call({ subkind: "line_problem", title: "Google Calendar stopped working", text: "Reconnect Google Calendar." })];
+  render(<NeedsYou />);
+  expect(screen.getByRole("link", { name: "Reconnect Google" })).toHaveAttribute("href", "/voice/settings#connections");
+});
+
+it("didnt_know offers tel when caller known", () => {
+  qs.data = [call({})];
+  const { unmount } = render(<NeedsYou />);
+  expect(screen.getByRole("link", { name: "I'll call them" })).toHaveAttribute("href", "tel:+14155550133");
+  unmount();
+  qs.data = [call({ preview: null })];
+  render(<NeedsYou />);
+  expect(screen.queryByRole("link", { name: "I'll call them" })).toBeNull();
 });

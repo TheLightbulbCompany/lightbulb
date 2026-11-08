@@ -278,6 +278,13 @@ async def curate(owner_id: str, agent_id: str) -> dict:
     return {"ran": bool(data.get("ran")), "changed": bool(data.get("changed"))}
 
 
+#: A phone caller's run is created only here (bridge ``runs.CALLER_RUNS_PATH``). The route is the capability: an
+#: image without caller mode answers 404 not_found before any thread starts, so the run is refused instead of
+#: running a caller's words with the full Worker toolset and the owner's CLI logins (prod 2026-11-08, a microVM
+#: still on h-2026.11.8-d99e0f8). Poll, steer and stop stay on ``/internal/v1/runs/<id>``.
+CALLER_RUNS_PATH = "/internal/v1/caller-runs"
+
+
 async def create_run(owner_id: str, identity: RunIdentity, request: RunRequest) -> RunStatus:
     grant = None
     if identity.mode == "worker":  # a Router batch has no task, run or Worker session a task grant could bind
@@ -287,15 +294,24 @@ async def create_run(owner_id: str, identity: RunIdentity, request: RunRequest) 
             )
         except (RuntimeError, ApiProblem) as exc:
             logger.warning("task run local session invocation unavailable: %s", type(exc).__name__)
-    data = await _call(
-        owner_id,
-        "/internal/v1/runs",
-        method="POST",
-        body={"identity": identity.to_wire(), "request": request.to_wire()},
-        timeout_s=CREATE_TIMEOUT_S,
-        grant=grant,
-        **_task_session(identity),
-    )
+    caller = request.principal == "caller"
+    try:
+        data = await _call(
+            owner_id,
+            CALLER_RUNS_PATH if caller else "/internal/v1/runs",
+            method="POST",
+            body={"identity": identity.to_wire(), "request": request.to_wire()},
+            timeout_s=CREATE_TIMEOUT_S,
+            grant=grant,
+            **_task_session(identity),
+        )
+    except RunRefused as exc:
+        if caller and str(exc) == "v1_runs_unsupported":
+            logger.warning(
+                "caller run refused: owner=%s run=%s is on an image without caller mode", owner_id, identity.run_id
+            )
+            raise RunRefused("caller_mode_unsupported") from exc
+        raise
     return _status(data)
 
 

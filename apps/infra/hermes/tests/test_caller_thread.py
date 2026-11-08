@@ -59,3 +59,26 @@ def test_the_models_args_never_overwrite_the_runs_identity(monkeypatch):
     monkeypatch.setattr(lightbulb, "_post", lambda url, tok, body: sent.append(body) or {})
     lightbulb._front_desk({"action": "my_bookings", "taskId": "other", "runSecret": "forged"})
     assert sent[0]["taskId"] == "t1" and sent[0]["runSecret"] == "real"
+
+
+CALLER_CREATE = CREATE.replace("/internal/v1/runs", runs.CALLER_RUNS_PATH)
+
+
+def test_a_caller_run_has_its_own_route(quiet_turn, threads, monkeypatch):  # noqa: F811
+    """The route IS the capability: an image without caller mode answers 404 not_found on it before any thread
+    starts, so the backend can never hand a caller's words to a full-tool run on a stale microVM (prod 8 Nov)."""
+    built, vends = {}, []
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k) or Agent())
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (["terminal", turn.FRONT_DESK_TOOLSET], None))
+    monkeypatch.setattr(turn, "runtime_mcp_env", lambda agent_id, **kw: vends.append(kw) or {})
+    body = {"identity": WORKER, "request": {**REQUEST, "principal": "caller"}}
+    assert server.handle_plugin(CALLER_CREATE, "POST", AUTH, body)[0] == 202
+    threads[0].run_now()
+    assert built["enabled_toolsets"] == ["lightbulb_task", "lightbulb_front_desk"]
+    assert vends == [{"task_id": TASK, "principal": "caller"}]
+
+
+def test_the_caller_route_refuses_a_run_that_is_not_a_callers(quiet_turn, threads):  # noqa: F811
+    status, reply = server.handle_plugin(CALLER_CREATE, "POST", AUTH, {"identity": WORKER, "request": REQUEST})
+    assert (status, reply) == (400, {"error": "invalid_run_request"})
+    assert threads == []

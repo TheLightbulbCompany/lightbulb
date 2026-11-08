@@ -165,3 +165,22 @@ def test_identity_session_key_matches_tasks_schema():
 
     assert IDENTITY.session_key == ts.worker_session_key(AGENT, TASK)
     assert re.fullmatch(ts.export_schema()["sessionKeys"]["worker"], IDENTITY.session_key)
+
+
+async def test_a_callers_run_is_created_on_the_caller_route(bridge):
+    """Prod 2026-11-08: four phone-caller runs reached a microVM still on an image without caller mode, which
+    ignored `principal` and gave them terminal, gh, gog and the owner's AWS connection. A caller's run is created
+    only on the route that image lacks, so it answers 404 not_found and the run is refused before it starts."""
+    import dataclasses
+
+    caller = dataclasses.replace(REQUEST, principal="caller")
+    await rr.create_run(OWNER, IDENTITY, caller)
+    assert bridge.calls[-1]["path"] == "/internal/v1/caller-runs"
+    assert bridge.calls[-1]["body"]["request"]["principal"] == "caller"
+
+    bridge.replies.append((404, {"error": "not_found", "path": "/internal/v1/caller-runs"}))
+    with pytest.raises(rr.RunRefused, match="caller_mode_unsupported"):
+        await rr.create_run(OWNER, IDENTITY, caller)
+
+    await rr.create_run(OWNER, IDENTITY, REQUEST)  # a member's run is unchanged
+    assert bridge.calls[-1]["path"] == "/internal/v1/runs"

@@ -688,6 +688,10 @@ _MARKS = {"working": "Started", "waiting": "Needs you", "idle": "Done", "failed"
 _PERSON_REASONS = frozenset({"resolved", "stopped", "dismissed", "reopened"})
 
 
+#: A phone caller's failed (or refused) thread: its line is read out on the call, so offer a message instead.
+CALLER_FAILED_LINE = "I couldn't get that done from here. Can I take a message for the team?"
+
+
 async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -> None:
     """One marker line in the task room per status change ("Started", "Needs you", "Done", "Closed"), and at Done or
     Didn't finish one new line in the main chat of the Router conversation it came from (an unread, like a Claude
@@ -726,6 +730,8 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
         if to in ("idle", "failed") and root and room and _is_uuid(room) and not person_only:
             # A short result whole, else one plain line; bare when someone in the room can't open the task.
             line = tasks_access.result_text(tree, room, humans) or ("Done." if to == "idle" else "Didn't finish.")
+            if to == "failed" and await tasks_repo.from_contact(ws, task):  # read out on the call: offer a message
+                line = CALLER_FAILED_LINE
             if to == "idle":  # a meeting's thread that made something: its link here and in the Meet's chat
                 line = await voice_meet.with_link(room, task, line)
             await task_conversation.post_as_lightbulb(

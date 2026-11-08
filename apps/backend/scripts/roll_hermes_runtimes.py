@@ -20,8 +20,9 @@ that is what ``hermes_provisioning.roll_runtime_image`` does per owner (update o
 READY, wait for the bridge to report idle, stop the warm session). Exit 0 when every targeted
 owner is current or updated, 1 if any owner failed or came back busy (the rest still roll).
 
-``updated-session-busy`` means the runtime IS on the new spec but a turn was still running at the
-ten-minute deadline, so the warm session was deliberately left alive. When the env moved (a
+``updated-session-busy`` means the runtime IS on the new spec but its session was not replaced by the
+ten-minute deadline: a turn was still running, AgentCore never confirmed the stop, or a microVM older than
+the update (a split session's survivor) still answered. The last line names every such owner. When the env moved (a
 managed-model flip) its profiles were NOT rewritten, and the next cold start refuses the mismatch
 -- so a busy owner exits 1: re-run it with ``--respec`` (its env no longer reads as drift).
 
@@ -85,7 +86,7 @@ async def main(argv: list[str] | None = None) -> int:
             parser.error("--max-concurrent-turns needs --owner-id, no --dry-run, and 0 (default) or >= 2")
         await container_repo.update_fields(args.owner_id, {"max_concurrent_turns": args.max_concurrent_turns or None})
 
-    failed = 0
+    failed, busy = 0, []
     for owner_id in await _targets(args):
         try:
             # Converge the boot secret first (a field a newer bridge reads): the bridge reads it
@@ -102,11 +103,15 @@ async def main(argv: list[str] | None = None) -> int:
         print(f"{owner_id} {result}")
         # A busy owner may have a moved env but its old profile (an env drift, or --respec):
         # re-run it with --respec (the env no longer reads as drift) or it breaks on cold start.
-        failed += result == "updated-session-busy"
+        if result == "updated-session-busy":
+            failed += 1
+            busy.append(owner_id)
         # A concurrent roll may have built its spec from the row before this cap landed: re-run.
         failed += (
             args.max_concurrent_turns is not None or bool(args.network_workers)
         ) and result == "update-in-progress"
+    if busy:
+        print("still busy (re-run them): " + " ".join(busy))
     return 1 if failed else 0
 
 

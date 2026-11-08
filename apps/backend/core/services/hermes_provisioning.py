@@ -970,9 +970,21 @@ ROLL_IDLE_WAIT_S = 600.0
 ROLL_IDLE_POLL_S = 15.0
 
 
+#: A bridge whose ``uptimeS`` exceeds the time since the roll's ``UpdateAgentRuntime`` by more than this
+#: started before the update, so it is on the OLD spec (rounding and clock skew are the slack). A warm-pool
+#: microVM of the new version can only have booted after the update.
+ROLL_UPTIME_SLACK_S = 30.0
+
+
 async def _wait_for_idle_session(owner_id: str) -> bool:
     """Poll the bridge's ``health`` RPC with ``drain`` until no turn is in flight, up to
-    ``ROLL_IDLE_WAIT_S``. False means still busy at the deadline.
+    ``ROLL_IDLE_WAIT_S``. False means still busy at the deadline."""
+    return await _idle_payload(owner_id, time.monotonic() + ROLL_IDLE_WAIT_S) is not None
+
+
+async def _idle_payload(owner_id: str, deadline: float) -> dict | None:
+    """``_wait_for_idle_session`` to an absolute ``deadline``, returning the idle bridge's health payload
+    (``{}`` for "no reachable runtime") or None when still busy at the deadline.
 
     ``drain`` makes an idle bridge take its refusal hold (``turn.hold_turns``, 120 s TTL)
     atomically with answering ``busy: 0``, so no turn can start between this answer and the
@@ -1006,20 +1018,19 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
     from core.services import container_rpc
     from core.services.messaging import ApiProblem
 
-    deadline = time.monotonic() + ROLL_IDLE_WAIT_S
     while True:
         try:
             payload = await container_rpc.call(owner_id, "health", {"drain": True})
         except ApiProblem as exc:
             if not isinstance(exc.__cause__, httpx.TimeoutException):
-                return True  # no reachable runtime: there is no warm session to protect
+                return {}  # no reachable runtime: there is no warm session to protect
             payload = {"busy": 1}  # it did not answer in ~95 s, which is not proof it is idle
         except Exception:  # noqa: BLE001 -- a 504 or an ok:false is not proof of idle either
             payload = {"busy": 1}
         if not (payload or {}).get("busy"):
-            return True
+            return payload or {}
         if time.monotonic() >= deadline:
-            return False
+            return None
         await asyncio.sleep(ROLL_IDLE_POLL_S)
 
 
@@ -1067,17 +1078,77 @@ async def _session_warm(owner_id: str, arn: str) -> bool:
     return int(row.get("warm_until") or 0) > int(time.time()) and row.get("arn") == arn
 
 
-async def _rewake(owner_id: str) -> None:
+async def _rewake(owner_id: str) -> float | None:
     """Start the rolled session again, on the new spec, for a workspace that was in use: otherwise the next message
     pays the 40-55 s cold start (dev walk 16: the first answer after a roll took 54 s, 39 s of it the wake). A parked
-    one stays parked. Best effort: a failed wake costs only that cold start."""
+    one stays parked. Best effort: a failed wake costs only that cold start. Returns the answering bridge's
+    ``uptimeS`` (None when it did not answer), which tells the roll whether the stop really replaced it."""
     from core.services import container_rpc
     from core.services.runtime_transport import AGENTCORE_INGRESS_TIMEOUT_S
 
     try:
-        await container_rpc.call(owner_id, "health", timeout_s=AGENTCORE_INGRESS_TIMEOUT_S)
+        payload = await container_rpc.call(owner_id, "health", timeout_s=AGENTCORE_INGRESS_TIMEOUT_S)
     except Exception:  # noqa: BLE001
         logger.warning("roll_runtime_image: owner=%s rolled session not re-woken", owner_id, exc_info=True)
+        return None
+    uptime = (payload or {}).get("uptimeS")
+    return float(uptime) if isinstance(uptime, (int, float)) else None
+
+
+# MUST-FIX when #5098 merges: its ``_stop_rolled_session`` would reference ``updated_at``, which exists only inside
+# ``roll_runtime_image``. On the shared runtime the "older than the update" test needs the runtime's own
+# ``lastUpdatedAt`` (GetAgentRuntime), not this process's monotonic clock: the update may be another roll's.
+async def _stop_when_idle(owner_id: str, arn: str, *, was_warm: bool, updated_at: float | None, write: bool) -> bool:
+    """Stop the owner's session at its first idle moment, until it is really replaced or ``ROLL_IDLE_WAIT_S`` runs
+    out (False: the caller reports the owner busy).
+
+    Replaced means: the stop was CONFIRMED (an unconfirmed one is retried at the next idle probe, never reported as
+    done), and -- when the spec moved (``updated_at``, the monotonic time of ``UpdateAgentRuntime``) -- no bridge
+    older than the update answers afterwards. Each ``StopRuntimeSession`` takes ONE microVM of a split session, and
+    prod 2026-11-08 had two: the stop took 45106d09, while 395f1e3e (both booted 13:30:24 on h-2026.11.8-d99e0f8)
+    answered the rewake and served four phone-caller runs on the old image, without #5105's caller limits, until it
+    idled out at 14:13:47. So a warm session -- or one whose drain probe answered from an old bridge -- is woken
+    after the stop, and an old ``uptimeS`` sends the roll back to drain and stop again.
+
+    A CONFIRMED stop (or AgentCore reporting no session) is the one point at which superseded gate bearers are
+    expired. ``write`` rewrites the profiles once, after the first confirmed stop (a managed-model flip: the model
+    lives in the env AND each profile)."""
+    from core.billing.bedrock_gate_tokens import expire_superseded_gate_tokens
+
+    def _old(uptime) -> bool:
+        return (
+            updated_at is not None
+            and isinstance(uptime, (int, float))
+            and uptime > time.monotonic() - updated_at + ROLL_UPTIME_SLACK_S
+        )
+
+    deadline = time.monotonic() + ROLL_IDLE_WAIT_S
+    while True:
+        payload = await _idle_payload(owner_id, deadline)
+        if payload is None:
+            return False
+        if await stop_runtime_session(owner_id, arn):
+            await expire_superseded_gate_tokens(owner_id)  # never raises
+            if write:
+                # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
+                # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
+                # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.
+                await write_profiles(owner_id)
+                write = False
+            if not (was_warm or _old(payload.get("uptimeS"))):
+                return True
+            uptime = await _rewake(owner_id)
+            if not _old(uptime):
+                return True
+            logger.warning(
+                "roll_runtime_image: owner=%s a microVM up %.0fs (older than the update) still answers after the "
+                "stop -- a split session; draining and stopping it too",
+                owner_id,
+                uptime,
+            )
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(ROLL_IDLE_POLL_S)
 
 
 async def roll_runtime_image(
@@ -1100,8 +1171,9 @@ async def roll_runtime_image(
     present them any more. A busy session keeps them alive.
 
     Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``,
-    ``"updated-session-busy"`` -- the runtime IS on the desired spec but a turn was still running
-    at the deadline, so the warm session was left alone and picks it up when it next starts --
+    ``"updated-session-busy"`` -- the runtime IS on the desired spec but its session was not replaced
+    by the deadline (a turn still running, a stop AgentCore never confirmed, or a microVM older than the
+    update still answering: ``_stop_when_idle``), so an old-spec VM may still serve turns --
     or ``"update-in-progress"``: a concurrent roll's ``UpdateAgentRuntime`` holds the runtime
     (ConflictException), and that roll owns the stop.
     Raises ``ValueError`` for a row with no provisioned runtime.
@@ -1150,6 +1222,7 @@ async def roll_runtime_image(
         return "current"
     if dry_run:
         return "would-update"
+    updated_at = time.monotonic()
     if drifted:
         try:
             await run_in_thread(_update_runtime_image, arn, request)
@@ -1165,36 +1238,24 @@ async def roll_runtime_image(
             raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
     # Read before the idle probe, which itself wakes a parked session.
     was_warm = await _session_warm(owner_id, arn)
-    idle = await _wait_for_idle_session(owner_id)
-    if idle:
-        from core.billing.bedrock_gate_tokens import expire_superseded_gate_tokens
-
-        # Unconfirmed (False) keeps every superseded bearer.
-        stopped = await stop_runtime_session(owner_id, arn)
-        if stopped:
-            await expire_superseded_gate_tokens(owner_id)  # never raises
-        if respec or env_drifted:
-            # An env move (a managed-model flip) must reach the profiles too: sync.py refuses a pair.
-            # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
-            # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
-            # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.
-            await write_profiles(owner_id)
-        if stopped and was_warm:
-            await _rewake(owner_id)
-    else:
+    idle = await _stop_when_idle(
+        owner_id, arn, was_warm=was_warm, updated_at=updated_at if drifted else None, write=respec or env_drifted
+    )
+    if not idle:
         logger.warning(
-            "roll_runtime_image: owner=%s updated but a turn was still running after %.0fs -- warm session "
-            "left alive; it picks the new spec up on its next session",
+            "roll_runtime_image: owner=%s updated but the session was not replaced within %.0fs (a turn still "
+            "running, an unconfirmed stop, or a microVM older than the update still answering) -- re-run it",
             owner_id,
             ROLL_IDLE_WAIT_S,
         )
     logger.info(
-        "roll_runtime_image: owner=%s %s -> %s (drifted=%s restart=%s)",
+        "roll_runtime_image: owner=%s %s -> %s (drifted=%s restart=%s replaced=%s)",
         owner_id,
         current,
         settings.AGENTCORE_HERMES_IMAGE,
         drifted,
         restart_session,
+        idle,
     )
     return "updated" if idle else "updated-session-busy"
 

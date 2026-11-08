@@ -249,7 +249,7 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
         return 403, {"error": "tenant_mismatch"}
     # A task VM (spec 02 §3.3) runs its task's runs and answers RPC reads, nothing else: no room
     # turn, no Paperclip run, no call -- each would restore and write the specialist profile.
-    task_run = path.startswith("/internal/v1/runs")
+    task_run = path.startswith("/internal/v1/runs") or path == runs.CALLER_RUNS_PATH  # a caller's create too
     if task_mode.active() and not task_run and path != "/plugins/lightbulb-channel/rpc":
         return task_mode.Refused.reply
     # A real, authorized invoke: this microVM is claimed, so the network member may start here

@@ -842,3 +842,16 @@ async def test_a_task_of_another_room_says_only_done(world):
     await _attempt(tid)
     await _ended(tid, "completed")
     assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == "Done."
+
+
+async def test_a_callers_failed_task_offers_to_take_a_message(world, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    """A phone caller's thread that could not run (refused on an image without caller mode, #5118) or failed: the
+    call room's line is read out, so it offers a message instead of "Didn't finish"."""
+    tid = await _task()
+    await _attempt(tid)
+    monkeypatch.setattr(acts.tasks_repo, "from_contact", AsyncMock(return_value=True))
+    await _ended(tid, "failed")
+    (line,) = world["posts"]
+    assert line["text"] == acts.CALLER_FAILED_LINE

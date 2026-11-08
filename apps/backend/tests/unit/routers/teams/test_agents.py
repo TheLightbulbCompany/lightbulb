@@ -15,9 +15,6 @@ def teams_ctx():
         user_id="u1",
         org_id="o1",
         owner_id="o1",
-        company_id="co_abc",
-        paperclip_user_id="pcu_xyz",
-        session_cookie="cookie-value",
     )
 
 
@@ -243,3 +240,24 @@ def test_list_agents_carries_each_agents_handle_under_the_switch(client, monkeyp
         messaging, "load_agent_roster", AsyncMock(side_effect=messaging.ApiProblem("RUNTIME_UNAVAILABLE", "down"))
     )
     assert client.get("/api/v1/teams/agents").status_code == 200  # no handles beats no Team page
+
+
+def test_list_agents_without_a_cookie_sets_none(monkeypatch):
+    """Old mobile builds call ``GET /teams/agents``: it answers 200 with the same shape and no
+    Paperclip session, so no ``Set-Cookie`` (Phase 1 task 8b.8)."""
+    from core.auth import AuthContext, get_current_user
+    from routers.teams import agents as agents_mod
+
+    _roster(monkeypatch, {"id": "agent-ceo"})
+    monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
+    monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value={"agent-ceo"}))
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="u1", org_id="o1")
+    try:
+        r = TestClient(app).get("/api/v1/teams/agents")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert r.status_code == 200
+    assert "set-cookie" not in r.headers
+    assert r.json() == {"agents": [{"id": "agent-ceo", "status": "idle", "seeded": False, "origin": "Starter"}]}

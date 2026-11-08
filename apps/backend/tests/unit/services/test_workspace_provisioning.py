@@ -193,12 +193,7 @@ async def test_teams_context_for_native_member_mints_no_session():
     from routers.teams.deps import resolve_teams_context
 
     await provision_org(ORG, provisioner="user_1")
-    factory = AsyncMock(side_effect=AssertionError("session minted"))
     ctx = await resolve_teams_context(
-        auth=AuthContext(user_id="user_1", org_id=ORG, org_role="org:admin"),
-        repo=_repo(),
-        session_factory=factory,
-        cookies={},
-        response=SimpleNamespace(set_cookie=lambda *a, **k: None),
+        auth=AuthContext(user_id="user_1", org_id=ORG, org_role="org:admin"), repo=_repo()
     )
-    assert ctx.owner_id == ORG and ctx.company_id == "" and ctx.session_cookie == "" and ctx.paperclip_user_id == ""
+    assert ctx.owner_id == ORG and ctx.user_id == "user_1"

@@ -1,7 +1,7 @@
 """Tests for the BFF ``_ctx`` Depends helper.
 
 ``_ctx`` is a thin wrapper around ``deps.resolve_teams_context``: it
-builds the session_factory closure, wires a ``reconcile`` callback
+wires a ``reconcile`` callback
 (``ensure_user_ready(auth)``), and propagates whatever the resolver
 returns or raises.
 
@@ -30,19 +30,6 @@ def _auth(user_id: str = "u1", org_id: str | None = None, is_org_context: bool =
     return auth
 
 
-def _req() -> MagicMock:
-    """Minimal Request stand-in for ``_ctx``: a cookie jar + a writable
-    ``state`` for the 401-self-heal user-id stash."""
-
-    class _State:
-        pass
-
-    req = MagicMock()
-    req.cookies = {}
-    req.state = _State()
-    return req
-
-
 @pytest.mark.asyncio
 async def test_ctx_returns_context_when_resolve_succeeds():
     """Happy path — resolve_teams_context returned a context, _ctx
@@ -54,23 +41,17 @@ async def test_ctx_returns_context_when_resolve_succeeds():
         user_id="u1",
         org_id=None,
         owner_id="u1",
-        company_id="co_abc",
-        paperclip_user_id="pcu_xyz",
-        session_cookie="cookie",
     )
 
-    req = _req()
     with patch.object(
         agents_mod.deps_mod,
         "resolve_teams_context",
         new_callable=AsyncMock,
         return_value=fake_ctx,
     ):
-        result = await agents_mod._ctx(req, MagicMock(), auth=_auth())
+        result = await agents_mod._ctx(auth=_auth())
 
     assert result is fake_ctx
-    # _ctx stamps the user id for the 401 self-heal handler.
-    assert req.state.teams_user_id == "u1"
 
 
 @pytest.mark.asyncio
@@ -85,9 +66,6 @@ async def test_ctx_passes_reconcile_to_resolver():
         user_id="u1",
         org_id=None,
         owner_id="u1",
-        company_id="co",
-        paperclip_user_id="pcu",
-        session_cookie="cookie",
     )
 
     with patch.object(
@@ -96,7 +74,7 @@ async def test_ctx_passes_reconcile_to_resolver():
         new_callable=AsyncMock,
         return_value=fake_ctx,
     ) as mock_resolve:
-        await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
+        await agents_mod._ctx(auth=_auth())
 
     reconcile = mock_resolve.await_args.kwargs["reconcile"]
     assert callable(reconcile)
@@ -222,7 +200,7 @@ async def test_ctx_self_heal_202_propagates_for_org_context():
         side_effect=raise_202,
     ):
         with pytest.raises(TeamsContextError) as exc:
-            await agents_mod._ctx(_req(), MagicMock(), auth=_auth(org_id="org_x", is_org_context=True))
+            await agents_mod._ctx(auth=_auth(org_id="org_x", is_org_context=True))
 
     assert exc.value.status_code == 202
 
@@ -243,6 +221,6 @@ async def test_ctx_propagates_other_status_codes_unchanged():
         side_effect=raise_503,
     ):
         with pytest.raises(TeamsContextError) as exc:
-            await agents_mod._ctx(_req(), MagicMock(), auth=_auth())
+            await agents_mod._ctx(auth=_auth())
 
     assert exc.value.status_code == 503

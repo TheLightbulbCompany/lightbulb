@@ -23,14 +23,13 @@ def env(monkeypatch):
 def test_phone_and_orb_transcribe_english_and_meet_stt_does():
     tr = phone.realtime_model()._opts.input_audio_transcription  # the orb is on GPT-Live (live.py)
     assert tr is not None and tr.language == "en"
-    assert meet.realtime_model()._opts.input_audio_transcription is None  # Meet hears through its STT
-    assert meet.STT_LANGUAGE == "en"
+    assert meet.STT_LANGUAGE == "en"  # Meet is on GPT-Live; its lines come from its own per-person STT
 
 
 def test_every_voice_replies_in_english():
     texts = (
         phone.INSTRUCTIONS,
-        meet.INSTRUCTIONS,
+        meet.prompt({"name": "Nova", "company": "C", "title": "T", "today": "d"}),
     )
     for t in texts:
         assert mouth.ENGLISH in t

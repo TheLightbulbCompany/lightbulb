@@ -1,18 +1,18 @@
-"""The meeting agent (founder ruling 8 Nov 2026, shape 1: talker plus delegated brain, on the DeepSeek one-Router
-design; super-agent-design/evidence/voice/voice-brain-architecture-research.md, patterns 1 and 3): a realtime talker
-in a Google Meet in front of the meeting room's Router, the one brain (agent.py hands it every `source: "meet"`
-dispatch).
+"""The meeting agent on OpenAI GPT-Live (plan 2026-11-08-gpt-live-voice, Task 3): GPT-Live is the voice, the meeting
+room's Router the one brain (agent.py hands it every `source: "meet"` dispatch). live.py runs the session; this file is
+the meeting's ears, its permission gate and its playback gate.
 
-Ears: a per-person transcriber (one stream per Meet track, so every line has its exact speaker) and the wake gate
-(`Gate` and `wakes`, over transcript.py's rules). The talker (OpenAI, create_response off, no tools) never decides a
-line: code does (mouth.Talker.line). An addressed line is posted to the meeting's room as a message
-(`/meet/{room}/ask`), with the turns since the last ask, and the fixed holding line said; only a greeting or thanks
-gets a short model reply. The Router decides the message like any other. "<name>, stop" cuts the voice off.
-Mouth: each new agent message in the meeting's room (`/meet/{room}/events`, mouth.py) is said once, briefly, adding
-nothing, when the room has paused.
+Ears: a per-person transcriber (one stream per Meet track from Recall, so every line has its exact speaker) feeds the
+wake rules (`Gate`, `wakes`, over transcript.py's), the meeting notes and the delegation's source line; the same
+frames, mixed (`Mix`), are what GPT-Live hears. Speak only when named rests on three things: GPT-Live's prompt, a
+delegation is posted (`/meet/{room}/ask`, naming the speaker) only for a line that named the assistant, and GPT-Live's
+audio reaches the meeting only while the current line named it or a team message is being said (application-
+controlled playback, developers.openai.com/api/docs/guides/voice-server-controls#control-playback-when-needed: the
+client cannot cancel a response, so the voice track is muted at the relay). Team messages (`/meet/{room}/events`) go
+to GPT-Live as results when the room has paused.
 
 The worker never leaves on an empty room: Recall's call_ended closes the LiveKit room (routers/meetings.py), and an
-hour of silence pulls the bot.
+hour of silence pulls the bot. The GPT-Live session is closed with the meeting: it bills every open second.
 """
 
 from __future__ import annotations
@@ -22,17 +22,18 @@ import logging
 import os
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
 from livekit import rtc
-from livekit.agents import AgentSession, JobContext, room_io, stt
+from livekit.agents import JobContext, room_io, stt
+from livekit.agents.voice.io import AudioInput
 from livekit.plugins import noise_cancellation, openai
-from openai.types.beta.realtime.session import TurnDetection
 
-from huddle_agent import end_after, usage_log
+from huddle_agent import live
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import ENGLISH, LANGUAGE, Mouth, Talker
+from huddle_agent.mouth import ANSWER_WITHIN_S, ENGLISH, LANGUAGE, Context, speakable
 from huddle_agent.transcript import (
     _LEADS,
     _LIGHTBULB,
@@ -43,8 +44,6 @@ from huddle_agent.transcript import (
 )
 
 logger = logging.getLogger("meet")
-MODEL = os.environ.get("MEET_MODEL", "gpt-realtime-2.1-mini")
-VOICE = os.environ.get("MEET_VOICE", "marin")
 # the gate's per-person transcriber: gpt-4o-mini-transcribe shuts down 26 Feb 2027; gpt-transcribe is its successor
 # for committed turns, $0.0045/min (developers.openai.com/api/docs/deprecations, .../models/gpt-transcribe)
 TRANSCRIBE = os.environ.get("MEET_TRANSCRIBE_MODEL", "gpt-transcribe")
@@ -63,12 +62,14 @@ STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "si
 # STT_VAD's 400 ms silence splits a line at normal pace ("Nova." + "what have we shipped...?", 8 Nov prod Meet): a
 # person's finals are one line until they stay quiet this long after one
 JOIN_S = 1.5
-INSTRUCTIONS = """You are {name}, the voice of {company}'s AI assistant, in the Google Meet "{title}". Today is {today}.
-You hear only the lines said to you, as "<who>: <words>". You own only the conversation; the team behind you owns
-every fact, tool and decision, and every request goes to them before you hear it.
-- A greeting or thanks: answer it in a few words.
-- Otherwise say only what you are told to say: the holding line, or a message from the team, adding nothing.
-Speak briefly, one or two short sentences. """ + ENGLISH
+ASK_WAIT_S = 4.0  # a delegation may land before its line is judged (JOIN_S plus the transcriber's lag): it waits this long
+FRAME = RATE // 50  # 20 ms
+TOOLS = [
+    "The Router: the team's brain in this meeting's room. It knows the team's work across GitHub, email, calendar and docs.",
+    "Memory: the Router remembers and recalls what the team has said and decided.",
+    "Work threads: the Router starts work threads that hand tasks to the team's agents, such as a draft or a post, and "
+    "puts their links in the meeting chat.",
+]
 STT_LANGUAGE = LANGUAGE  # pinned, as the phone and the orb (openai.STT defaults to it today)
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
@@ -170,40 +171,6 @@ class Gate:
         self.ask_at = None
 
 
-def realtime_model():
-    """Replies only when code asks (create_response off): the gate hands the talker each addressed line."""
-    return openai.realtime.RealtimeModel(
-        model=MODEL, voice=VOICE, input_audio_transcription=None,
-        turn_detection=TurnDetection(type="server_vad", create_response=False, interrupt_response=False),
-    )  # fmt: skip
-
-
-class MeetTalker(Talker):
-    """The talker: no tools. `asker` is the addressed line it is answering (participant id, name)."""
-
-    where = "meet"
-
-    def __init__(self, backend: Backend, info: dict) -> None:
-        super().__init__(INSTRUCTIONS.format(**info))
-        self._b, self.allow = backend, (info["name"],)
-        self.asker = ("", "")
-        self._posts: set[asyncio.Task] = set()
-
-    def post(self, request: str) -> None:
-        # a task of its own: "<name>, stop" cuts the talker's reply, never the post. The backend names the speaker
-        # ("<who> said in the meeting: ...").
-        t = asyncio.create_task(self._ask(self.context.take(request), *self.asker, self.take_question()))
-        self._posts.add(t)
-        t.add_done_callback(self._posts.discard)
-
-    async def _ask(self, text: str, pid: str, who: str, answers: dict | None = None) -> None:
-        body = {"text": text[:4000], "participantId": pid, "speakerName": who}
-        try:
-            await self._b.meet("ask", {**body, "answers": answers} if answers else body)
-        except BackendError as e:
-            logger.warning("meet: ask not posted (%s)", e.code)
-
-
 class Joiner:
     """One person's consecutive final transcripts as one line: each final waits JOIN_S for the next, and an interim
     (`speaking`: they are talking again) holds it until that next final lands. `on_line(who, text)` gets the whole
@@ -223,6 +190,10 @@ class Joiner:
         if who in self._parts:
             self._hold(who)
 
+    def held(self, who: str) -> str:
+        """The finals of `who`'s line not yet handed on."""
+        return " ".join(self._parts.get(who, []))
+
     def _hold(self, who: str) -> None:
         if (t := self._timers.pop(who, None)) is not None:
             t.cancel()
@@ -236,15 +207,6 @@ class Joiner:
         for t in self._timers.values():
             t.cancel()
         self._timers.clear()
-
-
-def assistant_text(item) -> str | None:
-    """What the voice said, from a conversation item: None for anything else. Not every item has a role: the
-    session's first item is an AgentHandoff (AttributeError on every start, 8 Nov prod Meet)."""
-    text = getattr(item, "text_content", None)
-    if getattr(item, "role", None) != "assistant" or not text or getattr(item, "interrupted", False):
-        return None
-    return text
 
 
 def voiced(frame: rtc.AudioFrame) -> bool:
@@ -263,9 +225,191 @@ def addressed(gate: Gate, name: str, who: str, text: str, now: float) -> str:
     return "ask" if kind in ADDRESSED and wakes(name, text, gate.people) else ""
 
 
+def prompt(info: dict) -> str:
+    """OpenAI's live-prompting template (developers.openai.com/api/docs/guides/live-prompting): its three headings, the
+    meeting's rule of speaking only when named, and the Router's capabilities. Task procedure stays with the Router."""
+    n = info["name"]
+    return f"""You are {n}, a calm, friendly voice assistant for {info["company"]}, in the Google Meet "{info["title"]}". Today is {info["today"]}.
+Speak warmly and naturally, at an unhurried pace. Be clear and direct, not overly cheerful.
+Several people are talking with each other in this meeting. Speak only when someone says your name, "{n}", to ask or tell you something. Stay silent for everything else, even a question to the room or a line that mentions you. "{n}, stop" means stop speaking at once.
+Keep each reply to one or two short sentences. {ENGLISH}
+
+Backchannel policy: Do not produce any backchannel interjections while anyone is speaking. Backchanneling is entirely disallowed: stay silent until someone names you.
+
+Interruption policy: Stop speaking when anyone speaks. Listen to what they say.
+
+{live.delegation_policy(TOOLS)}
+Do not generate <|SpawnThinking|> for talk that does not name you.
+
+Anything that spends, sends or publishes waits for the inviting member's OK on a card in the chat. Never approve, confirm or promise one by voice."""
+
+
+class Mix(AudioInput):
+    """Every Meet person's audio as the one stream GPT-Live hears (RoomIO links one participant; Recall gives one
+    track a person): 20 ms frames summed, silence when nobody speaks, paced in real time."""
+
+    def __init__(self) -> None:
+        super().__init__(label="meet-mix")
+        self._q: dict[str, deque[np.ndarray]] = {}
+        self._next = 0.0
+
+    def push(self, who: str, frame: rtc.AudioFrame) -> None:
+        self._q.setdefault(who, deque(maxlen=50)).append(np.frombuffer(frame.data, dtype=np.int16))  # 1 s backlog
+
+    def drop(self, who: str) -> None:
+        self._q.pop(who, None)
+
+    async def __anext__(self) -> rtc.AudioFrame:
+        now = asyncio.get_running_loop().time()
+        self._next = max(self._next + FRAME / RATE, now - 0.2)  # ponytail: catch up at most 200 ms behind
+        await asyncio.sleep(self._next - now)
+        out = np.zeros(FRAME, np.int32)
+        for q in list(self._q.values()):
+            if q and len(f := q.popleft()) == FRAME:
+                out += f
+        return rtc.AudioFrame(np.clip(out, -32768, 32767).astype(np.int16).tobytes(), RATE, 1, FRAME)
+
+
+def named(gate: Gate, who: str, text: str) -> str:
+    """The loose check (the gate's ask: a greeting or thanks to it counts): "stop", "ask" or "". The gate's state is
+    left as it was."""
+    return Gate(name=gate.name, people=gate.people).heard(who, text, 0, new_turn=True)
+
+
+class Meeting:
+    """The meeting's state between the transcriber, GPT-Live and the backend: who said what (`lines`, `asked`), the
+    playback gate on the voice track, the delegation gate (`post`) and the team's messages (`events`)."""
+
+    def __init__(self, backend, name: str, room, after: int = 0, quiet=lambda: True, poll_s: float = POLL_S,
+                 wait_s: float = ASK_WAIT_S) -> None:  # fmt: skip
+        self._b, self.name, self.room, self.after = backend, name, room, after
+        self.quiet, self.poll_s, self.wait_s = quiet, poll_s, wait_s
+        self.gate = Gate(name=name)
+        self.names: dict[str, str] = {}
+        self.context = Context()
+        self.lines: list[dict] = []
+        self.asked: list[dict] = []  # {t, who, q, a}: the meeting's record
+        self.last: dict | None = None  # the newest judged line: {at, who, text, ask}
+        self.talking: set[str] = set()  # people heard whose line is not judged yet
+        self.judged = asyncio.Event()
+        self.question: dict | None = None  # {taskId, qid}: the Worker question last sent to the voice
+        self.question_at = 0.0
+        self.open: bool | None = None
+        self.started = time.monotonic()
+        self.joiner = Joiner(self.line)
+        room.on("local_track_published", lambda *_: self._apply())
+        self.play(False)
+
+    def person(self, identity: str, name: str) -> None:
+        self.names[identity] = name or "Someone"
+        self.gate.people = [{"name": n} for n in self.names.values()]
+
+    def label(self, identity: str) -> str:
+        return self.names.get(identity, "Someone") if identity else "Several people"
+
+    def play(self, on: bool) -> None:
+        """The voice reaches the meeting only while on: GPT-Live's response cannot be cancelled, its track can."""
+        if on != self.open:
+            self.open = on
+            self._apply()
+
+    def _apply(self) -> None:
+        for pub in self.room.local_participant.track_publications.values():
+            if pub.track is not None and (pub.name or "").startswith("agent-"):
+                pub.track.unmute() if self.open else pub.track.mute()
+
+    def heard(self, who: str, text: str, final: bool) -> None:
+        """A transcript as it comes: the voice track opens as soon as the words name the assistant, closes when they
+        do not (someone else has the floor), and a stop shuts it at once."""
+        if not text.strip():
+            return
+        self.talking.add(who)
+        kind = named(self.gate, who, f"{self.joiner.held(who)} {text}".strip())
+        self.play(kind == "ask")
+        if final:
+            self.joiner.final(who, text)
+        else:
+            self.joiner.speaking(who)
+
+    def line(self, who: str, text: str) -> None:
+        """A person's whole line (Joiner): judged once, for the playback gate, the delegation gate and the notes."""
+        self.talking.discard(who)
+        kind = addressed(self.gate, self.name, who, text, time.monotonic())
+        logger.info("meet: line kind=%s", kind or "-")
+        self.play(kind != "stop" and named(self.gate, who, text) == "ask")
+        if kind == "ask":
+            self.asked.append({"t": int(time.monotonic() - self.started), "who": self.label(who), "q": text, "a": ""})
+        self.context.add(self.label(who), text)
+        self.last = {"at": time.monotonic(), "who": who, "text": text, "ask": kind == "ask"}
+        self.lines.append({"mark": len(self.lines), "kind": "person", "name": self.label(who)[:200],
+                           "text": text[:4000], "at": time.time()})  # fmt: skip
+        self.judged.set()
+
+    def _current(self) -> bool:
+        return self.last is not None and time.monotonic() - self.last["at"] <= STALE_S
+
+    async def post(self, _text: str, _turns: list[str]) -> str:
+        """GPT-Live's delegation (live.py): posted only when the current line named the assistant (a permission
+        gate, not speech), as that line, by its speaker, with the talk since the last ask. One line, one post.
+        GPT-Live's own wording of the ask is not used: it hears the meeting mixed, the transcriber knows who spoke."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + self.wait_s
+        while self.talking or not self._current():  # the line it delegated on is not judged yet
+            self.judged.clear()
+            try:
+                await asyncio.wait_for(self.judged.wait(), max(0.0, end - loop.time()))
+            except TimeoutError:
+                break
+        line = self.last
+        if not (line and line["ask"] and self._current()):
+            logger.info("meet: delegation not posted (no line named the assistant)")
+            return ""
+        self.last = None
+        body = {"text": self.context.take(line["text"])[:4000], "participantId": line["who"].rsplit(":", 1)[-1],
+                "speakerName": self.label(line["who"])}  # fmt: skip
+        if self.question and time.monotonic() - self.question_at <= ANSWER_WITHIN_S:
+            body["answers"] = self.question
+        self.question = None
+        try:
+            out = await self._b.meet("ask", body)
+        except BackendError as e:
+            logger.warning("meet: ask not posted (%s)", e.code)
+            return ""
+        return str(out.get("messageId") or "")
+
+    async def events(self):
+        """Each new agent message in the meeting's room, once, when the room has paused: the voice track opens for
+        it. A Worker's question carries its ref: the next line posted within ANSWER_WITHIN_S answers it."""
+        seen: set[str] = set()
+        while True:
+            await asyncio.sleep(self.poll_s)
+            try:
+                out = await self._b.meet("events", {"after": self.after})
+            except BackendError as e:
+                logger.warning("meet: events failed (%s)", e.code)
+                continue
+            for m in out.get("messages", []):
+                q = m.get("question")
+                keys = {m["id"], (q or {}).get("qid")} - {None}
+                if keys & seen or not (text := speakable(m.get("text") or "")):
+                    continue
+                seen |= keys
+                while not self.quiet():
+                    await asyncio.sleep(max(self.poll_s, 0.01))
+                if q:
+                    self.question, self.question_at = q, time.monotonic()
+                self.play(True)
+                self.lines.append({"mark": len(self.lines), "kind": "agent", "name": self.name[:200],
+                                   "text": m["text"][:4000], "at": time.time()})  # fmt: skip
+                if self.asked:
+                    self.asked[-1]["a"] = f"{self.asked[-1]['a']} {text}".strip()[:2000]
+                yield {"kind": "agent", "id": m["id"], "text": text, **({"question": q} if q else {})}
+            self.after = max(self.after, int(out.get("after") or 0))
+
+
 async def run(ctx: JobContext, meta: dict) -> None:
     """The meeting, from the dispatch until the room closes."""
-    started, wall = time.monotonic(), time.time()
+    wall = time.time()
     room_id = meta["roomId"]
     backend = Backend(room_id, meta["ownerId"], meta["roomToken"])
     await ctx.connect()
@@ -275,9 +419,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
         logger.error("meet: no meeting for room %s (%s)", room_id, e.code)
         return
     name = info["assistantName"]
-    names: dict[str, str] = {}
-    gate = Gate(name=name)
     heard_at = {"voiced": time.monotonic()}  # when anyone last spoke
+    meeting = Meeting(backend, name, ctx.room, int(info.get("after") or 0),
+                      quiet=lambda: time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S)  # fmt: skip
+    mix = Mix()
     readers: dict[str, asyncio.Task] = {}
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
@@ -285,49 +430,6 @@ async def run(ctx: JobContext, meta: dict) -> None:
         prompt=f'A meeting at {meta.get("company") or "a business"}. People ask the AI assistant "{name}" things '
         f'by name: "{name}, ...".',
     )  # fmt: skip
-    talker = MeetTalker(backend, {"name": name, "company": meta.get("company") or "the team", "title": info["title"],
-                                  "today": time.strftime("%A %Y-%m-%d")})  # fmt: skip
-    session = AgentSession(llm=realtime_model())
-    usage_log(session, f"meet {room_id}")
-    lines: list[dict] = []
-    asked: list[dict] = []  # {t, who, q, a}: the meeting's record
-
-    def label(identity: str) -> str:
-        return names.get(identity, "Someone") if identity else "Several people"
-
-    def stop() -> None:
-        mouth.pending.clear()
-        session.interrupt(force=True)
-
-    def on_heard(who: str, text: str, final: bool) -> None:
-        if not text.strip():
-            return
-        agents = [{"id": ASSISTANT_ID, "name": name, "defaultName": False}]
-        if stop_request(text, agents):  # a partial or a final may stop the voice at once, never wake it
-            stop()
-        if final:
-            joiner.final(who, text)
-        else:
-            joiner.speaking(who)
-
-    def on_line(who: str, text: str) -> None:
-        """A person's whole line (Joiner): gated once."""
-        kind = addressed(gate, name, who, text, time.monotonic())
-        logger.info("meet: line kind=%s", kind or "-")
-        if kind == "stop":
-            stop()
-        elif kind == "ask":
-            asked.append({"t": int(time.monotonic() - started), "who": label(who), "q": text, "a": ""})
-            talker.asker = (who.rsplit(":", 1)[-1], label(who))
-            talker.allow = (name, label(who))
-            try:  # code decides: posted with the holding line, or (a greeting) a short reply, tools off
-                talker.line(label(who), text, user_input=f"{label(who)}: {text}")
-            except RuntimeError:  # the session is closed: nothing to answer with
-                logger.warning("meet: line not handed to the talker")
-        lines.append({"mark": len(lines), "kind": "person", "name": label(who)[:200], "text": text[:4000],
-                      "at": time.time()})  # fmt: skip
-
-    joiner = Joiner(on_line)
 
     async def read(track: rtc.Track, identity: str) -> None:
         stream = rtc.AudioStream.from_track(
@@ -339,7 +441,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         async def listen() -> None:
             async for ev in words:
                 if ev.alternatives and ev.type in (stt.SpeechEventType.INTERIM_TRANSCRIPT, stt.SpeechEventType.FINAL_TRANSCRIPT):
-                    on_heard(identity, ev.alternatives[0].text, ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT)
+                    meeting.heard(identity, ev.alternatives[0].text, ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT)
 
         listener = asyncio.create_task(listen())
         try:
@@ -347,15 +449,16 @@ async def run(ctx: JobContext, meta: dict) -> None:
                 if voiced(ev.frame):
                     heard_at["voiced"] = time.monotonic()
                 words.push_frame(ev.frame)
+                mix.push(identity, ev.frame)
         finally:
             listener.cancel()
+            mix.drop(identity)
             await words.aclose()
             await stream.aclose()
 
     def on_track(track: rtc.Track, _pub, p: rtc.RemoteParticipant) -> None:
         if track.kind == rtc.TrackKind.KIND_AUDIO and p.identity.startswith("meet:"):
-            names[p.identity] = p.name or "Someone"
-            gate.people = [{"name": n} for n in names.values()]
+            meeting.person(p.identity, p.name)
             if (old := readers.pop(p.identity, None)) is not None:
                 old.cancel()
             readers[p.identity] = asyncio.create_task(read(track, p.identity))
@@ -371,80 +474,54 @@ async def run(ctx: JobContext, meta: dict) -> None:
             if pub.track is not None:
                 on_track(pub.track, pub, p)
 
-    @session.on("conversation_item_added")
-    def _item(ev) -> None:
-        if (text := assistant_text(ev.item)) is None:
-            return
-        talker.context.add(name, text)
-        lines.append({"mark": len(lines), "kind": "agent", "name": name[:200], "text": text[:4000], "at": time.time()})
-        if asked:
-            asked[-1]["a"] = f"{asked[-1]['a']} {text}".strip()[:2000]
-
-    def say(texts: list[str]) -> None:
-        talker.say(texts)
-
-    async def fetch(after: int, _handled: int) -> dict:
-        return await backend.meet("events", {"after": after})
-
-    mouth = Mouth(fetch, int(info.get("after") or 0))
-    talker.mouth = mouth
-
-    async def speak_loop() -> None:
-        while True:
-            await asyncio.sleep(POLL_S)
-            await mouth.poll()
-            quiet = time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S and session.agent_state != "speaking"
-            mouth.speak(say, ready=quiet, live=True)
-
-    def on_state(ev) -> None:
-        status = {"speaking": "speaking", "thinking": "working"}.get(ev.new_state, "listening")
-        asyncio.create_task(ctx.room.local_participant.set_attributes(
-            {f"lightbulb.agent.{ASSISTANT_ID}.status": status, f"lightbulb.agent.{ASSISTANT_ID}.name": name}
-        ))  # fmt: skip
-
-    session.on("agent_state_changed", on_state)
-    sent = {"n": 0}
-
-    async def flush(final: bool = False) -> None:
-        batch = lines if final else lines[sent["n"] :]
-        if batch:
-            await backend.transcript(f"{room_id}:{int(wall)}", batch, final=final)
-            sent["n"] = len(lines)
-
-    async def time_up() -> None:
-        logger.info("meet: max length reached, leaving room %s", room_id)
-        await backend.leave_meeting()
-        ctx.shutdown("meeting max length")
-
-    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up, talker.unchecked))
-    speaking = asyncio.create_task(speak_loop())
-
-    async def on_end(_reason: str = "") -> None:
-        limit.cancel()
-        speaking.cancel()
-        joiner.close()
-        for t in readers.values():
-            t.cancel()
-        summary = f"Asked {len(asked)} time{'s' if len(asked) != 1 else ''}"
-        for step in (flush(final=True), backend.meet("end", {"asked": asked, "summary": summary})):
-            try:
-                await step
-            except Exception:  # noqa: BLE001 -- one lost write must not cost the other
-                logger.exception("meet: end write failed room=%s", room_id)
-        await backend.aclose()
-
-    ctx.add_shutdown_callback(on_end)
-    await session.start(
-        agent=talker,
-        room=ctx.room,
+    voice = await live.start(
+        ctx,
+        prompt=prompt({"name": name, "company": meta.get("company") or "the team", "title": info["title"],
+                       "today": time.strftime("%A %Y-%m-%d")}),  # fmt: skip
+        surface="meet",
+        post=meeting.post,
+        events=meeting.events,
         room_options=room_io.RoomOptions(
-            audio_input=False,
+            audio_input=False,  # GPT-Live hears `mix`: every Meet person, not one linked participant
             text_input=False,
             close_on_disconnect=False,
             audio_output=room_io.AudioOutputOptions(track_name=TRACK),
         ),  # fmt: skip
-        record=False,  # the transcript is kept (meeting_notes); no recording of guests
     )
+    if voice.session is not None:
+        voice.session.input.audio = mix
+    meeting._apply()  # the voice track exists now: muted until someone names the assistant
+    sent = {"n": 0}
+
+    async def flush(final: bool = False) -> None:
+        batch = meeting.lines if final else meeting.lines[sent["n"] :]
+        if batch:
+            await backend.transcript(f"{room_id}:{int(wall)}", batch, final=final)
+            sent["n"] = len(meeting.lines)
+
+    async def time_up() -> None:
+        await asyncio.sleep(MEETING_MAX_S)
+        logger.info("meet: max length reached, leaving room %s", room_id)
+        await backend.leave_meeting()
+        ctx.shutdown("meeting max length")
+
+    limit = asyncio.create_task(time_up())
+
+    async def on_end(_reason: str = "") -> None:
+        limit.cancel()
+        meeting.joiner.close()
+        for t in readers.values():
+            t.cancel()
+        asked = meeting.asked
+        summary = f"Asked {len(asked)} time{'s' if len(asked) != 1 else ''}"
+        for step in (voice.close(), flush(final=True), backend.meet("end", {"asked": asked, "summary": summary})):
+            try:
+                await step
+            except Exception:  # noqa: BLE001 -- one lost write must not cost the others
+                logger.exception("meet: end step failed room=%s", room_id)
+        await backend.aclose()
+
+    ctx.add_shutdown_callback(on_end)
     await ctx.room.local_participant.set_attributes(
         {f"lightbulb.agent.{ASSISTANT_ID}.status": "listening", f"lightbulb.agent.{ASSISTANT_ID}.name": name}
     )

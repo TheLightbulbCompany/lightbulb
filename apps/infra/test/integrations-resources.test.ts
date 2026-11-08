@@ -165,6 +165,7 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
               "secretsmanager:CreateSecret",
               "secretsmanager:PutSecretValue",
               "secretsmanager:DeleteSecret",
+              "secretsmanager:RestoreSecret",
               "secretsmanager:GetSecretValue",
             ]),
             // stringLikeRegexp anchors with ^…$, so wrap with .* to assert the

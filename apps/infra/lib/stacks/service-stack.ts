@@ -840,6 +840,8 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:PutSecretValue",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
+          // force_delete_secret restores a secret scheduled for deletion, then force-deletes it (owner wipe, disconnect).
+          "secretsmanager:RestoreSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret",
         ],
@@ -879,6 +881,8 @@ export class ServiceStack extends cdk.Stack {
           "secretsmanager:PutSecretValue",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
+          // force_delete_secret restores a secret scheduled for deletion, then force-deletes it (owner wipe, disconnect).
+          "secretsmanager:RestoreSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret",
         ],

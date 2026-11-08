@@ -90,6 +90,7 @@ async def test_request_routes_task_id_to_invoke(invoked):
         (f"/internal/v1/runs/{RUN}", "GET", _task_body()),
         (f"/internal/v1/runs/{RUN}/steer", "POST", {**_task_body(), "text": "hi", "kind": "input"}),
         (f"/internal/v1/runs/{RUN}/stop", "POST", _task_body()),
+        ("/internal/v1/caller-runs", "POST", _task_body()),  # a phone caller's create (#5118)
     ],
 )
 async def test_task_session_allowed_for_every_task_run_call(invoked, path, method, body):
@@ -104,6 +105,8 @@ async def test_task_session_allowed_for_every_task_run_call(invoked, path, metho
         ("/plugins/lightbulb-channel/rpc", _task_body()),  # not a runs-v1 call
         ("/internal/v1/curate", {"agentId": "a1"}),
         ("/internal/v1/runsx", _task_body()),
+        ("/internal/v1/caller-runs", _task_body("workspace")),
+        (f"/internal/v1/caller-runs/{RUN}", _task_body()),
         ("/internal/v1/runs", _task_body("workspace")),  # a workspace run on a task session
         ("/internal/v1/runs", {"identity": {"taskId": TASK}}),
         ("/internal/v1/runs", None),

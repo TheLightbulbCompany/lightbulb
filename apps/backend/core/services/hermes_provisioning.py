@@ -1095,6 +1095,9 @@ async def _rewake(owner_id: str) -> float | None:
     return float(uptime) if isinstance(uptime, (int, float)) else None
 
 
+# MUST-FIX when #5098 merges: its ``_stop_rolled_session`` would reference ``updated_at``, which exists only inside
+# ``roll_runtime_image``. On the shared runtime the "older than the update" test needs the runtime's own
+# ``lastUpdatedAt`` (GetAgentRuntime), not this process's monotonic clock: the update may be another roll's.
 async def _stop_when_idle(owner_id: str, arn: str, *, was_warm: bool, updated_at: float | None, write: bool) -> bool:
     """Stop the owner's session at its first idle moment, until it is really replaced or ``ROLL_IDLE_WAIT_S`` runs
     out (False: the caller reports the owner busy).

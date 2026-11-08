@@ -72,7 +72,8 @@ class TaskSessionRefused(ValueError):
 
 #: The bridge's own runs-v1 routes (``bridge/runs.py`` create + ``_RUN_RE``), matched whole: no
 #: prefix test a ``/runs/../`` path could slip through.
-_RUNS_V1_RE = re.compile(r"^/internal/v1/runs(/[0-9a-f-]{36}(/stop|/steer)?)?$")
+# ``/internal/v1/caller-runs`` is a caller's create (``runtime_runs.CALLER_RUNS_PATH``); poll/steer/stop stay on runs.
+_RUNS_V1_RE = re.compile(r"^/internal/v1/(caller-runs|runs(/[0-9a-f-]{36}(/stop|/steer)?)?)$")
 
 
 def _check_task_call(path: str, json_body: Any, task_id: str) -> None:

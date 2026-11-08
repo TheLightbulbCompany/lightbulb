@@ -120,3 +120,18 @@ def test_second_task_on_task_vm_refused(threads):
     # A workspace-kind run on a latched VM would restore and write the specialist profile: refused.
     assert _post({**IDENTITY, "runId": OTHER_RUN}) == (409, {"error": "task_mode"})
     assert len(threads) == 1
+
+
+def test_a_callers_task_run_latches_a_fresh_vm_and_never_starts_the_network(quiet_turn, threads, monkeypatch):
+    """A workspace on task sessions creates a caller's run on a task VM: the task-VM gate admits caller-runs and,
+    like a task run, it starts no network member there."""
+    started = []
+    monkeypatch.setattr(server.network, "ensure_started", lambda **kw: started.append(kw) or True)
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: Agent())
+    body = {"identity": TASK_IDENTITY, "request": {**REQUEST, "principal": "caller"}}
+    code, accepted = server.handle_plugin(runs.CALLER_RUNS_PATH, "POST", AUTH, body)
+    assert code == 202 and accepted["status"] == "queued"
+    assert task_mode.active()["taskId"] == IDENTITY["taskId"]
+    assert started == []
+    # and once latched, the same create is still admitted (not refused as "not a task run")
+    assert server.handle_plugin(runs.CALLER_RUNS_PATH, "POST", AUTH, body)[0] in (200, 202)

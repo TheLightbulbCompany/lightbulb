@@ -9,7 +9,8 @@ vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: org.current, isLoaded: true }),
 }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ HuddleProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
-vi.mock("../data", () => ({ useQuestions: () => ({ data: [] }) }));
+const questions = vi.hoisted(() => ({ list: [] as { id: string }[] }));
+vi.mock("../data", () => ({ useQuestions: () => ({ data: questions.list }) }));
 
 import { VoiceShell } from "../VoiceShell";
 
@@ -28,7 +29,20 @@ it("no-org user at /voice sees OrganizationList with afterSelect /voice", () => 
   org.current = { id: "o" };
 });
 
-it("Workspace rail item opens the super-agent UI at /chat", () => {
+it("the rail is Lightbulb (the logo) · Home · Agent · Needs you · Settings, and Workspace is gone", () => {
   render(<VoiceShell><div /></VoiceShell>);
-  expect(screen.getByRole("link", { name: "Workspace" })).toHaveAttribute("href", "/chat");
+  const links = screen.getAllByRole("link");
+  expect(links.map((l) => l.getAttribute("href"))).toEqual(["/voice/lightbulb", "/voice", "/voice/agent", "/voice/needs-you", "/voice/settings"]);
+  expect(links[0]).toHaveAccessibleName("Lightbulb");
+  expect(links[0].querySelector("svg.brand-mark")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Workspace" })).not.toBeInTheDocument();
+});
+
+it("Needs you keeps its badge and count", () => {
+  questions.list = [{ id: "q1" }, { id: "q2" }];
+  render(<VoiceShell><div /></VoiceShell>);
+  const needs = screen.getByRole("link", { name: "Needs you, 2" });
+  expect(needs).toHaveAttribute("href", "/voice/needs-you");
+  expect(needs.querySelector(".vx-badge")).toHaveTextContent("2");
+  questions.list = [];
 });

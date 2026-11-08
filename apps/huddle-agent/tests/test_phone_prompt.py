@@ -322,3 +322,24 @@ async def test_delegate_starts_the_hold():
     await r.delegate("Open Sunday?")
     await r.turns.flush()
     assert started == [True]
+
+
+def test_still_there_goodbye_and_holding_lines_are_said_with_tools_off():
+    """With tools on, the model calls delegate instead of speaking an instruction line (Meet lane, 8 Nov)."""
+    import inspect
+
+    made = []
+
+    class Session:
+        def generate_reply(self, **kw):
+            made.append(kw)
+            return object()
+
+    for text in (phone.STILL_THERE, phone.SILENT_BYE, phone.HOLD_AGAIN, phone.OFFER_MESSAGE):
+        phone.line(Session(), text)
+    assert made == [{"instructions": t, "tool_choice": "none"} for t in
+                    (phone.STILL_THERE, phone.SILENT_BYE, phone.HOLD_AGAIN, phone.OFFER_MESSAGE)]  # fmt: skip
+    src = inspect.getsource(phone.entrypoint)
+    for used in ("line(session, STILL_THERE)", "line(session, SILENT_BYE)", "line(session, text)"):
+        assert used in src  # every phone-only instruction line goes through `line`
+    assert "generate_reply(instructions=" not in src

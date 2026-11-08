@@ -204,6 +204,12 @@ def say_disclosure(session, line: str) -> None:
     )
 
 
+def line(session, instructions: str):
+    """A phone-only line said from instructions (still there, goodbye, a holding or message offer), tools off: with
+    tools on, the model calls delegate instead of speaking it."""
+    return session.generate_reply(instructions=instructions, tool_choice="none")
+
+
 def greet(session) -> None:
     """The opening turn: the model speaks first, from the prompt (docs.livekit.io/agents/build/audio, "generate_reply"
     greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov).
@@ -426,7 +432,7 @@ async def entrypoint(ctx: JobContext) -> None:
             ctx.shutdown("minutes used up: forwarded")
             return
     hold_lines: list = []  # the hold's say, bound once the session exists
-    hold = Hold(lambda line: hold_lines[0](line) if hold_lines else None)
+    hold = Hold(lambda text: hold_lines[0](text) if hold_lines else None)
     agent = Receptionist(backend, info, transfer, hold)
     session = AgentSession(
         user_away_timeout=AWAY_S,
@@ -445,7 +451,7 @@ async def entrypoint(ctx: JobContext) -> None:
     t0 = time.time()
     guard = DisclosureGuard(
         info["assistantName"],
-        lambda line: agent.unchecked(say_disclosure(session, line)),
+        lambda text: agent.unchecked(say_disclosure(session, text)),
     )
 
     @session.on("conversation_item_added")
@@ -504,7 +510,7 @@ async def entrypoint(ctx: JobContext) -> None:
         stayed open, billing Gemini, until the 20-minute cap)."""
         await asyncio.sleep(AWAY_S)
         try:
-            bye = session.generate_reply(instructions=SILENT_BYE)
+            bye = line(session, SILENT_BYE)
             agent.unchecked(bye)
             await asyncio.wait_for(bye, 10)
         except Exception:  # noqa: BLE001 -- a lost goodbye must not keep the line open
@@ -524,7 +530,7 @@ async def entrypoint(ctx: JobContext) -> None:
             asyncio.get_running_loop().call_later(hold.left() + 0.1, still_away)
             return
         if ev.new_state == "away" and not silent:
-            agent.unchecked(session.generate_reply(instructions=STILL_THERE))
+            agent.unchecked(line(session, STILL_THERE))
             silent.append(asyncio.create_task(hang_up_silent()))
         elif ev.new_state != "away" and silent:
             silent.pop().cancel()
@@ -536,9 +542,9 @@ async def entrypoint(ctx: JobContext) -> None:
     def idle() -> bool:
         return session.user_state != "speaking" and session.agent_state not in ("speaking", "thinking")
 
-    def hold_line(line: str) -> None:
+    def hold_line(text: str) -> None:
         if session.user_state != "speaking":  # the caller talking over the wait is answered, not held
-            agent.unchecked(session.generate_reply(instructions=line))  # a holding line, never an answer
+            agent.unchecked(line(session, text))  # a holding line, never an answer
 
     hold_lines.append(hold_line)
     async def fetch(after: int, _handled: int) -> dict:

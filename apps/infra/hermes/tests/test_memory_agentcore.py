@@ -63,6 +63,22 @@ def provider(mod, client, session="room:ceo", **kw):
     return p
 
 
+def test_memory_events_use_the_sessions_scoped_credentials(mod, monkeypatch):
+    """With credentials from the invoke, the memory client is built on them, not the execution role."""
+    import bridge
+
+    builds = []
+    fake = types.ModuleType("boto3")
+    fake.client = lambda service, **kw: (builds.append((service, kw.get("aws_access_key_id"))), object())[1]
+    monkeypatch.setitem(sys.modules, "boto3", fake)
+    monkeypatch.setattr(bridge, "AWS_SESSION", {})
+    mod._client()
+    monkeypatch.setattr(bridge, "AWS_SESSION", {"keys": ("ASIA1", "s", "t"), "expires": datetime.now(timezone.utc) + timedelta(hours=1)})
+    mod._client()
+    mod._client()
+    assert builds == [("bedrock-agentcore", None), ("bedrock-agentcore", "ASIA1")]
+
+
 MEMBER = "user_2abcXYZ"
 DM = {"user_id": MEMBER, "chat_type": "dm"}
 TEAM_NS, PRIVATE_NS = f"/owners/{OWNER}/", f"/owners/{OWNER}:{MEMBER}/"
@@ -268,18 +284,3 @@ def test_health_advertises_the_three_way_browser_state_merge(home):
     _, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
     assert obj["payload"]["browserStateMerge"] == 1
 
-
-def test_memory_events_use_the_sessions_scoped_credentials(mod, monkeypatch):
-    """With credentials from the invoke, the memory client is built on them, not the execution role."""
-    import bridge
-
-    builds = []
-    fake = types.ModuleType("boto3")
-    fake.client = lambda service, **kw: (builds.append((service, kw.get("aws_access_key_id"))), object())[1]
-    monkeypatch.setitem(sys.modules, "boto3", fake)
-    monkeypatch.setattr(bridge, "AWS_SESSION", {})
-    mod._client()
-    monkeypatch.setattr(bridge, "AWS_SESSION", {"keys": ("ASIA1", "s", "t"), "expires": datetime.now(timezone.utc) + timedelta(hours=1)})
-    mod._client()
-    mod._client()
-    assert builds == [("bedrock-agentcore", None), ("bedrock-agentcore", "ASIA1")]

@@ -39,17 +39,34 @@ def _ranges(starts: list[str]) -> str:
     return ", ".join(say(a) if a == b else f"{say(a)}–{say(b)}" for a, b in out)
 
 
+async def facts_text(ws: str, cfg: dict | None = None) -> str:
+    """The business's name, time zone and Agent page facts; "" with no saved Agent page (the phone's defaults are
+    not facts). As on the phone (voice_phone.start_call), the facts are left out when the Agent page's "answer
+    questions" is off or the line is paused. Shared by the caller profile and a Worker's `business_facts`."""
+    from core.repositories import messaging_repo
+    from core.services import clerk_admin
+    from routers import voice_phone as vp
+
+    if cfg is None:
+        if not await messaging_repo.get_voice_agent(ws):
+            return ""
+        cfg = await vp.agent_config(ws)
+    org = await clerk_admin.get_organization(ws) if ws.startswith("org_") else None
+    head = f"Business: {(org or {}).get('name') or 'not named'}. Time zone: {vp._tz(cfg).key}."
+    if not cfg["allow"].get("answer") or cfg.get("paused"):
+        return head
+    return f"{head}\n{_cap(vp._facts(cfg), _FACTS_MAX)}"
+
+
 async def _build(ws: str, caller: str | None) -> str:
     from core.repositories import messaging_repo
-    from core.services import clerk_admin, voice_booking
+    from core.services import voice_booking
     from routers import voice_phone as vp
 
     if not await messaging_repo.get_voice_agent(ws):
         return ""  # no saved Agent page: nothing is known, and the phone's defaults are not facts
     cfg = await vp.agent_config(ws)
-    org = await clerk_admin.get_organization(ws) if ws.startswith("org_") else None
-    lines = [f"Business: {(org or {}).get('name') or 'not named'}. Time zone: {vp._tz(cfg).key}."]
-    lines.append(_cap(vp._facts(cfg), _FACTS_MAX))
+    lines = [await facts_text(ws, cfg)]
     now, minutes = vp._now(cfg), vp._minutes(cfg, "")
     dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(DAYS)]
     # call_id None: a failed Google check here raises no Line problem (that is the call's own job)

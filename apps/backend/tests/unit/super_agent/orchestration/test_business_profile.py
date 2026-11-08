@@ -140,3 +140,13 @@ def test_a_callers_words_never_pass_through_to_a_full_tool_task():
     )
     assert [d.task_id for d in kept] == [theirs["taskId"]]
     assert acts._callers({"voice:c": {"ref": {"origin": "phone_contact"}}, "chat:m": {"ref": {}}}) == {"voice:c"}
+
+
+@pytest.mark.parametrize("off", [{"allow": {"answer": False}}, {"paused": True}])
+async def test_facts_follow_the_phones_answer_and_pause_rule(sources, off):
+    """facts_text (the profile's and a Worker's business_facts' one reader) hides the facts as the phone does
+    (voice_phone.start_call): "answer questions" off or the line paused leaves only the name and time zone."""
+    assert "Pedicure $45" in await bp.facts_text("org_x")
+    sources.return_value = {**CFG, **off}
+    for text in (await bp.facts_text("org_x"), await bp.business_profile("org_x")):
+        assert "Glow Nails" in text and "Pedicure" not in text and "$50 deposit" not in text

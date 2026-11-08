@@ -569,11 +569,14 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
 NOTE_CAP = 20  # notes per attempt
 
 
-class NoteBody(BaseModel):
+class RunRef(BaseModel):
     task_id: str = Field(alias="taskId")
     run_id: str = Field(alias="runId")
     attempt: int = Field(ge=1)
     run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+
+
+class NoteBody(RunRef):
     text: str = Field(min_length=1, max_length=2000)
 
 
@@ -598,3 +601,15 @@ async def task_note(owner_id: str, body: NoteBody, request: Request) -> dict:
         progress=True,  # never a mention or notification, never room memory
     )
     return {"messageId": message_id}
+
+
+@router.post("/{owner_id}/business-facts")
+async def business_facts(owner_id: str, body: RunRef, request: Request) -> dict:
+    """A Worker's `business_facts`: its own workspace's Agent page (services, prices, hours, the Knowledge answers),
+    the same text a caller's profile holds (router-latency-2026-11-08: owner Workers asked "which salon?").
+    Read-only; the workspace is the path's, proven by the hook token and the attempt's secret."""
+    from core.services import business_profile
+
+    await _gate(owner_id, request)
+    await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
+    return {"facts": await business_profile.facts_text(owner_id)}

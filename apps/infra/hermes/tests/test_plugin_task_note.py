@@ -122,3 +122,24 @@ def test_a_call_never_gets_the_task_toolset(env, home, monkeypatch):  # noqa: F8
     turn.register_call_run(CALL)
     assert turn._run_call(CALL, CALL_REQUEST, _frames())[0] == "completed"
     assert env["limits"]["enabled_toolsets"] == ["lightbulb", "memory", "lightbulb_voice_work"]
+
+
+# ---- business_facts: a Worker reads its own business's Agent page (router-latency-2026-11-08) ----------------
+def test_business_facts_on_a_worker_run_reads_the_turns_workspace(tmp_path, monkeypatch):
+    _ctx(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(lightbulb, "_post",
+                        lambda url, token, body: calls.append((url, token, body)) or {"facts": "Services: Cut $40."})
+    assert lightbulb._business_facts({"ownerId": "org_evil"}, session_id=SESSION) == "Services: Cut $40."
+    assert calls == [("https://api.invalid/api/v1/internal/runtime/org_test/business-facts", "h",
+                      {"taskId": TASK, "runId": "run-1", "attempt": 2, "runSecret": "sec"})]
+    monkeypatch.setattr(lightbulb, "_post", lambda *a: {"facts": ""})
+    assert lightbulb._business_facts({}, session_id=SESSION) == lightbulb.NO_FACTS
+    src = pathlib.Path(lightbulb.__file__).read_text()
+    assert 'ctx.register_tool("business_facts", TASK_TOOLSET, BUSINESS_FACTS_SCHEMA, _business_facts' in src
+
+
+def test_business_facts_only_on_a_task_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(lightbulb, "_post", lambda *a: pytest.fail("no HTTP call"))
+    _ctx(tmp_path, monkeypatch, mode="router")
+    assert "only on a Lightbulb task run" in lightbulb._business_facts({}, session_id=SESSION)

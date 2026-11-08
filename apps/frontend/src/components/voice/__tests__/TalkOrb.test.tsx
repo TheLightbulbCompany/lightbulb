@@ -95,3 +95,14 @@ it("compact: End stays visible while Live, also when quiet", () => {
   expect(screen.getByRole("button", { name: "Hold to talk to Nova" })).toHaveAttribute("data-state", "idle");
   expect(screen.getByRole("button", { name: "End" }).closest("[data-open]")).toHaveAttribute("data-open", "true");
 });
+
+it("a talk that ended for quiet is not reported as unreachable", () => {
+  const { rerender } = render(<TalkOrb name="Nova" compact />);
+  const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+  fireEvent.keyDown(orb, { key: " " });
+  fireEvent.keyUp(orb, { key: " " });
+  huddle.error = { code: "idle_ended" }; // owner.py left after AWAY_S of quiet
+  rerender(<TalkOrb name="Nova" compact />);
+  expect(screen.getByRole("alert")).toHaveTextContent("left after a few minutes of quiet");
+  expect(screen.getByRole("alert")).not.toHaveTextContent("Couldn't reach");
+});

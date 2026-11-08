@@ -181,15 +181,13 @@ def talk_record(
     session_id: str,
     seconds: float,
     *,
-    usage_seconds: float | None = None,
-    usage_started_at: float | None = None,
+    usage_sessions: list[dict] | None = None,
 ) -> dict:
     """What `/owner/{room}/end` keeps as the "Yours" row: the transcript as phone calls keep it."""
     out = {"speakerUserId": speaker, "sessionId": session_id, "durationSec": int(seconds),
            "transcript": clean_transcript(items)}  # fmt: skip
-    if usage_seconds is not None:
-        out["usageSec"] = int(max(0, usage_seconds))
-        out["usageStartedAt"] = datetime.fromtimestamp(usage_started_at or time.time(), UTC).isoformat()
+    if usage_sessions is not None:
+        out["usageSessions"] = usage_sessions
     return out
 
 
@@ -209,9 +207,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
     talk = Talk(backend, member.identity, ctx.job.id, int(info.get("after") or 0))
     talk.rewake = lambda: recount()  # noqa: PLW0108 -- recount is defined below
     state: dict = {"open": None, "quiet": False, "ending": False}
-    openings: dict[asyncio.Task, float] = {}
+    openings: dict[asyncio.Task, tuple[int, float]] = {}
     closing: dict[asyncio.Task, asyncio.Task] = {}
-    usage: list[tuple[float, float]] = []  # actual provider seconds, never the muted warm-room wall clock
+    usage: list[dict] = []  # actual provider seconds, never the muted warm-room wall clock
     attrs = ctx.room.local_participant.set_attributes
 
     async def leave(reason: str) -> None:
@@ -276,7 +274,14 @@ async def run(ctx: JobContext, meta: dict) -> None:
                     "billed_s",
                     getattr(session, "billed_s", 0.0),
                 )
-                usage.append((openings[opening], float(seconds or 0)))
+                epoch, started = openings[opening]
+                usage.append(
+                    {
+                        "id": str(epoch),
+                        "startedAt": datetime.fromtimestamp(started, UTC).isoformat(),
+                        "seconds": int(max(0, seconds or 0)),
+                    }
+                )
         for sid in old:  # the closed session's track goes, so the strip finds the next one's
             with contextlib.suppress(Exception):
                 await lp.unpublish_track(sid)
@@ -299,7 +304,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
                     audio_output=room_io.AudioOutputOptions(track_name=f"agent-{tile}"),  # the strip's bars read it
                 ),
             ))  # fmt: skip
-            openings[state["open"]] = time.time()
+            openings[state["open"]] = (len(openings), time.time())
             state["open"].add_done_callback(hooks)
         elif not mic and state["open"] is not None:
             opening, state["open"] = state["open"], None
@@ -330,8 +335,6 @@ async def run(ctx: JobContext, meta: dict) -> None:
         state["open"] = None
         if closing:
             await asyncio.gather(*closing.values())
-        billed = sum(seconds for _, seconds in usage)
-        first_open = min((at for at, seconds in usage if seconds > 0), default=talk.t0)
         try:
             await backend.owner(
                 "end",
@@ -340,8 +343,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
                     talk.items,
                     ctx.job.id,
                     time.time() - talk.t0,
-                    usage_seconds=billed,
-                    usage_started_at=first_open,
+                    usage_sessions=usage,
                 ),
             )
         except BackendError as e:

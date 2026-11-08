@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter
-from pydantic import Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from core.auth import AuthContext
 from core.billing import voice_billing
@@ -109,12 +109,17 @@ async def events(room_id: str, body: EventsIn) -> dict:
     return await agent_lines(room, body.after)
 
 
+class UsageSession(BaseModel):
+    id: Annotated[str, Field(pattern=r"^[0-9]{1,5}$")]
+    startedAt: AwareDatetime
+    seconds: int = Field(ge=0, le=86400)
+
+
 class EndIn(OwnerIn):
     sessionId: Annotated[str, Field(min_length=1, max_length=200)]  # the worker's job id: one talk, one row
     durationSec: int = Field(ge=0, le=86400)
     transcript: list[dict] = Field(default=[], max_length=2000)
-    usageSec: int | None = Field(default=None, ge=0, le=86400)
-    usageStartedAt: datetime | None = None
+    usageSessions: list[UsageSession] = Field(default=[], max_length=10000)
 
 
 @router.post("/internal/voice/owner/{room_id}/end")
@@ -122,12 +127,10 @@ async def end(room_id: str, body: EndIn) -> dict:
     """The talk is kept as a hidden call room with `ownerMode`, a "Yours" row on Home: the transcript as phone
     calls keep it and a one-line summary (the tasks are the DM's own). A talk with nothing said is not kept."""
     room_id, member, _agent = await _owner(room_id, body)
-    if body.usageSec is not None:
-        if body.usageStartedAt is None:
-            raise _problem(422, "usage_start_required")
-        transaction_id = f"owner:{room_id}:{body.sessionId}"
+    for usage in body.usageSessions:
+        transaction_id = f"owner:{room_id}:{body.sessionId}:{usage.id}"
         await voice_billing.report_owner_minutes(
-            body.ownerId, transaction_id, body.usageStartedAt.isoformat(), body.usageSec
+            body.ownerId, transaction_id, usage.startedAt.isoformat(), usage.seconds
         )
     lines = transcript_lines(body.transcript)
     if not lines:

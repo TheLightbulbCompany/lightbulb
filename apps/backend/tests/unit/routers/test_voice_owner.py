@@ -67,27 +67,32 @@ async def test_silent_provider_usage_is_reported_before_empty_transcript_return(
         speakerUserId="user_maya",
         sessionId="job_2",
         durationSec=300,
-        usageSec=24,
-        usageStartedAt="2026-11-08T16:00:00Z",
+        usageSessions=[{"id": "0", "seconds": 24, "startedAt": "2026-11-08T16:00:00Z"}],
     )
     with patch.object(voice_owner.voice_billing, "report_owner_minutes", AsyncMock()) as report:
         assert await voice_owner.end(ROOM, body) == {"kept": False}
-        report.assert_awaited_once_with("org_1", f"owner:{ROOM}:job_2", "2026-11-08T16:00:00+00:00", 24)
+        report.assert_awaited_once_with("org_1", f"owner:{ROOM}:job_2:0", "2026-11-08T16:00:00+00:00", 24)
 
 
-async def test_usage_requires_start_timestamp_and_seated_owner(m):
+async def test_sessions_preserve_their_own_utc_period_and_require_seated_owner(m):
     body = voice_owner.EndIn(
         ownerId="org_1",
         roomToken="t",
         speakerUserId="user_maya",
         sessionId="j",
-        durationSec=1,
-        usageSec=1,
+        durationSec=1800,
+        usageSessions=[
+            {"id": "0", "seconds": 10, "startedAt": "2026-11-30T23:59:00Z"},
+            {"id": "1", "seconds": 600, "startedAt": "2026-12-01T00:20:00Z"},
+        ],
     )
     with patch.object(voice_owner.voice_billing, "report_owner_minutes", AsyncMock()) as report:
-        with pytest.raises(HTTPException) as exc:
-            await voice_owner.end(ROOM, body)
-        assert exc.value.status_code == 422
+        await voice_owner.end(ROOM, body)
+        assert [c.args for c in report.await_args_list] == [
+            ("org_1", f"owner:{ROOM}:j:0", "2026-11-30T23:59:00+00:00", 10),
+            ("org_1", f"owner:{ROOM}:j:1", "2026-12-01T00:20:00+00:00", 600),
+        ]
+        report.reset_mock()
         with pytest.raises(HTTPException) as exc:
             await voice_owner.end(ROOM, body.model_copy(update={"speakerUserId": "intruder"}))
         assert exc.value.status_code == 403

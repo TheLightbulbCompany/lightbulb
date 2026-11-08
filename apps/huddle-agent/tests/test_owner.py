@@ -341,8 +341,9 @@ async def test_owner_usage_waits_for_all_closes_and_excludes_muted_room_time(liv
     await ctx.callbacks[0]()  # repeated shutdown cannot double-close or double-report
     assert [s.closed for s in live.sessions] == [1, 1]
     [(_, body)] = [(op, body) for op, body in b.sent if op == "end"]
-    assert body["usageSec"] == 20 and body["durationSec"] == 0
-    assert body["usageStartedAt"].endswith("+00:00") and body["transcript"] == []
+    assert body["durationSec"] == 0 and body["transcript"] == []
+    assert sorted((u["id"], u["seconds"]) for u in body["usageSessions"]) == [("0", 12), ("1", 7)]
+    assert all(u["startedAt"].endswith("+00:00") for u in body["usageSessions"])
 
 
 async def test_each_result_is_said_once_and_only_in_a_live_talk():

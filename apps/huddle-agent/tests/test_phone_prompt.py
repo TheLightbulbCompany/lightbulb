@@ -37,7 +37,8 @@ def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
             replies.append(kw)
 
     phone.greet(Session())
-    assert replies == [{"allow_interruptions": False}]  # no instructions (Gemini keeps them); nobody cuts it off
+    # no instructions (Gemini keeps them); nobody cuts it off; tools off: the opening is never a delegate call
+    assert replies == [{"allow_interruptions": False, "tool_choice": "none"}]
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():
@@ -170,6 +171,7 @@ def test_the_corrective_line_is_one_reply_that_says_never_again():
     )
     assert "word for word, and nothing else" in only["instructions"]
     assert "do not say it again" in only["instructions"]
+    assert set(only) == {"instructions", "tool_choice"} and only["tool_choice"] == "none"  # never a delegate call
 
 
 def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monkeypatch):
@@ -324,7 +326,7 @@ async def test_delegate_starts_the_hold():
     assert started == [True]
 
 
-def test_still_there_goodbye_and_holding_lines_are_said_with_tools_off():
+def test_every_scripted_line_is_said_with_tools_off():
     """With tools on, the model calls delegate instead of speaking an instruction line (Meet lane, 8 Nov)."""
     import inspect
 
@@ -337,8 +339,11 @@ def test_still_there_goodbye_and_holding_lines_are_said_with_tools_off():
 
     for text in (phone.STILL_THERE, phone.SILENT_BYE, phone.HOLD_AGAIN, phone.OFFER_MESSAGE):
         phone.line(Session(), text)
-    assert made == [{"instructions": t, "tool_choice": "none"} for t in
+    assert made[:4] == [{"instructions": t, "tool_choice": "none"} for t in
                     (phone.STILL_THERE, phone.SILENT_BYE, phone.HOLD_AGAIN, phone.OFFER_MESSAGE)]  # fmt: skip
+    phone.greet(Session())
+    phone.say_disclosure(Session(), "I'm Nova, an AI assistant, and this call is recorded.")
+    assert [kw["tool_choice"] for kw in made[4:]] == ["none", "none"]  # the opening and its correction too
     src = inspect.getsource(phone.entrypoint)
     for used in ("line(session, STILL_THERE)", "line(session, SILENT_BYE)", "line(session, text)"):
         assert used in src  # every phone-only instruction line goes through `line`

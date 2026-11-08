@@ -200,7 +200,8 @@ def say_disclosure(session, line: str) -> None:
     logger.info("phone: first line lacked the disclosure; saying it once")
     return session.generate_reply(
         instructions=f'The disclosure was missed. Say exactly this, word for word, and nothing else: "{line}" '
-        "This is a one-time line: do not say it again later in the call."
+        "This is a one-time line: do not say it again later in the call.",
+        tool_choice="none",  # the compliance correction is spoken, never a delegate call
     )
 
 
@@ -214,8 +215,9 @@ def greet(session) -> None:
     """The opening turn: the model speaks first, from the prompt (docs.livekit.io/agents/build/audio, "generate_reply"
     greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov).
     Not interruptible, as in LiveKit's greeting example (`allow_interruptions=False`): a caller's "hi" over it cut the
-    disclosure off (8 Nov evals). Gemini's server-side turns ignore the flag (LiveKit logs a warning)."""
-    return session.generate_reply(allow_interruptions=False)
+    disclosure off (8 Nov evals). Gemini's server-side turns ignore the flag (LiveKit logs a warning). Tools off: the
+    opening is spoken, never a delegate call."""
+    return session.generate_reply(allow_interruptions=False, tool_choice="none")
 
 
 class Backend:

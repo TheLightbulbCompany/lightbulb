@@ -401,7 +401,8 @@ async def test_debug_restart_stops_the_live_legacy_vm(shared, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rollback_revokes_a_pool_session_still_inside_drain_grace(monkeypatch):
+@pytest.mark.parametrize("saved_route", [True, False])
+async def test_rollback_revokes_a_pool_session_still_inside_drain_grace(monkeypatch, saved_route):
     import time
     from core.services import network_member
 
@@ -416,6 +417,8 @@ async def test_rollback_revokes_a_pool_session_still_inside_drain_grace(monkeypa
     monkeypatch.setattr(
         hp.container_repo, "get_session_sync", lambda *a, **k: {"arn": SHARED, "warm_until": int(time.time()) - 1}
     )
+    if not saved_route:
+        row.pop("agentcore_shared_runtime_arn")
     assert await network_member._session_is_warm("org_a")
 
 

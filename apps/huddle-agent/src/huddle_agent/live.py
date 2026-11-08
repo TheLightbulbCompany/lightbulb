@@ -63,6 +63,7 @@ Backend tools:
 
 Generate <|SpawnThinking|> when:
 - The request needs a backend capability or careful reasoning.
+- The answer needs facts about this business or workspace, including its description or what it does.
 - A correction changes the work already requested.
 
 Do not generate <|SpawnThinking|> when:
@@ -70,6 +71,8 @@ Do not generate <|SpawnThinking|> when:
 - You need a brief clarification to understand the request.
 
 Generate <|SpawnThinking|> before giving an answer that depends on backend work.
+Business facts come from the backend. A business name or greeting is not evidence of its services, prices,
+hours, policies or purpose. If no current backend result answers the question, delegate it before answering.
 Do not guess the result while waiting."""
 
 

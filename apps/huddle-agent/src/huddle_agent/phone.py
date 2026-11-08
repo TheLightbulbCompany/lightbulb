@@ -50,7 +50,7 @@ server = AgentServer(
 #: and the caller-scoped Front desk thread's actions (front_desk: availability, book, my_bookings, move, cancel,
 #: message), nothing more.
 TOOLS = [
-    "Business profile: answer the business's services, prices, how long they take, hours and policies.",
+    "Business profile: the business's actual description, what it does, services, prices, durations, hours and policies.",
     "Availability: find open times for a service on a day.",
     "Bookings: book a time, or list, move or cancel the caller's own bookings.",
     "Messages: take a message for the owner, with the caller's name and a callback number.",
@@ -85,7 +85,7 @@ Names, dates and numbers: before a booking is made, say the name it goes under b
 have it right. If an important name, date, or number is unclear, ask about that part. Use the caller's correction.
 Do not guess the missing value.
 
-Wait for the backend's result before stating a price or a time, confirming a booking, or saying that a message was
+Wait for the backend's result before describing this business or its services, stating a price or a time, confirming a booking, or saying that a message was
 taken or a transfer is under way. Never share anything about other customers."""
 
 #: Facts the call tells GPT-Live (commentary with delegation_id null): GPT-Live chooses what to say.

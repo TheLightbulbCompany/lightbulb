@@ -347,9 +347,14 @@ async def main() -> None:
         seeded = dev("seed", f"{sid}-{int(time.time())}")
         at = Path(a.log).stat().st_size
         heard = await play(sid, SCENARIOS[sid], seeded, out)
-        await asyncio.sleep(8)  # the worker's shutdown: final transcript, then /end
+        for _ in range(12):  # the worker's shutdown: final transcript, then /end (OpenAI's close takes longer)
+            await asyncio.sleep(5)
+            rec = dev("record", seeded["dispatch"]["roomId"])
+            if rec["meeting"].get("summary"):
+                break
+        if SCENARIOS[sid].get("notes"):
+            rec = dev("end", seeded["dispatch"]["roomId"])
         log = Path(a.log).read_text(errors="replace")[at:]
-        rec = dev("end" if SCENARIOS[sid].get("notes") else "record", seeded["dispatch"]["roomId"])
         card = score(sid, SCENARIOS[sid], seeded, heard, rec, log)
         (out / f"{sid}.json").write_text(json.dumps(card, indent=1, default=str))
         print(f"{sid}: {card['passed']}/{card['of']} false_wakes={card['false_wakes']} answered={card['answered']} "

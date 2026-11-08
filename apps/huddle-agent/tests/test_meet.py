@@ -297,3 +297,36 @@ async def test_call_stats_sends_a_date_range():
     a._post = post
     await a.call_stats(from_date="2026-10-01", to_date="2026-10-31")
     assert sent == [{"kind": "calls", "days": 7, "from": "2026-10-01", "to": "2026-10-31"}]
+
+
+def test_an_ask_right_after_a_dropped_reply_is_answered():
+    """#5025 review: a reply asked for and then dropped or cut must not hold up the next ask."""
+    agent = _agent()
+    assert not agent.asking()
+
+    class Handle:
+        def __init__(self, done):
+            self._done = done
+
+        def done(self):
+            return self._done
+
+    agent.asked = Handle(done=False)  # asked for, still under way: the next ask waits
+    assert agent.asking()
+    agent.asked = Handle(done=True)  # it was dropped unheard (or cut): the next ask goes ahead
+    assert not agent.asking()
+
+
+def test_the_nudge_asks_for_a_reply_room_sound_cannot_cut():
+    """#5025 review: a reply held for quiet was cut by the next voice; only the gate's stop (force) may cut it."""
+    calls = []
+
+    class Session:
+        def generate_reply(self, **kw):
+            calls.append(kw)
+            return "handle"
+
+    agent = _agent()
+    agent.ask(Session(), "Maya: Lightbulb, how many calls today?")
+    assert calls == [{"user_input": "Maya: Lightbulb, how many calls today?", "allow_interruptions": False}]
+    assert agent.asked == "handle"

@@ -250,7 +250,9 @@ class Receptionist(Agent):
 
     @function_tool
     async def book(self, start: str, service: str, name: str) -> dict:
-        """Book the caller. start: local "YYYY-MM-DDTHH:MM" from check_availability; service; the caller's name."""
+        """Book the caller. Call it only after the caller has said yes to your read-back, never in the same turn as
+        the read-back. It books at once: never call it again for the same booking. start: local "YYYY-MM-DDTHH:MM"
+        from check_availability; service; the caller's name."""
         out = await self._b.post(
             "book", {"start": start, "service": service, "name": name}
         )
@@ -262,8 +264,10 @@ class Receptionist(Agent):
     async def reschedule_or_cancel(
         self, start: str, new_start: str | None = None
     ) -> dict:
-        """Move (new_start given) or cancel (new_start empty) one of THIS caller's bookings. Call my_bookings first
-        if you don't know its start. Times: local "YYYY-MM-DDTHH:MM"."""
+        """Move (new_start given) or cancel (new_start empty) one of THIS caller's bookings. Call it only after the
+        caller has said yes to your read-back, never in the same turn as the read-back. It is done at once: never
+        call it again for the same booking. Call my_bookings first if you don't know its start. Times: local
+        "YYYY-MM-DDTHH:MM"."""
         out = await self._b.post(
             "change", {"start": start, "newStart": new_start or None}
         )

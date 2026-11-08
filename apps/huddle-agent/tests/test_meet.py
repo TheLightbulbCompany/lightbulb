@@ -1,5 +1,7 @@
 """The meeting's ears and mouth (meet.py): the wake gate, what is posted to the Router, and the 17 scenarios."""
 
+import asyncio
+
 import numpy as np
 from livekit import rtc
 
@@ -134,11 +136,36 @@ def test_only_an_addressed_line_goes_to_the_router():
     assert meet.addressed(gate, "Nova", "maya", "Nova, stop", 2) == "stop"
 
 
-def test_the_meeting_voice_has_no_model_and_no_tools(monkeypatch):
+async def test_the_meeting_talker_has_one_tool_and_answers_only_when_asked(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
-    s = meet.voice_session()
-    assert s.llm is None and s.stt is None and s.tts is not None
-    assert not hasattr(meet, "MeetAgent") and "function_tool" not in vars(meet)
+    monkeypatch.setenv("LIGHTBULB_API_URL", "http://x")
+    monkeypatch.setenv("LIGHTBULB_HUDDLE_SECRET", "s")
+    from huddle_agent.backend import Backend
+
+    t = meet.MeetTalker(Backend("r", "o", "t"), {"name": "Nova", "company": "C", "title": "T", "today": "d"})
+    assert [tool.info.name for tool in t.tools] == ["delegate"]
+    td = meet.realtime_model()._opts.turn_detection
+    assert td.create_response is False and meet.MODEL == "gpt-realtime-2.1-mini"
+
+
+async def test_a_meeting_delegation_posts_the_ask_with_its_speaker_and_context():
+    sent = []
+
+    class B:
+        async def meet(self, op, body):
+            await asyncio.sleep(0.01)
+            sent.append((op, body))
+            return {}
+
+    t = meet.MeetTalker.__new__(meet.MeetTalker)  # no session: only the tool's own state
+    t._b, t.context, t.asker, t._posts = B(), meet.Context(), ("12", "Sam"), set()
+    t.context.add("Sam", "Nova, what shipped this week?")
+    out = await t.delegate("what shipped this week")
+    assert out == {"sent": True} and sent == []  # it returns at once; the post runs on its own
+    await asyncio.gather(*t._posts)
+    [(op, body)] = sent
+    assert op == "ask" and (body["participantId"], body["speakerName"]) == ("12", "Sam")
+    assert body["text"] == "what shipped this week\n\nSaid in the talk since the last ask:\n> Sam: Nova, what shipped this week?"
 
 
 def test_a_voiced_frame_is_someone_speaking():

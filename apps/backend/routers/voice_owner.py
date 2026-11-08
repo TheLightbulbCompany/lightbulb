@@ -45,12 +45,20 @@ async def _owner(room_id: str, body: OwnerIn) -> tuple[str, str, str | None]:
     return room_id, member, next((m["id"] for m in members if m.get("kind") == "agent"), None)
 
 
+def _cursor_key(room: str, member: str) -> str:
+    return f"owner-mouth:{room}:{member}"
+
+
 @router.post("/internal/voice/owner/{room_id}/start")
 async def start(room_id: str, body: OwnerIn) -> dict:
     """The assistant's name, the DM's agent (the tile the voice speaks as) and `after`, the first `/events` cursor:
-    the voice says only what the room gets from now on."""
-    room, _member, agent = await _owner(room_id, body)
-    name, after = await asyncio.gather(assistant_name(body.ownerId), latest_seq(room))
+    the last message the previous session handled (spoken, or passed over outside a talk) when it was within the
+    voice-run TTL, so a message posted while the worker reconnected is still said once; else the newest."""
+    room, member, agent = await _owner(room_id, body)
+    name, row = await asyncio.gather(
+        assistant_name(body.ownerId), messaging_repo.get_voice_run(body.ownerId, _cursor_key(room, member))
+    )
+    after = int(row["spoken"]) if row and row.get("spoken") is not None else await latest_seq(room)
     return {"assistantName": name, "agentId": agent, "after": after}
 
 
@@ -82,13 +90,16 @@ async def turn(room_id: str, body: TurnIn) -> dict:
 
 class EventsIn(OwnerIn):
     after: int = Field(ge=0)
+    spoken: int | None = Field(default=None, ge=0)  # the last seq the voice handled: the next session starts there
 
 
 @router.post("/internal/voice/owner/{room_id}/events")
 async def events(room_id: str, body: EventsIn) -> dict:
     """The agent messages the DM got after message `after` (the Router's ack and replies, its Workers' answers),
     oldest first, and the next cursor. The worker polls this while a talk is live and says each one."""
-    room, _member, _agent = await _owner(room_id, body)
+    room, member, _agent = await _owner(room_id, body)
+    if body.spoken is not None:
+        await messaging_repo.put_voice_run(body.ownerId, _cursor_key(room, member), {"spoken": body.spoken})
     return await agent_lines(room, body.after)
 
 

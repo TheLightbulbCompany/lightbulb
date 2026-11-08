@@ -5503,7 +5503,8 @@ async def create_agent_message(
         meta.get("hidden")
         and meta.get("meeting")
         and not (bound or request.uploaded_attachments)
-        and agent_id != await _front_agent_id(owner_id)  # the meeting's Router answers in it: the voice says it
+        # while the call is on, the meeting's Router answers in its room, where the voice says it
+        and not (meta["meeting"].get("status") == "in_call" and agent_id == await _front_agent_id(owner_id))
     ):
         # A Google Meet's room (hidden, with a meeting record) is read by nobody: what an agent posts
         # there (a late Live answer) goes to the meeting's output room when it sits there. A session's

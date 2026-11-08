@@ -278,6 +278,14 @@ async def test_a_meetings_line_is_answered_with_the_meeting_origin(world):
     assert (await repo.get_trigger(WS, tid))["ref"]["origin"] == "meeting"
 
 
+async def test_a_spoken_line_tells_the_router_and_workers_to_answer_for_speech(world):
+    tid = await _admit(world, {**_msg(), "via": "voice", "kind": "dm"})
+    ref = (await repo.get_trigger(WS, tid))["ref"]
+    assert ref["text"] == f"pay acme\n\n{admission.VOICE_HINT}" and "short spoken" in admission.VOICE_HINT
+    tid2 = await _admit(world, _msg(seq=2))  # a typed line: no hint, the message text is read as it is
+    assert "text" not in (await repo.get_trigger(WS, tid2))["ref"]
+
+
 async def test_lightbulb_mentions_only_room_skips_jev(world):
     world["listen"] = "mentions"
     await _admit(world, _msg())

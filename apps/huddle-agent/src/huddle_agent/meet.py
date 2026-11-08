@@ -1,12 +1,15 @@
-"""The meeting agent (one-brain plan, founder ruling 8 Nov 2026, option A): ears and a mouth in a Google Meet for
-the meeting room's Router, never a second brain (agent.py hands it every `source: "meet"` dispatch).
+"""The meeting agent (founder ruling 8 Nov 2026, shape 1: talker plus delegated brain, on the DeepSeek one-Router
+design; super-agent-design/evidence/voice/voice-brain-architecture-research.md, patterns 1 and 3): a realtime talker
+in a Google Meet in front of the meeting room's Router, the one brain (agent.py hands it every `source: "meet"`
+dispatch).
 
 Ears: a per-person transcriber (one stream per Meet track, so every line has its exact speaker) and the wake gate
-(`Gate` and `wakes`, over transcript.py's rules): a line that opens with the assistant's name and asks is posted to
-the meeting's room as a message (`/meet/{room}/ask`), which the Router decides like any other. Side talk is never
-posted. "<name>, stop" cuts the voice off.
-Mouth: text-to-speech of each new agent message in the meeting's room (`/meet/{room}/events`, mouth.py), word for
-word, once the room has paused. No language model and no tools: nothing said is the voice's own answer.
+(`Gate` and `wakes`, over transcript.py's rules). The talker answers only when the gate hands it a line (OpenAI with
+create_response off: no reply to side talk), as text with the speaker's name. Its one tool, `delegate`, posts the
+request, with the turns since the last delegation, to the meeting's room as a message (`/meet/{room}/ask`), which the
+Router decides like any other; it may answer a greeting or thanks itself. "<name>, stop" cuts the voice off.
+Mouth: each new agent message in the meeting's room (`/meet/{room}/events`, mouth.py) is said once, briefly, adding
+nothing, when the room has paused.
 
 The worker never leaves on an empty room: Recall's call_ended closes the LiveKit room (routers/meetings.py), and an
 hour of silence pulls the bot.
@@ -23,12 +26,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, room_io, stt
+from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io, stt
 from livekit.plugins import noise_cancellation, openai
+from openai.types.beta.realtime.session import TurnDetection
 
-from huddle_agent import end_after
+from huddle_agent import end_after, usage_log
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.mouth import Mouth
+from huddle_agent.mouth import DELEGATE_DOC, Context, Mouth, check_said, result_instructions
 from huddle_agent.transcript import (
     _LEADS,
     _LIGHTBULB,
@@ -39,6 +43,7 @@ from huddle_agent.transcript import (
 )
 
 logger = logging.getLogger("meet")
+MODEL = os.environ.get("MEET_MODEL", "gpt-realtime-2.1-mini")
 VOICE = os.environ.get("MEET_VOICE", "marin")
 # the gate's per-person transcriber: gpt-4o-mini-transcribe shuts down 26 Feb 2027; gpt-transcribe is its successor
 # for committed turns, $0.0045/min (developers.openai.com/api/docs/deprecations, .../models/gpt-transcribe)
@@ -55,7 +60,15 @@ RATE = 16000
 ADDRESSED = ("ask",)
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
 STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 400}
-GOODBYE = "We're out of time. Goodbye, everyone."
+INSTRUCTIONS = """You are {name}, the voice of {company}'s AI assistant, in the Google Meet "{title}". Today is {today}.
+You hear only the lines said to you, as "<who>: <words>". You own only the conversation; the team behind you owns
+every fact, tool and decision.
+- A greeting, thanks or "are you there?": answer yourself, in a few words.
+- Everything else -- any question, request, action item, a yes or a no, "stop that thread" -- call delegate with what
+  they asked in their own words, then say one short holding line ("Let me check.") and stop. Never answer it yourself,
+  never guess, never say anything is done or approved. You cannot approve anything: a yes is delegated.
+- When a message from the team arrives, say it as you are told, adding nothing.
+Speak briefly, one or two short sentences."""
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
 
@@ -156,9 +169,37 @@ class Gate:
         self.ask_at = None
 
 
-def voice_session() -> AgentSession:
-    """Text-to-speech only: no language model, no speech-to-text of its own (the per-person transcriber hears)."""
-    return AgentSession(tts=openai.TTS(model=os.environ.get("MEET_TTS_MODEL", "gpt-4o-mini-tts"), voice=VOICE))
+def realtime_model():
+    """Replies only when asked (create_response off): the gate hands the talker each addressed line as text."""
+    return openai.realtime.RealtimeModel(
+        model=MODEL, voice=VOICE, input_audio_transcription=None,
+        turn_detection=TurnDetection(type="server_vad", create_response=False, interrupt_response=False),
+    )  # fmt: skip
+
+
+class MeetTalker(Agent):
+    """The talker: no tool but `delegate`. `asker` is the addressed line it is answering (participant id, name)."""
+
+    def __init__(self, backend: Backend, info: dict) -> None:
+        super().__init__(instructions=INSTRUCTIONS.format(**info))
+        self._b = backend
+        self.context = Context()
+        self.asker = ("", "")
+        self._posts: set[asyncio.Task] = set()
+
+    @function_tool(description=DELEGATE_DOC)
+    async def delegate(self, request: str) -> dict:
+        # a task of its own: "<name>, stop" cuts the talker's reply, never the post
+        t = asyncio.create_task(self._ask(self.context.take(request), *self.asker))
+        self._posts.add(t)
+        t.add_done_callback(self._posts.discard)
+        return {"sent": True}
+
+    async def _ask(self, text: str, pid: str, who: str) -> None:
+        try:
+            await self._b.meet("ask", {"text": text[:4000], "participantId": pid, "speakerName": who})
+        except BackendError as e:
+            logger.warning("meet: ask not posted (%s)", e.code)
 
 
 def voiced(frame: rtc.AudioFrame) -> bool:
@@ -199,8 +240,10 @@ async def run(ctx: JobContext, meta: dict) -> None:
         prompt=f'A meeting at {meta.get("company") or "a business"}. People ask the AI assistant "{name}" things '
         f'by name: "{name}, ...".',
     )  # fmt: skip
-    session = voice_session()
-    speeches: list = []  # what the voice is saying or has queued: "<name>, stop" cuts them all
+    talker = MeetTalker(backend, {"name": name, "company": meta.get("company") or "the team", "title": info["title"],
+                                  "today": time.strftime("%A %Y-%m-%d")})  # fmt: skip
+    session = AgentSession(llm=realtime_model())
+    usage_log(session, f"meet {room_id}")
     lines: list[dict] = []
     asked: list[dict] = []  # {t, who, q, a}: the meeting's record
 
@@ -209,9 +252,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     def stop() -> None:
         mouth.pending.clear()
-        for h in speeches:
-            h.interrupt(force=True)
-        speeches.clear()
+        session.interrupt(force=True)
 
     def on_heard(who: str, text: str, final: bool) -> None:
         if not text.strip():
@@ -226,17 +267,15 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if kind == "stop":
             stop()
         elif kind == "ask":
-            pid = who.rsplit(":", 1)[-1]
             asked.append({"t": int(time.monotonic() - started), "who": label(who), "q": text, "a": ""})
-            asyncio.create_task(ask(text, pid, label(who)))
+            talker.asker = (who.rsplit(":", 1)[-1], label(who))
+            talker.context.add(label(who), text)
+            try:
+                session.generate_reply(user_input=f"{label(who)}: {text}")
+            except RuntimeError:  # the session is closed: nothing to answer with
+                logger.warning("meet: line not handed to the talker")
         lines.append({"mark": len(lines), "kind": "person", "name": label(who)[:200], "text": text[:4000],
                       "at": time.time()})  # fmt: skip
-
-    async def ask(text: str, pid: str, who: str) -> None:
-        try:
-            await backend.meet("ask", {"text": text, "participantId": pid, "speakerName": who})
-        except BackendError as e:
-            logger.warning("meet: ask not posted (%s)", e.code)
 
     async def read(track: rtc.Track, identity: str) -> None:
         stream = rtc.AudioStream.from_track(
@@ -280,13 +319,23 @@ async def run(ctx: JobContext, meta: dict) -> None:
             if pub.track is not None:
                 on_track(pub.track, pub, p)
 
-    def say(line: str) -> None:
-        speeches.append(session.say(line))
-        lines.append({"mark": len(lines), "kind": "agent", "name": name[:200], "text": line[:4000], "at": time.time()})
+    @session.on("conversation_item_added")
+    def _item(ev) -> None:
+        text = getattr(ev.item, "text_content", None)
+        if ev.item.role != "assistant" or not text or ev.item.interrupted:
+            return
+        talker.context.add(name, text)
+        lines.append({"mark": len(lines), "kind": "agent", "name": name[:200], "text": text[:4000], "at": time.time()})
         if asked:
-            asked[-1]["a"] = f"{asked[-1]['a']} {line}".strip()[:2000]
+            asked[-1]["a"] = f"{asked[-1]['a']} {text}".strip()[:2000]
 
-    async def fetch(after: int) -> dict:
+    def say(texts: list[str]) -> None:
+        speech = session.generate_reply(instructions=result_instructions(texts))
+        speech.add_done_callback(lambda h: check_said(
+            " ".join(t for i in h.chat_items if getattr(i, "role", None) == "assistant"
+                     and (t := getattr(i, "text_content", None))), texts, (name,), "meet"))  # fmt: skip
+
+    async def fetch(after: int, _handled: int) -> dict:
         return await backend.meet("events", {"after": after})
 
     mouth = Mouth(fetch, int(info.get("after") or 0))
@@ -295,8 +344,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
         while True:
             await asyncio.sleep(POLL_S)
             await mouth.poll()
-            speeches[:] = [h for h in speeches if not h.done()]
-            mouth.speak(say, time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S)
+            quiet = time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S and session.agent_state != "speaking"
+            mouth.speak(say, ready=quiet, live=True)
 
     def on_state(ev) -> None:
         status = {"speaking": "speaking", "thinking": "working"}.get(ev.new_state, "listening")
@@ -318,7 +367,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         await backend.leave_meeting()
         ctx.shutdown("meeting max length")
 
-    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up, line=GOODBYE))
+    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up))
     speaking = asyncio.create_task(speak_loop())
 
     async def on_end(_reason: str = "") -> None:
@@ -336,7 +385,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     ctx.add_shutdown_callback(on_end)
     await session.start(
-        agent=Agent(instructions=""),
+        agent=talker,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=False,

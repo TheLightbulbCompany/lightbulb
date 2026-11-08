@@ -125,23 +125,29 @@ async def test_only_the_seated_member_writes_turns(m):
 
 
 async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
+    body = voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
     with (
         patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
         patch.object(voice_owner, "latest_seq", AsyncMock(return_value=41)) as seq,
+        patch.object(voice_owner.messaging_repo, "get_voice_run", AsyncMock(side_effect=[None, {"spoken": 37}])) as gv,
     ):
-        out = await voice_owner.start(
-            ROOM, voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
-        )
-    assert out == {"assistantName": "Nova", "agentId": "a1", "after": 41}
+        assert await voice_owner.start(ROOM, body) == {"assistantName": "Nova", "agentId": "a1", "after": 41}
+        # a reconnect: the last handled seq, so what was posted in the gap is still said
+        assert (await voice_owner.start(ROOM, body))["after"] == 37
     seq.assert_awaited_once_with(ROOM)
+    assert gv.await_args.args == ("org_1", f"owner-mouth:{ROOM}:user_maya")
 
 
 async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
     lines = {"messages": [{"id": "a1", "text": "Checking GitHub."}], "after": 6}
-    with patch.object(voice_owner, "agent_lines", AsyncMock(return_value=lines)) as al:
-        body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5)
+    with (
+        patch.object(voice_owner, "agent_lines", AsyncMock(return_value=lines)) as al,
+        patch.object(voice_owner.messaging_repo, "put_voice_run", AsyncMock()) as put,
+    ):
+        body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5, spoken=5)
         assert await voice_owner.events(ROOM, body) == lines
         al.assert_awaited_once_with(ROOM, 5)
+        put.assert_awaited_once_with("org_1", f"owner-mouth:{ROOM}:user_maya", {"spoken": 5})
         with pytest.raises(HTTPException) as e:
             await voice_owner.events(ROOM, body.model_copy(update={"speakerUserId": "user_other"}))
     assert e.value.status_code == 403

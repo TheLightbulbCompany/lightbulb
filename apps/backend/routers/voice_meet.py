@@ -60,7 +60,7 @@ async def agent_lines(room_id: str, after: int) -> dict:
     are not said), and the next cursor. The voice says these word for word (huddle-agent mouth.py)."""
     rows, _ = await messaging_repo.list_messages(room_id, after, 100)
     said = [
-        {"id": r["messageId"], "text": r.get("editedText") or r["text"]}
+        {"id": r["messageId"], "seq": int(r["messageSeq"]), "text": r.get("editedText") or r["text"]}
         for r in rows
         if (r.get("author") or {}).get("kind") == "agent"
         and not (r.get("progress") or r.get("deletedAt") or r.get("threadRootMessageId"))

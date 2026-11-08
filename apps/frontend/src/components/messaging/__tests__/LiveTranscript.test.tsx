@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 type Stream = { text: string; streamInfo: { id: string; attributes?: Record<string, string> } };
 const lk = vi.hoisted(() => ({ streams: [] as Stream[], asked: [] as string[][] }));
@@ -12,12 +12,13 @@ const huddle = vi.hoisted(() => ({ roomId: "dm1" as string | null, room: {} as o
 vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => huddle }));
 vi.mock("@/components/teams/shared/components/Identity", () => ({ Identity: () => null }));
 
-import { LiveTranscript } from "../LiveTranscript";
+import { CLEAR_MS, LiveTranscript } from "../LiveTranscript";
 
 const seg = (text: string, final = false): Stream => ({ text, streamInfo: { id: `s-${text.length}`, attributes: { "lk.segment_id": "seg1", "lk.transcription_final": String(final) } } });
 const older = [{ messageSeq: 4, text: "Hi", author: { kind: "human", id: "user_maya" } }];
 
 beforeEach(() => { lk.streams = []; lk.asked = []; huddle.roomId = "dm1"; huddle.room = {}; });
+afterEach(() => vi.useRealTimers());
 
 it("the member's words stream into a pending bubble, which becomes the real message at the end of the line", () => {
   lk.streams = [seg("What have we")];
@@ -29,9 +30,19 @@ it("the member's words stream into a pending bubble, which becomes the real mess
   rerender(<LiveTranscript roomId="dm1" messages={older} name="Maya" />);
   expect(screen.getByRole("article")).toHaveTextContent("What have we shipped this week?"); // final, not yet posted
 
-  const posted = [...older, { messageSeq: 5, text: "What have we shipped this week?", author: { kind: "human", id: "user_maya" } }];
+  // the talker's delegated message (the request and its context) is in the room: the bubble steps aside
+  const posted = [...older, { messageSeq: 5, text: "What have we shipped this week?\n\nSaid in the talk…", author: { kind: "human", id: "user_maya" } }];
   rerender(<LiveTranscript roomId="dm1" messages={posted} name="Maya" />);
-  expect(screen.queryByRole("article")).toBeNull(); // the via-voice message is in the room: the bubble steps aside
+  expect(screen.queryByRole("article")).toBeNull();
+});
+
+it("a finished line with no message (a greeting, or a post that failed) clears on its own", () => {
+  vi.useFakeTimers();
+  lk.streams = [seg("Hi Nova", true)];
+  render(<LiveTranscript roomId="dm1" messages={older} name="Maya" />);
+  expect(screen.getByRole("article")).toHaveTextContent("Hi Nova");
+  act(() => { vi.advanceTimersByTime(CLEAR_MS); });
+  expect(screen.queryByRole("article")).toBeNull();
 });
 
 it("an earlier message with the same words does not hide a new line", () => {

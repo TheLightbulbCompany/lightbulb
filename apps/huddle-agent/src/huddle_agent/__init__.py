@@ -4,13 +4,11 @@ import logging
 GOODBYE = "We're out of time. In one short sentence, say a warm goodbye; don't ask anything."
 
 
-async def end_after(seconds: float, session, end, on_speech=None, line: str = "") -> None:
-    """Cost cap (gate finding 14): after `seconds` the assistant says a short goodbye, then `end()` closes it.
-    `line`: a session without a language model (owner, meet) says this fixed goodbye instead."""
+async def end_after(seconds: float, session, end, on_speech=None) -> None:
+    """Cost cap (gate finding 14): after `seconds` the assistant says a short goodbye, then `end()` closes it."""
     await asyncio.sleep(seconds)
     try:
-        speech = (session.say(line, allow_interruptions=False) if line
-                  else session.generate_reply(instructions=GOODBYE, allow_interruptions=False))  # fmt: skip
+        speech = session.generate_reply(instructions=GOODBYE, allow_interruptions=False)
         if on_speech:
             on_speech(speech)  # meet: only this speech passes the reply gate
         await asyncio.wait_for(speech, 20)

@@ -57,22 +57,3 @@ async def test_a_failed_goodbye_still_ends():
 
     await huddle_agent.end_after(0, Session(), end)
     assert done == [1]
-
-
-async def test_a_session_without_a_model_says_a_fixed_goodbye():
-    said, done = [], []
-
-    class Session:
-        def say(self, text, allow_interruptions):
-            said.append(text)
-
-            async def played():
-                return None
-
-            return played()
-
-    async def end():
-        done.append(said[:])
-
-    await huddle_agent.end_after(0, Session(), end, line="We're out of time.")
-    assert done == [["We're out of time."]]

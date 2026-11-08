@@ -188,7 +188,7 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))) as lm:
         out = await voice_meet.agent_lines(ROOM, 4)
     lm.assert_awaited_once_with(ROOM, 4, 100)
-    assert out == {"messages": [{"id": "a1", "text": "Checking GitHub."}, {"id": "a4", "text": "We shipped #5095."}],
+    assert out == {"messages": [{"id": "a1", "seq": 6, "text": "Checking GitHub."}, {"id": "a4", "seq": 9, "text": "We shipped #5095."}],
                    "after": 10}  # fmt: skip
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=([], None))):
         assert await voice_meet.agent_lines(ROOM, 10) == {"messages": [], "after": 10}

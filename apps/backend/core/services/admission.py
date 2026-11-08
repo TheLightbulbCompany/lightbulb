@@ -40,6 +40,12 @@ _HISTORY = 20
 _LIGHTBULB_NAME = re.compile(r"^\W*(?:(?:hey|hi|hello|yo|ok|okay)\s+)?lightbulb\b\s*[,:?!]", re.IGNORECASE)
 
 
+VOICE_HINT = (
+    "(Said aloud in a voice talk; the reply is read out. Answer in one or two short spoken sentences: no lists, "
+    "tables, links or markdown. Longer work goes in its thread as usual.)"
+)
+
+
 async def router_room(meta: dict, owner_id: str) -> bool:
     """A room people chat with Lightbulb in: Lightbulb (the front agent) seated, and not an
     app/feed/vendor/session room or one shared with another organization. A task's own room is a Router room, and so
@@ -168,6 +174,10 @@ async def _admit_message(room_id: str, seq: int) -> None:
         ref["threadRoot"] = msg["threadRootMessageId"]
     if meta.get("meeting"):
         ref["origin"] = "meeting"  # anyone in a Meet acts as the inviter: every spend, send or publish gets a card
+    if msg.get("via") == "voice":
+        # DeepSeek §4.2, channel-appropriate replies: the Router's and a Worker's input (`activities._input_text`
+        # reads `ref.text` first) says the line was spoken, so the answer the voice says back is short
+        ref["text"] = f"{msg.get('text') or ''}\n\n{VOICE_HINT}"
     base = {
         "triggerId": trigger_id,
         "source": "chat",

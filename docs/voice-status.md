@@ -100,7 +100,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | # | Promise | Built | Prod | Machine | 1st | Owner | Note |
 |---|---|---|---|---|---|---|---|
 | 3.1 | Call answered through Twilio, SIP and LiveKit | yes | yes | yes | 1st | Product | |
-| 3.2 | Opening contains the name and "AI assistant". A recording notice is an owner setting, off by default; the business is responsible for its own state's rules | part | part | part | 1st | Product | Founder ruling 9 Nov, replacing "every call says it is recorded". Today the notice is always said and enforced by a guard in the worker and a fallback in the backend. To change: the phone prompt, the guard, the greeting fallback, and a setting with a plain warning on the Agent page. One real call passed with the old opening |
+| 3.2 | The business owns the opening. We ship an editable default (name, business, "AI assistant"). Nothing in code enforces its wording. The assistant never claims to be a person when a caller sincerely asks | no | no | no | 1st | Product | Founder ruling 9 Nov, replacing "every call says AI and recorded". To change: delete the worker's disclosure guard and the backend's greeting fallback; make the default greeting editable; keep one prompt rule about not claiming to be human. The medical tier defaults the AI notice on |
 | 3.3 | The voice hands every business question to the Router and speaks its answer | yes | yes | part | 1st | Product | One call invented facts with no hand-off; one later call handed off. Rate not measured |
 | 3.4 | Latency: 1.4 s caller-to-reply on simple turns; a stated target for a useful answer | no | no | no | 1st | Product | No target for a useful answer exists yet |
 | 3.5 | Knowledge from the website scan answers callers, with where each fact came from | yes | yes | part | 1st | Product | The Router received the right facts in one recovered call |
@@ -253,6 +253,7 @@ Individual PRs were reviewed. No whole-phase review has been run.
 | Code rules for when the agent speaks (3 s pause, 20 s stale drop, wake gates, canned lines) | The model owns conversation; code enforces permissions and safety only | 8 Nov |
 | A scheduling rules engine or speech rules for double booking | The model judges what to offer. The booking tool still reserves a slot atomically, so two bookings cannot take one slot. This ruling does not remove that safety | 8 Nov |
 | Delete the OpenRouter gate | OpenRouter stays as the inference and billing gate | 9 Nov |
+| First words of every call say the name, "AI assistant" and "this call is recorded", enforced by a guard | The business owns the opening; no enforcement in code; the assistant never claims to be a person when sincerely asked | 9 Nov |
 
 ## Waiting on the founder or a vendor
 

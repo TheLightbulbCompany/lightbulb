@@ -508,16 +508,28 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     room = await task_conversation.ensure_task_room(ws, task)
     for uid in q["answerers"]:
         await task_conversation.ensure_task_room(ws, task, seat_viewer=uid)
-    # Room/seat creation awaits I/O: an answer or Stop may have retired the card.
-    current = await questions_repo.get_question(ws, task_id, qid)
-    current_task = await tasks_repo.get_task(ws, task_id)
-    if current is None or current["state"] != "open" or current_task is None or current_task["status"] == "resolved":
+
+    async def still_open() -> bool:
+        # Each delivery can await provider I/O. Retiring a Question cannot retract
+        # a delivery already started, but must suppress subsequent deliveries.
+        current = await questions_repo.get_question(ws, task_id, qid)
+        current_task = await tasks_repo.get_task(ws, task_id)
+        return (
+            current is not None
+            and current["state"] == "open"
+            and current_task is not None
+            and current_task["status"] != "resolved"
+        )
+
+    if not await still_open():
         return
     await task_conversation.post_as_lightbulb(
         ws, room, text=title, event_id=f"q:{qid}", specialist=task.get("specialist"), task_refs=refs, kind="question"
     )
     origin = _origin_thread(tree.get("subscriptions") or [])
     if origin:
+        if not await still_open():
+            return
         card = dict(text=title, event_id=f"q:{qid}:origin", specialist=task.get("specialist"), task_refs=refs,
                     kind="question")  # fmt: skip
         try:
@@ -528,12 +540,18 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
             # The card goes to the origin room itself (which sends a Meet room's post to the output room again).
             if exc.error.code != "MESSAGE_NOT_FOUND" or not origin[1]:
                 raise
+            if not await still_open():
+                return
             activity.logger.warning("origin thread %s gone for task %s; card posted unthreaded", origin[1], task_id)
             await task_conversation.post_as_lightbulb(ws, origin[0], thread_root=None, **card)
     data = {"source": "task_question", "taskId": task_id, "qid": qid}
     push_title = f"{label} needs your answer" if q["kind"] == "question" else f"{label} needs your OK"
     for uid in q["answerers"]:
+        if not await still_open():
+            return
         await _push_once(f"qpush:{ws}:{qid}:{uid}", uid, push_title, body, data)
+    if not await still_open():
+        return
     await needs_you_email.queue_question(ws, task_id, qid, list(q["answerers"]), title.replace("**", ""), body)
 
 

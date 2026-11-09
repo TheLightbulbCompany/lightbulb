@@ -415,3 +415,69 @@ async def test_relay_rechecks_retirement_after_room_creation(world, relay, monke
     relay["post"].assert_not_awaited()
     relay["push"].assert_not_awaited()
     relay["away"].assert_not_awaited()
+
+
+@pytest.mark.parametrize("stage", ["task_post", "origin_post", "origin_refused", "first_push"])
+@pytest.mark.parametrize("retire", ["cancel", "answer", "stop", "resolve"])
+async def test_retirement_during_delivery_suppresses_remaining_deliveries(world, relay, monkeypatch, stage, retire):
+    from core.services import messaging, push_service, task_conversation
+
+    monkeypatch.setattr(
+        questions.clerk_admin,
+        "list_organization_members",
+        AsyncMock(
+            return_value=[
+                {"user_id": SAM, "role": "org:admin"},
+                {"user_id": ADA, "role": "org:admin"},
+            ]
+        ),
+    )
+    await tasks_repo.subscribe(WS, TASK, "room:00000000-0000-0000-0000-0000000000aa:origin", created_by="router")
+    await effects_repo.put_effect(WS, _effect(kind="purchase"))
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    assert len(ref.answerers) == 2
+    entered, release = asyncio.Event(), asyncio.Event()
+    posts, pushes = [], []
+
+    async def post(*args, **kwargs):
+        posts.append(kwargs["event_id"])
+        blocked = len(posts) == (1 if stage == "task_post" else 2)
+        if stage != "first_push" and blocked:
+            entered.set()
+            await release.wait()
+            if stage == "origin_refused":
+                raise messaging.ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.")
+        return "already-started-post"
+
+    async def push(uid, *args):
+        pushes.append(uid)
+        if stage == "first_push" and len(pushes) == 1:
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(task_conversation, "post_as_lightbulb", post)
+    monkeypatch.setattr(push_service, "send_push_to_user", push)
+    running = asyncio.create_task(_run(tq.relay_question, WS, TASK, ref.qid))
+    await asyncio.wait_for(entered.wait(), 5)
+    if retire in ("cancel", "stop"):
+        await questions_repo.cancel_open(WS, TASK, by=SAM, reason="stopped")
+    elif retire == "answer":
+        await questions_repo.record_answer(
+            WS,
+            TASK,
+            ref.qid,
+            option_id="allow_once",
+            trigger_id=None,
+            by=ADA,
+            client_answer_id="during-delivery",
+            expected_version=None,
+        )
+    if retire in ("stop", "resolve"):
+        task = await tasks_repo.get_task(WS, TASK)
+        await tasks_repo.transition_task(WS, TASK, to="resolved", expected_version=task["version"])
+    release.set()
+    await running
+    # A delivery begun while open may finish. Nothing later starts after retirement.
+    assert posts == [f"q:{ref.qid}"] + ([] if stage == "task_post" else [f"q:{ref.qid}:origin"])
+    assert len(pushes) == (1 if stage == "first_push" else 0)
+    relay["away"].assert_not_awaited()

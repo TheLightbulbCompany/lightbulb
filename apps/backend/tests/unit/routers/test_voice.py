@@ -283,7 +283,13 @@ async def test_front_agent_selection_is_scoped_and_preserves_other_fields(async_
     monkeypatch.setattr(
         voice.agent_registry, "get", AsyncMock(return_value={"agentId": "existing", "status": "active"})
     )
-    cfg = {"name": "Founder's name", "frontAgentId": "existing", "unknownSetting": {"keep": True}}
+    cfg = {
+        "name": "Founder's name",
+        "frontAgentId": "existing",
+        "voice": "quartz",
+        "spanish": True,
+        "unknownSetting": {"keep": True},
+    }
     response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
     assert response.status_code == 200
     voice.agent_registry.get.assert_awaited_once_with(WS, "existing")
@@ -325,3 +331,21 @@ async def test_missing_selected_agent_is_visible_without_rewriting_the_selection
     assert response.json()["frontAgentId"] is None
     assert "Choose an active" in response.json()["frontAgentIssue"]
     assert (await messaging_repo.get_voice_agent(WS))["name"] == "Preserved"
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [("spanish", "true"), ("spanish", 1), ("spanish", None), ("voice", "alloy"), ("voice", {}), ("voice", None)],
+)
+async def test_phone_preferences_are_validated(repos, async_client_org_admin, field, bad):  # noqa: F811
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": {field: bad}})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == f"{field}_invalid"
+
+
+@pytest.mark.parametrize("voice", ["Warm", "marin", "quartz", "willow"])
+async def test_phone_preferences_round_trip_without_rewriting_legacy(repos, async_client_org_admin, voice):  # noqa: F811
+    cfg = {"name": "Founder assistant", "voice": voice, "spanish": True, "future": {"preserved": True}}
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
+    assert response.status_code == 200
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] == cfg

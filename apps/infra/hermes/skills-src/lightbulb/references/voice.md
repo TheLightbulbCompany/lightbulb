@@ -48,3 +48,7 @@ changes today (try again tomorrow), anything else means it did not save.
 A fact or preference about the work ("remember the launch is on the 12th")
 goes to your normal `memory` tool, not to voice notes. Voice notes are only
 about how you speak.
+
+## Phone voice and Spanish
+
+Workspace admins choose the phone voice and **Also speaks Spanish** in Agent settings, or step five of web phone setup. Calls open in English; Spanish enabled follows the caller in English or Spanish. Changes take effect on the next call. **Voice sample** plays a fixed AI recording from the same phone model, not the business's personalized greeting. The phone always discloses its assistant name, AI identity and recording; choosing Spanish keeps the same permissions and disclosure requirements.

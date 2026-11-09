@@ -9,6 +9,7 @@ beforeEach(() => { desktop.enabled = false; });
 
 vi.mock("@/components/settings/SettingsPlace", () => ({
   PANELS: {
+    billing: () => <div>workspace billing and provider choices</div>,
     members: () => <div>members ok</div>,
     approvals: () => { throw new Error("approvals exploded"); },
     connections: () => <div>connections ok</div>,
@@ -26,6 +27,7 @@ it("one section throwing leaves the other sections on the page", () => {
   render(<VoiceSettings />);
   quiet.mockRestore();
   expect(screen.getByText("members ok")).toBeInTheDocument();
+  expect(screen.getByText("workspace billing and provider choices")).toBeInTheDocument();
   expect(screen.getByText("connections ok")).toBeInTheDocument();
   expect(screen.getByText("daily ok")).toBeInTheDocument();
   const broken = screen.getByRole("alert");

@@ -71,7 +71,7 @@ export interface AgentConfig {
 export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
 export const DEFAULT_CONFIG: AgentConfig = {
-  name: "", greeting: "", voice: "Warm", spanish: false, live: false, paused: false,
+  name: "", greeting: "", voice: "marin", spanish: false, live: false, paused: false,
   allow: { book: true, move: true, waitlist: true, greetByName: true, answer: true },
   knowledge: [], toAdd: [], instructions: "",
   hours: Object.fromEntries(DAYS.map((d) => [d, { open: "09:00", close: "18:00", closed: d === "Sun" }])),

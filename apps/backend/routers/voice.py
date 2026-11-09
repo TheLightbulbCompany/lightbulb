@@ -31,7 +31,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
-from core.services import voice_onboarding, voice_outbound, agent_registry, task_conversation
+from core.services import voice_onboarding, voice_outbound, voice_preferences, agent_registry, task_conversation
 
 router = APIRouter()
 
@@ -219,6 +219,13 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
     require_org_admin(auth)
     if len(json.dumps(body.config)) > MAX_CONFIG_BYTES:
         raise HTTPException(status_code=413, detail={"code": "too_large"})
+    if "spanish" in body.config and type(body.config["spanish"]) is not bool:
+        raise HTTPException(status_code=422, detail={"code": "spanish_invalid"})
+    if "voice" in body.config and body.config["voice"] not in (
+        *voice_preferences.VOICES,
+        voice_preferences.LEGACY_VOICE,
+    ):
+        raise HTTPException(status_code=422, detail={"code": "voice_invalid"})
     tz = body.config.get("timezone")
     if tz:
         try:

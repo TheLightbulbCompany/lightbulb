@@ -364,6 +364,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);
                                  core/services/{voice_routing,voice_persona}.py (room-call routing; each agent speaks as itself in its own voice)
                                  routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; agents join only where one listens; addressed by name, "Lightbulb" or a tile)
+  - Phone voice / Spanish / stock samples ... references/voice.md ("Phone voice and Spanish")
+                              <- backend routers/{voice,voice_phone}.py + core/services/voice_preferences.py;
+                                 apps/huddle-agent/src/huddle_agent/{phone,live}.py;
+                                 frontend components/voice/PhoneVoiceSettings.tsx + native counterpart;
+                                 packages/shared/src/voicePreferences.ts + frontend public/voice-samples/
   - Voice requests .......... references/voice.md + SKILL.md routing row
                               <- apps/infra/hermes/bridge/server.py + turn.py (a voice run is locked and scoped on the room
                                  session key, lightbulb_session_key, and recorded in the call's own transcript,
@@ -518,3 +523,5 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
 - Task handoffs (super-agent only) — `references/tasks.md`, deliberately NOT in SKILL.md's routing table: only a super-agent Worker run loads it, because its instructions name it (`WORKER_INSTRUCTIONS` in `apps/backend/core/temporal/activities.py`). Every other run keeps the Paperclip handoffs in platform-primitives.md, company-and-plans.md, software-projects.md. Added 2026-11-05 after #4760 rewrote the global text (skills are fleet-wide). Test: `apps/backend/tests/unit/super_agent/orchestration/test_task_board_signals.py::test_task_wording_is_super_agent_only`.
 
 - Front-door existing-worker selection and retained conversation identity: `references/company-and-plans.md`; `task_conversation.py`, `routers/voice.py`, web/mobile Agent settings.
+
+- Voice Settings/provider confirmation — references/surfaces.md and references/company-and-plans.md; anchors: VoiceSettings.tsx, chat/page.tsx, ProvisioningStepper.ProviderPicker and ChatGPTOAuthStep.tsx. Authentication and explicit provider confirmation are separate; cancellation preserves the saved provider.

@@ -164,6 +164,9 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   // needs are added through the supported API rather than a positional patch.
   // Build-Synth otherwise has id-token: write but never assumes a role.
   postBuildSteps: [CDKOUT_OIDC_STEP],
+  dockerAssetJobSettings: {
+    setupSteps: [{ name: "Enable ARM64 image builds", uses: "docker/setup-qemu-action@v3", with: { platforms: "arm64" } }],
+  },
   synth: new ShellStep("Synth", {
     commands: [
       "cd apps/infra",

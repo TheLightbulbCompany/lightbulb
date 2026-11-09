@@ -314,7 +314,7 @@ async def test_explicit_id_answers_that_delegation():
 
 
 async def test_send_result_none_is_unsolicited_and_keeps_the_pending_delegation():
-    # the phone's opening, disclosure correction and goodbye go out with None while a delegation waits
+    # the phone's opening and goodbye go out with None while a delegation waits
     t = FakeTransport()
     s = session(Router(delay=0), transport=t)
     s.on_delegate(delegation(1, "a"))
@@ -467,6 +467,10 @@ class StubDuplex(rtc.EventEmitter):
         super().__init__()
         self.appends = []
         self.thoughts = []
+        self.instructions = []
+
+    def append_instructions(self, text, *, delegation_id=None):
+        self.instructions.append((text, delegation_id))
 
     def append_commentary(self, text, *, delegation_id=None):
         self.appends.append((text, delegation_id))
@@ -574,7 +578,7 @@ async def test_start_wires_gpt_live_to_the_router(monkeypatch):
     r = Router(delay=0)
     q, events = queue_events()
     s = await _start(monkeypatch, r, events)
-    assert s.transport.model.kw == {"delegation": "client"}
+    assert s.transport.model.kw == {"delegation": "client", "voice": "marin"}
     assert s.agent.instructions == "the prompt"
     assert s.session.started == {"agent": s.agent, "room": "the-room", "record": False}
     duplex = s.agent.duplex_session
@@ -701,9 +705,10 @@ async def test_interrupt_never_cancels_post(monkeypatch):
 def test_no_scripted_speech():
     src = pathlib.Path(live.__file__).read_text()
     assert not re.search(r"\.(say|generate_reply|speak)\(", src)
-    # Replies are commentary; caught-up context is silent thinking. Neither is scripted speech.
+    # Replies are commentary; context is silent thinking; a missed disclosure is a trusted instruction. No local speech.
     assert re.findall(r"append_\w+\(", src) == [
         "append_commentary(",
+        "append_instructions(",
         "append_thinking(",
     ]
 
@@ -813,3 +818,29 @@ async def test_explicit_meeting_chat_delivery_is_context_not_a_second_spoken_rep
         spoken.assert_awaited_once_with("normal-result")
     finally:
         await voice.close()
+
+
+async def test_phone_voice_and_opening_are_startup_configuration(monkeypatch):
+    s = await _start(
+        monkeypatch, Router(), voice="willow", opening="Greet in English, then listen."
+    )
+    assert s.transport.model.kw == {"delegation": "client", "voice": "willow"}
+    assert [(i.role, i.text_content) for i in s.agent.chat_ctx.items] == [
+        ("developer", "Greet in English, then listen.")
+    ]
+    assert (
+        s.agent.duplex_session.appends == []
+    )  # surface sends its opening once after start
+    await s.close()
+
+
+async def test_disclosure_instructions_do_not_answer_a_delegation_or_append_after_close(monkeypatch):
+    s = await _start(monkeypatch, Router())
+    s.pending["item_waiting"] = "message_waiting"
+    s.send_instructions("Say the missed disclosure once, then continue normally.")
+    assert s.agent.duplex_session.instructions == [("Say the missed disclosure once, then continue normally.", None)]
+    assert s.agent.duplex_session.appends == []
+    assert s.pending == {"item_waiting": "message_waiting"}
+    await s.close()
+    s.send_instructions("Never sent")
+    assert len(s.agent.duplex_session.instructions) == 1

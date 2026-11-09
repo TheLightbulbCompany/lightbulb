@@ -102,6 +102,7 @@ function useTalkController(name: string) {
     // else the pre-connect is in flight: it lands with `want` set and opens the mic
   };
   const end = useCallback(() => {
+    started.current = false;
     setTalk(false); setMuted(false);
     void setMic(false).catch(() => {});
     huddle.leave(); // explicit End stops input and playback; backend work keeps running

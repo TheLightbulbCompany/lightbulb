@@ -413,3 +413,19 @@ it("a cancelled chord restores a previously closed input without ending its conv
   expect(screen.getByRole("button", { name: "End" })).toBeInTheDocument();
   expect(huddle.leave).not.toHaveBeenCalled();
 });
+
+
+it("Escape before a cold join lands permits the next tap to start a fresh join", () => {
+  const { rerender } = render(<TalkOrb name="Nova" />);
+  tap();
+  expect(huddle.join).toHaveBeenCalledTimes(1);
+  huddle.joining = "dm1";
+  rerender(<TalkOrb name="Nova" />);
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(huddle.leave).toHaveBeenCalledTimes(1);
+  // The real HuddleProvider fences the old connection attempt and clears joining on leave.
+  huddle.joining = null;
+  rerender(<TalkOrb name="Nova" />);
+  tap();
+  expect(huddle.join).toHaveBeenCalledTimes(2);
+});

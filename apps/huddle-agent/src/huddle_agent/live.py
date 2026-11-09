@@ -105,6 +105,7 @@ class Transport(Protocol):
     ) -> list[tuple[str, str, str]]: ...  # (item id, role, text), the chat context
     def commentary(self, text: str, delegation_id: str | None) -> None: ...
     def context(self, text: str, delegation_id: str | None = None) -> None: ...
+    def instructions(self, text: str) -> None: ...
     def set_input_enabled(self, enabled: bool) -> None: ...
     async def close(self) -> None: ...
 
@@ -261,6 +262,12 @@ class LiveSession:
             speakable(text)
         ):  # several appends with one id continue the same work
             self.transport.commentary(chunk, delegation_id)
+
+    def send_instructions(self, text: str) -> None:
+        """Trusted session rules, e.g. a once-only disclosure correction; never a delegation answer."""
+        if not self._closed:
+            for chunk in _chunks(text.strip()):
+                self.transport.instructions(chunk)
 
     def send_context(self, text: str, delegation_id: str | None = None) -> None:
         """Silent context for a session already open: e.g. results fetched while a Meet voice was asleep. Thinking
@@ -424,6 +431,9 @@ class _GPTLive:
     def commentary(self, text: str, delegation_id: str | None) -> None:
         self.live.append_commentary(text, delegation_id=delegation_id)
 
+    def instructions(self, text: str) -> None:
+        self.live.append_instructions(text, delegation_id=None)
+
     def context(self, text: str, delegation_id: str | None = None) -> None:
         self.live.append_thinking(text, delegation_id=delegation_id)
 
@@ -451,6 +461,8 @@ async def start(
     record: bool = False,
     user_away_timeout: float | None = None,
     history: list[tuple[str, str]] | None = None,
+    voice: str = "marin",
+    opening: str | None = None,
 ) -> LiveSession:
     """GPT-Live in `ctx.room` with `prompt` (OpenAI's live-prompting template; `delegation_policy` renders its
     delegation section), every delegation posted with `post(text, context_turns)`, every agent message from `events`
@@ -459,11 +471,15 @@ async def start(
     session recording (the phone kept it on). `user_away_timeout`: seconds of silence before LiveKit marks the user
     away (its `user_state_changed`); None: never. `history`: (speaker, text) pairs the session starts with
     (`startup_context`); never sent to the Router as an ask's context."""
-    model = GPTLiveModel(delegation="client")
+    model = GPTLiveModel(delegation="client", voice=voice)
+    chat_ctx = startup_context(history or [])
+    if opening:
+        # Official GPT-Live greeting contract: startup developer input, followed by the same commentary once.
+        chat_ctx.add_message(role="developer", content=opening)
     # no tools: client delegation refuses them. The agent's chat context is the plugin's startup history (session.start)
     agent = Agent(
         instructions=prompt,
-        **({"chat_ctx": startup_context(history)} if history else {}),
+        **({"chat_ctx": chat_ctx} if history or opening else {}),
     )
     session = AgentSession(llm=model, vad=None, user_away_timeout=user_away_timeout)
     try:

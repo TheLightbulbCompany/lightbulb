@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -43,6 +43,7 @@ from core.services import (
     voice_booking,
     voice_calls,
     voice_outbound,
+    voice_preferences,
 )
 from routers.huddles import _Worker
 from routers.voice import _e164, month_seconds
@@ -65,6 +66,8 @@ _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULTS: dict = {
     "name": "",
     "greeting": "",
+    "voice": voice_preferences.DEFAULT_VOICE,
+    "spanish": False,
     "live": False,
     "paused": False,
     "instructions": "",
@@ -339,7 +342,12 @@ async def start_call(body: StartIn) -> dict:
             kind="call",
             members=members,
             req_hash=messaging_repo.request_hash(name, "call", body.livekitRoom),
-            extra={"call": call, "hidden": True, "ownerUserId": line["ownerUserId"]},
+            extra={
+                "call": call,
+                "hidden": True,
+                "ownerUserId": line["ownerUserId"],
+                **({"frontAgentId": front["id"]} if front else {}),
+            },
         )
     except messaging_repo.MessagingRepoError:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
@@ -355,6 +363,8 @@ async def start_call(body: StartIn) -> dict:
         "ownerId": owner_id,
         "businessName": business,
         "assistantName": assistant,
+        "voice": voice_preferences.phone_voice(cfg.get("voice")),
+        "spanish": cfg.get("spanish") is True,
         "greeting": greeting(cfg["greeting"], business, assistant),
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
         "instructions": cfg["instructions"][:4000],
@@ -421,7 +431,7 @@ def transcript_lines(transcript: list[dict]) -> list[dict]:
 
 
 @router.post("/internal/voice/calls/{call_id}/end")
-async def end_call(call_id: str, body: EndIn, background: BackgroundTasks) -> dict:
+async def end_call(call_id: str, body: EndIn) -> dict:
     lines = transcript_lines(body.transcript)
     meta, _ = await _call(call_id)
     forwarded_to = (await agent_config(meta["ownerId"]))["handoff"]["number"] if body.forwarded else None
@@ -429,6 +439,8 @@ async def end_call(call_id: str, body: EndIn, background: BackgroundTasks) -> di
 
     def change(call: dict) -> dict:
         before["status"] = call.get("status")
+        if call.get("status") == "ended":
+            return {}  # retries reuse the immutable first terminal result below
         if forwarded_to:
             return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
                     "outcome": "forwarded", "transferredTo": forwarded_to,
@@ -440,16 +452,17 @@ async def end_call(call_id: str, body: EndIn, background: BackgroundTasks) -> di
                    if body.disclosure else {})}  # fmt: skip
 
     out = await _patch_call(call_id, change)
-    if before.get("status") != "ended":  # a retried end counts nothing twice
+    if before.get("status") != "ended":
         try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
             await voice_billing.add_month_seconds(
-                meta["ownerId"], body.durationSec, datetime.fromisoformat(out["startedAt"])
+                meta["ownerId"], int(out["durationSec"]), datetime.fromisoformat(out["startedAt"])
             )
         except Exception:
             logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
-        background.add_task(
-            voice_billing.report_minutes, meta["ownerId"], call_id, out["startedAt"], body.durationSec, "phone"
-        )
+    # This awaited write is the durable source + outbox admission. If it fails,
+    # return an error so the worker retries; terminal retries keep the first
+    # stored duration/start time rather than trusting a new request body.
+    await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], int(out["durationSec"]), "phone")
     if out.get("caller"):
         seen = await _seen(meta["ownerId"], out["caller"]) or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,

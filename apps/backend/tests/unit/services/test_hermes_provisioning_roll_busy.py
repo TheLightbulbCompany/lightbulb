@@ -23,6 +23,7 @@ from tests.unit.services.test_hermes_provisioning_roll import _wire
 def _no_billing_row(monkeypatch):
     """A roll resolves the provider from billing; default to no row (bedrock_claude)."""
     monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(hermes_provisioning.settings, "HERMES_SHARED_RUNTIME_ARN", "arn:rt")
 
 
 #: Captured at import, before any test's ``_wire`` replaces it: the S1-b test needs the REAL
@@ -54,7 +55,7 @@ async def test_roll_waits_for_an_in_flight_turn_before_stopping_the_session(monk
     probes = _health(monkeypatch, {"busy": 1}, {"busy": 2}, {"busy": 0})
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert [c[0] for c in calls] == ["stop"]
     assert probes == ["org_a"] * 3
 
 
@@ -67,7 +68,7 @@ async def test_roll_leaves_a_still_busy_session_running(monkeypatch):
     monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
-    assert [c[0] for c in calls] == ["update", "ready"]  # no stop
+    assert [c[0] for c in calls] == []  # no stop
     assert probes == ["org_a"]
 
 
@@ -80,7 +81,7 @@ async def test_an_unreachable_runtime_is_not_a_running_turn(monkeypatch):
     probes = _health(monkeypatch, ApiProblem("RUNTIME_UNAVAILABLE", "gone", retryable=True))
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert [c[0] for c in calls] == ["stop"]
     assert probes == ["org_a"]
 
 
@@ -99,7 +100,7 @@ async def test_a_slow_or_failing_probe_is_never_read_as_idle(monkeypatch, raised
     monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
-    assert [c[0] for c in calls] == ["update", "ready"]  # no stop
+    assert [c[0] for c in calls] == []  # no stop
     assert probes == ["org_a"]
 
 
@@ -139,7 +140,7 @@ async def test_a_starved_microvm_arrives_as_an_apiproblem_and_is_not_idle(monkey
     monkeypatch.setattr(runtime_transport, "request", _timed_out)
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
-    assert [c[0] for c in calls] == ["update", "ready"]  # no stop
+    assert [c[0] for c in calls] == []  # no stop
 
 
 @pytest.mark.asyncio
@@ -203,7 +204,7 @@ async def test_a_microvm_older_than_the_update_is_stopped_too(monkeypatch):
     seen = _bridges(monkeypatch, 1424.0, 1424.0, 1424.0, 1.0)  # probe, rewake (survivor), probe, rewake (fresh)
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "stop", "stop"]
+    assert [c[0] for c in calls] == ["stop", "stop"]
     assert seen == [{"drain": True}, None, {"drain": True}, None]
 
 
@@ -215,7 +216,7 @@ async def test_a_parked_owner_whose_probe_reached_an_old_microvm_is_verified(mon
     seen = _bridges(monkeypatch, 900.0, 2.0)
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert [c[0] for c in calls] == ["stop"]
     assert seen == [{"drain": True}, None]
 
 
@@ -225,7 +226,7 @@ async def test_a_parked_owner_on_a_fresh_microvm_is_not_woken_again(monkeypatch)
     seen = _bridges(monkeypatch, 3.0)
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert [c[0] for c in calls] == ["stop"]
     assert seen == [{"drain": True}]
 
 
@@ -238,7 +239,7 @@ async def test_an_old_microvm_that_outlives_the_deadline_fails_the_roll(monkeypa
     monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
-    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert [c[0] for c in calls] == ["stop"]
 
 
 @pytest.mark.asyncio
@@ -258,7 +259,7 @@ async def test_an_unconfirmed_stop_is_retried_not_reported_updated(monkeypatch):
 
     monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", _stop)
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "stop", "stop"]
+    assert [c[0] for c in calls] == ["stop", "stop"]
 
 
 @pytest.mark.asyncio
@@ -275,7 +276,7 @@ async def test_a_stop_that_never_confirms_fails_the_roll(monkeypatch):
 
     monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", _stop)
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
-    assert [c[0] for c in calls] == ["update", "ready", "stop"]
+    assert [c[0] for c in calls] == ["stop"]
 
 
 @pytest.mark.asyncio

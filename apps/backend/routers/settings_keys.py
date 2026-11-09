@@ -1,28 +1,19 @@
-"""Router for BYOK API key management."""
-
-import logging
+"""Legacy BYOK key reads/deletes for workspaces already using saved keys."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.repositories import container_repo
 from core.services.container_provision import resolve_provider_choice
 from core.services.key_service import (
     SUPPORTED_LLM_PROVIDERS,
     KeyService,
 )
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Only LLM provider keys (OpenAI/Anthropic) are accepted; the service layer
 # validates the key and mirrors it into Secrets Manager.
 ALLOWED_KEY_IDS = set(SUPPORTED_LLM_PROVIDERS.keys())
-
-
-class SetKeyRequest(BaseModel):
-    api_key: str
 
 
 async def _is_active_byo_key(owner_id: str, tool_id: str) -> bool:
@@ -41,44 +32,28 @@ async def list_keys(
     keys = await service.list_keys(owner_id)
     return {
         "keys": keys,
-        "supported_llm_providers": list(SUPPORTED_LLM_PROVIDERS.keys()),
+        "supported_llm_providers": [],
     }
 
 
 @router.put("/{tool_id}")
 async def set_key(
     tool_id: str,
-    body: SetKeyRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Store an API key for a tool."""
-    owner_id = resolve_owner_id(auth)
+    """Reject new LLM-key setup; retain existing keys for active legacy workspaces."""
     if auth.is_org_context:
         require_org_admin(auth)
-    if tool_id not in ALLOWED_KEY_IDS:
-        raise HTTPException(status_code=400, detail=f"Unsupported tool: {tool_id}")
-
-    service = KeyService()
-    await service.set_key(owner_id, tool_id, body.api_key)
-
-    # #1913: the plaintext is baked into every roster profile's .env at provision, so a rotated
-    # active key must be re-rendered there too (write_profiles bumps .revision; the bridge
-    # re-pulls on the next turn). No runtime yet => the provision reads the new key itself.
-    # A key for an inactive provider is not in any profile; the provider switch reconciles.
-    if await _is_active_byo_key(owner_id, tool_id):
-        row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-        if row.get("status") == "running":  # provisioned (the shared runtime's rows carry no ARN)
-            from core.services.hermes_provisioning import write_profiles
-
-            try:
-                await write_profiles(owner_id)
-            except Exception:
-                logger.exception("set_key: profile rewrite failed for owner=%s provider=%s", owner_id, tool_id)
-                raise HTTPException(
-                    status_code=502,
-                    detail="Key saved, but updating your agents failed. Save it again to retry.",
-                )
-    return {"status": "ok", "tool_id": tool_id}
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "byo_setup_retired",
+            "message": (
+                "Adding or changing an LLM API key is no longer available. Choose OpenRouter managed "
+                "or Sign in with ChatGPT. A workspace already running on a saved key can keep using it."
+            ),
+        },
+    )
 
 
 @router.delete("/{tool_id}")

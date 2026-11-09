@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
+
+from core.config import settings
 import yaml
 from moto import mock_aws
 
@@ -178,7 +180,7 @@ async def test_x_newest_profile_copy_wins(world):
     assert abs(datetime.fromisoformat(secret["token_expiry"]).timestamp() - exp) < 2
     assert state["row"]["custody"] == "backend"
     assert state["projected"] == [("x", "xurl_cli", secret)]
-    world["stop"].assert_awaited_once_with(OWNER, "arn:rt")
+    world["stop"].assert_awaited_once_with(OWNER, settings.HERMES_SHARED_RUNTIME_ARN)
     world["lease"].assert_called_once()
     world["finish"].assert_called_once()
     assert await cli_cutover.cli_cutover(OWNER, "x") == "already"

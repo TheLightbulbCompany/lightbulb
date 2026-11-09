@@ -662,3 +662,76 @@ async def test_has_active_oauth_false_when_pending(oauth_table):
         Item={"user_id": {"S": "u_1"}, "state": {"S": "pending"}},
     )
     assert await oauth_service.has_active_oauth(user_id="u_1", bound_to="u_1") is False
+
+
+@pytest.mark.asyncio
+async def test_poll_refuses_changed_workspace_before_exchange(oauth_table):
+    from core.services.oauth_service import OAuthBoundElsewhereError
+
+    oauth_service._table().put_item(
+        Item={
+            "user_id": "u_scope",
+            "state": "pending",
+            "bound_owner_id": "org_original",
+            "device_auth_id": "device",
+            "user_code": "code",
+        }
+    )
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as exchange:
+        with pytest.raises(OAuthBoundElsewhereError):
+            await poll_device_code(user_id="u_scope", authorized_owner_id="org_other")
+    exchange.assert_not_awaited()
+    assert oauth_service._table().get_item(Key={"user_id": "u_scope"})["Item"]["state"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_poll_keeps_existing_tokens_without_exchange(oauth_table):
+    oauth_service._table().put_item(
+        Item={
+            "user_id": "u_duplicate",
+            "state": "active",
+            "bound_owner_id": "org_original",
+            "account_id": "acc",
+            "encrypted_tokens": "preserved",
+        }
+    )
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as exchange:
+        result = await poll_device_code(user_id="u_duplicate", authorized_owner_id="org_original")
+    exchange.assert_not_awaited()
+    assert result.account_id == "acc"
+    assert oauth_service._table().get_item(Key={"user_id": "u_duplicate"})["Item"]["encrypted_tokens"] == "preserved"
+
+
+@pytest.mark.asyncio
+async def test_stale_completion_cannot_overwrite_new_device_session(oauth_table):
+    table = oauth_service._table()
+    table.put_item(
+        Item={
+            "user_id": "u_stale",
+            "state": "pending",
+            "bound_owner_id": "org_original",
+            "device_auth_id": "old",
+            "user_code": "code",
+        }
+    )
+
+    async def complete_then_replace(self, url, **kwargs):
+        if "deviceauth/token" in str(url):
+            return _ok({"authorization_code": "ac", "code_verifier": "v"}, str(url))
+        table.put_item(
+            Item={
+                "user_id": "u_stale",
+                "state": "pending",
+                "bound_owner_id": "org_original",
+                "device_auth_id": "new",
+                "user_code": "new-code",
+            }
+        )
+        return _ok({"access_token": "eyJ.x.y", "refresh_token": "rt", "account_id": "acc"}, str(url))
+
+    with patch.object(httpx.AsyncClient, "post", new=complete_then_replace):
+        with pytest.raises(OAuthExchangeFailedError, match="session changed"):
+            await poll_device_code(user_id="u_stale", authorized_owner_id="org_original")
+    row = table.get_item(Key={"user_id": "u_stale"})["Item"]
+    assert row["device_auth_id"] == "new"
+    assert "encrypted_tokens" not in row

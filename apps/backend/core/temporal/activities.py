@@ -202,10 +202,13 @@ async def _frames_target(tree: dict) -> dict | None:
 
 
 async def _agent_for(ws: str, task: dict) -> str:
-    """The specialist's agent id when it is one of this workspace's agents, else Lightbulb's (the CEO)."""
+    """Choose a new attempt's explicit specialist, otherwise its conversation's front door."""
     spec = task.get("specialist")
     if spec and spec in {a["id"] for a in await messaging.load_agent_roster(ws)}:
         return spec
+    room = ts.task_room_id(task["taskId"])
+    if await messaging_repo.get_room(room) is not None:
+        return await task_conversation.front_agent_id(ws, room_id=room)
     return await task_conversation.front_agent_id(ws)
 
 
@@ -292,6 +295,14 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
         await _move(ws, task_id, "working", fields={"attemptCount": last["n"]})
         await _announce(ws, task_id, "working")
         return AttemptRef(last["n"], last["runId"])
+    if not attempts:
+        initial = await task_asks.initial_question(ws, tree["task"])
+        if initial is not None:
+            if initial.state != "answered":
+                return AttemptRef(0, "", initial)  # no Attempt row, no Worker before the canonical answer
+            if not initial.answered_trigger_id:
+                raise ValueError("initial_question_has_no_answer_trigger")
+            input_trigger_ids = list(dict.fromkeys([*input_trigger_ids, initial.answered_trigger_id]))
     n = len(attempts) + 1
     kind = await _session_kind(ws)
     att, _ = await tasks_repo.put_attempt(
@@ -563,7 +574,7 @@ async def _react(ws: str, ref: dict, emoji: str) -> None:
                 ws,
                 ref["roomId"],
                 msg["messageSeq"],
-                await task_conversation.front_agent_id(ws),
+                await task_conversation.front_agent_id(ws, room_id=ref["roomId"]),
                 emoji,
                 True,
                 member_kind="agent",
@@ -781,6 +792,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         "who": None,
         "where": None,
         "meetingChat": bool(ref.get("meetingBotId")),
+        "meetingFollowups": "meetingFollowups" in ref,
         "caller": ref.get("origin") == "phone_contact",  # a phone caller's line: fenced as data in the batch
     }
     if ref.get("roomId") and ref.get("messageId"):
@@ -805,7 +817,7 @@ async def _recent_lines(ws: str, trig: dict, batch: set[str], lane: str, user_id
     msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"])
     if not msg or not msg.get("messageSeq"):
         return []
-    front = await task_conversation.front_agent_id(ws)
+    front = await task_conversation.front_agent_id(ws, room_id=ref["roomId"])
     seq = int(msg["messageSeq"])
     if ref.get("threadRoot"):  # a follow-up in a thread ("make it shorter") sees its thread, not the room
         rows = (await messaging_repo.list_thread(ref["roomId"], ref["threadRoot"], seq))[-_RECENT:]
@@ -899,17 +911,42 @@ async def _meter_router(ws: str, user_id: str | None, status: runtime_runs.RunSt
 
 
 async def _router_identity(ws: str, inp: RouterTurnIn, scope: str, call: bool = False) -> runtime_runs.RunIdentity:
+    row = await tasks_repo.get_router_identity(ws, inp.batch_id)
+    if row is None:
+        # trigger_scope preserves a canonical room id; outside conversations are r:<hash>.
+        agent = (
+            await task_conversation.front_agent_id(ws)
+            if scope.startswith("r:")
+            else await task_conversation.front_agent_id(ws, room_id=scope)
+        )
+        row = await tasks_repo.claim_router_identity(
+            ws, inp.batch_id, agent_id=agent, lane=inp.lane, scope=scope, model=await _cheap_model(ws), call=call
+        )
+    expected = {
+        "ownerId": ws,
+        "batchId": inp.batch_id,
+        "runId": ts.router_run_id(ws, inp.batch_id),
+        "lane": inp.lane,
+        "scope": scope,
+        "call": call,
+    }
+    if (
+        any(row.get(k) != v for k, v in expected.items())
+        or not isinstance(row.get("agentId"), str)
+        or not row["agentId"]
+    ):
+        raise RuntimeError("Router batch identity does not match its authorized scope.")
     return runtime_runs.RunIdentity(
-        ts.router_run_id(ws, inp.batch_id),
+        row["runId"],
         ws,
         inp.batch_id,
         1,
-        await task_conversation.front_agent_id(ws),
+        row["agentId"],
         mode="router",
         lane=inp.lane,
-        room=ts.router_room_key(scope),  # the batch's conversation: a batch is one (lane, trigger_scope)
-        model=await _cheap_model(ws),
-        call=call,  # a phone caller's batch: the bridge adds transfer_call
+        room=ts.router_room_key(scope),
+        model=row.get("model"),
+        call=call,
     )
 
 
@@ -928,12 +965,22 @@ async def _router_run(
     Returned still running, unmetered, once `settled(status)` holds: the decisions are in and the rest of the run
     is the Router's closing word, so the ack need not wait for it (`_finish_router_run` meters it)."""
     identity = await _router_identity(ws, inp, scope, call)
+    from core.services import meeting_context
+
+    context_triggers = []
+    for trigger_id in inp.trigger_ids:
+        trigger = await tasks_repo.get_trigger(ws, trigger_id)
+        if trigger and "meetingFollowups" in (trigger.get("ref") or {}):
+            await meeting_context.authorize(ws, trigger)
+            context_triggers.append(trigger_id)
+    grant = meeting_context.mint_grant(ws, identity.run_id, context_triggers) if context_triggers else None
     request = runtime_runs.RunRequest(
         input=prompt,
         instructions=router_prompt.ROUTER_INSTRUCTIONS,
         max_iterations=ROUTER_MAX_ITERATIONS,
         run_budget_seconds=ROUTER_BUDGET_S,
         memory=memory,
+        context_grant=grant,
     )
     try:
         try:
@@ -1083,10 +1130,18 @@ async def _work_origin(ws: str, task_id: str, trig: dict, parent_id: str | None)
 
 async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str, **fields) -> dict:
     """The task a decision names, created once (deterministic id) with its room and memory card."""
+    ref = trig.get("ref") or {}
+    if "meetingFollowups" in ref:
+        from core.services import meeting_context, meeting_followups
+
+        await meeting_context.authorize(ws, trig)  # recheck after model work and on a retried start
     existing = await tasks_repo.get_task(ws, task_id)
     if existing:
+        if fields.get("initialQuestion") is not None and existing.get("initialQuestion") != fields["initialQuestion"]:
+            raise ValueError("initial_question_binding_changed")
+        if "meetingFollowups" in ref:
+            await meeting_followups.record_task(ws, existing)
         return existing
-    ref = trig.get("ref") or {}
     actor = trig.get("actorUserId")
     room = ts.trigger_room(trig)
     private = lane != "shared"
@@ -1143,6 +1198,8 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     row, _ = await tasks_repo.create_task(ws, row)
     await task_conversation.ensure_task_room(ws, row)
     await memory_tasks_index.index_task(ws, row)  # memory (M5)
+    if "meetingFollowups" in ref:
+        await meeting_followups.record_task(ws, row)
     return row
 
 
@@ -1184,7 +1241,7 @@ async def _apply(
     routed_to: dict[str, list[str]] = {}  # every trigger a start or pass_through covers → its tasks, in order
 
     def slot(tid: str) -> dict:
-        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "passes": [], "acks": set()})
+        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "passes": [], "acks": set(), "asks": {}})
 
     def ack(sl: dict, line: str | None) -> None:
         """One ack line per trigger: several start/pass_through decisions on one ask are one message with
@@ -1277,7 +1334,31 @@ async def _apply(
             else:
                 sl["react"] = True
         elif isinstance(dec, ts.Ask):
-            sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
+            if "meetingFollowups" in (trig.get("ref") or {}):
+                from core.services import meeting_followups
+
+                task_id = ts.router_task_id(inp.batch_id, i, 0)
+                brief, question = await meeting_followups.clarification(ws, trig, task_id, dec.text, dec.options)
+                initial = await task_asks.prepare_initial_question(ws, task_id, trig["actorUserId"], inp.lane, question)
+                task = await _ensure_task(
+                    ws,
+                    task_id,
+                    trig,
+                    inp.lane,
+                    "queued",
+                    title="Clarify meeting follow-up",
+                    description=brief,
+                    initialQuestion=initial,
+                )
+                await task_asks.open_ask(ws, task, **question)  # gate BEFORE card/subscription exposure
+                sl["asks"][task_id] = question
+                sl["refs"].append({"taskId": task_id, "role": "started"})
+                sl["starts"].append(task_id)
+                sl["lines"].append("A meeting follow-up needs your answer in Needs You.")
+                for tid in dec.trigger_ids:
+                    routed_to.setdefault(tid, []).append(task_id)
+            else:
+                sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
             if primary not in carded:
                 replies.append(
@@ -1335,7 +1416,9 @@ async def _apply(
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
             try:
-                if ref.get("ask"):  # a phone call's Question (voice_phone.call_ask): the task waits on it, no attempt
+                if task_id in sl["asks"]:
+                    pass  # completion's persisted startup gate and Question were installed before the card
+                elif ref.get("ask"):
                     await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **ref["ask"])
                 else:
                     await temporal_client.start_task_workflow(ws, task_id, "router")

@@ -71,6 +71,7 @@ describe("BillingPanel — workspace billing", () => {
     clerk.membership = { role: "org:admin" };
     billing.isLoading = false;
     billing.refresh.mockClear();
+    billing.startCheckout.mockReset().mockResolvedValue(undefined);
   });
 
   it("refreshes billing immediately when Settings is the Checkout success target", () => {
@@ -160,14 +161,21 @@ describe("BillingPanel — workspace billing", () => {
     expect(screen.queryByText(/seats?/i)).not.toBeInTheDocument();
   });
 
-  it("unsubscribed org renders the plan chooser", () => {
+  it("an unsubscribed org offers two providers and one workspace subscription checkout", async () => {
     billing.isSubscribed = false;
     billing.account = null;
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /^continue/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "OpenRouter managed" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sign in with ChatGPT" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Subscribe to workspace plan" })).toHaveLength(1);
     expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Subscribe to workspace plan" }));
+    });
+    expect(billing.startCheckout).toHaveBeenCalledExactlyOnceWith("workspace", false, "managed_onboarding");
   });
 
   it("a non-admin member of a subscribed workspace sees no billing controls", () => {
@@ -273,15 +281,18 @@ describe("BillingPanel — org trial_local conversion", () => {
 
     render(<SettingsPage />);
 
-    // One plan, not marked current on the trial; its button starts it.
-    expect(screen.getByTestId("plan-chooser")).toBeInTheDocument();
+    // Two inference choices share one workspace subscription checkout.
+    expect(screen.getByRole("heading", { name: "OpenRouter managed" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sign in with ChatGPT" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Subscribe to workspace plan" })).toHaveLength(1);
     expect(screen.queryByText("Current plan")).toBeNull();
     expect(screen.queryByText(/Ultra|Base/)).toBeNull();
     expect(screen.queryByRole("button", { name: /subscribe workspace|upgrade to base/i })).toBeNull();
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Continue for $50 a month" }));
+      fireEvent.click(screen.getByRole("button", { name: "Subscribe to workspace plan" }));
     });
-    expect(billing.startCheckout).toHaveBeenCalledWith("workspace", false);
+    expect(billing.startCheckout).toHaveBeenCalledExactlyOnceWith("workspace", false, "managed_onboarding");
     // The Bedrock card is gone (#2932); managed inference shows only when available.
     expect(screen.queryByText(/managed Claude inference/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Create or select a workspace/i)).not.toBeInTheDocument();

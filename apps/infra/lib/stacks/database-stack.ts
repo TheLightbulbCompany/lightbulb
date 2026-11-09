@@ -495,6 +495,21 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
     });
 
+    // Stage 1 of the approved marketplace retirement. Deploy this policy change
+    // while the five resources still exist in the template; only then remove
+    // their constructs. Otherwise prod's previous RETAIN policy orphans them.
+    // Workspace identities, provisioning records and every other table keep
+    // their existing per-environment retention policy.
+    for (const table of [
+      this.marketplaceListingsTable,
+      this.marketplacePurchasesTable,
+      this.marketplacePayoutAccountsTable,
+      this.marketplaceTakedownsTable,
+      this.marketplaceSellersTable,
+    ]) {
+      table.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    }
+
     // Launch Competition waitlist.
     // Waitlist rows are keyed by lowercased email — the join to an account is
     // users.email (written by the Clerk user.created webhook). The counter row

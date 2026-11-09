@@ -43,6 +43,8 @@ export interface Knowledge { q: string; a: string; source?: string }
 export type Day = { open: string; close: string; closed?: boolean };
 
 export interface AgentConfig {
+  /** Existing worker UUID that greets people; null uses the stable workspace default. */
+  frontAgentId?: string | null;
   name: string; greeting: string; voice: string; spanish: boolean; live: boolean; paused: boolean;
   allow: { book: boolean; move: boolean; waitlist: boolean; greetByName: boolean; answer: boolean };
   knowledge: Knowledge[]; toAdd: string[]; instructions: string;
@@ -58,7 +60,7 @@ export interface AgentConfig {
   /** Onboarding step 4, stored by POST /voice/number; Go live reads it. */
   numberChoice?: { path: "keep" | "new"; areaCode?: string | null; carrier?: string | null; mode?: "missed" | "all" | null };
   handoff: { number: string; onlyOpenHours: boolean };
-  meetings: { followUps: boolean; emailNotes: boolean };
+  meetings: { followUps: boolean };
   reminders: { dayBefore: boolean; missedCallers: boolean; waitlist: boolean };
   /** Past the included minutes: keep answering at the overage rate, or send calls to the owner's phone. */
   runOut?: "keep" | "forward";
@@ -69,7 +71,7 @@ export interface AgentConfig {
 export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
 export const DEFAULT_CONFIG: AgentConfig = {
-  name: "", greeting: "", voice: "Warm", spanish: false, live: false, paused: false,
+  name: "", greeting: "", voice: "marin", spanish: false, live: false, paused: false,
   allow: { book: true, move: true, waitlist: true, greetByName: true, answer: true },
   knowledge: [], toAdd: [], instructions: "",
   hours: Object.fromEntries(DAYS.map((d) => [d, { open: "09:00", close: "18:00", closed: d === "Sun" }])),
@@ -78,7 +80,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   bookingsGo: "own", otherSystem: "",
   number: "", forwardFrom: "",
   handoff: { number: "", onlyOpenHours: true },
-  meetings: { followUps: true, emailNotes: true },
+  meetings: { followUps: true },
   reminders: { dayBefore: true, missedCallers: false, waitlist: false },
 };
 
@@ -92,15 +94,18 @@ export const nameOf = (c?: Partial<AgentConfig> | null) => c?.name?.trim() || LI
 export function useAgentConfig() {
   const api = useApi();
   const swr = useSWR("/voice/agent", async () => {
-    const { config } = (await api.get("/voice/agent")) as { config: Partial<AgentConfig> | null };
-    return { config: { ...DEFAULT_CONFIG, ...config } as AgentConfig, isNew: config == null };
+    const { config, agents = [], frontAgentId, frontAgentIssue } = (await api.get("/voice/agent")) as {
+      config: Partial<AgentConfig> | null; agents?: { id: string; name: string }[]; frontAgentId?: string | null; frontAgentIssue?: string | null;
+    };
+    return { config: { ...DEFAULT_CONFIG, ...config } as AgentConfig, isNew: config == null, agents, frontAgentId, frontAgentIssue };
   });
   const { mutate } = swr;
   const save = useCallback(async (next: AgentConfig) => {
-    await mutate({ config: next, isNew: false }, { revalidate: false });
     await api.put("/voice/agent", { config: next });
+    await mutate((current) => ({ config: next, isNew: false, agents: current?.agents ?? [],
+      frontAgentId: next.frontAgentId ?? current?.frontAgentId, frontAgentIssue: undefined }), { revalidate: true });
   }, [api, mutate]);
-  return { data: swr.data?.config, isNew: swr.data?.isNew, error: swr.error, isLoading: swr.isLoading, save };
+  return { agents: swr.data?.agents ?? [], frontAgentId: swr.data?.frontAgentId, frontAgentIssue: swr.data?.frontAgentIssue, data: swr.data?.config, isNew: swr.data?.isNew, error: swr.error, isLoading: swr.isLoading, save };
 }
 
 /** The workspace's own team address, the one a Meet invite reaches (GET /agent-mail/address `invite_address`). */

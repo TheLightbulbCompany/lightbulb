@@ -260,3 +260,8 @@ def test_every_stop_goes_through_the_helper():
         if re.search(r"_stop_runtime_session\b|\.stop_runtime_session\(\s*agentRuntimeArn", text):
             offenders.append(rel)
     assert offenders == []
+
+
+@pytest.fixture(autouse=True)
+def _canonical_pool_configured(monkeypatch):
+    monkeypatch.setattr("core.config.settings.HERMES_SHARED_RUNTIME_ARN", "arn:runtime/x")

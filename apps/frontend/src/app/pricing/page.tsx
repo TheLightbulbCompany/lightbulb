@@ -24,8 +24,8 @@ export async function generateMetadata() {
     title: "Pricing — Lightbulb",
     description: p
       ? `$${p.teamPriceUsd} a month for your workspace, up to ${p.includedMembers} people, then $${p.seatPriceUsd} a person. ` +
-        `Managed AI at provider price × ${p.managedMarkup}, or bring your own. ${p.trialDays} days free.`
-      : "One price for the workspace and your first people, then a per-person price. Managed AI, or bring your own.",
+        `Lightbulb-managed AI at provider price × ${p.managedMarkup}, or sign in with ChatGPT. ${p.trialDays} days free.`
+      : "One price for the workspace and your first people, then a per-person price. Choose Lightbulb-managed AI or sign in with ChatGPT.",
     path: "/pricing",
   });
 }

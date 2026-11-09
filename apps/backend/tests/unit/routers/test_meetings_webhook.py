@@ -1,6 +1,7 @@
 """Recall's status webhook drives the meeting room; realtime speaker events reach LiveKit; the
 worker's idle leave pulls the bot."""
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -170,16 +171,79 @@ def test_call_ended_closes_the_room_once(env):
     assert owner == "org_a" and seconds > 0
 
 
-def test_meeting_reports_original_duration_once_across_end_callback_retries(env):
+def test_meeting_retries_reuse_original_usage_event_after_terminal_write(env):
     start = 1790980000
     env["meta"]["meeting"].update(status="in_call", inCallAt=start)
     stamp = datetime.fromtimestamp(start + 160, timezone.utc).isoformat()
     assert _post(env["client"], _at_time(_status("call_ended"), stamp)).status_code == 200
     assert _post(env["client"], _at_time(_status("done"), None)).status_code == 200
     assert _post(env["client"], _at_time(_status("call_ended"), None)).status_code == 200
-    env["reported_minutes"].assert_awaited_once_with(
-        "org_a", f"meeting:{ROOM}:{start}", datetime.fromtimestamp(start, timezone.utc).isoformat(), 160, "meeting"
+    expected = (
+        "org_a",
+        f"meeting:{ROOM}:{start}",
+        datetime.fromtimestamp(start, timezone.utc).isoformat(),
+        160,
+        "meeting",
     )
+    assert [call.args for call in env["reported_minutes"].await_args_list] == [expected, expected, expected]
+
+
+@pytest.mark.asyncio
+async def test_failed_first_meeting_meter_admission_is_retried_from_frozen_ended_fields(env):
+    start = 1790980000
+    env["meta"]["meeting"].update(status="in_call", inCallAt=start)
+    env["reported_minutes"].side_effect = [RuntimeError("messaging table unavailable"), None]
+
+    with pytest.raises(RuntimeError, match="not durably admitted"):
+        await mod._on_status("bot-1", ROOM, "call_ended", "call_ended_by_host")
+    assert env["meta"]["meeting"]["status"] == "ended"
+    await mod._on_status("bot-1", ROOM, "done", "call_ended_by_host")
+
+    expected = (
+        "org_a",
+        f"meeting:{ROOM}:{start}",
+        datetime.fromtimestamp(start, timezone.utc).isoformat(),
+        max(0, int(env["meta"]["meeting"]["endedAt"]) - start),
+        "meeting",
+    )
+    assert [call.args for call in env["reported_minutes"].await_args_list] == [expected, expected]
+
+
+@pytest.mark.asyncio
+async def test_failed_meeting_admission_cannot_advance_series_before_terminal_retry(env):
+    start = 1790980000
+    env["meta"]["meeting"].update(status="in_call", inCallAt=start, recurrence={"frequency": "weekly"})
+    env["reported_minutes"].side_effect = [RuntimeError("outbox unavailable"), None]
+    notes_finished = asyncio.Event()
+    notes_calls = 0
+
+    async def notes_then_advance(_room_id):
+        nonlocal notes_calls
+        notes_calls += 1
+        await env["advance"](ROOM)
+        notes_finished.set()
+
+    env["notes"].side_effect = notes_then_advance
+
+    with pytest.raises(RuntimeError, match="not durably admitted"):
+        await mod._on_status("bot-1", ROOM, "call_ended", "call_ended_by_host")
+    await asyncio.sleep(0)  # let any incorrectly queued notes work run
+    assert env["advance"].call_count == 0
+    assert notes_calls == 0
+
+    # Recall's terminal redelivery retries the same frozen occurrence before releasing notes.
+    await mod._on_status("bot-1", ROOM, "done", "call_ended_by_host")
+    await asyncio.wait_for(notes_finished.wait(), timeout=1)
+    assert notes_calls == 1
+    env["advance"].assert_called_once_with(ROOM)
+    expected = (
+        "org_a",
+        f"meeting:{ROOM}:{start}",
+        datetime.fromtimestamp(start, timezone.utc).isoformat(),
+        max(0, int(env["meta"]["meeting"]["endedAt"]) - start),
+        "meeting",
+    )
+    assert [call.args for call in env["reported_minutes"].await_args_list] == [expected, expected]
 
 
 @pytest.mark.asyncio
@@ -385,7 +449,8 @@ def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
     leave.assert_awaited_once_with("bot-1")
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
-    env["reported_minutes"].assert_awaited_once()
+    assert env["reported_minutes"].await_count == 2
+    assert env["reported_minutes"].await_args_list[0] == env["reported_minutes"].await_args_list[1]
     # The call_ended found the notes not yet done and asked too; on_ended's own claim makes it one run.
     assert env["notes"].call_args_list == [((ROOM,),), ((ROOM,),)]
 

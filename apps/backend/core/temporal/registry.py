@@ -9,11 +9,18 @@ from core.temporal import (
     learning,
     rules_activities,
     task_questions,
+    voice_usage_notices,
     watches,
     workflows,
 )
 
-ALL_WORKFLOWS = [*health.WORKFLOWS, *workflows.WORKFLOWS, *automations.WORKFLOWS, *learning.WORKFLOWS]
+ALL_WORKFLOWS = [
+    *health.WORKFLOWS,
+    *workflows.WORKFLOWS,
+    *automations.WORKFLOWS,
+    *learning.WORKFLOWS,
+    *voice_usage_notices.WORKFLOWS,
+]
 ALL_ACTIVITIES = [
     *health.ACTIVITIES,
     *activities.ACTIVITIES,
@@ -21,6 +28,7 @@ ALL_ACTIVITIES = [
     *rules_activities.ACTIVITIES,
     *automations.ACTIVITIES,
     *learning.ACTIVITIES,
+    *voice_usage_notices.ACTIVITIES,
     watchdog.reconcile_state,  # the watchdog's reconcile start reads task state on the main queue
     *watches.ACTIVITIES,
 ]

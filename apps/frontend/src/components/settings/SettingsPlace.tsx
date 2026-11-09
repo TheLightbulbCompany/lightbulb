@@ -14,6 +14,7 @@ import { useAuth, useUser, useOrganization, useClerk } from "@clerk/nextjs";
 import { useApi, ApiError, BACKEND_URL } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
+import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
 import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
@@ -464,7 +465,7 @@ function BillingPanel() {
             endLabel={trialEndLabel}
           />
         )}
-        <PlanChooser account={account} subscribed={false} startCheckout={startCheckout} />
+        <ProviderPicker isOrg={isOrgContext} embedded source="settings_billing" />
       </div>
     );
   }
@@ -507,6 +508,17 @@ function BillingPanel() {
           <div style={{ marginTop: 14 }}>
             <PlanChooser account={account} subscribed startCheckout={startCheckout} />
           </div>
+          {isSubscribed && (
+            <div style={{ marginTop: 24, borderTop: "1px solid var(--edge)", paddingTop: 20 }}>
+              <ProviderPicker
+                isOrg
+                embedded
+                heading="Inference provider"
+                subheading="Choose the provider your agents use. ChatGPT subscriptions are separate from your Lightbulb workspace plan."
+                source="settings_billing"
+              />
+            </div>
+          )}
         </div>
       </div>
     );
@@ -567,6 +579,17 @@ function BillingPanel() {
         {(isSubscribed || isTrialLocal) && (
           <div style={{ marginTop: 14 }}>
             <PlanChooser account={account} subscribed={isSubscribed} startCheckout={startCheckout} />
+          </div>
+        )}
+        {isSubscribed && (
+          <div style={{ marginTop: 24, borderTop: "1px solid var(--edge)", paddingTop: 20 }}>
+            <ProviderPicker
+              isOrg={false}
+              embedded
+              heading="Inference provider"
+              subheading="Choose the provider your agents use. ChatGPT subscriptions are separate from your Lightbulb workspace plan."
+              source="settings_billing"
+            />
           </div>
         )}
       </div>

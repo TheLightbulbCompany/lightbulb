@@ -40,7 +40,9 @@ async def test_grid_reports_each_rows_own_status():
     by_owner = {g["owner_id"]: g for g in grid}
     assert by_owner["org_a"]["status"] == "running"
     assert by_owner["org_b"]["status"] == "error"
-    assert by_owner["org_a"]["runtime_arn"] == _ARN
+    from core.config import settings
+
+    assert by_owner["org_a"]["runtime_arn"] == settings.HERMES_SHARED_RUNTIME_ARN
 
 
 @pytest.mark.asyncio

@@ -2,8 +2,8 @@
 
 The work FIFO carries outbox *pointers* (room dispatch / runtime operation), not
 message text, and ``maxReceiveCount`` is 360 — so anything that reaches the DLQ
-has failed for hours and is almost always a pointer the worker can never
-deserialize, sitting in front of a room's whole FIFO group.
+has exhausted retries. The current queue is configured for 30 receives; this
+tool is also used for newer pointer kinds such as durable voice usage events.
 
 Three modes, dry-run unless ``--apply`` is passed::
 
@@ -34,7 +34,7 @@ import subprocess
 import sys
 import uuid
 
-_KIND_LABELS = ("room_dispatch", "runtime_operation")
+_KIND_LABELS = ("room_dispatch", "runtime_operation", "voice_usage")
 
 
 def aws(*args: str) -> dict:
@@ -131,6 +131,8 @@ def describe(pointer: dict[str, str]) -> str:
         return f"kind=unknown (undeserializable pointer, keys={sorted(pointer)})"
     if kind == "runtime_operation":
         return f"kind=runtime_operation owner={pointer.get('ownerId')} operation={pointer.get('operationId')}"
+    if kind == "voice_usage":
+        return f"kind=voice_usage owner={pointer.get('ownerId')} transaction={pointer.get('transactionId')}"
     return (
         f"kind=room_dispatch room={pointer.get('roomId')} "
         f"agent={pointer.get('agentId')} seq={pointer.get('throughSeq')}"
@@ -230,6 +232,11 @@ def main(argv: list[str] | None = None) -> int:
                     "--message-deduplication-id",
                     uuid.uuid4().hex,
                 )
+        elif pointer.get("kind") == "voice_usage":
+            # A metering pointer owns financial data and must be redriven, never
+            # dropped through the generic maintenance path.
+            deletable = False
+            print(f"{prefix}  kept on the DLQ: voice usage must be redriven, not dropped")
         elif (target := cursor_target(pointer)) is not None:
             room_id, agent_id, through = target
             repo = CliRepo(table)

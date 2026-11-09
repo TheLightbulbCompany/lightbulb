@@ -146,10 +146,10 @@ describe("ChatErrorCard", () => {
       billing.account = paid(plan);
       render(<ChatErrorCard code="included_daily_cap" message="server copy" />);
       expect(screen.getByText(TITLE)).toBeInTheDocument();
-      expect(screen.getByText(/Pick a model provider — ChatGPT or your own key/)).toBeInTheDocument();
+      expect(screen.getByText(/Sign in with ChatGPT or choose OpenRouter managed/)).toBeInTheDocument();
       expect(screen.getByRole("link", { name: "Pick provider" })).toHaveAttribute(
         "href",
-        "/chat?panel=llm&action=change-provider",
+        "/settings?panel=billing",
       );
       expectNoTrialCopy();
     });

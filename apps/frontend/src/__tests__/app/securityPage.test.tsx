@@ -7,10 +7,10 @@ vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 import SecurityPage, { metadata } from "@/app/security/page";
 
 describe("/security", () => {
-  it("names the three provider paths and links the Privacy Policy", () => {
+  it("names the two selectable providers and legacy key compatibility, and links the Privacy Policy", () => {
     const { container } = render(<SecurityPage />);
     const text = container.textContent ?? "";
-    for (const path of ["Lightbulb-managed", "Your ChatGPT account", "Your own key"]) {
+    for (const path of ["Lightbulb-managed", "Your ChatGPT account", "Workspaces already configured with a saved OpenAI or Anthropic key"]) {
       expect(text).toContain(path);
     }
     expect(text).toContain("we do not use it to train AI models");

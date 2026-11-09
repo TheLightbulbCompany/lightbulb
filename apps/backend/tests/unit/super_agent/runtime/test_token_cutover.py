@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, patch
 import boto3
 import httpx
 import pytest
+
+from core.config import settings
 from cryptography.fernet import Fernet
 from moto import mock_aws
 
@@ -156,7 +158,7 @@ async def test_cutover_moves_s3_pair_into_row_with_version(world):
     assert auth["active_provider"] == "openai-codex"
     assert auth["providers"]["anthropic"] == {"tokens": {"api_key": "sk-x"}}  # other providers survive
     assert world["s3"].get_object(Bucket=BUCKET, Key=f"{OWNER}/hermes/auth.revision")  # bridges re-pull
-    world["stop"].assert_awaited_once_with(OWNER, ARN)
+    world["stop"].assert_awaited_once_with(OWNER, settings.HERMES_SHARED_RUNTIME_ARN)
     assert world["posted"] == []  # the verify vend is a fast-path read
     assert "waking_until" not in container_repo.get_session_sync(OWNER)  # wake lease released
     assert await token_custody.codex_cutover(OWNER) == "already"

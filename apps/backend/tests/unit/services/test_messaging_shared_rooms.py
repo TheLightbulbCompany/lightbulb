@@ -188,6 +188,7 @@ async def test_vendor_room_still_lets_admins_change_the_agents_listen_mode(vendo
         messaging, "require_room_member", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=agent))
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": agent["id"], "name": "CEO"}]))
     monkeypatch.setattr(messaging, "_resolved_member", AsyncMock(return_value={**agent, "listenMode": "active"}))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[agent]))
@@ -225,6 +226,7 @@ async def test_attachment_download_reads_the_rooms_owner_workspace_not_the_calle
 @pytest.mark.asyncio
 async def test_a_foreign_members_message_is_written_under_the_rooms_owner(monkeypatch):
     sender = _human("user_v", VENDOR)
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, sender)))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[sender]))
     monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
@@ -275,6 +277,7 @@ async def test_a_foreign_admin_can_only_add_the_rooms_own_org_members(monkeypatc
     admin = _human("user_v", VENDOR, "admin")
     agent_id = str(uuid.uuid4())
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, admin)))
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
     load_agent_roster = AsyncMock(return_value=[{"id": agent_id, "name": "CEO"}])
     monkeypatch.setattr(messaging, "load_agent_roster", load_agent_roster)

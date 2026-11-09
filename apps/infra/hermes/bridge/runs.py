@@ -145,9 +145,12 @@ def _create(headers: dict, body, *, caller: bool = False) -> tuple[int, dict]:
             turn.release_turn()
             return 200, status
         token = next((v for k, v in headers.items() if k.lower() == "x-lightbulb-local-session-token"), None)
+        # Ephemeral, like the local-session grant: only the thread gets it, never RUNS/S3/request hashing.
+        context_grant = next((v for k, v in headers.items() if k.lower() == "x-lightbulb-meeting-context-grant"), None)
         threading.Thread(
             target=_run_and_report,
-            args=(dict(identity, localSessionToken=token, runSecret=run_secret), dict(request)),
+            args=(dict(identity, localSessionToken=token, runSecret=run_secret,
+                       meetingContextGrant=context_grant if identity.get("mode") == "router" else None), dict(request)),
             daemon=True,
             name=f"task-run-{identity['runId']}",
         ).start()

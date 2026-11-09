@@ -434,3 +434,8 @@ class TestNotReadyRetry:
         with pytest.raises(httpx.ConnectError):
             await rt.request({"agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x", timeout_s=5.0)
         assert len(calls) == 1
+
+
+@pytest.fixture(autouse=True)
+def _canonical_pool_configured(monkeypatch):
+    monkeypatch.setattr("core.config.settings.HERMES_SHARED_RUNTIME_ARN", "arn:runtime/abc")

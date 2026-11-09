@@ -121,3 +121,23 @@ def test_a_queued_turn_never_touches_the_running_turns_context_file(home, posted
     with turn._turn_context_file("ceo", body["_turnContext"]):
         assert json.loads(path.read_text())["runId"] == body["run"]["runId"]
     assert not path.exists()
+
+
+def test_concurrent_router_context_grants_are_session_isolated_and_never_synced(home):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from bridge import sync
+
+    barrier = Barrier(2)
+    def read_own(index):
+        ctx = {"sessionKey": f"router-session-{index}", "runId": f"run-{index}",
+               "meetingContextGrant": f"private-grant-{index}"}
+        path = turn._turn_context_path(turn._profile_dir("ceo"), ctx["sessionKey"])
+        with turn._turn_context_file("ceo", ctx):
+            barrier.wait(timeout=5)
+            assert json.loads(path.read_text()) == ctx
+            assert sync.is_excluded(str(path.relative_to(turn._profile_dir("ceo"))))
+            barrier.wait(timeout=5)
+        assert not path.exists()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(read_own, (1, 2)))

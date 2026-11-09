@@ -383,3 +383,6 @@ export {
   automationKey, automationRunsKey, automationsKey, useAutomation, useAutomationRuns, useAutomations,
 } from "./tasks/useAutomations";
 export type { AutomationSource } from "./tasks/useAutomations";
+
+export { PHONE_VOICES, phoneVoice, voiceSamplePath } from "./voicePreferences";
+export type { PhoneVoice, SampleLanguage } from "./voicePreferences";

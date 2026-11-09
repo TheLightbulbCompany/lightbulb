@@ -328,7 +328,7 @@ export function PaywallScreen({
       {planLine(account) != null && <Text style={styles.price}>{planLine(account)}</Text>}
       <Text style={styles.caption}>
         Includes your six AI employees, their memory and email, the shared browser, the task board and the always-on
-        runtime. AI usage: bring your ChatGPT account or API key at no charge, or use Lightbulb credits at the
+        runtime. AI usage: sign in with your ChatGPT account, or use Lightbulb credits at the
         model&apos;s price plus 20%.
       </Text>
       {products.map((p) => {

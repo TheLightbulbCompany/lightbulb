@@ -41,9 +41,9 @@ import {
 import { useLiveEvents } from "../../../providers/live-events";
 
 // Provider/model/credit management is a multi-step, purchase-adjacent surface
-// (OAuth sign-in, BYO key entry, Stripe top-up). Per D1 the mobile app renders
+// (OAuth sign-in, legacy BYO-key display, Stripe top-up). Per D1 the mobile app renders
 // current state read-only and deep-links out to the web for any change.
-const MANAGE_LLM_URL = `${WEB_ORIGIN}/settings?panel=providers`;
+const MANAGE_LLM_URL = `${WEB_ORIGIN}/settings?panel=billing`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §7 + w2-billing-contract §2)
@@ -449,7 +449,7 @@ export default function LlmPanel() {
         {account.capped_today === true && (
           <Text style={styles.bodyText}>Daily allowance used — resets at 00:00 UTC</Text>
         )}
-        <ManageLink label="Manage provider on thelightbulb.company" />
+        <ManageLink label="Choose or change provider on thelightbulb.company" />
       </Card>
     );
   }

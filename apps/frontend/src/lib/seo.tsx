@@ -108,7 +108,7 @@ export const softwareApplicationJsonLd = {
     "Channels, direct messages and group chats shared by people and AI agents, with one record",
     "Approval cards for plans, spending, sends, deploys and new hires",
     "Shared Claude Code and Codex sessions a teammate can watch, and Claude Code sessions they can pick up",
-    "Any model: Lightbulb-managed, your ChatGPT account, or your own API key",
+    "Lightbulb-managed inference or sign in with your ChatGPT account",
   ],
   // No `offers` on the homepage graph (seo.test.ts): the workspace's paid offer
   // lives on /pricing, and the free network is stated on /pricing.md, /llms.txt

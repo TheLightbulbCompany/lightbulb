@@ -1442,7 +1442,7 @@ async def test_away_checks_ride_the_deadline_index_and_leave_it(table):
 
 def _switch_on(monkeypatch, org_name="Acme"):
     from core.repositories.workspace_repo import WorkspaceRepo
-    from core.services import messaging, task_conversation
+    from core.services import agent_registry, messaging
 
     starter_ids = {key: f"10000000-0000-4000-8000-00000000000{i}" for i, key in enumerate(messaging._STARTER_KEYS, 1)}
     ceo = starter_ids["ceo"]
@@ -1451,11 +1451,10 @@ def _switch_on(monkeypatch, org_name="Acme"):
         return SimpleNamespace(status="active", starter_agent_ids=starter_ids)
 
     monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", owner_row)
-    roster = [{"id": agent_id, "name": key} for key, agent_id in starter_ids.items()]
+    roster = [{"id": agent_id, "name": key, "status": "active"} for key, agent_id in starter_ids.items()]
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))
-    monkeypatch.setattr(messaging, "_front_agent_id", lambda _owner: asyncio.sleep(0, result=ceo))
-    monkeypatch.setattr(task_conversation, "front_agent_id", lambda _owner: asyncio.sleep(0, result=ceo))
+    monkeypatch.setattr(agent_registry, "roster", AsyncMock(return_value=roster))
     org = AsyncMock(return_value={"name": org_name})
     monkeypatch.setattr(messaging.clerk_admin, "get_organization", org)
     return messaging, ceo, org
@@ -1476,7 +1475,10 @@ async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_
     monkeypatch.setattr(repo, "create_room", create_room)
     general = await messaging.ensure_default_room(OWNER, USER_A)
     dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)
-    assert next(c for c in created if c["kind"] == "dm")["extra"] == {"firstRun": True}  # no gap without the flag
+    assert next(c for c in created if c["kind"] == "dm")["extra"] == {
+        "firstRun": True,
+        "frontAgentId": ceo,
+    }  # one atomic write
     org.return_value = {"name": "Acme Renamed"}
     for _ in range(2):
         (welcome,), _ = await repo.list_messages(dm, 0, 100)
@@ -1485,7 +1487,8 @@ async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_
             messaging.FIRST_RUN_KIND,
             messaging.FRONT_AGENT_NAME,
         )
-        assert (await repo.get_room(dm))["firstRun"] is True
+        dm_meta = await repo.get_room(dm)
+        assert dm_meta["firstRun"] is True and dm_meta["frontAgentId"] == ceo
         (line,), _ = await repo.list_messages(general, 0, 100)
         assert (line["text"], line["kind"]) == (messaging.team_welcome("Acme"), messaging.TEAM_WELCOME_KIND)
         assert await messaging.ensure_default_room(OWNER, USER_A) == general

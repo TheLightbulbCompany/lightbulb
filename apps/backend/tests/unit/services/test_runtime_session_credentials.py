@@ -146,6 +146,7 @@ def test_a_malformed_role_arn_sends_no_credentials_and_never_fails_the_invoke(st
 @pytest.mark.asyncio
 async def test_every_invoke_and_the_wake_carry_the_owners_credentials(sts, monkeypatch):
     captured = []
+    monkeypatch.setattr("core.repositories.container_repo.get_session_sync", lambda *a, **k: {})
 
     class Client(_Sts):
         def invoke_agent_runtime(self, **kwargs):

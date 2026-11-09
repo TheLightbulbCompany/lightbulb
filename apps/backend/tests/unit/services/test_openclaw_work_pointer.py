@@ -63,6 +63,23 @@ def test_network_wake_pointer_is_exact():
         deserialize_pointer(_record({**pointer, "ownerId": {"S": ""}}))
 
 
+def test_voice_usage_pointer_is_exact_and_owner_scoped():
+    pointer = {
+        "kind": {"S": "voice_usage"},
+        "ownerId": {"S": "org_1"},
+        "transactionId": {"S": "meeting-1"},
+    }
+    assert deserialize_pointer(_record(pointer)) == {
+        "kind": "voice_usage",
+        "ownerId": "org_1",
+        "transactionId": "meeting-1",
+    }
+    with pytest.raises(ValueError, match="invalid voice_usage pointer"):
+        deserialize_pointer(_record({**pointer, "ownerId": {"S": ""}}))
+    with pytest.raises(ValueError, match="invalid voice_usage pointer"):
+        deserialize_pointer(_record({**pointer, "unexpected": {"S": "value"}}))
+
+
 async def test_a_network_wake_invokes_network_wake_rpc(monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
@@ -77,3 +94,47 @@ async def test_a_network_wake_invokes_network_wake_rpc(monkeypatch):
     assert await worker._process_message({"Body": body, "ReceiptHandle": "rh"}) is True
     rpc.assert_awaited_once_with("org_1", "network.wake", {})
     sqs.delete_message.assert_called_once()
+
+
+async def test_voice_usage_work_is_acked_only_after_durable_delivery(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from core.services import openclaw_work as work
+
+    delivery = AsyncMock()
+    monkeypatch.setattr("core.billing.voice_billing.deliver_usage_event", delivery)
+    sqs = MagicMock()
+    worker = work.OpenClawWorkWorker(sqs_client=sqs)
+    body = _record(
+        {
+            "kind": {"S": "voice_usage"},
+            "ownerId": {"S": "org_1"},
+            "transactionId": {"S": "meeting-1"},
+        }
+    )
+
+    assert await worker._process_message({"Body": body, "ReceiptHandle": "rh"}) is True
+    delivery.assert_awaited_once_with("org_1", "meeting-1")
+    sqs.delete_message.assert_called_once()
+
+
+async def test_voice_usage_delivery_failure_leaves_fifo_message_for_retry(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from core.services import openclaw_work as work
+
+    delivery = AsyncMock(side_effect=RuntimeError("provider temporarily unavailable"))
+    monkeypatch.setattr("core.billing.voice_billing.deliver_usage_event", delivery)
+    sqs = MagicMock()
+    worker = work.OpenClawWorkWorker(sqs_client=sqs)
+    body = _record(
+        {
+            "kind": {"S": "voice_usage"},
+            "ownerId": {"S": "org_1"},
+            "transactionId": {"S": "meeting-1"},
+        }
+    )
+
+    assert await worker._process_message({"Body": body, "ReceiptHandle": "rh"}) is False
+    delivery.assert_awaited_once_with("org_1", "meeting-1")
+    sqs.delete_message.assert_not_called()

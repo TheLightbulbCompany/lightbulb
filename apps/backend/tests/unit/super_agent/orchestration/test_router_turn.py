@@ -60,7 +60,7 @@ def world(table, monkeypatch):  # noqa: F811
         w["rooms"].append(task["taskId"])
         return ts.task_room_id(task["taskId"])
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     async def roster(ws):
@@ -565,8 +565,7 @@ async def test_pinned_specialist_in_prompt(world):
     assert f"pinned specialist: Finance ({FIN})" in request.input
     assert "Sam: pay acme and book the flights" in request.input and "the channel #general" in request.input
     assert (
-        f"- {FIN} · Finance · Books and invoices" in request.input
-        and CEO not in request.input.split("## Specialists")[1]
+        f"- {FIN} · Finance · Books and invoices" in request.input and CEO in request.input.split("## Specialists")[1]
     )
     assert request.instructions == router_prompt.ROUTER_INSTRUCTIONS
     assert request.memory == {
@@ -1407,7 +1406,7 @@ def test_recurring_asks_are_automations_not_requests():
     Worker made an Active Paperclip routine in UTC, with no confirm card. The prompt listed five tools and not
     propose_automation, and said to start everything: recurring work is propose_automation, never start_task."""
     text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
-    assert "ignore, propose_automation, meeting_chat)" in text
+    assert "ignore, propose_automation, meeting_chat, meeting_context)" in text
     assert "Recurring work" in text and "propose_automation, never start_task" in text
 
 
@@ -1757,7 +1756,7 @@ async def test_react_sets_lightbulbs_reaction_and_shows_it_live(monkeypatch):
     async def publish(room_id, event):
         events.append((room_id, event["type"] if isinstance(event, dict) and "type" in event else event))
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     monkeypatch.setattr(acts.messaging_repo, "get_message_by_id", get_msg)
@@ -1909,3 +1908,109 @@ async def test_meeting_chat_tool_receipt_covers_trigger_without_spoken_fallback(
     result = await acts._apply(WS, RouterTurnIn(WS, "shared", BATCH, [tid]), {tid: trig}, [], "Done")
     assert world["posts"] == []
     assert result.started_task_ids == []
+
+
+async def test_meeting_reader_grant_names_only_actual_authorized_completion_batch(world, monkeypatch):
+    from core.services import meeting_context
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "x" * 32)
+    completion = await _trig(
+        "completion:batch", ref={"roomId": ROOM, "origin": "meeting", "meetingFollowups": {"requestId": "notes:1"}}
+    )
+    ordinary = await _trig("chat:ordinary")
+    await _trig(
+        "completion:private-other-room", ref={"roomId": "private", "meetingFollowups": {"requestId": "notes:2"}}
+    )
+    authorize = AsyncMock()
+    monkeypatch.setattr(meeting_context, "authorize", authorize)
+    inp = RouterTurnIn(WS, "shared", BATCH, [completion, ordinary])
+    await acts._router_run(WS, inp, "bounded prompt", {}, ROOM, SAM)
+    identity, request = world["runs"][0]
+    authorize.assert_awaited_once()
+    assert authorize.await_args.args[1]["triggerId"] == completion
+    meeting_context.verify_grant(request.context_grant, WS, identity.run_id, completion)
+    for forbidden in (ordinary, "completion:private-other-room"):
+        with pytest.raises(meeting_context.NotAuthorized):
+            meeting_context.verify_grant(request.context_grant, WS, identity.run_id, forbidden)
+    with pytest.raises(meeting_context.NotAuthorized):
+        meeting_context.verify_grant(request.context_grant, WS, "another-router-run", completion)
+    assert "context_grant" not in request.to_wire()
+
+
+async def test_meeting_context_revocation_prevents_router_launch(world, monkeypatch):
+    from core.services import meeting_context
+
+    completion = await _trig("completion:revoked", ref={"roomId": ROOM, "meetingFollowups": {"requestId": "notes:1"}})
+    monkeypatch.setattr(meeting_context, "authorize", AsyncMock(side_effect=meeting_context.NotAuthorized("revoked")))
+    with pytest.raises(meeting_context.NotAuthorized):
+        await acts._router_run(WS, RouterTurnIn(WS, "shared", BATCH, [completion]), "prompt", {}, ROOM, SAM)
+    assert world["runs"] == []
+
+
+@pytest.mark.asyncio
+async def test_ceo_frontdoor_remains_a_worker_that_can_receive_tasks(world):
+    trigger = await _trig("chat:ceo-worker")
+    world["decisions"] = [_start([trigger], specialist=CEO, title="Review the business plan")]
+    outcome = await _run([trigger])
+    assert len(outcome.started_task_ids) == 1
+    task = await repo.get_task(WS, outcome.started_task_ids[0])
+    assert task["specialist"] == CEO
+    assert world["starts"] == [(task["taskId"], "router")]
+
+
+async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or_plain_reply(world, monkeypatch):
+    from core.services import meeting_context, meeting_followups, questions
+
+    tid = await _trig(
+        "completion:clarify",
+        source="webhook",
+        ref={"roomId": ROOM, "origin": "meeting", "confirmAll": True, "meetingFollowups": {"requestId": "notes:1"}},
+    )
+    monkeypatch.setattr(meeting_context, "authorize", AsyncMock())
+    monkeypatch.setattr(meeting_followups, "record_task", AsyncMock(return_value=True))
+    question = {
+        "qid": questions.qid_for("meeting-clarification:" + ts.router_task_id(BATCH, 0, 0)),
+        "kind": "question",
+        "subkind": "question",
+        "title": "Clarify meeting follow-up",
+        "text": "Which report?",
+        "options": [],
+        "blocking": True,
+        "before_attempt": True,
+        "attempt": None,
+        "run_id": None,
+    }
+    monkeypatch.setattr(
+        meeting_followups, "clarification", AsyncMock(return_value=("Original meeting request and question", question))
+    )
+    from temporalio.testing import ActivityEnvironment
+    from core.temporal import task_questions
+    from core.repositories import questions_repo
+
+    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": SAM}]))
+
+    async def update(ws, task_id, name, ref):
+        assert name == "ask"
+        return await ActivityEnvironment().run(task_questions.open_asked_question, ws, task_id, ref)
+
+    monkeypatch.setattr(acts.temporal_client, "update_task", update)
+    opened = AsyncMock(wraps=acts.task_asks.open_ask)
+    monkeypatch.setattr(acts.task_asks, "open_ask", opened)
+    inp = RouterTurnIn(WS, "shared", BATCH, [tid])
+    decision = ts.Ask(kind="ask", trigger_ids=[tid], text="Which report?")
+    for _ in range(2):
+        out = await acts._apply(WS, inp, {tid: await repo.get_trigger(WS, tid)}, [decision], None)
+    task_id = ts.router_task_id(BATCH, 0, 0)
+    # _apply_decisions starts numbering at zero; the same decision replay names the same canonical task.
+    task = await repo.get_task(WS, task_id)
+    assert task and task["status"] == "queued" and task["ownerUserId"] == SAM
+    # This fixture runs the real Question row activity, not TaskWorkflow: only the Workflow owns waiting.
+    assert task["triggerId"] == tid and task["origin"] == "meeting" and task["confirmAll"] is True
+    assert task["audience"]["roomId"] == ROOM
+    assert world["starts"] == [] and world["runs"] == []
+    assert opened.await_count == 2 and opened.await_args.kwargs == question
+    assert out.started_task_ids == [task_id]
+    needs, _ = await questions_repo.needs_for_user(WS, SAM)
+    assert len(needs) == 1 and needs[0]["taskId"] == task_id
+    assert needs[0]["qid"] == question["qid"]
+    assert (await questions_repo.get_question(WS, task_id, question["qid"]))["answerers"] == [SAM]

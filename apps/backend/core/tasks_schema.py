@@ -118,6 +118,11 @@ def run_id(ws: str, task_id: str, n: int) -> str:
     return str(uuid.uuid5(RUN_NS, f"{ws}:{task_id}:{n}"))
 
 
+def router_identity_sk(batch_id: str) -> str:
+    """The immutable profile/session identity chosen before one Router batch starts."""
+    return f"ROUTERRUN#{batch_id}"
+
+
 def router_run_id(ws: str, batch_id: str) -> str:
     """A Router batch's bridge run id: a retried `router_turn` re-POSTs the same run (a replay)."""
     return str(uuid.uuid5(RUN_NS, f"{ws}:router:{batch_id}"))
@@ -133,7 +138,7 @@ def worker_session_key(agent_id: str, task_id: str) -> str:
 
 
 #: The Router's session on the workspace VM: one per lane (`shared` or `router_lane_key(user)`) and conversation
-#: (`router_room_key(trigger_scope(trig))`), on the CEO agent's profile. A Router run reads its session's previous
+#: (`router_room_key(trigger_scope(trig))`), on the selected front agent's profile. A Router run reads its session's previous
 #: conversation, so one room's batch never sees another room's, a DM's or an outside sender's. The room part is
 #: required: no key equals the old per-lane one, whose history mixed every room. The bridge checks keys against this
 #: (bridge/runs.py ROUTER_SESSION_KEY_RE).
@@ -475,6 +480,14 @@ class TaskOutput(Output):
     created_at: str
 
 
+class InitialQuestion(_Model):
+    """Server-owned immutable startup gate; text and authority stay with the existing Question owner."""
+
+    qid: str
+    trigger_id: str
+    principal_user_id: str
+
+
 class Task(_Row):
     type: Literal["task"] = "task"
     task_id: TaskId
@@ -497,6 +510,7 @@ class Task(_Row):
     origin: str | None = None
     previous_run_task_id: str | None = None  # an automation run's previous run (lane A chaining)
     confirm_all: bool = False  # started from a meeting: every spend, send or publish gets a card, in any mode
+    initial_question: InitialQuestion | None = Field(None, json_schema_extra={"readOnly": True})
     question: bool = False  # a question a Worker answers from the source: its answer is the chat reply, not an output
     hidden: bool = False  # §18 speculative work
     watch_until: str | None = None  # "Watching" when set

@@ -304,3 +304,11 @@ def test_session_search_passes_arguments_a_newer_hermes_adds(monkeypatch):
     tool, calls = _recall(monkeypatch)
     assert tool.session_search(query="pricing", db=_RecallDB(), current_session_id="child", after="2026-10-01") == "hermes"
     assert calls[0]["after"] == "2026-10-01" and calls[0]["profile"] is None
+
+
+def test_workspace_tool_retires_derived_search_before_backend_routes():
+    assert lightbulb.WORKSPACE_SCHEMA["parameters"]["properties"]["action"]["enum"] == [
+        "add_member", "set_listen_mode", "remove_member", "create_room", "update_room", "pin", "unpin",
+    ]
+    assert "search_messages" not in lightbulb.WORKSPACE_SCHEMA["description"]
+    assert "search_sessions" not in lightbulb.WORKSPACE_SCHEMA["description"]

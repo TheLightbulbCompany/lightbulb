@@ -10,10 +10,12 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
 
+import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
+
 type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment";
 
 export function AgentPage() {
-  const { data: config, error, save } = useAgentConfig();
+  const { data: config, error, save, agents = [], frontAgentId, frontAgentIssue } = useAgentConfig();
   const invite = useInviteAddress();
   const { organization } = useOrganization();
   const business = organization?.name || "your business";
@@ -65,6 +67,17 @@ export function AgentPage() {
       </div>
     </header>
 
+    <Sec title="Front-door agent" hint="Choose an existing worker to greet people as Lightbulb. Every agent stays on your team and can do work. New conversations use this choice; existing conversations keep their agent.">
+      <label className="vx-label">Receptionist
+        <select className="vx-field" value={c.frontAgentId ?? ""} onChange={(e) => set({ frontAgentId: e.target.value || null })}>
+          <option value="">Workspace default{!c.frontAgentId && frontAgentId ? ` · ${agents.find((a) => a.id === frontAgentId)?.name ?? "existing agent"}` : ""}</option>
+          {c.frontAgentId && !agents.some((a) => a.id === c.frontAgentId) && <option value={c.frontAgentId}>Unavailable agent — choose another</option>}
+          {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+      </label>
+      {frontAgentIssue && <p role="alert">{frontAgentIssue}</p>}
+    </Sec>
+
     <Sec title="Name & greeting">
       <label className="vx-label">Name (callers hear it; in a meeting you say &ldquo;{name}, …&rdquo;)
         <input className="vx-field" value={c.name} maxLength={40} placeholder="Lightbulb" onChange={(e) => set({ name: e.target.value })} /></label>
@@ -73,6 +86,8 @@ export function AgentPage() {
       <p className="vx-hint" style={{ color: "var(--fg-mute)", fontSize: "var(--text-caption)" }}>
         {name} always says its name, that it&apos;s an AI assistant and that the call is recorded.</p>
     </Sec>
+
+    <Sec title="Voice & language"><PhoneVoiceSettings c={c} set={set} /></Sec>
 
     <Sec title={`What ${name} may do for callers`} hint={`Anything unchecked, or anything it doesn't know: ${name} takes a message and puts it in Needs you.`}>
       <div>

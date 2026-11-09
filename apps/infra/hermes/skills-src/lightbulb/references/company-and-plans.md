@@ -101,13 +101,15 @@ days** reading-only, the owner gets a deletion notice before anything is
 deleted; nothing is deleted automatically. Never tell anyone their work will be
 lost when the trial ends.
 
-Inference runs on one of
-three provider paths chosen by the owner:
+New workspaces use one of two inference paths:
 **Lightbulb-managed** (DeepSeek within the plan's daily allowance; prepaid
 credits for more models are coming soon), **ChatGPT OAuth** (the owner's own
 OpenAI account — the workspace owner/admin who completed the connection is the
-only one who can manage it; one ChatGPT account per workspace), or **BYO API
-key** (owner's Anthropic/OpenAI key, billed by that provider).
+only one who can manage it; one ChatGPT account per workspace).
+
+Some existing workspaces were configured with a saved Anthropic or OpenAI key.
+They keep using that key, but new workspaces cannot select BYO and new keys
+cannot be added. Do not suggest API-key setup as a current option.
 
 **Never state the owner's plan or provider from memory.** Read
 `$HERMES_HOME/lightbulb-facts.json` — Lightbulb keeps it current:
@@ -124,9 +126,13 @@ key** (owner's Anthropic/OpenAI key, billed by that provider).
 ```
 
 If the file is missing or the owner says something that contradicts it,
-trust the owner and suggest they check thelightbulb.company/settings. Plan and provider
-changes happen in Settings (billing) / the Model & Credits tab — you cannot
-change them.
+trust the owner and suggest they check thelightbulb.company/settings. Plans are
+managed in Settings → Workspace billing at `/voice/settings`. Workspace admins
+choose Lightbulb-managed via OpenRouter or Sign in with ChatGPT there or during
+setup. Connecting ChatGPT authenticates the account; the saved provider changes
+only after the admin clicks **Use connected ChatGPT**. Cancelling sign-in keeps
+the current provider. Guide the admin through these controls; you cannot change
+the provider for them.
 
 ## Voice calls
 
@@ -172,3 +178,13 @@ For workspaces without the separate voice-agents plan:
 - Every other workspace gets 10 free minutes per workspace per UTC day, one
   free call at a time.
 - A call ends at 30 minutes, or sooner when the minutes or credits run out.
+
+
+### Front-door agent
+
+The owner can designate an existing active worker in the Agent settings on web or mobile.
+The default for a fresh roster is the saved CEO UUID, regardless of its edited name. A legacy
+roster keeps its existing root until the owner selects another agent. Every active agent stays
+available for work. The selection applies to new conversations; existing private conversations
+keep their agent. Existing texting-line bindings are preserved. An unavailable selected agent
+needs the owner to choose an active worker in Agent settings; another agent is not silently substituted.

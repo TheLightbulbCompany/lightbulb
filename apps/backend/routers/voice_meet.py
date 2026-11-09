@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext
 from core.config import settings
-from core.repositories import messaging_repo
+from core.repositories import messaging_repo, tasks_repo
 from core.services import livekit_huddles, meeting_bots, meeting_invites, messaging
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 
@@ -256,8 +256,6 @@ async def task_moved(task: dict, to: str) -> None:
     owner_id = str(task.get("pk") or "").removeprefix("WS#")
     if (
         task.get("origin") != "meeting"
-        or audience.get("kind") != "room"
-        or not room_id
         or not str(task.get("pk") or "").startswith("WS#")
         or not owner_id
         or status is None
@@ -276,6 +274,12 @@ async def task_moved(task: dict, to: str) -> None:
         )
 
     try:
+        from core.services import meeting_followups
+
+        if await meeting_followups.record_task(owner_id, {**task, "status": to}):
+            return  # completion work belongs to its original notes, never a newly active Meet
+        if audience.get("kind") != "room" or not room_id:
+            return  # live provider delivery remains room-only
         meta = (await messaging_repo.get_room(room_id)) or {}
         if meta.get("ownerId") != owner_id or not meta.get("meeting"):
             return
@@ -297,11 +301,18 @@ async def task_moved(task: dict, to: str) -> None:
             and status == "done"
             and meeting.get("status") == "in_call"
             and meeting.get("recallBotId")
+            and await _result_occurrence(task, room_id, {**meta, "meeting": meeting})
         ):
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task['taskId']}"
             await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
             await _tile_phase(room_id, "page_ready")
-        elif meeting and current_changed and status != "done" and meeting.get("status") == "in_call":
+        elif (
+            meeting
+            and current_changed
+            and status != "done"
+            and meeting.get("status") == "in_call"
+            and await _result_occurrence(task, room_id, {**meta, "meeting": meeting})
+        ):
             await _tile_phase(room_id, "drafting" if status == "working" else "")
     except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
         logger.warning("meet follow-up not updated task=%s to=%s", task.get("taskId"), to, exc_info=True)
@@ -309,6 +320,28 @@ async def task_moved(task: dict, to: str) -> None:
 
 def task_link(task_id: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task_id}"
+
+
+async def _result_occurrence(task: dict, room_id: str, meta: dict) -> tuple[str, int | float] | None:
+    """Provider delivery needs positive canonical provenance; an app result needs no live bot."""
+    owner_id = str(task.get("pk") or "").removeprefix("WS#")
+    if (
+        task.get("origin") != "meeting"
+        or not str(task.get("pk") or "").startswith("WS#")
+        or meta.get("ownerId") != owner_id
+    ):
+        return None
+    trigger = await tasks_repo.get_trigger(owner_id, task.get("triggerId")) if task.get("triggerId") else None
+    ref = (trigger or {}).get("ref") or {}
+    if ref.get("roomId") != room_id or ref.get("origin") != "meeting" or ref.get("meetingFollowups"):
+        return None
+    meeting = meta.get("meeting") or {}
+    bot, started = ref.get("meetingBotId"), ref.get("meetingInCallAt")
+    return (
+        (bot, started)
+        if bot and started and bot == meeting.get("recallBotId") and started == meeting.get("inCallAt")
+        else None
+    )
 
 
 async def with_link(room_id: str, task: dict, line: str) -> str:
@@ -321,18 +354,26 @@ async def with_link(room_id: str, task: dict, line: str) -> str:
         return line
     tid, linked = task["taskId"], f"{line} {task_link(task['taskId'])}"
     try:
-        meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting")
+        meta = (await messaging_repo.get_room(room_id)) or {}
+        meeting = meta.get("meeting")
     except Exception:  # noqa: BLE001 -- the line must still post
         logger.warning("meet room %s: room not read for the result link task=%s", room_id, tid, exc_info=True)
         return line
     if not meeting:
         return line
     try:
+        occurrence = await _result_occurrence(task, room_id, meta)
+        if occurrence is None:
+            return linked
+        bot, started = occurrence
         fresh = await meeting_invites._patch_meeting(
             room_id,
             lambda m: {"linksSaid": [*(m.get("linksSaid") or []), tid]},
             when=lambda m: (
-                m.get("status") == "in_call" and m.get("recallBotId") and tid not in (m.get("linksSaid") or [])
+                m.get("status") == "in_call"
+                and m.get("recallBotId") == bot
+                and m.get("inCallAt") == started
+                and tid not in (m.get("linksSaid") or [])
             ),
         )  # None: not in the call, or already said (a retried Activity)
         if fresh is not None:

@@ -349,8 +349,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/onboarding_brief.py (first_message_intake);
                                  apps/frontend/src/components/messaging/FirstReplyChips.tsx
   - The invite ask after the first run ... references/company-and-plans.md <- core/services/messaging.py ask_who_should_see (INVITE_ASK)
-  - Plans / providers ....... references/company-and-plans.md
-                              <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
+  - Plans / providers ....... references/company-and-plans.md (two selectable paths; BYO is legacy compatibility only)
+                              <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py;
+                                 apps/backend/routers/{billing,settings_keys}.py; apps/frontend/src/lib/providerCards.ts
                                  (billing_service.create_workspace_checkout: confirm=True to change a live plan; prorated onto the next invoice)
   - Trial end (recap, reading-only, pause, 90 days) ... references/company-and-plans.md ("How a trial ends")
                               <- apps/backend/core/services/{trial_recap,trial_lifecycle}.py;
@@ -363,6 +364,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);
                                  core/services/{voice_routing,voice_persona}.py (room-call routing; each agent speaks as itself in its own voice)
                                  routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; agents join only where one listens; addressed by name, "Lightbulb" or a tile)
+  - Phone voice / Spanish / stock samples ... references/voice.md ("Phone voice and Spanish")
+                              <- backend routers/{voice,voice_phone}.py + core/services/voice_preferences.py;
+                                 apps/huddle-agent/src/huddle_agent/{phone,live}.py;
+                                 frontend components/voice/PhoneVoiceSettings.tsx + native counterpart;
+                                 packages/shared/src/voicePreferences.ts + frontend public/voice-samples/
   - Voice requests .......... references/voice.md + SKILL.md routing row
                               <- apps/infra/hermes/bridge/server.py + turn.py (a voice run is locked and scoped on the room
                                  session key, lightbulb_session_key, and recorded in the call's own transcript,
@@ -448,7 +454,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Meetings (invite the team address) references/email.md ("Meetings")
                               <- backend core/services/meeting_invites.py (handle_team_mail: member's Meet invite -> hidden room with every agent, RSVP, bot; output_room; advance for series),
                                  meeting_bots.py (bot_name + chat event subscription), routers/meetings.py (Recall status, endedAt, roster relay + signed chat),
-                                 core/services/meeting_chat.py + plugins/lightbulb/router.py (meeting_chat tool; occurrence-scoped receipts), meeting_notes.py (transcript + notes run to the
+                                 core/services/meeting_chat.py + plugins/lightbulb/router.py (meeting_chat tool; occurrence-scoped receipts);
+                                 core/services/meeting_context.py + routers/runtime_internal.py (read-only meeting_context pages; immutable original principal and occurrence), meeting_notes.py (transcript + notes run to the
                                  default room by the CEO or a fallback agent in it, notesSkipped, app-only notes and occurrence history), voice_calls.post_late_answer (a Meet's unheard
                                  answers -> meeting.unsaid); who an agent answers in a Meet: apps/huddle-agent huddle.py (_mine, MEET_FOLLOWUP_S)
   - Teammates in a room ..... references/platform-primitives.md ("Teammates in a room") + SKILL.md non-negotiable + routing row
@@ -514,3 +521,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
 - Roster + connected integrations routing row ("Who is on the team?" / "What's connected?") — `references/boundaries.md` Quick answers; source: `core/services/owner_facts.py` (`teammates`, `connected_integrations`, #3851). Added 2026-10-08 after a dev check where the CEO answered a roster question from the room's member list.
 - Ask and count rules (SKILL.md, the two lines after "A person's decision is an approval in Needs you") — tool `ask_person` in `apps/infra/hermes/plugins/lightbulb/__init__.py`; the paperclip skill's `references/interactions.md` "When you need an answer, not a sign-off: ask_person". Added 2026-10-30 from G1's failures (comments nobody read; "3 open cards" with 55 open). The count rule points at the paperclip skill's list route; the `lightbulb_board` wrapper was removed 30 Oct (same route, same key). Test: `tests/test_ask_and_count_skill.py`.
 - Task handoffs (super-agent only) — `references/tasks.md`, deliberately NOT in SKILL.md's routing table: only a super-agent Worker run loads it, because its instructions name it (`WORKER_INSTRUCTIONS` in `apps/backend/core/temporal/activities.py`). Every other run keeps the Paperclip handoffs in platform-primitives.md, company-and-plans.md, software-projects.md. Added 2026-11-05 after #4760 rewrote the global text (skills are fleet-wide). Test: `apps/backend/tests/unit/super_agent/orchestration/test_task_board_signals.py::test_task_wording_is_super_agent_only`.
+
+- Front-door existing-worker selection and retained conversation identity: `references/company-and-plans.md`; `task_conversation.py`, `routers/voice.py`, web/mobile Agent settings.
+
+- Voice Settings/provider confirmation — references/surfaces.md and references/company-and-plans.md; anchors: VoiceSettings.tsx, chat/page.tsx, ProvisioningStepper.ProviderPicker and ChatGPTOAuthStep.tsx. Authentication and explicit provider confirmation are separate; cancellation preserves the saved provider.

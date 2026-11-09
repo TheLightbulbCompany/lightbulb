@@ -78,8 +78,10 @@ def test_change_provider_refuses_retired_bedrock_choices():
     from routers.billing import ChangeProviderRequest
 
     allowed = _literal_values(ChangeProviderRequest.model_fields["provider_choice"].annotation)
-    assert allowed == {"chatgpt_oauth", "byo_key", "openrouter_managed"}
-    assert allowed == _VALID_PROVIDER_CHOICES
+    assert allowed == {"chatgpt_oauth", "openrouter_managed"}
+    assert _VALID_PROVIDER_CHOICES == allowed | {"byo_key"}  # existing saved keys remain valid
+    with pytest.raises(ValueError):
+        ChangeProviderRequest(provider_choice="byo_key")
     for retired in ("bedrock_claude", "bedrock_trial"):
         with pytest.raises(ValueError):
             ChangeProviderRequest(provider_choice=retired)

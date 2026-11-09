@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
+import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
 import { useSearchParams } from "next/navigation";
 
@@ -18,7 +19,7 @@ import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics"
 import { replaceSearchParams } from "@/lib/shellNav";
 import { SUPPORT_MAILTO } from "@/lib/domain";
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
-import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
+import { ChatGPTPlanGate } from "@/components/chat/ChatGPTPlanGate";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo, LogoMark } from "@/components/Logo";
 import { providerComparisonCards } from "@/lib/providerCards";
@@ -63,11 +64,10 @@ import { readLastKnown, writeLastKnown } from "@/lib/lastKnown";
 import { clearRoomsCache } from "@/lib/roomsCache";
 
 function isProviderChoice(v: string | null): v is ProviderChoice {
-  return v === "chatgpt_oauth" || v === "byo_key";
+  return v === "chatgpt_oauth" || v === "openrouter_managed";
 }
 
-// After the provider step writes its credential (OAuth token / BYO key /
-// credits), /container/status lags a few seconds before the gate evaluator
+// After the ChatGPT step writes its OAuth token, /container/status lags a few seconds before the gate evaluator
 // observes it, so the gate keeps returning a 402 block. During that window we
 // hold a calm "finishing" loader instead of the cold restart card, then reveal
 // whatever block remains once the window lapses — so a genuine or unrelated
@@ -79,10 +79,6 @@ const PROVIDER_SETTLE_COPY: Record<ProviderChoice | "default", { title: string; 
   chatgpt_oauth: {
     title: "Finishing ChatGPT sign-in",
     desc: "Connecting your ChatGPT account — this only takes a moment.",
-  },
-  byo_key: {
-    title: "Saving your API key",
-    desc: "Securing your key and setting up your workspace.",
   },
   openrouter_managed: {
     title: "Setting up your credits",
@@ -116,7 +112,7 @@ const STEPS_PAID: { phase: Phase; activeLabel: string }[] = (
 // phase), this includes every phase the machine can enter — so the
 // `onboarding_step_entered` funnel can see the provider step. Without
 // "provider" here it stays a measurement blind spot: users who abandon at the
-// ChatGPT-OAuth / BYO-key / credits screen emit no forward `step_completed`
+// ChatGPT sign-in screen emit no forward `step_completed`
 // event, so the drop-off was invisible.
 const ONBOARDING_PHASE_ORDER: Phase[] = [
   "payment",
@@ -181,6 +177,7 @@ export function ProvisioningStepper({
     isSubscribed,
     refresh: refreshBilling,
     startCheckout,
+    changeProvider,
   } = useBilling();
   // A workspace trial_local account is not paid and has no provider choice.
   // Keep it out of the pre-entitlement picker while its workspace is already
@@ -196,7 +193,7 @@ export function ProvisioningStepper({
   const [elapsedMs, setElapsedMs] = useState(0);
 
   // Plan 3 (flat-fee pivot): `?provider=` is set by the landing page CTA
-  // (/sign-up?provider=chatgpt_oauth|byo_key) and preserved
+  // (/sign-up?provider=chatgpt_oauth) and preserved
   // through Clerk's signup redirect to /onboarding -> /chat. When present,
   // we render a provider-specific step BEFORE container provisioning so the
   // user's provider_choice is on file when the gateway first looks at it
@@ -478,7 +475,7 @@ export function ProvisioningStepper({
   // phase (including "provider", indexed via ONBOARDING_PHASE_ORDER), so a stall
   // is now visible as "entered X, never entered X+1", and provider abandonment
   // becomes a real funnel step. Entry to the provider phase also carries the
-  // chosen provider so we can segment OAuth vs BYO vs credits drop-off.
+  // selected ChatGPT provider so we can segment sign-in drop-off.
   const prevPhaseRef = useRef<Phase | null>(null);
   const readyFiredRef = useRef(false);
   // Guard `onboarding_ready` against false activations. Two failure modes:
@@ -720,6 +717,26 @@ export function ProvisioningStepper({
   // dispatch selected an eligible agent; this component owns no brief form,
   // draft replay, or synthetic kickoff state.
 
+  const handleProviderComplete = useCallback(async () => {
+    if (providerChoice === "chatgpt_oauth") {
+      try {
+        await changeProvider("chatgpt_oauth");
+      } catch (error) {
+        notifyApiError(error, "Could not finish connecting ChatGPT. Try again.");
+        throw error;
+      }
+    }
+    capture("onboarding_provider_completed", {
+      provider_choice: providerChoice,
+    });
+    // Open the settling window in the same commit as providerStepDone so the
+    // loader is shown on the very next render with no one-frame stepper flash.
+    setCompletedProvider(providerChoice);
+    setProviderSettling(true);
+    setProviderStepDone(true);
+  }, [changeProvider, providerChoice]);
+
+
   // Ready — render children. `teams_state: "failed"` is a NON-BLOCKING
   // signal on the composed contract: Teams (Friday/Atlas) seeding failed
   // but the container itself is healthy and chat works — so we render the
@@ -887,32 +904,23 @@ export function ProvisioningStepper({
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 
-  // Provider-specific signup step. Renders the right component based on
-  // `?provider=` and advances the wizard once the user finishes.
+  // ChatGPT sign-in setup is the only provider-specific step.
   //
   // provider_choice is NOT persisted via /users/sync — that endpoint accepts
   // the field and ignores it. billing_accounts (owner-keyed) is the source of
   // truth. Checkout deliberately does not write it; POST /billing/provider
-  // owns the post-entitlement selection (including ByoKeyStep's sub-provider).
+  // owns the post-entitlement ChatGPT selection.
   if (phase === "provider" && providerChoice !== null) {
-    const handleProviderComplete = async () => {
-      capture("onboarding_provider_completed", {
-        provider_choice: providerChoice,
-      });
-      // Open the settling window in the same commit as providerStepDone so the
-      // loader is shown on the very next render with no one-frame stepper flash.
-      setCompletedProvider(providerChoice);
-      setProviderSettling(true);
-      setProviderStepDone(true);
-    };
     return (
       <div className="flex-1 flex items-center justify-center p-6 bg-[var(--cream)]">
         <div className="w-full max-w-md">
           {providerChoice === "chatgpt_oauth" && (
             <ChatGPTOAuthStep onComplete={handleProviderComplete} />
           )}
-          {providerChoice === "byo_key" && (
-            <ByoKeyStep onComplete={handleProviderComplete} />
+          {providerChoice === "openrouter_managed" && (
+            <ChatGPTPlanGate then="managed_onboarding">
+              <ManagedProviderStep onComplete={handleProviderComplete} />
+            </ChatGPTPlanGate>
           )}
         </div>
       </div>
@@ -1000,7 +1008,7 @@ export function ProvisioningStepper({
             ownerRole={blocked.owner_role}
             adminOnly={blocked.action.admin_only}
             isSubscribed={false}
-            onSubscribe={() => startCheckout("workspace")}
+            onSubscribe={(provider) => startCheckout("workspace", false, provider === "chatgpt_oauth" ? "chatgpt_onboarding" : "managed_onboarding")}
           />
           <div className="mt-6 flex items-center gap-2">
             <Button
@@ -1186,10 +1194,9 @@ export function ProvisioningStepper({
     return skipHold ? <>{children}{null}</> : <StepperHold />;
   }
 
-  // Pre-signup user — render the three signup paths inline. Each card links
-  // to `/chat?provider=X`, which routes the wizard into the provider phase
-  // below. The provider phase runs the chosen flow (OAuth / BYO key /
-  // credits) and creates the trial subscription.
+  // Pre-signup user — render the two supported inference paths alongside
+  // workspace billing. ChatGPT sign-in runs after checkout; new workspaces
+  // otherwise use Lightbulb-managed inference by default.
   //
   // Skip picker only when the owner is fully onboarded (has a provider
   // choice AND an active subscription). Two cases this handles:
@@ -1414,16 +1421,45 @@ function TeamsDegradedNotice() {
 }
 
 
+function ManagedProviderStep({ onComplete }: { onComplete: () => void | Promise<void> }) {
+  const { changeProvider } = useBilling();
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const started = useRef(false);
+  const activate = useCallback(async () => {
+    if (started.current) return;
+    started.current = true;
+    setSaving(true);
+    setError(null);
+    try {
+      await changeProvider("openrouter_managed");
+      await onComplete();
+    } catch (err) {
+      started.current = false;
+      setError(err instanceof Error ? err.message : "Could not select OpenRouter managed.");
+    } finally {
+      setSaving(false);
+    }
+  }, [changeProvider, onComplete]);
+  useEffect(() => { void activate(); }, [activate]);
+  return (
+    <div className="space-y-3 py-8 text-center" role={error ? undefined : "status"}>
+      {error ? <>
+        <p className="text-sm text-destructive">{error}</p>
+        <Button type="button" variant="outline" onClick={() => void activate()}>Try again</Button>
+      </> : <p className="text-sm text-[var(--midnight-muted)]">{saving ? "Setting up OpenRouter managed…" : "OpenRouter managed is ready."}</p>}
+    </div>
+  );
+}
+
 /**
- * The provider comparison shown before subscription.
- *
- * Checkout creates one workspace subscription; it deliberately does not
- * persist a provider choice. Provider setup is a post-entitlement step.
+ * Provider choice during onboarding and in Billing settings. Checkout is the
+ * existing workspace plan flow; the selected provider is committed only once
+ * entitlement is active, through POST /billing/provider.
  */
 
 export function ProviderPicker({
   isOrg,
-  orgName,
   heading,
   subheading,
   source = "provider_picker",
@@ -1445,7 +1481,30 @@ export function ProviderPicker({
   // panel. It used to be duplicated inline here — two copies of the same POST
   // + redirect, which is how the two surfaces drifted into offering different
   // copy for the same three paths in the first place.
-  const { startCheckout, account } = useBilling();
+  const { startCheckout, changeProvider, account } = useBilling();
+  const [connectingChatGPT, setConnectingChatGPT] = useState(false);
+  const [chatGPTReady, setChatGPTReady] = useState(false);
+  const { membership } = useOrganization();
+  const api = useApi();
+  const [connectionStatus, setConnectionStatus] = useState("Checking ChatGPT connection…");
+  const searchParams = useSearchParams();
+  const canManageWorkspace = !isOrg || membership?.role === "org:admin";
+  useEffect(() => {
+    if (!account?.is_subscribed || !canManageWorkspace) return;
+    let active = true;
+    api.get("/oauth/chatgpt/status").then((result) => {
+      if (active) setConnectionStatus((result as { connected: boolean }).connected ? "ChatGPT connected" : "ChatGPT is not connected");
+    }).catch(() => { if (active) setConnectionStatus("Connection status unavailable. Try connecting again."); });
+    return () => { active = false; };
+  }, [api, account?.is_subscribed, canManageWorkspace]);
+  useEffect(() => {
+    if (account?.is_subscribed && canManageWorkspace && searchParams.get("action") === "connect-chatgpt") {
+      setConnectingChatGPT(true);
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("action");
+      replaceSearchParams(params);
+    }
+  }, [account?.is_subscribed, canManageWorkspace, searchParams]);
   const workspacePriceUsd = account?.workspace_price_usd;
   const workspacePriceDescription =
     workspacePriceUsd === undefined
@@ -1453,9 +1512,51 @@ export function ProviderPicker({
       : `The $${workspacePriceUsd}/month workspace subscription covers your always-on agent infrastructure.`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderChoice>("openrouter_managed");
+  const [currentProvider, setCurrentProvider] = useState<string | null>(null);
   const comparisonCards = providerComparisonCards(
     account?.is_subscribed === true && account?.managed_inference_available === true,
   );
+  const currentProviderLabel = currentProvider === "chatgpt_oauth"
+    ? "Sign in with ChatGPT"
+    : currentProvider === "openrouter_managed"
+      ? "OpenRouter managed"
+      : currentProvider === "byo_key"
+        ? "Existing saved API key (legacy)"
+        : account?.is_subscribed ? "OpenRouter managed (default)" : "Not selected yet";
+  const requested = searchParams.get("provider");
+  useEffect(() => {
+    if (requested === "chatgpt_oauth" || requested === "openrouter_managed") {
+      setSelectedProvider(requested);
+    } else if (account?.provider_choice === "chatgpt_oauth" || account?.provider_choice === "openrouter_managed") {
+      setSelectedProvider(account.provider_choice);
+    }
+    setCurrentProvider(account?.provider_choice ?? null);
+  }, [account?.provider_choice, requested]);
+
+  const chooseProvider = useCallback(async (provider: ProviderChoice) => {
+    setError(null);
+    if (!account?.is_subscribed) return;
+    if (provider === "chatgpt_oauth") {
+      setChatGPTReady(false);
+      setConnectingChatGPT(true);
+      return;
+    }
+    if (provider === "openrouter_managed" && currentProvider !== "openrouter_managed") {
+      if (!window.confirm("Switching providers restarts your agents and ends the current chat session. Continue?")) return;
+    }
+    setLoading(true);
+    try {
+      await changeProvider(provider);
+      setCurrentProvider(provider);
+      setError("Provider choice saved. Your agents are switching now.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change provider. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  }, [account?.is_subscribed, changeProvider, currentProvider]);
+
   const startWorkspaceCheckout = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -1464,9 +1565,11 @@ export function ProviderPicker({
       source,
     });
     try {
-      // Checkout does not carry a provider choice. The provider controls are
-      // reached after entitlement, through the existing provider flow.
-      await startCheckout("workspace");
+      await startCheckout(
+        "workspace",
+        false,
+        selectedProvider === "chatgpt_oauth" ? "chatgpt_onboarding" : "managed_onboarding",
+      );
     } catch (err) {
       capture("subscription_checkout_failed", {
         owner_type: isOrg ? "org" : "personal",
@@ -1482,7 +1585,43 @@ export function ProviderPicker({
       console.error("workspace checkout failed", err);
       setError("Couldn't start checkout. Please try again.");
     }
-  }, [startCheckout, isOrg, source]);
+  }, [startCheckout, isOrg, selectedProvider, source]);
+
+  const authenticatedChatGPT = useCallback(async () => { setChatGPTReady(true); }, []);
+  const cancelChatGPT = useCallback(() => {
+    setConnectingChatGPT(false);
+    setChatGPTReady(false);
+    setError(null);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("action");
+    params.delete("provider");
+    replaceSearchParams(params);
+  }, [searchParams]);
+  const finishChatGPT = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await changeProvider("chatgpt_oauth");
+      setCurrentProvider("chatgpt_oauth");
+      setConnectingChatGPT(false);
+      setError("ChatGPT connected and selected.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save your provider choice. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  }, [changeProvider]);
+
+  if (connectingChatGPT && canManageWorkspace) return (
+    <div className="space-y-4">
+      <ChatGPTOAuthStep onComplete={authenticatedChatGPT} onCancel={cancelChatGPT} />
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {chatGPTReady && <Button disabled={loading} onClick={() => void finishChatGPT()}>
+        {loading ? "Saving provider…" : "Use connected ChatGPT"}
+      </Button>}
+      <Button variant="outline" disabled={loading} onClick={cancelChatGPT}>Cancel sign-in</Button>
+    </div>
+  );
 
   return (
     // `@container` (not a viewport breakpoint) because this now renders inside
@@ -1502,25 +1641,33 @@ export function ProviderPicker({
             {heading ?? "One workspace plan"}
           </h2>
           <p className={"text-[var(--midnight-muted)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>
-            {subheading ??
-              (isOrg
-                ? `${workspacePriceDescription} Choose your inference provider after checkout.`
-                : `${workspacePriceDescription} Choose your inference provider after checkout.`)}
+            {subheading ?? (account?.is_subscribed
+              ? "Choose the provider your agents use. Switching providers restarts your agents and ends the current chat session."
+              : `${workspacePriceDescription} Select a provider, then continue to workspace checkout.`)}
           </p>
         </div>
 
+        {account?.is_subscribed && (
+          <p className="text-sm text-[var(--midnight-muted)]" aria-live="polite">
+            Current provider: <strong className="text-[var(--midnight)]">{currentProviderLabel}</strong>
+            {canManageWorkspace && <span className="block">{connectionStatus}</span>}
+          </p>
+        )}
+
         {error && (
-          <div className="text-sm text-err -mt-4">{error}</div>
+          <div className="text-sm text-err -mt-4" role="status">{error}</div>
         )}
 
         <div className={`grid grid-cols-1 gap-4 ${comparisonCards.length >= 3 ? "@3xl:grid-cols-3" : "@3xl:grid-cols-2"}`}>
           {comparisonCards.map((card) => (
-            <div
+            <button
               key={card.id}
-              className={
-                "rounded-xl border p-6 space-y-4 bg-cream text-left flex flex-col " +
-                (card.highlighted ? "border-2 border-[var(--midnight)]" : "border-[var(--edge)]")
-              }
+              type="button"
+              onClick={() => { setSelectedProvider(card.id); setError(null); }}
+              aria-pressed={selectedProvider === card.id}
+              disabled={account?.is_subscribed && !canManageWorkspace}
+              className={"rounded-xl border p-6 space-y-4 bg-cream text-left flex flex-col w-full " +
+                (selectedProvider === card.id ? "border-2 border-[var(--midnight)]" : "border-[var(--edge)]")}
             >
               <div className="space-y-1">
                 <h3 className="font-medium text-[var(--midnight)]">{card.title}</h3>
@@ -1533,7 +1680,7 @@ export function ProviderPicker({
                   {card.subtitle}
                 </p>
                 <p className="text-xs text-[var(--midnight-muted)]">
-                  {card.trialNote}
+                  {account?.is_subscribed ? (currentProvider === card.id ? "Current provider" : "Select this provider") : card.trialNote}
                 </p>
                 {isOrg && card.id === "chatgpt_oauth" && (
                   <p className="text-xs text-[var(--midnight-muted)]">
@@ -1550,11 +1697,23 @@ export function ProviderPicker({
                   </li>
                 ))}
               </ul>
-            </div>
+            </button>
           ))}
         </div>
         <div className={embedded ? "" : "mx-auto max-w-sm"}>
-          {isOrg ? (
+          {account?.is_subscribed && !canManageWorkspace ? (
+            <p className="text-sm text-[var(--midnight-muted)]">
+              Ask your workspace admin to change the inference provider.
+            </p>
+          ) : account?.is_subscribed ? (
+            <Button
+              className="w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
+              onClick={() => { void chooseProvider(selectedProvider); }}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : currentProvider === selectedProvider ? "Reconnect or retry provider" : `Use ${selectedProvider === "chatgpt_oauth" ? "ChatGPT" : "OpenRouter managed"}`}
+            </Button>
+          ) : isOrg && canManageWorkspace ? (
             <Button
               className="w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
               onClick={startWorkspaceCheckout}
@@ -1562,6 +1721,10 @@ export function ProviderPicker({
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Subscribe to workspace plan"}
             </Button>
+          ) : isOrg ? (
+            <p className="text-sm text-[var(--midnight-muted)]">
+              Ask your workspace admin to choose the inference provider and subscribe.
+            </p>
           ) : (
             <p className="text-sm text-[var(--midnight-muted)]">
               Create or select a workspace to subscribe.

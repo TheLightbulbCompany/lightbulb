@@ -5,17 +5,17 @@ vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { name
 vi.mock("next/link", () => ({ default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a> }));
 const post = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get: vi.fn() }) }));
-const cfg = vi.hoisted(() => ({ value: {} as Record<string, unknown>, save: vi.fn() }));
+const cfg = vi.hoisted(() => ({ value: {} as Record<string, unknown>, issue: undefined as string | undefined, save: vi.fn() }));
 vi.mock("../data", async (orig) => ({
   ...(await orig<typeof import("../data")>()),
-  useAgentConfig: () => ({ data: cfg.value, save: cfg.save }),
+  useAgentConfig: () => ({ data: cfg.value, save: cfg.save, agents: [{ id: "existing-worker", name: "Founders custom name" }], frontAgentId: "existing-worker", frontAgentIssue: cfg.issue }),
   useInviteAddress: () => "agents@salon.thelightbulb.company",
 }));
 
 import { DEFAULT_CONFIG } from "../data";
 import { AgentPage } from "../AgentPage";
 
-beforeEach(() => { cfg.value = { ...DEFAULT_CONFIG, name: "Nova", number: "+14155550199" }; cfg.save.mockReset().mockResolvedValue(undefined); });
+beforeEach(() => { cfg.issue = undefined; vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {}); vi.spyOn(window, "scrollTo").mockImplementation(() => {}); cfg.value = { ...DEFAULT_CONFIG, name: "Nova", number: "+14155550199" }; cfg.save.mockReset().mockResolvedValue(undefined); });
 
 it("greeting style is optional and never blocks save", async () => {
   vi.useFakeTimers();
@@ -24,7 +24,7 @@ it("greeting style is optional and never blocks save", async () => {
   fireEvent.change(style, { target: { value: "Warm and brief, mention the sale" } });
   expect(screen.getByText(/always says its name, that it.s an AI assistant and that the call is recorded/)).toBeTruthy();
   expect(document.querySelector("[data-err='true']")).toBeNull();
-  await vi.advanceTimersByTimeAsync(700);
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
   expect(cfg.save).toHaveBeenCalledWith(expect.objectContaining({ greeting: "Warm and brief, mention the sale" }));
   vi.useRealTimers();
 });
@@ -45,7 +45,7 @@ it("unpaid Go live keeps the assistant off and offers the existing payment flow"
 
 it("hides what does nothing yet and shows the texts as off", () => {
   render(<AgentPage />);
-  for (const gone of [/Email me the notes/, /Also speaks Spanish/, /Add callers to the waitlist/, /^Voice$/]) expect(screen.queryByLabelText(gone)).toBeNull();
+  for (const gone of [/Email me the notes/, /Add callers to the waitlist/]) expect(screen.queryByLabelText(gone)).toBeNull();
   expect(screen.queryByText("Square")).toBeNull();
   for (const t of [/Text back missed callers/, /Text the waitlist/]) {
     const box = screen.getByLabelText(t) as HTMLInputElement;
@@ -78,4 +78,42 @@ it("tells people to invite the workspace's own address, the one that receives", 
   render(<AgentPage />);
   expect(screen.getByText("agents@salon.thelightbulb.company")).toBeTruthy();
   expect(screen.queryByText("agents@thelightbulb.company")).toBeNull();
+});
+
+
+it("designates an existing worker without renaming it or changing caller settings", async () => {
+  vi.useFakeTimers();
+  cfg.value = { ...cfg.value, voice: "Warm", spanish: true };
+  render(<AgentPage />);
+  fireEvent.change(screen.getByLabelText("Receptionist"), { target: { value: "existing-worker" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(cfg.save).toHaveBeenCalledWith(expect.objectContaining({ frontAgentId: "existing-worker", name: "Nova", voice: "Warm", spanish: true }));
+  expect(screen.getByText(/existing conversations keep their agent/)).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
+
+it("keeps an unavailable saved selection visible and offers an existing replacement", () => {
+  cfg.value = { ...cfg.value, frontAgentId: "deleted-worker" };
+  cfg.issue = "Choose an active front-door agent. Your saved selection is unavailable.";
+  render(<AgentPage />);
+  expect(screen.getByRole("alert")).toHaveTextContent("Choose an active front-door agent");
+  expect(screen.getByLabelText("Receptionist")).toHaveValue("deleted-worker");
+  expect(screen.getByRole("option", { name: "Founders custom name" })).toHaveValue("existing-worker");
+});
+
+it("saves supported voice and Spanish settings without rewriting the saved legacy default on an unrelated edit", async () => {
+  vi.useFakeTimers();
+  cfg.value = { ...cfg.value, voice: "Warm", frontAgentId: "existing-worker" };
+  render(<AgentPage />);
+  expect(screen.getByLabelText("Phone voice")).toHaveValue("marin");
+  fireEvent.change(screen.getByLabelText(/Greeting style/), { target: { value: "Brief" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ voice: "Warm", frontAgentId: "existing-worker" }));
+  fireEvent.change(screen.getByLabelText("Phone voice"), { target: { value: "quartz" } });
+  fireEvent.click(screen.getByLabelText("Also speaks Spanish"));
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ voice: "quartz", spanish: true, frontAgentId: "existing-worker" }));
+  expect(screen.getByLabelText("Sample language")).toBeInTheDocument();
+  vi.useRealTimers();
 });

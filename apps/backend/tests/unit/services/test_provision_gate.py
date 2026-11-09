@@ -354,9 +354,8 @@ async def test_active_subscription_no_provider_choice_returns_provider_required(
         )
     assert gate is not None
     assert gate.code == "provider_required"
-    # Clicking the action must land on the LLM panel with the change-provider
-    # modal pre-opened. ChatErrorCard's rate_limit action shares this URL.
-    assert gate.action_href == "/chat?panel=llm&action=change-provider"
+    # The action opens the same billing provider picker as ChatErrorCard.
+    assert gate.action_href == "/settings?panel=billing"
     # Provider choice is an admin-only mutation for orgs; personal owners
     # are admin of themselves so the action button still renders for them.
     assert gate.action_admin_only is True
@@ -612,12 +611,10 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
         )
     assert gate is not None
     assert gate.code == "byo_provider_required"
-    # Click target must be a real route. /settings/llm doesn't exist on
-    # the frontend; the canonical BYO sub-choice path is the
-    # ?provider=byo_key wizard mounted on /chat.
-    assert gate.action_href == "/chat?provider=byo_key"
-    # Member-actionable: the user picks anthropic/openai themselves.
-    assert gate.action_admin_only is False
+    # An incomplete legacy row needs an admin to pick a supported provider.
+    assert gate.action_href == "/settings?panel=billing"
+    # New key setup is closed.
+    assert gate.action_admin_only is True
 
 
 @pytest.mark.asyncio

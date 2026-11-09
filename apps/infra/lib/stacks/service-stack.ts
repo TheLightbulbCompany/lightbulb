@@ -285,9 +285,13 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Docker Image Asset (built & pushed by CDK Pipeline)
     // -------------------------------------------------------------------------
+    const backendRuntimePlatform = {
+      cpuArchitecture: ecs.CpuArchitecture.ARM64,
+      operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+    };
     const backendImage = new DockerImageAsset(this, "BackendImage", {
       directory: path.join(__dirname, "..", "..", "..", "backend"),
-      platform: Platform.LINUX_AMD64,
+      platform: Platform.LINUX_ARM64,
     });
 
     // -------------------------------------------------------------------------
@@ -422,7 +426,6 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:UpdateAgentRuntimeEndpoint",
           "bedrock-agentcore:DeleteAgentRuntimeEndpoint",
           "bedrock-agentcore:ListAgentRuntimeEndpoints",
-          "bedrock-agentcore:InvokeAgentRuntime",
           "bedrock-agentcore:StopRuntimeSession",
           // The create request tags the runtime (owner, env); Tag/Untag are separate actions.
           "bedrock-agentcore:TagResource",
@@ -1653,6 +1656,16 @@ export class ServiceStack extends cdk.Stack {
           tags: { Environment: env, ManagedBy: "cdk", Tier: "pool" },
         })
       : undefined;
+
+    if (sharedRuntime) {
+      agentCorePolicy.addStatements(
+        new iam.PolicyStatement({
+          sid: "AgentCoreCanonicalPoolInvoke",
+          actions: ["bedrock-agentcore:InvokeAgentRuntime"],
+          resources: [sharedRuntime.attrAgentRuntimeArn, `${sharedRuntime.attrAgentRuntimeArn}/runtime-endpoint/*`],
+        }),
+      );
+    }
     const desktopOwner = process.env[`DESKTOP_EXECUTION_OWNER_${env.toUpperCase()}`] ?? "";
     if (desktopOwner && !/^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(desktopOwner)) {
       throw new Error(`Invalid desktop execution owner for ${env}`);
@@ -2216,7 +2229,7 @@ export class ServiceStack extends cdk.Stack {
         cmd: ["scripts.provision_lambda.handler"],
         workingDirectory: "/app",
       }),
-      architecture: lambda.Architecture.X86_64,
+      architecture: lambda.Architecture.ARM_64,
       role: this.taskRole,
       // 2048 MB matches the ECS task's memory, and Lambda CPU scales with memory
       // (~1.2 vCPU here) -- the cold start imports the whole backend.
@@ -2253,7 +2266,7 @@ export class ServiceStack extends cdk.Stack {
         cmd: ["scripts.work_lambda.handler"],
         workingDirectory: "/app",
       }),
-      architecture: lambda.Architecture.X86_64,
+      architecture: lambda.Architecture.ARM_64,
       role: this.taskRole,
       // Same as the provisioner: CPU scales with memory and a cold start imports
       // the whole backend. The work itself is I/O-bound.
@@ -2573,6 +2586,7 @@ export class ServiceStack extends cdk.Stack {
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `lightbulb-${env}-backend`,
+      runtimePlatform: backendRuntimePlatform,
       // Sized from 30-day CloudWatch (2026-10-27 cost review): prod peaked at 0.52 GB of 4 GB
       // and 0.9 vCPU hourly-average of 2; dev peaked at 1 GB once (p99 0.35 GB). 2 GB is 4x
       // prod's and 2x dev's high-water; CPU bursts are what autoscaling (2-4 / 1-4) is for.
@@ -2661,6 +2675,7 @@ export class ServiceStack extends cdk.Stack {
     if (superAgentEnabled(env)) {
       const workerTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWorkerTaskDef", {
         family: `lightbulb-${env}-temporal-worker`,
+        runtimePlatform: backendRuntimePlatform,
         cpu: 512,
         memoryLimitMiB: 1024,
         taskRole: this.taskRole,
@@ -2693,6 +2708,7 @@ export class ServiceStack extends cdk.Stack {
       // superAgentEnabled(env).
       const watchdogTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWatchdogTaskDef", {
         family: `lightbulb-${env}-temporal-watchdog`,
+        runtimePlatform: backendRuntimePlatform,
         cpu: 256,
         memoryLimitMiB: 512,
         taskRole: this.taskRole,

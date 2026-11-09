@@ -69,81 +69,35 @@ def reprovision():
 
 
 @pytest.mark.asyncio
-async def test_change_provider_managed_to_byo_key_happy_path(
-    async_client,
-    active_personal_account,
-    reprovision,
-):
-    """Bedrock → BYO Anthropic: validates key exists, flips choice, no OAuth
-    cleanup (we weren't on chatgpt_oauth), schedules a re-provision."""
-    fresh_account = dict(active_personal_account)
-
+async def test_change_provider_rejects_byok_without_provider_or_credential_side_effects(async_client):
+    """Legacy clients get an explicit retirement error before any billing write or secret lookup."""
     with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=fresh_account),
-        ),
-        patch(
-            "core.repositories.billing_repo.set_provider_choice",
-            new=AsyncMock(return_value=None),
-        ) as mock_set_pc,
-        patch(
-            "core.services.key_service.get_secret_arn",
-            new=AsyncMock(return_value="arn:aws:secretsmanager:...:key"),
-        ) as mock_get_secret_arn,
-    ):
-        resp = await async_client.post(
-            "/api/v1/billing/provider",
-            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
-        )
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "ok"
-    assert body["provider_choice"] == "byo_key"
-    assert body["byo_provider"] == "anthropic"
-    mock_get_secret_arn.assert_awaited_once_with("org_test_456", "anthropic")
-    mock_set_pc.assert_awaited_once_with(
-        "org_test_456",
-        provider_choice="byo_key",
-        byo_provider="anthropic",
-        # Non-chatgpt switch always passes connector_user_id=None so the repo
-        # REMOVEs any stale connector from the row.
-        connector_user_id=None,
-    )
-
-
-@pytest.mark.asyncio
-async def test_change_provider_byo_key_without_saved_key_returns_409(
-    async_client,
-    active_personal_account,
-    patch_dispatch_provision,
-):
-    """The endpoint must refuse to flip provider_choice when the new BYO
-    key isn't on file — otherwise the next chat would fail at ECS with no
-    secret to inject. UI is expected to PUT /settings/keys first."""
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=active_personal_account),
-        ),
-        patch(
-            "core.repositories.billing_repo.set_provider_choice",
-            new=AsyncMock(return_value=None),
-        ) as mock_set_pc,
-        patch(
-            "core.services.key_service.get_secret_arn",
-            new=AsyncMock(return_value=None),
-        ),
+        patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock()) as mock_get,
+        patch("core.repositories.billing_repo.set_provider_choice", new=AsyncMock()) as mock_set,
+        patch("core.services.key_service.get_secret_arn", new=AsyncMock()) as mock_secret,
+        patch("core.services.provision_dispatch.dispatch_reconcile", new=AsyncMock()) as mock_dispatch,
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
             json={"provider_choice": "byo_key", "byo_provider": "openai"},
         )
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "byo_key_missing"
-    mock_set_pc.assert_not_awaited()
+    assert resp.status_code == 422
+    mock_get.assert_not_awaited()
+    mock_set.assert_not_awaited()
+    mock_secret.assert_not_awaited()
+    mock_dispatch.assert_not_awaited()
+
+
+def test_change_provider_openapi_advertises_only_current_choices():
+    from main import app
+
+    operation = app.openapi()["paths"]["/api/v1/billing/provider"]["post"]
+    schema_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    schema_name = schema_ref.rsplit("/", 1)[-1]
+    body_schema = app.openapi()["components"]["schemas"][schema_name]
+    assert body_schema["properties"]["provider_choice"]["enum"] == ["chatgpt_oauth", "openrouter_managed"]
+    assert "byo_provider" not in body_schema["properties"]
 
 
 @pytest.mark.asyncio
@@ -306,10 +260,6 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "core.services.key_service.get_secret_arn",
-            new=AsyncMock(return_value="arn:aws:secretsmanager:...:key"),
-        ),
-        patch(
             "core.services.oauth_service.revoke_user_oauth",
             new=AsyncMock(return_value=None),
         ) as mock_revoke,
@@ -320,7 +270,7 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
     ):
         resp = await async_client_org_admin.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 200, resp.text
@@ -329,58 +279,6 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
     mock_revoke.assert_awaited_once_with(user_id="user_a")
     # The credential is keyed on the WORKSPACE (org_id), not the human who connected it.
     assert mock_delete_auth.await_args_list[-1].args == ("org_test_456",)
-
-
-@pytest.mark.asyncio
-async def test_org_byo_key_prereq_is_owner_scoped_not_clerk_user_scoped(
-    async_client_org_admin,
-    reprovision,
-):
-    """An org's BYOK secret is stored under the ORG id, so the prerequisite
-    check must look it up there too.
-
-    Every route in routers/settings_keys.py (list/set/delete) keys the secret
-    on ``resolve_owner_id(auth)`` — org_id for an org — and the provisioner
-    reads it back the same way (``ecs_manager._build_byo_secrets_for_user``).
-    This check previously passed the CLERK user id instead. For a personal
-    owner the two ids are identical, which is exactly why it went unnoticed;
-    for an ORG they diverge, so an admin who had just saved a key got a
-    spurious ``byo_key_missing`` and could never complete the switch —
-    dead-ending the whole org BYO path, in-app and on web.
-
-    Contrast the chatgpt_oauth branch, which legitimately uses BOTH ids:
-    OAuth tokens are per-HUMAN bound to a workspace. A BYOK secret has no
-    such per-human identity.
-    """
-    org_account = {
-        "owner_id": "org_test_456",
-        "owner_type": "org",
-        "stripe_subscription_id": "sub_x",
-        "subscription_status": "active",
-        "provider_choice": "openrouter_managed",
-    }
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=org_account),
-        ),
-        patch(
-            "core.repositories.billing_repo.set_provider_choice",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.key_service.get_secret_arn",
-            new=AsyncMock(return_value="arn:aws:secretsmanager:...:key"),
-        ) as mock_get_secret_arn,
-    ):
-        resp = await async_client_org_admin.post(
-            "/api/v1/billing/provider",
-            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
-        )
-
-    assert resp.status_code == 200, resp.text
-    # The ORG id — NOT the switching admin's personal clerk id.
-    mock_get_secret_arn.assert_awaited_once_with("org_test_456", "anthropic")
 
 
 @pytest.mark.asyncio
@@ -700,42 +598,6 @@ async def test_change_provider_leaving_chatgpt_revokes_and_reprovisions(async_cl
     # Side-effect cleanup for leaving chatgpt_oauth must still run.
     assert mock_revoke.await_count == 1
     assert mock_delete_auth.await_count >= 1
-
-
-@pytest.mark.asyncio
-async def test_change_provider_managed_to_byo_always_cold_path(async_client, reprovision):
-    """BYO transitions can't avoid the restart — ECS env vars are bake-time.
-    Even if openclaw.json patch would work, we MUST re-register the task
-    definition with the new Secrets Manager secret ARN. restart=True."""
-    bedrock_account = {
-        "owner_id": "user_test_123",
-        "owner_type": "personal",
-        "stripe_subscription_id": "sub_x",
-        "subscription_status": "active",
-        "provider_choice": "openrouter_managed",
-    }
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=bedrock_account),
-        ),
-        patch(
-            "core.repositories.billing_repo.set_provider_choice",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.key_service.get_secret_arn",
-            new=AsyncMock(return_value="arn:..."),
-        ),
-    ):
-        resp = await async_client.post(
-            "/api/v1/billing/provider",
-            json={"provider_choice": "byo_key", "byo_provider": "openai"},
-        )
-
-    assert resp.status_code == 200
-    assert resp.json()["restart"] is True
-    reprovision.assert_called_once()
 
 
 @pytest.mark.asyncio

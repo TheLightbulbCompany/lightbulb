@@ -65,12 +65,8 @@ async def sync_user(
                 # falls back to Clerk rather than trusting this column.
                 logger.exception("users/sync: email backfill failed for %s", user_id)
 
-    # The canonical write path for provider_choice is POST
-    # /billing/trial-checkout, which persists synchronously to billing_accounts
-    # before creating the Stripe Checkout session. /users/sync is a pure
-    # user-row sync. The ``body`` parameter is still accepted (so old
-    # frontends that send ``provider_choice``/``byo_provider`` keep working),
-    # but the fields are silently ignored on the server.
+    # /users/sync is a pure user-row sync. Its optional legacy request body
+    # remains accepted for old clients, but extra provider fields are ignored.
 
     # Note: no billing-account creation here. /users/sync fires from multiple
     # places (ChatLayout mount, onboarding, settings), and the caller's JWT

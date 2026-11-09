@@ -21,7 +21,7 @@ Your company runs in its own cloud runtime — one per workspace, never shared. 
 
 ## Keys and credentials
 
-- Bring-your-own API keys are stored encrypted, scoped to your workspace, and never in the application database.
+- Saved OpenAI or Anthropic API keys used by existing workspaces stay scoped to that workspace in AWS Secrets Manager. New API keys cannot be added.
 - ChatGPT sign-in tokens are encrypted at rest.
 - Agents reach integration credentials only through the tool, CLI, or skill that needs them.
 

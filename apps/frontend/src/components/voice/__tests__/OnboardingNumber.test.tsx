@@ -8,10 +8,10 @@ vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get }) }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: [], startOAuth: vi.fn() }) }));
 
 import { Onboarding } from "../Onboarding";
-import { DEFAULT_CONFIG } from "../data";
+import { DEFAULT_CONFIG, needsOnboarding } from "../data";
 
 const at = (step: number, over = {}) => ({ ...DEFAULT_CONFIG, onboardingStep: step, ...over });
-beforeEach(() => { post.mockReset(); get.mockReset(); });
+beforeEach(() => { vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {}); vi.spyOn(window, "scrollTo").mockImplementation(() => {}); post.mockReset(); get.mockReset(); });
 
 it("step 4 keep path shows verizon missed code with number", () => {
   render(<Onboarding config={at(4, { number: "+14842079294" })} save={vi.fn()} />);
@@ -100,4 +100,24 @@ it("check forwarding says when a check is running or the number is not US", asyn
   post.mockResolvedValue({ ok: false, reason: "us_only" });
   fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
   expect(await screen.findByText("Forwarding checks work for US numbers for now")).toBeInTheDocument();
+});
+
+
+it("step five saves selected voice and Spanish preference at Go live", async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<Onboarding config={at(5, { name: "Nova" })} save={save} />);
+  fireEvent.change(screen.getByLabelText("Phone voice"), { target: { value: "willow" } });
+  fireEvent.click(screen.getByLabelText("Also speaks Spanish"));
+  fireEvent.click(screen.getByRole("button", { name: "Go live" }));
+  await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ voice: "willow", spanish: true, live: true })));
+});
+
+
+it("keeps web phone setup required after a mobile-only receptionist save", () => {
+  const saved = { frontAgentId: "existing-worker", onboardingStep: 1 };
+  const config = { ...DEFAULT_CONFIG, ...saved };
+  expect(needsOnboarding(config, false)).toBe(true);
+  render(<Onboarding config={config} save={vi.fn()} />);
+  expect(screen.getByText("Step 1 of 5")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Go live" })).not.toBeInTheDocument();
 });

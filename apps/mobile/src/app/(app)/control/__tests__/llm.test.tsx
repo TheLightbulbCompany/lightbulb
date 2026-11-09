@@ -72,9 +72,18 @@ describe("LlmPanel workspace credits", () => {
 
     expect(await screen.findByText("$12.34")).toBeTruthy();
     expect(screen.queryByText(/top up/i)).toBeNull();
-    // The provider deep-link is a plain feature link, not a purchase CTA —
-    // unaffected by the 3.1.3(f) fix and expected to remain.
-    expect(screen.getByText("Manage provider on thelightbulb.company")).toBeTruthy();
+    // The billing link is informational; purchases remain unavailable here.
+    expect(screen.getByText("Choose or change provider on thelightbulb.company")).toBeTruthy();
+  });
+
+  it("keeps the legacy BYO provider readable without exposing key setup", async () => {
+    mockAccountFixture = { provider_choice: "byo_key", byo_provider: "openai" };
+    await render(<LlmPanel />);
+
+    expect(await screen.findByText("Bring your own key")).toBeTruthy();
+    expect(screen.getByText("OpenAI API key")).toBeTruthy();
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    expect(screen.getByText("Choose or change provider on thelightbulb.company")).toBeTruthy();
   });
 
   it("shows the used daily allowance with no Upgrade link", async () => {

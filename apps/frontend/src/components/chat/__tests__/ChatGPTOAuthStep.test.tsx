@@ -98,8 +98,27 @@ describe("ChatGPTOAuthStep", () => {
   it("advances once the provider is connected", async () => {
     stateRef.current = completedState();
     const onComplete = vi.fn();
-    render(<ChatGPTOAuthStep onComplete={onComplete} />);
+    const view = render(<ChatGPTOAuthStep onComplete={onComplete} />);
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    view.rerender(<ChatGPTOAuthStep onComplete={onComplete} />);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not commit a provider after OAuth fails", () => {
+    stateRef.current = { ...initialState(), state: { status: "error", message: "device code expired" } };
+    const onComplete = vi.fn();
+    render(<ChatGPTOAuthStep onComplete={onComplete} />);
+    expect(screen.getByText(/Connection failed: device code expired/)).toBeInTheDocument();
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  it("keeps a completed OAuth session available for retry when provider commit fails", async () => {
+    stateRef.current = completedState();
+    const onComplete = vi.fn().mockRejectedValueOnce(new Error("workspace changed"));
+    render(<ChatGPTOAuthStep onComplete={onComplete} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("workspace changed");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(2));
   });
 
   it("copies the user code to the clipboard", async () => {
@@ -126,17 +145,20 @@ describe("ChatGPTOAuthStep", () => {
     expect(startMock).toHaveBeenCalled();
   });
 
-  it("strips ?provider= when cancelling, preserving other params", () => {
+  it.each(["pending", "error"])("strips ?provider= when cancelling standalone %s, preserving other params", (status) => {
+    const onComplete = vi.fn();
     const replaceStateSpy = vi.spyOn(window.history, "replaceState");
     searchParams = new URLSearchParams({ provider: "chatgpt_oauth", checkout: "success" });
-    stateRef.current = pendingState(Date.now() + 600_000);
-    render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+    stateRef.current = status === "pending" ? pendingState(Date.now() + 600_000)
+      : { ...initialState(), state: { status: "error", message: "device code expired" } };
+    render(<ChatGPTOAuthStep onComplete={onComplete} />);
     fireEvent.click(
       screen.getByRole("button", { name: /cancel and choose a different provider/i }),
     );
     const target = replaceStateSpy.mock.calls.at(-1)?.[2] as string;
     expect(target).not.toMatch(/provider=/);
     expect(target).toMatch(/checkout=success/);
+    expect(onComplete).not.toHaveBeenCalled();
     replaceStateSpy.mockRestore();
   });
 });

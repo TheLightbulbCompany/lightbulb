@@ -156,6 +156,28 @@ def _expiry_iso(expires_in: int | None) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
 
 
+def _square_token_fields(tok: dict, previous: dict | None = None) -> dict:
+    """Square returns an absolute expires_at and the seller binding, not expires_in.
+
+    https://developer.squareup.com/reference/square/o-auth-api/obtain-token
+    Fail closed rather than storing an unexpiring or differently bound grant.
+    """
+    try:
+        expiry = datetime.fromisoformat(tok["expires_at"])
+        merchant = tok["merchant_id"]
+        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+            raise ValueError
+        if not isinstance(merchant, str) or not merchant.strip() or merchant != merchant.strip():
+            raise ValueError
+        if any(not isinstance(tok.get(k), str) or not tok[k].strip() for k in ("access_token", "refresh_token")):
+            raise ValueError
+        if previous and previous.get("merchant_id") != merchant:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("square: invalid token expiry or merchant binding") from None
+    return {"token_expiry": expiry.isoformat(), "merchant_id": merchant}
+
+
 async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: str | None = None) -> str:
     p = registry.get_provider(provider_key)
     if not p.oauth:
@@ -211,6 +233,10 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: 
         "code_challenge_method": "S256",
         **p.oauth.extra_authorize_params,
     }
+    if p.key == "square":
+        # Confidential code flow; Square's PKCE flow is for public clients.
+        params.pop("code_challenge")
+        params.pop("code_challenge_method")
     # RFC 8707 resource indicator: a remote MCP server (mcp_remote) wants the
     # canonical server URI on the authorization request so the token is audienced
     # to it. Only set for MCP-remote providers — a BYO OAuth provider (google) has
@@ -269,12 +295,23 @@ async def exchange(
     # is audienced to the canonical MCP server URI. Only for MCP-remote providers.
     if p.mcp_remote is not None:
         data["resource"] = p.mcp_remote.url
+    square = p.key == "square"
+    if square:
+        if not client_secret or client_id != store_client_id:
+            raise ValueError("square: confidential OAuth client required")
+        data.pop("code_verifier")
     async with httpx.AsyncClient(timeout=15) as http:
         # GitHub's token endpoint answers form-encoded unless asked for JSON;
         # every other provider returns JSON regardless, so this is universal.
-        resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"}, auth=auth)
+        request = {"json": data} if square else {"data": data}
+        headers = {"Accept": "application/json"}
+        if square:
+            headers["Square-Version"] = "2026-09-16"
+        resp = await http.post(p.oauth.token_url, **request, headers=headers, auth=auth)
         resp.raise_for_status()
         tok = resp.json()
+        if square:
+            _square_token_fields(tok)
         # Meta's code exchange yields a token measured in hours; agents need the
         # ~60d one. The upgrade requires the app secret, so it happens here — the
         # ONLY place outside Secrets Manager that ever sees the platform secret.
@@ -306,6 +343,8 @@ async def exchange(
         # a second source of truth that can drift from the authorize leg.
         "redirect_uri": redirect_uri,
     }
+    if square:
+        credential.update(_square_token_fields(tok))
     # Instagram's exchange also returns the app-scoped IG user id — materializers
     # need it for Graph calls, so carry it through when present.
     if tok.get("user_id"):
@@ -382,18 +421,32 @@ async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
             data["client_secret"] = client_secret
     if p.mcp_remote is not None:
         data["resource"] = p.mcp_remote.url
+    square = p.key == "square"
+    if square:
+        if not client_secret or client_id != store_id:
+            raise ValueError("square: confidential OAuth client required")
+        data.pop("scope")  # Square's optional narrowing field is plural scopes; retain the existing grant.
     async with httpx.AsyncClient(timeout=15) as http:
-        resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"}, auth=auth)
+        request = {"json": data} if square else {"data": data}
+        headers = {"Accept": "application/json"}
+        if square:
+            headers["Square-Version"] = "2026-09-16"
+        resp = await http.post(p.oauth.token_url, **request, headers=headers, auth=auth)
         resp.raise_for_status()
         tok = resp.json()
+        if square:
+            _square_token_fields(tok, credential)
     expires_in = tok.get("expires_in")
-    return {
+    updated = {
         **credential,
         "access_token": tok["access_token"],
         "refresh_token": tok.get("refresh_token") or credential["refresh_token"],
         "token_expiry": _expiry_iso(expires_in),
         "expires_in": int(expires_in) if expires_in else None,
     }
+    if square:
+        updated.update(_square_token_fields(tok, credential))
+    return updated
 
 
 _IG_REFRESH_URL = "https://graph.instagram.com/refresh_access_token"

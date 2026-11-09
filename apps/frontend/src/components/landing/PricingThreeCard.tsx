@@ -5,7 +5,7 @@ import { markupPercent, ordinal, type Pricing } from "@/lib/pricing";
 import { Arrow } from "./Arrow";
 
 /**
- * Homepage price block (10 §A.5): one price, then the three ways to power the
+ * Homepage price block (10 §A.5): one price, then the two ways to power the
  * agents as a plain row (no pill, no per-card buttons, no art). Prices come from
  * the billing API via the page (lib/pricing.getPricing); null shows no number.
  */
@@ -17,14 +17,13 @@ const options = (p: Pricing | null) => [
       : "Nothing to set up. Billed as prepaid credits.",
   },
   { title: "Your ChatGPT account.", body: "Sign in once; your agents run on your ChatGPT plan." },
-  { title: "Your own key.", body: "OpenAI or Anthropic. Your provider bills you directly." },
 ];
 
 export function PricingThreeCard({ pricing: p }: { pricing: Pricing | null }) {
   return (
     <section id="pricing" className="lb-pricing">
       <div className="lb-wrap">
-        <h2 className="lb-h2">Any model. One price.</h2>
+        <h2 className="lb-h2">Two ways to power your agents. One price.</h2>
         {p && (
           <>
             <p className="lb-price-hero">

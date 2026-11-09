@@ -74,7 +74,7 @@ export function PlanChooser({
             runtime.
           </li>
           <li>
-            AI usage: bring your ChatGPT account or API key at no charge, or use Lightbulb credits
+            AI usage: sign in with ChatGPT, or use Lightbulb-managed inference with workspace credits
             {account?.managed_markup
               ? ` at the model's price plus ${markupPercent(account.managed_markup)}%.`
               : "."}

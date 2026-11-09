@@ -24,6 +24,7 @@ META = {"roomId": ROOM, "ownerId": OWNER, "kind": "channel", "revision": 1, "las
 @pytest.mark.asyncio
 async def test_human_send_maps_the_race_to_room_forbidden(monkeypatch):
     sender = {"kind": "human", "id": USER, "role": "member"}
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, sender)))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[sender]))
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Ann"))

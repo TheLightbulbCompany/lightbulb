@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { PROVIDER_CARDS } from "@/lib/providerCards";
+import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
 
 export interface TeamBillingCardProps {
   workspacePriceUsd?: number;
@@ -15,7 +15,7 @@ export interface TeamBillingCardProps {
    */
   adminOnly?: boolean;
   isSubscribed?: boolean;
-  onSubscribe?: () => Promise<void>;
+  onSubscribe?: (provider: ProviderChoiceId) => Promise<void>;
   onManage?: () => Promise<void>;
 }
 
@@ -44,6 +44,7 @@ export function TeamBillingCard({
   onSubscribe,
   onManage,
 }: TeamBillingCardProps) {
+  const [provider, setProvider] = useState<ProviderChoiceId>("openrouter_managed");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -93,9 +94,11 @@ export function TeamBillingCard({
       <div className="mt-4 space-y-2 rounded-lg border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-ui leading-snug text-[var(--midnight-muted)]">
         <p className="font-semibold text-[var(--midnight)]">Ways to power inference</p>
         {PROVIDER_CARDS.map((card) => (
-          <p key={card.id}>
+          <label key={card.id} className="block">
+            <input type="radio" name="team-inference-provider" value={card.id} checked={provider === card.id}
+              disabled={!canAct || busy} onChange={() => setProvider(card.id)} className="mr-2" />
             <span className="font-medium text-[var(--midnight)]">{card.title}</span>: {card.subtitle}
-          </p>
+          </label>
         ))}
       </div>
 
@@ -127,7 +130,7 @@ export function TeamBillingCard({
           <button
             type="button"
             disabled={busy}
-            onClick={() => run(onSubscribe)}
+            onClick={() => run(onSubscribe ? () => onSubscribe(provider) : undefined)}
             className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-bold text-cream transition-colors hover:bg-[var(--midnight-soft)] disabled:cursor-not-allowed disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep"
           >
             {busy ? "Starting checkout…" : "Subscribe workspace"}

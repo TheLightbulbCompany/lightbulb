@@ -88,10 +88,10 @@ export function pricingFaq(p: Pricing): { q: string; a: string }[] {
         "credits you top up. Usage shows in the workspace, and nothing runs past your balance.",
     },
     {
-      q: "Can we bring our own key?",
+      q: "Which inference providers can we use?",
       a:
-        "Yes. Sign in with your ChatGPT account, or add an OpenAI or Anthropic key, after your plan is active. " +
-        "Your provider bills you directly and we charge nothing for inference.",
+        "Choose Lightbulb-managed inference, funded with workspace credits, or sign in with your ChatGPT account. " +
+        "ChatGPT bills your account directly; managed inference is charged against workspace credits.",
     },
     { q: "What if it doesn't stick?", a: "Cancel any time. We help you take your work with you." },
   ];
@@ -100,8 +100,8 @@ export function pricingFaq(p: Pricing): { q: string; a: string }[] {
 export function pricingInference(p: Pricing | null): string {
   const managed = p ? `at the model provider's price × ${p.managedMarkup}, ` : "";
   return (
-    `Your agents' AI is billed separately, your choice: Lightbulb-managed ${managed}as prepaid credits, ` +
-    "or bring your own: your ChatGPT account or an OpenAI or Anthropic key, billed by them."
+    `Choose how your agents run AI: Lightbulb-managed inference ${managed}as prepaid workspace credits, ` +
+    "or sign in with your ChatGPT account, billed by OpenAI."
   );
 }
 export const PRICING_TRIAL =

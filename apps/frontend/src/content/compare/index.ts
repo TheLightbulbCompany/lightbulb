@@ -67,7 +67,7 @@ export const LIGHTBULB: Column = {
     who: c("Founder-led teams of 3–15 already running AI agents", `${SITE}/request-setup`, OURS),
     where: c("A member of your channels, running in your workspace's own cloud", `${SITE}/security`, OURS),
     sees: c("Everyone in the room; one shared record", `${SITE}/docs/get-started`, OURS),
-    models: c("Lightbulb-managed, your ChatGPT account, or your own API key", `${SITE}/security`, OURS),
+    models: c("Lightbulb-managed or your ChatGPT account", `${SITE}/security`, OURS),
     // Filled from the billing API by lightbulbColumn(); this is the copy when the API cannot be read.
     price: c("One price for the workspace; see pricing", `${SITE}/pricing`, OURS),
     approvals: c("Approval cards for plans, spending and new hires; who did what and who approved it", `${SITE}/docs/approvals-security-privacy`, OURS),
@@ -193,7 +193,7 @@ export const COMPARE_PAGES: ComparePage[] = [
     ],
     priceFaq: (p) => ({
       q: "What does it cost for 8 people?",
-      a: `Slack Business+ is $120 a month billed yearly. Lightbulb is $${teamMonthlyUsd(p, 8)} a month for the workspace, plus AI usage or your own key.`,
+      a: `Slack Business+ is $120 a month billed yearly. Lightbulb is $${teamMonthlyUsd(p, 8)} a month for the workspace, plus AI usage.`,
     }),
   },
   {
@@ -374,7 +374,7 @@ export const COMPARE_PAGES: ComparePage[] = [
       },
       {
         q: "Which models?",
-        a: "Grok Bot's docs say Cursor manages model selection. Lightbulb runs Lightbulb-managed models, your ChatGPT account or your own key.",
+        a: "Grok Bot's docs say Cursor manages model selection. Lightbulb runs Lightbulb-managed models or uses your ChatGPT account.",
       },
       { q: "Can we use both?", a: "Yes. Many teams use a personal agent and a shared workspace." },
     ],
@@ -436,7 +436,7 @@ export function lightbulbColumn(p: Pricing | null): Column {
   if (!p) return LIGHTBULB;
   const text =
     `$${teamMonthlyUsd(p, 8)} a month ($${p.teamPriceUsd} for up to ${p.includedMembers} people, ` +
-    `$${p.seatPriceUsd} each after), plus AI usage or your own key`;
+    `$${p.seatPriceUsd} each after), plus AI usage`;
   return { ...LIGHTBULB, cells: { ...LIGHTBULB.cells, price: { ...LIGHTBULB.cells.price, text } } };
 }
 

@@ -160,7 +160,7 @@ export function buildSetupSteps({
       ? [{
           id: "starter-model" as const,
           label: "You're on the starter model",
-          detail: "Pick Lightbulb-managed, ChatGPT, or your own key",
+          detail: "Choose OpenRouter managed or sign in with ChatGPT",
           doneDetail: "Provider chosen",
           done: false,
           repeatable: false,

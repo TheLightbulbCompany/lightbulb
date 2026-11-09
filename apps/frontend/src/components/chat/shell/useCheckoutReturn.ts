@@ -26,9 +26,8 @@ export function useCheckoutReturn(): { showSubscriptionSuccess: boolean } {
 
   // Post-checkout confirmation: refresh billing + clean URL.
   // Strip ONLY ?checkout / ?subscription, preserving ?provider= so the
-  // ProvisioningStepper can still render the provider-specific step
-  // (ChatGPTOAuthStep / ByoKeyStep / CreditsStep) — without this, the
-  // OAuth + BYO paths break because the wizard never gets to the step
+  // ProvisioningStepper can still render the ChatGPT OAuth step — without
+  // this, the wizard never gets to the step
   // that collects the user's credentials.
   useEffect(() => {
     if (!showSubscriptionSuccess) return;

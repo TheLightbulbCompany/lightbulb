@@ -133,6 +133,7 @@ vi.mock("@/hooks/useBilling", () => ({
     account: billingMockAccount,
     refresh: billingMockRefresh,
     startCheckout: billingMockStartCheckout,
+    changeProvider: vi.fn().mockResolvedValue({ status: "ok" }),
   }),
 }));
 
@@ -363,13 +364,13 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     // The workspace card, not the generic gate copy.
     expect(screen.getByText(/up to 5 people/i)).toBeInTheDocument();
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
-    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
     expect(screen.queryByText(/Subscribe to start your team's containers/)).not.toBeInTheDocument();
 
     await act(async () => {
       screen.getByRole("button", { name: /subscribe workspace/i }).click();
     });
-    expect(billingMockStartCheckout).toHaveBeenCalledWith("workspace");
+    expect(billingMockStartCheckout).toHaveBeenCalledWith("workspace", false, "managed_onboarding");
 
     // The card must carry its own chrome: `.settings-*` classes live in a
     // route-scoped stylesheet /chat never loads, so relying on them here is
@@ -438,8 +439,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       screen.getByRole("heading", { name: /Sign in with ChatGPT/i }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /Bring your own API key/i }),
+      screen.getByRole("heading", { name: /OpenRouter managed/i }),
     ).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
   });
 
   it("bypasses the ProviderPicker while a container is provisioning even if billing lags the trial, and refreshes billing", () => {

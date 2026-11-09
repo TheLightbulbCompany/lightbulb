@@ -40,6 +40,7 @@ vi.mock("@/hooks/useBilling", () => ({
     account: billingAccount,
     refresh: vi.fn(),
     startCheckout: vi.fn(),
+    changeProvider: vi.fn().mockResolvedValue({ status: "ok" }),
   }),
 }));
 

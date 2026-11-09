@@ -34,8 +34,7 @@
  *     Two `blocked` codes are the exception to D1's "never reimplement" for
  *     provider SIGN-IN specifically (mobile onboarding-parity Slice 4):
  *     `oauth_required` renders <ChatGPTConnectScreen/> (in-app device-code
- *     flow) and `byo_provider_required` renders <ByoKeyScreen/> (in-app key
- *     entry) — but only when `adminOnly` isn't blocking the CURRENT poller
+ *     flow) — but only when `adminOnly` isn't blocking the CURRENT poller
  *     specifically (checked against `ownerRole`, same admin-only rule as the
  *     generic gate copy below); a non-admin org member still falls through
  *     to "ask your workspace admin" instead of a control they can't use.
@@ -76,7 +75,6 @@ import { paywallProductIds } from "../../lib/appleIap";
 import { PaywallScreen } from "../billing/PaywallScreen";
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
-import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 import { ProvisioningStepper } from "./ProvisioningStepper";
 import { WorkspaceChooser } from "../workspace/WorkspaceGate";
@@ -362,7 +360,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
 
   // In-app provider sign-in (mobile onboarding-parity Slice 4). These two
   // gate codes fire when the owner already picked a provider (ChatGPT OAuth
-  // or BYO key) but hasn't finished connecting it — a native screen instead
+  // but hasn't finished connecting it — a native screen instead
   // of an outbound link. refetch (not the onRetry wrapper) is passed
   // directly as onConnected so the gate re-probes as soon as the flow
   // completes. Every OTHER blocked code — including provider_required
@@ -377,16 +375,11 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   // (ProvisioningStepper.tsx's `showAction`): show the in-app screen only
   // when NOT (adminOnly && not-the-admin) — personal owner + org admin
   // connect in-app, non-admin member falls through to the generic
-  // "ask your workspace admin" interstitial below. Applied uniformly to
-  // byo_provider_required too, even though its adminOnly is always false
-  // today — so both codes share one gating rule instead of two.
+  // "ask your workspace admin" interstitial below.
   if (status.kind === "blocked") {
     const canConnectInApp = !(status.adminOnly && status.ownerRole !== "admin");
     if (status.code === "oauth_required" && canConnectInApp) {
       return <ChatGPTConnectScreen onConnected={refetch} />;
-    }
-    if (status.code === "byo_provider_required" && canConnectInApp) {
-      return <ByoKeyScreen onConnected={refetch} />;
     }
   }
 

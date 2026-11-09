@@ -101,11 +101,11 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
             <strong>Your ChatGPT account.</strong> Sent to OpenAI under your ChatGPT plan, and your
             account&rsquo;s own data settings apply.
           </li>
-          <li>
-            <strong>Your own key.</strong> Sent to OpenAI or Anthropic under your own agreement with
-            them.
-          </li>
         </ul>
+        <p>
+          Workspaces already configured with a saved OpenAI or Anthropic key keep using it. New
+          workspaces cannot choose BYO keys, and new keys cannot be added.
+        </p>
       </>
     ),
   },

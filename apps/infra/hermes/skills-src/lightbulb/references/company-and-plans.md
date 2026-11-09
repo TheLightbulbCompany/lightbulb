@@ -131,7 +131,7 @@ change them.
 ## Voice calls
 
 The voice-business plan, where enrollment is available, is $250/month
-per business with 1,500 phone and meeting minutes, then $0.35/minute. An admin
+per business with 1,500 voice minutes across phone, meetings and owner talks, then $0.35/minute. An admin
 explicitly accepts it in Voice settings and sets up a card. Access starts only
 after collection and lasts through the paid coverage period. It includes the
 managed default within its daily allowance; it does not promise unlimited
@@ -142,6 +142,12 @@ stops renewal at the confirmed end shown in settings; a pending cancellation
 is not a confirmed end. Billing and minute periods use UTC. Read the workspace's
 current facts before claiming paid access; an unpaid invoice or expired
 coverage blocks it. Plan changes belong to the admin in Voice settings.
+
+A new business phone number requires current paid voice-plan access. Agent setup
+saves the business's draft when payment is required and links to Voice settings.
+After payment is confirmed, the admin returns to Agent setup and chooses Go live
+to provision the number. Existing assigned lines are kept; opening Settings or
+returning from checkout does not buy a number automatically.
 
 Members talk by voice with "Go live" (web and desktop; iPhone is coming).
 Live is in every room's header: channels, DMs and group chats. There is no

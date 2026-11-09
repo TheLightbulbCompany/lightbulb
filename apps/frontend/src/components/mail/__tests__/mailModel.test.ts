@@ -7,6 +7,7 @@ import {
   mailItemKey,
   meetingItemKey,
   meetingWhen,
+  meetingEntryStatus,
   occurrenceOutcome,
   parseItemKey,
   parseTranscript,
@@ -154,4 +155,15 @@ describe("occurrenceOutcome", () => {
     const m = meeting({ ...top, transcripts: [{ start_at: T, notes: "pending" }] });
     expect(occurrenceOutcome(m, T).notes).toBe("pending");
   });
+});
+
+
+it("a recurring meeting's current lobby state never leaks into a historical transcript", () => {
+  const m=meeting({status:"bot_created",start_at:NOW/1000+3600,end_at:NOW/1000+5400,last_bot_status:"in_waiting_room",transcripts:[{start_at:NOW/1000-86400}]});
+  const entries=buildSections([m],[],"all",NOW).flatMap(s=>s.entries).flatMap(e=>e.kind==="meeting"?[e]:[]);
+  const current=entries.find(e=>e.startAt===m.start_at)!;
+  const past=entries.find(e=>e.startAt!==m.start_at)!;
+  expect(meetingEntryStatus(current,NOW).label).toBe("Waiting for host");
+  expect(meetingEntryStatus(past,NOW).label).toBe("Ended");
+  expect(meetingEntryStatus(past,NOW).joined).toBe(true);
 });

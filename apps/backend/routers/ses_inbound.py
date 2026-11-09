@@ -78,7 +78,7 @@ from core.repositories.agent_email_repo import (
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import agent_email, meeting_invites
+from core.services import agent_email, clerk_admin, meeting_invites
 from core.services.agent_email import ensure_team_address, sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
@@ -187,6 +187,41 @@ class SesInboundBody(BaseModel):
     calendar: str | None = None
 
 
+async def _shared_team_mailbox(body: SesInboundBody) -> tuple[dict | None, str | None, str | None]:
+    """Resolve the shared address only from authenticated, verified current membership.
+
+    A personal account or several businesses is not an implicit workspace selection.
+    Failures from Clerk/DynamoDB remain retryable through the ingest's existing 503 path.
+    """
+    verdicts = body.verdicts or {}
+    if any(str(verdicts.get(k) or "").upper() == "FAIL" for k in ("spam", "virus")):
+        return None, "dropped_spam_or_virus", None
+    sender = parse_from_address(body.from_)
+    if str(verdicts.get("dmarc") or "").upper() == "FAIL" or not authenticated_sender(verdicts, {}, sender):
+        return None, "dropped_failed_authentication", None
+    user = await clerk_admin.find_user_by_email(sender, strict=True)
+    if not user or not any(
+        str(e.get("email_address") or "").lower() == sender
+        and (e.get("verification") or {}).get("status") == "verified"
+        for e in user.get("email_addresses", [])
+    ):
+        return None, "dropped_unregistered_sender", None
+    memberships = await clerk_admin.list_user_organizations(user["id"], limit=100, strict=True)
+    owners = {m["id"] for m in memberships}
+    if len(owners) > 1:
+        return None, "dropped_ambiguous_workspace", None
+    if not owners:
+        return None, "dropped_unregistered_sender", None
+    owner = next(iter(owners))  # exactly one, never first among several
+    address, reason = await ensure_team_address(owner, sender)
+    if not address:
+        raise RuntimeError(f"shared team address not ready: {reason}")
+    row = await get_by_address(address)
+    if not row or row.get("owner_id") != owner:
+        raise RuntimeError("shared team address owner mismatch")
+    return row, None, user["id"]
+
+
 @router.post(
     "/ses-inbound",
     summary="Handle SES inbound email ingest",
@@ -225,15 +260,21 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             if dedup is WebhookDedupResult.ALREADY_SEEN:
                 return _final("duplicate")
 
-        # Resolve recipient: the workspace's team address `agents@{slug}` is
-        # its only mailbox (owner ruling 2026-10-03), and the first one in `to`
-        # wins. Its row is created on first use. Which AGENT reads the mail is
+        # Explicit workspace addresses keep their routing. With only the shared
+        # agents@<domain> recipient, authenticated membership must select exactly
+        # one workspace instead of following any founder's public alias. Which AGENT reads the mail is
         # decided below, after the gates: the thread's writer, else the CEO.
         row = None
+        verified_sender_user_id = None
+        shared = f"agents@{settings.AGENT_EMAIL_DOMAIN.strip().lower()}"
+        has_shared = False
         for addr in body.to:
             try:
                 candidate = normalize(addr)
             except Exception:  # noqa: BLE001 — a malformed recipient entry must not abort scanning the rest of `to`.
+                continue
+            if candidate == shared:
+                has_shared = True
                 continue
             team = await is_team_address(candidate)
             if team is None:
@@ -247,6 +288,11 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
                 row = await get_by_address(address) if address == candidate else None
             if row is not None:
                 break
+        if row is None and has_shared:
+            row, rejection, verified_sender_user_id = await _shared_team_mailbox(body)
+            if rejection:
+                logger.info("agent_email shared routing: %s", rejection)
+                return _final(rejection)
         if row is None:
             return _final("dropped_unknown_recipient")
 
@@ -282,7 +328,12 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # A member's invite to the team address is a meeting, not mail. After
         # the spam/spoof gates, before the loop guard: an invite is not a reply.
         if body.calendar:
-            outcome = await meeting_invites.handle_team_mail(row["owner_id"], body, row)
+            if verified_sender_user_id is not None:
+                outcome = await meeting_invites.handle_team_mail(
+                    row["owner_id"], body, row, verified_sender_user_id=verified_sender_user_id
+                )
+            else:
+                outcome = await meeting_invites.handle_team_mail(row["owner_id"], body, row)
             if outcome is not None:
                 return _final(outcome)
 

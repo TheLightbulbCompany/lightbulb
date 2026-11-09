@@ -1964,6 +1964,9 @@ export class ServiceStack extends cdk.Stack {
         : (process.env.STRIPE_PUBLISHABLE_KEY_PROD ?? ""),
       LIVEKIT_URL: props.livekitUrl ?? "",
       VOICE_LINE_NUMBER: props.voiceLineNumber ?? "",
+      // Certification is complete. The reviewed phone-telephony workflow creates the provider trunk/config
+      // secret before the first prod deployment consuming it; number purchase still requires explicit Go live.
+      VOICE_BUY_NUMBERS: env === "prod" ? "true" : "false",
       RECALL_GOOGLE_LOGIN_GROUP_ID: props.recallGoogleLoginGroupId ?? "",
       ...(props.livekitAgentName ? { LIVEKIT_AGENT_NAME: props.livekitAgentName } : {}),
       // Accounts v2 API version pin for the company account/account-link
@@ -2109,6 +2112,16 @@ export class ServiceStack extends cdk.Stack {
       LIVEKIT_API_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportLivekitApiSecret", props.secretNames.livekitApiSecret),
       ),
+      ...(env === "prod" ? Object.fromEntries(Object.entries({
+        TWILIO_ACCOUNT_SID: "account_sid",
+        TWILIO_API_KEY_SID: "api_key_sid",
+        TWILIO_API_KEY_SECRET: "api_key_secret",
+        TWILIO_TRUNK_SID: "twilio_trunk_sid",
+        VOICE_INBOUND_TRUNK_ID: "inbound_trunk_id",
+        VOICE_OUTBOUND_TRUNK_ID: "outbound_trunk_id",
+      }).map(([name, field]) => [name, ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, `ImportVoiceTelephony${name}`, "lightbulb/prod/voice_telephony"), field,
+      )])) : {}),
       RECALL_API_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallApiKey", props.secretNames.recallApiKey),
       ),

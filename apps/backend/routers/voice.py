@@ -59,6 +59,9 @@ _MEETING_FIELDS = (
     "startAt",
     "endAt",
     "status",
+    "lastBotStatus",
+    "inCallAt",
+    "endedAt",
     "summary",
     "asked",
     "followUps",
@@ -218,6 +221,8 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
         try:  # Go live: the number is given (bought, once buying is on) now, never at sign-up
             body.config["number"] = await voice_onboarding.provision_at_go_live(ws, body.config, auth.user_id)
         except voice_onboarding.NoNumber as exc:
+            if str(exc) == "voice_payment_required":
+                raise HTTPException(status_code=402, detail={"code": "voice_payment_required"}) from None
             raise HTTPException(status_code=409, detail={"code": "number_unavailable", "reason": str(exc)}) from None
     await messaging_repo.put_voice_agent(ws, body.config, auth.user_id)
     return {"config": body.config}

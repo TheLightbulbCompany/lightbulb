@@ -4,6 +4,7 @@
 // one timeline of every call and meeting with what the assistant did, and the pane with how it did it.
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { meetingStatus } from "@/lib/meetingStatus";
 import { ArrowLeft, Phone, UserRound, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TalkOrb } from "./TalkOrb";
@@ -101,16 +102,15 @@ export function VoiceHome() {
 
 function Row({ item, name, current, now, onOpen }: { item: TimelineItem; name: string; current: boolean; now: number; onOpen: () => void }) {
   if (item.type === "meeting") {
+    const presentation = meetingStatus(item, now);
     const mins = item.endAt && item.startAt ? Math.round((item.endAt - item.startAt) / 60) : null;
     const did = item.summary || [item.asked?.length && `Asked ${item.asked.length === 1 ? "once" : `${item.asked.length} times`}`,
       item.followUps?.length && `${item.followUps.length} follow-up${item.followUps.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
-      || (item.at > now ? `Upcoming. ${name} will join.`
-        : item.endAt && item.endAt * 1000 > now ? `In progress.`  // endAt/startAt are epoch seconds (meeting_invites.py); at is ms
-        : `${name} listened.`);  // a calendar meeting that has not happened is not one Lightbulb listened to
+      || presentation.detail;
     return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
       <time>{time(item.at)}</time><Video size={16} aria-label="Meeting" />
       <span><span className="vx-who">{item.title || "Meeting"}<small>Google Meet{item.people?.length ? ` · ${item.people.join(", ")}` : ""}</small></span>
-        <span className="vx-did"><span className="vx-tag">Meeting</span><span>{did}</span></span></span>
+        <span className="vx-did"><span className="vx-tag">{presentation.label}</span><span>{did}</span></span></span>
       <span className="vx-dur">{mins != null ? `${mins} min` : ""}</span>
     </button>;
   }
@@ -197,18 +197,20 @@ function NextTime({ roomId }: { roomId: string }) {
 }
 
 function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: string; onClose: () => void }) {
+  const presentation = meetingStatus(meeting);
   return <>
     <div className="vx-pane-head">
       <div><h2 className="vx-title" style={{ fontSize: "var(--text-ui)" }}>{meeting.title || "Meeting"}</h2>
         <p className="vx-sub">{time(meeting.at)} · {dayLabel(meeting.at)}{meeting.people?.length ? ` · ${meeting.people.join(", ")}` : ""}</p></div>
       <Button type="button" size="sm" variant="ghost" className="vx-close" onClick={onClose} aria-label="Close details">Close</Button>
     </div>
+    <p className="vx-tx"><strong>{presentation.label}</strong> · {presentation.detail}</p>
     {meeting.summary && <section><h3>Notes</h3><p className="vx-tx">{meeting.summary}</p></section>}
     <section><h3>What {name} was asked and did</h3>
       {meeting.asked?.length
         ? <ol className="vx-steps">{meeting.asked.map((a, n) => <li key={n}><time>{mmss(a.t)}</time>
           <span>{a.who ? `${a.who}: ` : ""}&ldquo;{a.q}&rdquo;{a.a ? ` → ${a.a}` : ""}</span></li>)}</ol>
-        : <p className="vx-tx vx-muted">Nobody asked {name} anything. It listened.</p>}
+        : <p className="vx-tx vx-muted">No questions recorded for this meeting.</p>}
     </section>
     {!!meeting.followUps?.length && <section><h3>Follow-ups</h3>
       <ul className="vx-tx">{meeting.followUps.map((f, n) => <li key={n} style={{ display: "flex", gap: 8 }}>

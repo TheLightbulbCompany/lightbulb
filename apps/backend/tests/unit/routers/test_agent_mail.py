@@ -421,6 +421,8 @@ async def test_a_member_reads_meetings_and_mail_both_ways(async_client_org_membe
         "organizer": "pat@acme.com",
         "invited_by": "member@acme.com",
         "status": "scheduled",
+        "last_bot_status": None,
+        "in_call_at": None,
         "start_at": 200,
         "end_at": 260,
         "repeats": True,

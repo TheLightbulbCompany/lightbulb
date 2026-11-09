@@ -659,7 +659,7 @@ async def task_note(owner_id: str, body: NoteBody, request: Request) -> dict:
 @router.post("/{owner_id}/business-facts")
 async def business_facts(owner_id: str, body: RunRef, request: Request) -> dict:
     """A Worker's `business_facts`: its own workspace's Agent page (services, prices, hours, the Knowledge answers),
-    the same text a caller's profile holds (router-latency-2026-11-08: owner Workers asked "which salon?").
+    without the abbreviated profile's character cap; later saved answers must remain readable.
     Read-only; the workspace is the path's, proven by the hook token and the attempt's secret."""
     from core.services import business_profile
 

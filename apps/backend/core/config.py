@@ -243,8 +243,11 @@ class Settings(BaseSettings):
     # while off, Go live gives VOICE_LINE_NUMBER. The trunk is the Twilio Elastic SIP trunk that points at LiveKit.
     VOICE_BUY_NUMBERS: bool = False
     TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_API_KEY_SID: str = ""
+    TWILIO_API_KEY_SECRET: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_TRUNK_SID: str = ""
+    VOICE_INBOUND_TRUNK_ID: str = ""
     # The LiveKit outbound SIP trunk (ST_...) the forwarding check dials on. Empty = the check answers outbound_not_configured.
     VOICE_OUTBOUND_TRUNK_ID: str = ""
     """The worker huddles and meetings dispatch to. Prod's deployed agent keeps the default; dev's Mac worker is lightbulb-meet-dev."""

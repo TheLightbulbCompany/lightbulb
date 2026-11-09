@@ -297,6 +297,8 @@ async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool
     account is deleted, so a Clerk blip must fail closed.
     """
     if not settings.CLERK_SECRET_KEY:
+        if strict:
+            raise RuntimeError("clerk_admin.list_user_organizations is not configured")
         return []
 
     headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
@@ -325,12 +327,16 @@ async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool
     try:
         payload = response.json()
     except ValueError:
+        if strict:
+            raise RuntimeError("clerk_admin.list_user_organizations malformed response") from None
         return []
 
     # Clerk v1 wraps collection responses in {data, total_count}. Older/alt
     # shapes may return a bare list — accept both defensively.
     memberships = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(memberships, list):
+        if strict:
+            raise RuntimeError("clerk_admin.list_user_organizations malformed memberships")
         return []
     total = payload.get("total_count") if isinstance(payload, dict) else None
     if strict and isinstance(total, int) and total > len(memberships):
@@ -342,10 +348,14 @@ async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool
     result: list[dict] = []
     for m in memberships:
         if not isinstance(m, dict):
+            if strict:
+                raise RuntimeError("clerk_admin.list_user_organizations malformed membership")
             continue
         org = m.get("organization") or {}
         org_id = org.get("id")
         if not org_id:
+            if strict:
+                raise RuntimeError("clerk_admin.list_user_organizations missing organization")
             continue
         result.append(
             {
@@ -433,26 +443,34 @@ async def list_organization_members(org_id: str, *, strict: bool = False) -> lis
         return []
 
 
-async def find_user_by_email(email: str) -> dict | None:
+async def find_user_by_email(email: str, *, strict: bool = False) -> dict | None:
     """Return the first Clerk user matching `email`, or None.
 
     Used by the curator lookup to resolve a human-gated address to its
     Clerk user. Stubs to None when CLERK_SECRET_KEY is unset.
+    Strict callers require one unambiguous result; configuration, transport,
+    HTTP and malformed-directory failures raise so inbound mail can retry.
     """
     if not settings.CLERK_SECRET_KEY:
+        if strict:
+            raise RuntimeError("clerk_admin.find_user_by_email is not configured")
         return None
 
     headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-    params = {"email_address": email, "limit": 1}
+    params = {"email_address": email, "limit": 2 if strict else 1}
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
             response = await client.get(f"{_CLERK_API_BASE}/users", headers=headers, params=params)
     except Exception as e:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("clerk_admin.find_user_by_email network error: %s", e)
         return None
 
     if response.status_code >= 400:
+        if strict:
+            raise RuntimeError(f"clerk_admin.find_user_by_email failed: http_{response.status_code}")
         logger.warning(
             "clerk_admin.find_user_by_email HTTP %s for %s",
             response.status_code,
@@ -460,7 +478,9 @@ async def find_user_by_email(email: str) -> dict | None:
         )
         return None
 
-    users = response.json() or []
+    users = response.json()
+    if strict and (not isinstance(users, list) or len(users) > 1):
+        raise RuntimeError("clerk_admin.find_user_by_email ambiguous or malformed result")
     return users[0] if users else None
 
 

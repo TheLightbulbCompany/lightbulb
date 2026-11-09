@@ -6,6 +6,7 @@
 // Every step after the first saves the Agent page document with `onboardingStep`, so leaving (e.g. for the Google
 // consent screen) resumes where the owner was. Shapes: routers/voice.py, core/services/voice_onboarding.py.
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useOrganization } from "@clerk/nextjs";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -47,11 +48,12 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
   const [step, setStep] = useState(config.onboardingStep || 1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [paymentRequired, setPaymentRequired] = useState(false);
   const set = (patch: Partial<AgentConfig>) => setC((x) => ({ ...x, ...patch }));
   useEffect(() => { if (!c.business && organization?.name) set({ business: organization.name }); }, [organization?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = async (next: AgentConfig, to: number) => {
-    setBusy(true); setErr("");
+    setBusy(true); setErr(""); setPaymentRequired(false);
     try {
       const doc = to > 5 ? { ...withTimezone(next), live: true, paused: false, onboardingStep: undefined } : { ...withTimezone(next), onboardingStep: to };
       await save(doc);
@@ -60,6 +62,15 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
     } catch (e) {
       const status = (e as { status?: number }).status;
       const code = (e as { body?: { detail?: { code?: string } } }).body?.detail?.code;
+      if (code === "voice_payment_required") {
+        try {
+          const pending = { ...withTimezone(next), live: false, onboardingStep: 5 };
+          await save(pending); setC(pending);
+          setPaymentRequired(true);
+          setErr("Your setup is saved. Activate your voice plan in Settings, then return here and choose Go live to get your number.");
+        } catch { setErr("Couldn't save your setup. Try again before opening payment."); }
+        return;
+      }
       setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
         : status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
         : "Couldn't save. Try again.");
@@ -77,6 +88,7 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
     {step === 4 && <NumberStep {...props} />}
     {step === 5 && <NameStep {...props} />}
     {err && <p className="vx-save" data-err="true" role="alert" style={{ marginTop: 12 }}>{err}</p>}
+    {paymentRequired && <Button asChild variant="outline"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
   </div>;
 }
 

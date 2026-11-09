@@ -109,6 +109,27 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
 // Hoist a single ServiceStack synthesis and reuse across tests.
 const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 
+describe("ServiceStack — certified phone provisioning", () => {
+  test("prod enables explicit Go live purchases and injects scoped provider configuration without plaintext credentials", () => {
+    const prod = buildServiceStack("prod");
+    const tasks = prod.findResources("AWS::ECS::TaskDefinition");
+    const backend = Object.values(tasks).flatMap((r: any) => r.Properties.ContainerDefinitions).find((c: any) => c.Name === "backend");
+    expect(backend.Environment).toContainEqual({ Name: "VOICE_BUY_NUMBERS", Value: "true" });
+    for (const name of ["TWILIO_ACCOUNT_SID", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_TRUNK_SID", "VOICE_INBOUND_TRUNK_ID", "VOICE_OUTBOUND_TRUNK_ID"]) {
+      const secret = backend.Secrets.find((entry: any) => entry.Name === name);
+      expect(JSON.stringify(secret.ValueFrom)).toContain("lightbulb/prod/voice_telephony");
+      expect(backend.Environment.some((entry: any) => entry.Name === name)).toBe(false);
+    }
+  });
+
+  test("dev cannot purchase production numbers or receive production telephony credentials", () => {
+    const tasks = SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition");
+    const backend = Object.values(tasks).flatMap((r: any) => r.Properties.ContainerDefinitions).find((c: any) => c.Name === "backend");
+    expect(backend.Environment).toContainEqual({ Name: "VOICE_BUY_NUMBERS", Value: "false" });
+    expect(backend.Secrets.some((entry: any) => entry.Name === "TWILIO_API_KEY_SECRET")).toBe(false);
+  });
+});
+
 describe("ServiceStack — desktop execution rollout", () => {
   test("defaults closed without an owner", () => {
     vi.stubEnv("DESKTOP_EXECUTION_OWNER_DEV", "");

@@ -337,6 +337,8 @@ def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) 
         "organizer": meeting.get("organizer"),
         "invited_by": meeting.get("invitedBy"),
         "status": "bot_failed" if _never_admitted(meeting) else meeting.get("status"),
+        "last_bot_status": meeting.get("lastBotStatus"),
+        "in_call_at": meeting.get("inCallAt"),
         "start_at": meeting.get("startAt"),
         "end_at": meeting.get("endAt"),
         "repeats": bool(meeting.get("recurrence")),

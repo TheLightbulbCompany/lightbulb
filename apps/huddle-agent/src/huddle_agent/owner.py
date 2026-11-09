@@ -226,6 +226,20 @@ async def run(ctx: JobContext, meta: dict) -> None:
     def hooks(opening: asyncio.Task) -> None:
         """The live session's own events: the talk's record, the strip's status and the quiet count."""
         if opening.cancelled() or opening.exception():
+            if state["open"] is opening:
+                state["open"], state["quiet"] = None, True
+                recount()  # re-arm the warm room; a release/press retries, never an automatic busy loop
+
+                async def retry_notice() -> None:
+                    # Do not let delayed notification from an old attempt affect a newer opening.
+                    if state["ending"] or len(openings) != openings[opening][0] + 1:
+                        return
+                    with contextlib.suppress(Exception):
+                        await ctx.room.local_participant.publish_data(
+                            json.dumps({"code": "connection_lost"}), reliable=True, topic="huddle.error"
+                        )
+
+                asyncio.create_task(retry_notice())
             return
         opened = opening.result()
         opened.activity_changed = recount

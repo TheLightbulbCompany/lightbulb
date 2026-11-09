@@ -4,6 +4,7 @@ as the member's woken message; the DM's agent messages come back as results. The
 
 import asyncio
 import inspect
+import json
 import types
 
 import pytest
@@ -412,6 +413,87 @@ async def test_orb_closes_gpt_live_when_the_talk_goes_quiet(live, monkeypatch):
     await asyncio.sleep(0)
     assert len(live.sessions) == 2
     ctx.mic(False)
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_failed_or_canceled_start_retries_only_on_next_mic_press(
+    live, monkeypatch, failure
+):
+    class B(_Backend):
+        async def owner(self, op, body):
+            return (
+                {"assistantName": "Nova"}
+                if op == "start"
+                else await super().owner(op, body)
+            )
+
+        async def aclose(self):
+            pass
+
+    original, attempts = live_module.start, []
+
+    async def transient(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise failure()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(live_module, "start", transient)
+    monkeypatch.setattr(owner, "Backend", lambda *_a: B())
+    ctx = _Ctx()
+    await owner.run(ctx, {"roomId": "r1", "ownerId": "o1", "roomToken": "t"})
+    ctx.mic(True)
+    await asyncio.sleep(0.01)
+    ctx.mic(True)  # repeated events while held cannot auto-retry
+    await asyncio.sleep(0.01)
+    assert len(attempts) == 1 and not live.sessions
+    ctx.mic(False)
+    ctx.mic(True)
+    await asyncio.sleep(0.01)
+    assert (
+        len(attempts) == 2
+        and len(live.sessions) == 1
+        and live.sessions[0].input_enabled
+    )
+    assert [json.loads(value)["code"] for value in ctx.data] == ["connection_lost"]
+    await ctx.callbacks[0]()
+
+
+async def test_old_close_failure_does_not_clear_new_opening(live, monkeypatch):
+    class B(_Backend):
+        async def owner(self, op, body):
+            return (
+                {"assistantName": "Nova"}
+                if op == "start"
+                else await super().owner(op, body)
+            )
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(owner, "Backend", lambda *_a: B())
+    monkeypatch.setattr(owner, "QUIET_S", 0.01)
+    ctx, finish = _Ctx(), asyncio.Event()
+    await owner.run(ctx, {"roomId": "r1", "ownerId": "o1", "roomToken": "t"})
+    ctx.mic(True)
+    await asyncio.sleep(0.001)
+
+    async def broken_close():
+        await finish.wait()
+        raise RuntimeError("old session close failed")
+
+    live.sessions[0].close = broken_close
+    ctx.mic(False)
+    await asyncio.sleep(0.02)  # old model closes on true idle
+    ctx.mic(True)
+    await asyncio.sleep(0.001)
+    assert len(live.sessions) == 2
+    live.sessions[1].session.agent("speaking")
+    finish.set()
+    await asyncio.sleep(0.001)
+    ctx.mic(True)
+    assert len(live.sessions) == 2 and live.sessions[1].input_enabled
+    await ctx.callbacks[0]()
 
 
 async def test_owner_usage_waits_for_all_closes_and_excludes_muted_room_time(

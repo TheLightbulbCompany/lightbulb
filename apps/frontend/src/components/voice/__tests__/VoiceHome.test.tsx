@@ -66,7 +66,7 @@ it("orb shows thinking then speaking from the agent attribute", () => {
   lk.lines = [{ text: "Priya moved to 11:30." }, { text: "I'm drafting the holiday post now." }];
   rerender(<VoiceHome />);
   expect(orb).toHaveAttribute("data-state", "speaking");
-  expect(screen.getByText("Lightbulb is speaking · tap to stop")).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb is speaking")).toBeInTheDocument();
   expect(screen.getByText("I'm drafting the holiday post now.")).toBeInTheDocument(); // the last line, as a caption
 });
 

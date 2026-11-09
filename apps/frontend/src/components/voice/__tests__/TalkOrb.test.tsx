@@ -25,6 +25,7 @@ const questions = vi.hoisted(() => ({ data: [] as object[] }));
 vi.mock("../data", () => ({ useQuestions: () => questions }));
 
 import { HOLD_MS, TALK_KEY, TalkOrb } from "../TalkOrb";
+import { TalkSessionProvider } from "../TalkSessionProvider";
 
 // The browser's mic permission (jsdom has no Permissions API): "prompt" unless a test grants it.
 const perm = { state: "prompt" };
@@ -34,7 +35,7 @@ let now = 1_000;
 beforeEach(() => {
   lk.attrs = {}; lk.agent = null; lk.lines = []; questions.data = [];
   Object.assign(huddle, { roomId: null, roomName: null, joining: null, room: null, error: null });
-  huddle.join.mockReset(); mic.mockClear(); rpc.mockClear(); perm.state = "prompt"; connectedRoom.localParticipant.isMicrophoneEnabled = false;
+  huddle.join.mockReset(); huddle.leave.mockClear(); mic.mockClear(); rpc.mockClear(); perm.state = "prompt"; connectedRoom.localParticipant.isMicrophoneEnabled = false;
   vi.spyOn(Date, "now").mockImplementation(() => now);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -60,7 +61,7 @@ it("a tap starts a hands-free talk: the mic opens and stays open after the relea
   expect(status()).toHaveAttribute("aria-live", "polite");
 });
 
-it("a hold past 350 ms is push-to-talk: the release closes the mic and ends the talk", () => {
+it("a hold past 350 ms closes only input on release and keeps the conversation open", () => {
   listening();
   render(<TalkOrb name="Nova" />);
   fireEvent.keyDown(orb(), { key: " " });
@@ -69,25 +70,30 @@ it("a hold past 350 ms is push-to-talk: the release closes the mic and ends the 
   fireEvent.keyUp(orb(), { key: " " });
   expect(mic).toHaveBeenLastCalledWith(false);
   expect(orb()).toHaveAttribute("aria-pressed", "false");
-  expect(orb()).toHaveAttribute("data-state", "idle");
+  expect(orb()).toHaveAttribute("data-state", "muted");
+  expect(screen.getByRole("button", { name: "End" })).toBeInTheDocument();
+  expect(huddle.leave).not.toHaveBeenCalled();
 });
 
-it("a tap while the voice speaks stops the reply and keeps the talk; the next tap ends it", () => {
+it("a tap while the voice speaks toggles only input, preserving playback and work", () => {
   listening();
   const { rerender } = render(<TalkOrb name="Nova" />);
   tap();
   lk.attrs = { "lightbulb.agent.a1.status": "speaking" };
-  rerender(<TalkOrb name="Nova" />);
-  expect(status()).toHaveTextContent("Nova is speaking · tap to stop");
-  tap();
-  expect(rpc).toHaveBeenCalledWith({ destinationIdentity: "agent-ceo", method: "interrupt", payload: "" });
-  expect(mic).not.toHaveBeenCalledWith(false);
-  lk.attrs = { "lightbulb.agent.a1.status": "listening" };
+  lk.lines = [{ text: "The complete answer keeps playing." }];
   rerender(<TalkOrb name="Nova" />);
   tap();
   expect(mic).toHaveBeenLastCalledWith(false);
-  expect(orb()).toHaveAttribute("data-state", "idle");
+  expect(rpc).not.toHaveBeenCalled();
+  expect(huddle.leave).not.toHaveBeenCalled();
+  expect(status()).toHaveTextContent("Nova is speaking");
+  expect(screen.getByText("The complete answer keeps playing.")).toBeInTheDocument();
+  tap();
+  expect(mic).toHaveBeenLastCalledWith(true);
+  expect(rpc).not.toHaveBeenCalled();
+  expect(huddle.leave).not.toHaveBeenCalled();
 });
+
 
 it("Mute and End are their own controls, and Esc ends", () => {
   listening();
@@ -97,16 +103,19 @@ it("Mute and End are their own controls, and Esc ends", () => {
   expect(mic).toHaveBeenLastCalledWith(false);
   expect(orb()).toHaveAttribute("data-state", "muted");
   expect(status()).toHaveTextContent("Muted");
-  expect(orb()).toHaveAttribute("aria-pressed", "true"); // muted is still a talk
+  expect(orb()).toHaveAttribute("aria-pressed", "false"); // input is off; the conversation remains open
   fireEvent.click(screen.getByRole("button", { name: "Unmute" }));
   expect(mic).toHaveBeenLastCalledWith(true);
   fireEvent.click(screen.getByRole("button", { name: "End" }));
   expect(orb()).toHaveAttribute("data-state", "idle");
+  expect(huddle.leave).toHaveBeenCalledTimes(1);
   tap();
+  huddle.leave.mockClear();
   mic.mockClear();
   fireEvent.keyDown(window, { key: "Escape" });
   expect(mic).toHaveBeenCalledWith(false);
   expect(orb()).toHaveAttribute("aria-pressed", "false");
+  expect(huddle.leave).toHaveBeenCalledTimes(1);
 });
 
 it("each state has its own words: thinking, working names the tool, needs you", () => {
@@ -294,4 +303,113 @@ it("unmounted before the permission check answers, it does not join", async () =
   unmount();
   await settle();
   expect(huddle.join).not.toHaveBeenCalled();
+});
+
+
+it("the persistent owner receives Fn in Settings without rendering an orb", async () => {
+  const settings = () => <TalkSessionProvider name="Nova"><h1>Settings</h1></TalkSessionProvider>;
+  const { rerender } = render(settings());
+  expect(screen.queryByRole("button", { name: "Talk to Nova" })).not.toBeInTheDocument();
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  now += 120;
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "up" })); });
+  expect(huddle.join).toHaveBeenCalledTimes(1);
+  listening();
+  rerender(settings());
+  expect(mic).toHaveBeenCalledWith(true);
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(mic).toHaveBeenLastCalledWith(false);
+  await settle();
+});
+
+it("a held Fn release survives Home-to-Settings navigation", async () => {
+  listening();
+  const view = (home: boolean) => <TalkSessionProvider name="Nova">{home ? <TalkOrb name="Nova" /> : <h1>Settings</h1>}</TalkSessionProvider>;
+  const { rerender } = render(view(true));
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  expect(mic).toHaveBeenLastCalledWith(true);
+  rerender(view(false));
+  expect(screen.queryByRole("button", { name: "Talk to Nova" })).not.toBeInTheDocument();
+  now += HOLD_MS + 50;
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "up" })); });
+  expect(mic).toHaveBeenLastCalledWith(false);
+  expect(huddle.join).not.toHaveBeenCalled();
+  await settle();
+});
+
+it("a chord cancellation reaches the owner after the visible orb unmounts", () => {
+  listening();
+  const view = (home: boolean) => <TalkSessionProvider name="Nova">{home ? <TalkOrb name="Nova" /> : <h1>Agent</h1>}</TalkSessionProvider>;
+  const { rerender } = render(view(true));
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  rerender(view(false));
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "cancel" })); });
+  expect(mic).toHaveBeenLastCalledWith(false);
+  mic.mockClear();
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "up" })); });
+  expect(mic).not.toHaveBeenCalled();
+});
+
+it("multiple visible controls share one owner and one native-key join", () => {
+  render(<TalkSessionProvider name="Nova"><TalkOrb name="Nova" /><TalkOrb name="Nova" compact /></TalkSessionProvider>);
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  expect(huddle.join).toHaveBeenCalledTimes(1);
+});
+
+it("true owner teardown closes its assistant mic, but leaves another room's mic alone", () => {
+  listening();
+  const { unmount } = render(<TalkSessionProvider name="Nova"><h1>Settings</h1></TalkSessionProvider>);
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  mic.mockClear();
+  unmount();
+  expect(mic).toHaveBeenCalledWith(false);
+  huddle.roomId = "other-room";
+  mic.mockClear();
+  const other = render(<TalkSessionProvider name="Nova"><h1>Settings</h1></TalkSessionProvider>);
+  other.unmount();
+  expect(mic).not.toHaveBeenCalled();
+});
+
+
+it("a cold held Fn release remains closed when the join lands after navigating away", async () => {
+  const view = (home: boolean) => <TalkSessionProvider name="Nova">{home ? <TalkOrb name="Nova" /> : <h1>Settings</h1>}</TalkSessionProvider>;
+  const { rerender } = render(view(true));
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  huddle.joining = "dm1";
+  rerender(view(false));
+  now += HOLD_MS + 50;
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "up" })); });
+  connectedRoom.localParticipant.isMicrophoneEnabled = true;
+  listening(); huddle.joining = null;
+  rerender(view(false));
+  expect(mic).toHaveBeenLastCalledWith(false);
+  expect(huddle.join).toHaveBeenCalledTimes(1);
+  await settle();
+});
+
+it("a microphone enable finishing after the owner unmounts cannot reopen capture", async () => {
+  listening();
+  let enabled!: () => void;
+  mic.mockImplementationOnce(() => new Promise<void>((resolve) => { enabled = resolve; }));
+  const { unmount } = render(<TalkSessionProvider name="Nova"><h1>Settings</h1></TalkSessionProvider>);
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  expect(mic).toHaveBeenLastCalledWith(true);
+  unmount();
+  await act(async () => { enabled(); });
+  expect(mic).toHaveBeenLastCalledWith(false);
+});
+
+
+it("a cancelled chord restores a previously closed input without ending its conversation", () => {
+  listening();
+  render(<TalkSessionProvider name="Nova"><TalkOrb name="Nova" /></TalkSessionProvider>);
+  hold();
+  expect(orb()).toHaveAttribute("aria-pressed", "false");
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "down" })); });
+  expect(mic).toHaveBeenLastCalledWith(true);
+  act(() => { window.dispatchEvent(new CustomEvent(TALK_KEY, { detail: "cancel" })); });
+  expect(mic).toHaveBeenLastCalledWith(false);
+  expect(orb()).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: "End" })).toBeInTheDocument();
+  expect(huddle.leave).not.toHaveBeenCalled();
 });

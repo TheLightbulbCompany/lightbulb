@@ -1,6 +1,7 @@
 "use client";
 
 import useSWR from "swr";
+import { useAuth } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 
 interface RoomRow { roomId: string; kind: string; firstRun?: boolean; members?: { kind: string; id?: string }[] }
@@ -9,7 +10,8 @@ interface RoomRow { roomId: string; kind: string; firstRun?: boolean; members?: 
  *  undefined while loading, null when there is none. */
 export function useAssistantDm(): RoomRow | null | undefined {
   const api = useApi();
-  const { data } = useSWR("/messaging/rooms#voice-dm", async () => {
+  const { isLoaded, userId, orgId } = useAuth();
+  const { data } = useSWR(isLoaded && userId && orgId ? ["/messaging/rooms#voice-dm", userId, orgId] : null, async () => {
     const { rooms } = (await api.get("/messaging/rooms")) as { rooms: RoomRow[] };
     return rooms.find((r) => r.firstRun) ?? rooms.find((r) => r.kind === "dm" && r.members?.some((m) => m.kind === "agent")) ?? null;
   });

@@ -262,7 +262,10 @@ async def validate(receipt_path: Path) -> None:
         checks["pollContainsNoGrant"] = grant not in json.dumps(status.__dict__, default=str)
         receipt["checks"], receipt["passed"] = checks, all(checks.values())
         if status.usage:
-            receipt["usage"] = {"inputTokens": status.usage.input_tokens, "outputTokens": status.usage.output_tokens}
+            receipt["usage"] = {
+                "inputTokens": status.usage.get("input_tokens"),
+                "outputTokens": status.usage.get("output_tokens"),
+            }
         receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps({"receipt": str(receipt_path), "passed": receipt["passed"], "runId": identity.run_id}))
         if not receipt["passed"]:

@@ -203,6 +203,45 @@ async def test_usage_included_minutes(repos, async_client_org_admin):  # noqa: F
     assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["included"] == 1500
 
 
+@pytest.mark.parametrize("contract,paid", [(False, False), (True, False), (True, True)])
+@pytest.mark.usefixtures("repos")
+async def test_usage_only_describes_an_allowance_when_payment_covers_now(
+    async_client_org_admin, monkeypatch, contract, paid
+):
+    from unittest.mock import AsyncMock
+    from routers import voice
+
+    account = (
+        {
+            "metronome_voice_contract_id": "contract",
+            "voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}}
+            if paid
+            else {},
+        }
+        if contract
+        else {}
+    )
+    monkeypatch.setattr(voice.billing_repo, "get_by_owner_id", AsyncMock(return_value=account))
+    monkeypatch.setattr(voice, "month_seconds", AsyncMock(return_value=6720))
+    monkeypatch.setattr(
+        voice.voice_plan,
+        "usage",
+        AsyncMock(
+            return_value={
+                "used": 112,
+                "included": 1500,
+                "overageRate": 0.35,
+                "periodStart": "2026-11-01T00:00:00Z",
+                "periodEnd": "2026-12-01T00:00:00Z",
+            }
+        ),
+    )
+    result = (await async_client_org_admin.get("/api/v1/voice/usage")).json()
+    assert result["used"] == 112
+    assert result["paidAllowance"] is paid
+    assert result["planStatus"] == ("active" if paid else "pending_payment" if contract else "not_enrolled")
+
+
 @pytest.mark.asyncio
 async def test_usage_overage_rate(repos, async_client_org_admin):  # noqa: F811
     assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["overageRate"] == 0.35

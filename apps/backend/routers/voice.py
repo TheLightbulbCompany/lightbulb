@@ -153,9 +153,12 @@ async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
         return {
             **measured,
             "planStatus": voice_plan.status(account),
+            "paidAllowance": voice_billing.has_voice_plan(account),
             "runOut": "forward" if cfg.get("runOut") == "forward" else "keep",
         }
     return {
+        "planStatus": "not_enrolled",
+        "paidAllowance": False,
         "used": round(await month_seconds(ws, cfg.get("timezone")) / 60),
         "included": voice_billing.INCLUDED_MINUTES,
         "overageRate": voice_billing.OVERAGE_USD_PER_MINUTE,

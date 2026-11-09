@@ -21,6 +21,11 @@ export function BillingMinutes() {
   const { data: config, save } = useAgentConfig();
   if (error) return <section className="vx-card" role="alert"><h2 className="vx-h">Billing &amp; minutes</h2><p>Couldn&apos;t load measured usage. <button type="button" onClick={() => void mutate()}>Retry</button></p></section>;
   if (!u) return null;
+  if (!u.paidAllowance) return <section className="vx-card vx-billing" aria-labelledby="vx-billing-h">
+    <h2 className="vx-h" id="vx-billing-h">Billing &amp; minutes</h2>
+    <p className="vx-minutes"><span className="vx-number">{u.used.toLocaleString()}</span> voice min used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
+    <p className="vx-sub">Included minutes apply while your voice plan has confirmed paid access. Check your plan status above.</p>
+  </section>;
   const pct = Math.min(100, Math.round((u.used / u.included) * 100));
   const rate = `$${u.overageRate.toFixed(2)}`;
   const runOut = config?.runOut ?? u.runOut;

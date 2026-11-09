@@ -146,6 +146,7 @@ export function monthMinutes(items: TimelineItem[], now = new Date()): number {
 export interface Usage {
   used: number; included: number; overageRate: number; runOut: "keep" | "forward";
   usedSeconds?: number; periodStart?: string; periodEnd?: string; timeZone?: string;
+  paidAllowance?: boolean;
 }
 
 /** The server's measured allowance and billing period; unavailable usage must never become an estimated bill. */

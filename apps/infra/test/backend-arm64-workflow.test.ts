@@ -15,6 +15,8 @@ describe("backend ARM64 build and deployment coherence", () => {
     expect(smoke).toContain("--network none --platform linux/arm64");
     expect(smoke).toContain("--entrypoint /app/.venv/bin/python");
     expect(smoke).toContain("backend-image-smoke.py");
+    expect(smoke).toContain("arm64-smoke-${{ github.run_id }}-${{ github.run_attempt }}");
+    expect(smoke).toContain("tags: ${{ env.SMOKE_IMAGE }}");
   });
 
   it("the candidate check has no deployment or secret-reading authority", () => {

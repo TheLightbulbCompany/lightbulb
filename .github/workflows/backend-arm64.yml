@@ -17,6 +17,8 @@ jobs:
   image:
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     timeout-minutes: 30
+    env:
+      SMOKE_IMAGE: lightbulb-backend:arm64-smoke-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v3
@@ -30,10 +32,10 @@ jobs:
           platforms: linux/arm64
           load: true
           push: false
-          tags: lightbulb-backend:arm64-smoke
+          tags: ${{ env.SMOKE_IMAGE }}
       - name: Verify actual image architecture and native entrypoints without network
         run: |
-          test "$(docker image inspect lightbulb-backend:arm64-smoke --format '{{.Architecture}}')" = arm64
+          test "$(docker image inspect "$SMOKE_IMAGE" --format '{{.Architecture}}')" = arm64
           docker run --rm --network none --platform linux/arm64 \
             -v "$GITHUB_WORKSPACE/.github/scripts/backend-image-smoke.py:/image-smoke.py:ro" \
-            --entrypoint /app/.venv/bin/python lightbulb-backend:arm64-smoke /image-smoke.py
+            --entrypoint /app/.venv/bin/python "$SMOKE_IMAGE" /image-smoke.py

@@ -376,3 +376,42 @@ async def test_open_asked_question_from_trigger_and_supersedes(world):
 async def test_open_asked_question_missing_trigger_fails(world):
     with pytest.raises(ApplicationError):
         await _run(tq.open_asked_question, WS, TASK, tq.AskRef("ask:nope", "question", "question", True))
+
+
+@pytest.mark.parametrize("retire", ["cancel", "answer", "resolve"])
+async def test_relay_rechecks_retirement_after_room_creation(world, relay, monkeypatch, retire):
+    from core.services import task_conversation
+
+    await effects_repo.put_effect(WS, _effect(kind="purchase"))
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def room(*_, **__):
+        entered.set()
+        await release.wait()
+        return "room-task"
+
+    monkeypatch.setattr(task_conversation, "ensure_task_room", room)
+    running = asyncio.create_task(_run(tq.relay_question, WS, TASK, ref.qid))
+    await asyncio.wait_for(entered.wait(), 5)
+    if retire == "cancel":
+        await questions_repo.cancel_open(WS, TASK, by=SAM, reason="stopped")
+    elif retire == "answer":
+        await questions_repo.record_answer(
+            WS,
+            TASK,
+            ref.qid,
+            option_id="allow_once",
+            trigger_id=None,
+            by=ADA,
+            client_answer_id="during-relay",
+            expected_version=None,
+        )
+    else:
+        task = await tasks_repo.get_task(WS, TASK)
+        await tasks_repo.transition_task(WS, TASK, to="resolved", expected_version=task["version"])
+    release.set()
+    await running
+    relay["post"].assert_not_awaited()
+    relay["push"].assert_not_awaited()
+    relay["away"].assert_not_awaited()

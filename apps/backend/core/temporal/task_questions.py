@@ -221,7 +221,7 @@ class TaskQuestionsMixin:
 
     async def _q_cancel_open(self, by: str, reason: str) -> None:
         """The task is ending: its open Questions are cancelled (an answer after this is refused, not lost)."""
-        if self._open_qs:
+        if self._open_qs or self._pre_attempt_inflight:
             await _act("cancel_open_questions", self._ws, self._task_id, by, reason)
             self._open_qs.clear()
             self._nonblocking.clear()
@@ -262,9 +262,17 @@ class TaskQuestionsMixin:
                 # Old payloads default false and preserve the recorded command sequence.
                 # No Question row/card exists yet, so no answer can race a later waiting write.
                 await self._transition("waiting", "question")
+                if self._stop_by is not None or self._action is not None or self._status == "resolved":
+                    raise ValueError("task_closed")
             opened = await _act("open_asked_question", self._ws, self._task_id, ref, result_type=QuestionRef)
             if ref.before_attempt:
                 self._pre_attempt_qid = opened.qid
+                # Stop/Close can finish while the opening Activity is in flight. Its
+                # earlier cancellation saw no row; retire the late row before relay.
+                if self._stop_by is not None or self._action is not None or self._status == "resolved":
+                    by = self._stop_by or (self._action[1] if self._action else "__system__")
+                    await _act("cancel_open_questions", self._ws, self._task_id, by, "task_closed")
+                    return opened.qid
             if ref.kind == "question":
                 for qid in [q for q in self._asked_questions if q != opened.qid]:
                     self._q_forget(qid)
@@ -492,7 +500,7 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     q = await questions_repo.get_question(ws, task_id, qid)
     tree = await tasks_repo.get_task_tree(ws, task_id)
     task = tree["task"]
-    if q is None or task is None or q["state"] != "open":
+    if q is None or task is None or q["state"] != "open" or task["status"] == "resolved":
         return
     label = await _specialist_label(ws, task.get("specialist"))
     title, body = questions.card_copy(q, label)
@@ -500,6 +508,11 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     room = await task_conversation.ensure_task_room(ws, task)
     for uid in q["answerers"]:
         await task_conversation.ensure_task_room(ws, task, seat_viewer=uid)
+    # Room/seat creation awaits I/O: an answer or Stop may have retired the card.
+    current = await questions_repo.get_question(ws, task_id, qid)
+    current_task = await tasks_repo.get_task(ws, task_id)
+    if current is None or current["state"] != "open" or current_task is None or current_task["status"] == "resolved":
+        return
     await task_conversation.post_as_lightbulb(
         ws, room, text=title, event_id=f"q:{qid}", specialist=task.get("specialist"), task_refs=refs, kind="question"
     )
@@ -603,12 +616,24 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
         ):
             land = q["effectIdemKey"]
     trigger_id = ref.trigger_id or ts.trigger_id("answer", ref.qid, ref.client_answer_id)
+    # Button IDs are opaque. Preserve the authenticated selection from the
+    # canonical Question for the Worker, alongside its correlation IDs. An
+    # existing free-text answer Trigger remains first-write-wins.
+    selected = next((o["label"] for o in q.get("options", []) if o["id"] == option), None)
+    answer_text = (
+        f"{q.get('text') or q['title']}\nSelected answer: {selected}" if q["kind"] == "question" and selected else None
+    )
     await tasks_repo.put_trigger(
         ws,
         {
             "triggerId": trigger_id,
             "source": "answer",
-            "ref": {"taskId": task_id, "qid": ref.qid, "optionId": option},
+            "ref": {
+                "taskId": task_id,
+                "qid": ref.qid,
+                "optionId": option,
+                **({"text": answer_text} if answer_text else {}),
+            },
             "admission": "respond",
             "lane": "shared",
             "actorUserId": ref.by_user_id,

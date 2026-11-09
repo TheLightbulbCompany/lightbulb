@@ -573,3 +573,39 @@ def test_old_attempt_result_payload_defaults_to_no_initial_question_gate():
     assert value_to_type(AttemptRef, {"n": 1, "run_id": "recorded-before-gate"}) == AttemptRef(
         1, "recorded-before-gate"
     )
+
+
+async def test_stop_during_initial_question_open_cancels_late_row_without_relay(temporal_env, fakes):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def opening(*_):
+        entered.set()
+        await release.wait()
+        return QuestionRef("late-initial", [SAM], True)
+
+    fakes.behaviour["open_asked_question"] = opening
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run,
+            TaskStart(WS, TID, "migrated"),
+            id=f"meeting-stop-opening:{uuid.uuid4()}",
+            task_queue=queue,
+        )
+        ask = asyncio.create_task(
+            h.execute_update(
+                TaskWorkflow.ask,
+                AskRef("ask:late-initial", "question", "question", True, True),
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        await h.execute_update(TaskWorkflow.stop, StopRequest(PRIYA))
+        assert fakes.args("transition")[-1] == (WS, TID, "resolved", "stopped")
+        release.set()
+        assert await ask == "late-initial"
+        await h.result()
+    assert fakes.args("cancel_open_questions") == [
+        (WS, TID, PRIYA, "stopped"),
+        (WS, TID, PRIYA, "task_closed"),
+    ]
+    assert "relay_question" not in fakes.names()
+    assert "worker_turn" not in fakes.names()

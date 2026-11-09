@@ -167,3 +167,54 @@ async def test_current_membership_and_original_private_room_fences_still_apply(i
     with pytest.raises(task_asks.AskRefused, match="no_longer_authorized"):
         await activities.begin_attempt("org_a", task["taskId"], ["chat:yes"])
     assert (await tasks_repo.get_task_tree("org_a", task["taskId"]))["attempts"] == []
+
+
+async def test_button_selection_reaches_first_worker_request_as_canonical_label(initial_task, monkeypatch):
+    from core.services import owner_facts
+
+    task, question = initial_task
+    await _open(task, question)
+    answer = await ActivityEnvironment().run(
+        task_questions.record_answer,
+        "org_a",
+        task["taskId"],
+        AnswerRef(question["qid"], "option-0", None, "original-user", "button-answer"),
+    )
+    assert "Selected answer: Weekly" in await activities._input_text("org_a", answer.trigger_id)
+    monkeypatch.setattr(activities, "_local_now", AsyncMock(return_value="now"))
+    monkeypatch.setattr(activities.room_memory, "group_room_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(tasks_repo, "from_contact", AsyncMock(return_value=None))
+    monkeypatch.setattr(owner_facts, "_lookup_connected_integrations", AsyncMock(return_value=[]))
+    monkeypatch.setattr(activities.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value=[]))
+    request = await activities._request(
+        "org_a",
+        task,
+        {"n": 1, "inputTriggerIds": [answer.trigger_id]},
+        {"attempts": []},
+    )
+    assert "## New input\nWhich report?\nSelected answer: Weekly" in request.input
+
+
+async def test_button_context_never_overwrites_authentic_free_text_answer(initial_task):
+    task, question = initial_task
+    await _open(task, question)
+    trigger_id = ts.trigger_id("answer", question["qid"], "typed-answer")
+    await tasks_repo.put_trigger(
+        "org_a",
+        {
+            "triggerId": trigger_id,
+            "source": "answer",
+            "receivedAt": utc_now_iso(),
+            "actorUserId": "original-user",
+            "admission": "respond",
+            "lane": "shared",
+            "ref": {"taskId": task["taskId"], "qid": question["qid"], "text": "Weekly, starting next Monday"},
+        },
+    )
+    await ActivityEnvironment().run(
+        task_questions.record_answer,
+        "org_a",
+        task["taskId"],
+        AnswerRef(question["qid"], "option-0", trigger_id, "original-user", "typed-answer"),
+    )
+    assert await activities._input_text("org_a", trigger_id) == "Weekly, starting next Monday"

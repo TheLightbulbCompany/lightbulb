@@ -36,6 +36,9 @@ def m():
         patch.object(voice_meet.meeting_invites, "_patch_meeting", AsyncMock(side_effect=fake_patch)),
         patch.object(voice_meet.meeting_bots, "say", AsyncMock()) as say,
         patch.object(voice_meet.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
+        patch.object(
+            voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": meeting})
+        ),
         patch.object(voice_meet.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
         patch.object(voice_meet, "latest_seq", AsyncMock(return_value=41)),
     ):
@@ -91,7 +94,8 @@ async def test_assistant_name_from_the_agent_page(m):
 
 def _meet_task(status="idle"):
     return {"taskId": "k1", "title": "Draft the holiday-hours post", "status": status,
-            "triggerId": f"voice:{ROOM}:run1", "attemptCount": 1}  # fmt: skip
+            "pk": "WS#org_1", "origin": "meeting", "audience": {"kind": "room", "roomId": ROOM},
+            "triggerId": "chat:actual-ask", "attemptCount": 1}  # fmt: skip
 
 
 async def test_meeting_task_done_posts_link_in_chat(m):
@@ -127,6 +131,23 @@ async def test_ended_meeting_updates_status_only(m):
     m["meeting"].update(status="ended", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
     await voice_meet.task_moved(_meet_task(), "idle")
     assert m["meeting"]["followUps"][0]["status"] == "done"
+    m["say"].assert_not_awaited()
+
+
+async def test_task_followup_cannot_update_another_workspaces_room(m):
+    m["meeting"].update(followUps=[{"taskId": "k1", "status": "working"}])
+    task = {**_meet_task(), "pk": "WS#other-owner"}
+    await voice_meet.task_moved(task, "idle")
+    assert m["meeting"]["followUps"][0]["status"] == "working"
+    m["say"].assert_not_awaited()
+
+
+async def test_task_updates_the_archived_occurrence_without_announcing_in_the_next_call(m):
+    m["meeting"].update(
+        status="in_call", history=[{"startAt": 100, "followUps": [{"taskId": "k1", "status": "working"}]}]
+    )
+    await voice_meet.task_moved(_meet_task(), "idle")
+    assert m["meeting"]["history"][0]["followUps"][0]["status"] == "done"
     m["say"].assert_not_awaited()
 
 

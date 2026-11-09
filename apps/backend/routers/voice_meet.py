@@ -248,25 +248,61 @@ async def _tile_phase(room_id: str, phase: str) -> None:
 
 async def task_moved(task: dict, to: str) -> None:
     """A voice task changed status (activities._announce). When it is a meeting's follow-up, the follow-up tracks
-    it; a newly done one is said in the Meet's chat with its link while the bot is still in the call. A voice
-    trigger's call id is the room it was asked in; a phone call's room has no meeting, so nothing is written.
+    it; a newly done one is said in the Meet's chat with its link while the bot is still in the call. The canonical
+    meeting origin and room audience identify it; the task workspace must own that room.
     Best-effort: a status change never fails over this."""
-    parts, status = str(task.get("triggerId") or "").split(":"), _FOLLOW_UP.get(to)
-    if parts[0] != "voice" or len(parts) != 3 or status is None:
+    audience, status = task.get("audience") or {}, _FOLLOW_UP.get(to)
+    room_id = audience.get("roomId")
+    owner_id = str(task.get("pk") or "").removeprefix("WS#")
+    if (
+        task.get("origin") != "meeting"
+        or audience.get("kind") != "room"
+        or not room_id
+        or not str(task.get("pk") or "").startswith("WS#")
+        or not owner_id
+        or status is None
+    ):
         return
     mine = lambda f: f.get("taskId") == task["taskId"]  # noqa: E731
+
+    def updated(entry: dict) -> dict:
+        return {**entry, "followUps": [{**f, "status": status} if mine(f) else f for f in entry.get("followUps") or []]}
+
+    def changed(m: dict) -> bool:
+        return any(
+            mine(f) and f.get("status") != status
+            for entry in [m, *(m.get("history") or [])]
+            for f in entry.get("followUps") or []
+        )
+
     try:
+        meta = (await messaging_repo.get_room(room_id)) or {}
+        if meta.get("ownerId") != owner_id or not meta.get("meeting"):
+            return
+        current_changed = False
+
+        def lay(m: dict) -> dict:
+            nonlocal current_changed
+            current_changed = any(mine(f) and f.get("status") != status for f in m.get("followUps") or [])
+            return {"followUps": updated(m)["followUps"], "history": [updated(h) for h in m.get("history") or []]}
+
         meeting = await meeting_invites._patch_meeting(
-            parts[1],
-            lambda m: {"followUps": [{**f, "status": status} if mine(f) else f for f in m.get("followUps") or []]},
-            when=lambda m: any(mine(f) and f.get("status") != status for f in m.get("followUps") or []),
-        )  # None: no such follow-up, or already this status (a retried Activity says nothing twice)
-        if meeting and status == "done" and meeting.get("status") == "in_call" and meeting.get("recallBotId"):
+            room_id,
+            lay,
+            when=changed,
+        )  # a retried Activity changes nothing and says nothing twice
+        if (
+            meeting
+            and current_changed
+            and status == "done"
+            and meeting.get("status") == "in_call"
+            and meeting.get("recallBotId")
+        ):
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task&taskId={task['taskId']}"
             await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
-            await _tile_phase(parts[1], "page_ready")
-        elif meeting and status != "done" and meeting.get("status") == "in_call":
-            await _tile_phase(parts[1], "drafting" if status == "working" else "")
+            await _tile_phase(room_id, "page_ready")
+        elif meeting and current_changed and status != "done" and meeting.get("status") == "in_call":
+            await _tile_phase(room_id, "drafting" if status == "working" else "")
     except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
         logger.warning("meet follow-up not updated task=%s to=%s", task.get("taskId"), to, exc_info=True)
 

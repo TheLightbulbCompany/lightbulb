@@ -38,20 +38,20 @@ marked as machine-generated (`Auto-Submitted`), so well-behaved autoresponders
 will not answer it.
 
 **Meetings.** Put the team address on a Google Calendar event with a Meet link:
-one "<Company> agents · Lightbulb" participant joins each time it meets. No
-room opens; every agent is in the call. In the Meet someone asks an agent by
-saying its name (or "Lightbulb") anywhere in a sentence; the next thing that
-person says within a few seconds needs no name. The agent says nothing while it
-works: its tile shows it listening, then working, then a raised hand when the
-answer is ready. It speaks in the next pause in the talk, or at once when
-someone turns to it by name. Talked over, it stops, keeps its hand up and says
-the whole answer at the next pause. It stays out of all other talk. Afterwards the transcript posts in
-the general channel and one agent there writes the notes; action items become
-tasks. Notes and transcripts stay in the app; they are not emailed automatically.
+one "<Company> agents · Lightbulb" participant joins each time it meets. Say the
+assistant's name to wake it; while awake it follows the conversation naturally.
+It sleeps after five minutes without interaction. The live model handles turns,
+interruptions and speaking while canonical tasks handle delegated work.
+Afterwards the transcript posts in the general channel and one agent there writes
+the notes. Action items are recorded commitments with their original assignee;
+uniquely matching work already started during the call is linked, including
+completed work. Recording an action item does not authorize agent execution.
+People can explicitly request unmatched work through the existing chat.
+Notes and transcripts stay in the app; they are not emailed automatically.
 If no agent is in that channel, no notes are written. An answer nobody got to
-hear in the Meet stays with the meeting and its notes. Notes from earlier
-occurrences stay in the meeting history. You do not join by yourself and cannot
-be invited by chat.
+hear in the Meet stays with the meeting and its notes. Notes and commitments from
+earlier occurrences stay in the meeting history. You do not join by yourself and
+cannot be invited by chat.
 
 **Sending — one command, three recipients:**
 

@@ -10,8 +10,8 @@ import logging
 import re
 import time
 import uuid
+from datetime import datetime
 
-from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -190,7 +190,7 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 f"meeting:{room_id}:{occurrence}:notes",
                 f"Write the meeting notes for {title}: decisions, open questions, two paragraphs max, then a last "
                 'section headed "Action items:" with one line per item ("- <owner>: <what>"); do not create tasks '
-                "yourself, each action item becomes a thread for the team. Action items come only from what people "
+                "yourself. Action items are recorded commitments, not authorization to start work. Action items come only from what people "
                 f"said: never from a line marked{ASSISTANT_MARK}, which is the voice repeating the team. The "
                 "transcript is attached" + _unsaid_text(meeting),
                 dispatch_targets=[{"agentId": writer, "eventKind": "user_request"}],
@@ -332,7 +332,7 @@ async def _mail_organizer(
 
 #: What a notes run's mail reads from the meeting, snapshotted when the run is dispatched.
 _MAIL_FIELDS = (
-    "title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt", "unsaid", "inCallAt",
+    "title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt", "unsaid", "inCallAt", "endedAt", "endAt",
 )  # fmt: skip
 
 
@@ -401,93 +401,93 @@ def action_items(notes: str) -> list[str]:
     return [i for i in items if i]
 
 
-#: Not part of an action item's object ("Order **more** gel colors **from** OPI"). "post" and "email" are objects.
-_STOP = frozenset(
-    "the a an and or for with from to of on in at by more some our their his her my your it this that".split()
-)
-#: Verbs that name the same work ("Finalize and share the post" is the drafted post's thread).
-_VERBS = (
-    frozenset("draft write prepare create make finalize finish complete".split()),
-    frozenset("send share email mail publish".split()),
-    frozenset("order buy purchase".split()),
-    frozenset("book schedule reserve".split()),
-)
+def same_action(item: str, task: dict) -> bool:
+    """Only an exact normalized title/description after the notes' structural owner prefix.
+    Shared verbs or object words are not proof that a commitment is this task."""
+    normalize = lambda text: " ".join(re.findall(r"\w+", text.casefold()))  # noqa: E731
+    action = normalize(item.split(":", 1)[-1])
+    return bool(action) and any(action == normalize(task.get(k) or "") for k in ("title", "description"))
 
 
-def _stem(word: str) -> str:
-    word = word.lower().replace("colour", "color")
-    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
-
-
-def _verb_object(text: str) -> tuple[set[str], set[str]]:
-    """(the verbs, the object's words) of an imperative line: its first word, a second after "and" ("Finalize and
-    share ..."), then the rest without `_STOP` words."""
-    words = [_stem(w) for w in re.findall(r"[A-Za-z]+", text)]
-    verbs = set(words[:1])
-    rest = words[1:]
-    if len(rest) >= 2 and rest[0] == "and":
-        verbs.add(rest[1])
-        rest = rest[2:]
-    return verbs, {w for w in rest if w not in _STOP}
-
-
-def _same_verb(a: set[str], b: set[str]) -> bool:
-    return bool(a & b) or any(a & g and b & g for g in _VERBS)
-
-
-def covered(item: str, titles: list[str]) -> bool:
-    """A task already started in the meeting covers the item: the same verb (or one naming the same work) and every
-    word of the item's object in the task's title ("Finalize and share holiday-hours post" is "Draft the holiday-hours
-    post", 8 Nov prod Meet re-run LB-24 vs LB-19; "Book the venue" is not "book the venue for the party")."""
-    verbs, obj = _verb_object(item.split(":", 1)[-1])
-    for title in titles:
-        t_verbs, t_obj = _verb_object(title)
-        if obj and _same_verb(verbs, t_verbs) and obj <= t_obj:
-            return True
-    return False
-
-
-async def _meeting_task_titles(owner_id: str, room_id: str, since: int) -> list[str]:
-    """Titles of the meeting room's tasks started since the call began (open or done): the tasks holding, or that
+async def _meeting_tasks(owner_id: str, room_id: str, since: int, until: int) -> list[dict]:
+    """The meeting room's tasks started during this occurrence (open or done): the tasks holding, or that
     held, the room's threads (`list_room_threads`), never a workspace-wide scan."""
-    after = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(since))
     threads = await tasks_repo.list_room_threads(owner_id, room_id)
     ids = dict.fromkeys(tid for t in threads for tid in (t["taskId"], *(t.get("history") or [])))
     rows = await tasks_repo.batch_get(owner_id, [ts.task_sk(tid) for tid in ids])
-    return [r.get("title") or "" for r in rows if (r.get("createdAt") or "") >= after]
+
+    def in_call(row: dict) -> bool:
+        try:
+            at = datetime.fromisoformat(row.get("createdAt") or "").timestamp()
+        except ValueError:
+            return False
+        audience = row.get("audience") or {}
+        return (
+            since <= at <= until
+            and row.get("origin") == "meeting"
+            and audience.get("kind") == "room"
+            and audience.get("roomId") == room_id
+        )
+
+    return [r for r in rows if in_call(r)]
 
 
 async def _file_action_items(owner_id: str, message_id: str, request: dict, notes: str) -> None:
-    """Action items -> threads (super-agent plan: "meeting action items → Requests, not Paperclip"): one message in
-    the meeting's own room as the inviting member, which its Router starts a thread for each, like an addressed line
-    in the call (voice_meet.ask). Keyed on the notes request, so the reply and the run's end post it once."""
-    from routers.voice_meet import inviting_member
-
-    items = action_items(notes)
+    """Record commitments, not execution requests. Notes do not authorize work for the inviter.
+    A unique matching task already started in this call is linked, including finished work; ambiguous or
+    unmatched items remain recorded. Identity belongs to the occurrence and text, not the notes retry."""
     room_id = request["roomId"]
-    meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
-    since = int((request.get("meeting") or {}).get("inCallAt") or meeting.get("inCallAt") or 0)
-    if items and since:  # work the meeting already started, open or done, is not filed again (LB-24 vs LB-19)
-        titles = await _meeting_task_titles(owner_id, room_id, since)
-        # Covered items stay out of the Router's message entirely (they are in the mailed notes): listed there, the
-        # Router handed them to the finished task, which ran again (8 Nov prod Meet re-run #3, LB-28 attempt 3).
-        items = [i for i in items if not covered(i, titles)]
-    member = inviting_member(meeting, await messaging_repo.list_members(room_id)) if items else None
-    if member is None:
+    meta = (await messaging_repo.get_room(room_id)) or {}
+    if meta.get("ownerId") != owner_id or not meta.get("meeting"):
         return
-    title = " ".join(((request.get("meeting") or {}).get("title") or meeting.get("title") or "Meeting").split())
-    text = f"Action items from the meeting {title}, one thread each:\n" + "\n".join(f"- {i}" for i in items)
-    await messaging.create_human_message(
-        AuthContext(user_id=member, org_id=owner_id),
-        room_id,
-        messaging.CreateMessageRequest(
-            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"meeting-actions:{owner_id}:{message_id}"),
-            text=text[:3800],
-            reply_to_message_id=None,
-            thread_root_message_id=None,
-        ),
-        via="meeting_notes",  # nobody spoke it: no spoken-reply hint (admission still tags origin=meeting)
+    meeting = meta["meeting"]
+    occurrence = request.get("occurrence", meeting.get("startAt"))
+    entry = (
+        meeting
+        if meeting.get("startAt") == occurrence
+        else next((h for h in meeting.get("history") or [] if h.get("startAt") == occurrence), {})
     )
+    snapshot = request.get("meeting") or {}
+    since = int(snapshot.get("inCallAt") or entry.get("inCallAt") or 0)
+    until = int(snapshot.get("endedAt") or entry.get("endedAt") or snapshot.get("endAt") or entry.get("endAt") or 0)
+    items = action_items(notes)
+    tasks = await _meeting_tasks(owner_id, room_id, since, until) if items and since and until >= since else []
+    additions = []
+    statuses = {
+        "queued": "queued",
+        "working": "working",
+        "waiting": "needs_you",
+        "failed": "needs_you",
+        "idle": "done",
+        "resolved": "done",
+    }
+    for text in items:
+        identity = f"meeting-action:{owner_id}:{room_id}:{occurrence}:{' '.join(text.casefold().split())}"
+        item = {"id": str(uuid.uuid5(uuid.NAMESPACE_URL, identity)), "text": text, "status": "recorded"}
+        matches = {t["taskId"]: t for t in tasks if t.get("taskId") and same_action(text, t)}
+        if len(matches) == 1:
+            task = next(iter(matches.values()))
+            item.update(taskId=task["taskId"], status=statuses.get(task.get("status"), "recorded"))
+            if task.get("triggerId"):
+                item["sourceTriggerId"] = task["triggerId"]
+        additions.append(item)
+
+    def merge(entry: dict) -> dict:
+        kept = list(entry.get("followUps") or [])
+        ids = {f.get("id") for f in kept}
+        for item in additions:
+            if item["id"] not in ids:
+                kept.append(item)
+                ids.add(item["id"])
+        return {"followUps": kept}
+
+    def lay(m: dict) -> dict:
+        if m.get("startAt") == occurrence:
+            return merge(m)
+        return {"history": [{**h, **merge(h)} if h.get("startAt") == occurrence else h for h in m.get("history") or []]}
+
+    if additions:
+        await meeting_invites._patch_meeting(room_id, lay)
 
 
 async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
@@ -504,12 +504,17 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
                 for h in m.get("history") or []]  # fmt: skip
         return {"history": past}
 
-    await meeting_invites._patch_meeting(room_id, lay)
+    saved = await meeting_invites._patch_meeting(room_id, lay)
     await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
 
-    if notes:
+    entry = (
+        saved
+        if saved and saved.get("startAt") == occurrence
+        else next((h for h in (saved or {}).get("history") or [] if h.get("startAt") == occurrence), {})
+    )
+    if canonical := (entry or {}).get("notes"):
         try:
-            await _file_action_items(owner_id, message_id, request, notes)
+            await _file_action_items(owner_id, message_id, request, canonical)
         except Exception:  # noqa: BLE001 -- the notes stay in the app; the items are in the notes
             put_metric("meeting.notes.actions_failed")
             logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)

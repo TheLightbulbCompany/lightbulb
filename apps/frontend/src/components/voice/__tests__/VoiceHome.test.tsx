@@ -117,10 +117,12 @@ it("call pane Forget shows an error and keeps the memory", async () => {
 
 it("meeting pane shows follow-up status", () => {
   items.list = [{ type: "meeting", roomId: "m1", at: Date.now(), title: "Standup",
-    followUps: [{ text: "Send deck", status: "done" }, { text: "Pick vendor", status: "needs_you" }, { text: "Book room", status: "running" }] }];
+    followUps: [{ text: "Pat: send deck", status: "recorded" }, { text: "Send deck", status: "done", taskId: "finished-task" }, { text: "Pick vendor", status: "needs_you" }, { text: "Book room", status: "working" }] }];
   render(<VoiceHome />);
   fireEvent.click(screen.getByRole("button", { name: /Standup/ }));
   const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).getByText("Pat: send deck").closest("li")).toHaveTextContent("Recorded");
+  expect(within(pane).getByRole("link", { name: "Send deck" })).toHaveAttribute("href", "/chat?panel=task&taskId=finished-task");
   expect(within(pane).getByText("Send deck").closest("li")).toHaveTextContent("Done");
   expect(within(pane).getByText("Pick vendor").closest("li")).toHaveTextContent("Needs you");
   expect(within(pane).getByText("Book room").closest("li")).toHaveTextContent("Working");

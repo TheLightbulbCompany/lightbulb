@@ -391,19 +391,27 @@ async def test_go_live_returns_semantic_payment_error_without_buy(repos, async_c
     twilio.assert_not_awaited()
 
 
-async def test_route_add_is_atomic_and_preserves_shared_number_and_ip_configuration(monkeypatch):
+@pytest.mark.parametrize("remove", [False, True])
+async def test_real_sdk_route_patch_preserves_shared_number_and_ip_configuration(monkeypatch, remove):
     from types import SimpleNamespace
+    from livekit.api.sip_service import SipService
 
-    sip = SimpleNamespace(update_sip_inbound_trunk=AsyncMock())
+    sip = SipService.__new__(SipService)  # execute the pinned real SDK wrapper; intercept only its HTTP seam
+    sip._client = SimpleNamespace(request=AsyncMock())
+    sip._admin_headers = lambda: {}
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=SimpleNamespace(sip=sip))
     context.__aexit__ = AsyncMock(return_value=False)
     monkeypatch.setattr(vo.livekit_huddles, "_api", lambda: context)
     monkeypatch.setattr(vo.settings, "VOICE_INBOUND_TRUNK_ID", "ST_owned")
-    await vo._route_number(NEW)
-    request = sip.update_sip_inbound_trunk.await_args.args[0]
-    assert request.sip_trunk_id == "ST_owned" and list(request.update.numbers.add) == [NEW]
-    assert not request.update.numbers.set and not request.update.numbers.remove
+    await vo._route_number(NEW, remove=remove)
+    args = sip._client.request.await_args.args
+    assert args[1] == "UpdateSIPInboundTrunk"
+    request = args[2]
+    assert request.sip_trunk_id == "ST_owned"
+    assert list(request.update.numbers.remove if remove else request.update.numbers.add) == [NEW]
+    assert not request.update.numbers.set
+    assert not (request.update.numbers.add if remove else request.update.numbers.remove)
     assert not request.update.allowed_addresses.ListFields()
 
 

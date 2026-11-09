@@ -4,7 +4,8 @@ The one place that says what is built, what is live, and what has been tested.
 If a capability is not a row here, nobody owns it: add the row.
 
 Last full check: 9 Nov 2026, against `origin/main` `42a8f8aa8`, prod backend task
-definition 416 and dev 966. "Tested" entries come from the receipts of the build
+definition 416 and dev 966. Prod voice worker: LiveKit agent `CA_HTFFgrTj24NH`, version
+`QJcdFMeCBBJF` (reported by the Platform lead). Prod Hermes pool image: `h-2026.11.9-df8c100`. "Tested" entries come from the receipts of the build
 sessions unless the note says "config read 9 Nov".
 
 ## The four states
@@ -13,7 +14,7 @@ sessions unless the note says "config read 9 Nov".
 |---|---|---|
 | **Built** | The code is on `main`. | The PR that merges it |
 | **Prod** | It is deployed to prod and switched on there. | The session that ran the prod deploy |
-| **Machine** | A real call, meeting, payment or scripted run passed **on prod**. Unit tests do not count. | The session that ran it, with the receipt named |
+| **Machine** | A real call, meeting, payment or scripted run passed **on prod**. Unit tests do not count. The one exception is payment, which is proven in the Stripe sandbox on dev; the note then says so. | The session that ran it, with the receipt named |
 | **Founder** | The founder walked it on prod and said yes. | The founder |
 
 Values: `yes`, `no`, `part` (say which part in the note), `n/a`.
@@ -23,9 +24,10 @@ Values: `yes`, `no`, `part` (say which part in the note), `n/a`.
 1. Every PR that changes a capability edits its row in the same PR.
 2. One owner per row. Only the owner's track edits the row.
 3. A row moves one state at a time. "Built" never implies "Prod"; "Prod" never implies "Machine".
-4. One implementer, one fresh reviewer, one fix round, merge. A finding from a second
-   round becomes a new row, unless it is about money, security or data loss.
-5. New ideas go to **Later** as a row. Nothing in Later is started while a **Sell** row is not `Machine: yes`.
+4. PROPOSED, not yet a founder decision: one implementer, one fresh reviewer, one fix round, merge. A finding from a
+   second round becomes a new row, unless it is about money, security or data loss.
+5. PROPOSED, not yet a founder decision: new ideas go to **Later** as a row, and nothing in Later is started while a
+   **Sell** row is not `Machine: yes`. The full goal (phases 0 to 7) is unchanged either way; this is only an order.
 6. Prod trains leave twice a day. After each, the machine checks run, then the founder walks what passed.
 
 ## Tracks and leads
@@ -45,17 +47,17 @@ Values: `yes`, `no`, `part` (say which part in the note), `n/a`.
 | S1 | Call is answered; opening says name, AI, recorded | yes | yes | yes | no | Founder walk |
 | S2 | Answers a business question correctly, out loud, in useful time | yes | yes | part | no | One call invented facts; the handoff was fixed but no call has yet proved a correct **spoken** answer. Run the phone eval on prod and set a latency target |
 | S3 | Book, move, cancel on our own calendar | yes | yes | part | no | Passed on the older voice stack. Re-run on GPT-Live |
-| S4 | Book into Google Calendar | yes | yes | no | no | Founder reconnects Google; then one real booking with the event checked in Calendar |
+| S4 | Book into Google Calendar | part | part | no | no | Known bugs in move and cancel against Google, truthful availability and a late-write race; Codex is fixing them. Then the founder reconnects Google and one real booking is checked in Calendar |
 | S5 | Take a message; hand off to a person | yes | yes | no | no | One transfer to an answering number, one to a number that does not answer |
 | S6 | Each business gets its own number at Go live | yes | yes | no | no | `VOICE_BUY_NUMBERS=true` on prod (config read 9 Nov). No number has ever been bought. Needs a fresh paid workspace. Costs $1.15/month per number |
 | S7 | Forwarding check from the Agent page | yes | yes | no | no | Outbound trunk is set on prod (config read 9 Nov). Never run against a real carrier forward |
 | S8 | Onboarding on a fresh workspace, sign-up to first answered call | yes | yes | no | no | Never run end to end. Time it against the 15-minute goal |
-| S9 | Pay $250, get the plan, minutes counted | yes | yes | part | no | Sandbox passed. 0 of 33 prod billing rows hold a voice contract (read 9 Nov). One real checkout on prod |
+| S9 | Pay $250, get the plan, minutes counted | yes | part | part | no | Payment passed in the Stripe sandbox on dev (counts as Machine for payment, environment: dev sandbox). Prod metering is deployed in part and not verified. 0 of 33 prod billing rows hold a voice contract (read 9 Nov). Founder ruling 9 Nov: prove payment in the dev sandbox, not with a real prod charge |
 | S10 | Caller cannot do what the owner unticked; no owner data reaches a caller | yes | yes | no | no | Scripted calls: forbidden action, second caller, spoofed owner |
 | S11 | Home shows the call with transcript and steps | yes | yes | part | no | Check a fresh prod call row for truth |
 | S12 | The Agent page shows no control without a working feature behind it | no | no | no | no | "Day-before text" is ticked by default with no sender. Hide it until texts exist |
 | S13 | A new business is offered one plan, the $250 voice plan | no | no | no | no | Today sign-up gives the old $50 Team plan and a 30-day trial; the voice plan is a second opt-in contract. A leftover "Front desk" add-on is also in checkout. Needs founder decisions B1 and B2 |
-| S14 | Phone, Meet and orb minutes all count toward the 1,500 | part | part | no | no | Phone and Meet report minutes. No meter call was found on the orb route (unverified). Needs founder decision B3 |
+| S14 | Phone, Meet and orb minutes all count toward the allowance | yes | part | part | no | All three report minutes (#5155). Verified on dev with a real 14-second session. Not yet on prod. Founder ruling 9 Nov: orb minutes count |
 
 ## Sell: meetings and the app (demo quality, not a gate for the first phone customer)
 
@@ -65,9 +67,9 @@ Values: `yes`, `no`, `part` (say which part in the note), `n/a`.
 | M2 | Speaks when named, stays quiet otherwise, sleeps when idle | yes | yes | part | no | One real meeting had flaws; the fixes are not re-tested with several people |
 | M3 | Notes in the app after the meeting | yes | yes | yes | no | Founder walk |
 | M4 | Reads and writes Meet chat | yes | no | no | no | Prod image pin merged (#5169); prod not deployed or rolled |
-| M5 | Starts follow-up work it was clearly asked to do | no | no | no | no | #5163 in review (Codex) |
+| M5 | Starts follow-up work it was clearly asked to do | yes | no | no | no | #5163 merged, on dev. Next prod train |
 | M6 | In-app orb: talk, interrupt, keep speaking after release | yes | yes | part | no | Founder test on the Mac with Fn |
-| M7 | Provider choice: managed or Sign in with ChatGPT | yes | no | no | no | #5162 merged, dev only; settings route fix #5168 in review (Codex) |
+| M7 | Provider choice: managed or Sign in with ChatGPT | yes | no | no | no | #5162 and the settings route fix #5168 are merged and on dev. Next prod train |
 
 ## Platform (Codex)
 
@@ -77,7 +79,7 @@ Values: `yes`, `no`, `part` (say which part in the note), `n/a`.
 | P2 | Paperclip and Aurora removed | yes | yes | part | Confirm the bill lines are gone |
 | P3 | GooseTown parked, its NAT, load balancer and DNS removed | yes | yes | yes | n/a |
 | P4 | One shared Hermes runtime pool per tier | yes | yes | part | Tenant isolation check; #5170 fences calls to the pool |
-| P5 | Old per-business runtimes, roles and boot secrets retired | no | no | no | 27 old runtime definitions remain |
+| P5 | Old per-business runtimes and roles retired | no | no | no | 25 old runtime definitions remain (27 runtimes in all, 2 are the shared pools). The 28 boot identity seeds are KEPT until network identity custody has a replacement |
 | P6 | Backend, workers and Lambdas on ARM | yes | no | no | Live on dev (#5167). Prod train |
 | P7 | OpenSearch removed | part | no | no | #5156 then #5158, after the image roll |
 | P8 | Secrets under 20 | no | no | no | About 130 today |

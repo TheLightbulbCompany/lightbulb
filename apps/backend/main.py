@@ -719,11 +719,6 @@ from routers import company_slug  # noqa: E402
 app.include_router(company_context.router, prefix="/api/v1/company", tags=["company-context"])
 app.include_router(company_slug.router, prefix="/api/v1/company", tags=["company-slug"])
 
-# Ideas: the catalog of agency-style jobs, Start and dismiss (spec 2026-10-14 §4.4).
-from routers import ideas as ideas_router  # noqa: E402
-
-app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
-
 # Super-agent Questions (wave2-Q): /needs-you, /tasks/{id}/questions. Mounted before routers/tasks.py.
 from routers import questions as questions_router  # noqa: E402
 

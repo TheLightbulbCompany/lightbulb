@@ -58,7 +58,8 @@ def test_registered_under_router_toolset():
 
     rt.register(Ctx())
     assert seen == [(k, "lightbulb_router") for k in (
-        "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")]
+        "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")] + [
+        ("transfer_call", "lightbulb_router_call")]  # a phone caller's batch only
 
 
 def test_follow_link_calls_memory_link_route(router_turn, monkeypatch):

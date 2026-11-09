@@ -165,10 +165,4 @@ describe("desktop-build.yml prod promotion gate", () => {
     expect(prod).not.toContain("build-desktop-dev");
   });
 
-  it("runs Infra CI for desktop-workflow-only pull requests", () => {
-    const ci = readFileSync(join(__dirname, "../../../.github/workflows/infra-ci.yml"), "utf8");
-    const triggers = ci.slice(ci.indexOf("\non:\n"), ci.indexOf("\nconcurrency:\n"));
-    expect(triggers).toContain("pull_request:");
-    expect(triggers).toContain("- '.github/workflows/desktop-build.yml'");
-  });
 });

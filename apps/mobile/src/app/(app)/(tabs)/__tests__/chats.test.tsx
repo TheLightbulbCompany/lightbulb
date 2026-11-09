@@ -464,3 +464,6 @@ describe("Chats", () => {
     await waitFor(() => expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]));
   });
 });
+
+// The Home voice controls have their own interaction tests.
+jest.mock("../../../../components/voice/VoiceHome", () => ({ VoiceHome: () => null }));

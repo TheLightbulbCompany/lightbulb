@@ -8,6 +8,11 @@ from unittest.mock import patch
 from core.services import runtime_transport as rt
 
 
+@pytest.fixture(autouse=True)
+def no_existing_session(monkeypatch):
+    monkeypatch.setattr("core.repositories.container_repo.get_session_sync", lambda *a, **k: {})
+
+
 class TestSessionId:
     """A workspace gets ONE session id. This is the single-writer guarantee, not a detail:
     two live sessions mean two gateways on one EFS mount and two litestream replicators on one

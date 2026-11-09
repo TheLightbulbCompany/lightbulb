@@ -43,8 +43,11 @@ def _status(code: str, bot_id: str = "bot-1", sub_code: str | None = None, room:
 
 @pytest.fixture
 def env(monkeypatch):
+    monkeypatch.setattr(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
     minutes = AsyncMock()  # the meeting's minutes onto the month's counter
     monkeypatch.setattr(mod.voice_billing, "add_month_seconds", minutes)
+    reported_minutes = AsyncMock()
+    monkeypatch.setattr(mod.voice_billing, "report_minutes", reported_minutes)
     meta = {
         "roomId": ROOM,
         "ownerId": "org_a",
@@ -102,6 +105,7 @@ def env(monkeypatch):
             "publisher": publisher,
             "metric": metric,
             "minutes": minutes,
+            "reported_minutes": reported_minutes,
             "notes": notes,
             "release": release,
             "claim": claim,
@@ -140,6 +144,19 @@ def test_in_call_dispatches_the_worker_once_and_prewakes(env):
     env["wake"].assert_called_once()
 
 
+def test_unpaid_opted_in_voice_plan_leaves_meet_without_starting_a_worker_or_legacy_debit(env):
+    with patch.object(
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"metronome_voice_contract_id": "voice", "voice_plan_status": "pending_payment"}),
+    ):
+        assert _post(env["client"], _status("in_call_recording")).status_code == 200
+    assert env["meta"]["meeting"]["botError"] == "voice_payment_required"
+    env["bot_leave"].assert_awaited_once_with("bot-1")
+    env["dispatch"].assert_not_awaited()
+    env["minutes"].assert_not_awaited()
+
+
 def test_call_ended_closes_the_room_once(env):
     env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     _post(env["client"], _status("call_ended", sub_code="call_ended_by_host"))
@@ -151,6 +168,38 @@ def test_call_ended_closes_the_room_once(env):
     env["minutes"].assert_awaited_once()  # the meeting's time goes on the month's voice minutes
     owner, seconds, _at = env["minutes"].await_args.args
     assert owner == "org_a" and seconds > 0
+
+
+def test_meeting_reports_original_duration_once_across_end_callback_retries(env):
+    start = 1790980000
+    env["meta"]["meeting"].update(status="in_call", inCallAt=start)
+    stamp = datetime.fromtimestamp(start + 160, timezone.utc).isoformat()
+    assert _post(env["client"], _at_time(_status("call_ended"), stamp)).status_code == 200
+    assert _post(env["client"], _at_time(_status("done"), None)).status_code == 200
+    assert _post(env["client"], _at_time(_status("call_ended"), None)).status_code == 200
+    env["reported_minutes"].assert_awaited_once_with(
+        "org_a", f"meeting:{ROOM}:{start}", datetime.fromtimestamp(start, timezone.utc).isoformat(), 160, "meeting"
+    )
+
+
+@pytest.mark.asyncio
+async def test_meeting_metering_id_is_stable_per_occurrence_and_distinct_for_a_reused_room(env):
+    start = 1790980000
+    await mod._count_minutes(ROOM, 160, start)
+    await mod._count_minutes(ROOM, 160, start)  # the same occurrence gets Metronome's same dedupe key
+    await mod._count_minutes(ROOM, 120, start + 604800)  # the next week's meeting uses the same room
+    reports = env["reported_minutes"].await_args_list
+    assert reports[0] == reports[1]
+    assert reports[0].args[1] != reports[2].args[1]
+    assert reports[2].args[3:] == (120, "meeting")
+
+
+def test_allowance_counter_failure_does_not_lose_meeting_metering_or_cleanup(env):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1)
+    env["minutes"].side_effect = RuntimeError("ddb unavailable")
+    assert _post(env["client"], _status("call_ended")).status_code == 200
+    env["reported_minutes"].assert_awaited_once()
+    env["close"].assert_awaited_once_with(ROOM, meet=True)
 
 
 def _at_time(payload: dict, stamp) -> dict:
@@ -336,6 +385,7 @@ def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
     leave.assert_awaited_once_with("bot-1")
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
+    env["reported_minutes"].assert_awaited_once()
     # The call_ended found the notes not yet done and asked too; on_ended's own claim makes it one run.
     assert env["notes"].call_args_list == [((ROOM,),), ((ROOM,),)]
 
@@ -402,6 +452,7 @@ def test_fatal_mid_call_runs_the_notes(env):
     env["notes"].assert_called_once_with(ROOM)
     env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "bot_kicked_from_call"})
     env["line"].assert_awaited_once()
+    env["reported_minutes"].assert_awaited_once()
 
 
 def test_a_failed_transition_is_5xx_and_releases_the_lease(env):
@@ -478,6 +529,7 @@ def test_an_ended_call_the_bot_never_joined_runs_no_notes_and_advances(env):
     assert env["meta"]["meeting"]["status"] == "ended"
     env["notes"].assert_not_called()
     env["advance"].assert_called_once_with(ROOM)
+    env["reported_minutes"].assert_not_awaited()
 
 
 def test_a_terminal_redelivery_retries_a_series_advance(env):

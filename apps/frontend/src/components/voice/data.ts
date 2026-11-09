@@ -156,3 +156,8 @@ export function useUsage() {
   if (swr.data === null && items) return { data: { used: monthMinutes(items), included: 1500, overageRate: 0.35, runOut: "keep" } as Usage, isLoading: false };
   return { data: undefined, isLoading: true };
 }
+
+/** A factual recorded step can fill a missing call summary; guessed steps never do. */
+export function callSummary(call: Pick<CallItem, "summary" | "steps">): string {
+  return call.summary?.trim() || [...(call.steps ?? [])].reverse().find((step) => !step.guessed && step.text.trim())?.text.trim() || "Open conversation";
+}

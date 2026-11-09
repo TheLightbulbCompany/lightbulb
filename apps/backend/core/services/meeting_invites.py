@@ -732,6 +732,8 @@ _CALL_KEYS = (
     "transcriptId",
     "transcriptRoomId",
     "notesRunId",
+    "notes",
+    "decisions",
     "notesMailedAt",
     "notesMailAttemptedAt",
     "roster",
@@ -756,7 +758,11 @@ def _kept_transcript(meeting: dict) -> dict:
     if not meeting.get("transcriptId"):
         return {}
     past = {k: meeting.get(k) for k in ("startAt", "transcriptId", "transcriptRoomId")}
-    past |= {k: meeting[k] for k in ("endedAt", "notesRunId", "notesSkipped", "unsaid") if meeting.get(k)}
+    past |= {
+        k: meeting[k]
+        for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+        if meeting.get(k)
+    }
     history = [past, *(meeting.get("history") or [])][:_HISTORY_MAX]
     return {
         "history": [

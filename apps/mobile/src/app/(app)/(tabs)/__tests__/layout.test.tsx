@@ -70,19 +70,19 @@ beforeEach(() => {
 // not tabs. Teams and Settings, which used to be pushed screens reached only
 // through More, are real tabs again — and must not come back as pushed
 // screens (see (app)/__tests__/layout.test.tsx).
-it("registers exactly Chats · Activity · Teams · Settings", async () => {
+it("registers Home · Agent · Needs you · Settings", async () => {
   await render(<TabsLayout />);
   expect(screen.getAllByTestId(/^tab-/).map((node) => node.props.testID)).toEqual([
     "tab-chats",
-    "tab-activity",
     "tab-teams",
+    "tab-activity",
     "tab-settings",
   ]);
 });
 
-it("labels the third tab Work", async () => {
+it("labels the assistant configuration tab Agent", async () => {
   await render(<TabsLayout />);
-  expect(within(screen.getByTestId("tab-teams")).getByText("Work")).toBeTruthy();
+  expect(within(screen.getByTestId("tab-teams")).getByText("Agent")).toBeTruthy();
 });
 
 // The one thing NativeTabs had to be able to express beyond labels and icons.
@@ -109,7 +109,7 @@ it("badges Activity with its unseen count, and nothing at zero", async () => {
 
   mockUnseen = 4;
   await render(<TabsLayout />);
-  expect(screen.getByTestId("tab-activity")).toHaveTextContent("Activity4");
+  expect(screen.getByTestId("tab-activity")).toHaveTextContent("Needs you4");
   expect(screen.getByTestId("tab-chats")).not.toHaveTextContent(/\d/);
 });
 

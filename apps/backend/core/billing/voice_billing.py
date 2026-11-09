@@ -21,7 +21,7 @@ from core.billing import metronome_client
 from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
-from core.repositories import messaging_repo
+from core.repositories import billing_repo, messaging_repo
 from core.services import metronome_gate, trial_cap
 
 logger = logging.getLogger(__name__)
@@ -41,9 +41,28 @@ def _containers():
     return get_table("containers")
 
 
-def billing_mode(account: dict | None) -> Literal["credits", "free"] | None:
+def has_voice_plan(account: dict | None) -> bool:
+    if not account or not account.get("metronome_voice_contract_id") or account.get("voice_plan_status") == "canceled":
+        return False
+    if account.get("voice_plan_unpaid_invoice_ids"):
+        return False
+    now = datetime.now(UTC)
+    if not any(
+        datetime.fromisoformat(period["start"]) <= now < datetime.fromisoformat(period["end"])
+        for period in (account.get("voice_plan_paid_periods") or {}).values()
+    ):
+        return False
+    ending_at = account.get("voice_plan_ending_at")
+    return not ending_at or datetime.fromisoformat(ending_at) > now
+
+
+def billing_mode(account: dict | None) -> Literal["credits", "free", "plan"] | None:
     """None = no voice (no row, lapsed, expired trial). Stored fields only — never
     provider_choice_from_row, which reports openrouter_managed for trial_local."""
+    if has_voice_plan(account):
+        return "plan"
+    if account and account.get("metronome_voice_contract_id"):
+        return None  # a pending/failed voice invoice cannot fall back to legacy free/credit voice
     if not account or account.get("subscription_status") not in _LIVE_STATUSES:
         return None
     if account.get("subscription_status") == "trial_local" and trial_cap.is_trial_expired(account):
@@ -131,17 +150,34 @@ async def counted_seconds(owner_id: str, tz_name: str | None) -> int | None:
 
 
 async def report_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int, kind: str) -> None:
-    """One ``voice_minutes`` event per call (transaction_id = the call: Metronome dedupes a retry). Nothing in
-    Metronome prices it yet: that needs a billable metric on this event and the $250 / 1,500-minute plan.
-    Run after the response (a background task): never raises, a lost event is unbilled minutes, logged."""
+    """One ``voice_minutes`` event per call or meeting occurrence; Metronome dedupes transaction_id retries.
+    Pricing requires a voice-minutes metric and plan on the customer's contract. Best effort: an ingest
+    failure is logged and never raises, so provider downtime cannot prevent call or meeting cleanup."""
     if not settings.METRONOME_API_KEY or seconds <= 0:
         return
     at = datetime.fromisoformat(started_at).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+        properties = {"seconds": str(seconds), "kind": kind}
+        # A late end callback still belongs to the paid occurrence that started before cancellation.
+        if (
+            account
+            and account.get("metronome_voice_contract_id")
+            and account.get("voice_plan_usage_key")
+            and (
+                not account.get("voice_plan_started_at")
+                or datetime.fromisoformat(started_at) >= datetime.fromisoformat(account["voice_plan_started_at"])
+            )
+            and (
+                not account.get("voice_plan_ending_at")
+                or datetime.fromisoformat(started_at) < datetime.fromisoformat(account["voice_plan_ending_at"])
+            )
+        ):
+            properties["voice_plan"] = account["voice_plan_usage_key"]
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
             await metronome_client.for_settings(http).ingest(
                 [{"transaction_id": transaction_id, "customer_id": owner_id, "event_type": "voice_minutes",
-                  "timestamp": at, "properties": {"seconds": str(seconds), "kind": kind}}]
+                  "timestamp": at, "properties": properties}]
             )  # fmt: skip
     except Exception:
         logger.warning("voice_minutes ingest failed for %s", transaction_id, exc_info=True)

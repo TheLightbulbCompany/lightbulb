@@ -7,13 +7,14 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "unstable", "webview-data-url"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
@@ -48,6 +49,7 @@ vt100 = "0.16"
 block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSEvent"] }
 objc2-user-notifications = "0.3"
 
 [dev-dependencies]

@@ -130,6 +130,19 @@ change them.
 
 ## Voice calls
 
+The voice-business plan, where enrollment is available, is $250/month
+per business with 1,500 phone and meeting minutes, then $0.35/minute. An admin
+explicitly accepts it in Voice settings and sets up a card. Access starts only
+after collection and lasts through the paid coverage period. It includes the
+managed default within its daily allowance; it does not promise unlimited
+general AI tokens. A fresh voice business gets workspace/runtime access from
+this plan, without a separate Workspace subscription. Go live itself does not
+purchase it. This differs from the Front desk texting add-on. Cancellation
+stops renewal at the confirmed end shown in settings; a pending cancellation
+is not a confirmed end. Billing and minute periods use UTC. Read the workspace's
+current facts before claiming paid access; an unpaid invoice or expired
+coverage blocks it. Plan changes belong to the admin in Voice settings.
+
 Members talk by voice with "Go live" (web and desktop; iPhone is coming).
 Live is in every room's header: channels, DMs and group chats. There is no
 separate "Talk" on web.
@@ -145,6 +158,8 @@ separate "Talk" on web.
   plain voice room for people.
 - Only the agents' speaking time is billed, like a call. Live leaves no
   recording, and nothing said in Live is posted to the room.
+
+For workspaces without the separate voice-agents plan:
 
 - Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
   per-minute cost times the same markup as AI usage).

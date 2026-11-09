@@ -82,3 +82,22 @@ def test_ended_requires_outcome_and_usage_for_a_started_run(client):
             headers=H,
         )
     assert ignored.status_code == 200 and completed.status_code == 200
+
+
+def test_a_room_turn_heartbeat_keeps_its_session_live(client):
+    """Room turns heartbeat here, not on the run route: each one slides the drain estimate too."""
+    with (
+        _container(),
+        patch(
+            "routers.messaging.service.handle_run_event",
+            AsyncMock(return_value=RunEventResponse(run_id=RUN, status="applied")),
+        ),
+        patch("routers.messaging.runtime_transport.note_alive") as alive,
+    ):
+        client.post(f"/api/v1/internal/messaging/runs/{OWNER}/events", json=BODY, headers=H)
+        client.post(
+            f"/api/v1/internal/messaging/runs/{OWNER}/events",
+            json={**BODY, "type": "run.ended", "outcome": "completed", "usage": USAGE},
+            headers=H,
+        )
+    assert [c.args for c in alive.call_args_list] == [(OWNER,)]

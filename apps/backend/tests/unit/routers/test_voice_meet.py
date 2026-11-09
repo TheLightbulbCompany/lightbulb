@@ -201,9 +201,9 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
         out = await voice_meet.agent_lines(ROOM, 4)
     lm.assert_awaited_once_with(ROOM, 4, 100)
     # inReplyTo: the human message a line answers, so the voice matches it to that spoken ask; action: the phone's
-    assert out == {"messages": [{"id": "a1", "seq": 6, "text": "Checking GitHub.", "inReplyTo": "h1"},
-                                {"id": "a4", "seq": 9, "text": "We shipped #5095."},
-                                {"id": "a5", "seq": 11, "text": "Putting you through.", "action": "transfer"}],
+    assert out == {"messages": [{"id": "a1", "seq": 6, "text": "Checking GitHub.", "waiting": False, "inReplyTo": "h1"},
+                                {"id": "a4", "seq": 9, "text": "We shipped #5095.", "waiting": False},
+                                {"id": "a5", "seq": 11, "text": "Putting you through.", "waiting": False, "action": "transfer"}],
                    "after": 11}  # fmt: skip
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=([], None))):
         assert await voice_meet.agent_lines(ROOM, 10) == {"messages": [], "after": 10}
@@ -232,7 +232,8 @@ async def test_a_worker_question_in_a_thread_is_said_with_its_ref():
     with _open_questions("q-17b4"), patch.object(voice_meet.messaging_repo, "list_messages",
                                                  AsyncMock(return_value=(rows, None))):  # fmt: skip
         out = await voice_meet.agent_lines(ROOM, 4)
-    assert out["messages"] == [{"id": "q1", "seq": 8, "text": QROW["text"],
+    assert out["messages"] == [{"id": "q1", "seq": 8, "text": QROW["text"], "waiting": False,
+                                "taskIds": ["k1"],
                                 "question": {"taskId": "k1", "qid": "q-17b4"}}]  # fmt: skip
 
 
@@ -415,3 +416,21 @@ async def test_opt_out_survives_chat_confirmation_failure(m):
 async def test_opt_out_needs_a_participant(m):
     with pytest.raises(Exception):
         await voice_meet.transcription(ROOM, _tx("", ""))
+
+
+async def test_voice_events_distinguish_a_task_ack_from_the_terminal_answer():
+    base = {"author": {"kind": "agent"}, "inReplyTo": "ask"}
+    rows = [
+        {**base, "messageId": "ack", "messageSeq": 1, "text": "On it.", "voiceWaiting": True, "voiceTaskIds": ["k1"]},
+        {
+            **base,
+            "messageId": "answer",
+            "messageSeq": 2,
+            "text": "Booked.",
+            "kind": "task_line",
+            "taskRefs": [{"taskId": "k1"}],
+        },
+    ]
+    with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
+        out = await voice_meet.agent_lines(ROOM, 0)
+    assert [(m["waiting"], m["taskIds"]) for m in out["messages"]] == [(True, ["k1"]), (False, ["k1"])]

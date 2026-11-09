@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings
+from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.services.hermes_provisioning import delete_workspace_runtime
 from core.repositories import (
@@ -126,7 +127,9 @@ async def redeploy_container(
     from core.services import hermes_provisioning
 
     await hermes_provisioning.write_profiles(owner_id)
-    runtime_arn = container.get("agentcore_runtime_arn")
+    from core.services import runtime_transport
+
+    runtime_arn = await run_in_thread(runtime_transport.live_arn, container)
     if runtime_arn:
         await hermes_provisioning.stop_runtime_session(owner_id, runtime_arn)  # never raises
     return {

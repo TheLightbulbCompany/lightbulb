@@ -232,75 +232,6 @@ def _voice_profile(args: dict, *, session_id: str = "", **_kw) -> str:
         return f"Voice profile update failed: {type(exc).__name__}"
 
 
-# suggest_idea tool (spec 2026-10-14 §4.4): an idea for THIS company joins the workspace's Ideas
-# list (never a chat card). The suggesting agent and workspace come from the turn, never the model.
-SUGGEST_IDEA_SCHEMA = {
-    "name": "suggest_idea",
-    "description": "Add an idea to this company's Ideas list (the person sees it there, not in chat). "
-                   "Use it only when you notice a concrete, company-specific job during real work "
-                   "(\"14 reviews have no reply\"), never a generic or routine one. You will own it.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "title": {"type": "string", "description": "The outcome, short: 'Answer the 14 open Shopify reviews'."},
-            "description": {"type": "string",
-                            "description": "Why it matters for this company and what you will do, in one or "
-                                           "two sentences. Promise the action, never the result."},
-            "deliverables": {"type": "array", "items": {"type": "string"}, "maxItems": 3,
-                             "description": "Up to three short lines the person will have."},
-            "size": {"type": "string", "enum": ["project", "task", "quick"],
-                     "description": "project: many steps over days; task: one errand; quick: answered in one go."},
-            "emoji": {"type": "string", "description": "One emoji that pictures the outcome, shown beside the title."},
-            "kind": {"type": "string", "enum": ["app"], "description": "Set to app when the idea is a small app."},
-            "app_kind": {"type": "string", "description": "With kind app: what sort of app.",
-                         "enum": ["landing_page", "content_site", "form", "internal_tool", "dashboard",
-                                  "customer_portal", "product_with_payments", "automation"]},
-            "origin": {"type": "string", "maxLength": 120,
-                       "description": "With kind app: one line on what keeps coming back."},
-        },
-        "required": ["title", "description", "deliverables", "size"],
-    },
-}
-SUGGEST_NO_TURN = "suggest_idea works only inside a Lightbulb turn."
-
-
-def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
-    ctx = turn_context.read(session_id)
-    if not ctx or not ctx.get("agentId") or not ctx.get("hookToken"):
-        return SUGGEST_NO_TURN
-    body = {
-        "agentId": ctx["agentId"],
-        "title": str(args.get("title") or "").strip(),
-        "why": str(args.get("description") or "").strip(),
-        "deliverables": [str(d).strip() for d in (args.get("deliverables") or []) if str(d).strip()][:3],
-        "size": args.get("size"),
-    }
-    if str(args.get("emoji") or "").strip():
-        body["emoji"] = str(args["emoji"]).strip()
-    if ctx.get("taskId"):  # a Worker run: the backend lets one request file at most 3 ideas
-        body["taskId"] = ctx["taskId"]
-    for key, field in (("kind", "kind"), ("app_kind", "appKind"), ("origin", "origin")):
-        if str(args.get(key) or "").strip():
-            body[field] = str(args[key]).strip()
-    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/ideas/suggestions/{ctx['ownerId']}"
-    try:
-        result = _post(url, ctx["hookToken"], body)
-    except urllib.error.HTTPError as exc:
-        return f"Idea not added: HTTP {exc.code}."
-    except Exception as exc:  # noqa: BLE001
-        return f"Idea not added: {type(exc).__name__}."
-    status = result.get("status")
-    if status == "added":
-        return "Added to the Ideas list. Do not post it in chat; the person sees it under the 💡."
-    if status == "duplicate":
-        return "Already in the Ideas list: nothing added."
-    if status == "cap":
-        return "The Ideas list already has 10 suggestions: nothing added."
-    if status == "run_cap":
-        return "This request already filed 3 ideas: nothing added. File no more."
-    return json.dumps(result)
-
-
 # request_purchase tool (Link Agent Wallet, dark): the agent can only ASK. The backend checks the
 # owner's purchase limits after the task's Needs-you question, then Link's own approval. The agent
 # and workspace come from the turn; the reply is {requestId, status} and nothing else -- no URL,
@@ -1107,8 +1038,6 @@ def register(ctx) -> None:
                       description=SEND_SCHEMA["description"], emoji="💬")
     ctx.register_tool("ask_session", "lightbulb", ASK_SESSION_SCHEMA, _ask_session,
                       description=ASK_SESSION_SCHEMA["description"], emoji="🔐")
-    ctx.register_tool("suggest_idea", "lightbulb", SUGGEST_IDEA_SCHEMA, _suggest_idea,
-                      description=SUGGEST_IDEA_SCHEMA["description"], emoji="💡")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
     ctx.register_tool("request_purchase", "lightbulb", PURCHASE_SCHEMA, _request_purchase,

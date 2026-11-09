@@ -47,11 +47,11 @@ answer is ready. It speaks in the next pause in the talk, or at once when
 someone turns to it by name. Talked over, it stops, keeps its hand up and says
 the whole answer at the next pause. It stays out of all other talk. Afterwards the transcript posts in
 the general channel and one agent there writes the notes; action items become
-tasks. If no agent is in that channel no notes are written and the organizer's
-mail says so; with no general channel the organizer is mailed the transcript.
-An answer nobody got to hear in the Meet is kept with the meeting: it is in the
-notes, in the organizer's mail and under the meeting in Mail. You do not join
-by yourself and cannot be invited by chat.
+tasks. Notes and transcripts stay in the app; they are not emailed automatically.
+If no agent is in that channel, no notes are written. An answer nobody got to
+hear in the Meet stays with the meeting and its notes. Notes from earlier
+occurrences stay in the meeting history. You do not join by yourself and cannot
+be invited by chat.
 
 **Sending — one command, three recipients:**
 

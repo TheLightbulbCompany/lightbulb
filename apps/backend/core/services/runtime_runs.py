@@ -58,6 +58,7 @@ class RunIdentity:
     lane: str | None = None
     room: str | None = None  # Router runs: `router_room_key(trigger_scope)`, one session per lane and conversation
     model: str | None = None  # Router runs: the cheaper model (§9); the bridge overrides the profile's
+    call: bool = False  # Router runs: a phone caller's batch, which may hand the call to a person (transfer_call)
     # "task": the run lives in its own AgentCore session (`runtime_transport.session_id_for(owner, task_id)`)
     # and the bridge latches task mode (read-only specialist profile, task-prefix writes). Decided per attempt
     # by `session_kind_for`, written on the Attempt row by O's `begin_attempt`, never cached on the task.
@@ -110,6 +111,8 @@ class RunIdentity:
                 wire["room"] = self.room
             if self.model:
                 wire["model"] = self.model
+            if self.call:
+                wire["call"] = True
         return wire
 
 
@@ -246,8 +249,10 @@ async def stop_task_session(owner_id: str, task_id: str, run_id: str | None = No
     stopped mid-tool never released it; the next task's run would wait out the lease)."""
     from core.services import browser_control, hermes_provisioning
 
+    from core.dynamodb import run_in_thread
+
     container = await container_repo.get_by_owner_id(owner_id) or {}
-    arn = container.get("agentcore_runtime_arn")
+    arn = await run_in_thread(runtime_transport.live_arn, container, task_id)  # where the task session runs
     if not arn:
         return False
     stopped = await hermes_provisioning.stop_runtime_session(owner_id, arn, task_id=task_id)
@@ -270,7 +275,7 @@ async def curate(owner_id: str, agent_id: str) -> dict:
     from core.services import hermes_provisioning
 
     container = await _container(owner_id)
-    if not await hermes_provisioning._session_warm(owner_id, container.get("agentcore_runtime_arn")):
+    if not await hermes_provisioning._session_warm(owner_id, runtime_transport.runtime_arn(container)):
         return {"ran": False, "changed": False}
     data = await _call(
         owner_id, "/internal/v1/curate", method="POST", body={"agentId": agent_id}, timeout_s=CURATE_TIMEOUT_S

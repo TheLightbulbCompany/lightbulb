@@ -1,11 +1,43 @@
 """GET /voice/timeline, POST /voice/calls/{id}/done, GET/PUT /voice/agent against the moto messaging table."""
 
 import pytest
+from unittest.mock import AsyncMock
 
 from core.repositories import messaging_repo
 from tests.unit.services.conftest import repos  # noqa: F401
 
 WS = "org_test_456"
+
+
+@pytest.fixture(autouse=True)
+def legacy_billing_account(monkeypatch):
+    from routers import voice
+
+    monkeypatch.setattr(voice.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+
+@pytest.mark.usefixtures("repos")
+async def test_paid_usage_returns_exact_utc_provider_period_instead_of_legacy_local_counter(
+    async_client_org_admin, monkeypatch
+):
+    from routers import voice
+
+    account = {"metronome_voice_contract_id": "voice", "voice_plan_status": "pending_payment"}
+    monkeypatch.setattr(voice.billing_repo, "get_by_owner_id", AsyncMock(return_value=account))
+    measured = {
+        "used": 61 / 60,
+        "usedSeconds": 61,
+        "periodStart": "2026-11-08T00:00:00Z",
+        "periodEnd": "2026-12-01T00:00:00Z",
+        "timeZone": "UTC",
+        "included": 1500,
+        "overageRate": 0.35,
+    }
+    monkeypatch.setattr(voice.voice_plan, "usage", AsyncMock(return_value=measured))
+    response = await async_client_org_admin.get("/api/v1/voice/usage")
+    assert response.status_code == 200
+    assert response.json()["usedSeconds"] == 61 and response.json()["used"] == 61 / 60
+    assert response.json()["periodStart"] == measured["periodStart"] and response.json()["timeZone"] == "UTC"
 
 
 async def _room(room_id: str, kind: str, created: str, owner: str = WS, **extra):
@@ -48,6 +80,8 @@ async def test_timeline_lists_calls_and_meetings_newest_first(repos, async_clien
         meeting={
             "title": "Team",
             "startAt": 1794070800,
+            "notes": "Ship Friday.",
+            "decisions": ["Ship Friday"],
             "ticketNonce": "secret",
             "recallBotId": "b",
             "roster": {"p1": {"name": "Ana", "in": True}},
@@ -60,6 +94,7 @@ async def test_timeline_lists_calls_and_meetings_newest_first(repos, async_clien
 
     assert [i["roomId"] for i in items] == ["m1", "c1"]  # by when it happened, not when the room was made
     assert items[1] | {"type": "call", "outcome": "booked"} == items[1]
+    assert items[0]["notes"] == "Ship Friday." and items[0]["decisions"] == ["Ship Friday"]
     assert items[0]["people"] == ["Ana"] and "ticketNonce" not in items[0] and "recallBotId" not in items[0]
 
 

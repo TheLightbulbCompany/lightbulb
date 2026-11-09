@@ -1,6 +1,6 @@
 """After a meeting: its transcript lands in the meeting's output room (the workspace's default
 room) as ``transcript.txt`` (never as messages), one CEO run writes the notes there, and the
-organizer gets one mail with the room link. A series then moves on to its next occurrence.
+notes stay in the app; nothing is emailed automatically. A series then moves on to its next occurrence.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
 
 
 async def on_ended(room_id: str) -> None:
-    """One notes run and one organizer mail per occurrence, then a series' advance (after the
+    """One app-only notes run per occurrence, then a series' advance (after the
     attempt, success or failure). Fire-and-forget: never raises.
 
     There is no sweeper: the retry is Recall's own webhooks. ``done`` follows ``call_ended`` (and a
@@ -208,12 +208,8 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
                 return
     if meeting.get("notesRunId"):
-        return  # its notes run was dispatched: the mail goes with its reply
-    mailed = await _mail_organizer(owner_id, room_id, target, meeting, title, occurrence)
-    if mailed is None:
-        return  # already attempted (here or by another end path), or the occurrence moved on
-    if not mailed:
-        raise RuntimeError("the organizer mail was not sent")
+        return  # its notes run was dispatched: its reply keeps the notes in the app
+    # Automatic meeting notes are app-only. Keep the existing completion marker for old rows.
     await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
 
@@ -341,25 +337,22 @@ _MAIL_FIELDS = (
 
 
 async def on_agent_reply(owner_id: str, agent_id: str, reply_to: str | None, text: str, progress: bool) -> None:
-    """An agent's reply to a meeting's "write the notes" request: those are the notes, and the
-    organizer's mail carries them (10-09: the only mail was the raw transcript, sent before the notes
-    existed). Only the agent the request was dispatched to writes them; a progress line is not the
-    reply. Never raises: the reply is already stored."""
+    """Keep the requested notes in the app. Only the assigned agent's final reply qualifies.
+    Never raises: the reply is already stored."""
     if progress or not reply_to or not text.strip():
         return
     try:
         request = await messaging_repo.get_meeting_notes_request(owner_id, reply_to)
         if request is not None and request.get("agentId") == agent_id:
-            await _mail_notes(owner_id, reply_to, request, notes=text)
+            await _keep_notes(owner_id, reply_to, request, notes=text)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
-        logger.warning("meeting notes mail failed for reply to %s", reply_to, exc_info=True)
+        logger.warning("meeting notes keep failed for reply to %s", reply_to, exc_info=True)
 
 
 async def on_notes_run_ended(owner_id: str, row: dict) -> None:
-    """Every path that closes a run calls this. A notes run whose mail has not gone sends it now:
-    the notes it posted (a reply can land before the request is recorded), or, with none, one mail
-    saying the notes could not be written. Never raises: the run is already closed."""
+    """Keep a notes run's final reply, including one that arrived before its request record.
+    A failed run is marked complete without emailing anyone. Never raises."""
     trigger = row.get("triggerMessageId")
     if not trigger:
         return
@@ -368,10 +361,10 @@ async def on_notes_run_ended(owner_id: str, row: dict) -> None:
         if request is None or request.get("mailAttemptedAt"):
             return
         notes = await _posted_notes(request, trigger) if row.get("outcome") == "completed" else None
-        await _mail_notes(owner_id, trigger, request, notes=notes)
+        await _keep_notes(owner_id, trigger, request, notes=notes)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
-        logger.warning("meeting notes end-of-run mail failed for %s", trigger, exc_info=True)
+        logger.warning("meeting notes end-of-run keep failed for %s", trigger, exc_info=True)
 
 
 async def _posted_notes(request: dict, trigger: str) -> str | None:
@@ -497,25 +490,26 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
     )
 
 
-async def _mail_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
+async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
+    """The notes agent's reply is kept on the meeting record (the app's timeline); nothing is mailed. A recurring
+    series has advanced by the time the reply lands: the notes go into that occurrence's history entry. The
+    write is idempotent, so the once-only claim is spent only after it lands."""
     room_id, occurrence = request["roomId"], request.get("occurrence")
-    meeting = request.get("meeting") or {}
-    target = request.get("targetRoomId") or await meeting_invites.output_room(owner_id, room_id)
+    text = (notes or "").strip()
 
-    async def claim() -> bool:
-        return await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
+    def lay(m: dict) -> dict:
+        if m.get("startAt") == occurrence:
+            return {"notesMailedAt": int(time.time()), **({"notes": text} if text and not m.get("notes") else {})}
+        past = [{**h, "notes": text} if text and h.get("startAt") == occurrence and not h.get("notes") else h
+                for h in m.get("history") or []]  # fmt: skip
+        return {"history": past}
 
-    mailed = await _mail_organizer(
-        owner_id, room_id, target, meeting, meeting.get("title") or "Meeting", occurrence,
-        notes=notes, notes_failed=notes is None, claim=claim,
-    )  # fmt: skip
-    if mailed:  # the live record too, while it is still this occurrence
-        await meeting_invites._patch_meeting(
-            room_id, {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
-        )
+    await meeting_invites._patch_meeting(room_id, lay)
+    await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
+
     if notes:
         try:
             await _file_action_items(owner_id, message_id, request, notes)
-        except Exception:  # noqa: BLE001 -- the notes and their mail stand; the items are in the notes
+        except Exception:  # noqa: BLE001 -- the notes stay in the app; the items are in the notes
             put_metric("meeting.notes.actions_failed")
             logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)

@@ -63,6 +63,10 @@ def day27_body(recap: dict, price: int) -> str:
 
 async def notices(owner_id: str, account: dict, now: int | None = None) -> None:
     """Called by the trial sweep for every trial_local row."""
+    from core.billing.voice_billing import has_voice_plan
+
+    if has_voice_plan(account):
+        return
     now = int(now if now is not None else time.time())
     end = account.get("trial_end")
     if end is None:
@@ -86,8 +90,8 @@ async def notices(owner_id: str, account: dict, now: int | None = None) -> None:
 
 
 async def _rearm_automation(owner_id: str) -> None:
-    """An extended trial may use the platform again: ``proactive.ensure`` resumes the automations its
-    expiry paused. If that fails, a durable reconcile retries it."""
+    """An extended trial retries cleanup of retired built-in schedules. User-created
+    automations keep their own state; a durable reconcile retries cleanup on failure."""
     from core.services import proactive
 
     try:
@@ -110,6 +114,13 @@ async def pause_once(owner_id: str, now: int | None = None) -> dict:
     account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if not account:
         return {"status": "no_billing_account"}
+    if account.get("metronome_voice_contract_id"):
+        # Extending a leftover local trial or pausing the Workspace Stripe item
+        # would leave the separately collected voice plan renewing unchanged.
+        return {
+            "status": "voice_plan_managed",
+            "message": "Manage voice-plan billing separately; no pause was applied.",
+        }
     trial = account.get("subscription_status") == "trial_local"
     if not trial and not stripe_is_live(account):
         return {"status": "no_subscription"}

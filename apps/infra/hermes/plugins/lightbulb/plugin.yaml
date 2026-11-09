@@ -9,7 +9,6 @@ provides_tools:
   - request_approval
   - ask_person
   - task_note
-  - suggest_idea
   - lightbulb_local_sessions
   - lightbulb_desktop
   - start_work

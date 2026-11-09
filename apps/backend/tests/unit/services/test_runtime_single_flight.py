@@ -222,7 +222,7 @@ class TestStopHelper:
 
     @pytest.mark.asyncio
     async def test_stop_clears_the_estimate(self, table, monkeypatch):
-        table.put_item(Item={**KEY, "warm_until": int(time.time()) + 600, "started_at": 1})
+        table.put_item(Item={**KEY, "arn": ARN, "warm_until": int(time.time()) + 600, "started_at": 1})
         monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", lambda arn, sid: None)
         assert await hermes_provisioning.stop_runtime_session(OWNER, "arn:runtime/x") is True
         assert _row(table) is None
@@ -238,7 +238,7 @@ class TestStopHelper:
         def _throttled(arn, sid):
             raise ClientError({"Error": {"Code": "ThrottlingException"}}, "StopRuntimeSession")
 
-        table.put_item(Item={**KEY, "warm_until": int(time.time()) + 600, "started_at": 1})
+        table.put_item(Item={**KEY, "arn": "arn", "warm_until": int(time.time()) + 600, "started_at": 1})
         monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", _throttled)
         assert await hermes_provisioning.stop_runtime_session(OWNER, "arn") is False
         assert _row(table) is None  # "cold" is the safe error

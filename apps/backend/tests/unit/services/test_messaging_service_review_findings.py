@@ -696,6 +696,8 @@ async def test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm(monkeypatch
     require_admin = AsyncMock(return_value=(group_meta, {"role": "admin"}))
     patch_meta = AsyncMock(return_value={**group_meta, "topic": "Ship v2"})
     monkeypatch.setattr(messaging, "require_room_member", require_admin)
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=group_meta))
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[]))
     monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
     monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
@@ -716,6 +718,8 @@ async def test_patch_room_keeps_the_admin_check_in_front_of_persistence(monkeypa
     auth = AuthContext(user_id="member", org_id="org_1")
     group_meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 1}
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(group_meta, {"role": "member"})))
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=group_meta))
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[]))
     patch_meta = AsyncMock()
     monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
     with pytest.raises(ApiProblem) as exc:
@@ -1040,6 +1044,7 @@ async def test_human_and_agent_posts_to_an_archived_room_are_a_409(monkeypatch):
     answering a turn that started before the archive. The bridge treats a 4xx as final."""
     room = str(uuid.uuid4())
     meta = {"roomId": room, "ownerId": "org_1", "kind": "channel", "revision": 1}
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, {"role": "member"})))
     monkeypatch.setattr(messaging, "_validate_mentions", AsyncMock(return_value=[]))
     monkeypatch.setattr(messaging, "_validate_message_links", AsyncMock(return_value=None))
@@ -1392,7 +1397,7 @@ async def test_create_a_chat_with_lightbulb_takes_project_fields(monkeypatch, ki
             client_room_id=uuid.uuid4(), name=None, kind=kind, members=seated, icon="rocket", topic="Plan the trip"
         ),
     )
-    assert create.await_args.kwargs["extra"] == {"topic": "Plan the trip", "icon": "rocket"}
+    assert create.await_args.kwargs["extra"] == {"topic": "Plan the trip", "icon": "rocket", "frontAgentId": "lb"}
 
 
 def _noted_fixture(monkeypatch, kind, joined, role="member"):

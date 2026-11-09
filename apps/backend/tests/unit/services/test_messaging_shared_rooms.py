@@ -225,6 +225,7 @@ async def test_attachment_download_reads_the_rooms_owner_workspace_not_the_calle
 @pytest.mark.asyncio
 async def test_a_foreign_members_message_is_written_under_the_rooms_owner(monkeypatch):
     sender = _human("user_v", VENDOR)
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, sender)))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[sender]))
     monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))

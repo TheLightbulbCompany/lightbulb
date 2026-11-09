@@ -270,3 +270,21 @@ async def test_handoff_number_cannot_be_the_forwarded_line(repos, async_client_o
     cfg = {"forwardFrom": "(415) 555-0177", "handoff": {"number": "+14155550177"}}
     r = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_is_forwarded_line"
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [("spanish", "true"), ("spanish", 1), ("spanish", None), ("voice", "alloy"), ("voice", {}), ("voice", None)],
+)
+async def test_phone_preferences_are_validated(repos, async_client_org_admin, field, bad):  # noqa: F811
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": {field: bad}})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == f"{field}_invalid"
+
+
+@pytest.mark.parametrize("voice", ["Warm", "marin", "quartz", "willow"])
+async def test_phone_preferences_round_trip_without_rewriting_legacy(repos, async_client_org_admin, voice):  # noqa: F811
+    cfg = {"name": "Founder assistant", "voice": voice, "spanish": True, "future": {"preserved": True}}
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
+    assert response.status_code == 200
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] == cfg

@@ -166,3 +166,25 @@ it("a past pending meeting never claims the assistant listened, including its pa
   expect(screen.queryByText(/It listened/)).not.toBeInTheDocument();
   expect(screen.getByText("No questions recorded for this meeting.")).toBeInTheDocument();
 });
+
+
+it("meeting details show the completed notes instead of the short timeline summary", () => {
+  items.list = [{ type: "meeting", roomId: "noted", at: Date.now(), title: "Planning",
+    summary: "Quick timeline summary", notes: "**Decision:** Launch Tuesday.\n\n- Maya will send the deck." }];
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Planning/ }));
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).getByRole("heading", { name: "Notes" })).toBeInTheDocument();
+  expect(within(pane).getByText("Decision:").tagName).toBe("STRONG");
+  expect(within(pane).getByText("Maya will send the deck.").closest("li")).toBeInTheDocument();
+  expect(within(pane).queryByText("Quick timeline summary")).not.toBeInTheDocument();
+});
+
+it("meeting details retain the summary while completed notes are unavailable", () => {
+  items.list = [{ type: "meeting", roomId: "summarized", at: Date.now(), title: "Review",
+    summary: "Waiting for the final notes.", notes: "  " }];
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Review/ }));
+  expect(within(screen.getByRole("complementary", { name: "Details" }))
+    .getByText("Waiting for the final notes.")).toBeInTheDocument();
+});

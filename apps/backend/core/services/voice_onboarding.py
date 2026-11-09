@@ -269,11 +269,8 @@ def _area_code(raw) -> str | None:
 async def _route_number(number: str, *, remove: bool = False) -> None:
     """Atomically add/remove without replacing the shared trunk list or its IP restrictions."""
     async with livekit_huddles._api() as lk:
-        await lk.sip.update_sip_inbound_trunk(
-            api.UpdateSIPInboundTrunkRequest(
-                sip_trunk_id=settings.VOICE_INBOUND_TRUNK_ID,
-                update=api.SIPInboundTrunkUpdate(numbers=api.ListUpdate(**{"remove" if remove else "add": [number]})),
-            )
+        await lk.sip.update_inbound_trunk_fields(
+            settings.VOICE_INBOUND_TRUNK_ID, numbers=api.ListUpdate(**{"remove" if remove else "add": [number]})
         )
 
 

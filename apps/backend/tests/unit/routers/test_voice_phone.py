@@ -529,18 +529,38 @@ async def test_minutes_used_up_and_run_out_keep_answers(client):
 async def test_call_end_reports_minutes_to_metronome(client):
     from core.billing import voice_billing
 
-    mc = AsyncMock()
     with (
-        patch.object(voice_billing.settings, "METRONOME_API_KEY", "k"),
-        patch.object(voice_billing.metronome_client, "for_settings", return_value=mc),
         patch.object(voice_billing.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)),
     ):
         call = await _start(client)
         client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 160}, headers=W)
-    [event] = mc.ingest.await_args.args[0]
-    assert event["transaction_id"] == call["callId"] and event["customer_id"] == "org_1"
-    assert event["event_type"] == "voice_minutes" and event["properties"] == {"seconds": "160", "kind": "phone"}
+    row = await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICEUSAGE#{call['callId']}")
+    event = row["voiceUsageEvent"]
+    assert event["transactionId"] == call["callId"] and event["customerId"] == "org_1"
+    assert event["seconds"] == 160 and event["kind"] == "phone"
+    assert event["properties"] == {"seconds": "160", "kind": "phone"}
     assert event["timestamp"].endswith("Z")
+    pointer = await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"WORK#VOICEUSAGE#{call['callId']}")
+    assert pointer["payload"] == {"kind": "voice_usage", "ownerId": "org_1", "transactionId": call["callId"]}
+
+
+async def test_failed_phone_usage_admission_retries_with_original_ended_duration(client):
+    from fastapi import HTTPException
+    from core.billing import voice_billing
+
+    call = await _start(client)
+    original = await messaging_repo.get_room(call["callId"])
+    original_start = original["call"]["startedAt"]
+    with patch.object(
+        voice_billing,
+        "report_minutes",
+        AsyncMock(side_effect=[HTTPException(status_code=503), None]),
+    ) as report:
+        first = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 60}, headers=W)
+        retry = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 900}, headers=W)
+    assert first.status_code == 503 and retry.status_code == 200
+    assert report.await_args_list[0].args == report.await_args_list[1].args
+    assert report.await_args_list[0].args[2:] == (original_start, 60, "phone")
 
 
 async def test_a_failed_minutes_counter_still_ends_the_call(client):

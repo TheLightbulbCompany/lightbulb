@@ -429,3 +429,22 @@ it("Escape before a cold join lands permits the next tap to start a fresh join",
   tap();
   expect(huddle.join).toHaveBeenCalledTimes(2);
 });
+
+
+it("a model-start error closes the owned mic and the next press can retry", async () => {
+  listening();
+  const { rerender } = render(<TalkOrb name="Nova" />);
+  tap();
+  await settle();
+  mic.mockClear();
+  huddle.error = { code: "connection_lost" };
+  rerender(<TalkOrb name="Nova" />);
+  expect(mic).toHaveBeenCalledWith(false);
+  expect(orb()).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("alert")).toHaveTextContent("The connection dropped");
+  huddle.error = null; // dismissError clears the real provider's error before retry.
+  rerender(<TalkOrb name="Nova" />);
+  tap();
+  expect(mic).toHaveBeenLastCalledWith(true);
+  expect(huddle.leave).not.toHaveBeenCalled();
+});

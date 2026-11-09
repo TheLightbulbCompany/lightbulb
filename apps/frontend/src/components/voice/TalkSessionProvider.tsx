@@ -188,7 +188,12 @@ function useTalkController(name: string) {
   const code = huddle.error?.code;
   const [seenCode, setSeenCode] = useState(code);
   if (code !== seenCode) { setSeenCode(code); if (code) { setTalk(false); setMuted(false); } }
-  useEffect(() => { if (code) want.current = false; }, [code]);
+  useEffect(() => {
+    if (!code) return;
+    want.current = false;
+    // The worker's failure notice must close capture as well as the UI, never another room's mic.
+    if (live && mine) void setMic(false).catch(() => {});
+  }, [code, live, mine, setMic]);
   const micLive = live && talk && !muted;
   useEffect(() => { if (isTauri()) tellDesktop(micLive); }, [micLive]);
 

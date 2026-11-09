@@ -17,13 +17,20 @@ What it does:
 4. Reads `META.call` and the calendar rows back from dev, measures latency and silence from the agent's audio,
    asks a text OpenAI judge the soft questions, and writes `tests/evals/out/scorecard-<time>.{json,md}`.
 
-Prod mode (`--prod --max-usd 2 [--dry-run] [scenario ...]`): scores the DEPLOYED worker (LiveKit Cloud agent
-`lightbulb-huddle`) against the prod API and the prod messaging table. No local worker is started. Rooms are named
-`phone-prod-qa-<scenario>-<ts>`. It seeds the same two fake lines (+1555010xxxx, owners `qa_phone_*`) in the prod table;
-a workspace with no billing row is not payment-blocked, so no billing row is written. The worker.log usage check is
-skipped (a cloud agent has no local log), k defaults to 1, and the default scenarios are book, hours_prices, message.
-`--max-usd` is required: no new scenario starts once the estimate (2x the caller's own cost, as the agent's tokens are
-not visible) reaches it. `--dry-run` prints what would run and touches nothing (also works without `--prod`).
+Prod mode (`--prod --owner org_... --owner-user user_... --max-usd 2 [--dry-run] [scenario ...]`): scores the DEPLOYED
+worker (LiveKit Cloud agent `lightbulb-huddle`) against the prod API and `lightbulb-prod-messaging`. No local worker.
+Bookings and messages run on the owner's Hermes runtime (the Router), so prod mode targets ONE real, dedicated test
+workspace, never a fake owner. It refuses to write anything unless `OWNER#<owner>/VOICEAGENT` has `qaWorkspace: true`
+(set it through `PUT /voice/agent`; extra keys survive a PUT), and refuses if that row has a hand-off number,
+`forwardFrom`, `runOut`, `bookingsGo: google` or `forwardingCheck`. It seeds a fake +1555010xxxx line pointing at that
+owner, merges only the keys the scenarios need into VOICEAGENT, and sweeps only that owner's VOICEBOOK#, VOICECALLER#
+and VOICECELL# rows. Scenarios needing the second (closed) line are skipped. Rooms are `phone-prod-qa-<scenario>-<ts>`.
+k defaults to 1; default scenarios are book, hours_prices, message. The worker.log usage check is skipped. `--max-usd`
+is required: spend is counted by wall time (PROD_USD_PER_MIN), and a scenario does not start if its worst case would
+pass the cap. `--dry-run` touches nothing (also without `--prod`).
+EVERY PROD RUN LEAVES ROWS THAT ARE NEVER CLEANED, all under the test workspace: call rooms and messages, trigger rows,
+Needs-you tasks, usage outbox rows and a month counter. Test calls show up in the VoiceCallOutcome and
+phone.voice.failed metrics.
 
 Needs: AWS profile isol8-admin, the `lk` CLI's project config (~/.livekit/cli-config.yaml). Spend: two Live sessions
 per scenario, each capped at `max_s`; the estimate is printed in the scorecard.
@@ -52,17 +59,21 @@ HERE = Path(__file__).parent
 OUT = HERE / "out"
 AGENT = os.environ.get("PHONE_QA_AGENT", "lightbulb-phone-qa")
 # Dev and prod share one LiveKit project: a QA worker must never register under the prod agent name.
-assert AGENT != "lightbulb-huddle" and "qa" in AGENT, f"PHONE_QA_AGENT must be a qa agent name, got {AGENT!r}"
+if AGENT == "lightbulb-huddle" or "qa" not in AGENT:
+    sys.exit(f"PHONE_QA_AGENT must be a qa agent name, got {AGENT!r}")
 API ="https://api-dev.thelightbulb.company"
 TABLE = "lightbulb-dev-messaging"
 ENV, PROD, ROOM_PREFIX = "dev", False, "phone-qa-"  # --prod flips these in __main__
 PROD_DEFAULT = ["book", "hours_prices", "message"]
+# Prod spend by wall time, caller + agent, $/minute. The agent's GPT-Live price is UNVERIFIED: deliberately high.
+PROD_USD_PER_MIN = 0.30
 AWS = ["--profile", "isol8-admin", "--region", "us-east-1"]
 MODEL = os.environ.get("CALLER_MODEL", "gpt-realtime-2.1-mini")  # the caller
 JUDGE = os.environ.get("PHONE_JUDGE_MODEL", "gpt-4.1-mini")
 TZ = ZoneInfo("America/New_York")
 OPEN, CLOSED = "+15550109001", "+15550109002"
 OWNERS = {OPEN: "qa_phone_open", CLOSED: "qa_phone_closed"}
+OWNER_USER = {}  # prod: {OPEN: <owner user id>}; dev derives f"{owner}_user"
 OTHER = {"phone": "+15550109199", "name": "Rebecca Stone"}  # another customer; must never leak or change
 
 # --- the test business ------------------------------------------------------------------------------------------
@@ -219,19 +230,49 @@ def calendar(owner: str) -> list[dict]:
     return q["Items"]
 
 
+def qa_gate(owner: str) -> dict:
+    """Prod: the owner is a real workspace, so write only if it carries the qaWorkspace marker and nothing on its
+    VOICEAGENT row could send a test call to a real phone. Returns the row's config."""
+    row = table().get_item(Key={"pk": f"OWNER#{owner}", "sk": "VOICEAGENT"}, ConsistentRead=True).get("Item")
+    cfg = json.loads(row["config"]) if row else {}
+    if cfg.get("qaWorkspace") is not True:
+        sys.exit(f"refusing: OWNER#{owner}/VOICEAGENT has no qaWorkspace=true")
+    unsafe = [k for k, v in (("handoff.number", (cfg.get("handoff") or {}).get("number")), ("forwardFrom", cfg.get("forwardFrom")),
+                             ("runOut", cfg.get("runOut")), ("bookingsGo=google", cfg.get("bookingsGo") == "google"),
+                             ("forwardingCheck", cfg.get("forwardingCheck"))) if v]  # fmt: skip
+    if unsafe:
+        sys.exit(f"refusing: test workspace VOICEAGENT has {unsafe} set")
+    return cfg
+
+
 def seed() -> None:
+    from botocore.exceptions import ClientError
+
     t = table()
     for number, owner in OWNERS.items():
-        assert owner.startswith("qa_phone_"), owner  # never sweep a real workspace's rows
-        assert not PROD or number.startswith("+1555010"), number  # prod: only fake numbers
+        user = OWNER_USER.get(number, f"{owner}_user")
+        if PROD:
+            if not number.startswith("+1555010"):
+                sys.exit(f"prod: refusing non-fake number {number}")
+            old = qa_gate(owner)
+        elif not owner.startswith("qa_phone_"):
+            sys.exit(f"refusing to sweep {owner}")  # never sweep a real workspace's rows
         for row in calendar(owner):
             # VOICECELL#: the slot cells a booking holds since #5024; left behind, they refuse the next run's
             # bookings as slot_taken
             if row["sk"].startswith(("VOICEBOOK#", "VOICECALLER#", "VOICECELL#")):
                 t.delete_item(Key={"pk": row["pk"], "sk": row["sk"]})
-        t.put_item(Item={"pk": f"PHONE#{number}", "sk": "LINE", "ownerId": owner, "ownerUserId": f"{owner}_user"})
+        try:
+            t.put_item(Item={"pk": f"PHONE#{number}", "sk": "LINE", "ownerId": owner, "ownerUserId": user},
+                       ConditionExpression="attribute_not_exists(pk) OR ownerId = :o",
+                       ExpressionAttributeValues={":o": owner})  # never take over another owner's number
+        except ClientError as exc:
+            sys.exit(f"refusing: {number} belongs to another owner ({exc.response['Error']['Code']})")
+        page = agent_page(number == CLOSED)
+        if PROD:  # a real workspace's config: only the keys the scenarios need, the rest stays as it is
+            page = {**old, **{k: page[k] for k in ("name", "live", "paused", "allow", "knowledge", "hours", "services", "bufferMin")}}
         t.put_item(Item={"pk": f"OWNER#{owner}", "sk": "VOICEAGENT", "updatedBy": "phone-evals",
-                         "config": json.dumps(agent_page(number == CLOSED)), "updatedAt": datetime.now(TZ).isoformat()})  # fmt: skip
+                         "config": json.dumps(page), "updatedAt": datetime.now(TZ).isoformat()})  # fmt: skip
     day = f"{DAY:%Y-%m-%d}"
     seeds = [("16:30", "Acrylic full set", OTHER["name"], OTHER["phone"])]
     seeds += [(at, svc, name, s["caller"]) for s in SCENARIOS for at, svc, name in s.get("seed", [])]
@@ -311,7 +352,8 @@ async def run_scenario(sc: dict, lk: dict) -> dict:
     from openai.types.beta.realtime.session import TurnDetection
 
     room_name = f"{ROOM_PREFIX}{sc['name']}-{int(time.time())}"
-    assert not PROD or room_name.startswith("phone-prod-qa-"), room_name
+    if PROD and not room_name.startswith("phone-prod-qa-"):
+        sys.exit(f"prod: bad room name {room_name}")
     line, max_s = sc.get("line", OPEN), sc.get("max_s", 150)
     async with api.LiveKitAPI(lk["LIVEKIT_URL"], lk["LIVEKIT_API_KEY"], lk["LIVEKIT_API_SECRET"]) as lkapi:
         await lkapi.agent_dispatch.create_dispatch(api.CreateAgentDispatchRequest(agent_name=AGENT, room=room_name))
@@ -645,7 +687,13 @@ def dry_run(chosen: list[dict], max_usd: float | None) -> None:
     print(f"  secrets lightbulb/{ENV}/openai_api_key" + ("" if PROD else f", lightbulb/{ENV}/huddle_worker_secret"))
     print(f"  max-usd {max_usd}; versions under test: not queried")
     for number, owner in OWNERS.items():
-        print(f"  seed {TABLE} PHONE#{number}/LINE -> {owner}; OWNER#{owner}/VOICEAGENT; sweep VOICEBOOK#/VOICECALLER#/VOICECELL#")
+        print(f"  seed {TABLE} PHONE#{number}/LINE (only if free or ours) -> {owner}, user {OWNER_USER.get(number, owner + '_user')}")
+        if PROD:
+            print(f"  first read OWNER#{owner}/VOICEAGENT: need qaWorkspace=true, no handoff.number/forwardFrom/runOut/"
+                  "bookingsGo=google/forwardingCheck; then merge only name, live, paused, allow, knowledge, hours, services, bufferMin")
+        else:
+            print(f"  replace OWNER#{owner}/VOICEAGENT")
+        print(f"  sweep OWNER#{owner} VOICEBOOK#/VOICECALLER#/VOICECELL# only")
     for s in SCENARIOS:
         for at, svc, name in s.get("seed", []):
             print(f"  seed OWNER#{OWNERS[OPEN]}/VOICEBOOK#{DAY:%Y-%m-%d}T{at} {svc} {name} {s['caller']}")
@@ -656,7 +704,14 @@ def dry_run(chosen: list[dict], max_usd: float | None) -> None:
 
 
 async def main(names: list[str], k: int = 3, check: bool = False, dry: bool = False, max_usd: float | None = None) -> None:
+    bad = [n for n in names if n not in {s["name"] for s in SCENARIOS}]
+    if bad:
+        sys.exit(f"unknown scenario(s) {bad}; known: {[s['name'] for s in SCENARIOS]}")
     chosen = [s for s in SCENARIOS if not names or s["name"] in names]
+    if PROD:  # one owner only: a scenario that needs the second (closed) line cannot run
+        for s in [s for s in chosen if s.get("line", OPEN) != OPEN]:
+            print(f"prod: skipping {s['name']}: needs a second owner for the closed line")
+        chosen = [s for s in chosen if s.get("line", OPEN) == OPEN]
     chosen = [s for s in chosen for _ in range(max(s.get("repeat", 1) if names and not PROD else 1, k))]  # k runs each: pass^k
     if dry:
         return dry_run(chosen, max_usd)
@@ -668,13 +723,13 @@ async def main(names: list[str], k: int = 3, check: bool = False, dry: bool = Fa
     if PROD:
         print("prod: worker.log usage check skipped (cloud agent); agent cost not measured", flush=True)
     worker = None if PROD else start_worker({**lk})  # the keys ride in os.environ
-    results = []
+    results, spent = [], 0.0
     try:
         for sc in chosen:
-            # ponytail: agent tokens are invisible in prod, so the estimate is 2x the caller's own cost
-            if PROD and sum(2 * cost(r["usage"]) for r in results) >= max_usd:
-                print(f"max-usd {max_usd} reached; not starting {sc['name']}", flush=True)
+            if PROD and spent + sc.get("max_s", 150) / 60 * PROD_USD_PER_MIN > max_usd:
+                print(f"max-usd {max_usd}: ${spent:.2f} spent, not starting {sc['name']}", flush=True)
                 break
+            started = time.monotonic()
             print(f"… {sc['name']}", flush=True)
             try:
                 results.append(score(sc, await run_scenario(sc, lk)))
@@ -685,6 +740,7 @@ async def main(names: list[str], k: int = 3, check: bool = False, dry: bool = Fa
                                 "judge": {}, "outcome": None, "transcript": [], "usage": dict.fromkeys(
                                     ("in_audio", "in_text", "out_audio", "out_text"), 0), "room": "",
                                 "hung_up_by": ""})  # fmt: skip
+            spent += (time.monotonic() - started) / 60 * PROD_USD_PER_MIN  # wall time: a crashed call still counts
             r = results[-1]
             print(f"  {'PASS' if r['pass'] else 'FAIL'} {[k for k, v in r['checks'].items() if not v]}", flush=True)
             await asyncio.sleep(20)  # run 1: a dispatch sent while the last job was still exiting came 2 min late
@@ -717,12 +773,23 @@ if __name__ == "__main__":
         cli.run_app(server)
     else:
         args = sys.argv[1:]
+        def opt(name: str, cast=str):
+            if name not in args:
+                return None
+            i = args.index(name)
+            if i + 1 >= len(args) or args[i + 1].startswith("--"):
+                sys.exit(f"{name} needs a value")
+            return cast(args.pop(i + 1))
+
         PROD, dry = "--prod" in args, "--dry-run" in args
-        k = int(args.pop(args.index("--k") + 1)) if "--k" in args else (1 if PROD else 3)
-        max_usd = float(args.pop(args.index("--max-usd") + 1)) if "--max-usd" in args else None
+        k = opt("--k", int) or (1 if PROD else 3)
+        max_usd, owner, owner_user = opt("--max-usd", float), opt("--owner"), opt("--owner-user")
         if PROD:
-            if max_usd is None:
-                sys.exit("--prod requires --max-usd <dollars>")
+            if max_usd is None or not (owner and owner_user):
+                sys.exit("--prod requires --max-usd <dollars>, --owner <org_...> and --owner-user <user_...>")
+            if not (owner.startswith("org_") and owner_user.startswith("user_")):
+                sys.exit("--owner must be an org_ id and --owner-user a user_ id")
             ENV, API, TABLE, AGENT, ROOM_PREFIX = "prod", "https://api.thelightbulb.company", "lightbulb-prod-messaging", "lightbulb-huddle", "phone-prod-qa-"
-        names = [x for x in args if x not in ("--k", "--check", "--prod", "--dry-run", "--max-usd")]
+            OWNERS, OWNER_USER = {OPEN: owner}, {OPEN: owner_user}
+        names = [x for x in args if x not in ("--check", "--prod", "--dry-run", "--k", "--max-usd", "--owner", "--owner-user")]
         asyncio.run(main(names or (PROD_DEFAULT if PROD else []), k, "--check" in args, dry, max_usd))

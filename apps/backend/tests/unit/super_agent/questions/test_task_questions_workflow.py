@@ -482,3 +482,34 @@ async def test_concurrent_open_ask_misses_share_one_waiting_write_even_with_imme
         assert fakes.args("transition").count((WS, TID, "waiting", "question")) == 1
         assert len(fakes.args("open_asked_question")) == 1
         assert not any(name == "transition" and args[2] == "waiting" for name, args in fakes.calls[worker_start:])
+
+
+@pytest.mark.parametrize("phase", ["transition", "open_asked_question"])
+async def test_typed_input_cannot_start_worker_while_pre_task_question_is_opening(temporal_env, fakes, phase):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(*_):
+        entered.set()
+        await release.wait()
+        return QuestionRef("opening-question", [SAM], True) if phase == "open_asked_question" else None
+
+    fakes.behaviour[phase] = blocked
+    if phase != "open_asked_question":
+        fakes.behaviour["open_asked_question"] = lambda *_: QuestionRef("opening-question", [SAM], True)
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-opening:{uuid.uuid4()}", task_queue=queue
+        )
+        ask = asyncio.create_task(
+            h.execute_update(TaskWorkflow.ask, AskRef("ask:opening", "question", "question", True, True))
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:yes", "message"))
+        await asyncio.sleep(0.2)
+        assert "begin_attempt" not in fakes.names() and "worker_turn" not in fakes.names()
+        release.set()
+        await ask
+        assert "begin_attempt" not in fakes.names()
+        await h.execute_update(TaskWorkflow.answer, _press(qid="opening-question", option="answer"))
+        await _until(lambda: "begin_attempt" in fakes.names())

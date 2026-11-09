@@ -256,8 +256,6 @@ async def task_moved(task: dict, to: str) -> None:
     owner_id = str(task.get("pk") or "").removeprefix("WS#")
     if (
         task.get("origin") != "meeting"
-        or audience.get("kind") != "room"
-        or not room_id
         or not str(task.get("pk") or "").startswith("WS#")
         or not owner_id
         or status is None
@@ -280,6 +278,8 @@ async def task_moved(task: dict, to: str) -> None:
 
         if await meeting_followups.record_task(owner_id, {**task, "status": to}):
             return  # completion work belongs to its original notes, never a newly active Meet
+        if audience.get("kind") != "room" or not room_id:
+            return  # live provider delivery remains room-only
         meta = (await messaging_repo.get_room(room_id)) or {}
         if meta.get("ownerId") != owner_id or not meta.get("meeting"):
             return

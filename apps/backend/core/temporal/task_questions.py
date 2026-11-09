@@ -122,7 +122,8 @@ class TaskQuestionsMixin:
 
     async def _q_before_attempt(self) -> bool:
         """An open blocking Question holds the next attempt: inputs wait behind it (spec 05 §3.5 layer 2)."""
-        return not (set(self._open_qs) - self._nonblocking)
+        opening = self._pre_attempt_trigger is not None and self._pre_attempt_qid is None
+        return not opening and not (set(self._open_qs) - self._nonblocking)
 
     async def _q_after_attempt(self, outcome: str) -> None:
         if outcome != "waiting_approval":

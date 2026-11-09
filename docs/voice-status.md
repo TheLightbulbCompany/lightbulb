@@ -1,125 +1,268 @@
 # Voice product status board
 
-The one place that says what is built, what is live, and what has been tested.
-If a capability is not a row here, nobody owns it: add the row.
+The one place that says what was promised, what is built, what is live, and what has been tested.
+It follows the founder's phases 0 to 7 (`docs/superpowers/plans/2026-11-07-voice-agents-master-plan.md`).
+If a promise is not a row here, nobody owns it: add the row.
 
-Last full check: 9 Nov 2026, against `origin/main` `42a8f8aa8`, prod backend task
-definition 416 and dev 966. Prod voice worker: LiveKit agent `CA_HTFFgrTj24NH`, version
-`QJcdFMeCBBJF` (reported by the Platform lead). Prod Hermes pool image: `h-2026.11.9-df8c100`. "Tested" entries come from the receipts of the build
-sessions unless the note says "config read 9 Nov".
+**Sources for the rows:** the design spec (`docs/superpowers/specs/2026-11-07-voice-agents-design.md`), the master plan,
+the Phase 1 and Phase 2 plans, the end-state UX plan, the founder goal, and the build sessions' ledger. Three read-only
+audits checked this board against those documents on 9 Nov 2026.
+
+**Last state check:** 9 Nov 2026. `origin/main` `42a8f8aa8`. Prod backend task definition 416, dev 966.
+Prod voice worker: LiveKit agent `CA_HTFFgrTj24NH`, version `QJcdFMeCBBJF`. Prod Hermes pool image `h-2026.11.9-df8c100`.
 
 ## The four states
 
 | State | Means | Who sets it |
 |---|---|---|
 | **Built** | The code is on `main`. | The PR that merges it |
-| **Prod** | It is deployed to prod and switched on there. | The session that ran the prod deploy |
-| **Machine** | A real call, meeting, payment or scripted run passed **on prod**. Unit tests do not count. The one exception is payment, which is proven in the Stripe sandbox on dev; the note then says so. | The session that ran it, with the receipt named |
+| **Prod** | Every part it needs is deployed to prod and switched on. | The session that ran the deploy |
+| **Machine** | A real call, meeting or scripted run passed **on prod**, on the versions named in the receipt. Unit tests do not count. Payment is the one exception: it is proven in the Stripe sandbox on dev, and the note says so. | The session that ran it |
 | **Founder** | The founder walked it on prod and said yes. | The founder |
 
-Values: `yes`, `no`, `part` (say which part in the note), `n/a`.
+Values: `yes`, `part` (the note says which part), `no`, `?` (**not checked yet**: do not read it as yes or no), `n/a`.
+
+The **1st** column marks rows a first paying receptionist customer needs. It is an order of attack, not a cut.
 
 ## Rules
 
 1. Every PR that changes a capability edits its row in the same PR.
-2. One owner per row. Only the owner's track edits the row.
-3. A row moves one state at a time. "Built" never implies "Prod"; "Prod" never implies "Machine".
-4. PROPOSED, not yet a founder decision: one implementer, one fresh reviewer, one fix round, merge. A finding from a
-   second round becomes a new row, unless it is about money, security or data loss.
-5. PROPOSED, not yet a founder decision: new ideas go to **Later** as a row, and nothing in Later is started while a
-   **Sell** row is not `Machine: yes`. The full goal (phases 0 to 7) is unchanged either way; this is only an order.
-6. Prod trains leave twice a day. After each, the machine checks run, then the founder walks what passed.
-
-## Tracks and leads
-
-| Track | Lead | Scope |
-|---|---|---|
-| **Sell** | Sell lead (Claude) | What one paying business needs to take real calls |
-| **Platform** | Codex (thread `01a1bcde`) | Infrastructure, cost, retirement, and the PRs it already has open |
-| **Later** | Nobody until Sell is done | Everything else that was promised |
+2. One owner per row. **Platform** = the Codex lead thread. **Product** = the Claude lead session.
+3. A row moves one state at a time. Built never implies Prod. Prod never implies Machine.
+4. A pass is valid only for the build it ran on. The receipt names the backend task definition, the voice worker
+   version and the Hermes image tag.
+5. A phase is "done, acceptance pending" when every row in it is Machine: yes and its gate rows have passed
+   (founder ruling, 9 Nov). The founder walk is then its own task.
 
 ---
 
-## Sell: one business live on the phone
+## Phase 0. Stop the bleed
 
-| # | Capability | Built | Prod | Machine | Founder | Next step |
+| # | Promise | Built | Prod | Machine | Owner | Note |
 |---|---|---|---|---|---|---|
-| S1 | Call is answered; opening says name, AI, recorded | yes | yes | yes | no | Founder walk |
-| S2 | Answers a business question correctly, out loud, in useful time | yes | yes | part | no | One call invented facts; the handoff was fixed but no call has yet proved a correct **spoken** answer. Run the phone eval on prod and set a latency target |
-| S3 | Book, move, cancel on our own calendar | yes | yes | part | no | Passed on the older voice stack. Re-run on GPT-Live |
-| S4 | Book into Google Calendar | part | part | no | no | Known bugs in move and cancel against Google, truthful availability and a late-write race; Codex is fixing them. Then the founder reconnects Google and one real booking is checked in Calendar |
-| S5 | Take a message; hand off to a person | yes | yes | no | no | One transfer to an answering number, one to a number that does not answer |
-| S6 | Each business gets its own number at Go live | yes | yes | no | no | `VOICE_BUY_NUMBERS=true` on prod (config read 9 Nov). No number has ever been bought. Needs a fresh paid workspace. Costs $1.15/month per number |
-| S7 | Forwarding check from the Agent page | yes | yes | no | no | Outbound trunk is set on prod (config read 9 Nov). Never run against a real carrier forward |
-| S8 | Onboarding on a fresh workspace, sign-up to first answered call | yes | yes | no | no | Never run end to end. Time it against the 15-minute goal |
-| S9 | Pay $250, get the plan, minutes counted | yes | part | part | no | Payment passed in the Stripe sandbox on dev (counts as Machine for payment, environment: dev sandbox). Prod metering is deployed in part and not verified. 0 of 33 prod billing rows hold a voice contract (read 9 Nov). Founder ruling 9 Nov: prove payment in the dev sandbox, not with a real prod charge |
-| S10 | Caller cannot do what the owner unticked; no owner data reaches a caller | yes | yes | no | no | Scripted calls: forbidden action, second caller, spoofed owner |
-| S11 | Home shows the call with transcript and steps | yes | yes | part | no | Check a fresh prod call row for truth |
-| S12 | The Agent page shows no control without a working feature behind it | no | no | no | no | "Day-before text" is ticked by default with no sender. Hide it until texts exist |
-| S13 | A new business is offered one plan, the $250 voice plan | no | no | no | no | Today sign-up gives the old $50 Team plan and a 30-day trial; the voice plan is a second opt-in contract. A leftover "Front desk" add-on is also in checkout. Needs founder decisions B1 and B2 |
-| S14 | Phone, Meet and orb minutes all count toward the allowance | yes | part | part | no | All three report minutes (#5155). Verified on dev with a real 14-second session. Not yet on prod. Founder ruling 9 Nov: orb minutes count |
+| 0.1 | GooseTown services at zero; its NAT, load balancer, WAF and DNS removed | yes | yes | yes | Platform | Verified by CloudFormation receipts on both envs |
+| 0.2 | Dormant per-business sessions stopped; nothing wakes them | yes | yes | no | Platform | Needs the quiet 24 h (row 2.14) |
+| 0.3 | Nightly CEO timer off | part | ? | no | Platform | `NIGHTLY_CEO` references remain in `provision_gate.py` and `run_analytics.py` |
+| 0.4 | Paperclip off in dev and prod; Aurora gone in both regions | yes | yes | part | Platform | No clusters found. Bill lines not yet confirmed gone |
+| 0.5 | 24 h of about 0 GB-hours outside live use | n/a | n/a | no | Platform | Same measurement as 2.14 |
+| 0.6 | Activate Founders application sent | n/a | n/a | n/a | Founder | No receipt |
 
-## Sell: meetings and the app (demo quality, not a gate for the first phone customer)
+## Phase 1. The engine on prod, the old product out
 
-| # | Capability | Built | Prod | Machine | Founder | Next step |
+| # | Promise | Built | Prod | Machine | Owner | Note |
 |---|---|---|---|---|---|---|
-| M1 | Invite the agent to a Meet and it joins | yes | yes | part | no | Joined once after a manual repair. A normal new invite must work. `RECALL_GOOGLE_LOGIN_GROUP_ID` is empty on prod, so the bot waits in the lobby |
-| M2 | Speaks when named, stays quiet otherwise, sleeps when idle | yes | yes | part | no | One real meeting had flaws; the fixes are not re-tested with several people |
-| M3 | Notes in the app after the meeting | yes | yes | yes | no | Founder walk |
-| M4 | Reads and writes Meet chat | yes | no | no | no | Prod image pin merged (#5169); prod not deployed or rolled |
-| M5 | Starts follow-up work it was clearly asked to do | yes | no | no | no | #5163 merged, on dev. Next prod train |
-| M6 | In-app orb: talk, interrupt, keep speaking after release | yes | yes | part | no | Founder test on the Mac with Fn |
-| M7 | Provider choice: managed or Sign in with ChatGPT | yes | no | no | no | #5162 and the settings route fix #5168 are merged and on dev. Next prod train |
+| 1.1 | Router and Workers on Temporal are the only agent path on prod | yes | yes | yes | Platform | |
+| 1.2 | Workspaces that had opted out (`super_agent=False`) are moved, not silently broken | ? | ? | no | Platform | Master plan review focus 1 |
+| 1.3 | The feature switch is retired | part | ? | no | Platform | `super_agent_flags.py` and `superAgent` references remain in 5+ files |
+| 1.4 | Roster served from `agent_registry`; old mobile builds (TestFlight 0.4.8) still work against `/teams/agents` | yes | yes | no | Platform | Master plan review focus 2. Never exercised with an old build |
+| 1.5 | Paperclip code removed | part | yes | n/a | Platform | No module remains. Name residue in comments and one unused component (`AgentPaperclipFields.tsx`). **Three Paperclip-named things are live and stay:** the `paperclip-companies` table (the canonical workspace identity row), `PAPERCLIP_SERVICE_TOKEN_KEY` (signs session shares, digests and Needs-you links), and the bridge's run route. A name is not proof something is dead |
+| 1.6 | Paperclip stack and Aurora removed | yes | yes | yes | Platform | Guard test `no-paperclip-stack.test.ts` |
+| 1.7 | Marketplace removed | part | part | n/a | Platform | Routers and services gone. Five tables and `marketplace_safety.py` remain |
+| 1.8 | Apps backend removed, with its 60 secrets | part | ? | n/a | Platform | Routes gone. Secrets not confirmed |
+| 1.9 | Stripe Projects rail removed | part | part | n/a | Platform | Code gone. The `provisioning-workflows` table is still read by `owner_facts` and the wipes; it stays until that coupling is removed |
+| 1.10 | Comms features removed (channels, threads, reactions, pins, mentions) | part | part | n/a | Platform | `EmojiPicker`, `RoomMessageSearch`, `RoomLinkPreviews` remain |
+| 1.11 | Ideas, Feed, Daily, Brief UI removed | part | part | n/a | Platform | `components/creations` (9 files) and `components/activity` (6) remain |
+| 1.12 | OpenSearch removed | no | no | no | Platform | Collection, endpoint, indexer Lambda and the search route still exist. #5156 then #5158 |
+| 1.13 | The five marketplace tables retired | no | no | n/a | Platform | They hold rows in prod (30 listings, 2 payouts, 3 sellers, 11 takedowns) and have a Retain policy, so removal is staged. Founder said delete (9 Nov) |
+| 1.14 | Old chat UI deleted once the voice UI is live | no | no | n/a | Product | `components/workspace` (54 files), `teams` (73), `control` (37) are unrouted. `messaging` (174) is still used by `/voice/lightbulb` |
+| 1.15 | Every existing integration kept as a live source; the CLI and A2A routes kept | yes | yes | no | Platform | Founder ruling. Never walked after the deletions |
+| 1.16 | Tasks export replaced before deletion | ? | ? | no | Platform | Phase 1 task 5 |
+| 1.17 | The Lightbulb CLI's future is settled with GooseTown | no | no | n/a | Founder | Master plan open item |
+| 1.18 | The bill shows RDS, OpenSearch and Paperclip Fargate lines gone | n/a | n/a | no | Platform | |
 
-## Platform (Codex)
+## Phase 2. Shared infrastructure, cost, medical-ready
 
-| # | Capability | Built | Prod | Machine | Next step |
-|---|---|---|---|---|---|
-| P1 | Router and Workers on Temporal are the only agent path | yes | yes | yes | n/a |
-| P2 | Paperclip and Aurora removed | yes | yes | part | Confirm the bill lines are gone |
-| P3 | GooseTown parked, its NAT, load balancer and DNS removed | yes | yes | yes | n/a |
-| P4 | One shared Hermes runtime pool per tier | yes | yes | part | Tenant isolation check; #5170 fences calls to the pool |
-| P5 | Old per-business runtimes and roles retired | no | no | no | 25 old runtime definitions remain (27 runtimes in all, 2 are the shared pools). The 28 boot identity seeds are KEPT until network identity custody has a replacement |
-| P6 | Backend, workers and Lambdas on ARM | yes | no | no | Live on dev (#5167). Prod train |
-| P7 | OpenSearch removed | part | no | no | #5156 then #5158, after the image roll |
-| P8 | Secrets under 20 | no | no | no | About 130 today |
-| P9 | AgentCore Identity holds OAuth tokens | no | no | no | Not started |
-| P10 | Lightbulb NAT and CloudFront plan | no | no | no | Not started |
-| P11 | Nothing wakes a business that is idle (quiet 24 h) | yes | yes | no | Needs a clean 24 h measurement |
-| P12 | Fixed cost at or under $250/month | no | no | no | Needs a full bill after P5 to P10 |
-| P13 | Memory retention (90 days) runs on a schedule | yes | yes | no | Confirm a real scheduled run |
+| # | Promise | Built | Prod | Machine | Owner | Note |
+|---|---|---|---|---|---|---|
+| 2.1 | One shared Hermes runtime pool per tier; a session per owner or per task | yes | yes | part | Platform | Tenant isolation not yet proven. #5170 fences every call to the pool |
+| 2.2 | Idle timeout 5 min; typing and new-room prewake deleted; the curator runs only when warm | yes | yes | no | Platform | |
+| 2.3 | The curator works without waking a business's session | ? | ? | no | Platform | Phase 2 follow-up 7 |
+| 2.4 | Old per-business runtimes and roles retired | no | no | no | Platform | 25 old definitions remain. By exact allowlist |
+| 2.5 | Boot identity seeds replaced, then retired | no | no | no | Platform | 28 seeds are KEPT until network identity custody has a replacement |
+| 2.6 | Per-business secrets moved to encrypted DynamoDB envelopes | yes | yes | part | Platform | Live credential use after the move not verified |
+| 2.7 | Secrets Manager under 20 | no | no | no | Platform | About 130 today. 14 platform OAuth client secrets are required and stay |
+| 2.8 | AgentCore Identity holds OAuth tokens | no | no | no | Platform | Not started |
+| 2.9 | Memory retention (90 days) runs on a schedule | yes | yes | no | Platform | No scheduled-run receipt |
+| 2.10 | Backend, workers and Lambdas on ARM | yes | no | no | Platform | Live on dev (#5167) |
+| 2.11 | One backend task, or two with a reason; idle CPU profiled | no | no | no | Platform | |
+| 2.12 | No NAT for Lightbulb; CloudFront free plan in place of WAF | no | no | no | Platform | Two NAT instances remain |
+| 2.13 | Backend background loops reduced | ? | ? | no | Platform | Spec section 8 |
+| 2.14 | Quiet 24 h: nothing runs for an idle business | n/a | n/a | no | Platform | After 2.2 to 2.4 |
+| 2.15 | Fixed cost at or under $250 a month; per-business cost about $25 to $30 | n/a | n/a | no | Platform | Needs a full bill |
+| 2.16 | AgentCore cold start measured | no | no | no | Platform | Master plan open item |
+| 2.17 | Zero retention set at every speech and model vendor | ? | ? | no | Platform | Recall is set to zero retention in code. Others not checked |
+| 2.18 | BAA requests filed with dates: Twilio, Google Cloud, LiveKit | n/a | n/a | n/a | Founder | Phase 2 gate. Paid plans |
+| 2.19 | Google calendar-only OAuth client created; verification started | no | no | n/a | Founder | Takes 4 to 6 weeks. Not started |
+| 2.20 | Twilio API key rotated | ? | ? | n/a | Platform | Its secret was shown once in a tool result |
 
-## Later (promised, not started or parked)
+## Phase 3. Phone
 
-| # | Capability | State | Blocked on |
-|---|---|---|---|
-| L1 | Texts: confirmations, reminders, callbacks | not built | 10DLC registration (vendor, paid) |
-| L2 | Play back a call recording | not built | n/a |
-| L3 | Waitlist: join and fill | not built | L1 for the fill texts |
-| L4 | Owner calls in and proves who they are (PIN) | not built | n/a |
-| L5 | Staff and holiday closures limit booking slots | fields saved, not used | n/a |
-| L6 | Square booking | started (Codex) | n/a |
-| L7 | Booking sites with no API, by browser | not built as a product | n/a |
-| L8 | Spanish and voice preview | core merged (#5171), controls not live | Codex to finish, then stop |
-| L9 | Choose which agent is the receptionist | #5166 draft (Codex) | Codex to finish, then stop |
-| L10 | Structured meeting decisions, recallable | not built (#5018 parked) | n/a |
-| L11 | Per-person transcription opt-out in a meeting | #5009 parked | n/a |
-| L12 | Shared `agents@` invite address | backend built | Google Workspace mail forwarding (founder access) |
-| L13 | Mobile: voice settings, billing and onboarding match the web | not built | n/a |
-| L14 | 80% and 100% minute notices, run-out forward | part, dev only | n/a |
-| L15 | Refunds, disputes, dunning for the voice plan | not decided | Founder decision |
-| L16 | Push for the first calls on Home (today it polls every 20 s) | not built | n/a |
-| L17 | Ten-second undo on send or spend | not found | n/a |
-| L18 | Dental: NexHealth, medical tier, BAAs | not started | Vendor agreements |
+| # | Promise | Built | Prod | Machine | 1st | Owner | Note |
+|---|---|---|---|---|---|---|---|
+| 3.1 | Call answered through Twilio, SIP and LiveKit | yes | yes | yes | 1st | Product | |
+| 3.2 | Opening contains the name, "AI assistant" and "recorded"; a guard corrects a miss. Target: 95% unaided, 100% with the guard | yes | yes | part | 1st | Product | One real call passed. The rate is not measured |
+| 3.3 | The voice hands every business question to the Router and speaks its answer | yes | yes | part | 1st | Product | One call invented facts with no hand-off; one later call handed off. Rate not measured |
+| 3.4 | Latency: 1.4 s caller-to-reply on simple turns; a stated target for a useful answer | no | no | no | 1st | Product | No target for a useful answer exists yet |
+| 3.5 | Knowledge from the website scan answers callers, with where each fact came from | yes | yes | part | 1st | Product | The Router received the right facts in one recovered call |
+| 3.6 | Book, move, cancel on the assistant's own calendar; time zone saved at onboarding; overlaps conflict | yes | yes | part | 1st | Product | Passed on the older voice stack. Re-run on GPT-Live |
+| 3.7 | Book, move, cancel in Google Calendar; a Google failure keeps the hold and raises a Line-problem card | part | part | no | 1st | Platform | Known bugs in move, cancel, availability and a late-write race, being fixed. The founder's Google grant expired |
+| 3.8 | Take a message | yes | yes | no | 1st | Product | |
+| 3.9 | Hand off to a person, only during opening hours; a missed hand-off becomes a card | yes | yes | no | 1st | Product | |
+| 3.10 | A caller cannot do what the owner unticked: refused by the server, and a message is taken | yes | yes | no | 1st | Product | Master plan review focus 3 |
+| 3.11 | A caller gets only the business profile and their own bookings; no owner data; cannot pose as the owner | yes | yes | no | 1st | Product | Unit tests exist |
+| 3.12 | Per-caller memory keyed by phone number; "what it remembers" with a working Forget | yes | yes | no | | Product | |
+| 3.13 | "Didn't know" becomes a card; the owner's answer goes into Knowledge and the next caller gets it | yes | yes | no | 1st | Product | |
+| 3.14 | "Next time…" note on a call reaches later calls | yes | yes | no | | Product | |
+| 3.15 | Pause and not-live take messages only; the owner's test call still works before Go live | yes | yes | no | 1st | Product | |
+| 3.16 | Each business gets its own number at Go live | yes | yes | no | 1st | Product | Buying is switched on in prod. No number has ever been bought |
+| 3.17 | Number buying is safe: no double purchase, no orphaned number, the line lookup works | ? | ? | no | 1st | Product | Three fixes the UX plan required before buying is used |
+| 3.18 | Keep-my-number or new-number choice, with the carrier's forward and stop codes | yes | yes | no | 1st | Product | |
+| 3.19 | Forwarding check from the Agent page | yes | yes | no | 1st | Product | The outbound trunk is set in prod. Never run against a real forward |
+| 3.20 | Call record: transcript, outcome tag, steps, one-line "what it did", booking card | yes | yes | part | 1st | Product | Home polls every 20 s by design |
+| 3.21 | Call recording stored and playable | no | no | no | | Product | The call is flagged for recording; nothing stores or serves the file |
+| 3.22 | Front-desk specialist pre-warmed when a call connects | part | part | no | | Product | A Router prewarm exists. The per-call specialist is not proven |
+| 3.23 | Staff and holidays limit the slots offered | no | no | no | | Product | The fields are saved and not used |
+| 3.24 | Waitlist: join and fill | no | no | no | | Product | The UX plan cut the tool; the spec promised it |
+| 3.25 | Texts from the assistant's number: confirmations, opt-in reminders, callbacks | no | no | no | | Product | Needs 10DLC. Founder ruling: missed-caller and waitlist texts stay off until a consent review |
+| 3.26 | 10DLC registration, per-business brand path | n/a | n/a | n/a | | Founder | Founder said start (9 Nov) |
+| 3.27 | Square booking | part | no | no | | Platform | #5173, hidden adapter |
+| 3.28 | Booking sites with no API, by browser, with steps and screenshots in the call record | no | no | no | | Product | Generic browser tool exists; no product path |
+| 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | |
+| 3.30 | Spanish, and a voice choice with preview | part | no | no | | Platform | Core merged (#5171); controls not live |
+| 3.31 | Choose which agent is the receptionist | part | no | no | | Platform | #5166, in fix |
+| 3.32 | `VoiceCallOutcome` metric and an alarm on worker and route errors | yes | ? | no | | Platform | #5033 |
+| 3.33 | Mark as spam; call back and text back from a row; warm transfer; ring me | no | no | no | | Product | Deferred by the UX plan |
+| 3.34 | Whether a Twilio number can be a Google Voice forward target | n/a | n/a | no | | Product | Master plan open item |
+| 3.35 | **Sellable bar:** every scenario passes three runs in a row, plus 20 real calls from people who did not build it | n/a | n/a | no | 1st | Product | |
 
-## Waiting on the founder
+## Phase 4. Web, Mac and mobile
+
+| # | Promise | Built | Prod | Machine | 1st | Owner | Note |
+|---|---|---|---|---|---|---|---|
+| 4.1 | Voice Home is where sign-in lands; `/chat` redirects | yes | yes | ? | 1st | Product | |
+| 4.2 | Home timeline by day, filter chips, footer counts | yes | yes | no | 1st | Product | |
+| 4.3 | Needs you: four card kinds with labels and fix links ("Reconnect Google") | yes | yes | no | 1st | Product | |
+| 4.4 | Agent page: one page, saves as you type, Pause, greeting style, Knowledge with "questions to add", instructions, hours, services, calendar status, number panel | yes | yes | no | 1st | Product | |
+| 4.5 | No control without a working feature behind it | no | no | no | 1st | Product | "Day-before text" is ticked by default with no sender. `meetings.emailNotes` is still in the config |
+| 4.6 | Onboarding: website read, review what was learned, booking destination, number, name and try a booking | yes | yes | no | 1st | Product | Never run end to end on a fresh workspace |
+| 4.7 | Fresh business to first answered call in 15 minutes, at phone width | n/a | n/a | no | 1st | Product | |
+| 4.8 | Settings: Members, Connections, Approvals (Ask, Auto, Never ask), Notifications, Billing and minutes with the run-out choice | yes | yes | no | 1st | Product | |
+| 4.9 | Provider choice: managed or Sign in with ChatGPT | yes | no | no | | Platform | #5162 and #5168 merged, on dev. Founder question open on who may choose ChatGPT |
+| 4.10 | The orb: connecting, listening, thinking, speaking, with a caption; each talk kept as a "Yours" row | yes | yes | part | | Product | |
+| 4.11 | The orb does the general agent work the old product did | yes | yes | no | | Product | Founder ruling: the orb is a full third use case |
+| 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
+| 4.13 | Mobile: four tabs, voice Home | yes | yes | no | | Product | Shipped by OTA |
+| 4.14 | Mobile: voice settings, billing and onboarding match the web; old purchase screens gone | no | no | no | | Product | |
+| 4.15 | Push: Needs-you cards, and the first three calls after Go live | no | no | no | | Product | |
+| 4.16 | Ten-second undo on send or spend | ? | ? | no | | Product | Not found in the code |
+| 4.17 | Design pass to a consumer bar; accessibility; empty and error states | part | part | no | | Product | A polish pass shipped (#5084). No final critique |
+
+## Phase 5. Meet
+
+| # | Promise | Built | Prod | Machine | Owner | Note |
+|---|---|---|---|---|---|---|
+| 5.1 | Invite the workspace address to a Meet and the agent joins; only a signed-in member's invite counts | yes | yes | part | Product | Joined once after a manual repair |
+| 5.2 | Joins signed in, with no lobby click | yes | no | no | Founder | `RECALL_GOOGLE_LOGIN_GROUP_ID` is empty on prod |
+| 5.3 | Shared `agents@` address routes by sender | part | part | no | Founder | Backend built. Needs Google Workspace mail forwarding |
+| 5.4 | Recurring series; one occurrence moved or cancelled | yes | yes | no | Product | |
+| 5.5 | One announcement on joining, with the recording notice | yes | yes | part | Product | |
+| 5.6 | Speaks when named, stays quiet otherwise; the model decides, no code gate | yes | yes | part | Product | One real meeting had flaws; fixes not re-tested with several people |
+| 5.7 | Sleeps after five idle minutes, wakes on its name with recent context | yes | yes | no | Product | |
+| 5.8 | Hears each person separately and knows who asked | yes | yes | no | Product | |
+| 5.9 | Leaves only when Recall says the call ended; survives a reconnect | yes | yes | no | Product | Master plan review focus 4 |
+| 5.10 | Tile shows what it is doing | yes | yes | no | Product | |
+| 5.11 | Live answers from Knowledge, the web, past calls and meetings, and every connected provider | yes | yes | no | Product | The spec's six-ask acceptance list has never been run |
+| 5.12 | Reads and writes Meet chat; long answers go to chat as a link | yes | no | no | Platform | Prod image pinned (#5169); not deployed or rolled |
+| 5.13 | A Worker's result comes back into the meeting; the follow-up shows its status | yes | yes | no | Product | |
+| 5.14 | Starts follow-up work it was clearly given; records human commitments without acting | yes | no | no | Platform | #5163 merged, on dev |
+| 5.15 | Everyone acts with the inviter's authority; spend, send and publish need the inviter's card tap | yes | yes | no | Product | |
+| 5.16 | Notes in the app after the meeting; no email | yes | yes | yes | Product | Verified on screen |
+| 5.17 | Structured decisions, recallable by voice ("what did we decide") | no | no | no | Product | #5018 parked |
+| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked |
+| 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |
+| 5.20 | Meeting minutes counted | yes | part | part | Platform | #5155, verified on dev |
+| 5.21 | The scenario list (`tests/replay/scenarios/`) passes in a real Meet | n/a | n/a | no | Product | No simulator exists; the earlier one was removed |
+
+## Phase 6. Billing and go to market
+
+| # | Promise | Built | Prod | Machine | 1st | Owner | Note |
+|---|---|---|---|---|---|---|---|
+| 6.1 | The voice plan: $250 a month, 1,500 minutes, $0.35 after | yes | yes | part | 1st | Platform | Sandbox: 1,600 minutes billed $285. Founder question open on credits versus minutes |
+| 6.2 | Pay, get the plan | yes | yes | part | 1st | Platform | Passed in the Stripe sandbox on dev. 0 of 33 prod billing rows hold a voice contract |
+| 6.3 | A new business is offered one plan, the voice agent | no | no | no | 1st | Product | Sign-up still gives the old $50 plan and a free trial. A leftover "Front desk" add-on is in checkout. Founder ruling 9 Nov: one plan |
+| 6.4 | Phone, Meet and orb minutes all count | yes | part | part | 1st | Platform | #5155, a real 14-second session on dev |
+| 6.5 | 80% and 100% notices; run-out choice; never a silent cut-off | part | no | no | | Platform | |
+| 6.6 | Cancel, renewal, failed payments, refunds | part | part | no | | Platform | Cancel at period end exists. No refund or dispute handling |
+| 6.7 | Old plans and purchase doors closed for new buyers (web, mobile, Apple) | no | no | no | | Product | |
+| 6.8 | Pay, then Go live buys the number, then the first call is answered | yes | yes | no | 1st | Product | Four steps, never run together |
+| 6.9 | Pricing page presents the receptionist | no | no | no | 1st | Product | Founder ruling 9 Nov |
+| 6.10 | Five paying salons live | n/a | n/a | n/a | | Founder | Phase 6 gate |
+
+## Phase 7. Dental
+
+| # | Promise | Built | Prod | Machine | Owner | Note |
+|---|---|---|---|---|---|---|
+| 7.1 | NexHealth integration | no | no | no | Product | |
+| 7.2 | Medical tier: its own runtime pool, audit logging, model choices safe for health data | no | no | no | Platform | |
+| 7.3 | Practice BAA template; vendor BAAs signed | n/a | n/a | n/a | Founder | Follows 2.18 |
+| 7.4 | One practice live under BAA | n/a | n/a | n/a | Founder | Phase 7 gate |
+
+## Added channel: iMessage agents
+
+Named in the spec as an optional add-on (section 9). Founder direction 9 Nov: plain iMessage agents, not Apple business messaging.
+
+| # | Promise | Built | Prod | Machine | Owner | Note |
+|---|---|---|---|---|---|---|
+| I.1 | A customer texts the business's iMessage line and the agent replies | yes | ? | no | Product | Built in October on Photon. Routes are mounted and secrets are wired in both envs. Not known whether a real message has ever arrived; the webhook is registered by hand |
+| I.2 | The texter is treated like a caller: same contact identity, same limits, same Router path | no | no | no | Product | Today a text has no contact room and no caller scope. The phone path's contact model is the thing to reuse |
+| I.3 | One memory per contact across calls and texts, with Forget | no | no | no | Product | Caller memory is written only at the end of a call |
+| I.4 | Agent page switch for texts; Pause applies | no | no | no | Product | |
+| I.5 | The texting line belongs to the business's receptionist, not the old Customer Operations agent | no | no | no | Product | |
+| I.6 | STOP and HELP handled; group chats detected; photos and files read | no | no | no | Product | None of the three exists |
+| I.7 | Text the caller after a call (confirmation, answer) | no | no | no | Product | Photon only allows a first message to someone who texted first. May need SMS as the fallback, which needs 10DLC |
+| I.8 | Price and metering for texts | no | no | no | Founder | A line costs $250 a month from Photon. Today it is sold as a flat add-on. Needs a founder decision |
+| I.9 | The leftover Sendblue rail deleted | no | no | n/a | Product | Mounted and inert |
+
+## Phase gates
+
+Required by the master plan before a phase reaches prod. Founder ruling: "Don't skimp on review or security."
+
+| Phase | Code review against `docs/standards/aws-agentic-lens.md` | Security review | Over-engineering audit | Founder walk |
+|---|---|---|---|---|
+| 1 | no | no | no | no |
+| 2 | no | no | n/a | no |
+| 3 | no | no | n/a | no |
+| 4 | no (design critique instead) | no | n/a | no |
+| 5 | no | no | n/a | no |
+| 6 | no | no | n/a | no |
+
+Individual PRs were reviewed. No whole-phase review has been run.
+
+## Superseded: do not rebuild
+
+| Was promised | Replaced by | When |
+|---|---|---|
+| Gemini Live as the voice and the Router | GPT-Live talks; it hands off to the same Router typed messages use | 8 Nov |
+| A spoken "yes" approves | Card taps only | 8 Nov |
+| Two seeded specialists | The six-agent roster, one named the receptionist | 9 Nov |
+| Notes emailed to the organiser | Notes in the app only | 7 and 9 Nov |
+| Every action item becomes a task | Only work clearly given to the agent | 9 Nov |
+| Delete the Mac app | It stays | 7 Nov |
+| Delete the chat UI entirely | A conversation page stays at `/voice/lightbulb` | 8 Nov |
+| Always-open Meet voice | May sleep and wake on its name | 8 Nov |
+| Code rules for when the agent speaks (3 s pause, 20 s stale drop, wake gates, canned lines) | The model owns conversation; code enforces permissions and safety only | 8 Nov |
+| Deterministic double-booking logic | Left to the model and the booking tool | 8 Nov |
+| Delete the OpenRouter gate | OpenRouter stays as the inference and billing gate | 9 Nov |
+
+## Waiting on the founder or a vendor
 
 | Item | Unblocks |
 |---|---|
-| Reconnect Google on the founder workspace | S4 |
-| A second phone and 20 minutes after each prod train | Every `Founder` column |
-| Google Workspace admin access, or someone who has it | L12 |
-| Recall Google Login Group | M1 without the lobby |
-| Go or no-go on 10DLC registration cost | L1, L3 |
-| Activate Founders application | Credits |
-| Refund and dunning policy | L15 |
+| Reconnect Google on the founder workspace | 3.7 |
+| Recall Google Login Group | 5.2 |
+| Google Workspace admin access | 5.3 |
+| 10DLC registration (company details, fee) | 3.25, 3.26 |
+| Google calendar-only OAuth verification (4 to 6 weeks) | 2.19 |
+| BAA requests (paid plans) | 2.18, 7.3 |
+| Activate Founders application | 0.6 |
+| A second phone and 40 minutes after the checks pass | Every Founder walk |

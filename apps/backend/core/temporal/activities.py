@@ -566,7 +566,7 @@ async def _react(ws: str, ref: dict, emoji: str) -> None:
                 ws,
                 ref["roomId"],
                 msg["messageSeq"],
-                await task_conversation.front_agent_id(ws),
+                await task_conversation.front_agent_id(ws, room_id=ref["roomId"]),
                 emoji,
                 True,
                 member_kind="agent",

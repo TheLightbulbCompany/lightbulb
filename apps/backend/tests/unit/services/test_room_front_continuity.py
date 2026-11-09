@@ -7,10 +7,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core import tasks_schema as ts
+from core.repositories import agent_registry_repo, automations_repo
 from core.repositories import messaging_repo as repo
-from core.services import agent_registry, meeting_invites, messaging
+from core.repositories.workspace_repo import WorkspaceRepo
+from core.services import admission, agent_registry, meeting_invites, messaging
 from core.services import task_conversation as tc
+from core.temporal import activities
+from core.temporal.types import RouterTurnIn
 from routers import voice_meet
+from temporalio.testing import ActivityEnvironment
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401 -- local moto store
 
 OWNER, HUMAN = "org_1", "user_sam"
@@ -290,3 +296,249 @@ async def test_rename_never_changes_or_authorizes_invalid_room_seats(world, inva
     with pytest.raises(tc.NoFrontAgent):
         await _answer(meta["roomId"], "invalid-seat")
     assert (await repo.get_room(meta["roomId"]))["lastSeq"] == 0
+
+
+async def _human_message(room_id, key):
+    msg, _ = await repo.create_message(
+        room_id=room_id,
+        owner_id=OWNER,
+        idemp_pk=repo.room_pk(room_id),
+        idemp_sk=repo.human_idemp_sk(HUMAN, key),
+        req_hash=repo.request_hash(key),
+        author={"kind": "human", "id": HUMAN, "displayName": "Sam"},
+        text="The launch date is Tuesday",
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=None,
+        client_message_id=key,
+        acting_human_id=HUMAN,
+    )
+    return msg
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids=["legacy", "modern"])
+async def test_quiet_read_receipt_uses_existing_room_front_after_default_switch(world, monkeypatch, pinned):
+    """RoomPanel clears its reading indicator only for the room front's UUID, never the new default."""
+    meta = await _room("quiet-old-room", pinned=pinned)
+    room_id = meta["roomId"]
+    before = await repo.list_members(room_id)
+    world.config["frontAgentId"] = B
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    repo.get_voice_agent.reset_mock()
+    owner_row = WorkspaceRepo.resolve_owner_row
+    owner_row.reset_mock()
+
+    await tc.read_quietly(OWNER, {"roomId": room_id, "messageId": "quiet-message"})
+
+    publish.assert_awaited_once()
+    published_room, event = publish.await_args.args
+    assert published_room == room_id
+    assert event["type"] == "room.read.changed"
+    assert event["payload"] == {
+        "roomId": room_id,
+        "reader": {"kind": "agent", "id": A},
+        "messageId": "quiet-message",
+    }
+    repo.get_voice_agent.assert_not_awaited()
+    owner_row.assert_not_awaited()
+    assert await repo.list_members(room_id) == before
+    assert await repo.get_member(room_id, "agent", B) is None
+
+
+async def test_quiet_read_receipt_uses_new_room_selected_front(world, monkeypatch):
+    world.config["frontAgentId"] = B
+    room_id = await tc.ensure_task_room(
+        OWNER, {"taskId": str(uuid.UUID(int=900)), "title": "New task", "audience": {"kind": "workspace"}}
+    )
+    assert (await repo.get_room(room_id))["frontAgentId"] == B
+    before = await repo.list_members(room_id)
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    repo.get_voice_agent.reset_mock()
+
+    await tc.read_quietly(OWNER, {"roomId": room_id, "messageId": "new-message"})
+
+    publish.assert_awaited_once()
+    assert publish.await_args.args[0] == room_id
+    assert publish.await_args.args[1]["payload"] == {
+        "roomId": room_id,
+        "reader": {"kind": "agent", "id": B},
+        "messageId": "new-message",
+    }
+    repo.get_voice_agent.assert_not_awaited()
+    assert await repo.list_members(room_id) == before
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "removed",
+        "foreign-seat",
+        "nonordinary-seat",
+        "paused-agent",
+        "deleted-agent",
+        "wrong-owner",
+        "deleted-room",
+        "missing-room",
+    ],
+)
+async def test_quiet_read_receipt_fails_closed_without_authorized_active_room_front(world, monkeypatch, invalid):
+    meta = await _room(
+        "quiet-invalid-room",
+        other_seats=[_seat(B, "next")],  # a seated global choice cannot replace an invalid pin
+        owner="org_other" if invalid == "wrong-owner" else OWNER,
+        seat_extra={"homeOwnerId": "org_other"}
+        if invalid == "foreign-seat"
+        else ({"role": "owner"} if invalid == "nonordinary-seat" else {}),
+        extra={"deletedAt": "2026-11-09T00:00:00Z"} if invalid == "deleted-room" else {},
+    )
+    room_id = meta["roomId"]
+    if invalid == "removed":
+        world.table.delete_item(Key={"pk": repo.room_pk(room_id), "sk": repo.member_sk("agent", A)})
+    elif invalid in {"paused-agent", "deleted-agent"}:
+        world.roster[0]["status"] = "paused" if invalid == "paused-agent" else "deleted"
+    world.config["frontAgentId"] = B
+    before = await repo.list_members(room_id)
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    repo.get_voice_agent.reset_mock()
+
+    await tc.read_quietly(
+        OWNER,
+        {"roomId": str(uuid.UUID(int=999)) if invalid == "missing-room" else room_id, "messageId": "quiet-message"},
+    )
+
+    publish.assert_not_awaited()
+    repo.get_voice_agent.assert_not_awaited()
+    assert await repo.list_members(room_id) == before
+
+
+async def test_actual_admission_receipt_retains_existing_room_front(world, monkeypatch):
+    meta = await _room("independent-review-receipt", seat_extra={"listenMode": "active"})
+    room_id = meta["roomId"]
+    await repo.set_agent_names(room_id, A, "Lightbulb", "lightbulb")
+    world.config["frontAgentId"] = B
+    assert await tc.front_agent_id(OWNER, room_id=room_id) == A
+    assert await tc.front_agent_id(OWNER) == B
+    assert await repo.get_member(room_id, "agent", B) is None
+    assert await admission.router_room(meta, OWNER)
+    monkeypatch.setattr(admission.room_memory, "ingest_message", AsyncMock())
+    monkeypatch.setattr(
+        agent_registry_repo, "list_agents", AsyncMock(return_value=[{"agentId": a["id"], **a} for a in world.roster])
+    )
+    monkeypatch.setattr(automations_repo, "list_rules", AsyncMock(return_value=[]))
+    jev = AsyncMock(return_value={"to": "none"})
+    monkeypatch.setattr(admission.jev, "route_for_router", jev)
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    msg = await _human_message(room_id, "review-message")
+    await admission.admit_pointer({"kind": "admit", "roomId": room_id, "throughSeq": msg["messageSeq"]})
+    jev.assert_awaited_once()
+    publish.assert_awaited_once()
+    event = publish.await_args.args[1]
+    assert event["payload"]["reader"] == {"kind": "agent", "id": A}
+    assert await repo.get_member(room_id, "agent", B) is None
+
+
+@pytest.mark.parametrize("switch_default", [False, True], ids=["control-A", "switched-B"])
+async def test_actual_router_note_reaction_retains_existing_room_front(world, monkeypatch, switch_default):
+    meta = await _room("independent-review-reaction", seat_extra={"listenMode": "active"})
+    room_id = meta["roomId"]
+    world.config["frontAgentId"] = B if switch_default else A
+    assert await tc.front_agent_id(OWNER, room_id=room_id) == A
+    assert await repo.get_member(room_id, "agent", B) is None
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    msg = await _human_message(room_id, "review-reaction")
+    tid = ts.trigger_id("chat", msg["messageId"])
+    trig = {
+        "triggerId": tid,
+        "source": "chat",
+        "admission": "candidate",
+        "ref": {"roomId": room_id, "messageId": msg["messageId"]},
+    }
+    repo.get_voice_agent.reset_mock()
+    await ActivityEnvironment().run(
+        activities._apply,
+        OWNER,
+        RouterTurnIn(OWNER, "shared", "review-batch", [tid]),
+        {tid: trig},
+        [ts.Note(kind="note", trigger_ids=[tid], fact="Launch date is Tuesday")],
+        None,
+    )
+    saved = await repo.get_message_by_id(room_id, msg["messageId"])
+    repo.get_voice_agent.assert_not_awaited()
+    assert saved.get("reactions", {}).get("✅") == [A]
+    reaction_events = [
+        call.args for call in publish.await_args_list if call.args[1]["type"] == "room.message.reactions.changed"
+    ]
+    assert len(reaction_events) == 1
+    assert reaction_events[0][0] == room_id
+    assert reaction_events[0][1]["payload"]["reactions"] == {"✅": [A]}
+    assert await repo.get_member(room_id, "agent", B) is None
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["removed", "foreign-seat", "nonordinary-seat", "paused-agent", "deleted-agent", "wrong-owner", "deleted-room"],
+)
+async def test_router_reaction_fails_closed_without_authorized_active_room_front(world, monkeypatch, invalid):
+    meta = await _room("reaction-invalid-room", other_seats=[_seat(B, "next")])
+    room_id = meta["roomId"]
+    msg = await _human_message(room_id, "invalid-reaction")
+    if invalid == "removed":
+        world.table.delete_item(Key={"pk": repo.room_pk(room_id), "sk": repo.member_sk("agent", A)})
+    elif invalid in {"paused-agent", "deleted-agent"}:
+        world.roster[0]["status"] = "paused" if invalid == "paused-agent" else "deleted"
+    else:
+        field, value = {
+            "foreign-seat": ("homeOwnerId", "org_other"),
+            "nonordinary-seat": ("role", "owner"),
+            "wrong-owner": ("ownerId", "org_other"),
+            "deleted-room": ("deletedAt", "2026-11-09T00:00:00Z"),
+        }[invalid]
+        sk = repo.member_sk("agent", A) if invalid in {"foreign-seat", "nonordinary-seat"} else "META"
+        world.table.update_item(
+            Key={"pk": repo.room_pk(room_id), "sk": sk},
+            UpdateExpression="SET #field = :value",
+            ExpressionAttributeNames={"#field": field},
+            ExpressionAttributeValues={":value": value},
+        )
+    world.config["frontAgentId"] = B
+    before = await repo.list_members(room_id)
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    repo.get_voice_agent.reset_mock()
+
+    await activities._react(OWNER, {"roomId": room_id, "messageId": msg["messageId"]}, "✅")
+
+    assert not (await repo.get_message_by_id(room_id, msg["messageId"])).get("reactions")
+    publish.assert_not_awaited()
+    repo.get_voice_agent.assert_not_awaited()
+    assert await repo.list_members(room_id) == before
+
+
+async def test_router_reactions_use_new_room_selected_front(world, monkeypatch):
+    world.config["frontAgentId"] = B
+    room_id = await tc.ensure_task_room(
+        OWNER,
+        {"taskId": str(uuid.UUID(int=901)), "title": "New task", "audience": {"kind": "person", "userIds": [HUMAN]}},
+    )
+    msg = await _human_message(room_id, "new-reaction")
+    before = await repo.list_members(room_id)
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    repo.get_voice_agent.reset_mock()
+
+    await activities._react_eyes(OWNER, {"roomId": room_id, "messageId": msg["messageId"]})
+    await activities._react(OWNER, {"roomId": room_id, "messageId": msg["messageId"]}, "✅")
+
+    assert (await repo.get_message_by_id(room_id, msg["messageId"]))["reactions"] == {"👀": [B], "✅": [B]}
+    assert publish.await_count == 2
+    assert all(call.args[0] == room_id for call in publish.await_args_list)
+    repo.get_voice_agent.assert_not_awaited()
+    assert await repo.list_members(room_id) == before

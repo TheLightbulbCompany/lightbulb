@@ -110,7 +110,7 @@ async def read_quietly(ws: str, ref: dict) -> None:
     if not ref.get("roomId") or not ref.get("messageId"):
         return
     try:
-        agent_id = await front_agent_id(ws)
+        agent_id = await front_agent_id(ws, room_id=ref["roomId"])
         await messaging._publish_room_event(
             ref["roomId"],
             messaging.make_live_event(

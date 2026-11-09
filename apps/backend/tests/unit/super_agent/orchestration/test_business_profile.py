@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.repositories import messaging_repo
+from core.repositories import billing_repo, messaging_repo
 from core.services import business_profile as bp
 from core.services import clerk_admin, voice_booking
 from core.temporal import activities as acts
@@ -28,6 +28,7 @@ def sources(monkeypatch):
     bp._cache.clear()
     get = AsyncMock(return_value=CFG)
     monkeypatch.setattr(messaging_repo, "get_voice_agent", get)
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Glow Nails"}))
     monkeypatch.setattr(vp, "_taken", AsyncMock(return_value=[]))
     monkeypatch.setattr(voice_booking, "busy_across", AsyncMock(return_value=[]))
@@ -72,7 +73,9 @@ async def test_the_profile_degrades_when_sources_fail(sources, monkeypatch):
     monkeypatch.setattr(vp, "_taken", AsyncMock(side_effect=RuntimeError("ddb")))
     monkeypatch.setattr(bp, "_upcoming", AsyncMock(side_effect=RuntimeError("ddb")))
     text = await bp.business_profile("org_x", "+15550001")
-    assert "Pedicure $45" in text and "Open start times" not in text and "This caller's" not in text
+    assert "Pedicure $45" in text
+    assert "Open start times: unknown (data unavailable)." in text
+    assert "This caller's upcoming bookings: unknown (data unavailable)." in text
     bp._cache.clear()
     sources.side_effect = RuntimeError("ddb")
     assert await bp.business_profile("org_x") == ""
@@ -87,6 +90,39 @@ async def test_the_profile_never_holds_the_turn_past_its_bound(sources, monkeypa
     monkeypatch.setattr(bp, "TIMEOUT_S", 0.05)
     monkeypatch.setattr(messaging_repo, "get_voice_agent", slow)
     assert await bp.business_profile("org_x") == ""
+
+
+@pytest.mark.parametrize("missing", ["availability", "bookings"])
+async def test_optional_timeout_keeps_known_facts_and_marks_only_missing_data_unknown(sources, monkeypatch, missing):
+    """A stalled optional reader must not erase facts already read from the saved Agent page."""
+    cancelled = []
+
+    async def hanging(*_a):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    monkeypatch.setattr(bp, "TIMEOUT_S", 0.05)
+    monkeypatch.setattr(
+        vp if missing == "availability" else bp,
+        "_taken" if missing == "availability" else "_upcoming",
+        hanging,
+    )
+    started = asyncio.get_running_loop().time()
+    text = await bp.business_profile("org_x", "+15550001")
+
+    assert asyncio.get_running_loop().time() - started < 0.25
+    assert "Glow Nails" in text and "Pedicure $45" in text and "$50 deposit" in text
+    if missing == "availability":
+        assert "Open start times: unknown" in text
+        assert "9:00 AM" not in text
+        assert "This caller's upcoming bookings: Pedicure" in text
+        assert len(cancelled) == 7  # every outstanding day reader has been cancelled and drained
+    else:
+        assert "This caller's upcoming bookings: unknown" in text
+        assert "9:00 AM–9:30 AM, 2:00 PM" in text
+        assert len(cancelled) == 1
 
 
 async def test_the_facts_and_slots_never_wait_on_google_or_clerk(sources, monkeypatch):

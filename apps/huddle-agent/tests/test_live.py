@@ -670,3 +670,33 @@ async def test_terminal_receipt_ends_waiting_but_ack_and_final_keep_the_original
     assert s.awaiting == {} and s.pending == {"item_1": "m_1"}
     assert t.appends == [("On it.", "item_1"), ("Booked.", "item_1")]
     await s.close()
+
+
+async def test_task_reply_answers_latest_followup_even_when_its_post_receipt_is_in_flight():
+    t = FakeTransport()
+    _, events = queue_events()
+    second_started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def post(text, turns):
+        calls.append(text)
+        if len(calls) == 2:
+            second_started.set()
+            await release.wait()
+        return live.Posted(f"m_{len(calls)}", ("task-1",))
+
+    s = live.LiveSession(t, "phone", post, events)
+    s.on_delegate(delegation(1, "Book Saturday"))
+    await s._last
+    await s._result({"id": "ack", "inReplyTo": "m_1", "taskIds": ["task-1"], "waiting": True, "text": "Checking."})
+    s.on_delegate(delegation(2, "The first time works"))
+    await second_started.wait()
+    result = asyncio.create_task(s._result({"id": "done", "inReplyTo": "m_1", "taskIds": ["task-1"], "waiting": False, "text": "Booked."}))
+    await asyncio.sleep(0)
+    assert not result.done()
+    release.set()
+    await result
+    assert t.appends[-1] == ("Booked.", "item_2")
+    assert not s.awaiting  # both spoken turns were waiting for this one task
+    assert s.pending == {"item_1": "m_1", "item_2": "m_2"}
+    await s.close()

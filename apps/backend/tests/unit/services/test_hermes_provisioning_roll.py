@@ -30,6 +30,7 @@ async def _roles(owner_id):
 
 
 def _wire(monkeypatch, *, current_image, row=ROW):
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_session_sync", lambda *a, **k: {})
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", IMAGE)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(row))
     monkeypatch.setattr(

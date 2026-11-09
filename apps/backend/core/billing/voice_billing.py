@@ -186,8 +186,27 @@ async def report_minutes(owner_id: str, transaction_id: str, started_at: str, se
 
 async def report_owner_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int) -> None:
     """Freeze one room/job receipt before ingest; retries reuse its original start and provider seconds."""
+    from core.services import voice_calls
+
     key = {"pk": messaging_repo.owner_pk(owner_id), "sk": f"VOICEUSAGE#{transaction_id}"}
-    row = {**key, "startedAt": started_at, "seconds": seconds}
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    # Scope plan usage to the epoch that began on the voice contract; never stack a credit debit.
+    at = datetime.fromisoformat(started_at)
+    on_plan = bool(
+        account.get("metronome_voice_contract_id")
+        and (not account.get("voice_plan_started_at") or at >= datetime.fromisoformat(account["voice_plan_started_at"]))
+        and (not account.get("voice_plan_ending_at") or at < datetime.fromisoformat(account["voice_plan_ending_at"]))
+    )
+    mode = (
+        "plan"
+        if on_plan
+        else (
+            "credits"
+            if account.get("provider_choice") == "openrouter_managed" and not trial_cap.is_managed_capped(account)
+            else "free"
+        )
+    )
+    row = {**key, "startedAt": started_at, "seconds": seconds, "billing": mode}
     try:
         await run_in_thread(messaging_repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(sk)")
     except ClientError as exc:
@@ -195,3 +214,24 @@ async def report_owner_minutes(owner_id: str, transaction_id: str, started_at: s
             raise
         row = (await run_in_thread(messaging_repo._table().get_item, Key=key, ConsistentRead=True))["Item"]
     await report_minutes(owner_id, transaction_id, row["startedAt"], int(row["seconds"]), "owner")
+    if row.get("billingSettled"):
+        return
+    try:
+        await voice_calls._bill(
+            {
+                "ownerId": owner_id,
+                "callId": transaction_id,
+                "startedAt": int(datetime.fromisoformat(row["startedAt"]).timestamp()),
+                "billing": row.get("billing", mode),
+                "holdMicrocents": 0,
+                "settlementReceipt": key,
+            },
+            int(row["seconds"]),
+        )
+    except ClientError:
+        # Concurrent/retried ends may both ingest, but only one atomic settlement can debit.
+        settled = (await run_in_thread(messaging_repo._table().get_item, Key=key, ConsistentRead=True)).get(
+            "Item"
+        ) or {}
+        if not settled.get("billingSettled"):
+            raise

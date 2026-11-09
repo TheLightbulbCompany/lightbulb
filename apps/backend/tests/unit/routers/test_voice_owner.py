@@ -60,6 +60,28 @@ async def test_a_talk_with_nothing_said_is_not_kept(m):
     create.assert_not_awaited()
 
 
+async def test_billing_receipt_failure_cannot_lose_nonempty_transcript(m):
+    body = voice_owner.EndIn(
+        ownerId="org_1",
+        roomToken="t",
+        speakerUserId="user_maya",
+        sessionId="j",
+        durationSec=10,
+        transcript=[{"who": "caller", "text": "Keep my conversation", "t": 1}],
+        usageSessions=[{"id": "0", "seconds": 10, "startedAt": "2026-11-08T16:00:00Z"}],
+    )
+    with (
+        patch.object(voice_owner.messaging_repo, "create_room", AsyncMock()) as create,
+        patch.object(
+            voice_owner.voice_billing, "report_owner_minutes", AsyncMock(side_effect=RuntimeError("DDB down"))
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="DDB down"):
+            await voice_owner.end(ROOM, body)
+        create.assert_awaited_once()
+        assert create.await_args.kwargs["extra"]["call"]["transcript"][0]["text"] == "Keep my conversation"
+
+
 async def test_silent_provider_usage_is_reported_before_empty_transcript_return(m):
     body = voice_owner.EndIn(
         ownerId="org_1",

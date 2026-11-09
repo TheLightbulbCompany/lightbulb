@@ -147,6 +147,18 @@ async def _bill(call: dict, seconds: int) -> None:
             "ExpressionAttributeValues": {":closing": CLOSING},
         }
     }
+    if receipt := call.get("settlementReceipt"):
+        # Owner epochs already have a durable usage receipt, not a live-call workflow.
+        # Atomically mark it settled alongside the same counter/credit debit used by calls.
+        delete = {
+            "Update": {
+                "TableName": messaging_repo._table().name,
+                "Key": receipt,
+                "UpdateExpression": "SET billingSettled = :yes",
+                "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(billingSettled)",
+                "ExpressionAttributeValues": {":yes": True},
+            }
+        }
     if call["billing"] == "plan":
         # Plan minutes are metered at the phone/meeting lifecycle boundary. Never also debit
         # provider-cost credits or the free daily counter for a window opened on that plan.
@@ -181,6 +193,10 @@ async def _bill(call: dict, seconds: int) -> None:
                 },
             }
         }
+        if call.get("settlementReceipt"):
+            first["Update"]["UpdateExpression"] = "ADD remaining_microcents :debit"
+            first["Update"]["ConditionExpression"] = "attribute_exists(owner_id)"
+            first["Update"]["ExpressionAttributeValues"].pop(":hold")
     else:
         today = voice_billing.trial_cap.utc_today()
         first = {

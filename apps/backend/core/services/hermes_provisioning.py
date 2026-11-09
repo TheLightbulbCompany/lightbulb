@@ -464,7 +464,9 @@ async def stop_runtime_session(owner_id: str, runtime_arn: str, task_id: str | N
         logger.warning("StopRuntimeSession failed for owner=%s: %s", owner_id, type(exc).__name__)
     try:
         # Cleared even on an unconfirmed stop: "cold" is the safe error (one serialized health).
-        await container_repo.clear_session(owner_id, **({"task_id": task_id} if task_id is not None else {}))
+        await container_repo.clear_session(
+            owner_id, expected_arn=runtime_arn, **({"task_id": task_id} if task_id is not None else {})
+        )
     except Exception:  # noqa: BLE001
         logger.warning("session estimate clear failed for owner=%s", owner_id, exc_info=True)
     return stopped
@@ -1141,12 +1143,23 @@ async def _stop_when_idle(owner_id: str, arn: str, *, was_warm: bool, updated_at
             and uptime > time.monotonic() - updated_at + ROLL_UPTIME_SLACK_S
         )
 
+    from core.services.runtime_transport import live_arn
+
+    async def target() -> str:
+        row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+        return await run_in_thread(live_arn, {**row, "owner_id": owner_id}) or arn
+
     deadline = time.monotonic() + ROLL_IDLE_WAIT_S
     while True:
+        current_arn = await target()
         payload = await _idle_payload(owner_id, deadline)
         if payload is None:
             return False
-        if await stop_runtime_session(owner_id, arn):
+        if current_arn != await target():
+            if time.monotonic() >= deadline:
+                return False
+            continue  # the idle probe and stop must address the same live runtime
+        if await stop_runtime_session(owner_id, current_arn):
             await expire_superseded_gate_tokens(owner_id)  # never raises
             if write:
                 # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
@@ -1300,14 +1313,18 @@ async def _shared_session_to_roll(owner_id: str, row: dict, shared: str) -> tupl
     if int(session.get("warm_until") or 0) <= time.time() - LIVE_GRACE_S:
         return shared, None  # parked: its next start is on the current version
     own = row.get("agentcore_runtime_arn")
-    if own and session.get("arn") == own:
-        return own, time.monotonic()
-    if session.get("arn") != shared:
+    if session.get("arn") not in {own, shared}:
         return shared, None
-    updated = (await run_in_thread(_runtime_description, shared)).get("lastUpdatedAt")
-    if not updated or int(session.get("started_at") or 0) >= updated.timestamp():
+    description = await run_in_thread(_runtime_description, shared)
+    updated = description.get("lastUpdatedAt") or description.get("createdAt")
+    if not updated:
+        raise RuntimeError("shared runtime has no deployment timestamp; cannot verify rolled session")
+    updated_at = time.monotonic() - (time.time() - updated.timestamp())
+    if own and own != shared and session.get("arn") == own:
+        return own, updated_at  # old runtime must stop; the answering pool VM need only postdate its deploy
+    if int(session.get("started_at") or 0) >= updated.timestamp():
         return shared, None
-    return shared, time.monotonic() - (time.time() - updated.timestamp())
+    return shared, updated_at
 
 
 async def _stop_rolled_session(

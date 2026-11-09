@@ -178,8 +178,9 @@ async def _session_is_warm(owner_id: str) -> bool:
     )
     arn = row.get("arn")
     desired = runtime_arn(container or {})
-    pool_route = settings.HERMES_SHARED_RUNTIME_ARN or (container or {}).get("agentcore_shared_runtime_arn")
-    draining = bool(pool_route and arn and arn != desired)
+    # The ledger is authoritative even when a legacy workspace reached the pool before
+    # its route marker was saved and the tier setting has since been rolled back.
+    draining = bool(arn and desired and arn != desired)
     warm_after = time.time() - (LIVE_GRACE_S if draining else 0)
     return bool(arn and desired and (arn == desired or draining)) and int(row.get("warm_until") or 0) > warm_after
 

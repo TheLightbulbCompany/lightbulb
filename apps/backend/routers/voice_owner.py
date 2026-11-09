@@ -127,11 +127,17 @@ async def end(room_id: str, body: EndIn) -> dict:
     """The talk is kept as a hidden call room with `ownerMode`, a "Yours" row on Home: the transcript as phone
     calls keep it and a one-line summary (the tasks are the DM's own). A talk with nothing said is not kept."""
     room_id, member, _agent = await _owner(room_id, body)
+    result = await _keep_talk(room_id, member, body)
     for usage in body.usageSessions:
         transaction_id = f"owner:{room_id}:{body.sessionId}:{usage.id}"
         await voice_billing.report_owner_minutes(
             body.ownerId, transaction_id, usage.startedAt.isoformat(), usage.seconds
         )
+    return result
+
+
+async def _keep_talk(room_id: str, member: str, body: EndIn) -> dict:
+    """Save conversation history before independently retryable billing I/O."""
     lines = transcript_lines(body.transcript)
     if not lines:
         return {"kept": False}

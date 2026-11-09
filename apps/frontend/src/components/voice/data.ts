@@ -4,6 +4,7 @@
 // (one JSON document, GET/PUT /voice/agent) and the open Questions (/needs-you). Shapes: routers/voice.py.
 
 import { useCallback } from "react";
+import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import type { QuestionView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
@@ -142,19 +143,17 @@ export function monthMinutes(items: TimelineItem[], now = new Date()): number {
     .reduce((s, c) => s + (c.durationSec ?? 0), 0) / 60);
 }
 
-export interface Usage { used: number; included: number; overageRate: number; runOut: "keep" | "forward" }
+export interface Usage {
+  used: number; included: number; overageRate: number; runOut: "keep" | "forward";
+  usedSeconds?: number; periodStart?: string; periodEnd?: string; timeZone?: string;
+}
 
-/** GET /voice/usage (Task 13). Until it ships (404) this month's minutes come from the timeline: $250 plan, 1,500 included, $0.35/min after. */
+/** The server's measured allowance and billing period; unavailable usage must never become an estimated bill. */
 export function useUsage() {
   const api = useApi();
-  const { data: items } = useTimeline();
-  const swr = useSWR("/voice/usage", async () => {
-    try { return (await api.get("/voice/usage")) as Usage; }
-    catch (e) { if ((e as { status?: number }).status === 404) return null; throw e; }
-  });
-  if (swr.data) return { data: swr.data, isLoading: false };
-  if (swr.data === null && items) return { data: { used: monthMinutes(items), included: 1500, overageRate: 0.35, runOut: "keep" } as Usage, isLoading: false };
-  return { data: undefined, isLoading: true };
+  const { isLoaded, orgId, userId } = useAuth();
+  return useSWR<Usage>(isLoaded && userId ? ["/voice/usage", orgId ?? userId, userId] : null,
+    () => api.get("/voice/usage") as Promise<Usage>, { refreshInterval: 30_000 });
 }
 
 /** A factual recorded step can fill a missing call summary; guessed steps never do. */

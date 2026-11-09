@@ -163,6 +163,12 @@ async def test_phone_opening_carries_three_facts(monkeypatch):
             and "this call is recorded" in said
         )
     assert first_id is None
+
+
+async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlation(monkeypatch):
+    call = await Call(monkeypatch, replies={"turn": {"messageId": "followup", "taskId": "existing-task"}}).answer()
+    posted = await call.started["post"]("The first time works", [])
+    assert posted == phone.live.Posted("followup", ("existing-task",))
     call.state("listening", "speaking")
     call.item(
         "assistant", "Hi there, thanks for calling Glow Nails, how can I help?", 1.0

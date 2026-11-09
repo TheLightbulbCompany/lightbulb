@@ -27,9 +27,17 @@ from huddle_agent.mouth import speakable
 logger = logging.getLogger("live")
 
 Surface = Literal["owner", "meet", "phone"]
-#: Posts one ask; returns the posted message's id (its replies carry it as `inReplyTo`), or None: not posted (Meet,
-#: when the speaker never named the assistant), and the delegation is dropped.
-Post = Callable[[str, list[str]], Awaitable[str | None]]
+
+
+@dataclass(frozen=True)
+class Posted:
+    message_id: str
+    task_ids: tuple[str, ...] = ()
+
+
+#: Posts one ask; returns its message id and, for an existing task, its task identity.
+#: None means the post was refused or failed; nothing will answer that delegation.
+Post = Callable[[str, list[str]], Awaitable[str | Posted | None]]
 Spoken = Callable[[str], Awaitable[None]]
 Events = Callable[[], AsyncIterator[dict]]
 
@@ -55,6 +63,7 @@ Backend tools:
 
 Generate <|SpawnThinking|> when:
 - The request needs a backend capability or careful reasoning.
+- The answer needs facts about this business or workspace, including its description or what it does.
 - A correction changes the work already requested.
 
 Do not generate <|SpawnThinking|> when:
@@ -62,6 +71,8 @@ Do not generate <|SpawnThinking|> when:
 - You need a brief clarification to understand the request.
 
 Generate <|SpawnThinking|> before giving an answer that depends on backend work.
+Business facts come from the backend. A business name or greeting is not evidence of its services, prices,
+hours, policies or purpose. If no current backend result answers the question, delegate it before answering.
 Do not guess the result while waiting."""
 
 
@@ -202,7 +213,10 @@ class LiveSession:
         if prev:
             await asyncio.gather(prev, return_exceptions=True)
         try:
-            message_id = await self._post(d.text, d.turns)
+            posted = await self._post(d.text, d.turns)
+            message_id = posted.message_id if isinstance(posted, Posted) else posted
+            if isinstance(posted, Posted) and posted.task_ids:
+                self._waiting_tasks[d.id] = set(posted.task_ids)
         except Exception:  # noqa: BLE001 -- a failed post is logged; the talk and the next post go on
             logger.warning(
                 "live %s: delegation %s not posted", self.surface, d.id, exc_info=True
@@ -267,6 +281,8 @@ class LiveSession:
                 )
 
     async def _result(self, m: dict) -> None:
+        if self._last is not None and not self._last.done():
+            await asyncio.shield(self._last)  # settle post receipts before correlating a fast task result
         mid, text = m.get("id"), (m.get("text") or "").strip()
         # /events items carry no kind: every one is an agent line
         if m.get("kind", "agent") != "agent" or not text or (mid and mid in self._said):
@@ -274,16 +290,21 @@ class LiveSession:
         if mid:
             self._said.add(mid)
         delegation_id = self._by_message.get(m.get("inReplyTo") or "")
+        task_ids = set(m.get("taskIds") or [])
+        related = [key for key in self.awaiting if self._waiting_tasks.get(key, set()) & task_ids]
+        if related:
+            delegation_id = related[-1]  # a follow-up in the same task answers its newest spoken turn
         self.send_result(delegation_id, text)
         if delegation_id and m.get("waiting") is True:
             self._waiting_tasks.setdefault(delegation_id, set()).update(
                 m.get("taskIds") or []
             )
         if m.get("waiting") is False:
-            remaining = self._waiting_tasks.get(delegation_id, set())
-            remaining.difference_update(m.get("taskIds") or [])
-            if not remaining:
-                self.awaiting.pop(delegation_id, None)
+            for key in set(related) | {delegation_id}:
+                remaining = self._waiting_tasks.get(key, set())
+                remaining.difference_update(task_ids)
+                if not remaining:
+                    self.awaiting.pop(key, None)
         if mid and self._on_spoken:
             try:
                 await self._on_spoken(mid)

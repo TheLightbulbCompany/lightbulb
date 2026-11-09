@@ -229,7 +229,7 @@ def test_orb_prompt_has_no_business_facts(live):
     assert "Speak only English" in text
     # nothing about this business: no name, owner, date or slot
     assert inspect.signature(owner.prompt).parameters == {} and "{" not in text
-    for fact in ("Nova", "Maya", "Sunday", "business"):
+    for fact in ("Nova", "Maya", "Sunday", "Glow Nails"):
         assert fact not in text
 
 

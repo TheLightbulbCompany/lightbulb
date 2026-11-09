@@ -137,7 +137,6 @@ async def test_a_warm_runtime_gets_the_sessions_rpc(store, monkeypatch, rpc):
     "session",
     [
         {"warm_for": -1},  # parked
-        {"session_arn": "arn:old"},  # warm, but on a runtime that was re-created
         {"arn": None},  # fresh provision: profiles are written before CreateAgentRuntime
     ],
 )
@@ -449,3 +448,11 @@ async def test_already_joined_message(store, monkeypatch):
     assert raised.value.error.message == (
         "Your workspace's agents are already on a network. Sign in with lightbulb login to join it."
     )
+
+
+@pytest.mark.asyncio
+async def test_a_live_old_runtime_still_receives_network_revocation_during_drain(store, monkeypatch, rpc):
+    _session(monkeypatch, session_arn="arn:old", warm_for=-100)
+    await network_member.write_sessions("org_a")
+    await network_member.publish_sessions("org_a")
+    assert rpc == [("network.sessions", {}, {})]

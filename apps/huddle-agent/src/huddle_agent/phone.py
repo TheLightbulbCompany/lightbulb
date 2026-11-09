@@ -50,7 +50,7 @@ server = AgentServer(
 #: and the caller-scoped Front desk thread's actions (front_desk: availability, book, my_bookings, move, cancel,
 #: message), nothing more.
 TOOLS = [
-    "Business profile: answer the business's services, prices, how long they take, hours and policies.",
+    "Business profile: the business's actual description, what it does, services, prices, durations, hours and policies.",
     "Availability: find open times for a service on a day.",
     "Bookings: book a time, or list, move or cancel the caller's own bookings.",
     "Messages: take a message for the owner, with the caller's name and a callback number.",
@@ -85,7 +85,7 @@ Names, dates and numbers: before a booking is made, say the name it goes under b
 have it right. If an important name, date, or number is unclear, ask about that part. Use the caller's correction.
 Do not guess the missing value.
 
-Wait for the backend's result before stating a price or a time, confirming a booking, or saying that a message was
+Wait for the backend's result before describing this business or its services, stating a price or a time, confirming a booking, or saying that a message was
 taken or a transfer is under way. Never share anything about other customers."""
 
 #: Facts the call tells GPT-Live (commentary with delegation_id null): GPT-Live chooses what to say.
@@ -330,7 +330,7 @@ async def entrypoint(ctx: JobContext) -> None:
         tasks.add(t)
         t.add_done_callback(tasks.discard)
 
-    async def post(text: str, turns: list[str]) -> str | None:
+    async def post(text: str, turns: list[str]) -> str | live.Posted | None:
         """One delegation: the caller's line in the call's room, numbered in the order asked (live.py posts one at a
         time, in order; a retry is the same message). Its message id, or None: not posted. A paused line refuses it
         (`not_allowed`): it is a message for the team."""
@@ -347,7 +347,7 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning("phone %s: line %d not posted (%s)", backend.call_id, n, out["error"])
         if mid := out.get("messageId") or None:
             asked[mid] = time.monotonic()
-        return mid
+        return live.Posted(mid, (out["taskId"],)) if mid and out.get("taskId") else mid
 
     async def hand_off() -> None:
         """The Router's transfer_call: its line plays first, then the existing /transfer route and the SIP

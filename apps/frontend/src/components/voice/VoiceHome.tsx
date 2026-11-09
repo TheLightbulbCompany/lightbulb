@@ -90,7 +90,7 @@ export function VoiceHome() {
       </section>)}
       {all.length > 0 && <p className="vx-foot">
         Today {today.length} answered · {today.filter((c) => c.type === "call" && c.outcome === "booked").length} booked
-        {" "}&nbsp;·&nbsp; {minutes} min used this month</p>}
+        {" "}&nbsp;·&nbsp; {minutes} min in this month&apos;s call records</p>}
     </div></div>
     {open && <aside className="vx-pane" aria-label="Details">
       <Button type="button" variant="ghost" size="sm" className="vx-back" onClick={() => setOpenId(null)}><ArrowLeft /> All conversations</Button>

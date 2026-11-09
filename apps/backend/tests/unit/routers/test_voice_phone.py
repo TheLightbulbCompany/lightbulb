@@ -651,6 +651,7 @@ async def test_a_callers_next_line_goes_to_the_calls_open_thread_not_a_new_one(c
     assert trig["routedTo"] == {"taskId": T1} and trig["triggerId"] == out["triggerId"]
     assert trig["ref"]["origin"] == "phone_contact" and trig["ref"]["messageId"] == out["messageId"]
     to_task.assert_awaited_once_with("org_1", T1, out["triggerId"])
+    assert out["taskId"] == T1  # the voice can correlate a follow-up to the original task's final line
 
 
 async def test_a_callers_line_after_the_thread_closed_goes_to_the_router(client, router_seat):

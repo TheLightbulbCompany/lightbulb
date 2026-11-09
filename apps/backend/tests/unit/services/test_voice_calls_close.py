@@ -257,3 +257,66 @@ async def test_bill_credits_against_real_dynamodb(moto_tables):
     assert int(row["remaining_microcents"]) == 1_000_000 - vc.voice_billing.charge_microcents(45)
     assert int(row["openrouter_reserved_microcents"]) == 0
     assert "Item" not in containers.get_item(Key={"owner_id": "__call__#c1"})
+
+
+@pytest.mark.parametrize("mode", ["credits", "free", "plan"])
+async def test_owner_epoch_uses_existing_settlement_once_without_live_call_workflow(moto_tables, mode):
+    """Receipt settlement and debit commit together, including concurrent/replayed ends."""
+    import boto3
+
+    from core.billing import voice_billing
+
+    containers, gate = moto_tables
+    ddb = boto3.resource("dynamodb", region_name="us-east-1")
+    messaging = ddb.create_table(
+        TableName="owner-usage-t",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+        AttributeDefinitions=[
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    gate.put_item(Item={"owner_id": "org_a", "remaining_microcents": 1_000_000})
+    account = (
+        {"metronome_voice_contract_id": "voice-contract"}
+        if mode == "plan"
+        else {"provider_choice": "openrouter_managed", "plan": "standard"}
+        if mode == "credits"
+        else {}
+    )
+    ledger = MagicMock(ingest=AsyncMock())
+    with (
+        patch.object(voice_billing.messaging_repo, "_table", return_value=messaging),
+        patch.object(voice_billing.billing_repo, "get_by_owner_id", AsyncMock(return_value=account)),
+        patch.object(voice_billing, "report_minutes", AsyncMock()),
+        patch.object(vc, "_metronome", return_value=ledger),
+    ):
+        await voice_billing.report_owner_minutes("org_a", "owner:room:job:0", "2026-11-08T16:00:00Z", 45)
+        await voice_billing.report_owner_minutes("org_a", "owner:room:job:0", "2026-11-08T16:10:00Z", 999)
+        # A concurrent closer that read the receipt before settlement also cannot debit twice.
+        with pytest.raises(ClientError):
+            await vc._bill(
+                {
+                    "ownerId": "org_a",
+                    "callId": "owner:room:job:0",
+                    "startedAt": 1794153600,
+                    "billing": mode,
+                    "holdMicrocents": 0,
+                    "settlementReceipt": {"pk": "OWNER#org_a", "sk": "VOICEUSAGE#owner:room:job:0"},
+                },
+                45,
+            )
+    row = messaging.scan()["Items"][0]
+    assert row["billingSettled"] is True and row["seconds"] == 45 and row["billing"] == mode
+    assert containers.scan()["Count"] == (1 if mode == "free" else 0)  # no synthetic live call
+    balance = int(gate.get_item(Key={"owner_id": "org_a"})["Item"]["remaining_microcents"])
+    assert balance == 1_000_000 - (voice_billing.charge_microcents(45) if mode == "credits" else 0)
+    if mode == "free":
+        assert containers.get_item(Key={"owner_id": "__voice__#org_a"})["Item"]["usedSeconds"] == 45
+    if mode == "credits":
+        assert ledger.ingest.await_count == 2  # same transaction id, provider deduplicates the concurrent ingest
+        assert {c.args[0][0]["transaction_id"] for c in ledger.ingest.await_args_list} == {"owner:room:job:0"}
+        assert ledger.ingest.await_args.args[0][0]["event_type"] == "voice_call"
+    else:
+        ledger.ingest.assert_not_awaited()

@@ -28,6 +28,9 @@ and VOICECELL# rows. Scenarios needing the second (closed) line are skipped. Roo
 k defaults to 1; default scenarios are book, hours_prices, message. The worker.log usage check is skipped. `--max-usd`
 is required: spend is counted by wall time (PROD_USD_PER_MIN), and a scenario does not start if its worst case would
 pass the cap. `--dry-run` touches nothing (also without `--prod`).
+The cap covers the voice sessions only: Router and Worker inference bills the test workspace's own credits. Writing
+`live: true` directly skips the product's Go-live step, so never take the test workspace live through the product while
+it carries the marker (`qaOwnerUser` must equal --owner-user: that user gets its Needs-you questions, pushes, emails).
 EVERY PROD RUN LEAVES ROWS THAT ARE NEVER CLEANED, all under the test workspace: call rooms and messages, trigger rows,
 Needs-you tasks, usage outbox rows and a month counter. Test calls show up in the VoiceCallOutcome and
 phone.voice.failed metrics.
@@ -230,14 +233,16 @@ def calendar(owner: str) -> list[dict]:
     return q["Items"]
 
 
-def qa_gate(owner: str) -> dict:
+def qa_gate(owner: str, user: str) -> dict:
     """Prod: the owner is a real workspace, so write only if it carries the qaWorkspace marker and nothing on its
     VOICEAGENT row could send a test call to a real phone. Returns the row's config."""
     row = table().get_item(Key={"pk": f"OWNER#{owner}", "sk": "VOICEAGENT"}, ConsistentRead=True).get("Item")
     cfg = json.loads(row["config"]) if row else {}
     if cfg.get("qaWorkspace") is not True:
         sys.exit(f"refusing: OWNER#{owner}/VOICEAGENT has no qaWorkspace=true")
-    unsafe = [k for k, v in (("handoff.number", (cfg.get("handoff") or {}).get("number")), ("forwardFrom", cfg.get("forwardFrom")),
+    if cfg.get("qaOwnerUser") != user:
+        sys.exit(f"refusing: OWNER#{owner}/VOICEAGENT qaOwnerUser is {cfg.get('qaOwnerUser')!r}, not --owner-user {user!r}")
+    unsafe = [k for k, v in (("handoff.number", (cfg.get("handoff") or {}).get("number")), ("forwardFrom", cfg.get("forwardFrom")), ("number", cfg.get("number")),
                              ("runOut", cfg.get("runOut")), ("bookingsGo=google", cfg.get("bookingsGo") == "google"),
                              ("forwardingCheck", cfg.get("forwardingCheck"))) if v]  # fmt: skip
     if unsafe:
@@ -254,7 +259,7 @@ def seed() -> None:
         if PROD:
             if not number.startswith("+1555010"):
                 sys.exit(f"prod: refusing non-fake number {number}")
-            old = qa_gate(owner)
+            old = qa_gate(owner, user)
         elif not owner.startswith("qa_phone_"):
             sys.exit(f"refusing to sweep {owner}")  # never sweep a real workspace's rows
         for row in calendar(owner):
@@ -689,7 +694,7 @@ def dry_run(chosen: list[dict], max_usd: float | None) -> None:
     for number, owner in OWNERS.items():
         print(f"  seed {TABLE} PHONE#{number}/LINE (only if free or ours) -> {owner}, user {OWNER_USER.get(number, owner + '_user')}")
         if PROD:
-            print(f"  first read OWNER#{owner}/VOICEAGENT: need qaWorkspace=true, no handoff.number/forwardFrom/runOut/"
+            print(f"  first read OWNER#{owner}/VOICEAGENT: need qaWorkspace=true, qaOwnerUser={OWNER_USER.get(OPEN)}, no number/handoff.number/forwardFrom/runOut/"
                   "bookingsGo=google/forwardingCheck; then merge only name, live, paused, allow, knowledge, hours, services, bufferMin")
         else:
             print(f"  replace OWNER#{owner}/VOICEAGENT")
@@ -715,6 +720,10 @@ async def main(names: list[str], k: int = 3, check: bool = False, dry: bool = Fa
     chosen = [s for s in chosen for _ in range(max(s.get("repeat", 1) if names and not PROD else 1, k))]  # k runs each: pass^k
     if dry:
         return dry_run(chosen, max_usd)
+    if not chosen:
+        sys.exit("no scenario to run (nothing written)")
+    if PROD and chosen[0].get("max_s", 150) / 60 * PROD_USD_PER_MIN > max_usd:
+        sys.exit(f"--max-usd {max_usd} is below the first scenario's worst case (nothing written)")
     os.environ.setdefault("OPENAI_API_KEY", secret(f"lightbulb/{ENV}/openai_api_key"))
     if os.environ.get("PHONE_ENGINE") == "gemini":
         os.environ.setdefault("GOOGLE_API_KEY", secret(f"lightbulb/{ENV}/gemini_api_key"))
@@ -782,7 +791,10 @@ if __name__ == "__main__":
             return cast(args.pop(i + 1))
 
         PROD, dry = "--prod" in args, "--dry-run" in args
-        k = opt("--k", int) or (1 if PROD else 3)
+        k = opt("--k", int)
+        if k is not None and k < 1:
+            sys.exit("--k must be at least 1")
+        k = k or (1 if PROD else 3)
         max_usd, owner, owner_user = opt("--max-usd", float), opt("--owner"), opt("--owner-user")
         if PROD:
             if max_usd is None or not (owner and owner_user):

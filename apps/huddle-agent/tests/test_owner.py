@@ -36,10 +36,38 @@ class _Backend:
         return {"messageId": f"m{len(self.sent)}"} if op == "turn" else {}
 
 
+class _AgentSession:
+    def __init__(self):
+        self.user_state, self.agent_state, self.handlers = "listening", "listening", {}
+
+    def on(self, event, fn=None):
+        def register(cb):
+            self.handlers.setdefault(event, []).append(cb)
+            return cb
+
+        return register(fn) if fn else register
+
+    def agent(self, state):
+        self.agent_state = state
+        for cb in self.handlers.get("agent_state_changed", []):
+            cb(types.SimpleNamespace(new_state=state))
+
+
 class _LiveSession:
     def __init__(self, kw):
-        self.kw, self.closed, self.session, self.close_s = kw, 0, None, 0
+        self.kw, self.closed, self.session, self.close_s = kw, 0, _AgentSession(), 0
+        self.awaiting, self.activity_changed, self.input_enabled, self.input_changes = (
+            {},
+            None,
+            True,
+            [],
+        )
         self.billed_s = 0.0
+
+    def set_input_enabled(self, enabled):
+        if self.input_enabled != enabled:
+            self.input_changes.append(enabled)
+        self.input_enabled = enabled
 
     async def close(self):
         await asyncio.sleep(
@@ -174,22 +202,6 @@ async def test_orb_hears_only_voice_answers_that_landed_while_it_was_closed(
     ] == 3  # the room's cursor
 
 
-async def test_orb_waits_wait_s_from_each_ask_whatever_replies(live, monkeypatch):
-    b = _Backend(polls=[{"messages": [{"id": "y", "seq": 5, "text": "Started a thread.", "inReplyTo": "m1"}],
-                         "after": 5}])  # fmt: skip
-    t = _talk(b)
-    woke = []
-    t.rewake = lambda: woke.append(1)
-    monkeypatch.setattr(owner, "WAIT_S", 0.05)
-    assert await t.post("Fix the deploy", []) == "m1" and t.waiting()
-    gen = t.results()
-    await anext(gen)  # the Router's ack: the Worker's answer is still to come
-    await gen.aclose()
-    assert t.waiting()
-    await asyncio.sleep(0.2)
-    assert not t.waiting() and woke == [1]  # WAIT_S from the post: Quiet re-arms
-
-
 async def test_orb_has_no_approve_path(live):
     b = _Backend(polls=[{"messages": [], "after": 2}, {"messages": [{"id": "q1", "seq": 3, "text": "**Vera** asks: approve the refund?",
                                        "question": {"taskId": "t1", "qid": "q-2"}}], "after": 3}])  # fmt: skip
@@ -289,13 +301,13 @@ class _Ctx:
         self.handlers["track_published"]()
 
 
-async def test_orb_opens_gpt_live_only_while_the_mic_is_live_and_closes_it(
+async def test_mic_release_keeps_playback_and_resume_keeps_same_context(
     live, monkeypatch
 ):
     class B(_Backend):
         async def owner(self, op, body):
             return (
-                {"assistantName": "Nova", "after": 2}
+                {"assistantName": "Nova"}
                 if op == "start"
                 else await super().owner(op, body)
             )
@@ -303,52 +315,74 @@ async def test_orb_opens_gpt_live_only_while_the_mic_is_live_and_closes_it(
         async def aclose(self):
             pass
 
-    b = B()
-    monkeypatch.setattr(owner, "Backend", lambda *_a: b)
+    monkeypatch.setattr(owner, "Backend", lambda *_a: B())
+    monkeypatch.setattr(owner, "QUIET_S", 0.02)
     ctx = _Ctx()
     await owner.run(ctx, {"roomId": "r1", "ownerId": "o1", "roomToken": "t"})
-    assert live.sessions == []  # the warm room, no mic: nothing billed
+    assert live.sessions == []
     ctx.mic(True)
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.001)
     [s] = live.sessions
-    assert (s.kw["surface"], s.kw["prompt"]) == ("owner", owner.prompt())
-    assert (
-        s.kw["room_options"].audio_output.track_name == "agent-assistant"
-    )  # the strip's bars read it
-    ctx.mic(True)  # a repeat does not open a second session
-    await asyncio.sleep(0)
-    assert len(live.sessions) == 1
-    lp = ctx.room.local_participant
-    lp.track_publications["TR_1"] = types.SimpleNamespace(
+    s.session.agent("speaking")
+    ctx.room.local_participant.track_publications["TR_1"] = types.SimpleNamespace(
         sid="TR_1", name="agent-assistant"
     )
-    ctx.mic(
-        False
-    )  # the orb closed: GPT-Live closes, and its track goes, so the strip finds the next one
-    await asyncio.sleep(0.01)
-    assert s.closed == 1 and ctx.unpublished == ["TR_1"]
+    ctx.mic(False)  # release Fn halfway through an answer
+    await asyncio.sleep(0.04)
+    assert not s.input_enabled and s.closed == 0 and ctx.unpublished == []
     ctx.mic(True)
-    await asyncio.sleep(0)
-    assert len(live.sessions) == 2 and live.sessions[1].kw["on_spoken"] is not None
-    live.sessions[1].close_s = 0.03
-    lp.track_publications["TR_2"] = types.SimpleNamespace(
-        sid="TR_2", name="agent-assistant"
-    )
+    assert s.input_enabled and live.sessions == [s] and s.input_changes == [False, True]
     ctx.mic(False)
-    ctx.mic(True)  # a quick reopen while the old session is still closing
-    await asyncio.sleep(0)
-    lp.track_publications["TR_3"] = types.SimpleNamespace(
-        sid="TR_3", name="agent-assistant"
-    )  # the new voice
-    await asyncio.sleep(0.05)
-    assert (
-        live.sessions[1].closed == 1
-        and ctx.unpublished == ["TR_1", "TR_2"]
-        and "TR_3" in lp.track_publications
-    )
-    for cb in ctx.callbacks:  # the room left: closed too, and the talk kept
-        await cb()
-    assert live.sessions[2].closed == 1 and [op for op, _ in b.sent][-1] == "end"
+    s.session.agent("thinking")
+    await asyncio.sleep(0.04)
+    assert s.closed == 0  # still waiting for model output
+    s.awaiting["delegation"] = "message"
+    s.session.agent("listening")
+    await asyncio.sleep(0.04)
+    assert s.closed == 0  # output paused while Router/Worker is still running
+    s.awaiting.clear()
+    s.activity_changed()
+    await asyncio.sleep(0.04)
+    assert s.closed == 1 and ctx.unpublished == ["TR_1"]  # only true idle closes
+    await ctx.callbacks[0]()
+
+
+async def test_release_during_startup_mutes_when_ready_without_closing(
+    live, monkeypatch
+):
+    class B(_Backend):
+        async def owner(self, op, body):
+            return (
+                {"assistantName": "Nova"}
+                if op == "start"
+                else await super().owner(op, body)
+            )
+
+        async def aclose(self):
+            pass
+
+    original, ready = live_module.start, asyncio.Event()
+
+    async def delayed(*args, **kwargs):
+        await ready.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(live_module, "start", delayed)
+    monkeypatch.setattr(owner, "Backend", lambda *_a: B())
+    monkeypatch.setattr(owner, "QUIET_S", 0.02)
+    ctx = _Ctx()
+    await owner.run(ctx, {"roomId": "r1", "ownerId": "o1", "roomToken": "t"})
+    ctx.mic(True)
+    ctx.mic(False)
+    await asyncio.sleep(0.04)
+    assert not live.sessions and not ctx.data  # startup never counts as idle
+    ready.set()
+    await asyncio.sleep(0.001)
+    [s] = live.sessions
+    assert not s.input_enabled and s.closed == 0
+    ctx.mic(True)
+    assert s.input_enabled and len(live.sessions) == 1
+    await ctx.callbacks[0]()
 
 
 async def test_orb_closes_gpt_live_when_the_talk_goes_quiet(live, monkeypatch):
@@ -380,21 +414,31 @@ async def test_orb_closes_gpt_live_when_the_talk_goes_quiet(live, monkeypatch):
     ctx.mic(False)
 
 
-async def test_owner_usage_waits_for_all_closes_and_excludes_muted_room_time(live, monkeypatch):
+async def test_owner_usage_waits_for_all_closes_and_excludes_muted_room_time(
+    live, monkeypatch
+):
     class B(_Backend):
         async def owner(self, op, body):
-            return {"assistantName": "Nova"} if op == "start" else await super().owner(op, body)
+            return (
+                {"assistantName": "Nova"}
+                if op == "start"
+                else await super().owner(op, body)
+            )
 
         async def aclose(self):
             pass
 
     b, ctx = B(), _Ctx()
+    monkeypatch.setattr(owner, "QUIET_S", 0.01)
     monkeypatch.setattr(owner, "Backend", lambda *_a: b)
     await owner.run(ctx, {"roomId": "r1", "ownerId": "o1", "roomToken": "t"})
     ctx.mic(True)
     await asyncio.sleep(0)
-    live.sessions[0].billed_s, live.sessions[0].close_s = 12.4, 0.03
+    live.sessions[0].billed_s, live.sessions[0].close_s = 12.4, 0.05
     ctx.mic(False)
+    await asyncio.sleep(
+        0.02
+    )  # true idle closes epoch1 while its close is still in flight
     ctx.mic(True)
     await asyncio.sleep(0)
     live.sessions[1].billed_s = 7.8
@@ -403,7 +447,10 @@ async def test_owner_usage_waits_for_all_closes_and_excludes_muted_room_time(liv
     assert [s.closed for s in live.sessions] == [1, 1]
     [(_, body)] = [(op, body) for op, body in b.sent if op == "end"]
     assert body["durationSec"] == 0 and body["transcript"] == []
-    assert sorted((u["id"], u["seconds"]) for u in body["usageSessions"]) == [("0", 12), ("1", 7)]
+    assert sorted((u["id"], u["seconds"]) for u in body["usageSessions"]) == [
+        ("0", 12),
+        ("1", 7),
+    ]
     assert all(u["startedAt"].endswith("+00:00") for u in body["usageSessions"])
 
 

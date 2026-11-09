@@ -84,6 +84,11 @@ Settled. Tasks build on these and do not reopen them. Source: the founder's own 
 | F29 | Payment is proven in the Stripe sandbox on dev. | 9 Nov. | A real prod charge as a test. |
 | F30 | Start vendor administration now (Twilio and similar). | 9 Nov. | Waiting until code is ready. |
 | F31 | iMessage agents are a channel of the product: plain iMessage, not Apple business messaging. | 9 Nov. "The direction we wanted to go in." | Apple Messages for Business registration. |
+| F32 | One pool of credits covers voice and text. | 9 Nov. Replaces the minutes plan. | Separate meters the customer has to understand. |
+| F33 | Sign in with ChatGPT is internal only for now. Customers are on managed credits. | 9 Nov. We use it so we do not pay for inference while testing; customers pay. | Offering it to customers. |
+| F34 | iMessage is an add-on, built out later. | 9 Nov. "Was just looking into it." | Putting iMessage ahead of phone and Meet work. |
+| F35 | Order: everything, as fast as possible. Quick implementation and iteration matter most. | 9 Nov. | Waiting on phase order. Phases run in parallel. |
+| F36 | Work is reviewed. A review that finds real issues gets them fixed. A review that finds an architecture issue is brought to the founder. | 9 Nov. | Quietly patching around an architecture problem; or capping review rounds. |
 
 ---
 
@@ -91,31 +96,13 @@ Settled. Tasks build on these and do not reopen them. Source: the founder's own 
 
 ### Open
 
-**Q1. Minutes or credits?** The founder said "voice + OpenRouter work on a credits model". The built plan is $250 for 1,500 minutes, then $0.35 a minute.
-- (a) Minutes stay the unit for voice; text inference draws on credits as today.
-- (b) One pool of credits covers both.
-Blocks: 6.1, 6.4, 6.5.
+**Q1. Refunds and failed payments.** No policy exists. Suggested: refund on request in the first 30 days; three failed payments pause the line and take messages only.
 
-**Q2. Who may choose Sign in with ChatGPT?** The founder said "ChatGPT is fine for now as it's only for us."
-- (a) Customers can still choose it (the 9 Nov ruling to the Platform lead).
-- (b) Internal only for now; customers are always on credits.
-Blocks: 4.9.
-
-**Q3. Price and metering for iMessage.** A Photon line costs $250 a month. Today it is a flat "Front desk" add-on at the same price.
-- (a) Included in the plan for every business (doubles our cost per business).
-- (b) An add-on a business turns on.
-- (c) One shared Lightbulb line that routes by contact. Not designed; needs a contact-to-workspace map.
-Blocks: I.8, and how iMessage is built.
-
-**Q4. Phase order.** The master plan says Phase 1 and 2 finish before 3, 4 and 5 start. In practice all are running. Proposal: accept that, and order by the board's **1st** marker so the phone receptionist reaches "sellable" first.
-
-**Q5. Review rounds.** Proposal from the Product lead: one fix round per task, later findings become new rows unless they are money, security or data loss. The Platform lead disagrees and keeps real findings as release blockers. The founder picks.
-
-**Q6. Refunds and failed payments for the voice plan.** No policy exists. Suggested: refund on request in the first 30 days; three failed payments pause the line and take messages only.
+**Q2. How one pool of credits works across OpenAI voice and OpenRouter text.** The founder ruled one pool (F32) and asked for this to be looked into. A read-only review of the billing code is under way; the options come back to the founder before anything is built.
 
 ### Answered on 9 Nov
 
-Test on prod (F26). Delete the leftovers that are truly dead (see row 1.13). Orb minutes count (F28). One plan (F27). Payment in the dev sandbox (F29). Start vendor admin (F30). No change to the voice design before measuring (task 3-A).
+Test on prod (F26). Delete the leftovers that are truly dead (row 1.13). Orb minutes count (F28). One plan (F27). Payment in the dev sandbox (F29). Start vendor admin (F30). No change to the voice design before measuring (task 3-A). One pool of credits (F32). Sign in with ChatGPT internal only (F33). iMessage is an add-on, later (F34). Order and review (F35, F36).
 
 ---
 
@@ -156,7 +143,7 @@ Test on prod (F26). Delete the leftovers that are truly dead (see row 1.13). Orb
 1. The lead writes a brief: the rows, the files, the exit test, what is out of scope.
 2. One implementer in its own worktree under `.claude/worktrees/`, based on `origin/main`. Test first for logic.
 3. One fresh reviewer with the diff and the brief.
-4. Fixes. (How many rounds: Q5.)
+4. Real findings are fixed (F36). An architecture finding stops the task and goes to the founder.
 5. Merge. The PR edits the rows.
 6. The worktree is removed.
 
@@ -255,10 +242,10 @@ Each task lists the board rows it moves. "Check" tasks build nothing: they run a
 
 | Task | Rows | What | Done when |
 |---|---|---|---|
-| 6-A | 6.3, 6.7, 6.9 | One plan: a new business is offered the voice agent only, presented as the receptionist. Close the old purchase doors on web, mobile and Apple. Remove the leftover add-on from checkout unless Q3 keeps it for iMessage. | A new workspace sees one offer. After Q1. |
+| 6-A | 6.1, 6.3, 6.7, 6.9 | One plan on one pool of credits: a new business is offered the voice agent only, presented as the receptionist. Close the old purchase doors on web, mobile and Apple. The leftover add-on stays as the iMessage add-on (F34). | A new workspace sees one offer. After Q2. |
 | 6-B | 6.1, 6.2, 6.4 | Check in the dev sandbox: pay, entitlement, a 10-minute session on each surface moves the meter by 10. | Receipts, environment stated. |
 | 6-C | 6.8 | The first-customer path on prod: a paid workspace, Go live buys a number, a call to it is answered for that business. A forced failure at each step leaves a retry. | One clean run. Needs a prod workspace that counts as paid without a charge. |
-| 6-D | 6.5, 6.6 | Notices at 80% and 100%, the run-out choice, cancel, failed payments, refunds per Q6. | Each path exercised in the sandbox. |
+| 6-D | 6.5, 6.6 | Notices at 80% and 100%, the run-out choice, cancel, failed payments, refunds per Q1. | Each path exercised in the sandbox. |
 | 6-E | 6.10, Gate 6 | Reviews, then the founder sells. | Five paying salons. |
 
 ### Phase 7: dental
@@ -273,7 +260,7 @@ Starts after Phase 3's sellable bar, per the master plan's order.
 
 ### iMessage (Product)
 
-The October code is a working rail with the old product's assumptions. The work is to make a texter the same kind of contact as a caller.
+Later (F34). The October code is a working rail with the old product's assumptions. The work is to make a texter the same kind of contact as a caller, reusing the phone path's contact principal, room and memory. No separate text persona and no bypass of the caller limits.
 
 | Task | Rows | What | Done when |
 |---|---|---|---|
@@ -282,7 +269,7 @@ The October code is a working rail with the old product's assumptions. The work 
 | I-C | I.3 | One memory per contact across calls and texts, respecting Forget. | Call, then text from the same number: the agent knows the name. |
 | I-D | I.4, I.6 | Agent page switch; Pause applies; STOP and HELP; group chats detected; attachments read. | Each with a test. |
 | I-E | I.7 | Text after a call. Decide the fallback when Photon will not allow a first message. | A confirmation arrives after a booked call. |
-| I-F | I.8, I.9 | Price and metering per Q3; delete the Sendblue rail. | |
+| I-F | I.8, I.9 | Keep it as an add-on (F34); delete the Sendblue rail. | |
 
 ---
 

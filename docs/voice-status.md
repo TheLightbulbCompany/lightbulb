@@ -79,12 +79,12 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 2.3 | The curator works without waking a business's session | ? | ? | no | Platform | Phase 2 follow-up 7 |
 | 2.4 | Old per-business runtimes and roles retired | no | no | no | Platform | 25 old definitions remain. By exact allowlist |
 | 2.5 | Boot identity seeds replaced, then retired | no | no | no | Platform | 28 seeds are KEPT until network identity custody has a replacement |
-| 2.6 | Per-business secrets moved to encrypted DynamoDB envelopes | yes | yes | part | Platform | Live credential use after the move not verified |
+| 2.6 | Per-business secrets moved to encrypted DynamoDB envelopes | yes | yes | part | Platform | Unit tests and live provider use exist in earlier receipts. Still to do: classify it per connector |
 | 2.7 | Secrets Manager under 20 | no | no | no | Platform | About 130 today. 14 platform OAuth client secrets are required and stay |
 | 2.8 | AgentCore Identity holds OAuth tokens | no | no | no | Platform | Not started |
 | 2.9 | Memory retention (90 days) runs on a schedule | yes | yes | no | Platform | No scheduled-run receipt |
 | 2.10 | Backend, workers and Lambdas on ARM | yes | no | no | Platform | Live on dev (#5167) |
-| 2.11 | One backend task, or two with a reason; idle CPU profiled | no | no | no | Platform | |
+| 2.11 | One backend task, or two with a reason; idle CPU profiled | part | part | part | Platform | Prod runs 2 tasks for availability, dev 1. Measured over 24 h: CPU average 9%, 95th percentile about 42%, peak 99%; memory peak 18%. The Platform lead reads this as "keep the resources"; no downsizing claimed |
 | 2.12 | No NAT for Lightbulb; CloudFront free plan in place of WAF | no | no | no | Platform | Two NAT instances remain |
 | 2.13 | Backend background loops reduced | ? | ? | no | Platform | Spec section 8 |
 | 2.14 | Quiet 24 h: nothing runs for an idle business | n/a | n/a | no | Platform | After 2.2 to 2.4 |
@@ -93,7 +93,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 2.17 | Zero retention set at every speech and model vendor | ? | ? | no | Platform | Recall is set to zero retention in code. Others not checked |
 | 2.18 | BAA requests filed with dates: Twilio, Google Cloud, LiveKit | n/a | n/a | n/a | Founder | Phase 2 gate. Paid plans |
 | 2.19 | Google calendar-only OAuth client created; verification started | no | no | n/a | Founder | Takes 4 to 6 weeks. Not started |
-| 2.20 | Twilio API key rotated | ? | ? | n/a | Platform | Its secret was shown once in a tool result |
+| 2.20 | Twilio API key rotated | ? | ? | n/a | Platform | The founder goal says the key's secret was shown once in a tool result when it was made. Find the key id and date before acting |
 
 ## Phase 3. Phone
 
@@ -119,7 +119,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.18 | Keep-my-number or new-number choice, with the carrier's forward and stop codes | yes | yes | no | 1st | Product | |
 | 3.19 | Forwarding check from the Agent page | yes | yes | no | 1st | Product | The outbound trunk is set in prod. Never run against a real forward |
 | 3.20 | Call record: transcript, outcome tag, steps, one-line "what it did", booking card | yes | yes | part | 1st | Product | Home polls every 20 s by design |
-| 3.21 | Call recording stored and playable | no | no | no | | Product | The call is flagged for recording; nothing stores or serves the file |
+| 3.21 | Call recording stored and playable | no | no | no | | Product | Confirmed: the call is flagged for recording and the web player waits for a `recordingUrl`, but nothing produces one. LiveKit's session-end report may give a recording path with no extra egress cost; verify against the installed SDK (1.8.11) before building |
 | 3.22 | Front-desk specialist pre-warmed when a call connects | part | part | no | | Product | A Router prewarm exists. The per-call specialist is not proven |
 | 3.23 | Staff and holidays limit the slots offered | no | no | no | | Product | The fields are saved and not used |
 | 3.24 | Waitlist: join and fill | no | no | no | | Product | The UX plan cut the tool; the spec promised it |
@@ -128,7 +128,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.27 | Square booking | part | no | no | | Platform | #5173, hidden adapter |
 | 3.28 | Booking sites with no API, by browser, with steps and screenshots in the call record | no | no | no | | Product | Generic browser tool exists; no product path |
 | 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | |
-| 3.30 | Spanish, and a voice choice with preview | part | no | no | | Platform | Core merged (#5171); controls not live |
+| 3.30 | Spanish, and a voice choice with preview | part | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the train. Mobile controls are unmerged |
 | 3.31 | Choose which agent is the receptionist | part | no | no | | Platform | #5166, in fix |
 | 3.32 | `VoiceCallOutcome` metric and an alarm on worker and route errors | yes | ? | no | | Platform | #5033 |
 | 3.33 | Mark as spam; call back and text back from a row; warm transfer; ring me | no | no | no | | Product | Deferred by the UX plan |
@@ -143,11 +143,11 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.2 | Home timeline by day, filter chips, footer counts | yes | yes | no | 1st | Product | |
 | 4.3 | Needs you: four card kinds with labels and fix links ("Reconnect Google") | yes | yes | no | 1st | Product | |
 | 4.4 | Agent page: one page, saves as you type, Pause, greeting style, Knowledge with "questions to add", instructions, hours, services, calendar status, number panel | yes | yes | no | 1st | Product | |
-| 4.5 | No control without a working feature behind it | no | no | no | 1st | Product | "Day-before text" is ticked by default with no sender. `meetings.emailNotes` is still in the config |
+| 4.5 | No control without a working feature behind it | part | no | no | 1st | Product | The notes-email control and its helper were removed by #5163 (on dev, in the queued prod train). "Day-before text" is still ticked by default with no sender. A full list of controls is being made |
 | 4.6 | Onboarding: website read, review what was learned, booking destination, number, name and try a booking | yes | yes | no | 1st | Product | Never run end to end on a fresh workspace |
 | 4.7 | Fresh business to first answered call in 15 minutes, at phone width | n/a | n/a | no | 1st | Product | |
 | 4.8 | Settings: Members, Connections, Approvals (Ask, Auto, Never ask), Notifications, Billing and minutes with the run-out choice | yes | yes | no | 1st | Product | |
-| 4.9 | Provider choice: managed or Sign in with ChatGPT | yes | no | no | | Platform | #5162 and #5168 merged, on dev. Founder question open on who may choose ChatGPT |
+| 4.9 | Customers are always on managed credits; Sign in with ChatGPT is internal only for now | no | no | no | | Platform | Founder ruling 9 Nov. What is built (#5162, #5168, on dev) offers both to every workspace admin |
 | 4.10 | The orb: connecting, listening, thinking, speaking, with a caption; each talk kept as a "Yours" row | yes | yes | part | | Product | |
 | 4.11 | The orb does the general agent work the old product did | yes | yes | no | | Product | Founder ruling: the orb is a full third use case |
 | 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
@@ -176,7 +176,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 5.13 | A Worker's result comes back into the meeting; the follow-up shows its status | yes | yes | no | Product | |
 | 5.14 | Starts follow-up work it was clearly given; records human commitments without acting | yes | no | no | Platform | #5163 merged, on dev |
 | 5.15 | Everyone acts with the inviter's authority; spend, send and publish need the inviter's card tap | yes | yes | no | Product | |
-| 5.16 | Notes in the app after the meeting; no email | yes | yes | yes | Product | Verified on screen |
+| 5.16 | Notes in the app after the meeting; no email | yes | part | part | Product | Notes in the app are verified on screen on prod. The removal of the automatic email reaches prod with the queued train |
 | 5.17 | Structured decisions, recallable by voice ("what did we decide") | no | no | no | Product | #5018 parked |
 | 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked |
 | 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |
@@ -187,7 +187,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 
 | # | Promise | Built | Prod | Machine | 1st | Owner | Note |
 |---|---|---|---|---|---|---|---|
-| 6.1 | The voice plan: $250 a month, 1,500 minutes, $0.35 after | yes | yes | part | 1st | Platform | Sandbox: 1,600 minutes billed $285. Founder question open on credits versus minutes |
+| 6.1 | One pool of credits covers voice and text | no | no | no | 1st | Platform | Founder ruling 9 Nov, replacing the built plan ($250, 1,500 minutes, $0.35 after; sandbox billed 1,600 minutes at $285). How one pool works across OpenAI voice and OpenRouter text is being looked into |
 | 6.2 | Pay, get the plan | yes | yes | part | 1st | Platform | Passed in the Stripe sandbox on dev. 0 of 33 prod billing rows hold a voice contract |
 | 6.3 | A new business is offered one plan, the voice agent | no | no | no | 1st | Product | Sign-up still gives the old $50 plan and a free trial. A leftover "Front desk" add-on is in checkout. Founder ruling 9 Nov: one plan |
 | 6.4 | Phone, Meet and orb minutes all count | yes | part | part | 1st | Platform | #5155, a real 14-second session on dev |
@@ -220,7 +220,7 @@ Named in the spec as an optional add-on (section 9). Founder direction 9 Nov: pl
 | I.5 | The texting line belongs to the business's receptionist, not the old Customer Operations agent | no | no | no | Product | |
 | I.6 | STOP and HELP handled; group chats detected; photos and files read | no | no | no | Product | None of the three exists |
 | I.7 | Text the caller after a call (confirmation, answer) | no | no | no | Product | Photon only allows a first message to someone who texted first. May need SMS as the fallback, which needs 10DLC |
-| I.8 | Price and metering for texts | no | no | no | Founder | A line costs $250 a month from Photon. Today it is sold as a flat add-on. Needs a founder decision |
+| I.8 | iMessage is an add-on | part | ? | no | Product | Founder ruling 9 Nov: an add-on, built out later. A flat add-on exists in checkout today. A Photon line costs $250 a month |
 | I.9 | The leftover Sendblue rail deleted | no | no | n/a | Product | Mounted and inert |
 
 ## Phase gates
@@ -251,7 +251,7 @@ Individual PRs were reviewed. No whole-phase review has been run.
 | Delete the chat UI entirely | A conversation page stays at `/voice/lightbulb` | 8 Nov |
 | Always-open Meet voice | May sleep and wake on its name | 8 Nov |
 | Code rules for when the agent speaks (3 s pause, 20 s stale drop, wake gates, canned lines) | The model owns conversation; code enforces permissions and safety only | 8 Nov |
-| Deterministic double-booking logic | Left to the model and the booking tool | 8 Nov |
+| A scheduling rules engine or speech rules for double booking | The model judges what to offer. The booking tool still reserves a slot atomically, so two bookings cannot take one slot. This ruling does not remove that safety | 8 Nov |
 | Delete the OpenRouter gate | OpenRouter stays as the inference and billing gate | 9 Nov |
 
 ## Waiting on the founder or a vendor

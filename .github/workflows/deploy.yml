@@ -113,6 +113,10 @@ jobs:
           fi
 
           rm -rf cdk.out && tar -xzf cdk.out.tgz
+      - name: Enable ARM64 image builds
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - id: Publish
         name: Publish Assets-DockerAsset1
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-DockerAsset1-step.sh

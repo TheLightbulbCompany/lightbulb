@@ -1,0 +1,41 @@
+name: Backend ARM64 image
+on:
+  pull_request:
+    paths:
+      - "apps/backend/**"
+      - "apps/infra/lib/stacks/service-stack.ts"
+      - "apps/infra/lib/app.ts"
+      - ".github/scripts/backend-image-smoke.py"
+      - ".github/workflows/backend-arm64.yml"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: backend-arm64-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  image:
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    timeout-minutes: 30
+    env:
+      SMOKE_IMAGE: lightbulb-backend:arm64-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - name: Build actual ARM64 backend candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/backend
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: ${{ env.SMOKE_IMAGE }}
+      - name: Verify actual image architecture and native entrypoints without network
+        run: |
+          test "$(docker image inspect "$SMOKE_IMAGE" --format '{{.Architecture}}')" = arm64
+          docker run --rm --network none --platform linux/arm64 \
+            -v "$GITHUB_WORKSPACE/.github/scripts/backend-image-smoke.py:/image-smoke.py:ro" \
+            --entrypoint /app/.venv/bin/python "$SMOKE_IMAGE" /image-smoke.py

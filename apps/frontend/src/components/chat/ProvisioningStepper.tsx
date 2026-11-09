@@ -1588,6 +1588,15 @@ export function ProviderPicker({
   }, [startCheckout, isOrg, selectedProvider, source]);
 
   const authenticatedChatGPT = useCallback(async () => { setChatGPTReady(true); }, []);
+  const cancelChatGPT = useCallback(() => {
+    setConnectingChatGPT(false);
+    setChatGPTReady(false);
+    setError(null);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("action");
+    params.delete("provider");
+    replaceSearchParams(params);
+  }, [searchParams]);
   const finishChatGPT = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -1605,12 +1614,12 @@ export function ProviderPicker({
 
   if (connectingChatGPT && canManageWorkspace) return (
     <div className="space-y-4">
-      <ChatGPTOAuthStep onComplete={authenticatedChatGPT} />
+      <ChatGPTOAuthStep onComplete={authenticatedChatGPT} onCancel={cancelChatGPT} />
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {chatGPTReady && <Button disabled={loading} onClick={() => void finishChatGPT()}>
         {loading ? "Saving provider…" : "Use connected ChatGPT"}
       </Button>}
-      <Button variant="outline" disabled={loading} onClick={() => { setConnectingChatGPT(false); setChatGPTReady(false); }}>Cancel sign-in</Button>
+      <Button variant="outline" disabled={loading} onClick={cancelChatGPT}>Cancel sign-in</Button>
     </div>
   );
 

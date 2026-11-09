@@ -8,6 +8,7 @@ import { externalLinkClick } from "@/lib/externalAuth";
 
 type Props = {
   onComplete: () => void | Promise<void>;
+  onCancel?: () => void;
 };
 
 /** Device-code expiry countdown as M:SS (floored at 0:00). */
@@ -122,7 +123,7 @@ export function ChatGPTOAuthStep(props: Props) {
   return <ChatGPTPlanGate then="chatgpt_onboarding"><ChatGPTOAuthSignIn {...props} /></ChatGPTPlanGate>;
 }
 
-function ChatGPTOAuthSignIn({ onComplete }: Props) {
+function ChatGPTOAuthSignIn({ onComplete, onCancel }: Props) {
   // The hook owns the on-mount status probe + auto-start. If tokens are
   // already on file (e.g. user completed in another tab, or the wizard
   // re-mounted between /poll and the next gate refresh), the hook lands
@@ -154,17 +155,17 @@ function ChatGPTOAuthSignIn({ onComplete }: Props) {
     if (state.status === "completed") void finish();
   }, [state.status, finish]);
 
-  // The stepper's only "go back" mechanism is the `?provider=` URL param:
-  // stripping it exits the provider step and re-enters the main flow (the
-  // provider picker for a not-yet-subscribed owner, normal provisioning
-  // otherwise). Mirrors CreditsStep.chooseDifferentProvider so other params
-  // (e.g. checkout=success) survive. Re-entering the OAuth step 409s on an
-  // already-active device session, so the escape hatch matters.
+  // Embedded callers own the flow state and must unmount this step to stop polling.
+  // Standalone onboarding still exits through ?provider=, keeping checkout and other params.
   const cancel = useCallback(() => {
+    if (onCancel) {
+      onCancel();
+      return;
+    }
     const params = new URLSearchParams(searchParams.toString());
     params.delete("provider");
     replaceSearchParams(params);
-  }, [searchParams]);
+  }, [onCancel, searchParams]);
 
   const cancelControl = (
     <button

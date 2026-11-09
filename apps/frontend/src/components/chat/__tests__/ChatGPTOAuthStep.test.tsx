@@ -145,11 +145,12 @@ describe("ChatGPTOAuthStep", () => {
     expect(startMock).toHaveBeenCalled();
   });
 
-  it("strips ?provider= when cancelling, preserving other params", () => {
+  it.each(["pending", "error"])("strips ?provider= when cancelling standalone %s, preserving other params", (status) => {
     const onComplete = vi.fn();
     const replaceStateSpy = vi.spyOn(window.history, "replaceState");
     searchParams = new URLSearchParams({ provider: "chatgpt_oauth", checkout: "success" });
-    stateRef.current = pendingState(Date.now() + 600_000);
+    stateRef.current = status === "pending" ? pendingState(Date.now() + 600_000)
+      : { ...initialState(), state: { status: "error", message: "device code expired" } };
     render(<ChatGPTOAuthStep onComplete={onComplete} />);
     fireEvent.click(
       screen.getByRole("button", { name: /cancel and choose a different provider/i }),

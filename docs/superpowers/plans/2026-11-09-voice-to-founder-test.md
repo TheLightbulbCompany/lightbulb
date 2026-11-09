@@ -134,7 +134,7 @@ Test on prod (F26). Delete the leftovers that are truly dead (row 1.13). Orb min
 
 ## Part 4. How the work runs
 
-**Leads.** Two, each the only writer of its rows.
+**Leads.** Two tracks, each the only writer of its rows. **Since 9 Nov late, Codex is out of usage and the Claude lead holds both tracks and the release.** The founder granted merge and prod permission (CI green and a clean review on the exact head; prod through the deploy workflow).
 - **Platform lead** (Codex, thread `01a1bcde`): phases 0, 1 and 2, the rows marked Platform, and the single release owner for `deploy.yml`, `huddle-agent.yml` and the Hermes pin and roll.
 - **Product lead** (Claude): the rows marked Product in phases 3 to 7 and iMessage, the machine checks, the founder walk.
 

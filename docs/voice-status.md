@@ -27,7 +27,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 ## Rules
 
 1. Every PR that changes a capability edits its row in the same PR.
-2. One owner per row. **Platform** = the Codex lead thread. **Product** = the Claude lead session.
+2. One owner per row. **Platform** and **Product** are the two tracks. Since 9 Nov late, Codex is out of usage and the Claude lead holds both.
 3. A row moves one state at a time. Built never implies Prod. Prod never implies Machine.
 4. A pass is valid only for the build it ran on. The receipt names the backend task definition, the voice worker
    version and the Hermes image tag.
@@ -63,7 +63,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 1.10 | Comms features removed (channels, threads, reactions, pins, mentions) | part | part | n/a | Platform | `EmojiPicker`, `RoomMessageSearch`, `RoomLinkPreviews` remain |
 | 1.11 | Ideas, Feed, Daily, Brief UI removed | part | part | n/a | Platform | `components/creations` (9 files) and `components/activity` (6) remain |
 | 1.12 | OpenSearch removed | no | no | no | Platform | Collection, endpoint, indexer Lambda and the search route still exist. #5156 then #5158 |
-| 1.13 | The five marketplace tables retired | no | no | n/a | Platform | They hold rows in prod (30 listings, 2 payouts, 3 sellers, 11 takedowns) and have a Retain policy, so removal is staged. Founder said delete (9 Nov) |
+| 1.13 | The five marketplace tables retired | part | no | n/a | Platform | Stage 1, the delete policy (#5175), merged 9 Nov. Stage 2 removes the tables; Codex's draft is saved on branch `finish/retire-leftover-table-wiring` and must not deploy before stage 1 is on prod |
 | 1.14 | Old chat UI deleted once the voice UI is live | no | no | n/a | Product | `components/workspace` (54 files), `teams` (73), `control` (37) are unrouted. `messaging` (174) is still used by `/voice/lightbulb` |
 | 1.15 | Every existing integration kept as a live source; the CLI and A2A routes kept | yes | yes | no | Platform | Founder ruling. Never walked after the deletions |
 | 1.16 | Tasks export replaced before deletion | yes | ? | no | Platform | `GET /tasks/export` exists with a test |
@@ -105,7 +105,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.4 | Latency: 1.4 s caller-to-reply on simple turns; a stated target for a useful answer | no | no | no | 1st | Product | No target for a useful answer exists yet |
 | 3.5 | Knowledge from the website scan answers callers, with where each fact came from | yes | yes | part | 1st | Product | The Router received the right facts in one recovered call |
 | 3.6 | Book, move, cancel on the assistant's own calendar; time zone saved at onboarding; overlaps conflict | yes | yes | part | 1st | Product | Passed on the older voice stack. Re-run on GPT-Live |
-| 3.7 | Book, move, cancel in Google Calendar; a Google failure keeps the hold and raises a Line-problem card | part | part | no | 1st | Platform | Known bugs in move, cancel, availability and a late-write race, being fixed. The founder's Google grant expired |
+| 3.7 | Book, move, cancel in Google Calendar; a Google failure keeps the hold and raises a Line-problem card | part | no | no | 1st | Platform | #5176 fixes the move, cancel, availability and late-write bugs; review finding fixed 9 Nov (own-calendar bookings saved before the change). Awaiting re-review. Then the founder reconnects Google |
 | 3.8 | Take a message | yes | yes | no | 1st | Product | |
 | 3.9 | Hand off to a person, only during opening hours; a missed hand-off becomes a card | yes | yes | no | 1st | Product | |
 | 3.10 | A caller cannot do what the owner unticked: refused by the server, and a message is taken | yes | yes | no | 1st | Product | Master plan review focus 3 |
@@ -129,7 +129,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.28 | Booking sites with no API, by browser, with steps and screenshots in the call record | no | no | no | | Product | Generic browser tool exists; no product path |
 | 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | |
 | 3.30 | Spanish, and a voice choice with preview | part | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the train. Mobile controls are unmerged |
-| 3.31 | Choose which agent is the receptionist | part | no | no | | Platform | #5166, in fix |
+| 3.31 | Choose which agent is the receptionist | yes | no | no | | Platform | #5166 merged 9 Nov; on dev, next prod train |
 | 3.32 | `VoiceCallOutcome` metric and an alarm on worker and route errors | yes | yes | no | | Platform | The metric is emitted. The alarm is W85 (voice route errors), present in prod and dev. No alarm reads the outcome metric itself |
 | 3.33 | Mark as spam; call back and text back from a row; warm transfer; ring me | no | no | no | | Product | Deferred by the UX plan |
 | 3.34 | Whether a Twilio number can be a Google Voice forward target | n/a | n/a | no | | Product | Master plan open item |

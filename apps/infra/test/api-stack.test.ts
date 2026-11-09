@@ -793,7 +793,7 @@ describe("ApiStack — ws sessions workspace channel", () => {
 });
 
 describe("ApiStack — messaging projector permissions and alarms", () => {
-  test("projector retains bounded canonical live delivery without search queue authority", () => {
+  test("projector retains bounded canonical live delivery and temporary search queue authority", () => {
     API_TEMPLATE.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "lightbulb-dev-messaging-projector",
       Runtime: "python3.13",

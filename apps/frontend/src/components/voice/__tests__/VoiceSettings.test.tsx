@@ -11,6 +11,7 @@ vi.mock("@/components/settings/SettingsPlace", () => ({
 }));
 vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => <div>daily ok</div> }));
 vi.mock("@/components/settings/SessionNotificationsCard", () => ({ SessionNotificationsCard: () => <div>session ok</div> }));
+vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => null }));
 vi.mock("../data", () => ({ useUsage: () => ({ data: undefined, isLoading: true }), useAgentConfig: () => ({ data: undefined, save: () => {} }) }));
 
 import { VoiceSettings } from "../VoiceSettings";

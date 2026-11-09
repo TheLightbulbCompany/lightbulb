@@ -1885,6 +1885,17 @@ export class ServiceStack extends cdk.Stack {
           : env === "prod"
             ? "fdac2edd-f207-4f11-b65b-01fad6fbbdbc"
             : "",
+      // Explicit admin enrollment; collection grants bounded voice-workspace access.
+      METRONOME_VOICE_ENROLLMENT_ENABLED: "true",
+      METRONOME_VOICE_RATE_CARD_ID: env === "dev"
+        ? "61facb7b-3412-431e-ae29-09eb7d9f0efa"
+        : "fd293a47-6b1b-4aed-b473-41d45548af6e",
+      METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID: env === "dev"
+        ? "937dcae6-a3c8-40f6-9248-ef11baa7f9c6"
+        : "69381c3d-d65a-4fde-85d5-2ad812a131bc",
+      METRONOME_VOICE_METRIC_ID: env === "dev"
+        ? "17a42d84-c10c-4c6a-907d-feb2ab02d080"
+        : "8065419d-79f8-4b8e-ad1d-d933479521cc",
       // The FIXED-type product top-up commits land on. Payment-gated
       // invoicing additionally requires a stripe_product_id custom field
       // on it (set: dev -> test-mode product, prod -> live-mode

@@ -135,11 +135,19 @@ def launch(receipt: dict, ecs) -> dict:
     return {**receipt, "taskArn": arn, "logStream": f"backend/backend/{arn.rsplit('/', 1)[-1]}", "state": "launched"}
 
 
-def own_task(receipt: dict, ecs) -> dict:
-    response = ecs.describe_tasks(cluster=receipt["cluster"], tasks=[receipt["taskArn"]], include=["TAGS"])
-    if response.get("failures") or len(response.get("tasks", [])) != 1:
-        raise RuntimeError("rollout task state unavailable")
-    task = response["tasks"][0]
+def own_task(receipt: dict, ecs, *, now=time.monotonic, pause=time.sleep) -> dict:
+    # RunTask is eventually consistent: MISSING is not proof the returned ARN does not exist.
+    deadline, delay = now() + 60, 1
+    while True:
+        response = ecs.describe_tasks(cluster=receipt["cluster"], tasks=[receipt["taskArn"]], include=["TAGS"])
+        tasks, failures = response.get("tasks") or [], response.get("failures") or []
+        if len(tasks) == 1 and not failures:
+            task = tasks[0]
+            break
+        if tasks or any(f.get("reason") != "MISSING" for f in failures) or now() >= deadline:
+            raise RuntimeError("rollout task state unavailable")
+        pause(min(delay, max(0, deadline - now())))
+        delay = min(delay * 2, 8)
     tags = {t["key"]: t["value"] for t in task.get("tags") or []}
     if (
         task.get("taskArn") != receipt["taskArn"]

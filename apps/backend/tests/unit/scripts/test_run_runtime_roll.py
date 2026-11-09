@@ -197,3 +197,34 @@ def test_missing_result_has_bounded_read_wait(world):
         is None
     )
     assert clock[0] == 30
+
+
+def test_task_lookup_retries_eventual_missing_without_relaunch(world):
+    receipt = mod.launch(mod.plan("dev", OWNER, KEY, world.ecs, world.sts), world.ecs)
+    clock, calls = [0], []
+
+    def describe(**kw):
+        calls.append(kw)
+        return {"failures": [{"reason": "MISSING"}]} if len(calls) < 3 else {"tasks": [world.task]}
+
+    world.ecs.describe_tasks = describe
+    assert (
+        mod.own_task(
+            receipt, world.ecs, now=lambda: clock[0], pause=lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        )
+        == world.task
+    )
+    assert clock[0] == 3 and len(calls) == 3
+    assert [name for name, _ in world.calls] == ["run"]
+
+
+def test_task_lookup_empty_response_has_bounded_backoff(world):
+    receipt = mod.launch(mod.plan("dev", OWNER, KEY, world.ecs, world.sts), world.ecs)
+    clock = [0]
+    world.ecs.describe_tasks = lambda **kw: {"tasks": []}
+    with pytest.raises(RuntimeError, match="state unavailable"):
+        mod.own_task(
+            receipt, world.ecs, now=lambda: clock[0], pause=lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        )
+    assert clock[0] == 60
+    assert [name for name, _ in world.calls] == ["run"]

@@ -5,6 +5,10 @@ import { redirect } from "next/navigation";
 export default async function ChatPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(await searchParams)) for (const v of [value].flat()) if (v !== undefined) qs.append(key, v);
+  const provider = qs.get("provider");
+  const providerSetup = provider === "chatgpt_oauth" || provider === "openrouter_managed";
+  if (provider === "chatgpt_oauth" && !qs.has("action")) qs.set("action", "connect-chatgpt");
+  const destination = providerSetup || qs.get("panel") === "settings" ? "/voice/settings" : "/voice/lightbulb";
   const q = qs.toString();
-  redirect(q ? `/voice/lightbulb?${q}` : "/voice/lightbulb");
+  redirect(q ? `${destination}?${q}` : destination);
 }

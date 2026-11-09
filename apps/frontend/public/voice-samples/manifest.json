@@ -1,0 +1,92 @@
+{
+  "model": "gpt-live-1",
+  "recordedAt": "2026-11-09",
+  "sourceURLs": [
+    "https://developers.openai.com/api/docs/guides/live-conversations",
+    "https://developers.openai.com/api/docs/guides/live-prompting",
+    "https://developers.openai.com/api/docs/guides/voice-websockets",
+    "https://developers.openai.com/api/docs/models/gpt-live-1"
+  ],
+  "sampleKind": "Fixed AI voice samples, not personalized greetings",
+  "totalBilledSeconds": 63.0,
+  "providerCostUSD": 0.0525,
+  "format": {
+    "codec": "pcm_s16le",
+    "rate": 24000,
+    "channels": 1
+  },
+  "samples": [
+    {
+      "file": "gpt-live-1-marin-en.wav",
+      "voice": "marin",
+      "language": "en",
+      "transcript": "Hello, I’m an AI assistant. This is a sample of my voice. How can I help you today?",
+      "seconds": 5.42,
+      "sha256": "bba861c7f7224712d86c44078b74c341cc4775153c0a44f383cfd2428f7d2649",
+      "sourceSha256": "f7cff3fcf10517ce936c74b253e8b3c3256692d036fd610158dcbc7d18903a39",
+      "sourceSeconds": 9.8,
+      "billedSeconds": 10.0,
+      "editing": "Trailing silence removed only; original PCM speech unchanged."
+    },
+    {
+      "file": "gpt-live-1-marin-es.wav",
+      "voice": "marin",
+      "language": "es",
+      "transcript": "Hola, soy un asistente de inteligencia artificial. Esta es una muestra de mi voz. ¿Cómo puedo ayudarte hoy?",
+      "seconds": 6.44,
+      "sha256": "a6b9ce93134945a8eca854fc82eb7ca2fd58a2daa3e954a71d3080525a6574ff",
+      "sourceSha256": "de78a1012ee6fc8d89daf4627fd080648e6277ad5f60acfc50ce41f890e2d6a7",
+      "sourceSeconds": 10.1,
+      "billedSeconds": 10.0,
+      "editing": "Trailing silence removed only; original PCM speech unchanged."
+    },
+    {
+      "file": "gpt-live-1-quartz-en.wav",
+      "voice": "quartz",
+      "language": "en",
+      "transcript": "Hello, I’m an AI assistant. This is a sample of my voice. How can I help you today?",
+      "seconds": 6.06,
+      "sha256": "515b1e37ff5a708d8cc127e764bb71de272eec1ef12c8e2af5eaf3408b5fd0e5",
+      "sourceSha256": "765dc1701104c8d853bb1fd3807140933fe4a6bb12ec3c1488ccaa4ed0f1027a",
+      "sourceSeconds": 10.02,
+      "billedSeconds": 10.0,
+      "editing": "Trailing silence removed only; original PCM speech unchanged."
+    },
+    {
+      "file": "gpt-live-1-quartz-es.wav",
+      "voice": "quartz",
+      "language": "es",
+      "transcript": "Hola, soy un asistente de inteligencia artificial. Esta es una muestra de mi voz. ¿Cómo puedo ayudarte hoy?",
+      "seconds": 7.58,
+      "sha256": "043ed480e48f463253acf6117ef5e3dd6c47a205b20932b6f8378489a1944886",
+      "sourceSha256": "d4c8aad8cee59d6b29821c2d34634977b7bb0f53ca5eeb21c462a0084dffed45",
+      "sourceSeconds": 10.4,
+      "billedSeconds": 11.0,
+      "editing": "Trailing silence removed only; original PCM speech unchanged."
+    },
+    {
+      "file": "gpt-live-1-willow-en.wav",
+      "voice": "willow",
+      "language": "en",
+      "transcript": "Hello, I’m an AI assistant. This is a sample of my voice. How can I help you today?",
+      "seconds": 4.82,
+      "sha256": "a3f749561fa6804b0dead2e3586467f9d8fdf6ffe62988418e7d30c66f9e8895",
+      "sourceSha256": "9dd1fc63cd49d70c5f70a03e729a1af2b5d59ab31fc6d1327f98b9b7f5026132",
+      "sourceSeconds": 10.44,
+      "billedSeconds": 11.0,
+      "editing": "Trailing silence removed only; original PCM speech unchanged."
+    },
+    {
+      "file": "gpt-live-1-willow-es.wav",
+      "voice": "willow",
+      "language": "es",
+      "transcript": "Hola, soy un asistente de inteligencia artificial. Esta es una muestra de mi voz. ¿Cómo puedo ayudarte hoy?",
+      "seconds": 5.76,
+      "sha256": "213c864199844301fc1977b278f43c8522f6100f0e448c37f116c24ad40fb029",
+      "sourceSha256": "c212f61919c242e1d13ac2c01df96d9b9dda19af31dc938b30cebe5584ca1d25",
+      "sourceSeconds": 10.64,
+      "billedSeconds": 11.0,
+      "editing": "Trailing silence removed only; original PCM speech unchanged."
+    }
+  ]
+}

@@ -43,6 +43,7 @@ from core.services import (
     voice_booking,
     voice_calls,
     voice_outbound,
+    voice_preferences,
 )
 from routers.huddles import _Worker
 from routers.voice import _e164, month_seconds
@@ -65,6 +66,8 @@ _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULTS: dict = {
     "name": "",
     "greeting": "",
+    "voice": voice_preferences.DEFAULT_VOICE,
+    "spanish": False,
     "live": False,
     "paused": False,
     "instructions": "",
@@ -355,6 +358,8 @@ async def start_call(body: StartIn) -> dict:
         "ownerId": owner_id,
         "businessName": business,
         "assistantName": assistant,
+        "voice": voice_preferences.phone_voice(cfg.get("voice")),
+        "spanish": cfg.get("spanish") is True,
         "greeting": greeting(cfg["greeting"], business, assistant),
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
         "instructions": cfg["instructions"][:4000],

@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
 
+import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
+
 type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment";
 
 export function AgentPage() {
@@ -73,6 +75,8 @@ export function AgentPage() {
       <p className="vx-hint" style={{ color: "var(--fg-mute)", fontSize: "var(--text-caption)" }}>
         {name} always says its name, that it&apos;s an AI assistant and that the call is recorded.</p>
     </Sec>
+
+    <Sec title="Voice & language"><PhoneVoiceSettings c={c} set={set} /></Sec>
 
     <Sec title={`What ${name} may do for callers`} hint={`Anything unchecked, or anything it doesn't know: ${name} takes a message and puts it in Needs you.`}>
       <div>

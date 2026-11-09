@@ -804,3 +804,21 @@ async def test_an_answer_after_hang_up_is_kept_on_the_record_home_reads(client):
     rec = (await messaging_repo.get_room(cid))["call"]
     assert rec["afterCall"] == [{"messageId": "m5", "text": late["text"]}]
     assert rec["steps"][-1]["text"].startswith("After the call, not heard by the caller: There's no deposit")
+
+
+@pytest.mark.parametrize(
+    "preferences,expected_voice,expected_spanish",
+    [
+        ({}, "marin", False),
+        ({"voice": "Warm"}, "marin", False),
+        ({"voice": "willow", "spanish": True}, "willow", True),
+        ({"voice": "quartz", "spanish": False}, "quartz", False),
+    ],
+)
+async def test_call_bootstrap_resolves_preferences_without_mutating_document(
+    client, preferences, expected_voice, expected_spanish
+):
+    bootstrap = await _start(client, **preferences)
+    assert bootstrap["voice"] == expected_voice
+    assert bootstrap["spanish"] is expected_spanish
+    assert await messaging_repo.get_voice_agent("org_1") == {**CONFIG, **preferences}

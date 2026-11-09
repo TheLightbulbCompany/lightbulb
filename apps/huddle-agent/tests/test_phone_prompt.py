@@ -268,3 +268,16 @@ def test_recording_objections_do_not_promise_unrecorded_service():
     instructions = phone.prompt({**INFO, "spanish": True})
     assert "do not claim it can be switched off" in instructions
     assert "Wait for the backend's result" in instructions
+
+
+def test_english_only_disclosure_requires_actual_recording_not_a_future_or_conditional():
+    for statement, expected in (
+        ("This call is being recorded.", "ok"),
+        ("We are recording this call.", "ok"),
+        ("This call will be recorded.", "missing"),
+        ("Maybe, this call is being recorded.", "missing"),
+        ("If you give permission, this call is being recorded.", "missing"),
+        ("This call is not being recorded.", "missing"),
+    ):
+        items = [{"role": "assistant", "text": f"I'm Ava, an AI assistant. {statement}", "t": 1}]
+        assert phone.disclosure_of(items, "Ava") == expected, statement

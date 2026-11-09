@@ -139,13 +139,41 @@ def clean_transcript(items: list[dict]) -> list[dict]:
     return out
 
 
-def _norm(text: str) -> str:
-    text = "".join(
-        c
-        for c in unicodedata.normalize("NFKD", text.lower())
-        if not unicodedata.combining(c)
-    )
+def _norm(text: str, *, keep_accents: bool = False) -> str:
+    text = unicodedata.normalize("NFC" if keep_accents else "NFKD", text.lower())
+    if not keep_accents:
+        text = "".join(c for c in text if not unicodedata.combining(c))
     return " ".join(re.sub(r"[^\w\s]", " ", text).split())
+
+
+def _recording_disclosed(text: str, spanish: bool) -> bool:
+    """Require a present recording assertion. Commas keep qualifiers in the same sentence.
+
+    Keep Spanish accents here: affirmative “sí” is different from conditional “si”. Unsupported or uncertain
+    wording leaves the existing guard to request its factual correction; this never controls caller turns.
+    """
+    for sentence in re.split(r"(?<=[.!?;])\s*", text):
+        s = f" {_norm(sentence, keep_accents=True)} "
+        if re.search(
+            r" (?:if|unless|might|may|maybe|perhaps|possibly|could|would|whether|not sure|don t know|do not know) ", s
+        ):
+            continue
+        if spanish and re.search(
+            r" (?:si|quiz[aá]s?|tal vez|puede que|podr[ií]a|posiblemente|no s[eé]|es posible) ", s
+        ):
+            continue
+        if re.search(
+            r" this (?:call )?(?:is|s) (?:being )?recorded "
+            r"| the call (?:is|s) (?:being )?recorded "
+            r"| we (?:are|re) recording (?:this|the) call ", s,
+        ):
+            return True
+        if spanish and re.search(
+            r" (?:esta |la )?llamada (?:sí )?(?:(?:est[aá] (?:siendo )?|es )grabada|se est[aá] grabando|se graba) "
+            r"| (?:estamos grabando|grabamos) (?:esta |la )llamada ", s,
+        ):
+            return True
+    return False
 
 
 def discloses(text: str, assistant: str, spanish: bool = False) -> bool:
@@ -162,7 +190,7 @@ def discloses(text: str, assistant: str, spanish: bool = False) -> bool:
         return False
     named = bool(_norm(assistant)) and f" {_norm(assistant)} " in t
     ai = " ai assistant " in t
-    recorded = " recorded " in t
+    recorded = _recording_disclosed(text, spanish)
     if spanish:
         clauses = (f" {_norm(part)} " for part in re.split(r"[.!?;,:]", text))
         if any(
@@ -178,14 +206,6 @@ def discloses(text: str, assistant: str, spanish: bool = False) -> bool:
             re.search(
                 r" asistente(?: virtual)? (?:de )?(?:inteligencia artificial|ia) ", t
             )
-        )
-        recorded = recorded or any(
-            re.search(
-                r" (?:esta |la )?llamada (?:esta |se |siendo |es |sera )*(?:grabada|grabando) "
-                r"| (?:estamos grabando|grabamos) (?:esta |la )llamada ", clause,
-            )
-            and not re.search(r" (?:si|quiza|quizas|tal vez|puede que|podria|posiblemente|no se) ", clause)
-            for clause in (f" {_norm(part)} " for part in re.split(r"[.!?;,:]", text))
         )
     return named and ai and recorded
 

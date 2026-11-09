@@ -543,3 +543,50 @@ async def test_missed_disclosure_is_one_time_instruction_and_later_turns_do_not_
     assert len(call.live.instructed) == 1
     assert len(call.live.sent) == 1  # opening only; ordinary model turns are not locally generated
     await call.on_shutdown[0]()
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("Soy Nova, asistente de IA. Si nos das permiso, esta llamada será grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Si nos das permiso, esta llamada está siendo grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Quizás, esta llamada está siendo grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Esta llamada sí está siendo grabada.", "ok"),
+    ("Soy Nova, asistente de IA. Esta llamada si\u0301 está siendo grabada.", "ok"),
+    ("Soy Nova, asistente de IA. Sí, esta llamada se está grabando.", "ok"),
+    ("Soy Nova, asistente de IA. Esta llamada será grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Esta llamada no está siendo grabada.", "missing"),
+    ("Soy Nova, no soy una asistente de IA. Esta llamada está siendo grabada.", "missing"),
+    ("Soy Nova, no soy humana, soy asistente de IA. Esta llamada está siendo grabada.", "ok"),
+    ("I'm Nova, an AI assistant. If you give permission, this call is being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. Perhaps, this call is being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. This call will be recorded.", "missing"),
+    ("I'm Nova, an AI assistant. This call may be recorded.", "missing"),
+    ("I'm Nova, not an AI assistant. This call is being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. This call is not being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. Yes, this call is being recorded.", "ok"),
+])
+async def test_recording_truth_controls_the_once_only_disclosure_correction(monkeypatch, spoken, expected):
+    # Exercise the real transcript classifier and phone guard/instruction wiring, not a standalone regex.
+    items = [{"role": "assistant", "text": spoken, "t": 1}]
+    assert phone.disclosure_of(items, "Nova", spanish=True) == expected
+    call = await Call(monkeypatch, info={"spanish": True}).answer()
+    call.state("listening", "speaking")
+    call.item("assistant", spoken, 1)
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    corrections = 1 if expected == "missing" else 0
+    assert len(call.live.instructed) == corrections
+    if corrections:
+        assert call.live.instructed == [phone.say_exactly("I'm Nova, an AI assistant, and this call is recorded.")]
+    # Later caller/model turns neither erase the original verdict nor repeat the correction.
+    call.item("user", "Hello", 2)
+    call.state("listening", "speaking")
+    call.item("assistant", "How can I help?", 3)
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    assert len(call.live.instructed) == corrections
+    assert len(call.live.sent) == 1  # ordinary turns remain model-owned; only startup commentary was appended
+    assert "turn" not in call.paths()
+    await call.on_shutdown[0]()
+    (ended,) = [body for path, body in call.backend.calls if path == "end"]
+    assert ended["disclosure"] == expected
+    assert ended["disclosureRepeated"] is bool(corrections)

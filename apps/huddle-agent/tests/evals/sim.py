@@ -17,6 +17,14 @@ What it does:
 4. Reads `META.call` and the calendar rows back from dev, measures latency and silence from the agent's audio,
    asks a text OpenAI judge the soft questions, and writes `tests/evals/out/scorecard-<time>.{json,md}`.
 
+Prod mode (`--prod --max-usd 2 [--dry-run] [scenario ...]`): scores the DEPLOYED worker (LiveKit Cloud agent
+`lightbulb-huddle`) against the prod API and the prod messaging table. No local worker is started. Rooms are named
+`phone-prod-qa-<scenario>-<ts>`. It seeds the same two fake lines (+1555010xxxx, owners `qa_phone_*`) in the prod table;
+a workspace with no billing row is not payment-blocked, so no billing row is written. The worker.log usage check is
+skipped (a cloud agent has no local log), k defaults to 1, and the default scenarios are book, hours_prices, message.
+`--max-usd` is required: no new scenario starts once the estimate (2x the caller's own cost, as the agent's tokens are
+not visible) reaches it. `--dry-run` prints what would run and touches nothing (also works without `--prod`).
+
 Needs: AWS profile isol8-admin, the `lk` CLI's project config (~/.livekit/cli-config.yaml). Spend: two Live sessions
 per scenario, each capped at `max_s`; the estimate is printed in the scorecard.
 """
@@ -47,6 +55,8 @@ AGENT = os.environ.get("PHONE_QA_AGENT", "lightbulb-phone-qa")
 assert AGENT != "lightbulb-huddle" and "qa" in AGENT, f"PHONE_QA_AGENT must be a qa agent name, got {AGENT!r}"
 API ="https://api-dev.thelightbulb.company"
 TABLE = "lightbulb-dev-messaging"
+ENV, PROD, ROOM_PREFIX = "dev", False, "phone-qa-"  # --prod flips these in __main__
+PROD_DEFAULT = ["book", "hours_prices", "message"]
 AWS = ["--profile", "isol8-admin", "--region", "us-east-1"]
 MODEL = os.environ.get("CALLER_MODEL", "gpt-realtime-2.1-mini")  # the caller
 JUDGE = os.environ.get("PHONE_JUDGE_MODEL", "gpt-4.1-mini")
@@ -213,6 +223,7 @@ def seed() -> None:
     t = table()
     for number, owner in OWNERS.items():
         assert owner.startswith("qa_phone_"), owner  # never sweep a real workspace's rows
+        assert not PROD or number.startswith("+1555010"), number  # prod: only fake numbers
         for row in calendar(owner):
             # VOICECELL#: the slot cells a booking holds since #5024; left behind, they refuse the next run's
             # bookings as slot_taken
@@ -252,7 +263,7 @@ def start_worker(env: dict) -> subprocess.Popen:
     OUT.mkdir(exist_ok=True)
     log = open(OUT / "worker.log", "w")
     env = {**os.environ, **env, "PHONE_AGENT_NAME": AGENT, "LIGHTBULB_API_URL": API, "PHONE_LOAD_THRESHOLD": "1.01",
-           "LIGHTBULB_HUDDLE_SECRET": secret("lightbulb/dev/huddle_worker_secret")}  # fmt: skip
+           "LIGHTBULB_HUDDLE_SECRET": secret(f"lightbulb/{ENV}/huddle_worker_secret")}  # fmt: skip
     proc = subprocess.Popen([sys.executable, __file__, "worker", "start", "--log-level", "INFO"], env=env, stdout=log, stderr=subprocess.STDOUT)
     for _ in range(90):
         time.sleep(1)
@@ -299,7 +310,8 @@ async def run_scenario(sc: dict, lk: dict) -> dict:
     from livekit.plugins import openai
     from openai.types.beta.realtime.session import TurnDetection
 
-    room_name = f"phone-qa-{sc['name']}-{int(time.time())}"
+    room_name = f"{ROOM_PREFIX}{sc['name']}-{int(time.time())}"
+    assert not PROD or room_name.startswith("phone-prod-qa-"), room_name
     line, max_s = sc.get("line", OPEN), sc.get("max_s", 150)
     async with api.LiveKitAPI(lk["LIVEKIT_URL"], lk["LIVEKIT_API_KEY"], lk["LIVEKIT_API_SECRET"]) as lkapi:
         await lkapi.agent_dispatch.create_dispatch(api.CreateAgentDispatchRequest(agent_name=AGENT, room=room_name))
@@ -594,6 +606,8 @@ def agent_usage(room: str) -> dict:
     """The agent's tokens for one call, from the worker log (`phone <callId> usage {...}`)."""
     import ast
 
+    if PROD:
+        return {}  # a cloud agent writes no local worker.log
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{room}"))
     for line in (OUT / "worker.log").read_text().splitlines():
         if f"phone {call_id} usage" in line:
@@ -625,18 +639,42 @@ def write(results: list[dict]) -> Path:
     return path
 
 
-async def main(names: list[str], k: int = 3, check: bool = False) -> None:
-    os.environ.setdefault("OPENAI_API_KEY", secret("lightbulb/dev/openai_api_key"))
-    if os.environ.get("PHONE_ENGINE") == "gemini":
-        os.environ.setdefault("GOOGLE_API_KEY", secret("lightbulb/dev/gemini_api_key"))
-    lk = livekit_env()
+def dry_run(chosen: list[dict], max_usd: float | None) -> None:
+    print(f"DRY RUN (no network, no writes, no dispatch)\n  mode {'PROD' if PROD else 'dev'}\n  api {API}\n  table {TABLE}")
+    print(f"  agent {AGENT} ({'deployed, no local worker' if PROD else 'local worker started'})")
+    print(f"  secrets lightbulb/{ENV}/openai_api_key" + ("" if PROD else f", lightbulb/{ENV}/huddle_worker_secret"))
+    print(f"  max-usd {max_usd}; versions under test: not queried")
+    for number, owner in OWNERS.items():
+        print(f"  seed {TABLE} PHONE#{number}/LINE -> {owner}; OWNER#{owner}/VOICEAGENT; sweep VOICEBOOK#/VOICECALLER#/VOICECELL#")
+    for s in SCENARIOS:
+        for at, svc, name in s.get("seed", []):
+            print(f"  seed OWNER#{OWNERS[OPEN]}/VOICEBOOK#{DAY:%Y-%m-%d}T{at} {svc} {name} {s['caller']}")
+    print(f"  seed OWNER#{OWNERS[OPEN]}/VOICEBOOK#{DAY:%Y-%m-%d}T16:30 Acrylic full set {OTHER['name']} {OTHER['phone']}")
+    stamp = int(time.time())
+    for sc in chosen:
+        print(f"  run {sc['name']}: room {ROOM_PREFIX}{sc['name']}-{stamp}, line {sc.get('line', OPEN)}, caller {sc['caller']}")
+
+
+async def main(names: list[str], k: int = 3, check: bool = False, dry: bool = False, max_usd: float | None = None) -> None:
     chosen = [s for s in SCENARIOS if not names or s["name"] in names]
-    chosen = [s for s in chosen for _ in range(max(s.get("repeat", 1) if names else 1, k))]  # k runs each: pass^k
+    chosen = [s for s in chosen for _ in range(max(s.get("repeat", 1) if names and not PROD else 1, k))]  # k runs each: pass^k
+    if dry:
+        return dry_run(chosen, max_usd)
+    os.environ.setdefault("OPENAI_API_KEY", secret(f"lightbulb/{ENV}/openai_api_key"))
+    if os.environ.get("PHONE_ENGINE") == "gemini":
+        os.environ.setdefault("GOOGLE_API_KEY", secret(f"lightbulb/{ENV}/gemini_api_key"))
+    lk = livekit_env()
     seed()
-    worker = start_worker({**lk})  # the keys ride in os.environ
+    if PROD:
+        print("prod: worker.log usage check skipped (cloud agent); agent cost not measured", flush=True)
+    worker = None if PROD else start_worker({**lk})  # the keys ride in os.environ
     results = []
     try:
         for sc in chosen:
+            # ponytail: agent tokens are invisible in prod, so the estimate is 2x the caller's own cost
+            if PROD and sum(2 * cost(r["usage"]) for r in results) >= max_usd:
+                print(f"max-usd {max_usd} reached; not starting {sc['name']}", flush=True)
+                break
             print(f"… {sc['name']}", flush=True)
             try:
                 results.append(score(sc, await run_scenario(sc, lk)))
@@ -652,11 +690,12 @@ async def main(names: list[str], k: int = 3, check: bool = False) -> None:
             await asyncio.sleep(20)  # run 1: a dispatch sent while the last job was still exiting came 2 min late
     finally:
         print(write(results))
-        worker.terminate()
-        try:
-            worker.wait(30)
-        except subprocess.TimeoutExpired:
-            worker.kill()
+        if worker:
+            worker.terminate()
+            try:
+                worker.wait(30)
+            except subprocess.TimeoutExpired:
+                worker.kill()
     by_name: dict[str, list[bool]] = {}
     for r in results:
         by_name.setdefault(r["name"], []).append(r["pass"])
@@ -678,5 +717,12 @@ if __name__ == "__main__":
         cli.run_app(server)
     else:
         args = sys.argv[1:]
-        k = int(args.pop(args.index("--k") + 1)) if "--k" in args else 3
-        asyncio.run(main([x for x in args if x not in ("--k", "--check")], k, "--check" in args))
+        PROD, dry = "--prod" in args, "--dry-run" in args
+        k = int(args.pop(args.index("--k") + 1)) if "--k" in args else (1 if PROD else 3)
+        max_usd = float(args.pop(args.index("--max-usd") + 1)) if "--max-usd" in args else None
+        if PROD:
+            if max_usd is None:
+                sys.exit("--prod requires --max-usd <dollars>")
+            ENV, API, TABLE, AGENT, ROOM_PREFIX = "prod", "https://api.thelightbulb.company", "lightbulb-prod-messaging", "lightbulb-huddle", "phone-prod-qa-"
+        names = [x for x in args if x not in ("--k", "--check", "--prod", "--dry-run", "--max-usd")]
+        asyncio.run(main(names or (PROD_DEFAULT if PROD else []), k, "--check" in args, dry, max_usd))

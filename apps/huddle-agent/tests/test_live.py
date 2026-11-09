@@ -6,6 +6,7 @@ import itertools
 import pathlib
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from livekit import rtc
@@ -26,6 +27,10 @@ class FakeTransport:
         self.thoughts: list[str] = []
         self.closed = False
         self.billed_s = 0.0
+        self.input_enabled = True
+
+    def set_input_enabled(self, enabled):
+        self.input_enabled = enabled
 
     def say(self, role, text):  # a turn lands in the chat context
         self.items.append((f"msg_{next(_ids)}", role, text))
@@ -81,6 +86,65 @@ def session(router, events=None, transport=None, on_spoken=None):
     return live.LiveSession(
         transport or FakeTransport(), "owner", router.post, events or _none, on_spoken
     )
+
+
+async def test_protocol_mute_keeps_audio_clock_running_without_microphone_frames():
+    """The real adapter supplies silence after LiveKit capture is disabled; no output API is touched."""
+    sdk = MagicMock()
+    framework = SimpleNamespace(
+        input=SimpleNamespace(set_audio_enabled=MagicMock()), aclose=AsyncMock()
+    )
+    model = SimpleNamespace(aclose=AsyncMock())
+    transport = live._GPTLive(framework, SimpleNamespace(duplex_session=sdk), model)
+    transport.set_input_enabled(False)
+    transport.set_input_enabled(False)  # idempotent repeated track events
+    await asyncio.sleep(0.055)
+    sdk.mute_input.assert_called_once()
+    assert sdk.push_audio.call_count >= 2
+    for call in sdk.push_audio.call_args_list:
+        frame = call.args[0]
+        assert (
+            frame.sample_rate == 24000
+            and frame.num_channels == 1
+            and not any(frame.data)
+        )
+    transport.set_input_enabled(True)
+    count = sdk.push_audio.call_count
+    await asyncio.sleep(0.04)
+    assert sdk.push_audio.call_count == count
+    sdk.unmute_input.assert_called_once()
+    assert [c.args[0] for c in framework.input.set_audio_enabled.call_args_list] == [
+        False,
+        True,
+    ]
+    transport.set_input_enabled(False)
+    await transport.close()
+    assert transport._silence is None
+    framework.aclose.assert_awaited_once()
+
+
+async def test_muting_keeps_pending_work_and_terminal_result_rearms_activity():
+    r, t = Router(delay=0), FakeTransport()
+    s = session(r, transport=t)
+    changes = []
+    s.activity_changed = lambda: changes.append(bool(s.awaiting))
+    s.on_delegate(delegation(1))
+    await asyncio.sleep(0.001)
+    s.set_input_enabled(False)
+    assert s.awaiting == {"item_1": "m_1"} and not t.closed
+    await s._result(
+        {
+            "id": "done",
+            "text": "The work finished.",
+            "inReplyTo": "m_1",
+            "waiting": False,
+        }
+    )
+    assert t.appends == [("The work finished.", "item_1")] and not s.awaiting
+    assert changes[0] is True and changes[-1] is False
+    s.set_input_enabled(True)
+    assert t.input_enabled and not t.closed and len(r.posts) == 1
+    await s.close()
 
 
 async def test_delegation_posts_once_and_returns_immediately():
@@ -688,10 +752,28 @@ async def test_task_reply_answers_latest_followup_even_when_its_post_receipt_is_
     s = live.LiveSession(t, "phone", post, events)
     s.on_delegate(delegation(1, "Book Saturday"))
     await s._last
-    await s._result({"id": "ack", "inReplyTo": "m_1", "taskIds": ["task-1"], "waiting": True, "text": "Checking."})
+    await s._result(
+        {
+            "id": "ack",
+            "inReplyTo": "m_1",
+            "taskIds": ["task-1"],
+            "waiting": True,
+            "text": "Checking.",
+        }
+    )
     s.on_delegate(delegation(2, "The first time works"))
     await second_started.wait()
-    result = asyncio.create_task(s._result({"id": "done", "inReplyTo": "m_1", "taskIds": ["task-1"], "waiting": False, "text": "Booked."}))
+    result = asyncio.create_task(
+        s._result(
+            {
+                "id": "done",
+                "inReplyTo": "m_1",
+                "taskIds": ["task-1"],
+                "waiting": False,
+                "text": "Booked.",
+            }
+        )
+    )
     await asyncio.sleep(0)
     assert not result.done()
     release.set()

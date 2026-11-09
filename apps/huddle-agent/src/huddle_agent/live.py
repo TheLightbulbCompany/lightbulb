@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from livekit.agents import Agent, AgentSession, JobContext, llm, room_io
+from livekit import rtc
 from livekit.plugins.openai.realtime import GPTLiveModel
 
 from huddle_agent.metrics import emit_metric
@@ -104,6 +105,7 @@ class Transport(Protocol):
     ) -> list[tuple[str, str, str]]: ...  # (item id, role, text), the chat context
     def commentary(self, text: str, delegation_id: str | None) -> None: ...
     def context(self, text: str) -> None: ...
+    def set_input_enabled(self, enabled: bool) -> None: ...
     async def close(self) -> None: ...
 
 
@@ -175,6 +177,16 @@ class LiveSession:
         self._posts: set[asyncio.Task] = set()
         self._said: set[str] = set()  # event message ids already sent as results
         self._events = asyncio.create_task(self._read(events))
+        self.activity_changed: Callable[[], None] | None = None
+
+    def _activity(self) -> None:
+        if self.activity_changed:
+            self.activity_changed()
+
+    def set_input_enabled(self, enabled: bool) -> None:
+        """Mute microphone input, never output or backend work; resume in the same conversation."""
+        if not self._closed:
+            self.transport.set_input_enabled(enabled)
 
     def ask(self, pending_transcript: str) -> tuple[str, list[str]]:
         """The ask and its context from the chat context plus `pending_transcript`, never the latter alone: a
@@ -203,6 +215,7 @@ class LiveSession:
         text, turns = self.ask(d.pending_transcript)
         out = Delegation(d.id, text, turns)
         self.pending[d.id] = self.awaiting[d.id] = None
+        self._activity()
         self._last = task = asyncio.create_task(self._send(self._last, out))
         self._posts.add(task)
         task.add_done_callback(self._posts.discard)
@@ -234,6 +247,7 @@ class LiveSession:
         else:
             self.pending[d.id], self._by_message[message_id] = message_id, d.id
             self.awaiting[d.id] = message_id
+        self._activity()
 
     def send_result(self, delegation_id: str | None, text: str) -> None:
         """The team's text to the model as commentary, said once in its own words: the answer to `delegation_id`
@@ -282,7 +296,9 @@ class LiveSession:
 
     async def _result(self, m: dict) -> None:
         if self._last is not None and not self._last.done():
-            await asyncio.shield(self._last)  # settle post receipts before correlating a fast task result
+            await asyncio.shield(
+                self._last
+            )  # settle post receipts before correlating a fast task result
         mid, text = m.get("id"), (m.get("text") or "").strip()
         # /events items carry no kind: every one is an agent line
         if m.get("kind", "agent") != "agent" or not text or (mid and mid in self._said):
@@ -291,9 +307,15 @@ class LiveSession:
             self._said.add(mid)
         delegation_id = self._by_message.get(m.get("inReplyTo") or "")
         task_ids = set(m.get("taskIds") or [])
-        related = [key for key in self.awaiting if self._waiting_tasks.get(key, set()) & task_ids]
+        related = [
+            key
+            for key in self.awaiting
+            if self._waiting_tasks.get(key, set()) & task_ids
+        ]
         if related:
-            delegation_id = related[-1]  # a follow-up in the same task answers its newest spoken turn
+            delegation_id = related[
+                -1
+            ]  # a follow-up in the same task answers its newest spoken turn
         self.send_result(delegation_id, text)
         if delegation_id and m.get("waiting") is True:
             self._waiting_tasks.setdefault(delegation_id, set()).update(
@@ -305,6 +327,7 @@ class LiveSession:
                 remaining.difference_update(task_ids)
                 if not remaining:
                     self.awaiting.pop(key, None)
+        self._activity()
         if mid and self._on_spoken:
             try:
                 await self._on_spoken(mid)
@@ -320,6 +343,7 @@ class LiveSession:
         self.awaiting.clear()
         self._waiting_tasks.clear()
         self._by_message.clear()
+        self._activity()
 
     def ended(self, *_args) -> None:
         """The AgentSession closed (the member left, an error): stop reading results and keep the usage so far."""
@@ -353,6 +377,36 @@ class _GPTLive:
         self.session, self.agent, self.model, self.billed_s = session, agent, model, 0.0
         self.live = agent.duplex_session
         self.live.on("metrics_collected", self._usage)
+        self._input_enabled = True
+        self._silence: asyncio.Task | None = None
+
+    def set_input_enabled(self, enabled: bool) -> None:
+        if enabled == self._input_enabled:
+            return
+        self._input_enabled = enabled
+        if enabled:
+            if self._silence:
+                self._silence.cancel()
+                self._silence = None
+            self.live.unmute_input()
+            self.session.input.set_audio_enabled(True)
+        else:
+            self.session.input.set_audio_enabled(False)
+            self.live.mute_input()
+            self._silence = asyncio.create_task(self._pump_silence())
+
+    async def _pump_silence(self) -> None:
+        """GPT-Live advances on input audio. The SDK has no clock when the mic track stops.
+
+        Keep 24 kHz mono PCM flowing while protocol-muted; no microphone audio is forwarded.
+        This preserves output and result delivery after a push-to-talk release.
+        """
+        frame = rtc.AudioFrame(
+            data=bytes(960), sample_rate=24000, num_channels=1, samples_per_channel=480
+        )
+        while not self._input_enabled:
+            self.live.push_audio(frame)
+            await asyncio.sleep(0.02)
 
     def _usage(self, m) -> None:
         self.billed_s += (
@@ -370,6 +424,11 @@ class _GPTLive:
         self.live.append_thinking(text)
 
     async def close(self) -> None:
+        if self._silence:
+            self._silence.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._silence
+            self._silence = None
         await (
             self.session.aclose()
         )  # sends session.close and waits for session.closed with the final usage

@@ -6,11 +6,12 @@
 import "./voice.css";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { OrganizationList, UserButton, useOrganization } from "@clerk/nextjs";
+import { OrganizationList, UserButton, useAuth, useOrganization } from "@clerk/nextjs";
 import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
-import { useQuestions } from "./data";
+import { LIGHTBULB as ASSISTANT_NAME, useQuestions } from "./data";
+import { TalkSessionProvider } from "./TalkSessionProvider";
 
 export function useNeedsYouTotal(): number {
   return useQuestions().data?.length ?? 0;
@@ -26,6 +27,7 @@ const PLACES = [
 
 export function VoiceShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
+  const { userId } = useAuth();
   const { organization, isLoaded } = useOrganization();
   const needs = useNeedsYouTotal();
   if (isLoaded && !organization) {
@@ -34,7 +36,8 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
       <div className="vx-orgs"><OrganizationList hidePersonal afterSelectOrganizationUrl="/voice" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen /></div></main>;
   }
   return (
-    <HuddleProvider>
+    <HuddleProvider key={`${userId ?? "loading"}:${organization?.id ?? "loading"}`}>
+      <TalkSessionProvider name={ASSISTANT_NAME}>
       <div className="vx-shell">
         <nav className="vx-rail" aria-label="Places">
           <Link href={LIGHTBULB} className="vx-logo" aria-label="Lightbulb" aria-current={path === LIGHTBULB ? "page" : undefined}><LogoMark /></Link>
@@ -51,6 +54,7 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
         </nav>
         <main className="vx-main">{children}</main>
       </div>
+      </TalkSessionProvider>
     </HuddleProvider>
   );
 }

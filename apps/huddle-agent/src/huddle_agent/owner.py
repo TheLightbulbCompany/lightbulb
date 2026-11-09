@@ -6,7 +6,8 @@ GPT-Live answers small talk itself and delegates the rest (live.py, client deleg
 delegation is posted once to the DM as the member's message (`/owner/turn`, via voice, wake on), with the talk's turns
 since the last ask, so it shows in the chat as it is said. The Router's and its Workers' messages in the DM come back
 through `/events`, once each by message id, as results. Approval is the one-tap card; a spoken "yes" is only a
-delegated message. GPT-Live bills every open second, silence too: a session is open only while the member's mic is.
+delegated message. GPT-Live bills every open second, silence too: mic mute preserves the conversation; true idle
+closes the model only once playback and backend work are finished.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import logging
 import os
 import time
 from datetime import UTC, datetime
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 
 from livekit import rtc
 from livekit.agents import JobContext, room_io
@@ -29,10 +30,9 @@ from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
 OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 55 * 60))  # cost cap on one Live
-QUIET_S = float(os.environ.get("OWNER_QUIET_S", 15))  # mic live, the voice done, nobody spoke: close the mic
-AWAY_S = float(os.environ.get("OWNER_AWAY_S", 5 * 60))  # no live mic this long: leave; the next tap rejoins
+QUIET_S = float(os.environ.get("OWNER_QUIET_S", 15))  # playback done and no pending work: close the paid model
+AWAY_S = float(os.environ.get("OWNER_AWAY_S", 5 * 60))  # model closed this long: leave the warm room
 POLL_S = float(os.environ.get("OWNER_EVENTS_S", 1))  # how often the talk asks what the room's agents posted
-WAIT_S = 90.0  # after a delegation the talk stays open this long for its answer (Quiet does not count)
 ANSWER_WITHIN_S = 60.0  # a line delegated this soon after a Worker's question came back answers it; later, a new ask
 
 #: The Router's capabilities, as the contract's prompt (§3) lists them: GPT-Live delegates by this list.
@@ -66,8 +66,8 @@ class Quiet:
     """Ends the talk on quiet, from LiveKit's agent and user states. Not `user_away_timeout`: in livekit-agents 1.8.11
     its timer starts once the member subscribes to the voice (agent_session._set_user_away_timer), mic or not, so it
     would end the pre-connected room, which publishes no mic, 15 s after it joins. Not OpenAI's `idle_timeout_ms`:
-    it makes the model speak, it ends nothing. With the mic live, QUIET_S after the voice finished and nobody spoke
-    calls `on_quiet` (the web closes the mic, the room stays warm); with no live mic, AWAY_S calls `on_away`."""
+    it makes the model speak, it ends nothing. QUIET_S after playback and pending backend work finish closes
+    the model, regardless of microphone mute. Only the warm room then counts AWAY_S before leaving."""
 
     def __init__(self, on_quiet, on_away, quiet_s: float = QUIET_S, away_s: float = AWAY_S) -> None:
         self._fire, self._s = (
@@ -77,14 +77,15 @@ class Quiet:
         self._timer: asyncio.TimerHandle | None = None
         self._key: bool | None = None
 
-    def update(self, mic_live: bool, user: str, agent: str) -> None:
+    def update(self, mic_live: bool, user: str, agent: str, *, session_open: bool | None = None) -> None:
         if user == "speaking" or agent != "listening":
             return self.cancel()
-        if self._timer and self._key == mic_live:
+        active = mic_live if session_open is None else session_open
+        if self._timer and self._key == active:
             return  # already counting
         self.cancel()
-        self._key = mic_live
-        self._timer = asyncio.get_running_loop().call_later(self._s[mic_live], self._fire[mic_live])
+        self._key = active
+        self._timer = asyncio.get_running_loop().call_later(self._s[active], self._fire[active])
 
     def cancel(self) -> None:
         if self._timer:
@@ -107,17 +108,10 @@ class Talk:
         self.question: dict | None = None  # {taskId, qid}: the last Worker question handed to the voice
         self.question_at = 0.0
         self.asked: dict[str, float] = {}  # this room's voice-asked message ids -> when posted, kept while warm
-        self.rewake: Callable[[], None] | None = None  # run's recount: once WAIT_S is up, Quiet counts again
         self.spoken_seq = after  # the last seq handed to the voice: reported, so the next Live starts there
         self._handing = after  # the seq of the message being handed over now
         self.items: list[dict] = []
         self.t0 = time.time()
-
-    def waiting(self) -> bool:
-        """An ask posted under WAIT_S ago: its answer may be on the way. A reply never ends the wait: the Router's
-        "Started a thread" ack would let the talk close before the Worker answers."""
-        now = time.monotonic()
-        return any(now - t < WAIT_S for t in self.asked.values())
 
     async def post(self, text: str, turns: list[str]) -> str | None:
         """live.py's `post`: one delegation, the member's message. Returns its message id, or None if it failed."""
@@ -138,9 +132,6 @@ class Talk:
         if not (mid := out.get("messageId")):
             return None
         self.asked[str(mid)] = time.monotonic()
-        if self.rewake:
-            # no reply by then: Quiet re-arms (the lambda: a talk that ended meanwhile cleared `rewake`)
-            asyncio.get_running_loop().call_later(WAIT_S + 0.1, lambda: self.rewake and self.rewake())
         return str(mid)
 
     async def spoken(self, event_id: str) -> None:
@@ -192,8 +183,7 @@ def talk_record(
 
 
 async def run(ctx: JobContext, meta: dict) -> None:
-    """The member's Live in the DM, from the dispatch until they leave, go quiet or the cap. GPT-Live is open only
-    while the mic is live (the orb open): the warm room costs nothing, and closing the orb ends the billed session."""
+    """The mic controls input; playback and delegated results survive mute until true idle or explicit leave."""
 
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     await ctx.connect()
@@ -205,8 +195,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         return ctx.shutdown("refused")
     name, tile = info["assistantName"], info.get("agentId") or "assistant"
     talk = Talk(backend, member.identity, ctx.job.id, int(info.get("after") or 0))
-    talk.rewake = lambda: recount()  # noqa: PLW0108 -- recount is defined below
-    state: dict = {"open": None, "quiet": False, "ending": False}
+    state: dict = {"open": None, "quiet": False, "ending": False, "mic": False}
     openings: dict[asyncio.Task, tuple[int, float]] = {}
     closing: dict[asyncio.Task, asyncio.Task] = {}
     usage: list[dict] = []  # actual provider seconds, never the muted warm-room wall clock
@@ -221,12 +210,12 @@ async def run(ctx: JobContext, meta: dict) -> None:
         ctx.shutdown(reason)
 
     def quiet() -> None:
-        """GPT-Live closes now (idle seconds are billed) and the web closes the mic on quiet_ended; the room stays
-        warm, and the next tap opens a new session. Tasks run on."""
+        """After true inactivity, close the paid model and leave the room warm for the next tap."""
         opening, state["open"], state["quiet"] = state["open"], None, True
         close_live(opening)
         asyncio.create_task(ctx.room.local_participant.publish_data(
             json.dumps({"code": "quiet_ended"}), reliable=True, topic="huddle.error"))  # fmt: skip
+        recount()
 
     quiet_timer = Quiet(quiet, lambda: asyncio.create_task(leave("member quiet")), QUIET_S, AWAY_S)
 
@@ -236,7 +225,27 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     def hooks(opening: asyncio.Task) -> None:
         """The live session's own events: the talk's record, the strip's status and the quiet count."""
-        if opening.cancelled() or opening.exception() or not (session := opening.result().session):
+        if opening.cancelled() or opening.exception():
+            if state["open"] is opening:
+                state["open"], state["quiet"] = None, True
+                recount()  # re-arm the warm room; a release/press retries, never an automatic busy loop
+
+                async def retry_notice() -> None:
+                    # Do not let delayed notification from an old attempt affect a newer opening.
+                    if state["ending"] or len(openings) != openings[opening][0] + 1:
+                        return
+                    with contextlib.suppress(Exception):
+                        await ctx.room.local_participant.publish_data(
+                            json.dumps({"code": "connection_lost"}), reliable=True, topic="huddle.error"
+                        )
+
+                asyncio.create_task(retry_notice())
+            return
+        opened = opening.result()
+        opened.activity_changed = recount
+        session = opened.session
+        if session is None:
+            recount()
             return
 
         @session.on("conversation_item_added")  # LiveKit's documented per-turn event: each final user/agent line
@@ -294,6 +303,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if state["ending"]:
             return
         mic = any(p.kind == rtc.TrackKind.KIND_AUDIO and not p.muted for p in member.track_publications.values())
+        if mic != state["mic"]:
+            quiet_timer.cancel()  # a fresh mic press gets time to produce audio before inactivity can close it
+            state["mic"] = mic
         state["quiet"] = state["quiet"] and mic  # after quiet, a new session only once the mic is off and on again
         if mic and state["open"] is None and not state["quiet"]:
             state["open"] = asyncio.create_task(live.start(
@@ -306,13 +318,16 @@ async def run(ctx: JobContext, meta: dict) -> None:
             ))  # fmt: skip
             openings[state["open"]] = (len(openings), time.time())
             state["open"].add_done_callback(hooks)
-        elif not mic and state["open"] is not None:
-            opening, state["open"] = state["open"], None
-            close_live(opening)
         s = current()
+        if s:
+            s.set_input_enabled(mic)
         session = s.session if s else None
         user, agent = (session.user_state, session.agent_state) if session else ("listening", "listening")
-        quiet_timer.update(mic, user, "thinking" if talk.waiting() else agent)  # an answer on its way: stay open
+        starting = state["open"] is not None and s is None
+        pending = bool(s and s.awaiting)
+        quiet_timer.update(
+            mic, user, "thinking" if starting or pending else agent, session_open=state["open"] is not None
+        )
 
     for event in (
         "track_published",
@@ -328,7 +343,6 @@ async def run(ctx: JobContext, meta: dict) -> None:
         if state["ending"]:
             return
         state["ending"] = True
-        talk.rewake = None
         limit.cancel()
         quiet_timer.cancel()
         close_live(state["open"])

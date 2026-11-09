@@ -2,15 +2,17 @@ import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/voice/settings" }));
-const org = vi.hoisted(() => ({ current: { id: "o" } as { id: string } | null, list: vi.fn() }));
+const org = vi.hoisted(() => ({ current: { id: "o" } as { id: string } | null, userId: "u", list: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({
   UserButton: () => null,
+  useAuth: () => ({ userId: org.userId }),
   OrganizationList: (p: object) => { org.list(p); return <p>org-list</p>; },
   useOrganization: () => ({ organization: org.current, isLoaded: true }),
 }));
+vi.mock("../TalkSessionProvider", () => ({ TalkSessionProvider: ({ children }: { children: React.ReactNode }) => <div data-testid="talk-owner">{children}</div> }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ HuddleProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 const questions = vi.hoisted(() => ({ list: [] as { id: string }[] }));
-vi.mock("../data", () => ({ useQuestions: () => ({ data: questions.list }) }));
+vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb", useQuestions: () => ({ data: questions.list }) }));
 
 import { VoiceShell } from "../VoiceShell";
 
@@ -45,4 +47,20 @@ it("Needs you keeps its badge and count", () => {
   expect(needs).toHaveAttribute("href", "/voice/needs-you");
   expect(needs.querySelector(".vx-badge")).toHaveTextContent("2");
   questions.list = [];
+});
+
+
+it("a workspace or user change creates a fresh talk and huddle owner", () => {
+  const { rerender } = render(<VoiceShell><h1>Settings</h1></VoiceShell>);
+  const first = screen.getByTestId("talk-owner");
+  rerender(<VoiceShell><h1>Agent</h1></VoiceShell>);
+  expect(screen.getByTestId("talk-owner")).toBe(first);
+  org.current = { id: "another-workspace" };
+  rerender(<VoiceShell><h1>Agent</h1></VoiceShell>);
+  const second = screen.getByTestId("talk-owner");
+  expect(second).not.toBe(first);
+  org.userId = "another-user";
+  rerender(<VoiceShell><h1>Agent</h1></VoiceShell>);
+  expect(screen.getByTestId("talk-owner")).not.toBe(second);
+  org.current = { id: "o" }; org.userId = "u";
 });

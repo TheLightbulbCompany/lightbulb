@@ -213,7 +213,8 @@ async def _shared_team_mailbox(body: SesInboundBody) -> tuple[dict | None, str |
     if not owners:
         return None, "dropped_unregistered_sender", None
     owner = next(iter(owners))  # exactly one, never first among several
-    address, reason = await ensure_team_address(owner, sender)
+    # Membership selects the workspace; it never grants permission to wake a closed mailbox.
+    address, reason = await ensure_team_address(owner, None)
     if not address:
         raise RuntimeError(f"shared team address not ready: {reason}")
     row = await get_by_address(address)

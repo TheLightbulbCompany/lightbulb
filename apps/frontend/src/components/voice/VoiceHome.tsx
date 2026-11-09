@@ -7,6 +7,7 @@ import Link from "next/link";
 import { meetingStatus } from "@/lib/meetingStatus";
 import { ArrowLeft, Phone, UserRound, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { TalkOrb } from "./TalkOrb";
 import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";
@@ -198,6 +199,7 @@ function NextTime({ roomId }: { roomId: string }) {
 
 function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: string; onClose: () => void }) {
   const presentation = meetingStatus(meeting);
+  const notes = meeting.notes?.trim() || meeting.summary?.trim();
   return <>
     <div className="vx-pane-head">
       <div><h2 className="vx-title" style={{ fontSize: "var(--text-ui)" }}>{meeting.title || "Meeting"}</h2>
@@ -205,7 +207,7 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
       <Button type="button" size="sm" variant="ghost" className="vx-close" onClick={onClose} aria-label="Close details">Close</Button>
     </div>
     <p className="vx-tx"><strong>{presentation.label}</strong> · {presentation.detail}</p>
-    {meeting.summary && <section><h3>Notes</h3><p className="vx-tx">{meeting.summary}</p></section>}
+    {notes && <section><h3>Notes</h3><div className="vx-tx"><MarkdownView skipHtml>{notes}</MarkdownView></div></section>}
     <section><h3>What {name} was asked and did</h3>
       {meeting.asked?.length
         ? <ol className="vx-steps">{meeting.asked.map((a, n) => <li key={n}><time>{mmss(a.t)}</time>

@@ -458,3 +458,20 @@ async def test_meeting_chat_route_checks_hook_and_preserves_limit(api, monkeypat
     response = await api.post(url, json=body, headers=H)
     assert response.status_code == 200 and response.json()["status"] == "unknown"
     sent.assert_awaited_once_with(WS, ["chat:m"], body["text"])
+
+
+async def test_meeting_chat_whitespace_is_invalid_without_effects(api, monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.services import meeting_chat
+
+    lookup, provider = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(meeting_chat.tasks_repo, "get_trigger", lookup)
+    monkeypatch.setattr(meeting_chat.meeting_bots, "say", provider)
+    response = await api.post(
+        f"/api/v1/internal/runtime/{WS}/meeting-chat",
+        json={"triggerIds": ["chat:m"], "text": " \t\n "},
+        headers=H,
+    )
+    assert response.status_code == 422 and response.json()["detail"] == "invalid_arguments"
+    lookup.assert_not_awaited()
+    provider.assert_not_awaited()

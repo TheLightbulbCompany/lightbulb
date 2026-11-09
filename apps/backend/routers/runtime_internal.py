@@ -594,6 +594,8 @@ async def meeting_chat(owner_id: str, body: MeetingChatBody, request: Request) -
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except delivery.meeting_invites.MeetingBusy as exc:
         raise HTTPException(status_code=503, detail="meeting_busy") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_arguments") from exc
 
 
 class TransferCallBody(BaseModel):

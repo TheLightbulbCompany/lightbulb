@@ -181,10 +181,8 @@ describe("ContainerStack — dev", () => {
     template.resourceCountIs("AWS::ECS::TaskDefinition", 0);
   });
 
-  test("keeps the Cloud Map namespace PaperclipStack registers into", () => {
-    // paperclip-stack derives PAPERCLIP_INTERNAL_URL from this namespace name
-    // and registers `paperclip.<namespace>` through cloudMapOptions. Deleting
-    // it takes the Teams Inbox down; only the per-user SERVICE goes.
+  test("keeps the historical Cloud Map namespace until its own retirement", () => {
+    // Removing the unused Paperclip URL does not retire this exported handle.
     template.hasResourceProperties("AWS::ServiceDiscovery::PrivateDnsNamespace", {
       Name: "lightbulb-dev.local",
     });

@@ -117,75 +117,35 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(service);
 }
 
-describe("DatabaseStack — marketplace tables", () => {
-  const template = buildDbStack("dev");
+describe.each(["dev", "prod"] as const)("DatabaseStack — retired marketplace tables (%s)", (environment) => {
+  const template = buildDbStack(environment);
 
-  test("creates marketplace-listings table with composite key", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-listings",
-      KeySchema: [
-        { AttributeName: "listing_id", KeyType: "HASH" },
-        { AttributeName: "version", KeyType: "RANGE" },
-      ],
-      BillingMode: "PAY_PER_REQUEST",
-    });
+  test.each([
+    "marketplace-listings",
+    "marketplace-purchases",
+    "marketplace-payout-accounts",
+    "marketplace-takedowns",
+    "marketplace-sellers",
+  ])("does not recreate %s after marketplace retirement", (suffix) => {
+    expect(template.findResources("AWS::DynamoDB::Table", {
+      Properties: { TableName: `${tablePrefix(environment)}${suffix}` },
+    })).toEqual({});
   });
 
-  test("marketplace-listings has the expected GSIs", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-listings",
-      GlobalSecondaryIndexes: Match.arrayWith([
-        Match.objectLike({ IndexName: "seller-created-index" }),
-        Match.objectLike({ IndexName: "status-published-index" }),
-      ]),
-    });
-  });
-
-  test("dev environment uses DESTROY removal policy for marketplace tables", () => {
+  test.each([
+    ["paperclip-companies", "user_id"],
+    ["provisioning-workflows", "workflow_id"],
+  ])("preserves the current %s readers' table", (suffix, key) => {
     template.hasResource("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-marketplace-listings" },
-      DeletionPolicy: "Delete",
+      Properties: Match.objectLike({
+        TableName: `${tablePrefix(environment)}${suffix}`,
+        KeySchema: [{ AttributeName: key, KeyType: "HASH" }],
+        SSESpecification: Match.objectLike({ SSEEnabled: true, SSEType: "KMS" }),
+        PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      }),
+      DeletionPolicy: environment === "prod" ? "Retain" : "Delete",
     });
   });
-
-  test("creates marketplace-purchases table with buyer_id PK", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-purchases",
-      KeySchema: [
-        { AttributeName: "buyer_id", KeyType: "HASH" },
-        { AttributeName: "purchase_id", KeyType: "RANGE" },
-      ],
-    });
-  });
-
-  test("marketplace-purchases has all 3 expected GSIs", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-purchases",
-      GlobalSecondaryIndexes: Match.arrayWith([
-        Match.objectLike({ IndexName: "listing-created-index" }),
-        Match.objectLike({ IndexName: "license-key-index" }),
-        Match.objectLike({ IndexName: "payment-intent-index" }),
-      ]),
-    });
-  });
-
-  test("creates marketplace-payout-accounts table with seller_id PK", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-payout-accounts",
-      KeySchema: [{ AttributeName: "seller_id", KeyType: "HASH" }],
-    });
-  });
-
-  test("creates marketplace-takedowns table with composite key", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-takedowns",
-      KeySchema: [
-        { AttributeName: "listing_id", KeyType: "HASH" },
-        { AttributeName: "takedown_id", KeyType: "RANGE" },
-      ],
-    });
-  });
-
 });
 
 // Hoist a single ServiceStack synthesis and reuse across describe blocks.
@@ -265,23 +225,5 @@ describe("ServiceStack — gog file-keyring password", () => {
         }),
       ]),
     });
-  });
-});
-
-// First retirement deploy: removing constructs while prod still says Retain would orphan the tables.
-describe.each(["dev", "prod"] as const)("Marketplace retirement policy (%s)", (environment) => {
-  const template = buildDbStack(environment);
-  test("only the five retired marketplace tables opt into physical deletion", () => {
-    const tables = Object.values(template.findResources("AWS::DynamoDB::Table")) as any[];
-    const retired = tables.filter((resource) => resource.Properties.TableName.startsWith(`${tablePrefix(environment)}marketplace-`));
-    expect(retired).toHaveLength(5);
-    for (const resource of retired) {
-      expect(resource.DeletionPolicy).toBe("Delete");
-      expect(resource.UpdateReplacePolicy).toBe("Delete");
-    }
-    for (const resource of tables.filter((table) => !retired.includes(table))) {
-      expect(resource.DeletionPolicy).toBe(environment === "prod" ? "Retain" : "Delete");
-      expect(resource.UpdateReplacePolicy).toBe(environment === "prod" ? "Retain" : "Delete");
-    }
   });
 });

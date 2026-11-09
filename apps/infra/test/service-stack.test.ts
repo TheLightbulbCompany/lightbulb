@@ -722,13 +722,14 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 
   // Lead ruling (task 10): CDK stops handing the backend PAPERCLIP_PUBLIC_URL and the
-  // Paperclip admin credentials (task 9 removed both reads); the three it still reads stay.
+  // Paperclip admin credentials. The two active signing/hook secrets stay.
   test("backend gets no PAPERCLIP_PUBLIC_URL and is denied the Paperclip admin credentials", () => {
     const env = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition"))
       .flatMap((td: any) => td.Properties.ContainerDefinitions)
       .flatMap((c: any) => [...(c.Environment ?? []), ...(c.Secrets ?? [])].map((e: any) => e.Name));
     expect(env).not.toContain("PAPERCLIP_PUBLIC_URL");
-    for (const kept of ["PAPERCLIP_SERVICE_TOKEN_KEY", "PAPERCLIP_EVENTS_WEBHOOK_SECRET", "PAPERCLIP_INTERNAL_URL"]) {
+    expect(env).not.toContain("PAPERCLIP_INTERNAL_URL");
+    for (const kept of ["PAPERCLIP_SERVICE_TOKEN_KEY", "PAPERCLIP_EVENTS_WEBHOOK_SECRET"]) {
       expect(env).toContain(kept);
     }
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>

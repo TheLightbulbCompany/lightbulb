@@ -517,8 +517,6 @@ class Settings(BaseSettings):
     GOG_KEYRING_PASSWORD: str = ""
 
     # Legacy env names (data names; the values are still configured by infra).
-    # Read by nothing since the Meta webhook stopped firing Paperclip routine triggers.
-    PAPERCLIP_INTERNAL_URL: str = ""
     # HMAC key for service-token JWTs (``service_token.py``), the digest/Needs-you email links and
     # the session-share signature.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""

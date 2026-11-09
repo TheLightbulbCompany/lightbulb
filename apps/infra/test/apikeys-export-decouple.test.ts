@@ -18,9 +18,9 @@ import { ServiceStack } from "../lib/stacks/service-stack";
  * Pass-1 (this test file's original assertions) proved the export-pin +
  * import-removal split was safe. Pass-2 (2026-07-14) deleted the table and
  * its pinned exports outright — nothing imports them anymore. These tests
- * now lock in that the table and its exports are GONE, alongside the
- * still-live invariant that the service stack grants the Paperclip
- * agent-keys Secrets Manager path instead.
+ * now lock in that the table and its exports are GONE. Old per-agent
+ * Paperclip secrets are no longer written/read; only their teardown
+ * sweep's DeleteSecret grant remains.
  */
 
 function build(environment: "dev" | "prod"): {
@@ -141,18 +141,27 @@ describe.each(["dev", "prod"] as const)(
       expect(Object.keys(resources)).toEqual([]);
     });
 
-    test("service task role grants paperclip-agent-keys secrets (the api-keys replacement)", () => {
+    test("old paperclip-agent-keys are cleanup-only; backend cannot create or read credentials", () => {
       service.hasResourceProperties("AWS::IAM::ManagedPolicy", {
         PolicyDocument: {
           Statement: Match.arrayWith([
-            Match.objectLike({ Sid: "PaperclipAgentKeysRW" }),
+            Match.objectLike({
+              Sid: "PaperclipAgentKeysCleanup",
+              Action: "secretsmanager:DeleteSecret",
+            }),
           ]),
         },
       });
-      const json = JSON.stringify(service.toJSON());
-      expect(json).toContain(
-        `secret:lightbulb/${environment}/paperclip-agent-keys/*`,
+      const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>
+        Object.values(service.findResources(type)).flatMap(
+          (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+        ),
       );
+      const grants = statements.filter((statement: any) =>
+        JSON.stringify(statement.Resource).includes(`secret:lightbulb/${environment}/paperclip-agent-keys/*`),
+      );
+      expect(grants).toHaveLength(1);
+      expect([grants[0].Action].flat()).toEqual(["secretsmanager:DeleteSecret"]);
     });
 
     test("service stack no longer imports the api-keys table ARN", () => {

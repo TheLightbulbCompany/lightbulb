@@ -892,23 +892,13 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // LEGACY per-agent Paperclip API keys. New keys live Fernet-encrypted on the
-    // owner's paperclip-companies row (paperclip_api_key.py); this prefix is only
-    // read as a fallback, swept by the wipes, and migrated + scheduled for deletion
-    // by scripts/migrate_agent_keys_to_rows.py (needs Get + Delete). Remove this
-    // statement, the fallback and the wipe sweeps once the prefix is empty.
+    // Old per-agent Paperclip credentials are no longer minted or read. Keep
+    // only the teardown sweep's delete permission until the prefix is empty.
     secretsPolicy.addStatements(
       new iam.PolicyStatement({
-        sid: "PaperclipAgentKeysRW",
+        sid: "PaperclipAgentKeysCleanup",
         effect: iam.Effect.ALLOW,
-        actions: [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:PutSecretValue",
-          "secretsmanager:UpdateSecret",
-          "secretsmanager:DeleteSecret",
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ],
+        actions: ["secretsmanager:DeleteSecret"],
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip-agent-keys/*`,
         ],
@@ -1819,14 +1809,6 @@ export class ServiceStack extends cdk.Stack {
       // records provisioned by dns-stack.ts.
       PUBLIC_API_BASE:
         env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`,
-      // PAPERCLIP_PUBLIC_URL is gone with the Paperclip server (task 9 removed
-      // the backend read). PAPERCLIP_INTERNAL_URL stays until its readers go.
-      // Cloud Map A record published by PaperclipStack at:
-      //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
-      // Namespace name is `lightbulb-${env}.local` (ContainerStack). Reading
-      // it off the namespace handle keeps this string in lockstep with
-      // ContainerStack rather than hard-coding the env suffix here.
-      PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
       // Apple IAP (StoreKit 2). Product ids live in apple_iap.PRODUCT_PLANS.
       // SELLING is the one switch that makes the iOS app offer purchases; prod
       // stays off until the Paid Apps Agreement is active. ACCEPT_XCODE lets

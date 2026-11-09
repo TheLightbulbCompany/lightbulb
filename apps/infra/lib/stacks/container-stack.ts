@@ -34,8 +34,8 @@ const CONSOLIDATION_PROMPT = promptText("memory-consolidation.md");
  *
  *  - the PLATFORM ECS cluster (the backend Fargate service runs on it; the
  *    provisioner is a Lambda now),
- *  - the Cloud Map private DNS namespace (PaperclipStack used to register
- *    `paperclip.<namespace>`; the backend still derives PAPERCLIP_INTERNAL_URL from it),
+ *  - the historical Cloud Map private DNS namespace (retiring its exported
+ *    handle is separate from removing the unused Paperclip URL),
  *  - the per-owner Bedrock base policy + permissions boundary, which double as
  *    every workspace's AgentCore Runtime EXECUTION role,
  *  - the per-owner state bucket (`lightbulb-{env}-openclaw-replicas`) every

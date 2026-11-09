@@ -6,6 +6,7 @@ GPT-Live owns conversation and delegation; these helpers only format existing ro
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 ANSWER_WITHIN_S = 60.0  # a line delegated this soon after a Worker's question was said answers it; later, a new ask
 
@@ -70,11 +71,40 @@ class Context:
         if text := " ".join(text.split()):
             self.turns.append((who, text))
 
-    def take(self, request: str) -> str:
+    def take(
+        self, request: str, *, max_chars: int = 4000, model_turns: Sequence[str] = ()
+    ) -> str:
         turns, self.turns = self.turns, []
-        said = [f"> {who}: {text}" for who, text in turns if text != request.strip()]
-        return request.strip() + (
-            "\n\nSaid in the talk since the last ask:\n" + "\n".join(said)
-            if said
-            else ""
-        )
+        request = request.strip()
+        if len(request) > max_chars:
+            marker = " [request truncated]"
+            return request[: max(0, max_chars - len(marker))] + marker[:max_chars]
+        known = {text for _, text in turns} | {" ".join(request.split())}
+        diarized = bool(turns)
+        # The SDK's own conversation includes assistant proposals accepted by a later "do that".
+        # Keep that canonical content; matching user text already has the transcriber's speaker identity.
+        for turn in model_turns:
+            role, sep, text = turn.partition(": ")
+            text = " ".join(text.split())
+            if diarized and role == "user":
+                continue  # the speaker-labelled transcript owns human context, not the mixed-audio paraphrase
+            if sep and text and text not in known:
+                turns.append((role, text))
+                known.add(text)
+        said = [(who, text) for who, text in turns if text != request]
+        header = "\n\nSaid in the talk since the last ask:\n"
+        budget = max_chars - len(request) - len(header)
+        selected = []
+        for who, text in reversed(said):
+            line = f"> {who}: {text}"
+            needed = len(line) + bool(selected)
+            if needed <= budget:
+                selected.append(line)
+                budget -= needed
+            else:
+                if not selected:
+                    prefix = f"> {who}: [earlier words omitted] "
+                    if budget > len(prefix):
+                        selected.append(prefix + text[-(budget - len(prefix)) :])
+                break
+        return request + (header + "\n".join(reversed(selected)) if selected else "")

@@ -117,20 +117,141 @@ async def test_a_refused_ask_returns_none():
     assert await _meeting(B()).post("hi", []) is None  # live.py drops the delegation
 
 
+async def test_meet_handoff_keeps_the_recent_sales_goal_and_sdk_proposal():
+    b = _Backend()
+    m = _meeting(b)
+    m.line(MAYA, "We discussed our earlier product pivots. " * 150)
+    m.line(
+        SAM,
+        "Our goal is five businesses in the next month because five businesses paying 250 bucks covers all of our expenses for the product.",
+    )
+    m.line(
+        SAM,
+        "If you could look at places around Miami or Philly, that'd be great as well.",
+    )
+    request = "Sure, Nova, go figure that out. That'd be awesome. Thank you"
+    await m.post(
+        request,
+        ["assistant: I can research prospective businesses for the scheduling agent."],
+    )
+    sent = b.asks()[0]["text"]
+    assert sent.startswith(request) and len(sent) <= 4000
+    assert "five businesses in the next month" in sent and "250 bucks" in sent
+    assert "Miami or Philly" in sent and "assistant: I can research" in sent
+
+
+async def test_replies_follow_their_canonical_ask_and_ack_chain_not_the_latest_question():
+    b = _Backend()
+    m = _meeting(b)
+    first = await m.post("Summarize recent product pivots", [])
+    second = await m.post("Look at places around Miami or Philly", [])
+    b.events = [
+        {
+            "messages": [
+                {
+                    "id": "ack",
+                    "seq": 3,
+                    "inReplyTo": first,
+                    "text": "Checking the pivots.",
+                    "waiting": True,
+                    "taskIds": ["pivots"],
+                },
+                {
+                    "id": "places",
+                    "seq": 4,
+                    "inReplyTo": second,
+                    "text": "What kind of places?",
+                    "waiting": False,
+                },
+                {
+                    "id": "answer",
+                    "seq": 5,
+                    "inReplyTo": "ack",
+                    "text": "We moved to voice-first.",
+                    "waiting": False,
+                    "taskIds": ["pivots"],
+                },
+                {
+                    "id": "other",
+                    "seq": 6,
+                    "inReplyTo": "unrelated",
+                    "text": "An unrelated task finished.",
+                },
+            ],
+            "after": 6,
+        }
+    ]
+    events = m.events()
+    handed = [await events.__anext__() for _ in range(4)]
+    assert m.asked[0]["a"] == "Checking the pivots. We moved to voice-first."
+    assert m.asked[1]["a"] == "What kind of places?"
+    assert handed[0]["waiting"] is True and handed[0]["taskIds"] == ["pivots"]
+    await events.aclose()
+
+
+async def test_a_reply_before_the_ask_http_receipt_is_bound_after_the_receipt_arrives():
+    posted, release = asyncio.Event(), asyncio.Event()
+
+    class B(_Backend):
+        async def meet(self, op, body):
+            if op == "ask":
+                posted.set()
+                await release.wait()
+                return {"messageId": "fast-ask"}
+            return {
+                "messages": [
+                    {
+                        "id": "fast-answer",
+                        "seq": 1,
+                        "inReplyTo": "fast-ask",
+                        "text": "Done.",
+                    }
+                ],
+                "after": 1,
+            }
+
+    m = _meeting(B())
+    request = asyncio.create_task(m.post("Do the work", []))
+    await posted.wait()
+    events = m.events()
+    assert (await events.__anext__())["id"] == "fast-answer"
+    release.set()
+    await request
+    assert m.asked[0]["a"] == "Done."
+    await events.aclose()
+
+
+async def test_explicit_older_ack_chain_wins_over_a_newer_question_on_the_same_task():
+    b = _Backend()
+    m = _meeting(b)
+    first = await m.post("Find businesses", [])
+    second = await m.post("What about Miami?", [])
+    b.events = [{"messages": [
+        {"id": "ack1", "seq": 3, "inReplyTo": first, "taskIds": ["research"], "text": "Research started."},
+        {"id": "ack2", "seq": 4, "inReplyTo": second, "taskIds": ["research"], "text": "Checking Miami."},
+        {"id": "late-first", "seq": 5, "inReplyTo": "ack1", "taskIds": ["research"], "text": "The original business list."},
+        {"id": "task-only", "seq": 6, "taskIds": ["research"], "text": "A later Miami update."},
+    ], "after": 6}]
+    events = m.events()
+    for _ in range(4):
+        await events.__anext__()
+    assert m.asked[0]["a"] == "Research started. The original business list."
+    assert m.asked[1]["a"] == "Checking Miami. A later Miami update."
+    await events.aclose()
+
+
 async def test_meet_link_result_reaches_chat():
     """A thread's line with its link (the backend also posts it in the Meet chat, voice_meet.with_link): GPT-Live gets
-    it once, as the team's message, without the URL, when the room is quiet; the notes keep the link."""
+    it once, as the team's message, without the URL, even while people talk; the model decides when to speak.
+    The notes keep the link."""
     line = "Drafted the holiday-hours post: [holiday-hours-post.md](https://app.x/chat?panel=task&taskId=k9)"
     msg = {"id": "a9", "seq": 9, "text": line}
-    quiet = {"v": False}
     b = _Backend([{"messages": [msg], "after": 9}, {"messages": [msg], "after": 9}])
-    m = meet.Meeting(b, "Nova", after=3, quiet=lambda: quiet["v"], poll_s=0)
+    m = meet.Meeting(b, "Nova", after=3, poll_s=0)
+    m.line(SAM, "We are still talking about our plans.")
     it = m.events()
     nxt = asyncio.create_task(it.__anext__())
-    await asyncio.sleep(0.01)
-    assert not nxt.done()  # someone is talking: held
-    quiet["v"] = True
-    assert await nxt == {
+    assert await asyncio.wait_for(nxt, 0.5) == {
         "kind": "agent",
         "id": "a9",
         "text": "Drafted the holiday-hours post: holiday-hours-post.md",
@@ -368,9 +489,8 @@ async def test_meet_runs_asleep_until_named_and_closes_the_voice_with_the_meetin
     assert Live.closed and ("end", {"asked": [], "summary": "Asked 0 times"}) in b.sent
 
 
-async def test_a_result_cancelled_in_the_quiet_wait_stays_in_the_notes_across_a_sleep():
-    """I1: the voice slept while a team message waited for a pause: it is in the notes and the next wake's history,
-    and the wake's catch-up does not add it twice."""
+async def test_a_result_handed_to_the_model_stays_in_the_notes_across_a_sleep():
+    """A result handed over before sleep is in the notes and next wake's history; catch-up never duplicates it."""
     msg = {"id": "a8", "seq": 8, "text": "We shipped #5095."}
     b = _Backend([{"messages": [msg], "after": 8}, {"messages": [msg], "after": 8}])
     opened = []
@@ -379,10 +499,10 @@ async def test_a_result_cancelled_in_the_quiet_wait_stays_in_the_notes_across_a_
         opened.append(_Voice(history))
         return opened[-1]
 
-    m = meet.Meeting(b, "Nova", quiet=lambda: False, poll_s=0, open_voice=open_voice)
-    waiting = asyncio.create_task(m.events().__anext__())
-    await asyncio.sleep(0.02)
-    waiting.cancel()  # live.close() cancels its events reader mid-wait
+    m = meet.Meeting(b, "Nova", poll_s=0, open_voice=open_voice)
+    events = m.events()
+    assert (await events.__anext__())["id"] == "a8"
+    await events.aclose()
     m.heard(SAM, "Nova, did it ship?", final=False)
     await m.opening
     assert opened[0].history == [("Team", "We shipped #5095.")]
@@ -428,7 +548,9 @@ async def test_the_wake_catch_up_records_a_question_without_answering_it():
     m.asked.append({"t": 0, "who": "Sam", "q": "draft it", "a": ""})
     m.heard(SAM, "Nova, any news?", final=True)
     await m.opening
-    assert m.question is None and m.asked[-1]["a"] == "Pulse asks: What holiday hours?"
+    assert (
+        m.question is None and m.asked[-1]["a"] == ""
+    )  # an unrelated question is context, not an answer
     assert opened[0].contexts == ["Team: **Pulse** asks: What holiday hours?"]
     await m.post("What is on my calendar?", [])
     assert "answers" not in b.asks()[-1]

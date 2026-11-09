@@ -9,7 +9,7 @@ Every delegation is posted (`/meet/{room}/ask`); GPT-Live decides. Measure it be
 
 Ears: GPT-Live hears every Meet person mixed (`Mix`; Recall gives one track a person). A per-person transcriber keeps
 the meeting notes (who said what) and the talk sent with each ask. Team messages (`/meet/{room}/events`) go to GPT-Live
-as results when the room has paused; a Worker's question carries its qid, and the next ask within 60 s answers it.
+as results immediately; GPT-Live owns turn-taking. A Worker's question carries its qid, and the next ask within 60 s answers it.
 
 Sleep and wake (founder ruling, 8 Nov 2026): GPT-Live bills every open second, so it opens when someone first says
 the assistant's name (the transcriber's only use of name detection: any interim or final line containing it), and
@@ -47,7 +47,6 @@ logger = logging.getLogger("meet")
 TRANSCRIBE = os.environ.get("MEET_TRANSCRIBE_MODEL", "gpt-transcribe")
 ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
-MEET_QUIET_S = 3.0  # a team message waits for a real pause in the room
 SLEEP_S = 5 * 60  # the voice closes after this long with no delegation and no speech of its own
 HISTORY_S, HISTORY_LINES = 10 * 60, 60  # what of the meeting a reopened voice is told
 SPEAKER_S = 20.0  # an ask names the newest line's speaker when that line is this recent
@@ -246,13 +245,12 @@ class Meeting:
     """The meeting between the transcriber, GPT-Live and the backend: who said what (`lines`, `asked`), each
     delegation posted (`post`) and the team's messages (`events`)."""
 
-    def __init__(self, backend, name: str, after: int = 0, quiet=lambda: True, poll_s: float = POLL_S,
+    def __init__(self, backend, name: str, after: int = 0, poll_s: float = POLL_S,
                  open_voice=None, mix: Mix | None = None, not_transcribed=(), on_opt_out=None, participants=None) -> None:  # fmt: skip
-        self._b, self.name, self.after, self.quiet, self.poll_s = (
+        self._b, self.name, self.after, self.poll_s = (
             backend,
             name,
             after,
-            quiet,
             poll_s,
         )
         self.not_transcribed = list(not_transcribed)
@@ -273,6 +271,12 @@ class Meeting:
         self.context = Context()
         self.lines: list[dict] = []
         self.asked: list[dict] = []  # {t, who, q, a}: the meeting's record
+        self._ask_messages: dict[
+            str, int
+        ] = {}  # canonical ask/ack message id -> the recorded question
+        self._ask_tasks: dict[str, int] = {}
+        self._posting = 0
+        self._early_answers: list[tuple[dict, str]] = []
         self.last: tuple[float, str] | None = None  # (when, who): the newest line
         self.question: dict | None = None  # {taskId, qid}: the Worker question last sent to the voice
         self.question_at = 0.0
@@ -453,17 +457,42 @@ class Meeting:
         return {m["id"], (m.get("question") or {}).get("qid")} - {None}
 
     def _record(self, m: dict, text: str) -> None:
-        """A team message into the record once: seen, the notes, the last ask's answer."""
+        """A team message into the record once; answers follow canonical message/task correlation."""
         self.seen |= self._keys(m)
         self._note(m["text"])
-        if self.asked:
-            self.asked[-1]["a"] = f"{self.asked[-1]['a']} {text}".strip()[:2000]
+        if not self._answer(m, text) and self._posting:
+            self._early_answers.append((m, text))
+
+    def _answer(self, m: dict, text: str) -> bool:
+        candidates = (
+            [self._ask_messages[m["inReplyTo"]]]
+            if m.get("inReplyTo") in self._ask_messages
+            else []
+        )
+        if not candidates:
+            candidates.extend(
+                self._ask_tasks[t] for t in m.get("taskIds", []) if t in self._ask_tasks
+            )
+        if not candidates:
+            return False  # unsolicited results are notes, never an answer to whichever question was newest
+        index = max(
+            candidates
+        )  # only an absent canonical message chain falls back to the latest associated task question
+        ask = self.asked[index]
+        ask["a"] = f"{ask['a']} {text}".strip()[:2000]
+        if m.get("id"):
+            self._ask_messages[m["id"]] = (
+                index  # a task_line can reply to the Router's acknowledgement
+            )
+        for task_id in m.get("taskIds", []):
+            self._ask_tasks[task_id] = max(index, self._ask_tasks.get(task_id, index))
+        return True
 
     def _note(self, text: str) -> None:
         self.lines.append({"mark": len(self.lines), "kind": "agent", "name": self.name[:200], "text": text[:4000],
                            "at": time.time()})  # fmt: skip
 
-    async def post(self, text: str, _turns: list[str]) -> str | None:
+    async def post(self, text: str, turns: list[str]) -> str | None:
         """GPT-Live's delegation (live.py), posted as it asked it, with the transcriber's talk since the last ask (who
         said what: GPT-Live hears the meeting mixed) and the newest line's speaker. Returns the message id, or None
         when the backend did not post it."""
@@ -471,24 +500,37 @@ class Meeting:
         pid = ""
         if self.last and time.monotonic() - self.last[0] <= SPEAKER_S:
             pid = self.last[1]
-        body = {"text": self.context.take(text)[:4000], "participantId": pid.rsplit(":", 1)[-1],
+        body = {"text": self.context.take(text, max_chars=4000, model_turns=turns), "participantId": pid.rsplit(":", 1)[-1],
                 "speakerName": self.label(pid) if pid else ""}  # fmt: skip
         if self.question and time.monotonic() - self.question_at <= ANSWER_WITHIN_S:
             body["answers"] = self.question
         self.question = None
+        index = len(self.asked)
         self.asked.append({"t": int(time.monotonic() - self.started), "who": body["speakerName"] or "Someone",
                            "q": text[:2000], "a": ""})  # fmt: skip
+        self._posting += 1
         try:
             out = await self._b.meet("ask", body)
+            message_id = str(out["messageId"]) if out.get("messageId") else None
+            if message_id:
+                self._ask_messages[message_id] = index
+            return message_id
         except BackendError as e:
             logger.warning("meet: ask not posted (%s)", e.code)
             return None
-        return str(out["messageId"]) if out.get("messageId") else None
+        finally:
+            self._posting -= 1
+            early, self._early_answers = self._early_answers, []
+            for message, answer in early:
+                if not self._answer(message, answer) and self._posting:
+                    self._early_answers.append((message, answer))
 
     async def events(self):
-        """Each new agent message in the meeting's room, once, when the room has paused. A Worker's question carries
-        its ref: the next ask within ANSWER_WITHIN_S answers it."""
-        await self._caught_up.wait()  # live.start schedules this reader while wake catch-up may still be fetching
+        """Each new agent message goes to GPT-Live once; its native turn-taking decides when to speak.
+        A Worker's question carries its ref: the next ask within ANSWER_WITHIN_S answers it."""
+        await (
+            self._caught_up.wait()
+        )  # live.start schedules this reader while wake catch-up may still be fetching
         while True:
             await asyncio.sleep(self.poll_s)
             try:
@@ -497,15 +539,15 @@ class Meeting:
                 logger.warning("meet: events failed (%s)", e.code)
                 continue
             for m in out.get("messages", []):
-                if self._keys(m) & self.seen or not (text := speakable(m.get("text") or "")):
+                if self._keys(m) & self.seen or not (
+                    text := speakable(m.get("text") or "")
+                ):
                     continue
-                self._record(m, text)  # before the wait: a sleep that cancels it never loses the note
-                while not self.quiet():
-                    await asyncio.sleep(max(self.poll_s, 0.01))
+                self._record(m, text)
                 if q := m.get("question"):
                     self.question, self.question_at = q, time.monotonic()
                 yield {"kind": "agent", "id": m["id"], "text": text,
-                       **{k: m[k] for k in ("question", "inReplyTo") if m.get(k)}}  # fmt: skip
+                       **{k: m[k] for k in ("question", "inReplyTo", "waiting", "taskIds") if k in m}}  # fmt: skip
             self.after = max(self.after, int(out.get("after") or 0))
 
 
@@ -529,7 +571,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
     def on_state(ev) -> None:
         if ev.new_state in ("speaking", "thinking"):
             meeting.activity()
-        status = {"speaking": "speaking", "thinking": "working"}.get(ev.new_state, "listening")
+        status = {"speaking": "speaking", "thinking": "working"}.get(
+            ev.new_state, "listening"
+        )
         asyncio.create_task(ctx.room.local_participant.set_attributes(
             {**tile, f"lightbulb.agent.{ASSISTANT_ID}.status": status}
         ))  # fmt: skip
@@ -563,7 +607,6 @@ async def run(ctx: JobContext, meta: dict) -> None:
         return voice
 
     meeting = Meeting(backend, name, int(info.get("after") or 0), open_voice=open_voice, mix=mix, not_transcribed=info.get("notTranscribed") or [],
-                      quiet=lambda: time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S,
                       participants=lambda: {p.identity: p.name for p in ctx.room.remote_participants.values() if p.identity.startswith("meet:")})  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
 
@@ -671,7 +714,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
         await backend.aclose()
 
     ctx.add_shutdown_callback(on_end)
-    await ctx.room.local_participant.set_attributes({**tile, f"lightbulb.agent.{ASSISTANT_ID}.status": "listening"})
+    await ctx.room.local_participant.set_attributes(
+        {**tile, f"lightbulb.agent.{ASSISTANT_ID}.status": "listening"}
+    )
     logger.info("meet: listening in room %s as %s", room_id, name)
     gone = asyncio.Event()
     ctx.room.on("disconnected", lambda *_: gone.set())
@@ -690,6 +735,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
             logger.warning("meet: voice sleep failed", exc_info=True)
         if time.monotonic() - heard_at["voiced"] > MEETING_IDLE_S:
             logger.info("meet: an hour of silence, leaving room %s", room_id)
-            await backend.leave_meeting()  # the backend ends the meeting and closes the room
+            await (
+                backend.leave_meeting()
+            )  # the backend ends the meeting and closes the room
             ctx.shutdown("meeting idle")
             return

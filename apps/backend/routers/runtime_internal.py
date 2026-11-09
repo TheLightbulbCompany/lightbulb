@@ -579,6 +579,7 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
 
 
 class MeetingContextBody(BaseModel):
+    run_id: str = Field(alias="runId", min_length=1, max_length=128)
     trigger_id: str = Field(alias="triggerId", min_length=1, max_length=500)
     section: Literal["transcript", "tasks"]
     cursor: str | None = Field(default=None, max_length=512)
@@ -590,7 +591,14 @@ async def meeting_context(owner_id: str, body: MeetingContextBody, request: Requ
 
     await _gate(owner_id, request)
     try:
-        return await source.context(owner_id, body.trigger_id, body.section, body.cursor)
+        return await source.context(
+            owner_id,
+            body.run_id,
+            body.trigger_id,
+            body.section,
+            body.cursor,
+            grant=request.headers.get(source.GRANT_HEADER),
+        )
     except source.NotAuthorized as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

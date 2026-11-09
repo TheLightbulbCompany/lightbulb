@@ -276,6 +276,9 @@ def _meeting_context(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if not ctx or ctx.get("mode") != "router":
         return NOT_ROUTER
+    grant = ctx.get("meetingContextGrant")
+    if not grant or not ctx.get("runId"):
+        return json.dumps({"error": "meeting context is not available in this Router turn"})
     trigger_id, section, cursor = args.get("trigger_id"), args.get("section"), args.get("cursor")
     if (
         not isinstance(trigger_id, str) or not trigger_id or len(trigger_id) > 500
@@ -285,7 +288,8 @@ def _meeting_context(args: dict, *, session_id: str = "", **_kw) -> str:
         return json.dumps({"error": "invalid meeting context arguments"})
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/meeting-context"
     try:
-        return json.dumps(_post(url, ctx["hookToken"], {"triggerId": trigger_id, "section": section, "cursor": cursor}))
+        return json.dumps(_post(url, ctx["hookToken"], {"runId": ctx["runId"], "triggerId": trigger_id, "section": section, "cursor": cursor},
+                                headers={"X-Lightbulb-Meeting-Context-Grant": grant}))
     except urllib.error.HTTPError as exc:
         return json.dumps({"error": _backend_code(exc)})
     except Exception as exc:

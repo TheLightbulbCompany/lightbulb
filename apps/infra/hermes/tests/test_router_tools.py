@@ -248,16 +248,17 @@ def test_meeting_context_pages_only_the_run_workspace_and_no_decision(router_tur
     import plugins.lightbulb as plugin
 
     monkeypatch.setattr(rt.turn_context, "read", lambda _: {
-        "mode": "router", "ownerId": "org_a", "apiUrl": "https://api.test", "hookToken": "secret",
+        "mode": "router", "ownerId": "org_a", "apiUrl": "https://api.test", "hookToken": "secret", "runId": RUN, "meetingContextGrant": "private-grant",
     })
     calls = []
-    monkeypatch.setattr(plugin, "_post", lambda url, token, body: calls.append((url, token, body)) or {
+    monkeypatch.setattr(plugin, "_post", lambda url, token, body, **kw: calls.append((url, token, body, kw)) or {
         "section": "transcript", "quotedSource": True, "text": "source", "nextCursor": "next",
     })
     result = json.loads(rt._meeting_context({"trigger_id": "completion:1", "section": "transcript", "ownerId": "other"}))
     assert result["quotedSource"] is True and result["nextCursor"] == "next"
     assert calls == [("https://api.test/api/v1/internal/runtime/org_a/meeting-context", "secret",
-                      {"triggerId": "completion:1", "section": "transcript", "cursor": None})]
+                      {"runId": RUN, "triggerId": "completion:1", "section": "transcript", "cursor": None},
+                      {"headers": {"X-Lightbulb-Meeting-Context-Grant": "private-grant"}})]
     assert "decisions" not in turn.RUNS[RUN]
     assert "error" in json.loads(rt._meeting_context({"trigger_id": "completion:1", "section": "other"}))
     assert "error" in json.loads(rt._meeting_context({"trigger_id": "completion:1", "section": "tasks", "cursor": "x" * 513}))

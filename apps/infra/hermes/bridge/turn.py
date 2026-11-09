@@ -4358,6 +4358,7 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     ctx = {"apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": agent_id,
            "runId": run_id, "sessionKey": session_id, "roomId": None,
            "localSessionToken": token, "family": family, "mode": identity.get("mode") or "worker",
+           "meetingContextGrant": identity.get("meetingContextGrant") if router else None,
            # Lane Q: a Worker run's ask_person / request_approval speak for this attempt (runtime_internal checks it)
            **({"taskId": identity.get("taskId"), "attempt": identity.get("attempt"),
                "runSecret": identity.get("runSecret")} if not paperclip and not router else {})}

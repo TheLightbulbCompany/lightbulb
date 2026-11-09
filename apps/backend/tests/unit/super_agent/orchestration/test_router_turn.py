@@ -1909,3 +1909,40 @@ async def test_meeting_chat_tool_receipt_covers_trigger_without_spoken_fallback(
     result = await acts._apply(WS, RouterTurnIn(WS, "shared", BATCH, [tid]), {tid: trig}, [], "Done")
     assert world["posts"] == []
     assert result.started_task_ids == []
+
+
+async def test_meeting_reader_grant_names_only_actual_authorized_completion_batch(world, monkeypatch):
+    from core.services import meeting_context
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "x" * 32)
+    completion = await _trig(
+        "completion:batch", ref={"roomId": ROOM, "origin": "meeting", "meetingFollowups": {"requestId": "notes:1"}}
+    )
+    ordinary = await _trig("chat:ordinary")
+    await _trig(
+        "completion:private-other-room", ref={"roomId": "private", "meetingFollowups": {"requestId": "notes:2"}}
+    )
+    authorize = AsyncMock()
+    monkeypatch.setattr(meeting_context, "authorize", authorize)
+    inp = RouterTurnIn(WS, "shared", BATCH, [completion, ordinary])
+    await acts._router_run(WS, inp, "bounded prompt", {}, ROOM, SAM)
+    identity, request = world["runs"][0]
+    authorize.assert_awaited_once()
+    assert authorize.await_args.args[1]["triggerId"] == completion
+    meeting_context.verify_grant(request.context_grant, WS, identity.run_id, completion)
+    for forbidden in (ordinary, "completion:private-other-room"):
+        with pytest.raises(meeting_context.NotAuthorized):
+            meeting_context.verify_grant(request.context_grant, WS, identity.run_id, forbidden)
+    with pytest.raises(meeting_context.NotAuthorized):
+        meeting_context.verify_grant(request.context_grant, WS, "another-router-run", completion)
+    assert "context_grant" not in request.to_wire()
+
+
+async def test_meeting_context_revocation_prevents_router_launch(world, monkeypatch):
+    from core.services import meeting_context
+
+    completion = await _trig("completion:revoked", ref={"roomId": ROOM, "meetingFollowups": {"requestId": "notes:1"}})
+    monkeypatch.setattr(meeting_context, "authorize", AsyncMock(side_effect=meeting_context.NotAuthorized("revoked")))
+    with pytest.raises(meeting_context.NotAuthorized):
+        await acts._router_run(WS, RouterTurnIn(WS, "shared", BATCH, [completion]), "prompt", {}, ROOM, SAM)
+    assert world["runs"] == []

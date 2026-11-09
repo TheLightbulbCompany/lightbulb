@@ -3,7 +3,7 @@ import pytest
 
 from bridge import runs, server, turn
 from tests.test_native_sessions import hermes  # noqa: F401 -- real-session harness
-from tests.test_runs_v1 import AGENT, AUTH, CREATE, REQUEST, TASK, Agent, quiet_turn, threads  # noqa: F401
+from tests.test_runs_v1 import AGENT, AUTH, CREATE, REQUEST, TASK, Agent, quiet_turn, s3, threads  # noqa: F401
 
 RUN = "1c6d7e40-5b6c-4d7e-8f90-a1b2c3d4e5f6"
 LANE = "shared"
@@ -157,3 +157,32 @@ def test_router_run_starts_without_its_transcript(hermes, home):
         assert turn._run_task_turn(identity, REQ, family="task")[0] == "completed"
     assert built[0].kw["session_id"] == built[1].kw["session_id"] == KEY
     assert "conversation_history" not in built[1].calls[0][0]
+
+
+def test_meeting_read_grant_is_ephemeral_not_a_model_or_durable_record_input(quiet_turn, threads, s3, monkeypatch, caplog):  # noqa: F811
+    import json
+    from bridge import sync
+
+    grant = "private-context-capability"
+    seen = {}
+    class Reading(Agent):
+        def run_conversation(self, **kw):
+            seen["model"] = kw
+            path = turn._turn_context_path(turn._profile_dir(AGENT), KEY)
+            seen["path"] = path
+            seen["context"] = json.loads(path.read_text())
+            assert sync.is_excluded(str(path.relative_to(turn._profile_dir(AGENT))))
+            return {"api_calls": 1, "final_response": "ok"}
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **kw: Reading())
+    code, _ = server.handle_plugin(CREATE, "POST", {**AUTH, "X-Lightbulb-Meeting-Context-Grant": grant},
+                                   {"identity": IDENTITY, "request": REQUEST})
+    assert code == 202
+    assert grant not in json.dumps(turn.RUNS[RUN], default=str)
+    threads[0].run_now()
+    assert seen["context"]["meetingContextGrant"] == grant
+    assert grant not in json.dumps(seen["model"], default=str)
+    assert grant not in json.dumps(turn.RUNS[RUN], default=str)
+    assert grant not in json.dumps(_poll(), default=str)
+    assert all(grant.encode() not in body for body, _ in s3.objects.values())
+    assert not seen["path"].exists()
+    assert grant not in caplog.text

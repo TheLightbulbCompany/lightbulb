@@ -9,6 +9,7 @@ from core.services import admission, meeting_context as mod, meeting_notes
 
 @pytest.fixture
 def world(monkeypatch):
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "meeting-context-test-key-with-32-bytes-minimum")
     request = {
         "roomId": "meeting-room",
         "occurrence": 100,
@@ -72,34 +73,46 @@ def world(monkeypatch):
         for i in range(12)
     ]
     monkeypatch.setattr(meeting_notes, "_meeting_tasks", AsyncMock(side_effect=lambda *_: state["tasks"]))
+    state["runId"] = "current-run"
+    state["grant"] = mod.mint_grant("org_a", state["runId"], [trigger["triggerId"]])
     return state
 
 
 async def test_superseded_series_reads_only_the_original_occurrences_artifact(world):
-    result = await mod.context("org_a", world["trigger"]["triggerId"], "transcript")
+    result = await mod.context(
+        "org_a", world["runId"], world["trigger"]["triggerId"], "transcript", grant=world["grant"]
+    )
     world["load"].assert_called_once_with("org_a", "notes-room", "original-transcript")
     assert result["quotedSource"] is True and len(result["text"]) == mod.PAGE_CHARS
     assert result["truncated"] and result["nextCursor"]
-    next_page = await mod.context("org_a", world["trigger"]["triggerId"], "transcript", result["nextCursor"])
+    next_page = await mod.context(
+        "org_a", world["runId"], world["trigger"]["triggerId"], "transcript", result["nextCursor"], grant=world["grant"]
+    )
     assert next_page["offset"] == mod.PAGE_CHARS
 
 
 async def test_context_paginates_open_and_done_task_ids_before_new_work(world):
-    page = await mod.context("org_a", world["trigger"]["triggerId"], "tasks")
+    page = await mod.context("org_a", world["runId"], world["trigger"]["triggerId"], "tasks", grant=world["grant"])
     assert {t["status"] for t in page["tasks"]} == {"working", "resolved"}
     assert len(page["tasks"]) == mod.TASK_PAGE and all(len(t["description"]) == 500 for t in page["tasks"])
-    rest = await mod.context("org_a", world["trigger"]["triggerId"], "tasks", page["nextCursor"])
+    rest = await mod.context(
+        "org_a", world["runId"], world["trigger"]["triggerId"], "tasks", page["nextCursor"], grant=world["grant"]
+    )
     assert len(rest["tasks"]) == 2 and rest["nextCursor"] is None
 
 
 async def test_cursor_cannot_switch_artifact_or_section(world):
-    cursor = (await mod.context("org_a", world["trigger"]["triggerId"], "transcript"))["nextCursor"]
+    cursor = (
+        await mod.context("org_a", world["runId"], world["trigger"]["triggerId"], "transcript", grant=world["grant"])
+    )["nextCursor"]
     with pytest.raises(ValueError, match="cursor"):
-        await mod.context("org_a", world["trigger"]["triggerId"], "tasks", cursor)
+        await mod.context("org_a", world["runId"], world["trigger"]["triggerId"], "tasks", cursor, grant=world["grant"])
     world["request"]["meeting"]["transcriptId"] = "another-artifact"
     world["meta"]["meeting"]["history"][0]["transcriptId"] = "another-artifact"
     with pytest.raises(ValueError, match="cursor"):
-        await mod.context("org_a", world["trigger"]["triggerId"], "transcript", cursor)
+        await mod.context(
+            "org_a", world["runId"], world["trigger"]["triggerId"], "transcript", cursor, grant=world["grant"]
+        )
 
 
 @pytest.mark.parametrize("change", ["owner", "actor", "occurrence", "artifact", "no_history"])
@@ -115,13 +128,47 @@ async def test_context_scope_cannot_be_retargeted(world, change):
     else:
         world["meta"]["meeting"]["history"] = []
     with pytest.raises(mod.NotAuthorized):
-        await mod.context("org_a", world["trigger"]["triggerId"], "transcript")
+        await mod.context("org_a", world["runId"], world["trigger"]["triggerId"], "transcript", grant=world["grant"])
     world["load"].assert_not_called()
 
 
 async def test_source_page_rechecks_revocation_after_the_first_page(world):
-    first = await mod.context("org_a", world["trigger"]["triggerId"], "transcript")
+    first = await mod.context(
+        "org_a", world["runId"], world["trigger"]["triggerId"], "transcript", grant=world["grant"]
+    )
     world["members"] = []
     with pytest.raises(mod.NotAuthorized, match="left_workspace"):
-        await mod.context("org_a", world["trigger"]["triggerId"], "transcript", first["nextCursor"])
+        await mod.context(
+            "org_a",
+            world["runId"],
+            world["trigger"]["triggerId"],
+            "transcript",
+            first["nextCursor"],
+            grant=world["grant"],
+        )
     assert world["load"].call_count == 1
+
+
+@pytest.mark.parametrize("change", ["other_run", "other_trigger", "other_owner", "wrong_purpose", "expired", "missing"])
+async def test_private_source_grant_is_bound_to_this_run_batch_and_purpose(world, change):
+    import jwt
+
+    run, trigger, owner, token = world["runId"], world["trigger"]["triggerId"], "org_a", world["grant"]
+    if change == "other_run":
+        run = "another-private-router-run"
+    elif change == "other_trigger":
+        trigger = "another-private-completion"
+    elif change == "other_owner":
+        owner = "org_other"
+    elif change == "missing":
+        token = None
+    else:
+        claims = jwt.decode(token, mod._signing_key(), algorithms=["HS256"], audience=mod.GRANT_AUDIENCE)
+        if change == "wrong_purpose":
+            claims["kind"] = "some_other_grant"
+        else:
+            claims.update(iat=1, exp=2)
+        token = jwt.encode(claims, mod._signing_key(), algorithm="HS256")
+    with pytest.raises(mod.NotAuthorized, match="grant_refused"):
+        await mod.context(owner, run, trigger, "transcript", grant=token)
+    world["load"].assert_not_called()

@@ -1427,7 +1427,6 @@ describe("ServiceStack — messaging environment and least privilege", () => {
             Action: Match.arrayWith([
               "bedrock-agentcore:CreateAgentRuntime",
               "bedrock-agentcore:CreateAgentRuntimeEndpoint",
-              "bedrock-agentcore:InvokeAgentRuntime",
               // The create request tags the runtime; Tag is a separate action (fourth dev flip).
               "bedrock-agentcore:TagResource",
             ]),
@@ -1847,6 +1846,22 @@ describe("ServiceStack — the tier's shared Hermes runtime (shared runtime step
         expect(envKeys).not.toContain(perOwner);
       }
       expect(p.EnvironmentVariables.S3_BUCKET).toBe(`lightbulb-${environment}-openclaw-replicas`);
+    });
+
+    test(`${environment}: callers may invoke only the canonical pool and its endpoints`, () => {
+      const policies = template.findResources("AWS::IAM::ManagedPolicy");
+      const statements = Object.values(policies).flatMap((p: any) => p.Properties.PolicyDocument.Statement);
+      const invokes = statements.filter((s: any) => [s.Action].flat().includes("bedrock-agentcore:InvokeAgentRuntime"));
+      expect(invokes).toHaveLength(1);
+      expect(invokes[0].Action).toBe("bedrock-agentcore:InvokeAgentRuntime");
+      expect(invokes[0].Resource).toEqual([
+        { "Fn::GetAtt": [runtimeId, "AgentRuntimeArn"] },
+        { "Fn::Join": ["", [{ "Fn::GetAtt": [runtimeId, "AgentRuntimeArn"] }, "/runtime-endpoint/*"]] },
+      ]);
+      const lifecycle = statements.find((s: any) => s.Sid === "AgentCoreRuntimeManage");
+      expect(lifecycle.Action).not.toContain("bedrock-agentcore:InvokeAgentRuntime");
+      expect(lifecycle.Action).toContain("bedrock-agentcore:DeleteAgentRuntime");
+      expect(lifecycle.Action).toContain("bedrock-agentcore:StopRuntimeSession");
     });
 
     test(`${environment}: its execution role reaches no tenant data`, () => {

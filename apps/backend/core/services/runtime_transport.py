@@ -109,20 +109,22 @@ class RuntimeResponse:
 
 
 def runtime_arn(container: dict) -> str | None:
-    """The runtime this workspace's sessions run on: the tier's shared one once the env has it
-    (``HERMES_SHARED_RUNTIME_ARN``) for any provisioned workspace -- one with its own runtime from
-    before, or a ``running`` row -- else the row's own. Session ids stay per owner
-    (:func:`session_id_for`), so each workspace still gets its own microVM. The row's own runtime
-    is kept, unused, until the per-owner cleanup; unsetting the setting moves those workspaces back.
-    A workspace born on the pool keeps that route on its row, so clearing the tier setting does
-    not leave a provisioned workspace without a runtime. That saved shared ARN is not an owned
-    runtime and is never deleted by workspace teardown."""
+    """The configured canonical pool; obsolete owned pointers are never invocation routes.
+
+    Configuration loss must fail closed rather than revive a previous writer. Saved owner
+    routes and identity fields remain intact for cleanup and teardown.
+    """
     from core.config import settings
 
-    own = container.get("agentcore_runtime_arn")
-    if settings.HERMES_SHARED_RUNTIME_ARN and (own or container.get("status") == "running"):
+    if not settings.HERMES_SHARED_RUNTIME_ARN:
+        raise RuntimeError("HERMES_SHARED_RUNTIME_ARN is not configured for this environment")
+    if (
+        container.get("agentcore_runtime_arn")
+        or container.get("agentcore_shared_runtime_arn")
+        or container.get("status") == "running"
+    ):
         return settings.HERMES_SHARED_RUNTIME_ARN
-    return own or container.get("agentcore_shared_runtime_arn")
+    return None
 
 
 #: How long past ``warm_until`` :func:`live_arn` still counts a session live on its own runtime. It
@@ -312,6 +314,10 @@ async def _request_agentcore(
     def _invoke() -> RuntimeResponse:
         nonlocal arn  # the wake below uses the same one
         arn = live_arn(container, task_id)  # a DynamoDB read at the cut-over: here on the pool
+        if arn != runtime_arn(container):
+            # Lifecycle/teardown can still identify and stop the previous writer, but no new
+            # invoke may reach it. Do not start another writer while that session may be live.
+            raise httpx.ConnectError("legacy runtime session is still draining")
         # Keyword only for a task session: the workspace call keeps its exact pre-task shape.
         session = _ensure_session(
             owner_id, arn, deadline, _wake, **({"task_id": task_id} if task_id is not None else {})

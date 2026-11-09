@@ -75,9 +75,7 @@ from core.services.agentcore_runtime import (
     MAX_LIFETIME_S,
     BOOT_SECRET_ENV_VAR,
     boot_secret_name,
-    ensure_agentcore_trust,
     runtime_name_for,
-    write_boot_secret,
 )
 
 logger = logging.getLogger(__name__)
@@ -830,30 +828,18 @@ async def delete_workspace_runtime(
 
 
 async def prepare_hermes_workspace(owner_id: str) -> bool:
-    """M4-R33: settle the owner's hook/gateway tokens + gate bearer, write the ONE JSON boot
-    secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
-    roster, so the native Hermes adapter's ``apiKey`` bakes in a real token instead of the empty
-    string a missing row field falls back to.
+    """Settle stable owner tokens, gate bearer, provider credentials and network membership.
 
-    Also the credential half of ``reconcile_runtime``: it runs for a LIVE workspace too, and
-    converges everything billing decides -- the owner role, the gate token row, the OpenRouter
-    key, the boot secret's provider marker and, on ChatGPT OAuth, a staged grant. Returns whether a BOOT-time input changed (``write_boot_secret``),
-    which a live runtime only picks up on its next cold start.
-
-    IDEMPOTENT AT THE SOURCE, so two concurrent runs for one owner converge: the tokens are one
-    ``if_not_exists`` write whose RETURNED winner every later step uses
-    (``container_repo.ensure_owner_tokens``), and the bearer is derived from the owner, the row's
-    ``id`` from that same read-back and its ``gate_bearer_generation`` (``derive_gate_bearer``),
-    so both runs write identical boot secret bytes, the same create-only token row and the same
-    pointer -- and a teardown (new row, new id) yields a new bearer. That derivation is also why
-    a live workspace is safe here: re-running cannot rotate the bearer it is presenting.
-
-    ``hook_token``/``gateway_token`` are minted only when the row does not already carry one, so
-    a retry never orphans a token some other seam already handed out (Paperclip snapshots them).
+    The canonical pool receives boot values on each invoke. Preparation never creates an
+    owner runtime role or writes a legacy boot secret. Existing credentials and network
+    seeds remain intact. Concurrent calls converge on ensure_owner_tokens' returned row id
+    and generation, so neither retries nor reconciliation rotate an active identity.
     """
+    if not settings.HERMES_SHARED_RUNTIME_ARN:
+        raise RuntimeError("HERMES_SHARED_RUNTIME_ARN is not configured for this environment")
+
     import secrets as _secrets
 
-    from core.billing.bedrock_aip import _owner_role_name, ensure_owner_bedrock_role
     from core.billing.bedrock_gate_tokens import mint_gate_token
     from core.services.container_provision import resolve_provider_choice
 
@@ -866,13 +852,7 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
 
     # On the shared runtime no workspace has an execution role or a boot secret of its own: the
     # backend derives the boot values and sends them on every invoke (runtime_transport._boot_header).
-    shared = bool(settings.HERMES_SHARED_RUNTIME_ARN)
-    if not shared:
-        role_arn = await ensure_owner_bedrock_role(owner_id)
-        await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
-    bedrock_bearer = await mint_gate_token(
-        owner_id, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
-    )
+    await mint_gate_token(owner_id, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0))
     provider_choice, _ = await resolve_provider_choice(owner_id)
     if provider_choice == "openrouter_managed":
         from core.services.openrouter_keys import ensure_owner_key_for_settings
@@ -882,16 +862,7 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         await _ensure_codex_auth_staged(owner_id)
     # ponytail: on the shared runtime a bearer rotation (a manual generation bump) reaches a warm
     # session at its next cold start, not by a restart here; nothing in code bumps it.
-    boot_changed = (
-        False
-        if shared
-        else await write_boot_secret(
-            owner_id,
-            hook_token=hook_token,
-            gateway_token=gateway_token,
-            bedrock_bearer=bedrock_bearer,
-        )
-    )
+    boot_changed = False
     await _ensure_network_member(owner_id)
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
@@ -1845,166 +1816,19 @@ async def _stage_owner_facts(
 
 
 async def provision_hermes_runtime(owner_id: str) -> str:
-    """Create this workspace's AgentCore runtime and point its container row at it.
+    """Join the canonical pool without creating or adopting a per-owner runtime.
 
-    REQUIRES ``prepare_hermes_workspace`` to have already run for this owner — it writes the boot
-    secret this reads the NAME of (not the contents) and the ``hook_token``/``gateway_token`` this
-    never re-writes. ``provision_runner.run`` always calls it first.
-
-    Fully idempotent: a row with ``agentcore_runtime_arn`` AND ``status="running"`` returns as-is,
-    with no AWS call and no row write. A row with the ARN but NOT yet ``running`` (a retry that
-    reached the create but not the terminal write) skips straight to the READY poll instead of
-    creating again (M4-R35/C1) — see the ARN-recording comment below for why that field exists.
-
-    The N1/M4-R39 ``service_name``/``migrate`` refusal that used to sit here went with the ECS
-    runtime (see ``prepare_hermes_workspace``'s docstring): it protected a live ECS task from
-    having a second runtime created beside it, and there are no ECS tasks.
+    Preparation owns existing credentials and profiles. A missing pool is configuration
+    failure, never a reason to resurrect the retired per-owner provisioning path.
     """
+    if not settings.HERMES_SHARED_RUNTIME_ARN:
+        raise RuntimeError("HERMES_SHARED_RUNTIME_ARN is not configured for this environment")
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
     if not settings.OWNER_STATE_BUCKET:
-        # m3: an empty bucket is not a loud failure anywhere downstream -- upload_profile
-        # silently no-ops on it (hermes_profiles.py), so the runtime would come up with
-        # S3_BUCKET="", restore_profile would no-op on every boot, and every agent would run on
-        # Hermes's own DEFAULT_CONFIG (the unpinned auto-chain) with no error anywhere. Same
-        # loud guard as the image, one line up.
         raise RuntimeError("OWNER_STATE_BUCKET is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    if settings.HERMES_SHARED_RUNTIME_ARN or (
-        row.get("agentcore_shared_runtime_arn") and not row.get("agentcore_runtime_arn")
-    ):
-        return await _join_shared_runtime(owner_id, row)
-    arn = row.get("agentcore_runtime_arn")
-    if arn and row.get("status") == "running":
-        return arn
-
-    from core.billing.bedrock_aip import ensure_owner_bedrock_role
-    from core.services.container_provision import resolve_provider_choice
-
-    role_arn = await ensure_owner_bedrock_role(owner_id)
-    provider_choice, _ = await resolve_provider_choice(owner_id)
-    # Create-or-adopt this workspace's AgentCore Browser profile and grant it, before the
-    # request is built: its id is what turns the browser env block on. Never raises -- ""
-    # means the runtime simply advertises no browser tools this round.
-    browser_profile_id = await _browser_profile_id(owner_id, row)
-    # Grant before the env names the memory: a runtime told AGENTCORE_MEMORY_ID must be able to use it.
-    from core.billing.bedrock_aip import ensure_owner_memory_policy
-
-    await ensure_owner_memory_policy(owner_id)
-    if not arn:
-        # N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so a row that already
-        # carries an ARN has its profiles in S3 already. Idempotence now keys on
-        # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's
-        # release-to-error path now produces routinely -- must skip straight to recovering the
-        # runtime (poll READY / update on image drift / terminal write) instead of
-        # re-running the fan-out and overwriting owner-edited profiles + bumping .revision.
-        await write_profiles(owner_id)
-
-    if not arn:
-        # M4-R35: the row has no ARN yet -- but AgentCore itself might, if a prior attempt got
-        # as far as CreateAgentRuntime and then died before recording it.
-        # Runtime names are unique per account, so skipping this check would hit a name
-        # conflict on every future attempt, forever.
-        arn = await run_in_thread(_find_existing_runtime_arn, runtime_name_for(owner_id))
-
-    def _build_request() -> dict:
-        # N2/M4-R40: the ONE spec-building path for BOTH CreateAgentRuntime and (minus its
-        # create-only fields, plus agentRuntimeId -- see _update_runtime_image) UpdateAgentRuntime
-        # -- so a reused runtime whose image drifted gets updated with the exact same
-        # roleArn/network/env/lifecycle a fresh create would have gotten, never a hand-built
-        # partial replace. Only called from the two branches that actually need it (create, or
-        # update-on-drift) -- the managed gate URL is a real (cached) SSM read, not free to call
-        # on every idempotent poll-and-reuse pass.
-        return build_runtime_request_for_owner(
-            owner_id,
-            role_arn,
-            browser_profile_id=browser_profile_id,
-            provider_choice=provider_choice,
-            max_concurrent_turns=row.get("max_concurrent_turns"),
-            network_workers=bool(row.get("network_workers")),
-        )
-
-    if arn:
-        # Reusing an already-created runtime (recorded on the row, or found by name). Bring it
-        # onto the currently configured image if it drifted (e.g. a broken tag fixed between
-        # retries); otherwise just poll it below.
-        try:
-            current_image = await run_in_thread(_runtime_image_uri, arn)
-        except _RuntimeGone:
-            # M6-R43: a rolled-back (deleted / DELETING) runtime is not one to reuse. Take the
-            # create path below: if the delete is still in flight the create raises a name
-            # conflict, which classifies transient and retries — no process sleeps on AWS here.
-            logger.info("hermes provision: runtime %s for owner=%s is gone/deleting -- creating fresh", arn, owner_id)
-            if not await run_in_thread(_wait_runtime_gone, arn):
-                # Retryable by default classification: the state machine retries, no create attempted.
-                raise RuntimeError(f"previous runtime still deleting after {_DELETE_WAIT_TIMEOUT_S:.0f} s")
-            arn = None
-        else:
-            if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
-                await run_in_thread(_update_runtime_image, arn, _build_request())
-            if not row.get("agentcore_runtime_arn"):
-                # Found by name lookup only -- the row never got it. Record now, before polling,
-                # for the same reason the freshly-created branch below does.
-                await container_repo.update_fields(owner_id, {"agentcore_runtime_arn": arn})
-    if not arn:
-        arn = await run_in_thread(_create_runtime, _build_request())
-        # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal. Without this, a
-        # CREATE_FAILED or a crash before the terminal write below loses the ARN
-        # with nothing to reconcile it: AgentCore runtime
-        # names are unique per account, so every future retry then hits a name conflict on
-        # CreateAgentRuntime, forever. A retry that sees this row field takes the `if arn:`
-        # branch above instead of creating again.
-        #
-        # Fix round 2 (deliberately NOT conditioned on `expected_field=`, unlike #14's clear): this
-        # write is also reached by the M6-R43 recovery path above, where the row's
-        # agentcore_runtime_arn still names a dead/DELETING runtime -- `_RuntimeGone` resets the
-        # LOCAL `arn` variable to None but never clears the ROW field. An expected-None condition here would then fail against that still-dead value and leave the row stuck on
-        # the dead arn forever. Runtime names are unique per owner, so two concurrent creators
-        # for the same owner always converge on the SAME arn anyway -- the condition would
-        # guard nothing real.
-        await container_repo.update_fields(owner_id, {"agentcore_runtime_arn": arn})
-
-    # Optimistic create: the ARN record above is the commit. Readiness is
-    # discovered at first invoke (retry-at-use) — no READY poll. Only a
-    # TERMINAL status needs action here, via ONE status read: a dead runtime
-    # would fail every future reuse, so sweep it now exactly as the old poll
-    # did on terminal (F1 below).
-    status = await run_in_thread(_runtime_status, arn)
-    if status in _TERMINAL_STATUSES:
-        # F1 (predeploy review, M6-R34): CREATE_FAILED/UPDATE_FAILED is a DEAD runtime -- AWS
-        # will refuse an UpdateAgentRuntime against it, so every retry that found this ARN on
-        # the row via the `if arn:` branch above would otherwise call Update on a terminal
-        # runtime forever. Delete it (best-effort) and clear the row's ARN, THEN raise -- a retry after the underlying cause (e.g. an
-        # unpushed image tag) is fixed then takes the CREATE path instead.
-        logger.warning(
-            "hermes provision: runtime create/update failed for owner=%s arn=%s -- deleting and "
-            "clearing the row's ARN so the next attempt creates fresh",
-            owner_id,
-            arn,
-        )
-        try:
-            await run_in_thread(_delete_runtime, arn)
-        except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
-            logger.warning(
-                "hermes provision: could not delete the failed runtime owner=%s arn=%s", owner_id, arn, exc_info=True
-            )
-        # Conditioned on the row still naming THIS arn: another concurrent run may have already
-        # observed the same dead arn, deleted it, and created a fresh one -- this clear must not
-        # then wipe out that newer, healthy arn (a miss is a silent no-op).
-        await container_repo.update_fields(
-            owner_id, {"agentcore_runtime_arn": None}, expected_field="agentcore_runtime_arn", expected_value=arn
-        )
-        raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to start: {status}")
-
-    # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
-    # live workspace. hook_token/gateway_token are NOT repeated here -- prepare_hermes_workspace
-    # already wrote them.
-    await container_repo.update_fields(
-        owner_id,
-        {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running"},
-    )
-    logger.info("hermes runtime created owner=%s arn=%s", owner_id, arn)
-    return arn
+    return await _join_shared_runtime(owner_id, row)
 
 
 async def _join_shared_runtime(owner_id: str, row: dict) -> str:

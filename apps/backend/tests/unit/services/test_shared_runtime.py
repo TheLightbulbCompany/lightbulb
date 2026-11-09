@@ -28,15 +28,18 @@ def test_the_shared_runtime_serves_every_provisioned_workspace(shared):
     assert rt.runtime_arn({"status": "provisioning"}) is None  # not yet: nothing to wake
 
 
-def test_without_the_setting_each_workspace_keeps_its_own(monkeypatch):
+def test_missing_pool_never_revives_owned_runtime(monkeypatch):
     monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "")
-    assert rt.runtime_arn({"agentcore_runtime_arn": OWN, "status": "running"}) == OWN
-    assert rt.runtime_arn({"status": "running"}) is None
+    with pytest.raises(RuntimeError, match="HERMES_SHARED_RUNTIME_ARN"):
+        rt.runtime_arn({"agentcore_runtime_arn": OWN, "status": "running"})
+    with pytest.raises(RuntimeError, match="HERMES_SHARED_RUNTIME_ARN"):
+        rt.runtime_arn({"status": "running"})
 
 
-def test_a_pool_workspace_keeps_its_recorded_route_when_the_setting_is_cleared(monkeypatch):
+def test_saved_pool_metadata_does_not_hide_missing_canonical_config(monkeypatch):
     monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "")
-    assert rt.runtime_arn({"status": "running", "agentcore_shared_runtime_arn": SHARED}) == SHARED
+    with pytest.raises(RuntimeError, match="HERMES_SHARED_RUNTIME_ARN"):
+        rt.runtime_arn({"status": "running", "agentcore_shared_runtime_arn": SHARED})
 
 
 @pytest.mark.parametrize("route_field", ["agentcore_runtime_arn", "agentcore_shared_runtime_arn"])
@@ -91,8 +94,8 @@ async def test_a_new_workspace_gets_no_runtime_role_or_boot_secret(shared, monke
         "ensure_owner_tokens",
         AsyncMock(return_value={**rows, "hook_token": "h", "gateway_token": "g"}),
     )
-    monkeypatch.setattr(hp, "ensure_agentcore_trust", nothing)
-    monkeypatch.setattr(hp, "write_boot_secret", nothing)
+    monkeypatch.setattr("core.services.agentcore_runtime.ensure_agentcore_trust", nothing)
+    monkeypatch.setattr("core.services.agentcore_runtime.write_boot_secret", nothing)
     monkeypatch.setattr("core.billing.bedrock_gate_tokens.mint_gate_token", AsyncMock(return_value="bearer"))
     monkeypatch.setattr(
         "core.services.container_provision.resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None))
@@ -160,12 +163,13 @@ async def test_at_the_cut_over_a_run_still_live_on_its_own_runtime_is_never_poll
     monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
     identity = runtime_runs.RunIdentity("r1", "org_a", "t1", 1, "agent-1")
     with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: session):
-        status = await runtime_runs.get_run("org_a", identity)  # no RunLost: it went to its own runtime
-        assert status.status == "running" and sent == [OWN]
+        with pytest.raises(runtime_runs.RuntimeBusy, match="ConnectError"):
+            await runtime_runs.get_run("org_a", identity)
+        assert sent == []
         session["warm_until"] = 0  # idled out (no heartbeat): the next session starts on the pool
         with pytest.raises(runtime_runs.RunLost):
             await runtime_runs.get_run("org_a", identity)
-        assert sent == [OWN, SHARED]
+        assert sent == [SHARED]
 
 
 def test_a_runs_heartbeat_keeps_its_session_live_on_its_own_runtime(monkeypatch):
@@ -204,12 +208,13 @@ async def test_a_missed_heartbeat_inside_the_grace_window_keeps_the_poll_on_its_
     monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
     identity = runtime_runs.RunIdentity("r1", "org_a", "t1", 1, "agent-1")
     with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: session):
-        status = await runtime_runs.get_run("org_a", identity)  # no RunLost
-        assert status.status == "running" and sent == [OWN]
+        with pytest.raises(runtime_runs.RuntimeBusy, match="ConnectError"):
+            await runtime_runs.get_run("org_a", identity)
+        assert sent == []
         session["warm_until"] = now - rt.LIVE_GRACE_S - 1  # past the grace window: idle, the pool takes it
         with pytest.raises(runtime_runs.RunLost):
             await runtime_runs.get_run("org_a", identity)
-        assert sent == [OWN, SHARED]
+        assert sent == [SHARED]
 
 
 @pytest.mark.asyncio
@@ -282,8 +287,8 @@ async def test_a_saved_pool_route_is_never_respecced_as_an_owned_runtime(shared,
     monkeypatch.setattr(
         "core.billing.bedrock_aip.ensure_owner_bedrock_role", AsyncMock(side_effect=AssertionError("per-owner role"))
     )
-    assert await hp.provision_hermes_runtime("org_a") == SHARED
-    assert await hp.roll_runtime_image("org_a") == "current"
+    with pytest.raises(RuntimeError, match="HERMES_SHARED_RUNTIME_ARN"):
+        await hp.provision_hermes_runtime("org_a")
 
 
 def test_the_drain_outlasts_agentcores_idle_timeout(shared):
@@ -350,9 +355,11 @@ def test_rollback_keeps_a_migrated_legacy_workspace_on_its_live_pool_session(mon
         row["agentcore_shared_runtime_arn"] = SHARED
     session = {"arn": SHARED, "warm_until": 10**10}
     monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: session)
-    assert rt.live_arn(row) == SHARED
+    with pytest.raises(RuntimeError, match="HERMES_SHARED_RUNTIME_ARN"):
+        rt.live_arn(row)
     session["warm_until"] = 0
-    assert rt.live_arn(row) == OWN
+    with pytest.raises(RuntimeError, match="HERMES_SHARED_RUNTIME_ARN"):
+        rt.live_arn(row)
 
 
 @pytest.mark.asyncio
@@ -424,7 +431,8 @@ async def test_rollback_revokes_a_pool_session_still_inside_drain_grace(monkeypa
     )
     if not saved_route:
         row.pop("agentcore_shared_runtime_arn")
-    assert await network_member._session_is_warm("org_a")
+    with pytest.raises(RuntimeError, match="HERMES_SHARED_RUNTIME_ARN"):
+        await network_member._session_is_warm("org_a")
 
 
 @pytest.mark.asyncio

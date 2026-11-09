@@ -438,7 +438,6 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:UpdateAgentRuntimeEndpoint",
           "bedrock-agentcore:DeleteAgentRuntimeEndpoint",
           "bedrock-agentcore:ListAgentRuntimeEndpoints",
-          "bedrock-agentcore:InvokeAgentRuntime",
           "bedrock-agentcore:StopRuntimeSession",
           // The create request tags the runtime (owner, env); Tag/Untag are separate actions.
           "bedrock-agentcore:TagResource",
@@ -1669,6 +1668,16 @@ export class ServiceStack extends cdk.Stack {
           tags: { Environment: env, ManagedBy: "cdk", Tier: "pool" },
         })
       : undefined;
+
+    if (sharedRuntime) {
+      agentCorePolicy.addStatements(
+        new iam.PolicyStatement({
+          sid: "AgentCoreCanonicalPoolInvoke",
+          actions: ["bedrock-agentcore:InvokeAgentRuntime"],
+          resources: [sharedRuntime.attrAgentRuntimeArn, `${sharedRuntime.attrAgentRuntimeArn}/runtime-endpoint/*`],
+        }),
+      );
+    }
     const desktopOwner = process.env[`DESKTOP_EXECUTION_OWNER_${env.toUpperCase()}`] ?? "";
     if (desktopOwner && !/^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(desktopOwner)) {
       throw new Error(`Invalid desktop execution owner for ${env}`);

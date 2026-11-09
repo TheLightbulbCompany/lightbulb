@@ -256,3 +256,8 @@ async def test_stop_with_no_initial_ledger_spares_a_new_completed_wake(table, mo
     assert await hermes_provisioning.stop_runtime_session(OWNER, ARN)
     item = table.get_item(Key={"owner_id": f"__session__#{OWNER}"})["Item"]
     assert item["session_gen"] == "new" and item["warm_until"] == now + 600
+
+
+@pytest.fixture(autouse=True)
+def _canonical_pool_configured(monkeypatch):
+    monkeypatch.setattr("core.config.settings.HERMES_SHARED_RUNTIME_ARN", "arn:aws:bedrock-agentcore:::runtime/r")

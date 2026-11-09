@@ -253,6 +253,7 @@ async def test_an_agents_unbound_post_in_a_meet_room_still_goes_to_its_output_ro
         side_effect=lambda rid, kind, mid: {"kind": "agent", "id": mid} if rid == "general" else None
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", get_member)
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[]))  # stops the post after the redirect
     request = messaging.AgentMessageRequest(
         event_id="evt-2",
@@ -282,7 +283,7 @@ async def test_lightbulbs_post_stays_in_the_meet_room_only_during_the_call(monke
     monkeypatch.setattr(meeting_invites, "output_room", output_room)
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meet))
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
-    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=front))
+    monkeypatch.setattr("core.services.task_conversation.front_agent_id", AsyncMock(return_value=front))
     monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[]))
     request = messaging.AgentMessageRequest(

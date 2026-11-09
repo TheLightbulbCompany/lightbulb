@@ -1765,14 +1765,39 @@ async def refresh_agent_member_names(
     row = next((r for r in roster if r["id"] == agent_id), None)
     if row is None:
         return {}
-    handle = (await _handles_for(owner_id, roster)).get(agent_id)
+    # A rename is not a new conversation: only that room's existing front may keep the reserved
+    # handle. In particular, the new global default must not acquire it in an older private room.
+    handles = mention_handles(roster, reserved=RESERVED_HANDLES)
     publisher = get_live_event_publisher()
     old: dict[str, str | None] = {}
     for entry in await messaging_repo.list_rooms_for_member(owner_id, "agent", agent_id):
-        room_id, room_owner = entry["meta"]["roomId"], entry["meta"]["ownerId"]
-        if not await messaging_repo.set_agent_names(room_id, agent_id, row["name"], handle):
+        meta = entry["meta"]
+        room_id, room_owner = meta["roomId"], meta["ownerId"]
+        if room_owner != owner_id or meta.get("deletedAt"):
             continue
-        old[room_id] = entry["member"].get("displayName")
+        # The member index can lag a removal or change of home; refresh only the current owned seat.
+        member = await messaging_repo.get_member(room_id, "agent", agent_id)
+        if (
+            not member
+            or member.get("kind") != "agent"
+            or member.get("role") != "member"
+            or messaging_repo.member_home(member, room_owner) != owner_id
+        ):
+            continue
+        front = await _front_agent_id(owner_id, room_id=room_id)
+        if front == agent_id:
+            name, handle = FRONT_AGENT_NAME, "lightbulb"
+        elif meta.get("frontAgentId") == agent_id or (
+            not meta.get("frontAgentId") and member.get("mentionHandle") == "lightbulb"
+        ):
+            # An unavailable/conflicting front fails closed. Erasing a legacy designation here
+            # would let resolution fall through to a different, seated global default next time.
+            continue
+        else:
+            name, handle = row["name"], handles.get(agent_id)
+        if not await messaging_repo.set_agent_names(room_id, agent_id, name, handle):
+            continue
+        old[room_id] = member.get("displayName")
         event = make_live_event("room.member.updated", {"roomId": room_id})
         for member in await messaging_repo.list_members(room_id):
             if member.get("kind") != "human":
@@ -1871,11 +1896,13 @@ async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list
     }
 
 
-async def _front_agent_id(owner_id: str) -> str | None:
-    """The front agent ("Lightbulb"); None when the workspace has none yet."""
+async def _front_agent_id(owner_id: str, *, room_id: str | None = None) -> str | None:
+    """The conversation's front agent, or the default for a new one; None when unavailable."""
     from core.services import task_conversation  # lazy: task_conversation imports this module
 
     try:
+        if room_id:
+            return await task_conversation.front_agent_id(owner_id, room_id=room_id)
         return await task_conversation.front_agent_id(owner_id)
     except task_conversation.NoFrontAgent:
         return None
@@ -5515,7 +5542,9 @@ async def create_agent_message(
         and meta.get("meeting")
         and not (bound or request.uploaded_attachments)
         # while the call is on, the meeting's Router answers in its room, where the voice says it
-        and not (meta["meeting"].get("status") == "in_call" and agent_id == await _front_agent_id(owner_id))
+        and not (
+            meta["meeting"].get("status") == "in_call" and agent_id == await _front_agent_id(owner_id, room_id=room_id)
+        )
     ):
         # A Google Meet's room (hidden, with a meeting record) is read by nobody: what an agent posts
         # there (a late Live answer) goes to the meeting's output room when it sits there. A session's

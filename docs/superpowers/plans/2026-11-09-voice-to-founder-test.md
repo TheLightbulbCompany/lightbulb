@@ -18,7 +18,7 @@
 
 - One business is one workspace.
 - No per-business compute, secret or process while nothing is happening.
-- First words of every call contain the assistant's name, "AI assistant" and "recorded". The wording is the model's own.
+- First words of every call contain the assistant's name and "AI assistant". The wording is the model's own. A recording notice is an owner setting, off by default (F37).
 - No outbound contact beyond consented callbacks, confirmations and opt-in reminders. No card capture.
 - Approvals are authenticated card taps. A spoken "yes" is a message.
 - A caller or texter gets the business profile and their own bookings and messages. Never owner credentials or team memory.
@@ -89,6 +89,7 @@ Settled. Tasks build on these and do not reopen them. Source: the founder's own 
 | F34 | iMessage is an add-on, built out later. | 9 Nov. "Was just looking into it." | Putting iMessage ahead of phone and Meet work. |
 | F35 | Order: everything, as fast as possible. Quick implementation and iteration matter most. | 9 Nov. | Waiting on phase order. Phases run in parallel. |
 | F36 | Work is reviewed. A review that finds real issues gets them fixed. A review that finds an architecture issue is brought to the founder. | 9 Nov. | Quietly patching around an architecture problem; or capping review rounds. |
+| F37 | The recording notice is not said by default. It is a setting the business turns on; the business is responsible for its own state's rules. | 9 Nov. Quo and others leave state compliance to the customer. Calls are still transcribed and the transcript is kept. | Forcing "this call is recorded" on every call. |
 
 ---
 
@@ -200,6 +201,7 @@ Each task lists the board rows it moves. "Check" tasks build nothing: they run a
 
 | Task | Rows | What | Done when |
 |---|---|---|---|
+| 3-A0 | 3.2 | Make the recording notice an owner setting, off by default, with a plain warning beside it that some states require it. Remove it from the default opening, the worker guard and the backend greeting fallback; keep the name and "AI assistant". Touches files the Platform lead has reserved. | With the setting off, 20 openings contain no recording claim; with it on, all 20 do. |
 | 3-A | 3.2, 3.3, 3.4, 3.5 | Check: 20 question calls across five saved facts, and 20 openings. Count missed hand-offs, wrong answers, missed disclosures, and time to a useful answer. Set the latency target from what is measured. | The four rates on the board. If hand-off misses are above zero, the cause is found in the voice-to-Router seam and brought to the founder; no prompt patch. |
 | 3-B | 3.6, 3.8, 3.9, 3.12 to 3.15, 3.20 | Check: book, move, cancel; a message; a hand-off that answers and one that does not; returning caller and Forget; a "didn't know" answered and reused; a "next time" note; Pause. | Each scenario passes three runs; the Home row is right each time. |
 | 3-C | 3.10, 3.11 | Check: an unticked action is refused by the server; caller B cannot hear caller A's booking; a caller posing as the owner gets nothing more. | Three receipts. Strong reviewer. |

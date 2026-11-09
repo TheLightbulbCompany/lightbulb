@@ -100,7 +100,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | # | Promise | Built | Prod | Machine | 1st | Owner | Note |
 |---|---|---|---|---|---|---|---|
 | 3.1 | Call answered through Twilio, SIP and LiveKit | yes | yes | yes | 1st | Product | |
-| 3.2 | Opening contains the name, "AI assistant" and "recorded"; a guard corrects a miss. Target: 95% unaided, 100% with the guard | yes | yes | part | 1st | Product | One real call passed. The rate is not measured |
+| 3.2 | Opening contains the name and "AI assistant". A recording notice is an owner setting, off by default; the business is responsible for its own state's rules | part | part | part | 1st | Product | Founder ruling 9 Nov, replacing "every call says it is recorded". Today the notice is always said and enforced by a guard in the worker and a fallback in the backend. To change: the phone prompt, the guard, the greeting fallback, and a setting with a plain warning on the Agent page. One real call passed with the old opening |
 | 3.3 | The voice hands every business question to the Router and speaks its answer | yes | yes | part | 1st | Product | One call invented facts with no hand-off; one later call handed off. Rate not measured |
 | 3.4 | Latency: 1.4 s caller-to-reply on simple turns; a stated target for a useful answer | no | no | no | 1st | Product | No target for a useful answer exists yet |
 | 3.5 | Knowledge from the website scan answers callers, with where each fact came from | yes | yes | part | 1st | Product | The Router received the right facts in one recovered call |

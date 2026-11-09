@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
+import { AssetManifestArtifact } from "aws-cdk-lib/cx-api";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
 import { vi } from "vitest";
@@ -16,7 +17,7 @@ import { ServiceStack } from "../lib/stacks/service-stack";
  * Container). Mirrors the wiring in lightbulb-stage.ts (and marketplace-resources.test.ts)
  * so the synthesized template matches what gets deployed.
  */
-function buildServiceStack(environment: "dev" | "prod"): Template {
+function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images: { hash: string; platform: string }[]) => void): Template {
   const app = new cdk.App();
   const env = { account: "877352799272", region: "us-east-1" };
 
@@ -103,6 +104,14 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     vendorOrgId: environment === "prod" ? "org_3H3viGAfq2SXc9dIdcatmGXg8Td" : undefined,
   });
 
+  if (inspectAssets) {
+    const assembly = app.synth();
+    const platforms = assembly.artifacts.filter(AssetManifestArtifact.isAssetManifestArtifact).flatMap((artifact) => {
+      const file = path.isAbsolute(artifact.file) ? artifact.file : path.join(assembly.directory, artifact.file);
+      return Object.entries(JSON.parse(fs.readFileSync(file, "utf8")).dockerImages ?? {}).map(([hash, image]: [string, any]) => ({ hash, platform: image.source.platform }));
+    });
+    inspectAssets(platforms);
+  }
   return Template.fromStack(service);
 }
 
@@ -878,7 +887,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
   test("the provisioner is a VPC DockerImageFunction on the backend image running awslambdaric", () => {
     const fn = provisionerFunction();
     expect(fn.PackageType).toBe("Image");
-    expect(fn.Architectures ?? ["x86_64"]).toEqual(["x86_64"]);
+    expect(fn.Architectures).toEqual(["arm64"]);
     expect(fn.ImageConfig.EntryPoint).toEqual(["/app/.venv/bin/python", "-m", "awslambdaric"]);
     expect(fn.ImageConfig.Command).toEqual(["scripts.provision_lambda.handler"]);
     expect(fn.Timeout).toBe(300);
@@ -1863,4 +1872,30 @@ describe("ServiceStack — the tier's shared Hermes runtime (shared runtime step
       });
     });
   }
+});
+
+
+describe("ServiceStack — coherent ARM64 backend image consumers", () => {
+  test.each(["dev", "prod"] as const)("%s publishes ARM64 and runs all five consumers on that architecture", (env) => {
+    let assetHash = "";
+    const template = buildServiceStack(env, (images) => {
+      expect(images).toHaveLength(1);
+      expect(images[0].platform).toBe("linux/arm64");
+      assetHash = images[0].hash;
+    });
+    const tasks = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as any[];
+    expect(tasks).toHaveLength(3);
+    for (const task of tasks) expect(task.Properties.RuntimePlatform).toEqual({ CpuArchitecture: "ARM64", OperatingSystemFamily: "LINUX" });
+    const sizes = Object.fromEntries(tasks.map((task) => [task.Properties.Family, [task.Properties.Cpu, task.Properties.Memory]]));
+    expect(sizes).toEqual({
+      [`lightbulb-${env}-backend`]: [env === "prod" ? "1024" : "512", "2048"],
+      [`lightbulb-${env}-temporal-worker`]: ["512", "1024"],
+      [`lightbulb-${env}-temporal-watchdog`]: ["256", "512"],
+    });
+    const lambdas = Object.values(template.findResources("AWS::Lambda::Function")).filter((fn: any) => fn.Properties.PackageType === "Image") as any[];
+    expect(lambdas).toHaveLength(2);
+    for (const fn of lambdas) expect(fn.Properties.Architectures).toEqual(["arm64"]);
+    const images = [...tasks.flatMap((task) => task.Properties.ContainerDefinitions.map((c: any) => JSON.stringify(c.Image))), ...lambdas.map((fn) => JSON.stringify(fn.Properties.Code.ImageUri))];
+    for (const image of images) expect(image).toContain(assetHash);
+  });
 });

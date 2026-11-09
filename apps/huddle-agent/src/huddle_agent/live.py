@@ -104,7 +104,7 @@ class Transport(Protocol):
         self,
     ) -> list[tuple[str, str, str]]: ...  # (item id, role, text), the chat context
     def commentary(self, text: str, delegation_id: str | None) -> None: ...
-    def context(self, text: str) -> None: ...
+    def context(self, text: str, delegation_id: str | None = None) -> None: ...
     def set_input_enabled(self, enabled: bool) -> None: ...
     async def close(self) -> None: ...
 
@@ -262,12 +262,12 @@ class LiveSession:
         ):  # several appends with one id continue the same work
             self.transport.commentary(chunk, delegation_id)
 
-    def send_context(self, text: str) -> None:
+    def send_context(self, text: str, delegation_id: str | None = None) -> None:
         """Silent context for a session already open: e.g. results fetched while a Meet voice was asleep. Thinking
         appends update GPT-Live without asking it to say old replies or answering a current delegation."""
         if not self._closed:
             for chunk in _chunks(text.strip()):
-                self.transport.context(chunk)
+                self.transport.context(chunk, delegation_id if delegation_id in self.pending else None)
 
     async def _read(self, events: Events) -> None:
         """Each new agent message in the room, once by its id, becomes a result: the answer to the delegation whose
@@ -316,7 +316,11 @@ class LiveSession:
             delegation_id = related[
                 -1
             ]  # a follow-up in the same task answers its newest spoken turn
-        self.send_result(delegation_id, text)
+        quiet = m.get("voiceDelivery") == "context"
+        if quiet:
+            self.send_context(f"Sent in the meeting chat: {text}", delegation_id)
+        else:
+            self.send_result(delegation_id, text)
         if delegation_id and m.get("waiting") is True:
             self._waiting_tasks.setdefault(delegation_id, set()).update(
                 m.get("taskIds") or []
@@ -328,7 +332,7 @@ class LiveSession:
                 if not remaining:
                     self.awaiting.pop(key, None)
         self._activity()
-        if mid and self._on_spoken:
+        if mid and self._on_spoken and not quiet:
             try:
                 await self._on_spoken(mid)
             except Exception:  # noqa: BLE001 -- the cursor is advisory: the next session may say it again
@@ -420,8 +424,8 @@ class _GPTLive:
     def commentary(self, text: str, delegation_id: str | None) -> None:
         self.live.append_commentary(text, delegation_id=delegation_id)
 
-    def context(self, text: str) -> None:
-        self.live.append_thinking(text)
+    def context(self, text: str, delegation_id: str | None = None) -> None:
+        self.live.append_thinking(text, delegation_id=delegation_id)
 
     async def close(self) -> None:
         if self._silence:

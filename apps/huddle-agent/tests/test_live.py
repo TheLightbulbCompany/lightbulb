@@ -25,6 +25,7 @@ class FakeTransport:
         ] = []  # (id, role, text), the chat context
         self.appends: list[tuple[str, str | None]] = []  # (text, delegation_id)
         self.thoughts: list[str] = []
+        self.thought_ids: list[str | None] = []
         self.closed = False
         self.billed_s = 0.0
         self.input_enabled = True
@@ -41,8 +42,9 @@ class FakeTransport:
     def commentary(self, text, delegation_id):
         self.appends.append((text, delegation_id))
 
-    def context(self, text):
+    def context(self, text, delegation_id=None):
         self.thoughts.append(text)
+        self.thought_ids.append(delegation_id)
 
     async def close(self):
         self.closed = True
@@ -782,3 +784,32 @@ async def test_task_reply_answers_latest_followup_even_when_its_post_receipt_is_
     assert not s.awaiting  # both spoken turns were waiting for this one task
     assert s.pending == {"item_1": "m_1", "item_2": "m_2"}
     await s.close()
+
+
+async def test_explicit_meeting_chat_delivery_is_context_not_a_second_spoken_reply():
+    spoken = AsyncMock()
+    voice = session(Router(), on_spoken=spoken)
+    voice.pending["delegation-chat"] = "human-chat"
+    voice._by_message["human-chat"] = "delegation-chat"
+    try:
+        await voice._result(
+            {
+                "id": "chat-result",
+                "text": "https://example.com/report",
+                "voiceDelivery": "context",
+                "inReplyTo": "human-chat",
+            }
+        )
+        assert voice.transport.appends == []
+        assert voice.transport.thoughts == [
+            "Sent in the meeting chat: https://example.com/report"
+        ]
+        assert voice.transport.thought_ids == ["delegation-chat"]
+        spoken.assert_not_awaited()
+        await voice._result(
+            {"id": "normal-result", "text": "The deployment is complete."}
+        )
+        assert voice.transport.appends == [("The deployment is complete.", None)]
+        spoken.assert_awaited_once_with("normal-result")
+    finally:
+        await voice.close()

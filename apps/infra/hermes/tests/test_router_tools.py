@@ -58,7 +58,7 @@ def test_registered_under_router_toolset():
 
     rt.register(Ctx())
     assert seen == [(k, "lightbulb_router") for k in (
-        "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")] + [
+        "meeting_chat", "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")] + [
         ("transfer_call", "lightbulb_router_call")]  # a phone caller's batch only
 
 
@@ -207,3 +207,38 @@ def test_router_turns_see_their_tools_without_tool_search(monkeypatch):
         assert fake.load_config() == {"enabled": "off"}
     finally:
         turn._ROUTER_TURN.reset(token)
+
+
+def test_meeting_chat_uses_run_workspace_and_reports_exact_backend_outcome(
+    router_turn, monkeypatch
+):
+    import plugins.lightbulb as plugin
+
+    context = {
+        "mode": "router",
+        "ownerId": "org_a",
+        "apiUrl": "https://api.test",
+        "hookToken": "secret",
+    }
+    monkeypatch.setattr(rt.turn_context, "read", lambda _sid: context)
+    calls = []
+
+    def post(url, token, body):
+        calls.append((url, token, body))
+        return {"status": "unknown", "replayed": True}
+
+    monkeypatch.setattr(plugin, "_post", post)
+    assert json.loads(
+        rt._meeting_chat({"trigger_ids": ["chat:m"], "text": "https://example.com"})
+    ) == {"status": "unknown", "replayed": True}
+    assert calls == [
+        (
+            "https://api.test/api/v1/internal/runtime/org_a/meeting-chat",
+            "secret",
+            {"triggerIds": ["chat:m"], "text": "https://example.com"},
+        )
+    ]
+    assert "error" in json.loads(
+        rt._meeting_chat({"trigger_ids": ["chat:m"], "text": "x" * 501})
+    )
+    assert len(calls) == 1

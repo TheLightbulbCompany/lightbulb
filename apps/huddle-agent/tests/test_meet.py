@@ -796,3 +796,18 @@ def test_opt_out_name_fallback_uses_the_current_roster_not_historical_speaker_na
     assert not m.excluded("meet:r:99", "Sam")
     present.pop("meet:r:98")
     assert m.excluded("meet:r:99", "Sam")
+
+
+@pytest.mark.parametrize("text", ["Report: https://example.com/report", "https://example.com/report"])
+async def test_meeting_chat_delivery_metadata_and_links_reach_live_session_unchanged(text):
+    message = {"id": "chat-link", "seq": 7, "text": text,
+               "voiceDelivery": "context", "inReplyTo": "ask"}
+    meeting = _meeting(_Backend([{"messages": [message], "after": 7}]))
+    events = meeting.events()
+    try:
+        packet = await events.__anext__()
+        assert packet["text"] == message["text"]
+        assert packet["voiceDelivery"] == "context"
+        assert packet["inReplyTo"] == "ask"
+    finally:
+        await events.aclose()

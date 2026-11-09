@@ -578,6 +578,26 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
 
 
+class MeetingChatBody(BaseModel):
+    trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
+    text: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/{owner_id}/meeting-chat")
+async def meeting_chat(owner_id: str, body: MeetingChatBody, request: Request) -> dict:
+    from core.services import meeting_chat as delivery
+
+    await _gate(owner_id, request)
+    try:
+        return await delivery.send(owner_id, body.trigger_ids, body.text)
+    except delivery.NotCurrentMeeting as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except delivery.meeting_invites.MeetingBusy as exc:
+        raise HTTPException(status_code=503, detail="meeting_busy") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+
+
 class TransferCallBody(BaseModel):
     trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
     text: str = Field(min_length=1, max_length=500)

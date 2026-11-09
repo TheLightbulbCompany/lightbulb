@@ -73,6 +73,7 @@ JOIN_S = 1.5
 STT_LANGUAGE = LANGUAGE  # pinned, as the phone and the orb (openai.STT defaults to it today)
 TOOLS = [
     "The Router: the team's brain in this meeting's room. It knows the team's work across GitHub, email, calendar and docs.",
+    "Meeting chat: the Router can send a message or link to everyone in this Google Meet. It also receives typed meeting chat. Hand raising is not available.",
     "Memory: the Router remembers and recalls what the team has said and decided.",
     "Work threads: the Router starts work threads that hand tasks to the team's agents, such as a draft or a post, and "
     "puts their links in the meeting chat.",
@@ -413,7 +414,9 @@ class Meeting:
             return []
         context = []
         for m in out.get("messages", []):
-            if (text := speakable(m.get("text") or "")) and not self._keys(m) & self.seen:
+            raw = (m.get("text") or "").strip()
+            text = raw if m.get("voiceDelivery") == "context" else speakable(raw)
+            if text and not self._keys(m) & self.seen:
                 self._record(m, text)
                 context.append(f"Team: {m['text'].strip()}")
         self.after = max(self.after, int(out.get("after") or 0))
@@ -539,15 +542,15 @@ class Meeting:
                 logger.warning("meet: events failed (%s)", e.code)
                 continue
             for m in out.get("messages", []):
-                if self._keys(m) & self.seen or not (
-                    text := speakable(m.get("text") or "")
-                ):
+                raw = (m.get("text") or "").strip()
+                text = raw if m.get("voiceDelivery") == "context" else speakable(raw)
+                if self._keys(m) & self.seen or not text:
                     continue
                 self._record(m, text)
                 if q := m.get("question"):
                     self.question, self.question_at = q, time.monotonic()
                 yield {"kind": "agent", "id": m["id"], "text": text,
-                       **{k: m[k] for k in ("question", "inReplyTo", "waiting", "taskIds") if k in m}}  # fmt: skip
+                       **{k: m[k] for k in ("question", "inReplyTo", "waiting", "taskIds", "voiceDelivery") if k in m}}  # fmt: skip
             self.after = max(self.after, int(out.get("after") or 0))
 
 

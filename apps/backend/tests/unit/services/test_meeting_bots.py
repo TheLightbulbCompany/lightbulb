@@ -60,6 +60,7 @@ async def test_create_body(recall, caplog):
                 "type": "webhook",
                 "url": "https://api.example/api/v1/webhooks/recall/realtime",
                 "events": [
+                    "participant_events.chat_message",
                     "participant_events.speech_on",
                     "participant_events.speech_off",
                     "participant_events.join",

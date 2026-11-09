@@ -27,6 +27,7 @@ _REASONS = {
 _BOT_SUFFIX = " agents · Lightbulb"  # Recall caps bot_name at 100 chars; the company part gives way
 _TICKET_GRACE_S = 4 * 3600  # the ticket outlives the scheduled end by this much, then dies
 _SPEECH_EVENTS = [
+    "participant_events.chat_message",
     "participant_events.speech_on",
     "participant_events.speech_off",
     "participant_events.join",

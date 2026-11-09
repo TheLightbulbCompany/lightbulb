@@ -51,7 +51,7 @@ from core.services.usage_service import record_usage
 
 # Where a message came from when not the chat surface itself; carried on the stored message.
 # voice: said in a Live talk; meeting_notes: a meeting's action items, filed from its notes
-MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text", "apps", "voice", "meeting_notes"]
+MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text", "apps", "voice", "meeting_notes", "meeting_chat"]
 
 logger = logging.getLogger(__name__)
 

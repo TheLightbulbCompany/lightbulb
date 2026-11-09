@@ -355,11 +355,77 @@ async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
         logger.warning("recall realtime failed room=%s", room_id, exc_info=True)
 
 
+async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
+    """Durably admit signed chat before acknowledging it. The Router decides whether to answer.
+
+    Display names identify conversation speakers only, never an owner or an approver. The
+    accountable member and workspace are resolved from the active meeting and current roster.
+    """
+    import uuid
+
+    from core.auth import AuthContext
+    from routers.voice_meet import inviting_member
+
+    who, content = data.get("participant") or {}, data.get("data") or {}
+    name, text = str(who.get("name") or "Someone"), content.get("text")
+    # Loop prevention only: participant names/optional bot flags never grant authority.
+    if (
+        who.get("is_bot")
+        or name.endswith(meeting_bots._BOT_SUFFIX.strip())
+        or not isinstance(text, str)
+        or not text.strip()
+        or len(text) > 10000
+    ):
+        return
+    try:
+        stamp = str((data.get("timestamp") or {})["absolute"])
+        at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except (KeyError, ValueError, TypeError):
+        return  # chat without an occurrence timestamp cannot safely execute work
+    async with meeting_invites.meeting_lease(room_id):
+        meta = await messaging_repo.get_room(room_id) or {}
+        meeting = meta.get("meeting") or {}
+        if (
+            not meta.get("ownerId")
+            or meeting.get("status") != "in_call"
+            or meeting.get("recallBotId") != bot_id
+            or not nonce
+            or nonce != meeting.get("ticketNonce")
+            or not meeting.get("inCallAt")
+            or at < meeting["inCallAt"] - 5
+            or at > time.time() + 30
+        ):
+            return
+        member = inviting_member(meeting, await messaging_repo.list_members(room_id))
+        if not member:
+            return
+        key = f"meet-chat:{bot_id}:{who.get('id')}:{stamp}:{text}"
+        await messaging.create_human_message(
+            AuthContext(user_id=member, org_id=meta["ownerId"]),
+            room_id,
+            messaging.CreateMessageRequest(
+                client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+                text=f"{name[:120]} wrote in the meeting chat: {text}",
+                reply_to_message_id=None,
+                thread_root_message_id=None,
+            ),
+            via="meeting_chat",
+        )
+
+
 @router.post("/webhooks/recall/realtime")
 async def recall_realtime(request: Request, tasks: BackgroundTasks):
     payload = await _verified(request)
     found = _bot(payload)
     kind = str((payload or {}).get("event") or "").removeprefix("participant_events.")
+    if found and kind == "chat_message":
+        bot_id, room_id, data = found
+        nonce = str((((payload or {}).get("data") or {}).get("bot") or {}).get("metadata", {}).get("nonce") or "")
+        try:
+            await _chat(bot_id, room_id, data, nonce)
+        except Exception as exc:
+            logger.warning("recall chat not stored room=%s", room_id, exc_info=True)
+            raise HTTPException(status_code=503, detail="retry") from exc
     if found and kind in _SPEAKING:
         bot_id, room_id, data = found
         who = data.get("participant") or {}

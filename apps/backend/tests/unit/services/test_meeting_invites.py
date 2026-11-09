@@ -1,6 +1,8 @@
 """Invites to the team address: the parser, and the member/stranger split in handle_team_mail."""
 
 import time
+import copy
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1434,7 +1436,7 @@ async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, 
         "transcriptId": "t1",
         "transcriptRoomId": "default-room",
         **{
-            k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+            k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
         },  # _ended_series sets each to 1
     }
 
@@ -1449,6 +1451,7 @@ async def test_history_keeps_each_occurrences_end_notes_and_unsaid_but_unsaid_on
         endedAt=99,
         notesRunId="run-1",
         notes="Meeting notes",
+        followUps=[{"id": "action-1", "text": "Pat: book venue", "status": "recorded"}],
         decisions=["Ship Friday"],
         notesSkipped=None,
         unsaid=unsaid,
@@ -1459,6 +1462,8 @@ async def test_history_keeps_each_occurrences_end_notes_and_unsaid_but_unsaid_on
     history = room.state["meta"]["meeting"]["history"]
     assert history[0]["endedAt"] == 99 and history[0]["notesRunId"] == "run-1"
     assert history[0]["notes"] == "Meeting notes" and history[0]["decisions"] == ["Ship Friday"]
+    assert history[0]["followUps"] == [{"id": "action-1", "text": "Pat: book venue", "status": "recorded"}]
+    assert "followUps" not in room.state["meta"]["meeting"]
     assert "notes" not in room.state["meta"]["meeting"] and "decisions" not in room.state["meta"]["meeting"]
     assert "notesSkipped" not in history[0]  # only the fields the occurrence has
     assert [bool(h.get("unsaid")) for h in history] == [True, True, True, False, False, False]
@@ -1536,7 +1541,7 @@ async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots
             "transcriptId": "t1",
             "transcriptRoomId": "default-room",
             **{
-                k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+                k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
             },  # _ended_series sets each to 1
         }
     ]
@@ -1712,3 +1717,55 @@ async def test_verified_sender_still_requires_member_and_authenticated_from(room
     )
     assert out is None
     room.create.assert_not_awaited()
+
+
+async def test_history_byte_budget_bounds_long_notes_actions_and_unsaid_on_every_write(room):
+    """Late notes can land after advance; all history writes must stay below META's 400KiB limit."""
+    _ended_series(room, notes="current" * 20000, unsaid=[{"answer": "c" * 44000}])
+    history = [
+        {
+            "startAt": 30 - n,
+            "transcriptId": f"t{n}",
+            "transcriptRoomId": "general",
+            "notesRunId": f"run{n}",
+            "notes": "会議" * 3000,
+            "followUps": [{"id": f"a{i}", "text": "調整" * 500, "status": "recorded"} for i in range(6)],
+            **({"unsaid": [{"answer": "x" * 44000}]} if n < 3 else {}),
+        }
+        for n in range(30)
+    ]
+    original = copy.deepcopy(history)
+    await meeting_invites._patch_meeting("r", {"history": history})
+    kept = room.state["meta"]["meeting"]["history"]
+    assert len(json.dumps(kept, ensure_ascii=False).encode()) <= 200 * 1024
+    assert 1 <= len(kept) < 30
+    assert len(json.dumps(room.state["meta"], ensure_ascii=False, default=str).encode()) < 400 * 1024
+    assert room.state["meta"]["meeting"]["notes"] == "current" * 20000
+    assert kept[0]["transcriptId"] == "t0" and kept[-1]["startAt"] > 1
+    assert history == original  # retention never edits the caller's canonical payload in place
+    # A later notes callback grows an archived occurrence after the original retention pass.
+    await meeting_invites._patch_meeting(
+        "r", lambda m: {"history": [{**h, "notes": "n" * 90000} for h in m["history"]]}
+    )
+    assert len(json.dumps(room.state["meta"]["meeting"]["history"], ensure_ascii=False).encode()) <= 200 * 1024
+
+
+async def test_oversized_newest_history_keeps_canonical_refs_with_explicit_omission(room):
+    _ended_series(room)
+    entry = {
+        "startAt": 10,
+        "endedAt": 20,
+        "transcriptId": "transcript",
+        "transcriptRoomId": "general",
+        "notesRunId": "canonical-notes-run",
+        "notes": "x" * 220000,
+        "followUps": [{"id": "a1", "text": "Pat: book venue", "status": "recorded"}],
+    }
+    original = copy.deepcopy(entry)
+    await meeting_invites._patch_meeting("r", {"history": [entry]})
+    [kept] = room.state["meta"]["meeting"]["history"]
+    assert kept["transcriptId"] == "transcript" and kept["notesRunId"] == "canonical-notes-run"
+    assert kept["detailsOmitted"] is True
+    assert "notes" not in kept and "followUps" not in kept
+    assert len(json.dumps(kept).encode()) <= 200 * 1024
+    assert entry == original

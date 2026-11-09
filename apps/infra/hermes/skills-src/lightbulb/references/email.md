@@ -48,13 +48,16 @@ Never retry an unknown send or claim it was delivered. Incoming meeting chat is
 conversation input the Router may answer or ignore. Hand raising and reading
 other people's raised hands are not supported. Chat delivery is context for the
 voice, not an instruction to read the same message aloud.
-Afterwards the transcript posts in
-the general channel and one agent there writes the notes; action items become
-tasks. Notes and transcripts stay in the app; they are not emailed automatically.
+Afterwards the transcript posts in the general channel and one agent there writes
+the notes. Action items are recorded commitments with their original assignee;
+uniquely matching work already started during the call is linked, including
+completed work. Recording an action item does not authorize agent execution.
+People can explicitly request unmatched work through the existing chat.
+Notes and transcripts stay in the app; they are not emailed automatically.
 If no agent is in that channel, no notes are written. An answer nobody got to
-hear in the Meet stays with the meeting and its notes. Notes from earlier
-occurrences stay in the meeting history. You do not join by yourself and cannot
-be invited by chat.
+hear in the Meet stays with the meeting and its notes. Notes and commitments from
+earlier occurrences stay in the meeting history. You do not join by yourself and
+cannot be invited by chat.
 
 **Sending — one command, three recipients:**
 

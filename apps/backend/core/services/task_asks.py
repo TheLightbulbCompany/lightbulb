@@ -152,7 +152,7 @@ async def prepare_initial_question(ws: str, task_id: str, principal: str, lane: 
 
 async def initial_question(ws: str, task: dict):
     """Questions-owned gate on the existing begin_attempt read; no attempt may precede it."""
-    from core.services import meeting_context, questions
+    from core.services import messaging, questions, tasks_access
     from core.temporal.task_questions import AnswerRef, record_answer
     from core.temporal.types import InitialQuestionRef
 
@@ -160,9 +160,25 @@ async def initial_question(ws: str, task: dict):
         return None
     ref = _initial_binding(task)
     original = await tasks_repo.get_trigger(ws, task["triggerId"])
-    if not original or original.get("actorUserId") != ref.principal_user_id:
+    original_ref = (original or {}).get("ref") or {}
+    room_id = original_ref.get("roomId")
+    if (
+        not original
+        or task.get("pk") != ts.ws_pk(ws)
+        or original.get("actorUserId") != ref.principal_user_id
+        or original_ref.get("origin") != "meeting"
+        or not room_id
+        or (task.get("audience") or {}).get("roomId") != room_id
+    ):
         raise AskRefused("invalid_initial_principal")
-    await meeting_context.authorize(ws, original)
+    # This Task was already admitted. Its lifetime follows canonical Task/Question authority,
+    # not the notes-request TTL or whether FUTURE automatic follow-ups are enabled.
+    if (
+        ref.principal_user_id not in await questions._members(ws)
+        or not await tasks_access.can_view(task, ref.principal_user_id)
+        or not await messaging.still_opens_room(ws, ref.principal_user_id, room_id)
+    ):
+        raise AskRefused("initial_principal_no_longer_authorized")
     payload = await tasks_repo.get_trigger(ws, ref.trigger_id) or {}
     ask = payload.get("ref") or {}
     if (

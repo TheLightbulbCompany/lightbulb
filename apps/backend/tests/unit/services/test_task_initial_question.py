@@ -19,6 +19,11 @@ REAL_GET_TRIGGER = tasks_repo.get_trigger
 
 @pytest.fixture
 async def initial_task(world, table, monkeypatch):  # noqa: F811
+    room_id = ts.new_task_id()
+    world["request"]["roomId"] = room_id
+    world["trigger"]["ref"]["roomId"] = room_id
+    world["trigger"]["ref"]["meetingFollowups"]["meetingRoomId"] = room_id
+    world["meta"]["roomId"] = room_id
     monkeypatch.setattr(messaging_repo, "ensure_workspace_id", AsyncMock(return_value="test-workspace-channel"))
     await tasks_repo.put_trigger("org_a", {**world["trigger"], "receivedAt": utc_now_iso()})
     monkeypatch.setattr(tasks_repo, "get_trigger", REAL_GET_TRIGGER)
@@ -35,7 +40,7 @@ async def initial_task(world, table, monkeypatch):  # noqa: F811
             "title": "Clarify meeting follow-up",
             "description": brief,
             "status": "queued",
-            "audience": {"kind": "person", "userIds": ["original-user"]},
+            "audience": {"kind": "person", "userIds": ["original-user"], "roomId": room_id},
             "lane": "shared",
             "ownerUserId": "original-user",
             "triggerId": world["trigger"]["triggerId"],
@@ -90,8 +95,18 @@ async def test_cancelled_initial_question_never_releases_first_attempt(initial_t
     assert (await tasks_repo.get_task_tree("org_a", task["taskId"]))["attempts"] == []
 
 
-async def test_answer_before_restart_replays_actual_answer_once_into_first_attempt(initial_task, monkeypatch):
+@pytest.mark.parametrize("future", ["unchanged", "notes_expired", "followups_disabled"])
+async def test_answer_before_restart_replays_actual_answer_once_into_first_attempt(
+    initial_task,
+    world,  # noqa: F811
+    monkeypatch,
+    future,
+):  # noqa: F811
     task, question = initial_task
+    if future != "unchanged":
+        monkeypatch.setattr(messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))
+    if future == "followups_disabled":
+        world["config"]["meetings"]["followUps"] = False
     await _open(task, question)
     answer = await ActivityEnvironment().run(
         task_questions.record_answer,
@@ -123,3 +138,32 @@ async def test_same_task_retry_rejects_a_different_initial_reference(initial_tas
 def test_initial_question_is_an_explicit_read_only_task_projection():
     schema = ts.Task.model_json_schema(by_alias=True)
     assert schema["properties"]["initialQuestion"]["readOnly"] is True
+
+
+@pytest.mark.parametrize("future", ["notes_expired", "followups_disabled"])
+async def test_admitted_task_question_outlives_notes_request_and_future_preference(
+    initial_task,
+    world,  # noqa: F811
+    monkeypatch,
+    future,
+):  # noqa: F811
+    task, _ = initial_task
+    lookup = AsyncMock(return_value=None)
+    monkeypatch.setattr(messaging_repo, "get_meeting_notes_request", lookup)
+    if future == "followups_disabled":
+        world["config"]["meetings"]["followUps"] = False
+    result = await activities.begin_attempt("org_a", task["taskId"], ["chat:after-seven-days"])
+    assert result.n == 0 and result.initial_question.state == "pending"
+    lookup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("revoked", ["workspace", "private_room"])
+async def test_current_membership_and_original_private_room_fences_still_apply(initial_task, world, revoked):  # noqa: F811
+    task, _ = initial_task
+    if revoked == "workspace":
+        world["members"] = []
+    else:
+        world["member"] = None
+    with pytest.raises(task_asks.AskRefused, match="no_longer_authorized"):
+        await activities.begin_attempt("org_a", task["taskId"], ["chat:yes"])
+    assert (await tasks_repo.get_task_tree("org_a", task["taskId"]))["attempts"] == []

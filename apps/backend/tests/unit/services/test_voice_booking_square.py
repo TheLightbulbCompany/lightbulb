@@ -387,6 +387,34 @@ async def test_ambiguous_mutation_never_masquerades_as_success(wire, action, met
     assert err.value.outcome == "unknown" and len(writes(wire)) == 1
 
 
+@pytest.mark.parametrize(
+    "action,method,path",
+    [
+        (create, "POST", "/v2/bookings"),
+        (update, "PUT", "/v2/bookings/booking_1"),
+        (cancel, "POST", "/v2/bookings/booking_1/cancel"),
+    ],
+)
+@pytest.mark.parametrize("status", [200, 201, 202, 206])
+@pytest.mark.parametrize("errors", [[{"code": "INTERNAL_SERVER_ERROR", "category": "API_ERROR"}], [{}]])
+async def test_error_bearing_2xx_write_without_booking_is_unknown_and_replay_keeps_key(
+    wire, action, method, path, status, errors
+):
+    # An inconsistent success response cannot establish that the write was absent.
+    # Exercise the public operations through real HTTP parsing, including preflight.
+    wire["overrides"][(method, path)] = httpx.Response(status, json={"errors": errors})
+    for attempt in (1, 2):
+        with pytest.raises(sq.SquareError) as err:
+            await action()  # explicit replay of the same immutable operation
+        assert err.value.outcome == "unknown"
+        assert err.value.http_status == status
+        assert err.value.provider_codes == (("INTERNAL_SERVER_ERROR",) if errors[0] else ())
+        assert len(writes(wire)) == attempt  # no automatic retry or fresh operation
+    first, replay = [json.loads(request.content) for request in writes(wire)]
+    assert first == replay and len(first["idempotency_key"]) == 64
+    assert not wire["locked"]
+
+
 async def test_deadline_during_write_is_unknown_and_same_operation_keeps_key(wire, monkeypatch):
     async def hang(request):
         await asyncio.Event().wait()

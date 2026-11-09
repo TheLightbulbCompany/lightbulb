@@ -167,11 +167,12 @@ class _Square:
                 if isinstance(errors, list)
                 else ()
             )
-            # Timeouts and server errors can follow an accepted write. Even an
-            # error-bearing 2xx with a booking is ambiguous, not an empty success.
+            # Timeouts and server errors can follow an accepted write. Any
+            # error-bearing 2xx is inconsistent and cannot prove no write occurred.
             unknown = mutate and (
                 response.status_code >= 500
                 or response.status_code == 408
+                or 200 <= response.status_code < 300
                 or (isinstance(payload, dict) and bool(payload.get("booking")))
             )
             raise SquareError(

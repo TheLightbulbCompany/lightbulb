@@ -521,7 +521,13 @@ async def test_start_includes_resource_for_mcp_remote_provider(monkeypatch, fake
         "client_id": "dcr_cid",
         "client_secret": "",
         "client_information": {"client_id": "dcr_cid"},
+        "scope": "openid offline_access mcp",
     }
+
+    async def _unexpected_registration(self, url, **kwargs):
+        raise AssertionError("matching cached scope must reuse the existing client")
+
+    monkeypatch.setattr("httpx.AsyncClient.post", _unexpected_registration)
 
     async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):
         pass

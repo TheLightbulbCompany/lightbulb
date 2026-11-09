@@ -83,7 +83,7 @@ def livekit():
             list_sip_inbound_trunk=AsyncMock(return_value=SimpleNamespace(items=[inbound])),
             list_sip_outbound_trunk=AsyncMock(return_value=SimpleNamespace(items=[outbound])),
             list_sip_dispatch_rule=AsyncMock(return_value=SimpleNamespace(items=[dispatch])),
-            update_sip_outbound_trunk=AsyncMock(),
+            update_outbound_trunk_fields=AsyncMock(),
         )
     )
 
@@ -93,6 +93,28 @@ async def test_dry_run_certifies_existing_route_without_writes():
     result = await p.reconcile(twilio, livekit(), apply=False)
     assert result["createTwilioTrunk"] and not twilio.writes
     assert result["numberPurchases"] == result["calls"] == 0
+
+
+async def test_reconcile_uses_real_sdk_partial_update_without_replacing_route_or_numbers():
+    from livekit.api.sip_service import SipService
+
+    lk = livekit()
+    fake_reads = lk.sip
+    real = SipService.__new__(SipService)
+    real._client = SimpleNamespace(request=AsyncMock())
+    real._admin_headers = lambda: {}
+    for name in ("list_sip_inbound_trunk", "list_sip_outbound_trunk", "list_sip_dispatch_rule"):
+        setattr(real, name, getattr(fake_reads, name))
+    lk.sip = real
+    await p.reconcile(Twilio(), lk, apply=True, config=CONFIG)
+    args = real._client.request.await_args.args
+    assert args[1] == "UpdateSIPOutboundTrunk"
+    request = args[2]
+    assert request.sip_trunk_id == p.OUTBOUND
+    assert request.update.auth_username == CONFIG["sip_auth_username"]
+    assert request.update.auth_password == CONFIG["sip_auth_password"]
+    assert not request.HasField("replace") and not request.update.numbers.ListFields()
+    assert not request.update.HasField("address")
 
 
 async def test_apply_reuses_resources_on_retry_and_never_purchases_numbers():
@@ -169,13 +191,13 @@ async def test_masked_livekit_password_is_never_used_and_saved_secret_is_reused(
     assert sm.value["sip_auth_password"] == desired
     password_writes = [fields["Password"] for method, url, fields in twilio.writes if "Password" in fields]
     assert password_writes == [desired, desired]
-    for call in lk.sip.update_sip_outbound_trunk.await_args_list:
-        assert call.args[0].sip_trunk_id == p.OUTBOUND and call.args[0].update.auth_password == desired
+    for call in lk.sip.update_outbound_trunk_fields.await_args_list:
+        assert call.args[0] == p.OUTBOUND and call.kwargs["auth_password"] == desired
 
 
 async def test_partial_failure_retains_desired_password_pending_then_retry_completes():
     sm, twilio, lk = SecretStore(), Twilio(), livekit()
-    lk.sip.update_sip_outbound_trunk.side_effect = [RuntimeError("LiveKit update failed"), None]
+    lk.sip.update_outbound_trunk_fields.side_effect = [RuntimeError("LiveKit update failed"), None]
     with pytest.raises(RuntimeError, match="LiveKit update failed"):
         await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
     saved = sm.value["sip_auth_password"]
@@ -192,7 +214,7 @@ async def test_foreign_config_secret_blocks_before_any_provider_or_secret_writes
     with pytest.raises(p.ProviderMismatch, match="telephony_secret_not_owned"):
         await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
     assert not twilio.writes and not sm.versions
-    lk.sip.update_sip_outbound_trunk.assert_not_awaited()
+    lk.sip.update_outbound_trunk_fields.assert_not_awaited()
 
 
 @pytest.mark.parametrize("raw", ["not valid JSON", "[]"])

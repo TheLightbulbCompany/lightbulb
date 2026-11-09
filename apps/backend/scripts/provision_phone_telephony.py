@@ -167,13 +167,8 @@ async def reconcile(twilio, lk, *, apply: bool, config: dict | None = None) -> d
             f"{twilio.account}/SIP/CredentialLists/{credential_list}/Credentials/{users[0]['sid']}.json",
             Password=config["sip_auth_password"],
         )
-        await lk.sip.update_sip_outbound_trunk(
-            api.UpdateSIPOutboundTrunkRequest(
-                sip_trunk_id=OUTBOUND,
-                update=api.SIPOutboundTrunkUpdate(
-                    auth_username=config["sip_auth_username"], auth_password=config["sip_auth_password"]
-                ),
-            )
+        await lk.sip.update_outbound_trunk_fields(
+            OUTBOUND, auth_username=config["sip_auth_username"], auth_password=config["sip_auth_password"]
         )
         mapped = (await twilio.request("GET", f"{trunk_url}/CredentialLists")).get("credential_lists", [])
         if not any(x.get("sid") == credential_list for x in mapped):

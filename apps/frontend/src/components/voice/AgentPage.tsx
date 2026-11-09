@@ -120,7 +120,7 @@ export function AgentPage() {
       <Check label="Only during opening hours" on={c.handoff.onlyOpenHours} set={(onlyOpenHours) => set({ handoff: { ...c.handoff, onlyOpenHours } })} />
     </Sec>
 
-    <Sec title="Meetings" hint={<>Invite {invite ? <span className="vx-code">{invite}</span> : "the assistant's team address (Mail)"} to any Google Meet. {name} joins, listens, and speaks only when someone says &ldquo;{name}&rdquo;. Guests are told it&apos;s there; anyone can say &ldquo;{name}, don&apos;t transcribe me&rdquo;.</>}>
+    <Sec title="Meetings" hint={<>Invite {invite ? <span className="vx-code">{invite}</span> : "the assistant's team address (Mail)"} to any Google Meet. {name} joins and listens. Say &ldquo;{name}&rdquo; to bring it into the conversation; while active, it responds naturally. Guests are told it&apos;s there; anyone can say &ldquo;{name}, don&apos;t transcribe me&rdquo;.</>}>
       <div>
         <Check label="Turn action items into follow-ups" on={c.meetings.followUps} set={(followUps) => set({ meetings: { ...c.meetings, followUps } })} />
       </div>

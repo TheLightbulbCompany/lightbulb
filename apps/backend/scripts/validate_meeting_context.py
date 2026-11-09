@@ -21,6 +21,7 @@ import uuid
 
 import boto3
 import httpx
+from botocore.exceptions import ClientError
 from temporalio.testing import ActivityEnvironment
 
 from core.config import settings
@@ -146,12 +147,19 @@ async def native_receipt(owner: str, identity, grant: str, marker: str) -> dict:
         }
 
     for attempt in range(6):
-        result = await run_in_thread(inspect)
-        if result["nativeAllowedToolResult"]:
-            return result
+        try:
+            result = await run_in_thread(inspect)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") not in {"NoSuchKey", "404"}:
+                raise
+            if attempt == 5:
+                raise RuntimeError("native receipt artifact still missing after bounded flush retries") from None
+        else:
+            if result["nativeAllowedToolResult"] or attempt == 5:
+                return result
         if attempt < 5:
             await asyncio.sleep(5)
-    return result
+    raise AssertionError("unreachable")
 
 
 async def validate(receipt_path: Path) -> None:

@@ -452,6 +452,13 @@ async def stop_runtime_session(owner_id: str, runtime_arn: str, task_id: str | N
     from core.services.runtime_transport import session_id_for
 
     try:
+        before_stop = await run_in_thread(
+            container_repo.get_session_sync, owner_id, **({"task_id": task_id} if task_id is not None else {})
+        )
+    except Exception:  # noqa: BLE001 -- no stop without the generation needed to clear safely
+        logger.warning("session snapshot failed before stop owner=%s", owner_id, exc_info=True)
+        return False
+    try:
         await run_in_thread(_stop_runtime_session, runtime_arn, session_id_for(owner_id, task_id))
         stopped = True
     except ClientError as exc:
@@ -465,7 +472,10 @@ async def stop_runtime_session(owner_id: str, runtime_arn: str, task_id: str | N
     try:
         # Cleared even on an unconfirmed stop: "cold" is the safe error (one serialized health).
         await container_repo.clear_session(
-            owner_id, expected_arn=runtime_arn, **({"task_id": task_id} if task_id is not None else {})
+            owner_id,
+            expected_arn=runtime_arn,
+            expected_session=before_stop or {},
+            **({"task_id": task_id} if task_id is not None else {}),
         )
     except Exception:  # noqa: BLE001
         logger.warning("session estimate clear failed for owner=%s", owner_id, exc_info=True)

@@ -216,3 +216,43 @@ async def test_a_late_stop_cannot_clear_the_new_runtime_session(table):
     table.put_item(Item={"owner_id": key, "wake_tok": "new-pool-wake", "waking_until": int(time.time()) + 60})
     await container_repo.clear_session(OWNER, expected_arn=ARN)
     assert table.get_item(Key={"owner_id": key})["Item"]["wake_tok"] == "new-pool-wake"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completed", [False, True])
+async def test_stop_spares_a_new_same_runtime_wake_generation(table, monkeypatch, completed):
+    now = int(time.time())
+    key = f"__session__#{OWNER}"
+    # The expired estimate is retained when another invocation wins the next wake lease.
+    table.put_item(Item={"owner_id": key, "arn": ARN, "warm_until": now - 100, "started_at": now})
+
+    def stopping(arn, sid):
+        assert container_repo.try_take_wake_lease_sync(OWNER, arn=ARN, token="new-generation", now=now, lease_s=120)
+        if completed:
+            # Same-second starts must still be distinct generations after wake_tok is removed.
+            container_repo.finish_wake_sync(
+                OWNER, token="new-generation", warm_until=now + 600, started_at=now, arn=ARN
+            )
+
+    monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", stopping)
+    assert await hermes_provisioning.stop_runtime_session(OWNER, ARN)
+    current = table.get_item(Key={"owner_id": key}).get("Item") or {}
+    if completed:
+        assert current.get("warm_until") == now + 600
+    else:
+        assert current.get("wake_tok") == "new-generation"
+
+
+@pytest.mark.asyncio
+async def test_stop_with_no_initial_ledger_spares_a_new_completed_wake(table, monkeypatch):
+    now = int(time.time())
+    monkeypatch.setattr(container_repo, "get_session_sync", lambda *a, **k: None)
+
+    def stopping(arn, sid):
+        assert container_repo.try_take_wake_lease_sync(OWNER, arn=ARN, token="new", now=now, lease_s=120)
+        container_repo.finish_wake_sync(OWNER, token="new", warm_until=now + 600, started_at=now, arn=ARN)
+
+    monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", stopping)
+    assert await hermes_provisioning.stop_runtime_session(OWNER, ARN)
+    item = table.get_item(Key={"owner_id": f"__session__#{OWNER}"})["Item"]
+    assert item["session_gen"] == "new" and item["warm_until"] == now + 600

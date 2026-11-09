@@ -1579,7 +1579,7 @@ def finish_wake_sync(
     A lease taken over (expired) or cleared by a stop is left alone."""
     update, values = "REMOVE waking_until, wake_tok", {":tok": token}
     if warm_until is not None:
-        update = "SET warm_until = :w, started_at = :s, arn = :arn " + update
+        update = "SET warm_until = :w, started_at = :s, arn = :arn, session_gen = :tok " + update
         values.update({":w": warm_until, ":s": started_at, ":arn": arn})
     try:
         _get_table().update_item(
@@ -1607,11 +1607,32 @@ def extend_session_warm_sync(owner_id: str, *, warm_until: int, task_id: str | N
             raise
 
 
-async def clear_session(owner_id: str, *, task_id: str | None = None, expected_arn: str | None = None) -> None:
-    """Forget only the stopped runtime's estimate; a late stop must spare a newer route."""
+async def clear_session(
+    owner_id: str,
+    *,
+    task_id: str | None = None,
+    expected_arn: str | None = None,
+    expected_session: dict | None = None,
+) -> None:
+    """Forget only the captured session generation; a late stop must spare a newer wake or route."""
     kwargs = {"Key": _session_key(owner_id, task_id)}
+    conditions, values = [], {}
     if expected_arn is not None:
-        kwargs.update(ConditionExpression="arn = :arn", ExpressionAttributeValues={":arn": expected_arn})
+        conditions.append("arn = :arn")
+        values[":arn"] = expected_arn
+    if expected_session is not None:
+        # A new lease retains the old ARN/warm mark. The token protects an in-flight wake;
+        # the retained generation protects a completed wake, including same-second starts.
+        for field in ("wake_tok", "session_gen", "started_at"):
+            if field in expected_session:
+                conditions.append(f"{field} = :{field}")
+                values[f":{field}"] = expected_session[field]
+            else:
+                conditions.append(f"attribute_not_exists({field})")
+    if conditions:
+        kwargs["ConditionExpression"] = " AND ".join(conditions)
+    if values:
+        kwargs["ExpressionAttributeValues"] = values
     try:
         await run_in_thread(_get_table().delete_item, **kwargs)
     except ClientError as exc:

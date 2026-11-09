@@ -91,6 +91,7 @@ Settled. Tasks build on these and do not reopen them. Source: the founder's own 
 | F35 | Order: everything, as fast as possible. Quick implementation and iteration matter most. | 9 Nov. | Waiting on phase order. Phases run in parallel. |
 | F36 | Work is reviewed. A review that finds real issues gets them fixed. A review that finds an architecture issue is brought to the founder. | 9 Nov. | Quietly patching around an architecture problem; or capping review rounds. |
 | F37 | The business owns the opening: greeting, any AI notice, any recording notice. We ship a good editable default (name, business, "AI assistant") and enforce nothing in code. The business is responsible for its own state's rules. One rule stays: the assistant never claims to be a person when a caller sincerely asks. The medical tier defaults the AI notice on. | 9 Nov. Quo and Bland both let the business write the opening. It also removes a guard, in line with F5 and "limit guards". | A disclosure guard; a backend greeting fallback; forcing any sentence on every call. |
+| F38 | One architecture for every use case. Phone, Meet, the orb and typed messages all go voice or text, then the Router, then a Worker. A booking on a call takes that path too. A new use case adds tools and permissions, never a new shape. | 9 Nov, confirming the 8 Nov rulings (F3, F4, F6). "The architecture doesn't change as the use cases change." | A fast path for one surface; giving the voice model its own tools; skipping the Router for callers. |
 
 ---
 

@@ -43,6 +43,7 @@ function TalkOrbView({ compact }: { compact: boolean }) {
       title={away || (micLive ? "Tap to mute microphone · hold to push-to-talk" : "Tap to talk · hold to push-to-talk")}
       onPointerDown={(e) => { if (e.button !== 0) return; e.currentTarget.setPointerCapture(e.pointerId); press(); }}
       onPointerUp={release} onPointerCancel={cancel} onContextMenu={(e) => e.preventDefault()}
+      onClick={(e) => { if (e.detail === 0) { press(); release(); } }}
       onKeyDown={(e) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); press(); } }}
       onKeyUp={(e) => { if (e.key === " " || e.key === "Enter") release(); }}>
       <Icon size={compact ? 20 : 22} aria-hidden="true" />

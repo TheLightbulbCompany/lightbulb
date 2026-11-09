@@ -448,3 +448,25 @@ it("a model-start error closes the owned mic and the next press can retry", asyn
   expect(mic).toHaveBeenLastCalledWith(true);
   expect(huddle.leave).not.toHaveBeenCalled();
 });
+
+
+it("assistive activation clicks toggle the microphone without pointer events", () => {
+  listening();
+  render(<TalkOrb name="Nova" />);
+  fireEvent.click(orb(), { detail: 0 });
+  expect(mic).toHaveBeenLastCalledWith(true);
+  expect(orb()).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(orb(), { detail: 0 });
+  expect(mic).toHaveBeenLastCalledWith(false);
+  expect(orb()).toHaveAttribute("aria-pressed", "false");
+});
+
+it("a physical pointer click is not counted again after its release", () => {
+  listening();
+  render(<TalkOrb name="Nova" />);
+  tap();
+  mic.mockClear();
+  fireEvent.click(orb(), { detail: 1 });
+  expect(mic).not.toHaveBeenCalled();
+  expect(orb()).toHaveAttribute("aria-pressed", "true");
+});

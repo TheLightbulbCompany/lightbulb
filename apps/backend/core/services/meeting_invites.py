@@ -836,6 +836,7 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
 _CALL_KEYS = (
     "inCallAt",
     "lastBotStatus",
+    "lastBotStatusAt",
     "transcriptAttachedAt",
     "transcriptId",
     "transcriptRoomId",

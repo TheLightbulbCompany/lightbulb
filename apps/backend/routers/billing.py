@@ -449,9 +449,9 @@ class CheckoutRequest(BaseModel):
     # Required to change the plan of a live subscription; without it the
     # response is ``confirm_required`` with the cost and nothing is changed.
     confirm: bool = False
-    # Where a web Checkout returns (fixed paths, billing_service._CHECKOUT_RETURNS): "chatgpt" = ChatGPT sign-in in
-    # Settings → Model, "chatgpt_onboarding" = the onboarding ChatGPT step; absent = the billing panel.
-    then: Literal["chatgpt", "chatgpt_onboarding"] | None = None
+    # Where a web Checkout returns (fixed paths, billing_service._CHECKOUT_RETURNS):
+    # the two onboarding values resume the selected provider setup after the plan is active.
+    then: Literal["chatgpt", "chatgpt_onboarding", "managed_onboarding"] | None = None
 
 
 @router.post(
@@ -581,18 +581,9 @@ _TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
 
 
 class ChangeProviderRequest(BaseModel):
-    # Pydantic validates choices before any DDB read or container side-effect.
-    provider_choice: Literal["chatgpt_oauth", "byo_key", "openrouter_managed"] = Field(
+    provider_choice: Literal["chatgpt_oauth", "openrouter_managed"] = Field(
         ...,
-        description="chatgpt_oauth | byo_key | openrouter_managed",
-    )
-    byo_provider: Literal["openai", "anthropic"] | None = Field(
-        None,
-        description=(
-            "Required when provider_choice == 'byo_key'. Switching to BYO "
-            "without a previously-uploaded matching API key returns 409 — "
-            "the caller must PUT /settings/keys/{provider} before this call."
-        ),
+        description="Choose OpenRouter managed inference or Sign in with ChatGPT.",
     )
 
 
@@ -633,7 +624,7 @@ async def change_provider(
             clerk_user_id=auth.user_id,
             owner_type=owner_type,
             provider_choice=body.provider_choice,
-            byo_provider=body.byo_provider,
+            byo_provider=None,
         )
     except ChangeProviderError as e:
         raise HTTPException(

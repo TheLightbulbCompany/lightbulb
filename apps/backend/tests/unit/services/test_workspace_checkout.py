@@ -817,7 +817,7 @@ async def test_workspace_checkout_for_chatgpt_returns_into_chatgpt_sign_in(monke
 
     kwargs = create.call_args.kwargs
     assert kwargs["success_url"] == (
-        f"{billing_service.settings.FRONTEND_URL}/settings?panel=providers&action=connect-chatgpt&checkout=success"
+        f"{billing_service.settings.FRONTEND_URL}/settings?panel=billing&action=connect-chatgpt&checkout=success"
     )
     assert kwargs["idempotency_key"].endswith(":web:fd0:chatgpt")
 
@@ -842,3 +842,48 @@ async def test_workspace_checkout_from_onboarding_returns_to_the_onboarding_chat
         kwargs["success_url"] == f"{billing_service.settings.FRONTEND_URL}/chat?provider=chatgpt_oauth&checkout=success"
     )
     assert kwargs["idempotency_key"].endswith(":web:fd0:chatgpt_onboarding")
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_from_onboarding_returns_to_the_managed_provider_step(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    create = MagicMock(return_value={"id": "cs_4", "url": "https://checkout.test/cs_4"})
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", then="managed_onboarding"
+    )
+
+    kwargs = create.call_args.kwargs
+    assert kwargs["success_url"] == (
+        f"{billing_service.settings.FRONTEND_URL}/chat?provider=openrouter_managed&checkout=success"
+    )
+    assert kwargs["idempotency_key"].endswith(":web:fd0:managed_onboarding")
+
+
+@pytest.mark.asyncio
+async def test_pending_checkout_is_not_reused_for_a_different_provider_return(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    pending = {
+        **_OPEN_BASE,
+        "metadata": {
+            **_OPEN_BASE["metadata"],
+            "plan": "workspace",
+            "return_to": "web",
+            "front_desk": "0",
+            "then": "chatgpt_onboarding",
+        },
+    }
+    stripe_calls = _with_pending_marker(monkeypatch, pending)
+
+    await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", then="managed_onboarding"
+    )
+
+    assert stripe_calls["expire"].called
+    assert stripe_calls["create"].called

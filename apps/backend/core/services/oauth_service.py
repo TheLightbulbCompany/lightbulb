@@ -198,7 +198,7 @@ async def request_device_code(*, user_id: str, bound_owner_id: str) -> DeviceCod
     )
 
 
-async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
+async def poll_device_code(*, user_id: str, authorized_owner_id: str | None = None) -> DevicePollResult | object:
     """Poll OpenAI's deviceauth/token endpoint for this user's session.
 
     Returns DevicePollPending while the user hasn't completed sign-in
@@ -208,7 +208,9 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
 
     The workspace this sign-in is bound to is NOT taken from the polling
     caller's context — it is read off the pending row's ``bound_owner_id``,
-    which /start fixed (under the owner gate). Completion therefore cannot
+    which /start fixed (under the owner gate). The router supplies its freshly
+    authorized owner id, checked before exchange; current membership and connector
+    ownership must still permit the operation. Completion therefore cannot
     re-target a session: a member who started a personal, ungated session
     cannot poll in org context to bind the org's connector to themselves.
 
@@ -219,7 +221,11 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     silently staged into a second, personal container — two containers sharing
     one ChatGPT account, and a disconnect in either revoking the other.
     """
-    row = _table().get_item(Key={"user_id": user_id}).get("Item")
+    row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=True).get("Item")
+    if row and row.get("state") == "active" and authorized_owner_id is not None:
+        if not _row_belongs_to(row, authorized_owner_id):
+            raise OAuthBoundElsewhereError("This sign-in belongs to another workspace.")
+        return DevicePollResult(account_id=row.get("account_id") or None, bound_owner_id=authorized_owner_id)
     if not row or row.get("state") != "pending":
         raise OAuthExchangeFailedError(f"No pending device-code session for user {user_id}")
     # The binding was fixed at /start. Fall back to user_id (personal
@@ -227,6 +233,8 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     # — an in-flight session at deploy time completes cleanly instead of
     # erroring or binding to an empty owner.
     bound_owner_id = row.get("bound_owner_id") or user_id
+    if authorized_owner_id is not None and bound_owner_id != authorized_owner_id:
+        raise OAuthBoundElsewhereError("This sign-in belongs to another workspace. Return to that workspace to finish.")
     # Legacy pending rows (from the pre-Codex-CLI flow) store `device_code`
     # instead of `device_auth_id`. Same for any partially-written row that
     # doesn't have user_code. Treat both as stale — the new flow can't
@@ -342,18 +350,26 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
         ":backend": "backend",
         ":one": 1,
         ":exp": token_fields["expires_at"],
+        ":pending": "pending",
+        ":device": device_auth_id,
     }
 
-    _table().update_item(
-        Key={"user_id": user_id},
-        UpdateExpression=(
-            "SET custody = :backend, version = :one, expires_at = :exp, "
-            "#s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
-            "REMOVE device_auth_id, user_code, #i"
-        ),
-        ExpressionAttributeNames={"#s": "state", "#i": "interval"},
-        ExpressionAttributeValues=values,
-    )
+    try:
+        _table().update_item(
+            Key={"user_id": user_id},
+            ConditionExpression="#s = :pending AND device_auth_id = :device",
+            UpdateExpression=(
+                "SET custody = :backend, version = :one, expires_at = :exp, "
+                "#s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
+                "REMOVE device_auth_id, user_code, #i"
+            ),
+            ExpressionAttributeNames={"#s": "state", "#i": "interval"},
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise OAuthExchangeFailedError("This sign-in session changed. Retry in the current workspace.") from exc
+        raise
     return DevicePollResult(account_id=account_id, bound_owner_id=bound_owner_id)
 
 

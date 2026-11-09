@@ -126,11 +126,8 @@ class TestSyncUser:
 class TestSyncUserProviderChoice:
     """/users/sync does not write provider_choice.
 
-    The canonical write path is POST /billing/trial-checkout, which
-    persists synchronously to billing_accounts before creating the
-    Stripe Checkout session. /users/sync is now a pure user-row sync
-    and silently ignores any provider_choice / byo_provider it receives
-    so old frontends keep working.
+    /users/sync is a pure user-row sync and ignores legacy provider fields
+    so old frontends keep working without advertising or writing them.
     """
 
     @pytest.mark.asyncio
@@ -212,8 +209,8 @@ class TestSyncUserProviderChoice:
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
-    async def test_sync_invalid_provider_choice_rejected(self, mock_repo, async_client):
-        """Unknown provider_choice value is still 422 (pydantic Literal)."""
+    async def test_sync_ignores_unknown_legacy_provider_choice(self, mock_repo, async_client):
+        """Unknown legacy provider fields are ignored just like the retired values."""
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
@@ -223,7 +220,7 @@ class TestSyncUserProviderChoice:
             json={"provider_choice": "wat"},
         )
 
-        assert response.status_code == 422
+        assert response.status_code == 200
         mock_repo.set_provider_choice.assert_not_called()
 
 

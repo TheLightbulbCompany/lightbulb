@@ -163,8 +163,9 @@ class BillingService:
 #: Where a web Checkout started for ChatGPT returns (`then`): ChatGPT sign-in in Settings → Model, or the onboarding
 #: wizard's ChatGPT step (ProvisioningStepper keeps ?provider=). Fixed paths: `then` is an allowlisted Literal.
 _CHECKOUT_RETURNS = {
-    "chatgpt": "/settings?panel=providers&action=connect-chatgpt&checkout=success",
+    "chatgpt": "/settings?panel=billing&action=connect-chatgpt&checkout=success",
     "chatgpt_onboarding": "/chat?provider=chatgpt_oauth&checkout=success",
+    "managed_onboarding": "/chat?provider=openrouter_managed&checkout=success",
 }
 
 
@@ -176,7 +177,7 @@ async def create_workspace_checkout(
     return_to: Literal["web", "app"] = "web",
     confirm: bool = False,
     front_desk: bool = False,
-    then: Literal["chatgpt", "chatgpt_onboarding"] | None = None,
+    then: Literal["chatgpt", "chatgpt_onboarding", "managed_onboarding"] | None = None,
 ) -> dict:
     """Create or change the single recurring subscription for a workspace.
 
@@ -357,6 +358,9 @@ async def create_workspace_checkout(
                 and (metadata.get("return_to") or "web") == return_to
                 # A plain-Team session is never handed to a front-desk click, nor the reverse.
                 and (metadata.get("front_desk") or "0") == str(int(front_desk))
+                # Provider setup is part of the authenticated user's checkout intent:
+                # don't return a managed selection through a pending ChatGPT URL.
+                and (metadata.get("then") or None) == then
             ):
                 return {"checkout_url": pending["url"]}
             _expire_open_checkout_session(pending_id)
@@ -370,6 +374,8 @@ async def create_workspace_checkout(
             "return_to": return_to,
             "front_desk": str(int(front_desk)),
         }
+        if then:
+            metadata["then"] = then
         bucket_start = checkout_bucket * 300
         # The add-on costs $250 (FRONT_DESK_PRICE_USD) the moment it exists: no Stripe trial with it.
         trial_end = None if front_desk else _checkout_trial_end(account, bucket_start)

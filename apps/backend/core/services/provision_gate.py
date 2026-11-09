@@ -506,9 +506,9 @@ async def _evaluate_provision_gate_inner(
         return Gate(
             code="provider_required",
             title="Pick how to power your agents",
-            message=("Choose Lightbulb credits, ChatGPT OAuth, or your own API key to continue."),
+            message=("Choose OpenRouter managed inference or sign in with ChatGPT to continue."),
             action_label="Pick provider",
-            action_href="/chat?panel=llm&action=change-provider",
+            action_href="/settings?panel=billing",
             # Org members can't change the org's provider — only the admin can.
             action_admin_only=True,
             owner_role=owner_role,
@@ -564,23 +564,21 @@ async def _evaluate_provision_gate_inner(
             )
 
     if provider_choice == "byo_key":
-        # Symmetric with the chatgpt_oauth gate above: the BYO path has a
-        # provider sub-choice (Anthropic / OpenAI) that the user picks
-        # AFTER selecting "byo_key". Until that sub-choice is persisted,
-        # ECS provisioning rejects with
-        # "byo_provider is required when provider_choice == 'byo_key'".
-        # The legacy ``POST /container/provision`` flow had a frontend
-        # ``needsProviderStep`` guard for this; the new poll-driven
-        # /container/status trigger lost the guard, so we enforce it
-        # here as the canonical gate site.
+        # Existing workspaces may still carry a legacy BYO choice. They keep
+        # running when their saved key is present; if the row is incomplete,
+        # direct the admin to the provider settings so they can move to one of
+        # the currently supported choices. New key setup is closed.
         if not account.get("byo_provider"):
             return Gate(
                 code="byo_provider_required",
-                title="Choose your BYO provider",
-                message="Choose Anthropic or OpenAI as your BYO provider to start your container.",
-                action_label="Choose provider",
-                action_href="/chat?provider=byo_key",
-                action_admin_only=False,
+                title="Finish setting up your inference provider",
+                message=(
+                    "This workspace has an incomplete saved API-key setup. Choose OpenRouter managed "
+                    "inference or sign in with ChatGPT to continue."
+                ),
+                action_label="Change provider",
+                action_href="/settings?panel=billing",
+                action_admin_only=True,
                 owner_role=owner_role,
             )
 

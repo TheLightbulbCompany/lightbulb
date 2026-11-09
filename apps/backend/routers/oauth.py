@@ -165,15 +165,14 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
     ),
 )
 async def poll(ctx: AuthContext = Depends(get_current_user)):
-    # No owner gate here (unlike /start and /disconnect), and none is needed:
-    # the binding AND the authorization are both fixed at /start (which IS
-    # owner-gated) and ride the pending row through to completion. /poll can
-    # only complete what /start authorized — it never re-derives the workspace
-    # from the polling caller's current Clerk context. poll_device_code also
-    # 502s unless a pending row exists for ctx.user_id, which only /start can
-    # create.
+    # Re-check current membership and connector ownership before exchanging or
+    # saving tokens. A session started by a former admin is no longer authorized.
+    if ctx.is_org_context:
+        await _require_org_oauth_owner(ctx)
     try:
-        result = await poll_device_code(user_id=ctx.user_id)
+        result = await poll_device_code(user_id=ctx.user_id, authorized_owner_id=resolve_owner_id(ctx))
+    except OAuthBoundElsewhereError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except OAuthExchangeFailedError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     if result is DevicePollPending:

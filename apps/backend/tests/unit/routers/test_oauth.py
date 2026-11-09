@@ -524,12 +524,8 @@ class TestPollOrgClaim:
             ) as mock_claim,
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
-        assert resp.status_code == 200
-        assert resp.json() == {"status": "completed", "account_id": "acc_1"}
-        # /poll must not pass a binding arg — it reads the binding off the row.
-        mock_poll.assert_awaited_once_with(user_id="user_test_789")
-        # Personal-bound session → no org claim, even though the caller is now
-        # in org context.
+        assert resp.status_code == 403
+        mock_poll.assert_not_awaited()
         mock_claim.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -553,7 +549,7 @@ class TestPollOrgClaim:
             resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
         assert resp.status_code == 200
         assert resp.json() == {"status": "completed", "account_id": "acc_1"}
-        mock_poll.assert_awaited_once_with(user_id="user_test_123")
+        mock_poll.assert_awaited_once_with(user_id="user_test_123", authorized_owner_id="org_test_456")
         mock_claim.assert_awaited_once_with("org_test_456", connector_user_id="user_test_123")
 
     @pytest.mark.asyncio
@@ -637,7 +633,7 @@ class TestPollOrgClaim:
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
         assert resp.status_code == 200
-        mock_poll.assert_awaited_once_with(user_id="user_test_123")
+        mock_poll.assert_awaited_once_with(user_id="user_test_123", authorized_owner_id="org_test_456")
         mock_claim.assert_not_awaited()
 
 
@@ -761,3 +757,22 @@ async def test_start_keeps_403_for_real_connector(async_client):
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/start")
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_poll_rejects_former_admin_before_exchanging_tokens(async_client, override_auth):
+    override_auth(ORG_MEMBER)
+    with patch("routers.oauth.poll_device_code", new=AsyncMock()) as exchange:
+        response = await async_client.post("/api/v1/oauth/chatgpt/poll")
+    assert response.status_code == 403
+    exchange.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_poll_rejects_other_workspace_binding(async_client):
+    with patch(
+        "routers.oauth.poll_device_code",
+        new=AsyncMock(side_effect=OAuthBoundElsewhereError("Return to your original workspace")),
+    ):
+        response = await async_client.post("/api/v1/oauth/chatgpt/poll")
+    assert response.status_code == 403

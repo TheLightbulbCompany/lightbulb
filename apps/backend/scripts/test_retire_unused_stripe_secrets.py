@@ -1,5 +1,6 @@
 import copy
 import json
+import subprocess
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -40,7 +41,11 @@ class RetirementTests(unittest.TestCase):
         self.sm.describe_secret.side_effect = lambda SecretId: self.rows[SecretId]
 
     def test_plan_never_reads_values_or_deletes_and_exact_review_hash_required(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(retire, "consumer_checks") as check:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(retire, "consumer_checks") as check,
+            patch.object(retire, "source_references", return_value=[]),
+        ):
             root = Path(directory)
             plan = retire.run(self.session, "dev", "plan", "", root)
             self.sm.get_secret_value.assert_not_called()
@@ -57,7 +62,11 @@ class RetirementTests(unittest.TestCase):
             self.assertEqual(check.call_count, 3)
 
     def test_rotation_metadata_or_managed_identity_change_blocks_all_writes(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(retire, "consumer_checks"):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(retire, "consumer_checks"),
+            patch.object(retire, "source_references", return_value=[]),
+        ):
             root = Path(directory)
             plan = retire.run(self.session, "dev", "plan", "", root)
             originals = copy.deepcopy(self.rows)
@@ -75,7 +84,11 @@ class RetirementTests(unittest.TestCase):
             self.sm.delete_secret.assert_not_called()
 
     def test_partial_failure_preserves_receipt_and_recovery_window(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(retire, "consumer_checks"):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(retire, "consumer_checks"),
+            patch.object(retire, "source_references", return_value=[]),
+        ):
             root = Path(directory)
             plan = retire.run(self.session, "dev", "plan", "", root)
             self.sm.delete_secret.side_effect = [{}, RuntimeError("provider unavailable")]
@@ -89,9 +102,12 @@ class RetirementTests(unittest.TestCase):
     def test_any_source_or_deployed_consumer_blocks_retirement(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root / "apps/backend/core/consumer.py"
+            subprocess.run(["git", "init", "--quiet", directory], check=True)
+            path = root / "apps/infra/lambda/platform/consumer.mjs"
             path.parent.mkdir(parents=True)
             path.write_text(f"secret = '{retire.SUFFIXES[0]}'")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            self.assertEqual(retire.source_references(root), ["apps/infra/lambda/platform/consumer.mjs"])
             with self.assertRaisesRegex(ValueError, "source consumer"):
                 retire.run(self.session, "dev", "execute", "anything", root)
             with self.assertRaisesRegex(ValueError, "referenced"):

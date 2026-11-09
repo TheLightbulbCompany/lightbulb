@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 from datetime import UTC
 from pathlib import Path
 
@@ -23,16 +24,35 @@ def scope_hash(rows):
 
 
 def source_references(root):
-    found = []
-    for directory in ("apps/backend/core", "apps/backend/routers", "apps/infra/lib", "apps/huddle-agent/src"):
-        for path in (root / directory).rglob("*"):
-            if (
-                path.is_file()
-                and path.suffix in {".py", ".ts", ".tsx", ".js", ".mjs"}
-                and any(name in path.read_text() for name in SUFFIXES)
-            ):
-                found.append(str(path.relative_to(root)))
-    return found
+    # Search every tracked repository file, including hidden workflows, Lambda
+    # packages, docs and non-Python consumers. Only this operation's exact files
+    # are excluded: they name the permitted scope, not a credential consumer.
+    own_files = (
+        "apps/backend/scripts/retire_unused_stripe_secrets.py",
+        "apps/backend/scripts/test_retire_unused_stripe_secrets.py",
+        ".github/workflows/retire-unused-stripe-secrets.yml",
+        "apps/infra/lib/stripe-secret-retirement-bootstrap.ts",
+        "apps/infra/test/stripe-secret-retirement-bootstrap.test.ts",
+    )
+    result = subprocess.run(
+        [
+            "git",
+            "grep",
+            "-l",
+            "--fixed-strings",
+            *[part for name in SUFFIXES for part in ("-e", name)],
+            "--",
+            ".",
+            *[f":(exclude){path}" for path in own_files],
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise ValueError("Cannot verify complete repository source references")
+    return result.stdout.splitlines()
 
 
 def assert_unreferenced(values, names, label):

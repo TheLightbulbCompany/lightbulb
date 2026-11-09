@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core.config import settings
+
 from core.services import hermes_provisioning, runtime_runs as rr, token_custody
 from core.services.runtime_transport import RuntimeResponse, TaskSessionRefused
 
@@ -92,7 +94,7 @@ async def test_stop_task_session_targets_task_session(monkeypatch):
     monkeypatch.setattr(hermes_provisioning, "stop_runtime_session", stop)
     monkeypatch.setattr(rr.container_repo, "get_by_owner_id", AsyncMock(return_value={"agentcore_runtime_arn": ARN}))
     assert await rr.stop_task_session(OWNER, TASK) is True
-    stop.assert_awaited_once_with(OWNER, ARN, task_id=TASK)
+    stop.assert_awaited_once_with(OWNER, settings.HERMES_SHARED_RUNTIME_ARN, task_id=TASK)
     monkeypatch.setattr(rr.container_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": OWNER}))
     assert await rr.stop_task_session(OWNER, TASK) is False  # no runtime: nothing to stop
     assert stop.await_count == 1

@@ -136,12 +136,12 @@ LIVE_GRACE_S = 190
 
 
 def live_arn(container: dict, task_id: str | None = None) -> str | None:
-    """:func:`runtime_arn`, except at the cut-over: a session still live on the workspace's previous
-    runtime stays there until it idles. A run in flight there is unknown to a fresh pool session,
-    so a poll, steer or stop sent to the pool would read it as lost (RunLost) and retry it. "Live"
-    is the wake gate's own estimate (``__session__#<owner>``: warm on that ARN, plus
-    ``LIVE_GRACE_S``), which run and room-turn heartbeats keep current (:func:`note_alive`).
-    Sync: a DynamoDB read, on the invoke pool."""
+    """The observed live writer for lifecycle/stop operations, otherwise the canonical pool.
+
+    Session heartbeats keep the estimate current through LIVE_GRACE_S. Invocation separately
+    refuses a live writer outside the pool: it must neither revive the legacy runtime nor
+    start a second writer before that session drains. Failed ledger reads propagate.
+    """
     arn = runtime_arn(container)
     owner_id = container.get("owner_id")
     if not arn or not owner_id:

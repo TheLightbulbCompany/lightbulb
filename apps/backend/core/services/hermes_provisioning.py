@@ -1,61 +1,22 @@
-"""Fresh-provision path for a Hermes-on-AgentCore workspace.
+"""Provision and reconcile workspace profiles on the tier's canonical Hermes pool.
 
-NOT a patch of ``agentcore_runtime.ensure_runtime``: that function is a MIGRATION tool and
-hard-requires an existing EFS access point and a ``stopped`` ECS row (agentcore_runtime.py:235-239),
-which a fresh workspace has never had. Patching it in place would inherit "must come from ECS" into
-new-workspace provisioning (report 04, risk 5).
+Preparation settles stable hook/gateway tokens, the derived gate bearer, provider credentials
+and network membership before roster seeding. Provisioning joins the CDK-owned shared runtime,
+creates profiles for a fresh workspace, and records its shared route. Missing pool configuration
+fails before identity mutation; neither path creates or adopts a per-owner runtime.
 
-Two steps, in order. Neither holds a lease: every write is idempotent at its source, so two
-concurrent runs for one owner converge on the same end state:
+Profiles and memory remain in S3. The backend sends tenant-scoped boot/session credentials on
+invocation; existing legacy network seeds remain the source of those owners' network identity.
+Preparation does not rotate stable tokens or rewrite legacy boot secrets.
 
-1. ``prepare_hermes_workspace`` — mints (or reuses) ``hook_token``/``gateway_token``, derives the
-   gate bearer, writes the ONE JSON boot secret, and writes the two tokens onto the containers row.
-   Runs BEFORE step 0 (the Paperclip seed): the starter-agent loop bakes ``hook_token`` into the
-   native Hermes adapter's ``apiKey`` at seed time, so seeding before minting it would ship every
-   starter agent with an empty credential.
-2. ``provision_hermes_runtime`` — writes the Hermes profiles to S3, creates the AgentCore runtime,
-   and writes the TERMINAL row fields. Fully idempotent-return only
-   once ``status="running"``. The ARN is recorded on the row NON-terminally IMMEDIATELY after
-   ``CreateAgentRuntime`` returns (M4-R35/C1) — runtime names are unique
-   per account, so a create that succeeds but is never recorded (a crash, a
-   CREATE_FAILED seen on the single post-create status check) would otherwise hit a name conflict
-   on every retry, forever. Readiness is NOT waited on: invoking a CREATING runtime fails fast
-   and retries with backoff at first use. A retry
-   that finds the ARN on the row (or, failing that, by listing AgentCore runtimes for the derived
-   name — covers a row write that itself never landed) skips creation and reuses it.
+CDK owns the pool's image and runtime specification. Per-owner roll operations move only idle
+sessions onto that deployed version; busy or unconfirmed stops are never reported as replaced.
+Lifecycle/teardown helpers retain access to obsolete owned definitions, their roles and seeds
+until a separately reviewed retirement removes them. A legacy session may still be identified
+for stop/teardown, while the transport refuses new invocation outside the canonical pool.
 
-What is reused verbatim: the IAM/naming scaffolding (``runtime_name_for``, ``ensure_agentcore_trust``),
-the owner's IAM role, ``mint_gate_token``, the boot-secret writer, and the lifecycle
-constants. What is dropped: ``filesystemConfigurations`` (no EFS — profiles are S3), the OpenClaw env
-builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``CreateAgentRuntime`` is
-one synchronous call; readiness is discovered at first invoke, not waited on).
-
-Row writes are plain scoped ``container_repo.update_fields`` calls. The one conditional write is
-the CREATE_FAILED ARN clear (``expected_field=``): it must not wipe a newer, healthy ARN a concurrent run
-recorded after deleting the same dead runtime.
-
-Boot secret (M4-R4/R5): the runtime's ``environmentVariables`` carry NO credential value. One JSON
-secret, ``agentcore_runtime.boot_secret_name(owner_id)`` = ``{"hookToken","gatewayToken","bedrockBearer"}`` plus the network member key,
-is written via ``agentcore_runtime.write_boot_secret`` and only its NAME travels in the env, under
-``agentcore_runtime.BOOT_SECRET_ENV_VAR`` — the bridge resolves it at boot with the runtime's own
-execution role. ``provision_hermes_runtime`` never re-fetches this name from anywhere: it is a pure
-function of ``owner_id`` (``boot_secret_name``), so it is recomputed, not looked up — the only writer
-of the secret's CONTENTS is ``prepare_hermes_workspace``, which MUST have already run for this owner
-(``provision_runner.run`` always calls it first).
-
-Rotation (M4-R16): this module never rotates an already-provisioned owner's bearer -- it is
-DERIVED from the row incarnation and its ``gate_bearer_generation``, so ``prepare_hermes_workspace``
-re-running for a live owner (every ``reconcile_runtime``) reproduces the bearer the runtime already
-holds. When a generation bump does change it, ``write_boot_secret`` reports a boot-time change and
-``reconcile_runtime`` stops the idle session so the next invoke reads the new one.
-
-Provider switches (Task 8a): there is no switch state. ``reconcile_runtime`` rewrites the profiles
-from billing and bumps ``.revision``; the bridge re-reads it every turn.
-
-BYO key (M4-R32): the plaintext value is read from Secrets Manager at provision time via
-``core.services.key_service.read_byo_key`` — the same ``lightbulb/{env}/user-keys/{user}/{provider}``
-secret the ECS path references by ARN, but read back directly here (AgentCore has no task-definition
-``secrets:`` mechanism to resolve it for us). Only read when ``provider_choice == "byo_key"``.
+Provider reconciliation rewrites profiles and bumps their revision; the bridge re-reads them
+on its next turn. Existing saved BYO credentials remain readable for those owners.
 """
 
 from __future__ import annotations

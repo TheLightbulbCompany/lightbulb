@@ -1,5 +1,4 @@
-"""A meeting's presence is ours to pay (a metric, no Metronome); agent speech in it draws the
-workspace's daily voice allowance exactly as Live does."""
+"""Meeting duration is durably admitted before delivery; speech retains its credit accounting."""
 
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,8 +14,8 @@ from routers import meetings  # noqa: E402
 ROOM = "11111111-1111-4111-8111-111111111111"
 
 
-async def test_presence_is_not_billed_and_speech_draws_the_allowance(monkeypatch):
-    # Presence: in_call at t=1000, call_ended at t=2800 -> 1800 s on the metric, nothing to Metronome.
+async def test_presence_is_durably_admitted_and_speech_keeps_credit_accounting(monkeypatch):
+    # Presence: 1800 seconds is durably admitted for later delivery, never ingested inline.
     meta = {"roomId": ROOM, "ownerId": "org_a", "meeting": {"status": "bot_created", "recallBotId": "bot-1"}}
 
     async def patch_meeting(room_id, fields, drop=()):
@@ -33,6 +32,8 @@ async def test_presence_is_not_billed_and_speech_draws_the_allowance(monkeypatch
         patch.object(meetings.meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock()),
         patch.object(meetings.clerk_admin, "get_organization", AsyncMock(return_value={})),
         patch.object(meetings.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
+        patch.object(meetings.voice_billing.messaging_repo, "put_voice_usage_event", AsyncMock()) as admission,
+        patch.object(meetings.voice_billing, "add_month_seconds", AsyncMock()) as allowance,
         patch.object(meetings.livekit_huddles, "dispatch_meet", AsyncMock()),
         patch.object(meetings.livekit_huddles, "close_room", AsyncMock()),
         patch.object(meetings.voice_calls, "room_agents", AsyncMock(return_value=[])),
@@ -46,6 +47,13 @@ async def test_presence_is_not_billed_and_speech_draws_the_allowance(monkeypatch
         clock.return_value = 2800.0
         await meetings._on_status("bot-1", ROOM, "call_ended", "")
     metric.assert_any_call("meeting.presence.seconds", 1800.0, unit="Seconds")
+    admission.assert_awaited_once()
+    owner, transaction_id, event = admission.await_args.args
+    assert owner == "org_a" and transaction_id == f"meeting:{ROOM}:1000"
+    assert event["seconds"] == 1800 and event["kind"] == "meeting"
+    allowance.assert_awaited_once()
+    assert allowance.await_args.args[:2] == ("org_a", 1800)
+    metronome.ingest.assert_not_awaited()
 
     # Speech: a 180 s agent answer in the meeting room closes like any Live call. On paid credits
     # that is the existing Metronome path -- the same mock the presence path above never touched.

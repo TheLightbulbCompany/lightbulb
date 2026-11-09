@@ -15,6 +15,9 @@ os.environ.setdefault("NETWORK_PROOF_KEY", "test-network-proof-key")
 os.environ.setdefault("GATE_BEARER_HMAC_KEY", "test-gate-bearer-hmac-key")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+# The current product requires one canonical pool. Tests of missing configuration
+# explicitly clear this setting; retained-behavior tests use a configured tier.
+os.environ.setdefault("HERMES_SHARED_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/test-pool")
 # The admin ids the router tests sign in as (require_platform_admin).
 os.environ.setdefault("PLATFORM_ADMIN_USER_IDS", "user_platform_admin,admin_1,user_admin_123,user_admin")
 

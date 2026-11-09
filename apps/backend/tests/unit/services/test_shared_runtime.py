@@ -143,9 +143,8 @@ async def test_a_roll_moves_only_a_warm_session_that_predates_the_update(shared,
 
 
 @pytest.mark.asyncio
-async def test_at_the_cut_over_a_run_still_live_on_its_own_runtime_is_never_polled_on_the_pool(shared, monkeypatch):
-    """The drain: a workspace whose session is live on its own runtime stays there until it idles.
-    The run is unknown to a pool session, so a poll there would be a 404, RunLost, and a retry."""
+async def test_a_live_legacy_run_is_refused_without_polling_or_starting_a_pool_writer(shared, monkeypatch):
+    """Retirement fails closed while an old writer may still own the run."""
     from core.services import runtime_runs
 
     row = {"owner_id": "org_a", "id": "row-1", "agentcore_runtime_arn": OWN, "status": "running", "gateway_token": "g"}
@@ -185,9 +184,8 @@ def test_a_runs_heartbeat_keeps_its_session_live_on_its_own_runtime(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_missed_heartbeat_inside_the_grace_window_keeps_the_poll_on_its_own_runtime(shared, monkeypatch):
-    """One late or missed heartbeat must not send a live run's poll to the pool (RunLost): the session
-    counts as live on its own runtime for ``LIVE_GRACE_S`` past ``warm_until``."""
+async def test_a_missed_legacy_heartbeat_inside_grace_still_refuses_new_invocations(shared, monkeypatch):
+    """A late heartbeat must not let a pool session become a second writer."""
     import time
 
     from core.services import runtime_runs

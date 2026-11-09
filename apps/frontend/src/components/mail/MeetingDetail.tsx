@@ -16,7 +16,7 @@ import {
   occurrenceOutcome,
   parseTranscript,
   shortDay,
-  UPCOMING,
+  meetingEntryStatus,
   type MailEntry,
 } from "./mailModel";
 
@@ -44,16 +44,14 @@ export function MeetingDetail({ entry, orgId, now, onOpen, onOpenNotes }: {
     <p className="mail-detail__meta">
       {when && <span>{when}</span>}
       {endedAt != null && <span>Ended {clockTime(endedAt * 1000)}</span>}
-      <MeetingStatus status={entry.status} hasTranscript={entry.hasTranscript} />
+      <MeetingStatus entry={entry} now={now} />
       {m.repeats && <span className="mail-detail__repeats"><Repeat size={13} aria-hidden="true" /> Repeats</span>}
     </p>
     {(m.organizer || m.invited_by) && <p className="mail-detail__meta">
       {m.organizer && <span>Organized by {m.organizer}</span>}
       {m.invited_by && m.invited_by !== m.organizer && <span>Added by {m.invited_by}</span>}
     </p>}
-    {entry.status === "bot_failed" && m.reason === "not_admitted" && (
-      <p className="mail-detail__note">Nobody let the agents in from the lobby.</p>
-    )}
+    <p className="mail-detail__note">{meetingEntryStatus(entry, now).detail}</p>
     {occurrences.length > 1 && <div className="mail-occurrences" role="group" aria-label="Occurrences">
       {occurrences.map((t) => <button key={t.start_at} type="button" className="mail-chip"
         aria-pressed={t.start_at === entry.startAt} onClick={() => onOpen(meetingItemKey(m.id, t.start_at))}>
@@ -75,9 +73,7 @@ export function MeetingDetail({ entry, orgId, now, onOpen, onOpenNotes }: {
     {entry.hasTranscript && entry.startAt !== null
       ? <Transcript meetingId={m.id} startAt={entry.startAt} orgId={orgId} />
       : <p className="mail-detail__note">
-        {UPCOMING.has(entry.status ?? "")
-          ? "The agents join when it starts. Let them in from the lobby."
-          : "No transcript for this meeting."}
+        No transcript for this meeting.
       </p>}
   </article>;
 }

@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _TARGET = {
+    "joining_call": "bot_created",
+    "in_waiting_room": "bot_created",
     "in_call_recording": "in_call",
     "in_call_not_recording": "in_call",
     "call_ended": "ended",
@@ -169,6 +171,20 @@ async def _on_status(
             elif meeting.get("recurrence"):
                 voice_calls._fire(meeting_invites.advance(room_id))
             return
+        if code in ("joining_call", "in_waiting_room"):
+            observed_at = int((at or time.time()) * 1000)
+            if status == "in_call" or observed_at < int(meeting.get("lastBotStatusAt", 0)):
+                return  # an older joining/lobby callback cannot regress observed presence
+            if (
+                observed_at == int(meeting.get("lastBotStatusAt", 0))
+                and meeting.get("lastBotStatus") == "in_waiting_room"
+                and code == "joining_call"
+            ):
+                return
+            if code != meeting.get("lastBotStatus") or observed_at > int(meeting.get("lastBotStatusAt", 0)):
+                await meeting_invites._patch_meeting(room_id, {"lastBotStatus": code, "lastBotStatusAt": observed_at})
+                await _publish(room_id, status or "bot_created")
+            return  # provider presence only: no worker dispatch, allowance check or metering yet
         if target == status or code == meeting.get("lastBotStatus"):
             return  # a replay, or a step this meeting already took
         owner_id = meta["ownerId"]

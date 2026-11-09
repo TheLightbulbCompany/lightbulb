@@ -619,3 +619,29 @@ def test_a_late_redelivery_counts_the_meetings_own_minutes_not_the_delay(env):
     stamp = datetime.fromtimestamp(in_call + 600, timezone.utc).isoformat().replace("+00:00", "Z")
     _post(env["client"], _at_time(_status("call_ended"), stamp))  # lands two hours after a 10-minute call
     assert env["minutes"].await_args.args[1] == 600
+
+
+def test_joining_and_lobby_are_observed_without_dispatch_or_billing(env):
+    assert _post(env["client"], _status("joining_call")).status_code == 200
+    assert env["meta"]["meeting"]["lastBotStatus"] == "joining_call"
+    assert _post(env["client"], _status("in_waiting_room")).status_code == 200
+    assert env["meta"]["meeting"]["lastBotStatus"] == "in_waiting_room"
+    assert env["meta"]["meeting"]["status"] == "bot_created"
+    env["dispatch"].assert_not_awaited()
+    env["reported_minutes"].assert_not_awaited()
+    env["wake"].assert_not_called()
+
+
+def test_late_joining_event_cannot_regress_confirmed_live_status(env):
+    _post(env["client"], _status("in_call_recording"))
+    _post(env["client"], _status("in_waiting_room"))
+    assert env["meta"]["meeting"]["lastBotStatus"] == "in_call_recording"
+    assert env["meta"]["meeting"]["status"] == "in_call"
+    env["dispatch"].assert_awaited_once()
+
+
+def test_older_joining_callback_cannot_overwrite_lobby_presence(env):
+    _post(env["client"], _at_time(_status("in_waiting_room"), "2026-10-03T00:00:02Z"))
+    _post(env["client"], _at_time(_status("joining_call"), "2026-10-03T00:00:01Z"))
+    assert env["meta"]["meeting"]["lastBotStatus"] == "in_waiting_room"
+    env["dispatch"].assert_not_awaited()

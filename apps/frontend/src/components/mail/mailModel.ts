@@ -1,3 +1,5 @@
+import { meetingStatus } from "@/lib/meetingStatus";
+
 // Pure model for the Mail panel: the wire types, the list's sections, item keys,
 // transcript parsing and time formatting. No React, no I/O.
 
@@ -37,6 +39,8 @@ export interface MailMeeting extends MeetingOutcome {
   organizer: string | null;
   invited_by?: string | null;
   status: string | null;
+  last_bot_status?: string | null;
+  in_call_at?: number | null;
   start_at: number | null;
   end_at: number | null;
   repeats: boolean;
@@ -112,14 +116,13 @@ const LIVE = new Set(["in_call"]);
 export const UPCOMING: ReadonlySet<string> = new Set(["scheduled", "bot_created"]);
 const PAST = new Set(["ended", "cancelled", "bot_failed"]);
 
-export const STATUS_WORD: Record<string, string> = {
-  scheduled: "Agents will join",
-  bot_created: "Agents will join",
-  in_call: "Live",
-  ended: "Ended",
-  cancelled: "Cancelled",
-  bot_failed: "Couldn't join",
-};
+/** Adapt the current occurrence only: a series' next bot is not its past transcript. */
+export function meetingEntryStatus(entry: MailEntry & { kind: "meeting" }, now: number) {
+  const current = entry.startAt === entry.meeting.start_at;
+  return meetingStatus({ status: entry.status, startAt: entry.startAt, hasTranscript: entry.hasTranscript,
+    lastBotStatus: current ? entry.meeting.last_bot_status : null,
+    inCallAt: current ? entry.meeting.in_call_at : null }, now);
+}
 
 // ---- sections --------------------------------------------------------------
 

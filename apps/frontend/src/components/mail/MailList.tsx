@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, Calendar, Repeat } from "lucide-react";
 
 import { ParticipantAvatar } from "@/components/messaging/ParticipantAvatar";
-import { clockTime, meetingWhen, STATUS_WORD, type MailEntry, type MailSection } from "./mailModel";
+import { clockTime, meetingWhen, meetingEntryStatus, type MailEntry, type MailSection } from "./mailModel";
 
 function typingInField(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
@@ -107,12 +107,11 @@ function MailRow({ entry, isNew, agentName }: {
   </>;
 }
 
-export function MeetingStatus({ status, hasTranscript }: { status: string | null; hasTranscript: boolean }) {
-  const word = STATUS_WORD[status ?? ""];
-  if (!word) return null;
-  return <span className="mail-status" data-status={status}>
-    {status === "in_call" && <span className="mail-status__live" aria-hidden="true" />}
-    {word}{status === "ended" && hasTranscript ? " · Transcript" : ""}
+export function MeetingStatus({ entry, now }: { entry: MailEntry & { kind: "meeting" }; now: number }) {
+  const presentation = meetingEntryStatus(entry, now);
+  return <span className="mail-status" data-status={entry.status}>
+    {entry.status === "in_call" && <span className="mail-status__live" aria-hidden="true" />}
+    {presentation.label}{entry.status === "ended" && entry.hasTranscript ? " · Transcript" : ""}
   </span>;
 }
 
@@ -127,7 +126,7 @@ function MeetingRow({ entry, now }: { entry: MailEntry & { kind: "meeting" }; no
       </span>
       <span className="mail-row__second">
         {when && <span className="mail-row__when">{when}</span>}
-        <MeetingStatus status={entry.status} hasTranscript={entry.hasTranscript} />
+        <MeetingStatus entry={entry} now={now} />
       </span>
     </span>
   </>;

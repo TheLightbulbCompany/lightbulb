@@ -5,7 +5,9 @@ import { Construct } from "constructs";
 /** Standalone, temporary retirement role; never expands the general CI deployer. */
 export class StripeSecretRetirementBootstrapStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
+    // The retirement preflight accepts exactly this role and policy. Suppress
+    // CLI-injected analytics metadata so CLI deployment matches the unit template.
+    super(scope, id, { ...props, analyticsReporting: false });
     const role = new iam.Role(this, "RetirementRole", {
       roleName: "lightbulb-retire-stripe-secrets",
       description: "Main-only exact obsolete Stripe webhook secret retirement; no value reads",

@@ -7,6 +7,9 @@ import { StripeSecretRetirementBootstrapStack } from "../lib/stripe-secret-retir
 
 const template = Template.fromStack(new StripeSecretRetirementBootstrapStack(new cdk.App(), "Retirement", {
   env: { account: "877352799272", region: "us-east-1" },
+  // The CLI enables analytics in real deployment. It must not add a third
+  // resource that the exact authority preflight would correctly reject.
+  analyticsReporting: true,
 }));
 const resources: any = template.toJSON().Resources;
 const role: any = Object.values(template.findResources("AWS::IAM::Role"))[0];

@@ -79,7 +79,17 @@ def validate_authority_template(template):
             delimiter, parts = value["Fn::Join"]
             return delimiter.join("aws" if part == {"Ref": "AWS::Partition"} else plain(part) for part in parts)
         if isinstance(value, dict):
-            return {key: plain(item) for key, item in value.items()}
+            result = {}
+            for key, item in value.items():
+                if key == "Action" and isinstance(item, list):
+                    if not all(isinstance(action, str) for action in item) or len(set(item)) != len(item):
+                        raise ValueError("Unexpected duplicate or invalid authority action")
+                    # IAM action order carries no meaning; the CLI's policy
+                    # minimizer sorts it. Resources/conditions remain exact.
+                    result[key] = sorted(item)
+                else:
+                    result[key] = plain(item)
+            return result
         if isinstance(value, list):
             return [plain(item) for item in value]
         return value
@@ -117,7 +127,7 @@ def validate_authority_template(template):
             "Resource": f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/lightbulb-*/*",
         },
     ]
-    if plain(policy.get("PolicyDocument")) != {"Version": "2012-10-17", "Statement": expected}:
+    if plain(policy.get("PolicyDocument")) != plain({"Version": "2012-10-17", "Statement": expected}):
         raise ValueError("Unexpected retirement authority permissions")
 
 

@@ -11,7 +11,7 @@ import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, mmss, monthMinutes, LIGHTBULB, needsOnboarding, useAgentConfig, useTimeline, who,
+  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, useAgentConfig, useTimeline, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -119,7 +119,7 @@ function Row({ item, name, current, now, onOpen }: { item: TimelineItem; name: s
   return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
     <time>{time(item.at)}</time><Icon size={16} aria-label={item.ownerMode ? "You" : "Call"} />
     <span><span className="vx-who">{item.ownerMode ? `You and ${name}` : who(item)}{sub && !item.ownerMode && <small>{sub}</small>}</span>
-      <span className="vx-did"><Tag outcome={item.outcome} /><span>{item.summary || "No summary yet."}</span></span></span>
+      <span className="vx-did"><Tag outcome={item.outcome} /><span>{callSummary(item)}</span></span></span>
     <span className="vx-dur">{mmss(item.durationSec)}</span>
   </button>;
 }

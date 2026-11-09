@@ -43,6 +43,7 @@ def _status(code: str, bot_id: str = "bot-1", sub_code: str | None = None, room:
 
 @pytest.fixture
 def env(monkeypatch):
+    monkeypatch.setattr(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
     minutes = AsyncMock()  # the meeting's minutes onto the month's counter
     monkeypatch.setattr(mod.voice_billing, "add_month_seconds", minutes)
     reported_minutes = AsyncMock()
@@ -141,6 +142,19 @@ def test_in_call_dispatches_the_worker_once_and_prewakes(env):
     assert _post(env["client"], _status("in_call_not_recording")).status_code == 200
     env["dispatch"].assert_awaited_once()
     env["wake"].assert_called_once()
+
+
+def test_unpaid_opted_in_voice_plan_leaves_meet_without_starting_a_worker_or_legacy_debit(env):
+    with patch.object(
+        mod.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"metronome_voice_contract_id": "voice", "voice_plan_status": "pending_payment"}),
+    ):
+        assert _post(env["client"], _status("in_call_recording")).status_code == 200
+    assert env["meta"]["meeting"]["botError"] == "voice_payment_required"
+    env["bot_leave"].assert_awaited_once_with("bot-1")
+    env["dispatch"].assert_not_awaited()
+    env["minutes"].assert_not_awaited()
 
 
 def test_call_ended_closes_the_room_once(env):

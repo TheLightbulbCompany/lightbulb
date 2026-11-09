@@ -50,6 +50,8 @@ def _activity_epoch(row: dict) -> int:
 
 
 async def sweep_trial_idle_once(*, now: int | None = None) -> None:
+    from core.billing.voice_billing import has_voice_plan
+
     now = int(now if now is not None else time.time())
     rows = await container_repo.get_by_status("running")
     connections = ConnectionService()
@@ -58,7 +60,7 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
         if not isinstance(owner_id, str) or not owner_id:
             continue
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-        if not account or account.get("subscription_status") != "trial_local":
+        if not account or account.get("subscription_status") != "trial_local" or has_voice_plan(account):
             continue
         try:
             from core.services.trial_lifecycle import notices
@@ -88,7 +90,7 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
         # accepted command clears the claim, and paid/work/gateway state can move
         # after the first pass.
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-        if not account or account.get("subscription_status") != "trial_local":
+        if not account or account.get("subscription_status") != "trial_local" or has_voice_plan(account):
             continue
         if await messaging_repo.has_open_runs(owner_id):
             continue

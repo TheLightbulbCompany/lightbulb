@@ -356,6 +356,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/core/services/{trial_recap,trial_lifecycle}.py;
                                  docs/runbooks/pause-and-reading-only.md
   - Voice calls ............. references/company-and-plans.md ("Voice calls")
+                              <- core/billing/voice_plan*.py + routers/billing.py (opt-in $250/1,500/$0.35 voice business,
+                                 explicit workspace-bound admin terms/card setup, collected bounded entitlement,
+                                 UTC scoped periods, confirmed period-end cancellation; provider/runtime gates share coverage)
                               <- apps/backend/core/billing/voice_billing.py (free 10 min/UTC day, credits mode, MIN_CALL_SECONDS);
                                  core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);
                                  core/services/{voice_routing,voice_persona}.py (room-call routing; each agent speaks as itself in its own voice)

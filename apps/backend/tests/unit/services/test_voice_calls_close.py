@@ -79,6 +79,14 @@ async def test_close_call_bills_credits_once_and_deletes_row():
     assert items[1]["Delete"]["Key"] == {"owner_id": "__call__#call-1"}
 
 
+async def test_close_plan_window_never_stacks_provider_credit_or_free_counter_debits():
+    _, client, metronome, patches = _patches(call={**CALL, "billing": "plan", "holdMicrocents": 0})
+    assert await _run(patches, vc.close_call("call-1", now=1100, usage_seconds=90)) is True
+    metronome.ingest.assert_not_awaited()
+    items = client.transact_write_items.call_args.kwargs["TransactItems"]
+    assert len(items) == 1 and items[0]["Delete"]["Key"] == {"owner_id": "__call__#call-1"}
+
+
 @pytest.mark.asyncio
 async def test_close_call_loser_does_nothing():
     table, client, metronome, patches = _patches(claim_ok=False)

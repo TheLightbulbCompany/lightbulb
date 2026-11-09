@@ -38,6 +38,15 @@ logger = logging.getLogger(__name__)
 # grants platform use exactly like "active" does.
 _ACTIVE_STATUSES = frozenset({"active", "trialing", "trial_local"})
 
+
+def _paid_voice(account: Mapping[str, Any] | None) -> bool:
+    # Runtime import: voice_billing also uses trial_cap. The invoice-derived entitlement
+    # remains independent of the workspace's Stripe/Apple subscription fields.
+    from core.billing.voice_billing import has_voice_plan
+
+    return has_voice_plan(dict(account)) if account else False
+
+
 # Stripe statuses that indicate this account has *ever* been on a paid
 # subscription (or is currently mid-attempt). Used to block a second
 # POST /trial-checkout — Stripe Checkout in subscription mode creates a
@@ -77,6 +86,7 @@ def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
     """Whether this billing-account row currently allows platform use.
 
     Returns True when:
+      - the voice plan has collected, current invoice coverage, OR
       - ``subscription_status`` is in {"active", "trialing"}, OR
       - ``subscription_status`` is None *and* ``stripe_subscription_id`` is
         set — legacy fallback for rows whose status hasn't been backfilled
@@ -97,6 +107,8 @@ def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
     """
     if not account:
         return False
+    if _paid_voice(account):
+        return True
     status = account.get("subscription_status")
     if status in _ACTIVE_STATUSES:
         return True
@@ -110,8 +122,8 @@ _ENTITLED_STATUSES = frozenset({"active", "trialing"})
 
 
 def is_paid_subscription(account: Mapping[str, Any] | None) -> bool:
-    """PAID predicate — whether this row is on a real (or legacy-implied)
-    Stripe subscription.
+    """PAID predicate — a collected, currently covered voice plan or a real
+    (or legacy-implied) Workspace subscription.
 
     Distinct axis from ``is_subscription_active`` (platform use):
     ``trial_local`` owners ARE subscription-active — chat and interactive
@@ -128,6 +140,8 @@ def is_paid_subscription(account: Mapping[str, Any] | None) -> bool:
     """
     if not account:
         return False
+    if _paid_voice(account):
+        return True
     status = account.get("subscription_status")
     if status in _ENTITLED_STATUSES:
         return True
@@ -138,8 +152,9 @@ def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
     """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
     routines, autonomous heartbeats).
 
-    Autonomy is what the $50/mo subscription buys, so this is exactly the
-    paid predicate: a ``trial_local`` owner is NEVER always-on entitled.
+    Autonomy follows the paid predicate. An unchanged ``trial_local`` row can
+    also carry a separately collected voice plan; its invoice-derived coverage
+    grants the same runtime entitlement without rewriting provider billing fields.
     Kept as a distinct name because entitlement-to-autonomy and
     rendered-billing-state are different questions that merely share an
     answer today — call sites should keep saying which one they mean.
@@ -178,6 +193,10 @@ def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:
     """
     if not account:
         return False
+    # A pending voice invoice can still collect. A second Workspace checkout
+    # must not add an unrelated subscription while that enrollment is in flight.
+    if account.get("metronome_voice_contract_id"):
+        return True
     return account.get("subscription_status") in TRIAL_BLOCKED_STATUSES
 
 
@@ -457,7 +476,7 @@ async def _evaluate_provision_gate_inner(
     # at provision time, not stored here), so it must not be sent through the
     # Layer-2 provider_required check below. A trial_local owner is
     # provision-eligible without a stored provider.
-    if account.get("subscription_status") == "trial_local":
+    if account.get("subscription_status") == "trial_local" and not _paid_voice(account):
         # ONE predicate, shared with every start path and the
         # daily Bedrock-restore trigger, so the gate and those paths can
         # never disagree about whether a trial owner may have a container.
@@ -477,7 +496,7 @@ async def _evaluate_provision_gate_inner(
     # ChatGPT-OAuth disconnect clears provider_choice — a re-read here used
     # to mask the null with the legacy "bedrock_claude" fallback).
     provider_choice = account.get("provider_choice")
-    if provider_choice is None and account.get("plan") in {"base", "standard", "ultra_pro"}:
+    if provider_choice is None and (account.get("plan") in {"base", "standard", "ultra_pro"} or _paid_voice(account)):
         # Base, and (interim) a paid Workspace/Ultra row that never chose a
         # provider, run on the capped managed model (container_provision.
         # provider_choice_from_row). OpenRouter's per-key daily limit is the

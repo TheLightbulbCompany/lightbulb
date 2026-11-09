@@ -72,9 +72,22 @@ def build_owner_facts(
     from core.services.container_provision import provider_choice_from_row
 
     account = billing_account or {}
+    from core.billing.voice_billing import has_voice_plan
+
+    voice_paid = has_voice_plan(account)
     status = account.get("subscription_status")
-    if status == "trial_local":
+    if voice_paid:
+        voice_label = "Voice agents ($250/mo, 1,500 phone/meeting minutes then $0.35/min; UTC periods)"
+        plan = voice_label
+        if account.get("voice_plan_ending_at"):
+            plan += f"; cancellation confirmed at {account['voice_plan_ending_at']}"
+    elif status == "trial_local":
         plan = "Free trial (no card, 30 days): Lightbulb-managed DeepSeek within a daily allowance"
+        if account.get("metronome_voice_contract_id"):
+            from core.services.trial_cap import is_trial_expired
+
+            if is_trial_expired(account):
+                plan = "Trial ended (reading-only)"
     elif status in ("active", "trialing"):
         plan = _paid_plan_label(account.get("plan"))
     elif status:
@@ -87,19 +100,42 @@ def build_owner_facts(
         plan = _paid_plan_label(account.get("plan"))
     else:
         plan = "No billing account yet"
+    if account.get("metronome_voice_contract_id") and not voice_paid:
+        plan += "; Voice agents coverage is not active — check payment and paid coverage in Voice settings"
 
     provider_choice, byo_provider = provider_choice_from_row(account)
+    from core.services.trial_cap import is_managed_capped
+
+    included_voice_model = voice_paid and is_managed_capped(account)
     if account.get("company_stripe_account_id"):
         company_stripe = "connected" if account.get("company_stripe_charges_enabled") else "pending"
     else:
         company_stripe = "none"
     return {
+        **(
+            {
+                "voice_plan": {
+                    "collected_coverage_active": voice_paid,
+                    "latest_collected_period_end": account.get("voice_plan_paid_through"),
+                    "ends_at": account.get("voice_plan_ending_at"),
+                    "payment_required": bool(account.get("voice_plan_unpaid_invoice_ids")),
+                    "managed_daily_allowance_usd": settings.OPENROUTER_BASE_KEY_DAILY_LIMIT_USD
+                    if included_voice_model
+                    else None,
+                    "billing_timezone": "UTC",
+                }
+            }
+            if account.get("metronome_voice_contract_id")
+            else {}
+        ),
         # The container builds its own /u/{owner_id} backend URLs from this,
         # so there is no second source of truth for who it is acting as.
         "owner_id": owner_id,
         "plan": plan,
         "subscription_status": status,
-        "provider": format_provider_label(provider_choice, byo_provider),
+        "provider": "Included managed model (daily allowance)"
+        if included_voice_model
+        else format_provider_label(provider_choice, byo_provider),
         "provider_choice": provider_choice,
         "company_stripe": company_stripe,
         "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",

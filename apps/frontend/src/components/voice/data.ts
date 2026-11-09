@@ -155,3 +155,8 @@ export function useUsage() {
   return useSWR<Usage>(isLoaded && userId ? ["/voice/usage", orgId ?? userId, userId] : null,
     () => api.get("/voice/usage") as Promise<Usage>, { refreshInterval: 30_000 });
 }
+
+/** A factual recorded step can fill a missing call summary; guessed steps never do. */
+export function callSummary(call: Pick<CallItem, "summary" | "steps">): string {
+  return call.summary?.trim() || [...(call.steps ?? [])].reverse().find((step) => !step.guessed && step.text.trim())?.text.trim() || "Open conversation";
+}

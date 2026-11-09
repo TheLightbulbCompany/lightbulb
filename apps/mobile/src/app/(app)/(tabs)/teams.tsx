@@ -1,6 +1,6 @@
-import { WorkScreen } from "../../../components/tasks/WorkScreen";
+import { AgentSettings } from "../../../components/voice/AgentSettings";
 
-/** The Work tab: the threads overview and the schedules. */
-export default function TeamsScreen() {
-  return <WorkScreen />;
+/** Assistant configuration. Work and schedules are reachable from Home. */
+export default function AgentScreen() {
+  return <AgentSettings />;
 }

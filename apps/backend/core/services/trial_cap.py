@@ -50,14 +50,25 @@ def _is_expired(account: dict) -> bool:
     return trial_end is not None and int(time.time()) > int(trial_end)
 
 
+def _paid_voice(account: dict | None) -> bool:
+    from core.billing.voice_billing import has_voice_plan
+
+    return has_voice_plan(account)
+
+
 def is_trial_expired(account: dict | None) -> bool:
-    """Public: True only for a ``trial_local`` owner whose 30-day window elapsed.
+    """True for an expired local trial without currently collected voice coverage.
 
     Expiry ONLY — the daily cap is a separate, transient gate that resets at
     the UTC rollover, so it is deliberately not folded in here. Nightly-CEO
     arming keys off expiry (a capped-today trial is still armed; the cap gates
     the run, not the arm)."""
-    return bool(account) and account.get("subscription_status") == "trial_local" and _is_expired(account)
+    return (
+        bool(account)
+        and not _paid_voice(account)
+        and account.get("subscription_status") == "trial_local"
+        and _is_expired(account)
+    )
 
 
 async def trial_block_reason(owner_id: str) -> str | None:
@@ -78,11 +89,14 @@ async def trial_block_reason(owner_id: str) -> str | None:
 
 def is_managed_capped(account: dict | None) -> bool:
     """True for an owner on the cheap managed model whose OpenRouter per-key
-    daily $ limit is the valve: a trial_local row, a Base row, or (interim) a
+    daily $ limit is the valve: a trial_local row, a paid voice plan with no
+    explicit provider, a Base row, or (interim) a
     paid Workspace/Ultra row that never stored a provider_choice. Lockstep with
     the openrouter-gate's ``capped`` predicate (apps/infra/lambda/openrouter-gate/core.mjs)."""
     if not account:
         return False
+    if _paid_voice(account):
+        return not account.get("provider_choice")
     status = account.get("subscription_status")
     if status == "trial_local":
         return True
@@ -103,7 +117,7 @@ async def reason_for_account(owner_id: str, account: dict | None) -> str | None:
     """
     if not is_managed_capped(account):
         return None
-    trial = account.get("subscription_status") == "trial_local"
+    trial = account.get("subscription_status") == "trial_local" and not _paid_voice(account)
     if trial and _is_expired(account):
         return TRIAL_EXPIRED
     # The openrouter-gate stamps this when OpenRouter's per-key daily limit

@@ -39,6 +39,7 @@ class _Backend:
 class _LiveSession:
     def __init__(self, kw):
         self.kw, self.closed, self.session, self.close_s = kw, 0, None, 0
+        self.billed_s = 0.0
 
     async def close(self):
         await asyncio.sleep(
@@ -377,6 +378,33 @@ async def test_orb_closes_gpt_live_when_the_talk_goes_quiet(live, monkeypatch):
     await asyncio.sleep(0)
     assert len(live.sessions) == 2
     ctx.mic(False)
+
+
+async def test_owner_usage_waits_for_all_closes_and_excludes_muted_room_time(live, monkeypatch):
+    class B(_Backend):
+        async def owner(self, op, body):
+            return {"assistantName": "Nova"} if op == "start" else await super().owner(op, body)
+
+        async def aclose(self):
+            pass
+
+    b, ctx = B(), _Ctx()
+    monkeypatch.setattr(owner, "Backend", lambda *_a: b)
+    await owner.run(ctx, {"roomId": "r1", "ownerId": "o1", "roomToken": "t"})
+    ctx.mic(True)
+    await asyncio.sleep(0)
+    live.sessions[0].billed_s, live.sessions[0].close_s = 12.4, 0.03
+    ctx.mic(False)
+    ctx.mic(True)
+    await asyncio.sleep(0)
+    live.sessions[1].billed_s = 7.8
+    await ctx.callbacks[0]()  # the first session is still closing when the room ends
+    await ctx.callbacks[0]()  # repeated shutdown cannot double-close or double-report
+    assert [s.closed for s in live.sessions] == [1, 1]
+    [(_, body)] = [(op, body) for op, body in b.sent if op == "end"]
+    assert body["durationSec"] == 0 and body["transcript"] == []
+    assert sorted((u["id"], u["seconds"]) for u in body["usageSessions"]) == [("0", 12), ("1", 7)]
+    assert all(u["startedAt"].endswith("+00:00") for u in body["usageSessions"])
 
 
 def test_a_message_is_cleaned_for_speech():

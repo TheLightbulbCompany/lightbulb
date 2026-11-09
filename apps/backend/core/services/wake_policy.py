@@ -31,13 +31,14 @@ async def _is_trial(owner_id: str, account: Mapping[str, Any] | None) -> bool:
     both the ECS and AgentCore legs of ``is_parked_trial``.
     """
     from core.repositories import billing_repo
+    from core.billing.voice_billing import has_voice_plan
 
     try:
         acct = account if account is not None else await billing_repo.get_by_owner_id(owner_id)
     except Exception:
         logger.exception("wake_policy billing read failed owner=%s — treating as not parked", owner_id)
         return False
-    return bool(acct) and acct.get("subscription_status") == "trial_local"
+    return bool(acct) and acct.get("subscription_status") == "trial_local" and not has_voice_plan(dict(acct))
 
 
 def _last_interactive_epoch(container: Mapping[str, Any]) -> float | None:

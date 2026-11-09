@@ -16,7 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from core.billing import voice_billing
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo
+from core.repositories import messaging_repo, billing_repo
 from core.services import (
     clerk_admin,
     livekit_huddles,
@@ -173,6 +173,22 @@ async def _on_status(
             return  # a replay, or a step this meeting already took
         owner_id = meta["ownerId"]
         if target == "in_call":
+            account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+            if account.get("metronome_voice_contract_id") and not voice_billing.has_voice_plan(account):
+                # Keep an unpaid voice plan from quietly using legacy voice credit/free modes.
+                await meeting_bots.leave(bot_id)
+                await meeting_invites._patch_meeting(
+                    room_id,
+                    {
+                        "status": "bot_failed",
+                        "lastBotStatus": code,
+                        "botError": "voice_payment_required",
+                        "endedAt": int(at or time.time()),
+                    },
+                )
+                await _publish(room_id, "bot_failed")
+                await livekit_huddles.close_room(room_id, meet=True)
+                return
             try:
                 org = await clerk_admin.get_organization(owner_id) or {}
             except Exception:  # noqa: BLE001 -- a Clerk blip must not cost the meeting its agents

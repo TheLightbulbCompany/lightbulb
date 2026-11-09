@@ -31,7 +31,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
-from core.services import voice_onboarding, voice_outbound
+from core.services import voice_onboarding, voice_outbound, agent_registry, task_conversation
 
 router = APIRouter()
 
@@ -197,7 +197,21 @@ class AgentConfigIn(BaseModel):
 
 @router.get("/voice/agent")
 async def get_agent(auth: AuthContext = Depends(get_current_user)) -> dict:
-    return {"config": await messaging_repo.get_voice_agent(resolve_owner_id(auth))}
+    ws = resolve_owner_id(auth)
+    try:
+        current = await task_conversation.front_agent_id(ws)
+        issue = None
+    except task_conversation.NoFrontAgent:
+        current = None
+        issue = "Choose an active front-door agent. Your saved selection is unavailable."
+    return {
+        "config": await messaging_repo.get_voice_agent(ws),
+        "frontAgentId": current,
+        "frontAgentIssue": issue,
+        "agents": [
+            {"id": a["id"], "name": a["name"]} for a in await agent_registry.roster(ws) if a.get("status") == "active"
+        ],
+    }
 
 
 @router.put("/voice/agent")
@@ -220,6 +234,20 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
             raise HTTPException(status_code=422, detail={"code": "handoff_is_forwarded_line"})
         body.config["handoff"] = {**handoff, "number": number}
     ws = resolve_owner_id(auth)
+    previous = await messaging_repo.get_voice_agent(ws) or {}
+    # Older clients save the whole document. Omitting the new field retains the existing choice.
+    if "frontAgentId" not in body.config and "frontAgentId" in previous:
+        body.config["frontAgentId"] = previous["frontAgentId"]
+    selected = body.config.get("frontAgentId")
+    if selected is not None:
+        if not isinstance(selected, str) or not selected or len(selected) > 256:
+            raise HTTPException(status_code=422, detail={"code": "front_agent_invalid"})
+        agent = await agent_registry.get(ws, selected)
+        if agent is None or agent.get("status", "active") != "active":
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "front_agent_unavailable", "message": "Choose an active agent from this workspace."},
+            )
     if body.config.get("live") and not (await messaging_repo.get_voice_agent(ws) or {}).get("live"):
         try:  # Go live: the number is given (bought, once buying is on) now, never at sign-up
             body.config["number"] = await voice_onboarding.provision_at_go_live(ws, body.config, auth.user_id)

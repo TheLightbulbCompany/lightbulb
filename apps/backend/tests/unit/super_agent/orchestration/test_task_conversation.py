@@ -21,7 +21,7 @@ def _task(audience):
 
 @pytest.fixture
 def chat(monkeypatch):
-    rooms: dict[str, dict] = {}
+    rooms: dict[str, dict] = {ORIGIN: {"roomId": ORIGIN, "ownerId": WS}}
     members: dict[str, list[dict]] = {}
     posts: list[dict] = []
 
@@ -62,6 +62,11 @@ def chat(monkeypatch):
         return posts[-1], False
 
     monkeypatch.setattr(tc.session_chat, "_default_agents", default_agents)
+    monkeypatch.setattr(messaging_repo, "get_voice_agent", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "core.repositories.workspace_repo.WorkspaceRepo.resolve_owner_row", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(side_effect=lambda rid: members.get(rid, [])))
 
     monkeypatch.setattr(tc.agent_registry, "roster", AsyncMock(return_value=[]))  # no registry CEO: Paperclip's default
 

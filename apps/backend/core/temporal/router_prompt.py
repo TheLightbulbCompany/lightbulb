@@ -198,7 +198,7 @@ def render_batch(
                 line += f" [cards: {cards}]" if cards else " [no task card]"
             lines.append(line)
     lines += ["", "## Specialists (id · name · title)"]
-    active = [a for a in roster if a.get("status", "active") == "active" and a.get("role") != "ceo"]
+    active = [a for a in roster if a.get("status", "active") == "active"]
     lines += [f"- {a['id']} · {names[a['id']]} · {_one_line(a.get('title') or '', 80)}" for a in active] or [
         "- none: Lightbulb does the work itself"
     ]

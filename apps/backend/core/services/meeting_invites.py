@@ -302,7 +302,7 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
     A replay or a conflicting create returns quietly; the caller's update path takes it from there."""
     # ponytail: the room member cap bounds a meeting to the first N agents; read the roster directly in voice_calls.room_agents when a workspace outgrows it.
     roster = (await messaging.load_agent_roster(owner_id))[: messaging_repo.MAX_ROOM_MEMBERS - 1]
-    handles = messaging.mention_handles(roster)
+    handles = await messaging._handles_for(owner_id, roster)
     members = [
         {
             "kind": "human",
@@ -336,7 +336,11 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
             kind="channel",
             members=members,
             req_hash=messaging_repo.request_hash(name, "channel", normalized),
-            extra={"meeting": meeting, "hidden": True},
+            extra={
+                "meeting": meeting,
+                "hidden": True,
+                "frontAgentId": next((a["id"] for a in roster if handles[a["id"]] == "lightbulb"), None),
+            },
         )
     except messaging_repo.MessagingRepoError:
         # A replay with a different body, or a second member's forward racing this one (its META

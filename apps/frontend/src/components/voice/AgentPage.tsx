@@ -13,7 +13,7 @@ import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from
 type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment";
 
 export function AgentPage() {
-  const { data: config, error, save } = useAgentConfig();
+  const { data: config, error, save, agents = [], frontAgentId, frontAgentIssue } = useAgentConfig();
   const invite = useInviteAddress();
   const { organization } = useOrganization();
   const business = organization?.name || "your business";
@@ -64,6 +64,17 @@ export function AgentPage() {
           : <Button size="sm" variant="outline" onClick={() => set({ paused: !c.paused })}>{c.paused ? "Resume" : "Pause"}</Button>}
       </div>
     </header>
+
+    <Sec title="Front-door agent" hint="Choose an existing worker to greet people as Lightbulb. Every agent stays on your team and can do work. New conversations use this choice; existing conversations keep their agent.">
+      <label className="vx-label">Receptionist
+        <select className="vx-field" value={c.frontAgentId ?? ""} onChange={(e) => set({ frontAgentId: e.target.value || null })}>
+          <option value="">Workspace default{!c.frontAgentId && frontAgentId ? ` · ${agents.find((a) => a.id === frontAgentId)?.name ?? "existing agent"}` : ""}</option>
+          {c.frontAgentId && !agents.some((a) => a.id === c.frontAgentId) && <option value={c.frontAgentId}>Unavailable agent — choose another</option>}
+          {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+      </label>
+      {frontAgentIssue && <p role="alert">{frontAgentIssue}</p>}
+    </Sec>
 
     <Sec title="Name & greeting">
       <label className="vx-label">Name (callers hear it; in a meeting you say &ldquo;{name}, …&rdquo;)

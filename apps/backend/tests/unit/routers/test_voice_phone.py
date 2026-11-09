@@ -598,6 +598,7 @@ async def test_a_call_seats_lightbulb_and_prewarms_the_router(client, router_sea
     call = await _start(client)
     members = await messaging_repo.list_members(call["callId"])
     assert {(m["kind"], m["id"]) for m in members} == {("human", "user_owner"), ("agent", "agent_front")}
+    assert (await messaging_repo.get_room(call["callId"]))["frontAgentId"] == FRONT["id"]
     wake.assert_called_once_with("org_1", team=[FRONT])
     assert call["after"] == 0
 

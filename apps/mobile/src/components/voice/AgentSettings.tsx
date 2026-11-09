@@ -7,6 +7,7 @@ import { fonts, useChatPalette } from "../../config/theme";
 import { useTeamsConfig } from "../../lib/teamsData";
 
 interface AgentDocument {
+  frontAgentId?: string | null;
   name?: string; greeting?: string; instructions?: string; live?: boolean; paused?: boolean;
   allow?: Record<string, boolean>; handoff?: { number: string; onlyOpenHours: boolean };
   [key: string]: unknown;
@@ -17,6 +18,9 @@ export function AgentSettings() {
   const palette = useChatPalette();
   const adapter = useTeamsConfig();
   const api = useMemo(() => createApiClient(adapter), [adapter]);
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
+  const [effectiveFront, setEffectiveFront] = useState<string | null>(null);
+  const [frontIssue, setFrontIssue] = useState<string | null>(null);
   const [draft, setDraft] = useState<AgentDocument | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -29,8 +33,8 @@ export function AgentSettings() {
     if (dirtyRef.current) return; // Switching tabs must not silently discard an unsaved edit.
     let alive = true;
     setLoading(true);
-    void (api.get("/voice/agent") as Promise<{ config: AgentDocument | null }>).then(({ config }) => {
-      if (alive) { setDraft(config); setDirty(false); setMessage(""); }
+    void (api.get("/voice/agent") as Promise<{ config: AgentDocument | null; agents?: { id: string; name: string }[]; frontAgentIssue?: string; frontAgentId?: string }>).then(({ config, agents, frontAgentIssue, frontAgentId }) => {
+      if (alive) { setEffectiveFront(frontAgentId ?? null); setAgents(agents ?? []); setFrontIssue(frontAgentIssue ?? null); setDraft(config); setDirty(false); setMessage(""); }
     }).catch(() => { if (alive) setMessage("Couldn’t load agent settings. Try again."); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
@@ -42,7 +46,7 @@ export function AgentSettings() {
     setMessage("");
     try {
       const result = await api.put("/voice/agent", { config: draft }) as { config: AgentDocument };
-      setDraft(result.config); setDirty(false); setMessage("Saved");
+      setDraft(result.config); setFrontIssue(null); setDirty(false); setMessage("Saved");
     } catch (error) {
       setMessage((error as { status?: number }).status === 403 ? "Only a workspace admin can change agent settings." : "Couldn’t save. Your changes are still here. Try again.");
     } finally { setSaving(false); }
@@ -60,6 +64,15 @@ export function AgentSettings() {
     <Text style={[text, styles.description, { color: palette.fgSoft }]}>Lightbulb in the app. Choose what callers hear and what your assistant can do.</Text>
     {loading ? <ActivityIndicator accessibilityLabel="Loading agent settings" color={palette.fg} /> : draft ? <>
       <Text style={[text, styles.status, { color: palette.fgSoft }]}>{draft.live ? draft.paused ? "Phone answering is paused" : "Phone answering is live" : "Phone answering is not live"}</Text>
+      <Text accessibilityRole="header" style={[text, styles.label]}>Front-door agent</Text>
+      <Text style={[text, { color: palette.fgSoft }]}>Choose an existing worker to greet people as Lightbulb. Every agent can still do work. New conversations use this choice; existing conversations keep their agent.</Text>
+      {frontIssue && <Text accessibilityRole="alert" style={[text, { color: palette.alert }]}>{frontIssue}</Text>}
+      {[{ id: "", name: `Workspace default${!draft.frontAgentId && effectiveFront ? ` · ${agents.find((a) => a.id === effectiveFront)?.name ?? "existing agent"}` : ""}` }, ...agents].map((a) => <Pressable key={a.id}
+        accessibilityRole="radio" accessibilityState={{ checked: (draft.frontAgentId ?? "") === a.id, disabled: saving }}
+        accessibilityLabel={`Receptionist: ${a.name}`} disabled={saving} onPress={() => patch({ frontAgentId: a.id || null })}
+        style={[styles.input, { borderColor: (draft.frontAgentId ?? "") === a.id ? palette.fg : palette.edge }]}>
+        <Text style={text}>{a.name}</Text>
+      </Pressable>)}
       {field("Name callers hear", "name")}
       {field("Phone greeting", "greeting", true)}
       {field("Instructions", "instructions", true)}

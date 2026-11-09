@@ -1923,7 +1923,15 @@ _VOICE_EXEMPT_EVENT_PREFIXES = ("a2a:", "live-late:")
 async def _require_lightbulb_voice(owner_id: str, meta: dict, agent_id: str, event_id: str = "") -> None:
     """Contracts-v2 §6: in rooms people chat in only Lightbulb (the front agent) posts; a Worker posts only in
     its own task room (the task's specialist). Everything else is refused, `lightbulb-post.sh --room` included."""
-    if event_id.startswith(_VOICE_EXEMPT_EVENT_PREFIXES) or agent_id == await _front_agent_id(owner_id):
+    from core.services import task_conversation
+
+    if event_id.startswith(_VOICE_EXEMPT_EVENT_PREFIXES):
+        return
+    try:
+        front = await task_conversation.front_agent_id(owner_id, room_id=meta["roomId"])
+    except task_conversation.NoFrontAgent:
+        front = None  # a Worker may still finish its own already-authorized task below
+    if agent_id == front:
         return
     task = meta.get("task") or {}
     if task.get("taskId"):
@@ -2970,7 +2978,7 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest, *, meta_ext
                 kind=request.kind,
                 members=members,
                 req_hash=req_hash,
-                extra={**project_fields, **(meta_extra or {})},
+                extra={**project_fields, **(meta_extra or {}), **({"frontAgentId": front} if seated else {})},
                 dm_pair=dm_pair,
                 dm_pair_replaces=stale_room,
             )
@@ -5645,7 +5653,13 @@ async def create_agent_message(
             idemp_pk=messaging_repo.owner_pk(owner_id),
             idemp_sk=messaging_repo.agent_idemp_sk(request.event_id),
             req_hash=req_hash,
-            author={"kind": "agent", "id": agent_id, "displayName": agent["name"]},
+            author={
+                "kind": "agent",
+                "id": agent_id,
+                "displayName": FRONT_AGENT_NAME
+                if meta.get("frontAgentId") == agent_id or member.get("mentionHandle") == "lightbulb"
+                else agent["name"],
+            },
             text=request.text,
             mentions=mentions,
             reply_to_message_id=str(request.reply_to_message_id) if request.reply_to_message_id else None,

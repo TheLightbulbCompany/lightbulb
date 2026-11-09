@@ -174,3 +174,13 @@ For workspaces without the separate voice-agents plan:
 - Every other workspace gets 10 free minutes per workspace per UTC day, one
   free call at a time.
 - A call ends at 30 minutes, or sooner when the minutes or credits run out.
+
+
+### Front-door agent
+
+The owner can designate an existing active worker in the Agent settings on web or mobile.
+The default for a fresh roster is the saved CEO UUID, regardless of its edited name. A legacy
+roster keeps its existing root until the owner selects another agent. Every active agent stays
+available for work. The selection applies to new conversations; existing private conversations
+keep their agent. Existing texting-line bindings are preserved. An unavailable selected agent
+needs the owner to choose an active worker in Agent settings; another agent is not silently substituted.

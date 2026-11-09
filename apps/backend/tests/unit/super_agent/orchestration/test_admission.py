@@ -61,7 +61,7 @@ def world(table, monkeypatch):  # noqa: F811
     async def foreign(room_id, owner):
         return False
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     async def signal_router(ref):

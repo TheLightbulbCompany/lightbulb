@@ -14,6 +14,10 @@ def legacy_billing_account(monkeypatch):
     from routers import voice
 
     monkeypatch.setattr(voice.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(voice.agent_registry, "roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "core.repositories.workspace_repo.WorkspaceRepo.resolve_owner_row", AsyncMock(return_value=None)
+    )
 
 
 @pytest.mark.usefixtures("repos")
@@ -109,10 +113,10 @@ async def test_done_marks_the_call_resolved(repos, async_client_org_admin):  # n
 
 @pytest.mark.asyncio
 async def test_agent_config_round_trip_admin_only(repos, async_client_org_admin):  # noqa: F811
-    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json() == {"config": None}
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] is None
     cfg = {"name": "Nova", "allow": {"book": True}, "hours": [{"day": "Mon", "open": "09:00"}], "price": 4.5}
     assert (await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})).status_code == 200
-    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json() == {"config": cfg}
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] == cfg
     big = {"x": "a" * 70_000}
     assert (await async_client_org_admin.put("/api/v1/voice/agent", json={"config": big})).status_code == 413
 
@@ -270,3 +274,54 @@ async def test_handoff_number_cannot_be_the_forwarded_line(repos, async_client_o
     cfg = {"forwardFrom": "(415) 555-0177", "handoff": {"number": "+14155550177"}}
     r = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_is_forwarded_line"
+
+
+@pytest.mark.usefixtures("repos")
+async def test_front_agent_selection_is_scoped_and_preserves_other_fields(async_client_org_admin, monkeypatch):
+    from routers import voice
+
+    monkeypatch.setattr(
+        voice.agent_registry, "get", AsyncMock(return_value={"agentId": "existing", "status": "active"})
+    )
+    cfg = {"name": "Founder's name", "frontAgentId": "existing", "unknownSetting": {"keep": True}}
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
+    assert response.status_code == 200
+    voice.agent_registry.get.assert_awaited_once_with(WS, "existing")
+    assert await messaging_repo.get_voice_agent(WS) == cfg
+    # An old client omits the selection when saving another setting; retain it.
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"name": "Updated"}})
+    assert response.json()["config"]["frontAgentId"] == "existing"
+
+
+@pytest.mark.parametrize("agent", [None, {"status": "paused"}, {"status": "deleted"}])
+@pytest.mark.usefixtures("repos")
+async def test_unavailable_or_foreign_selection_has_no_saved_effect(async_client_org_admin, monkeypatch, agent):
+    from routers import voice
+
+    await messaging_repo.put_voice_agent(WS, {"name": "Unchanged"}, "admin")
+    monkeypatch.setattr(voice.agent_registry, "get", AsyncMock(return_value=agent))
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"frontAgentId": "foreign"}})
+    assert response.status_code == 422
+    assert await messaging_repo.get_voice_agent(WS) == {"name": "Unchanged"}
+
+
+@pytest.mark.usefixtures("repos")
+async def test_member_cannot_designate_front_agent(async_client_org_member, monkeypatch):
+    from routers import voice
+
+    lookup = AsyncMock()
+    monkeypatch.setattr(voice.agent_registry, "get", lookup)
+    response = await async_client_org_member.put("/api/v1/voice/agent", json={"config": {"frontAgentId": "someone"}})
+    assert response.status_code == 403
+    lookup.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("repos")
+async def test_missing_selected_agent_is_visible_without_rewriting_the_selection(async_client_org_admin):
+    await messaging_repo.put_voice_agent(WS, {"frontAgentId": "deleted-founder-worker", "name": "Preserved"}, "admin")
+    response = await async_client_org_admin.get("/api/v1/voice/agent")
+    assert response.status_code == 200
+    assert response.json()["config"]["frontAgentId"] == "deleted-founder-worker"
+    assert response.json()["frontAgentId"] is None
+    assert "Choose an active" in response.json()["frontAgentIssue"]
+    assert (await messaging_repo.get_voice_agent(WS))["name"] == "Preserved"

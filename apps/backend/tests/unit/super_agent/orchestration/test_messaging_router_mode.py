@@ -102,6 +102,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(messaging, "_router_room", router_room)
     monkeypatch.setattr(messaging, "_front_agent_id", front)
+    monkeypatch.setattr(tc, "front_agent_id", AsyncMock(return_value=CEO))
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(side_effect=lambda o, u, r: (w["meta"], _human(u))))
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: w["meta"]))
     monkeypatch.setattr(messaging.messaging_repo, "get_member", get_member)
@@ -334,3 +335,11 @@ async def test_new_router_room_seats_only_lightbulb(world, monkeypatch):
     assert [(x.kind, x.id) for x in seated] == [("agent", CEO)]  # a DM to any agent is a DM to Lightbulb
     seated = await messaging._lightbulb_only(OWNER, [m("human", "user_priya")], "dm")
     assert [(x.kind, x.id) for x in seated] == [("human", "user_priya")]
+
+
+@pytest.mark.asyncio
+async def test_pinned_front_keeps_assistant_label_after_a_handle_change(world):
+    world["meta"]["frontAgentId"] = CEO
+    world["members"][1]["mentionHandle"] = "renamed-founder"
+    await _post(text="The work is ready.")
+    assert world["created"][-1]["author"]["displayName"] == messaging.FRONT_AGENT_NAME

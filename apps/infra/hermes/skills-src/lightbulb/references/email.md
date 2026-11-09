@@ -52,7 +52,9 @@ Afterwards the transcript posts in the general channel and one agent there write
 the notes. Action items are recorded commitments with their original assignee;
 uniquely matching work already started during the call is linked, including
 completed work. Recording an action item does not authorize agent execution.
-People can explicitly request unmatched work through the existing chat.
+When meeting follow-ups are enabled, the Router reads the original occurrence under its inviter's
+current authority and starts clearly agent-directed requests through existing permissions and approvals.
+Human commitments remain recorded; unclear assignments can be clarified. Notes alone do not authorize work.
 Notes and transcripts stay in the app; they are not emailed automatically.
 If no agent is in that channel, no notes are written. An answer nobody got to
 hear in the Meet stays with the meeting and its notes. Notes and commitments from

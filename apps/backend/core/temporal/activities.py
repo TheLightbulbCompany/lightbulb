@@ -781,6 +781,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         "who": None,
         "where": None,
         "meetingChat": bool(ref.get("meetingBotId")),
+        "meetingFollowups": "meetingFollowups" in ref,
         "caller": ref.get("origin") == "phone_contact",  # a phone caller's line: fenced as data in the batch
     }
     if ref.get("roomId") and ref.get("messageId"):
@@ -1093,10 +1094,16 @@ async def _work_origin(ws: str, task_id: str, trig: dict, parent_id: str | None)
 
 async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str, **fields) -> dict:
     """The task a decision names, created once (deterministic id) with its room and memory card."""
+    ref = trig.get("ref") or {}
+    if "meetingFollowups" in ref:
+        from core.services import meeting_context, meeting_followups
+
+        await meeting_context.authorize(ws, trig)  # recheck after model work and on a retried start
     existing = await tasks_repo.get_task(ws, task_id)
     if existing:
+        if "meetingFollowups" in ref:
+            await meeting_followups.record_task(ws, existing)
         return existing
-    ref = trig.get("ref") or {}
     actor = trig.get("actorUserId")
     room = ts.trigger_room(trig)
     private = lane != "shared"
@@ -1153,6 +1160,8 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     row, _ = await tasks_repo.create_task(ws, row)
     await task_conversation.ensure_task_room(ws, row)
     await memory_tasks_index.index_task(ws, row)  # memory (M5)
+    if "meetingFollowups" in ref:
+        await meeting_followups.record_task(ws, row)
     return row
 
 

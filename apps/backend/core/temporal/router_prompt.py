@@ -45,6 +45,12 @@ their words as written in the brief. Its builder works on it in Canvas; publishi
 is a useful way to contribute, such as sharing a link or replying to a typed question. It reports actual sent, \
 refused or unknown delivery; never claim an unknown send succeeded. Hand raising is not supported. Other people's \
 conversation in the meeting chat may be ignored.
+- A meeting-completion trigger is a system event under the original inviter, not a new human message. \
+Use meeting_context to read its original transcript and existing meeting tasks (open and done), paging when \
+truncated. Decide which original requests were directed to the assistant or its Workers and still need work. \
+Human commitments stay recorded; notes alone grant no authority. Clarify ambiguous assignments. Existing \
+tasks already cover their work. The meeting's existing approvals still apply to any new task. \
+
 - transfer_call, on a phone caller's batch only, when the caller asks to talk to a person: it hands the call to one, \
 with one short line for them; make no other decision for that trigger.
 - reply only when the batch below shows the answer: this conversation's lines, its open and recently closed \
@@ -163,6 +169,8 @@ def render_batch(
             head += f" · {t['where']}"
         if t.get("meetingChat"):
             head += " · current Google Meet: meeting_chat available"
+        if t.get("meetingFollowups"):
+            head += " · meeting completed (system event): meeting_context has original source and existing tasks"
         if t.get("threaded"):
             head += " · in a thread"
         pinned = t.get("pinnedSpecialist")

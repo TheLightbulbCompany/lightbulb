@@ -37,6 +37,20 @@ def m():
         patch.object(voice_meet.meeting_bots, "say", AsyncMock()) as say,
         patch.object(voice_meet.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
         patch.object(
+            voice_meet.tasks_repo,
+            "get_trigger",
+            AsyncMock(
+                return_value={
+                    "ref": {
+                        "roomId": ROOM,
+                        "origin": "meeting",
+                        "meetingBotId": "bot_1",
+                        "meetingInCallAt": 100,
+                    }
+                }
+            ),
+        ),
+        patch.object(
             voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": meeting})
         ),
         patch.object(voice_meet.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
@@ -345,6 +359,7 @@ async def test_a_refused_or_foreign_question_falls_back_to_a_message(m):
 def _made_task():
     """A Router thread started from a meeting message (a `chat:` trigger, no follow-up), that made a document."""
     return {"taskId": "k9", "title": "Draft the holiday-hours post", "status": "idle", "triggerId": "chat:m7",
+            "pk": "WS#org_1", "origin": "meeting",
             "attemptCount": 1, "audience": {"kind": "room", "roomId": ROOM},
             "outputs": [{"id": "file:a1", "kind": "document", "title": "holiday-hours-post.md"}]}  # fmt: skip
 
@@ -359,7 +374,9 @@ async def _announce_made(m, task):
         patch.object(activities.tasks_repo, "get_task_tree", AsyncMock(return_value=tree)),
         patch.object(activities.task_conversation, "ensure_task_room", AsyncMock()),
         patch.object(activities.task_conversation, "post_as_lightbulb", post),
-        patch.object(voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"meeting": m["meeting"]})),
+        patch.object(
+            voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": m["meeting"]})
+        ),
         patch.object(voice_meet, "_tile_phase", AsyncMock()),
     ):
         await activities._announce("org_1", task["taskId"], "idle")
@@ -457,3 +474,21 @@ async def test_voice_events_distinguish_a_task_ack_from_the_terminal_answer():
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
         out = await voice_meet.agent_lines(ROOM, 0)
     assert [(m["waiting"], m["taskIds"]) for m in out["messages"]] == [(True, ["k1"]), (False, ["k1"])]
+
+
+async def test_an_old_result_link_never_reaches_a_new_occurrences_bot(m):
+    m["meeting"].update(status="in_call", recallBotId="new-bot", inCallAt=200)
+    line = await _announce_made(m, _made_task())
+    assert line.endswith("taskId=k9")
+    m["say"].assert_not_awaited()
+    assert "k9" not in m["meeting"].get("linksSaid", [])
+
+
+async def test_unproven_occurrence_keeps_the_app_link_without_provider_delivery(m):
+    m["meeting"].update(status="in_call")
+    with patch.object(
+        voice_meet.tasks_repo, "get_trigger", AsyncMock(return_value={"ref": {"roomId": ROOM, "origin": "meeting"}})
+    ):
+        line = await _announce_made(m, _made_task())
+    assert line.endswith("taskId=k9")
+    m["say"].assert_not_awaited()

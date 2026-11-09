@@ -372,6 +372,8 @@ class TestOwnerBrowserPolicy:
 
         fake = MagicMock()
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        # This retained helper manages legacy owner roles; current pool sessions use STS scope.
+        monkeypatch.setattr(mod.settings, "HERMES_SHARED_RUNTIME_ARN", "")
         monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)

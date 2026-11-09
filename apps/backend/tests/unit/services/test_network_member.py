@@ -456,3 +456,8 @@ async def test_a_live_old_runtime_still_receives_network_revocation_during_drain
     await network_member.write_sessions("org_a")
     await network_member.publish_sessions("org_a")
     assert rpc == [("network.sessions", {}, {})]
+
+
+@pytest.fixture(autouse=True)
+def _canonical_pool_configured(monkeypatch):
+    monkeypatch.setattr(network_member.settings, "HERMES_SHARED_RUNTIME_ARN", "arn:r")

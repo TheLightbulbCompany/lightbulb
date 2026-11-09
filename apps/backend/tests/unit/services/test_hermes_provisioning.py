@@ -1,3 +1,4 @@
+import base64
 import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -28,6 +29,7 @@ HERMES_IMAGE = "acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm6
 def _configure_hermes_settings(monkeypatch):
     """Both loud-failure guards provision_hermes_runtime checks on entry (m3: OWNER_STATE_BUCKET
     got the same guard AGENTCORE_HERMES_IMAGE already had)."""
+    monkeypatch.setattr(hermes_provisioning.settings, "HERMES_SHARED_RUNTIME_ARN", "arn:pool")
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
     monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas")
 
@@ -391,7 +393,8 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
         AsyncMock(return_value="arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(bedrock_gate_tokens_mod, "mint_gate_token", AsyncMock(return_value="bearer-plaintext"))
-    monkeypatch.setattr(hermes_provisioning, "ensure_agentcore_trust", AsyncMock(return_value=True))
+    monkeypatch.setattr(hermes_provisioning.settings, "HERMES_SHARED_RUNTIME_ARN", "arn:pool")
+    monkeypatch.setattr("core.services.agentcore_runtime.ensure_agentcore_trust", AsyncMock(return_value=True))
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(existing_row))
     # The row as DynamoDB holds it: ensure_owner_tokens is `SET x = if_not_exists(x, :x)`.
     state = dict(existing_row or {})
@@ -410,178 +413,57 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
 
 
 @pytest.mark.asyncio
-async def test_two_concurrent_prepares_write_the_identical_row_secret_and_bearer(monkeypatch):
-    """No lease: two provision runs for one owner must converge on one credential set."""
+async def test_concurrent_pool_prepares_preserve_tokens_and_derive_same_identity(monkeypatch):
     import asyncio
-
-    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
+    from core.billing import bedrock_gate_tokens as gate
 
     state = _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a", "id": "row-1"})
-    monkeypatch.setattr(
-        bedrock_gate_tokens_mod,
-        "mint_gate_token",
-        AsyncMock(
-            side_effect=lambda owner_id, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
-                owner_id, row_id, generation
-            )
-        ),
-    )
-    secrets_written = []
-
-    async def _write_boot_secret(owner_id, **kwargs):
-        secrets_written.append(kwargs)
-        return f"lightbulb/dev/hermes/{owner_id}/boot"
-
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _write_boot_secret)
-
-    await asyncio.gather(
-        hermes_provisioning.prepare_hermes_workspace("org_a"),
-        hermes_provisioning.prepare_hermes_workspace("org_a"),
-    )
-
-    assert len(secrets_written) == 2 and secrets_written[0] == secrets_written[1]
-    assert secrets_written[0]["bedrock_bearer"] == bedrock_gate_tokens_mod.derive_gate_bearer("org_a", "row-1", 0)
-    assert secrets_written[0]["hook_token"] == state["hook_token"]
-
-
-@pytest.mark.asyncio
-async def test_prepare_derives_the_bearer_at_the_rows_generation(monkeypatch):
-    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
-
-    _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a", "gate_bearer_generation": 2})
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _noop_async_returns("boot"))
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", AsyncMock())
-
-    await hermes_provisioning.prepare_hermes_workspace("org_a")
-
-    assert bedrock_gate_tokens_mod.mint_gate_token.await_args.kwargs["generation"] == 2
-    assert bedrock_gate_tokens_mod.mint_gate_token.await_args.kwargs["row_id"] == "row-new"
-
-
-@pytest.mark.asyncio
-async def test_teardown_then_reprovision_yields_a_different_bearer(monkeypatch):
-    """Teardown deletes the containers row; the next provision's row has a new id, so a bearer
-    copied out of the old runtime is not re-issued. A generation bump rotates too."""
-    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
-
     bearers = []
 
-    async def _write_boot_secret(owner_id, **kwargs):
-        bearers.append(kwargs["bedrock_bearer"])
-        return "boot"
+    async def mint(owner_id, *, row_id, generation):
+        bearers.append(gate.derive_gate_bearer(owner_id, row_id, generation))
+        return bearers[-1]
 
-    for existing in ({"id": "row-old"}, {"id": "row-old", "gate_bearer_generation": 1}, {"id": "row-after-teardown"}):
-        _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a", **existing})
-        monkeypatch.setattr(
-            bedrock_gate_tokens_mod,
-            "mint_gate_token",
-            AsyncMock(
-                side_effect=lambda owner_id, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
-                    owner_id, row_id, generation
-                )
-            ),
-        )
-        monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _write_boot_secret)
-        monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", AsyncMock())
-        await hermes_provisioning.prepare_hermes_workspace("org_a")
-
-    assert len(set(bearers)) == 3
+    monkeypatch.setattr(gate, "mint_gate_token", mint)
+    write = AsyncMock(side_effect=AssertionError("pool preparation wrote a legacy boot secret"))
+    monkeypatch.setattr("core.services.agentcore_runtime.write_boot_secret", write)
+    assert await asyncio.gather(
+        hermes_provisioning.prepare_hermes_workspace("org_a"), hermes_provisioning.prepare_hermes_workspace("org_a")
+    ) == [False, False]
+    assert bearers == [gate.derive_gate_bearer("org_a", "row-1", 0)] * 2
+    assert state["hook_token"] and state["gateway_token"]
+    write.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_secret(monkeypatch):
-    row = _patch_owner_aws(monkeypatch, existing_row=None)
+async def test_pool_prepare_keeps_existing_tokens_and_current_bearer_generation(monkeypatch):
+    from core.billing import bedrock_gate_tokens as gate
 
-    written = {}
-
-    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer):
-        written.update(hookToken=hook_token, gatewayToken=gateway_token, bedrockBearer=bedrock_bearer)
-        return True
-
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
-
-    assert await hermes_provisioning.prepare_hermes_workspace("org_a") is True
-
-    # No vaultToken: the execution role can read this secret (and the agent's shell can read the
-    # role over the metadata service); the vault token rides the backend's invokes instead.
-    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer"}
-    assert written["bedrockBearer"] == "bearer-plaintext"
-    # The tokens on the row are the ones in the secret (ensure_owner_tokens' read-back).
-    assert row["hook_token"] == written["hookToken"]
-    assert row["gateway_token"] == written["gatewayToken"]
+    state = _patch_owner_aws(
+        monkeypatch,
+        existing_row={
+            "id": "row-1",
+            "hook_token": "existing-hook",
+            "gateway_token": "existing-gw",
+            "gate_bearer_generation": 2,
+        },
+    )
+    assert await hermes_provisioning.prepare_hermes_workspace("org_a") is False
+    assert state["hook_token"] == "existing-hook" and state["gateway_token"] == "existing-gw"
+    gate.mint_gate_token.assert_awaited_once_with("org_a", row_id="row-1", generation=2)
 
 
 @pytest.mark.asyncio
-async def test_fresh_managed_workspace_ensures_owner_key_before_boot_secret(monkeypatch):
-    _patch_owner_aws(monkeypatch, existing_row=None)
+async def test_pool_prepare_still_ensures_managed_owner_key(monkeypatch):
+    _patch_owner_aws(monkeypatch)
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"subscription_status": "active", "provider_choice": "openrouter_managed"}),
     )
-    order = []
-
-    async def ensure_key(owner_id):
-        order.append(("key", owner_id))
-        return "hash-only"
-
-    async def write_secret(owner_id, **kwargs):
-        order.append(("boot", owner_id))
-        return "lightbulb/dev/hermes/org_a/boot"
-
-    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", ensure_key)
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", write_secret)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", AsyncMock())
-
-    await hermes_provisioning.prepare_hermes_workspace("org_a")
-    assert order == [("key", "org_a"), ("boot", "org_a")]
-
-
-@pytest.mark.asyncio
-async def test_prepare_hermes_workspace_reuses_existing_tokens_on_a_retry(monkeypatch):
-    """A retry of a partially-failed provision must not orphan an already-issued token."""
-    _patch_owner_aws(monkeypatch, existing_row={"hook_token": "existing-hook", "gateway_token": "existing-gw"})
-    written = {}
-
-    async def _fake_write_boot_secret(owner_id, **kwargs):
-        written.update(kwargs)
-        return "lightbulb/dev/hermes/org_a/boot"
-
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
-
-    await hermes_provisioning.prepare_hermes_workspace("org_a")
-    assert written["hook_token"] == "existing-hook"
-    assert written["gateway_token"] == "existing-gw"
-
-
-@pytest.mark.asyncio
-async def test_prepare_converges_a_live_workspace_without_rotating_its_bearer(monkeypatch):
-    """reconcile_runtime runs prepare against a LIVE runtime: the bearer is derived, so the
-    re-run reproduces the one the runtime holds instead of rotating it."""
-    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
-
-    live = {"owner_id": "org_a", "id": "row-1", "agentcore_runtime_arn": "arn:existing", "status": "running"}
-    _patch_owner_aws(monkeypatch, existing_row={**live, "hook_token": "hook", "gateway_token": "gw"})
-    monkeypatch.setattr(
-        bedrock_gate_tokens_mod,
-        "mint_gate_token",
-        AsyncMock(
-            side_effect=lambda owner_id, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
-                owner_id, row_id, generation
-            )
-        ),
-    )
-    bearers = []
-
-    async def _write_boot_secret(owner_id, **kwargs):
-        bearers.append(kwargs["bedrock_bearer"])
-        return False
-
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _write_boot_secret)
-
-    await hermes_provisioning.prepare_hermes_workspace("org_a")
-    await hermes_provisioning.prepare_hermes_workspace("org_a")
-
-    assert bearers == [bedrock_gate_tokens_mod.derive_gate_bearer("org_a", "row-1", 0)] * 2
+    ensure = AsyncMock(return_value="hash-only")
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", ensure)
+    assert await hermes_provisioning.prepare_hermes_workspace("org_a") is False
+    ensure.assert_awaited_once_with("org_a")
 
 
 # --- I3/M4-R37: freshness guard against rotating a live ECS owner's bearer -----------------
@@ -591,91 +473,8 @@ async def test_prepare_converges_a_live_workspace_without_rotating_its_bearer(mo
 
 
 @pytest.mark.asyncio
-async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeypatch):
-    updated = {}
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:aws:bedrock-agentcore:...:runtime/r1")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    _no_runtime_found_by_name(monkeypatch)
-
-    async def _fake_update_fields(owner_id, fields, **kwargs):
-        updated.update(fields)
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _fake_update_fields)
-    arn = await hermes_provisioning.provision_hermes_runtime("org_a")
-    assert arn == "arn:aws:bedrock-agentcore:...:runtime/r1"
-    assert updated["runtime_host"] == "agentcore"
-    assert updated["agentcore_runtime_arn"] == arn
-    assert updated["status"] == "running"
-    # hook_token/gateway_token are prepare_hermes_workspace's job now -- not repeated here.
-    assert "hook_token" not in updated
-    assert "gateway_token" not in updated
-
-
-@pytest.mark.asyncio
-async def test_provision_threads_the_browser_profile_into_the_runtime_request(monkeypatch):
-    """The profile is resolved BEFORE the request is built -- its id is what turns the six
-    AgentCore Browser variables on, and CreateAgentRuntime is the only place they land."""
-    created = {}
-    monkeypatch.setattr(
-        hermes_provisioning.browser_sessions,
-        "ensure_browser_profile",
-        _noop_async_returns("org_a-ab12cd34ef"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _noop_async)
-    _no_runtime_found_by_name(monkeypatch)
-
-    await hermes_provisioning.provision_hermes_runtime("org_a")
-
-    assert created["environmentVariables"]["AGENTCORE_PROFILE_ID"] == "org_a-ab12cd34ef"
-    assert created["environmentVariables"]["AGENT_BROWSER_PROVIDER"] == "agentcore"
-
-
-@pytest.mark.asyncio
-async def test_provision_still_builds_a_usable_request_when_the_profile_resolve_fails(monkeypatch):
-    """The whole point of ensure_browser_profile's never-raise contract: AWS refusing the
-    profile must cost the workspace its browser tools, not its provision. Asserted at the
-    COMPOSITION level -- a refactor that made "" throw would still pass the two unit tests
-    on the env builder."""
-    created = {}
-    # The autouse _no_browser_profile fixture already answers "" here; this test is what
-    # pins the consequence.
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _noop_async)
-    _no_runtime_found_by_name(monkeypatch)
-
-    await hermes_provisioning.provision_hermes_runtime("org_a")
-
-    env = created["environmentVariables"]
-    assert env["ISOL8_OWNER_ID"] == "org_a"  # the request is complete, not half-built
-    assert not [k for k in env if k.startswith(("AGENTCORE_", "AGENT_BROWSER_"))]
-
-
-@pytest.mark.asyncio
 async def test_provision_refuses_without_a_configured_image(monkeypatch):
+    monkeypatch.setattr(hermes_provisioning.settings, "HERMES_SHARED_RUNTIME_ARN", "arn:pool")
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", "")
     # m7: explicit rather than relying on the image guard firing before this is ever read --
     # brittle if the guard order ever changes.
@@ -689,6 +488,7 @@ async def test_provision_refuses_without_a_configured_bucket(monkeypatch):
     """m3: the same loud-failure guard AGENTCORE_HERMES_IMAGE has -- an empty bucket is
     otherwise silent all the way down (upload_profile no-ops, restore_profile no-ops, every
     agent boots on Hermes's own unpinned auto-chain)."""
+    monkeypatch.setattr(hermes_provisioning.settings, "HERMES_SHARED_RUNTIME_ARN", "arn:pool")
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", HERMES_IMAGE)
     monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "")
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _explode)
@@ -696,375 +496,10 @@ async def test_provision_refuses_without_a_configured_bucket(monkeypatch):
         await hermes_provisioning.provision_hermes_runtime("org_a")
 
 
-@pytest.mark.asyncio
-async def test_provision_is_idempotent_on_a_row_that_already_has_a_runtime(monkeypatch):
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"agentcore_runtime_arn": "arn:existing", "status": "running"}),
-    )
-    created = {}
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.setdefault("x", 1))
-    assert await hermes_provisioning.provision_hermes_runtime("org_a") == "arn:existing"
-    assert created == {}
-
-
-@pytest.mark.asyncio
-async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_arn(monkeypatch):
-    """M4-R35/C1: a retry after a create-but-not-yet-ready runtime must reuse the recorded ARN,
-    not hit CreateAgentRuntime again (which would 409 on the unique runtime name)."""
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"agentcore_runtime_arn": "arn:not-ready-yet"}),  # no status="running" yet
-    )
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
-    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)  # arn already on the row
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)  # unchanged -- no update
-    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
-
-    polled = {}
-
-    def _fake_status(arn):
-        polled["arn"] = arn
-        return "READY"
-
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", _fake_status)
-
-    terminal = {}
-
-    async def _fake_update_fields(owner_id, fields, **kwargs):
-        terminal.update(fields)
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _fake_update_fields)
-
-    arn = await hermes_provisioning.provision_hermes_runtime("org_a")
-    assert arn == "arn:not-ready-yet"
-    assert polled["arn"] == "arn:not-ready-yet"
-    assert terminal["status"] == "running"
-
-
-@pytest.mark.asyncio
-async def test_a_create_failed_runtime_is_deleted_arn_cleared_and_the_failure_raised(monkeypatch):
-    """F1 (predeploy review, M6-R34): a CREATE_FAILED/UPDATE_FAILED runtime is dead -- AWS
-    refuses UpdateAgentRuntime against it, so every retry that found this ARN on the row would
-    otherwise call Update on a terminal runtime forever. The terminal branch must delete it and
-    clear the row's ARN before re-raising."""
-    _configure_hermes_settings(monkeypatch)
-    _no_runtime_found_by_name(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
-
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "CREATE_FAILED")
-    deleted = {}
-    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", lambda arn: deleted.setdefault("arn", arn))
-
-    writes: list[dict] = []
-
-    async def _fake_update_fields(owner_id, fields, **kwargs):
-        writes.append(fields)
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _fake_update_fields)
-
-    with pytest.raises(hermes_provisioning.AgentCoreRuntimeCreateFailed, match="CREATE_FAILED"):
-        await hermes_provisioning.provision_hermes_runtime("org_a")
-
-    assert deleted["arn"] == "arn:dead"
-    # writes[0] is the pre-poll ARN record (M4-R35/C1); writes[1] is this fix's clear.
-    assert writes[0]["agentcore_runtime_arn"] == "arn:dead"
-    assert writes[-1]["agentcore_runtime_arn"] is None
-
-
-@pytest.mark.asyncio
-async def test_provision_raises_transient_without_creating_when_old_runtime_never_finishes_deleting(monkeypatch):
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"agentcore_runtime_arn": "arn:old", "status": "provisioning"}),
-    )
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)
-
-    def _gone(arn):
-        raise hermes_provisioning._RuntimeGone(arn)
-
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
-    monkeypatch.setattr(hermes_provisioning, "_wait_runtime_gone", lambda arn: False)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
-
-    with pytest.raises(RuntimeError, match="still deleting") as ei:
-        await hermes_provisioning.provision_hermes_runtime("org_a")
-    from core.repositories.container_repo import classify_provision_error
-
-    assert classify_provision_error(ei.value)[1] is True
-
-
-@pytest.mark.asyncio
-async def test_a_create_failed_arn_clear_is_conditioned_on_the_arn_still_matching(monkeypatch):
-    """Two concurrent runs can both observe the same dead ARN and both reach this clear. If a
-    THIRD run's fresh create already landed a new ARN on the row in between, the loser's clear
-    must not blindly wipe out that newer, healthy ARN — it must be conditioned on the row still
-    carrying the arn this run determined was CREATE_FAILED."""
-    _configure_hermes_settings(monkeypatch)
-    _no_runtime_found_by_name(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "CREATE_FAILED")
-    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", lambda arn: None)
-
-    calls: list[dict] = []
-
-    async def _fake_update_fields(owner_id, fields, **kwargs):
-        calls.append({"fields": fields, **kwargs})
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _fake_update_fields)
-
-    with pytest.raises(hermes_provisioning.AgentCoreRuntimeCreateFailed):
-        await hermes_provisioning.provision_hermes_runtime("org_a")
-
-    clear_call = calls[-1]
-    assert clear_call["fields"]["agentcore_runtime_arn"] is None
-    assert (clear_call.get("expected_field"), clear_call.get("expected_value")) == ("agentcore_runtime_arn", "arn:dead")
-
-
-@pytest.mark.asyncio
-async def test_a_create_failed_runtime_delete_is_best_effort(monkeypatch):
-    """The runtime may already be gone (a concurrent operator cleanup, a prior attempt's own
-    delete) -- a failed DeleteAgentRuntime must not stop the row's ARN from being cleared or
-    the original failure from being raised."""
-    _configure_hermes_settings(monkeypatch)
-    _no_runtime_found_by_name(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "CREATE_FAILED")
-
-    def _explode_delete(arn):
-        raise RuntimeError("already gone")
-
-    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", _explode_delete)
-    writes: list[dict] = []
-
-    async def _fake_update_fields(owner_id, fields, **kwargs):
-        writes.append(fields)
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _fake_update_fields)
-
-    with pytest.raises(hermes_provisioning.AgentCoreRuntimeCreateFailed):
-        await hermes_provisioning.provision_hermes_runtime("org_a")
-
-    assert writes[-1]["agentcore_runtime_arn"] is None
-
-
-@pytest.mark.asyncio
-async def test_provision_skips_write_profiles_for_an_arn_row_in_error(monkeypatch):
-    """N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so an ARN row already has its
-    profiles in S3. Idempotence keys on status == "running" (M4-R35/C1), so an ARN row sitting in
-    error (which C2's release-to-error path now produces routinely) must NOT re-run the profile
-    fan-out and overwrite owner-edited profiles / bump .revision -- it only recovers the runtime."""
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"agentcore_runtime_arn": "arn:existing-error-row", "status": "error"}),
-    )
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)  # must NOT be called
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)  # arn already on the row
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)  # unchanged
-    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-
-    terminal = {}
-
-    async def _fake_update_fields(owner_id, fields, **kwargs):
-        terminal.update(fields)
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _fake_update_fields)
-
-    arn = await hermes_provisioning.provision_hermes_runtime("org_a")
-    assert arn == "arn:existing-error-row"
-    assert terminal["status"] == "running"
-
-
-@pytest.mark.asyncio
-async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatch):
-    """M4-R35/C1: no ARN on the row at all, but AgentCore already has a runtime under this
-    owner's derived name -- a prior attempt's row write was lost. Reuse it instead of hitting
-    CreateAgentRuntime (which would 409 on the name)."""
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
-    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:found-by-name")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)
-    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-
-    calls = []
-
-    async def _spy_update(owner_id, fields, **kwargs):
-        calls.append((fields, kwargs))
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _spy_update)
-
-    arn = await hermes_provisioning.provision_hermes_runtime("org_a")
-    assert arn == "arn:found-by-name"
-    # The row never had the ARN, so it must be recorded (non-terminal) before the terminal write.
-    assert len(calls) == 2
-    assert calls[0][0] == {"agentcore_runtime_arn": "arn:found-by-name"}
-    assert calls[1][0]["status"] == "running"
-
-
-@pytest.mark.asyncio
-async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monkeypatch):
-    """A reused runtime (found by name, not on the row) whose configured image no longer matches
-    settings.AGENTCORE_HERMES_IMAGE gets UpdateAgentRuntime before the READY poll."""
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:found-by-name")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: "old-broken-image:tag")
-
-    updated = {}
-
-    def _fake_update_image(arn, request):
-        updated["arn"] = arn
-        updated["request"] = request
-
-    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _fake_update_image)
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _noop_async)
-
-    await hermes_provisioning.provision_hermes_runtime("org_a")
-    assert updated["arn"] == "arn:found-by-name"
-    # N2/M4-R40: the FULL create spec, not just the image -- this is what proves the drift path
-    # can never omit roleArn/network/env/lifecycle again.
-    request = updated["request"]
-    assert request["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] == HERMES_IMAGE
-    assert request["roleArn"] == "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"
-    assert request["networkConfiguration"]["networkMode"] == "VPC"
-    assert request["environmentVariables"]
-    assert request["protocolConfiguration"] == {"serverProtocol": "HTTP"}
-    assert request["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 5 * 60
-
-
 # --- N1/M4-R39: provision_hermes_runtime gets the same freshness guard as prepare -----------
 
 
 # --- the ARN record and the terminal write ------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_create_record_statuscheck_happen_in_that_order(monkeypatch):
-    """M4-R35/C1: the ARN must be recorded (non-terminal) BEFORE the single terminal
-    status check — a CREATE_FAILED seen there must not lose it. No poll runs anywhere."""
-    order = []
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: order.append("create") or "arn:r1")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: order.append("check") or "READY")
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    _no_runtime_found_by_name(monkeypatch)
-
-    async def _spy_update(owner_id, fields, **kwargs):
-        order.append(("record", fields))
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _spy_update)
-
-    await hermes_provisioning.provision_hermes_runtime("org_a")
-    assert order == [
-        "create",
-        ("record", {"agentcore_runtime_arn": "arn:r1"}),
-        "check",
-        (
-            "record",
-            {
-                "runtime_host": "agentcore",
-                "agentcore_runtime_arn": "arn:r1",
-                "status": "running",
-            },
-        ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_the_freshly_created_arn_record_is_not_conditioned_on_no_arn_yet(monkeypatch):
-    """Fix round 2 (reverts fix round 1's Important #1 follow-up): this write must NOT carry
-    expected={"agentcore_runtime_arn": None} -- it is also reached by the M6-R43 recovery path,
-    where the row's OWN agentcore_runtime_arn still names a dead/DELETING runtime (only the
-    LOCAL `arn` variable is reset to None; the row field is never cleared). Conditioning on
-    "no arn yet" there would fail against that still-present value,
-    and strand the row on the dead ARN forever -- see
-    test_fresh_arn_record_succeeds_against_real_conditional_semantics_when_row_holds_a_dead_arn
-    for the regression proof against real conditional semantics. Runtime names are unique per
-    owner, so two concurrent creators for the same owner converge on the SAME arn anyway -- the
-    condition would guard nothing real."""
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:r1")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
-    _no_runtime_found_by_name(monkeypatch)
-
-    calls = []
-
-    async def _spy_update(owner_id, fields, **kwargs):
-        calls.append((fields, kwargs))
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _spy_update)
-
-    await hermes_provisioning.provision_hermes_runtime("org_a")
-
-    record_call = calls[0]
-    assert record_call[0] == {"agentcore_runtime_arn": "arn:r1"}
-    assert "expected" not in record_call[1]
 
 
 # --- Writer failure handling: catch per agent, name the variable, don't half-provision silently
@@ -1554,110 +989,6 @@ def test_classify_provision_error_treats_hermes_profile_error_like_runtime_error
 # --- M6-R43: a rolled-back (deleted / DELETING) runtime is never reused ------------------------
 
 
-@pytest.mark.asyncio
-async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(monkeypatch):
-    """M6-R43 (dev re-migration after --rollback): the row still carries the deleted runtime's
-    ARN (stamped by the attempt that found it DELETING by name). Describe says it is gone, so
-    the provisioner takes the create path WITHOUT waiting out the delete: a still-in-flight
-    delete surfaces as a transient name conflict that retries cover. The row write replaces
-    the stale ARN."""
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"agentcore_runtime_arn": "arn:rolled-back", "status": "provisioning"}),
-    )
-    monkeypatch.setattr(
-        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)  # ARN row: profiles already in S3
-    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
-
-    def _gone(arn):
-        raise hermes_provisioning._RuntimeGone(arn)
-
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
-    waited = []
-    monkeypatch.setattr(hermes_provisioning, "_wait_runtime_gone", lambda arn: waited.append(arn) or True)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:fresh")
-    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-
-    writes = []
-
-    async def _spy_update(owner_id, fields, **kwargs):
-        writes.append(dict(fields))
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _spy_update)
-
-    arn = await hermes_provisioning.provision_hermes_runtime("org_a")
-    assert arn == "arn:fresh"
-    assert waited == ["arn:rolled-back"]  # waited for the old delete BEFORE creating
-    assert writes[0] == {"agentcore_runtime_arn": "arn:fresh"}  # stale ARN replaced before the status check
-    assert writes[-1]["status"] == "running" and writes[-1]["agentcore_runtime_arn"] == "arn:fresh"
-
-
-@pytest.mark.asyncio
-async def test_fresh_arn_record_succeeds_against_real_conditional_semantics_when_row_holds_a_dead_arn(monkeypatch):
-    """Fix round 2 regression: the freshly-created ARN record must NOT be conditioned on
-    expected={"agentcore_runtime_arn": None}. That write is also reached by this exact M6-R43
-    recovery path -- the row's OWN agentcore_runtime_arn still names the dead/DELETING runtime
-    (``_RuntimeGone`` resets only the LOCAL `arn` variable to None; the ROW field is never
-    cleared). A bare-equality `expected=None` -- or even the OR-absent form -- would fail against
-    that still-present non-null value and strand the row on the dead ARN forever. The sibling
-    test above uses a spy that ignores `expected=` and therefore cannot catch this; this one runs
-    the REAL container_repo.update_fields against a moto-backed table so the write's actual
-    conditional semantics are exercised."""
-    import boto3
-    from moto import mock_aws
-
-    with mock_aws():
-        resource = boto3.resource("dynamodb", region_name="us-east-1")
-        resource.create_table(
-            TableName="test-containers",
-            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
-        monkeypatch.setattr("core.dynamodb._dynamodb_resource", resource)
-        table = resource.Table("test-containers")
-        # Seeded exactly like the live M6-R43 scenario: a dead/DELETING runtime's ARN is still
-        # stamped on the row.
-        table.put_item(
-            Item={
-                "owner_id": "org_a",
-                "status": "provisioning",
-                "agentcore_runtime_arn": "arn:rolled-back",
-            }
-        )
-
-        _configure_hermes_settings(monkeypatch)
-        monkeypatch.setattr(
-            "core.billing.bedrock_aip.ensure_owner_bedrock_role",
-            _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
-        )
-        monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)
-        monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)
-        monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
-
-        def _gone(arn):
-            raise hermes_provisioning._RuntimeGone(arn)
-
-        monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
-        monkeypatch.setattr(hermes_provisioning, "_wait_runtime_gone", lambda arn: True)
-        monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:fresh")
-        monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
-
-        arn = await hermes_provisioning.provision_hermes_runtime("org_a")
-
-        assert arn == "arn:fresh"
-        row = table.get_item(Key={"owner_id": "org_a"})["Item"]
-        assert row["agentcore_runtime_arn"] == "arn:fresh"
-        assert row["status"] == "running"
-
-
 def test_runtime_image_uri_raises_gone_on_not_found_and_on_deleting(monkeypatch):
     import boto3
 
@@ -2074,7 +1405,8 @@ async def test_the_roster_fan_out_reads_the_line_once(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_fresh_provision_mints_the_network_key_and_sessions_json(monkeypatch):
+@pytest.mark.parametrize("legacy_seed", [False, True])
+async def test_pool_preparation_preserves_network_identity_and_refreshes_sessions(monkeypatch, legacy_seed):
     """prepare_hermes_workspace makes every workspace a network member: the boot secret gets a
     member key and ``<owner>/network/sessions.json`` is written (empty roster before step 0
     seeds it; write_profiles republishes it after)."""
@@ -2100,9 +1432,17 @@ async def test_a_fresh_provision_mints_the_network_key_and_sessions_json(monkeyp
 
     with mock_aws():
         sm = boto3.client("secretsmanager", region_name="us-east-1")
-        assert await hermes_provisioning.prepare_hermes_workspace("org_a") is True
-        boot = json.loads(sm.get_secret_value(SecretId=hermes_provisioning.boot_secret_name("org_a"))["SecretString"])
-        assert boot["networkKey"]
+        from core.services.agentcore_runtime import network_seed_sync
+
+        secret_name = hermes_provisioning.boot_secret_name("org_a")
+        if legacy_seed:
+            sm.create_secret(
+                Name=secret_name,
+                SecretString=json.dumps({"networkKey": base64.b64encode(bytes(range(32))).decode()}),
+            )
+        seed = network_seed_sync("org_a", "row-new")
+        assert seed
+        assert await hermes_provisioning.prepare_hermes_workspace("org_a") is False
         assert json.loads(objects["org_a/network/sessions.json"]) == {
             "workspace": "Acme",
             "sessions": [],
@@ -2114,6 +1454,6 @@ async def test_a_fresh_provision_mints_the_network_key_and_sessions_json(monkeyp
         # A reconcile keeps the key and refreshes sessions.json (#4359: workspaces always carry members).
         objects["org_a/network/sessions.json"] = b'{"workspace": "Acme", "sessions": [], "kept": true}'
         assert await hermes_provisioning.prepare_hermes_workspace("org_a") is False
-        again = json.loads(sm.get_secret_value(SecretId=hermes_provisioning.boot_secret_name("org_a"))["SecretString"])
-        assert again["networkKey"] == boot["networkKey"]
+        assert network_seed_sync("org_a", "row-new") == seed
+        assert len(sm.list_secrets()["SecretList"]) == (1 if legacy_seed else 0)
         assert "kept" not in json.loads(objects["org_a/network/sessions.json"])

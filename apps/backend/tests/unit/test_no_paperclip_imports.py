@@ -77,7 +77,6 @@ MENTIONS = {
     "core/services/hook_signatures.py",
     "core/services/inbound_triggers.py",
     "core/services/local_sessions.py",
-    "core/services/meeting_notes.py",
     "core/services/messaging.py",
     "core/services/needs_you_email.py",
     "core/services/node_broker.py",

@@ -401,3 +401,8 @@ async def test_teardown_deletes_network_state_even_without_delete_profiles(monke
     await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=False)
 
     assert deleted == [["org_a/network/"]]
+
+
+@pytest.fixture(autouse=True)
+def _canonical_pool_configured(monkeypatch):
+    monkeypatch.setattr("core.config.settings.HERMES_SHARED_RUNTIME_ARN", "arn:pool")

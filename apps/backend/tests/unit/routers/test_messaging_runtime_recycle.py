@@ -11,12 +11,14 @@ H = {"Authorization": f"Bearer {TOKEN}"}
 
 
 @pytest.fixture
-def aws():
+def aws(monkeypatch):
+    monkeypatch.setattr("core.config.settings.HERMES_SHARED_RUNTIME_ARN", ARN)
     with (
         patch(
             "routers.messaging.container_repo.get_by_owner_id",
             AsyncMock(return_value={"owner_id": OWNER, "hook_token": TOKEN, "agentcore_runtime_arn": ARN}),
         ) as get_row,
+        patch("core.repositories.container_repo.get_session_sync", return_value={}),
         patch("core.repositories.container_repo.clear_session", AsyncMock()) as clear,
         patch("core.services.hermes_provisioning._stop_runtime_session") as stop,
     ):
@@ -35,7 +37,7 @@ def test_stops_the_owners_session_and_clears_the_warm_row(client, aws):
     r = client.post(URL, headers=H)
     assert r.status_code == 202 and r.json() == {"status": "stopped"}
     aws["stop"].assert_called_once_with(ARN, session_id_for(OWNER))
-    aws["clear"].assert_awaited_once_with(OWNER)
+    aws["clear"].assert_awaited_once_with(OWNER, expected_arn=ARN, expected_session={})
 
 
 def test_no_session_to_stop_is_a_stop(client, aws):

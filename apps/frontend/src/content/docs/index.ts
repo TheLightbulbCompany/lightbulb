@@ -39,7 +39,7 @@ export const docsFaq = [
   {
     question: "Where do I change model providers or plans?",
     answer:
-      "Plans are managed in Settings. Model and provider choices are managed in the Model & Credits tab, including Lightbulb-managed credits, ChatGPT OAuth, and BYO API key paths.",
+      "Manage your plan in Settings → Billing. During workspace setup, choose Lightbulb-managed inference or sign in with ChatGPT. Existing workspaces that were already configured with a saved API key can keep using it.",
   },
   // Every answer below is verified against the product, not marketing copy:
   // prices are WORKSPACE_PRICE_USD / ULTRA_PRICE_USD in the backend settings,
@@ -55,7 +55,7 @@ export const docsFaq = [
   {
     question: "How much does Lightbulb cost?",
     answer:
-      "One plan: a flat monthly price for the workspace and its first people, then a per-person price for each member after. Agents' AI is billed separately: Lightbulb-managed as prepaid credits, or your own ChatGPT account or API key, billed by them. Current prices are on /pricing.",
+      "One plan: a flat monthly price for the workspace and its first people, then a per-person price for each member after. Agents' AI runs on Lightbulb-managed inference, funded with prepaid credits, or your ChatGPT account, billed by OpenAI. Current prices are on /pricing.",
   },
   {
     question: "Which agents do I get when I sign up?",
@@ -70,6 +70,6 @@ export const docsFaq = [
   {
     question: "Which AI models does Lightbulb run on?",
     answer:
-      "Three provider paths. Lightbulb-managed is included with every plan and needs no setup — the free trial runs on DeepSeek within a daily allowance, and more models via prepaid credits are coming soon. Or connect your own ChatGPT account over OAuth, or bring your own Anthropic or OpenAI API key.",
+      "Choose Lightbulb-managed inference, which needs no setup and runs on DeepSeek within the free trial's daily allowance, or sign in with your ChatGPT account. Paid workspaces can add prepaid credits for more managed models.",
   },
 ];

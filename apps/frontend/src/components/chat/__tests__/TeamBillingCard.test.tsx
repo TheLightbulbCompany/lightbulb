@@ -10,14 +10,14 @@ describe("TeamBillingCard", () => {
     expect(screen.getByText(/from the 6th adds a seat/i)).toBeInTheDocument();
   });
 
-  it("discloses each separate inference-cost path beside the workspace CTA", () => {
+  it("discloses the two current inference choices beside the workspace CTA", () => {
     render(<TeamBillingCard workspacePriceUsd={50} ownerRole="admin" />);
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
-    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
     // Each path is named, not just described.
-    for (const name of ["Lightbulb-managed", "Sign in with ChatGPT", "Bring your own API key"]) {
+    for (const name of ["OpenRouter managed", "Sign in with ChatGPT"]) {
       expect(screen.getByText(name)).toBeInTheDocument();
     }
+    expect(screen.queryByText(/bring your own api key/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
   });
 

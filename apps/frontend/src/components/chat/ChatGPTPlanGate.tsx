@@ -12,7 +12,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { recentCheckoutReturn } from "@/lib/checkoutReturn";
 
 /** Where Checkout returns to (routers/billing.py `then`): Settings → Model, or the onboarding ChatGPT step. */
-export type ChatGPTReturn = "chatgpt" | "chatgpt_onboarding";
+export type ChatGPTReturn = "chatgpt" | "chatgpt_onboarding" | "managed_onboarding";
 
 const WEBHOOK_WAIT_MS = 30_000;
 
@@ -58,8 +58,14 @@ export function ChatGPTPlanFirst({ then = "chatgpt" }: { then?: ChatGPTReturn })
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return <div className="space-y-3 py-4">
-    <p className="text-sm text-[var(--midnight)]">Signing in with ChatGPT comes with the Workspace plan.</p>
-    <p className="text-sm text-[var(--midnight-muted)]">Choose the plan first. After checkout you come straight back here to sign in with ChatGPT.</p>
+    <p className="text-sm text-[var(--midnight)]">
+      {then === "managed_onboarding" ? "Provider setup comes with the Workspace plan." : "Signing in with ChatGPT comes with the Workspace plan."}
+    </p>
+    <p className="text-sm text-[var(--midnight-muted)]">
+      {then === "managed_onboarding"
+        ? "Choose the plan first. After checkout you come straight back here to finish setup."
+        : "Choose the plan first. After checkout you come straight back here to sign in with ChatGPT."}
+    </p>
     <Button type="button" disabled={pending} onClick={async () => {
       setPending(true);
       setError(null);

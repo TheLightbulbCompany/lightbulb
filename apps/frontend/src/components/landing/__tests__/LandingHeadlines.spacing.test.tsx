@@ -23,7 +23,7 @@ import { render } from "@testing-library/react";
  *   "Your team and your agents,in one place."
  *   "Three steps between youand your next hire."
  *   "Everything you needto run the company."
- *   "One workspace.Three ways to power it."
+ *   "One workspace.Two ways to power it."
  *
  * The fix is an explicit {" "} before each break — invisible when the break
  * renders, correct when it doesn't. These assertions are width-independent on
@@ -65,7 +65,7 @@ describe("landing headlines survive .lb-brk being hidden", () => {
   it("PricingThreeCard states the one price", async () => {
     const { PricingThreeCard } = await import("../PricingThreeCard");
     const { container } = render(<PricingThreeCard pricing={{ teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2" }} />);
-    expect(flatten(container)).toContain("Any model. One price.");
+    expect(flatten(container)).toContain("Two ways to power your agents. One price.");
     expect(flatten(container)).toContain("$50 a month for your workspace, up to five people.");
   });
 });

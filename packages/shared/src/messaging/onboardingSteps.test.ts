@@ -173,7 +173,7 @@ describe("starter-model step", () => {
     expect(steps[0]).toMatchObject({
       id: "starter-model",
       label: "You're on the starter model",
-      detail: "Pick Lightbulb-managed, ChatGPT, or your own key",
+      detail: "Choose OpenRouter managed or sign in with ChatGPT",
       done: false,
       adminOnly: true,
     });

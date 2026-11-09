@@ -349,8 +349,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/onboarding_brief.py (first_message_intake);
                                  apps/frontend/src/components/messaging/FirstReplyChips.tsx
   - The invite ask after the first run ... references/company-and-plans.md <- core/services/messaging.py ask_who_should_see (INVITE_ASK)
-  - Plans / providers ....... references/company-and-plans.md
-                              <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
+  - Plans / providers ....... references/company-and-plans.md (two selectable paths; BYO is legacy compatibility only)
+                              <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py;
+                                 apps/backend/routers/{billing,settings_keys}.py; apps/frontend/src/lib/providerCards.ts
                                  (billing_service.create_workspace_checkout: confirm=True to change a live plan; prorated onto the next invoice)
   - Trial end (recap, reading-only, pause, 90 days) ... references/company-and-plans.md ("How a trial ends")
                               <- apps/backend/core/services/{trial_recap,trial_lifecycle}.py;

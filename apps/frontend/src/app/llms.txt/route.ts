@@ -50,7 +50,7 @@ export async function GET() {
       ? `- Team plan: $${p.teamPriceUsd}/month for the workspace and up to ${p.includedMembers} people, then $${p.seatPriceUsd}/month for each person after. One plan; details at ${SITE_URL}/pricing.`
       : `- Team plan: one plan, a flat monthly price for the workspace and its first people, then a per-person price. Details at ${SITE_URL}/pricing.`,
     `- ${pricingInference(p)}`,
-    "- Inference providers: Lightbulb-managed models (DeepSeek within a daily allowance; more via prepaid credits), your own ChatGPT account via OAuth, or a bring-your-own Anthropic or OpenAI API key.",
+    "- Inference providers: Lightbulb-managed models (DeepSeek within a daily allowance; more via prepaid credits) or your ChatGPT account via OAuth. Saved BYO keys remain supported only for existing workspaces already configured to use them.",
     "- Surfaces: the lightbulb command (macOS, Linux; WSL on Windows), web app, a macOS desktop app, and an iOS app.",
     "",
     "## Documentation",

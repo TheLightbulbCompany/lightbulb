@@ -389,14 +389,14 @@ describe("starter-model card", () => {
     render(<OnboardingBand participants={FRESH} />);
     const cards = screen.getAllByRole("button").filter((b) => b.classList.contains("onboarding-card"));
     expect(cards[0]).toHaveTextContent("You're on the starter model");
-    expect(cards[0]).toHaveTextContent("Pick Lightbulb-managed, ChatGPT, or your own key");
+    expect(cards[0]).toHaveTextContent("Choose OpenRouter managed or sign in with ChatGPT");
   });
 
   it("opens the provider picker on click", async () => {
     h.billing = PAID_NO_PROVIDER;
     render(<OnboardingBand participants={FRESH} />);
     await userEvent.click(screen.getByRole("button", { name: /starter model/ }));
-    expect(h.navigateShell).toHaveBeenCalledWith("/chat?panel=llm&action=change-provider");
+    expect(h.navigateShell).toHaveBeenCalledWith("/settings?panel=billing");
   });
 
   it("is inert for a plain member, since only an admin can change the provider", () => {

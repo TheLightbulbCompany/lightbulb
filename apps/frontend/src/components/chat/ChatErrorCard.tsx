@@ -80,7 +80,7 @@ interface ErrorPresentation {
 }
 
 /** The LLM panel with its change-provider modal open — the provision gate's `provider_required` CTA. */
-export const PROVIDER_PICKER = "/chat?panel=llm&action=change-provider";
+export const PROVIDER_PICKER = "/settings?panel=billing";
 
 function describeIncludedCap(account: BillingAccount | null | undefined, message: string): ErrorPresentation {
   const title = "Today's included usage is used up";
@@ -95,7 +95,7 @@ function describeIncludedCap(account: BillingAccount | null | undefined, message
   if ((account?.plan === "standard" || account?.plan === "ultra_pro") && !account.provider_choice) {
     return {
       title,
-      description: `${reset} Need more today? Pick a model provider — ChatGPT or your own key.`,
+      description: `${reset} Need more today? Sign in with ChatGPT or choose OpenRouter managed.`,
       action: { label: "Pick provider", href: PROVIDER_PICKER },
     };
   }

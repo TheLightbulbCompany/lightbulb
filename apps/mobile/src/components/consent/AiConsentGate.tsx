@@ -20,9 +20,9 @@
  *
  * The recipient list is deliberately the FULL set an owner can be switched to
  * — OpenRouter and the model hosts it routes to, AWS (hosting, plus workspace
- * memory processed by AWS-managed models), Anthropic or OpenAI once the owner
- * connects their own key or ChatGPT sign-in, and Vercel/TypeSafe for Listening
- * routing — not just the provider active now.
+ * memory processed by AWS-managed models), OpenAI for ChatGPT sign-in, and
+ * Anthropic or OpenAI for existing workspaces already configured with a saved
+ * key, plus Vercel/TypeSafe for Listening routing — not just the provider active now.
  * A provider swap made later on the web must not silently widen an agreement
  * that named fewer companies (settings.tsx `providerLabel` is where the live
  * choice is surfaced).

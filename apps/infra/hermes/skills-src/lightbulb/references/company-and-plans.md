@@ -101,13 +101,15 @@ days** reading-only, the owner gets a deletion notice before anything is
 deleted; nothing is deleted automatically. Never tell anyone their work will be
 lost when the trial ends.
 
-Inference runs on one of
-three provider paths chosen by the owner:
+New workspaces use one of two inference paths:
 **Lightbulb-managed** (DeepSeek within the plan's daily allowance; prepaid
 credits for more models are coming soon), **ChatGPT OAuth** (the owner's own
 OpenAI account — the workspace owner/admin who completed the connection is the
-only one who can manage it; one ChatGPT account per workspace), or **BYO API
-key** (owner's Anthropic/OpenAI key, billed by that provider).
+only one who can manage it; one ChatGPT account per workspace).
+
+Some existing workspaces were configured with a saved Anthropic or OpenAI key.
+They keep using that key, but new workspaces cannot select BYO and new keys
+cannot be added. Do not suggest API-key setup as a current option.
 
 **Never state the owner's plan or provider from memory.** Read
 `$HERMES_HOME/lightbulb-facts.json` — Lightbulb keeps it current:
@@ -124,9 +126,9 @@ key** (owner's Anthropic/OpenAI key, billed by that provider).
 ```
 
 If the file is missing or the owner says something that contradicts it,
-trust the owner and suggest they check thelightbulb.company/settings. Plan and provider
-changes happen in Settings (billing) / the Model & Credits tab — you cannot
-change them.
+trust the owner and suggest they check thelightbulb.company/settings. Plans are
+managed in Settings → Billing. Provider choices are made during workspace
+setup and in Settings → Billing; you cannot change a provider for them.
 
 ## Voice calls
 

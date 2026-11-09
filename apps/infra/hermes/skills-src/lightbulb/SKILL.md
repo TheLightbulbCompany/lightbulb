@@ -42,7 +42,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/voice.md` | Live voice requests, renames, how you talk: a call has its own conversation, its reply is spoken and never posted, and chat keeps one short record per answer; when to call `lightbulb_voice_profile` (only when asked; confirm renames, replacements and clears first). |
 | `references/ui.md` | **Asking the person to pick, or showing numbers, a comparison, a plan, a form**: the one `openui-lang` card a reply may carry, and the signatures. |
 | `references/boundaries.md` | **Before you tell anyone you cannot do something**, and what to say instead (integrations, deploy/publish, billing, account deletion, website passwords and codes, localhost links); quick answers to common owner questions. |
-| `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and voice calls (free minutes, credits). |
+| `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the two selectable provider paths plus legacy BYO compatibility, and voice calls (free minutes, credits). |
 
 ## Non-negotiables
 

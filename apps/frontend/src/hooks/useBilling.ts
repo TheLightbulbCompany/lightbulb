@@ -129,10 +129,19 @@ export function useBilling() {
     window.location.href = portal_url;
   }, [api]);
 
+  const changeProvider = useCallback(async (provider_choice: "chatgpt_oauth" | "openrouter_managed") => {
+    const result = (await api.post("/billing/provider", { provider_choice })) as {
+      status: "ok" | "noop";
+      provider_choice: "chatgpt_oauth" | "openrouter_managed";
+    };
+    await mutate();
+    return result;
+  }, [api, mutate]);
+
   // `confirm` is required to change a live subscription's plan; without it the
   // server changes nothing and answers `confirm_required`.
   // `then`: Checkout returns straight into ChatGPT sign-in (Settings, or the onboarding step) for a free workspace.
-  const startCheckout = useCallback(async (plan: "workspace", confirm = false, then?: "chatgpt" | "chatgpt_onboarding") => {
+  const startCheckout = useCallback(async (plan: "workspace", confirm = false, then?: "chatgpt" | "chatgpt_onboarding" | "managed_onboarding") => {
     const res = (await api.post("/billing/checkout", { plan, confirm, ...(then ? { then } : {}) })) as {
       checkout_url?: string;
       updated?: boolean;
@@ -164,6 +173,7 @@ export function useBilling() {
     isSubscribed,
     openPortal,
     startCheckout,
+    changeProvider,
     fetchUsage,
     refresh,
   };

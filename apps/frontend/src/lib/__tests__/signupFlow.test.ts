@@ -130,7 +130,7 @@ describe("captureSignupCta", () => {
       ctaId: "hero_funnel_submit",
       label: "Start",
       surface: "landing_hero_funnel",
-      providerChoice: "byo_key",
+      providerChoice: "chatgpt_oauth",
       properties: { path: "grow" },
     });
     expect(mockCapture).toHaveBeenCalledWith("signup_cta_clicked", {
@@ -139,7 +139,7 @@ describe("captureSignupCta", () => {
       surface: "landing_hero_funnel",
       destination: "/sign-up",
       route: window.location.pathname,
-      provider_choice: "byo_key",
+      provider_choice: "chatgpt_oauth",
       path: "grow",
     });
   });

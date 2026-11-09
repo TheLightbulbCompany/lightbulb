@@ -22,23 +22,12 @@ jest.mock("../../../lib/containerStatus", () => ({
   useContainerStatus: () => mockUseContainerStatus(),
 }));
 
-// Isolate ProvisionGate's ROUTING decision from the screens' own internals
-// (each has its own dedicated test file: ChatGPTConnectScreen.test.tsx,
-// ByoKeyScreen.test.tsx).
+// Isolate ProvisionGate's routing decision from the ChatGPT screen internals.
 jest.mock("../ChatGPTConnectScreen", () => {
   const { Text: RNText } = require("react-native");
   return {
     ChatGPTConnectScreen: ({ onConnected }: { onConnected: () => void }) => (
       <RNText onPress={onConnected}>MOCK_CHATGPT_CONNECT_SCREEN</RNText>
-    ),
-  };
-});
-
-jest.mock("../ByoKeyScreen", () => {
-  const { Text: RNText } = require("react-native");
-  return {
-    ByoKeyScreen: ({ onConnected }: { onConnected: () => void }) => (
-      <RNText onPress={onConnected}>MOCK_BYO_KEY_SCREEN</RNText>
     ),
   };
 });
@@ -94,7 +83,7 @@ import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 // ChatGPTConnectScreen.test.tsx (jest.mock @clerk/expo +
 // react-native-safe-area-context; `await render(...)`). The routing cases
 // below cover all four blocking kinds this gate serves — blocked (generic,
-// oauth_required, byo_provider_required, and the adminOnly/ownerRole
+// oauth_required, the legacy incomplete BYO gate, and the adminOnly/ownerRole
 // variants), teamPending, needsSignup and error.
 describe("ProvisionGate provider sign-in routing", () => {
   beforeEach(() => {
@@ -126,19 +115,18 @@ describe("ProvisionGate provider sign-in routing", () => {
 
     expect(screen.getByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeTruthy();
     expect(screen.queryByText(/on isol8\.co/)).toBeNull();
-    expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
   });
 
-  it("renders ByoKeyScreen for blocked.code === byo_provider_required, wired to refetch", async () => {
+  it("does not offer new API-key setup for an incomplete legacy BYO workspace", async () => {
     mockUseContainerStatus.mockReturnValue({
       status: {
         kind: "blocked",
         code: "byo_provider_required",
-        title: "Choose your BYO provider",
-        message: "Choose Anthropic or OpenAI as your BYO provider to start your container.",
-        href: "/chat?provider=byo_key",
-        actionLabel: "Choose provider",
-        adminOnly: false,
+        title: "Finish setting up your inference provider",
+        message: "This workspace has an incomplete saved API-key setup. Choose OpenRouter managed inference or sign in with ChatGPT to continue.",
+        href: "/chat?panel=llm&action=change-provider",
+        actionLabel: "Change provider",
+        adminOnly: true,
       },
       refetch: mockRefetch,
     });
@@ -149,7 +137,7 @@ describe("ProvisionGate provider sign-in routing", () => {
       </ProvisionGate>,
     );
 
-    expect(screen.getByText("MOCK_BYO_KEY_SCREEN")).toBeTruthy();
+    expect(screen.queryByText(/API key/i)).toBeNull();
     expect(screen.queryByText(/on isol8\.co/)).toBeNull();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
   });
@@ -179,7 +167,6 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.getByText("You've been invited to a workspace")).toBeTruthy();
     expect(screen.getByText("View invitation on thelightbulb.company")).toBeTruthy();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
-    expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
   });
 
   // The 3.1.3(f) fence (lib/purchaseCta). The server sends a "Top up now"
@@ -216,7 +203,7 @@ describe("ProvisionGate provider sign-in routing", () => {
         kind: "blocked",
         code: "provider_required",
         title: "Pick how to power your agents",
-        message: "Choose Bedrock-managed credits, ChatGPT OAuth, or your own API key to continue.",
+        message: "Choose OpenRouter managed inference or sign in with ChatGPT to continue.",
         href: "/chat?panel=llm&action=change-provider",
         actionLabel: "Pick provider",
         adminOnly: true,
@@ -232,7 +219,6 @@ describe("ProvisionGate provider sign-in routing", () => {
 
     expect(screen.getByText("Pick how to power your agents")).toBeTruthy();
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
-    expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
   });
 
   // adminOnly + ownerRole gating (Slice 4 fix): oauth_required is admin_only
@@ -510,8 +496,7 @@ describe("ProvisionGate container-error interstitial", () => {
     );
 
     // fireEvent.press is ASYNC on this @testing-library/react-native version
-    // (see ByoKeyScreen.test.tsx's note) — must be awaited or the resulting
-    // act() scope races the next statement.
+    // async on this testing-library version — await to keep act() scoped.
     await fireEvent.press(screen.getByText("Retry"));
     expect(mockRefetch).toHaveBeenCalledTimes(1);
   });

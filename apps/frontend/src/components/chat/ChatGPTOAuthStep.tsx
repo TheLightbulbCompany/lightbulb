@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useChatGPTOAuth, type OAuthState } from "@/hooks/useChatGPTOAuth";
 import { ChatGPTPlanFirst, ChatGPTPlanGate } from "./ChatGPTPlanGate";
@@ -7,7 +7,7 @@ import { replaceSearchParams } from "@/lib/shellNav";
 import { externalLinkClick } from "@/lib/externalAuth";
 
 type Props = {
-  onComplete: () => void;
+  onComplete: () => void | Promise<void>;
 };
 
 /** Device-code expiry countdown as M:SS (floored at 0:00). */
@@ -129,10 +129,30 @@ function ChatGPTOAuthSignIn({ onComplete }: Props) {
   // in {status: "completed"} immediately.
   const { state, start } = useChatGPTOAuth();
   const searchParams = useSearchParams();
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savingRef = useRef(false);
+  const finishedRef = useRef(false);
+
+  const finish = useCallback(async () => {
+    if (savingRef.current || finishedRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onComplete();
+      finishedRef.current = true;
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not save your provider choice.");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }, [onComplete]);
 
   useEffect(() => {
-    if (state.status === "completed") onComplete();
-  }, [state.status, onComplete]);
+    if (state.status === "completed") void finish();
+  }, [state.status, finish]);
 
   // The stepper's only "go back" mechanism is the `?provider=` URL param:
   // stripping it exits the provider step and re-enters the main flow (the
@@ -189,8 +209,10 @@ function ChatGPTOAuthSignIn({ onComplete }: Props) {
 
   if (state.status === "completed") {
     return (
-      <div className="flex items-center justify-center py-8 text-primary">
-        &#10003; Connected
+      <div className="flex flex-col items-center justify-center gap-3 py-8 text-primary">
+        <p>{saving ? "Saving your provider choice…" : "ChatGPT connected"}</p>
+        {saveError && <p role="alert" className="text-sm text-destructive">{saveError}</p>}
+        {saveError && <button type="button" onClick={() => void finish()} className="rounded-full border px-4 py-2 text-sm">Retry</button>}
       </div>
     );
   }

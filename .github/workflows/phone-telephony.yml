@@ -14,9 +14,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   reconcile:
-    if: github.ref == 'refs/heads/main' || inputs.apply == false
+    if: github.ref == 'refs/heads/main'
     runs-on: ${{ vars.DEPLOY_RUNNER }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
@@ -32,6 +32,25 @@ jobs:
       - name: Validate provisioning behavior
         working-directory: apps/backend
         run: uv run pytest tests/unit/scripts/test_provision_phone_telephony.py -q --no-cov
+      - name: Install infrastructure dependencies
+        working-directory: apps/infra
+        run: npm ci
+      - name: Validate isolated phone IAM permissions
+        working-directory: apps/infra
+        run: npx vitest run test/phone-telephony-bootstrap.test.ts
+      - name: Bootstrap scoped phone IAM through CloudFormation
+        if: github.ref == 'refs/heads/main'
+        working-directory: apps/infra
+        # CDK assumes the existing cdk deploy/CloudFormation execution roles. No direct IAM mutations.
+        run: npx cdk deploy --app 'npx ts-node --prefer-ts-exts lib/phone-telephony-bootstrap-app.ts' lightbulb-phone-telephony-bootstrap --require-approval never --outputs-file /tmp/phone-telephony-bootstrap-outputs.json
+      - name: Assume main-only phone provisioning role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          role-skip-session-tagging: true
+          unset-current-credentials: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-phone-telephony
       - name: Read-only readiness
         if: inputs.apply == false
         working-directory: apps/backend

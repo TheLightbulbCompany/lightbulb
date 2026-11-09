@@ -257,14 +257,6 @@ async def test_unspecialized_existing_task_uses_its_seated_agent(front, monkeypa
     assert await activities._agent_for("ws", {"taskId": "task", "specialist": None}) == "ceo-stable"
 
 
-async def test_persisted_attempt_assignment_survives_global_front_unavailability(front, monkeypatch):
-    from core.temporal import activities
-
-    monkeypatch.setattr(tc, "front_agent_id", AsyncMock(side_effect=tc.NoFrontAgent("unavailable")))
-    assert await activities._agent_for("ws", {"taskId": "task"}, prior_agent_id="original-worker") == "original-worker"
-    tc.front_agent_id.assert_not_awaited()
-
-
 def test_trigger_scope_distinguishes_room_ids_from_outside_conversations():
     from core import tasks_schema as ts
 

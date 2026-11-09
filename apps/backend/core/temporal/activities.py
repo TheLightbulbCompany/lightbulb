@@ -201,10 +201,8 @@ async def _frames_target(tree: dict) -> dict | None:
     }
 
 
-async def _agent_for(ws: str, task: dict, *, prior_agent_id: str | None = None) -> str:
-    """Keep an attempt assignment; otherwise use the explicit specialist or the task conversation's front door."""
-    if prior_agent_id:
-        return prior_agent_id
+async def _agent_for(ws: str, task: dict) -> str:
+    """Choose a new attempt's explicit specialist, otherwise its conversation's front door."""
     spec = task.get("specialist")
     if spec and spec in {a["id"] for a in await messaging.load_agent_roster(ws)}:
         return spec
@@ -304,9 +302,7 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
         task_id,
         n,
         {
-            "agentId": await _agent_for(
-                ws, tree["task"], prior_agent_id=attempts[-1].get("agentId") if attempts else None
-            ),
+            "agentId": await _agent_for(ws, tree["task"]),
             "sessionId": runtime_transport.session_id_for(ws, task_id if kind == "task" else None),
             "status": "dispatched",
             "runSecret": secrets.token_urlsafe(32),  # binds run events and inputs to this attempt's runtime

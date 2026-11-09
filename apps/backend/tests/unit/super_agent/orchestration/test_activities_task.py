@@ -860,12 +860,33 @@ async def test_a_callers_failed_task_offers_to_take_a_message(world, monkeypatch
     assert line["text"] == acts.CALLER_FAILED_LINE
 
 
-async def test_retry_keeps_the_persisted_attempt_agent_when_frontdoor_changes(world, monkeypatch):
-    tid = await _task()
-    await acts.begin_attempt(WS, tid, [])
+async def test_new_attempt_honors_explicit_reassignment_after_old_attempt_ended(world, monkeypatch):
+    other = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    roster = AsyncMock(return_value=[{"id": CEO, "name": "Original"}, {"id": other, "name": "Reassigned"}])
+    monkeypatch.setattr(acts.messaging, "load_agent_roster", roster)
+    tid = await _task(specialist=CEO)
+    first = await acts.begin_attempt(WS, tid, [])
     await acts.end_attempt(WS, tid, 1, "runtime_lost", "HeartbeatTimeout")
-    front = AsyncMock(side_effect=RuntimeError("the new front door is unavailable"))
-    monkeypatch.setattr(acts.task_conversation, "front_agent_id", front)
-    await acts.begin_attempt(WS, tid, [])
-    assert (await repo.get_attempt(WS, tid, 2))["agentId"] == CEO
-    front.assert_not_awaited()
+    task = await repo.get_task(WS, tid)
+    await repo.update_task_fields(WS, tid, {"specialist": other}, expected_version=task["version"])
+    second = await acts.begin_attempt(WS, tid, [])
+    assert second.n == 2 and second.run_id != first.run_id
+    assert (await repo.get_attempt(WS, tid, 1))["agentId"] == CEO
+    assert (await repo.get_attempt(WS, tid, 2))["agentId"] == other
+
+
+async def test_open_attempt_is_reused_after_task_specialist_is_reassigned(world, monkeypatch):
+    other = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    roster = AsyncMock(return_value=[{"id": CEO, "name": "Original"}, {"id": other, "name": "Reassigned"}])
+    monkeypatch.setattr(acts.messaging, "load_agent_roster", roster)
+    tid = await _task(specialist=CEO)
+    first = await acts.begin_attempt(WS, tid, ["chat:original"])
+    task = await repo.get_task(WS, tid)
+    await repo.update_task_fields(WS, tid, {"specialist": other}, expected_version=task["version"])
+    roster.reset_mock()
+    second = await acts.begin_attempt(WS, tid, ["chat:later"])
+    assert second == first
+    attempts = (await repo.get_task_tree(WS, tid))["attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["agentId"] == CEO and attempts[0]["inputTriggerIds"] == ["chat:original"]
+    roster.assert_not_awaited()

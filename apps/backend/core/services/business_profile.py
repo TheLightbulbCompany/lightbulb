@@ -111,20 +111,37 @@ async def _build(ws: str, caller: str | None) -> str:
     from core.repositories import messaging_repo
     from routers import voice_phone as vp
 
-    if not await messaging_repo.get_voice_agent(ws):
-        return ""  # no saved Agent page: nothing is known, and the phone's defaults are not facts
-    cfg = await vp.agent_config(ws)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + TIMEOUT_S
+    async with asyncio.timeout_at(deadline):
+        if not await messaging_repo.get_voice_agent(ws):
+            return ""  # no saved Agent page: nothing is known, and the phone's defaults are not facts
+        cfg = await vp.agent_config(ws)
     now, minutes = vp._now(cfg), vp._minutes(cfg, "")
-    parts = [facts_text(ws, cfg), _open_days(ws, cfg, now, minutes)]
+    parts = [asyncio.create_task(facts_text(ws, cfg)), asyncio.create_task(_open_days(ws, cfg, now, minutes))]
     if caller:
-        parts.append(_callers_bookings(ws, caller, now))
-    facts, *rest = await asyncio.gather(*parts, return_exceptions=True)
+        parts.append(asyncio.create_task(_callers_bookings(ws, caller, now)))
+    try:
+        # One overall deadline, but independent outcomes: optional availability or
+        # booking reads must not erase facts that have already been read.
+        await asyncio.wait(parts, timeout=max(0, deadline - loop.time()))
+    finally:
+        for part in parts:
+            if not part.done():
+                part.cancel()
+        facts, *rest = await asyncio.gather(*parts, return_exceptions=True)
+    if isinstance(facts, asyncio.CancelledError):
+        raise TimeoutError("business facts were not ready within the profile deadline")
     if isinstance(facts, BaseException):
         raise facts
-    for r in rest:  # the rest of the profile still helps
+    sections = [facts]
+    for label, r in zip(("Open start times", "This caller's upcoming bookings"), rest):
         if isinstance(r, BaseException):
             logger.warning("business profile part unavailable ws=%s", ws, exc_info=r)
-    return "\n".join([facts, *(r for r in rest if not isinstance(r, BaseException))])
+            sections.append(f"{label}: unknown (data unavailable).")
+        else:
+            sections.append(r)
+    return "\n".join(sections)
 
 
 async def _upcoming(ws: str, now: str) -> list[dict]:
@@ -157,7 +174,7 @@ async def business_profile(ws: str, caller: str | None = None) -> str:
     if hit and time.monotonic() - hit[0] < TTL_S:
         return hit[1]
     try:
-        text = await asyncio.wait_for(_build(ws, caller), TIMEOUT_S)
+        text = await _build(ws, caller)
     except Exception:  # noqa: BLE001 -- a turn never waits on or fails for the profile
         logger.warning("business profile unavailable ws=%s", ws, exc_info=True)
         return ""

@@ -2,6 +2,7 @@
 
 import time
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from temporalio import activity
@@ -64,7 +65,7 @@ def world(table, monkeypatch):  # noqa: F811
     async def ensure_room(ws, task, **kw):
         return ts.task_room_id(task["taskId"])
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     async def roster(ws):
@@ -101,6 +102,7 @@ def world(table, monkeypatch):  # noqa: F811
     monkeypatch.setattr(acts.task_conversation, "post_as_lightbulb", post)
     monkeypatch.setattr(acts.task_conversation, "ensure_task_room", ensure_room)
     monkeypatch.setattr(acts.task_conversation, "front_agent_id", front)
+    monkeypatch.setattr(acts.messaging_repo, "get_room", AsyncMock(return_value=None))
     monkeypatch.setattr(acts.messaging, "load_agent_roster", roster)
     monkeypatch.setattr(acts.messaging, "_record_run_usage", usage)
     monkeypatch.setattr(acts.messaging, "ask_who_should_see", invite)
@@ -242,10 +244,10 @@ async def test_worker_turn_without_a_room_channel_casts_nowhere(world, monkeypat
     async def get_room(room_id):
         raise RuntimeError("table down")
 
-    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
     monkeypatch.setattr(acts.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.example")
     tid = await _task()
     ref = await _attempt(tid)
+    monkeypatch.setattr(acts.messaging_repo, "get_room", get_room)
     with pytest.raises(activity._CompleteAsyncError):
         await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
     assert "frames" not in world["runs"][0][0].to_wire()
@@ -856,3 +858,14 @@ async def test_a_callers_failed_task_offers_to_take_a_message(world, monkeypatch
     await _ended(tid, "failed")
     (line,) = world["posts"]
     assert line["text"] == acts.CALLER_FAILED_LINE
+
+
+async def test_retry_keeps_the_persisted_attempt_agent_when_frontdoor_changes(world, monkeypatch):
+    tid = await _task()
+    await acts.begin_attempt(WS, tid, [])
+    await acts.end_attempt(WS, tid, 1, "runtime_lost", "HeartbeatTimeout")
+    front = AsyncMock(side_effect=RuntimeError("the new front door is unavailable"))
+    monkeypatch.setattr(acts.task_conversation, "front_agent_id", front)
+    await acts.begin_attempt(WS, tid, [])
+    assert (await repo.get_attempt(WS, tid, 2))["agentId"] == CEO
+    front.assert_not_awaited()

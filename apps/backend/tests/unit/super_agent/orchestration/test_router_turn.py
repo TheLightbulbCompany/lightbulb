@@ -60,7 +60,7 @@ def world(table, monkeypatch):  # noqa: F811
         w["rooms"].append(task["taskId"])
         return ts.task_room_id(task["taskId"])
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     async def roster(ws):
@@ -1756,7 +1756,7 @@ async def test_react_sets_lightbulbs_reaction_and_shows_it_live(monkeypatch):
     async def publish(room_id, event):
         events.append((room_id, event["type"] if isinstance(event, dict) and "type" in event else event))
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     monkeypatch.setattr(acts.messaging_repo, "get_message_by_id", get_msg)

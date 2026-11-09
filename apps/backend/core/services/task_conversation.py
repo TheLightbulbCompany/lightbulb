@@ -38,9 +38,10 @@ async def _front_agent(ws: str, *, room_id: str | None = None) -> dict:
             raise NoFrontAgent("Conversation unavailable.")
         pinned = meta.get("frontAgentId")
         # New rooms pin the server-selected UUID. Older rooms retain their server-reserved seat.
+        room_members = await messaging_repo.list_members(room_id)
         seats = [
             m
-            for m in await messaging_repo.list_members(room_id)
+            for m in room_members
             if m.get("kind") == "agent"
             and m.get("role") == "member"
             and (m.get("id") == pinned if pinned else m.get("mentionHandle") == "lightbulb")
@@ -79,6 +80,14 @@ async def _front_agent(ws: str, *, room_id: str | None = None) -> dict:
             if not agents:
                 raise NoFrontAgent(ws)
             agent = agents[0]
+    if room_id and not any(
+        m.get("kind") == "agent"
+        and m.get("role") == "member"
+        and m.get("id") == agent["id"]
+        and messaging_repo.member_home(m, ws) == ws
+        for m in room_members
+    ):
+        raise NoFrontAgent("This conversation has no authorized front-door member.")
     return {
         "kind": "agent",
         "id": agent["id"],

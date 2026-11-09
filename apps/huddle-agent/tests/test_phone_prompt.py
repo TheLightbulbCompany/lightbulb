@@ -235,3 +235,49 @@ def test_a_ui_choice_question_is_said_with_its_options():
     assert (
         mouth.speakable("Done.\n```python\nx = 1\n```") == "Done."
     )  # other code blocks stay unsaid
+
+
+def test_spanish_disclosure_requires_opt_in_name_ai_and_recording_without_negation():
+    good = [
+        "Soy Ava, una asistente de inteligencia artificial. Esta llamada está siendo grabada.",
+        "Hola, soy Ava, tu asistente de IA, y esta llamada se está grabando.",
+        "Soy Ava, asistente de inteligencia artificial. Grabamos esta llamada.",
+        "Soy Ava, no soy humana, soy asistente de IA. Esta llamada está grabada.",
+        "No te preocupes, soy Ava, asistente de IA. Esta llamada está grabada.",
+    ]
+    for line in good:
+        assert phone.discloses(line, "Ava", spanish=True), line
+        assert not phone.discloses(line, "Ava"), line
+        assert not phone.discloses(line, "Nova", spanish=True), line
+    for line in (
+        "Soy Ava, asistente de IA. Esta llamada no está siendo grabada.",
+        "Soy Ava, asistente de IA. No grabamos esta llamada.",
+        "Soy Ava, asistente de IA. Esta llamada nunca será grabada.",
+        "Soy Ava, no soy una asistente de inteligencia artificial. Esta llamada está grabada.",
+        "Soy Ava. Esta llamada está grabada.",
+        "Soy Ava, asistente de IA. Podemos grabar esta llamada.",
+        "Soy Ava, asistente de IA. No sé si esta llamada está siendo grabada.",
+        "Soy Ava, asistente de IA. Si esta llamada está grabada, te lo digo.",
+        "Soy Ava, asistente de IA. Esta llamada no está grabada, pero esta llamada está grabada.",
+        "I'm Ava, not an AI assistant. This call is recorded.",
+    ):
+        assert not phone.discloses(line, "Ava", spanish=True), line
+
+
+def test_recording_objections_do_not_promise_unrecorded_service():
+    instructions = phone.prompt({**INFO, "spanish": True})
+    assert "do not claim it can be switched off" in instructions
+    assert "Wait for the backend's result" in instructions
+
+
+def test_english_only_disclosure_requires_actual_recording_not_a_future_or_conditional():
+    for statement, expected in (
+        ("This call is being recorded.", "ok"),
+        ("We are recording this call.", "ok"),
+        ("This call will be recorded.", "missing"),
+        ("Maybe, this call is being recorded.", "missing"),
+        ("If you give permission, this call is being recorded.", "missing"),
+        ("This call is not being recorded.", "missing"),
+    ):
+        items = [{"role": "assistant", "text": f"I'm Ava, an AI assistant. {statement}", "t": 1}]
+        assert phone.disclosure_of(items, "Ava") == expected, statement

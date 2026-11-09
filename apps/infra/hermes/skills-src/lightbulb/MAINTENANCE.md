@@ -364,6 +364,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);
                                  core/services/{voice_routing,voice_persona}.py (room-call routing; each agent speaks as itself in its own voice)
                                  routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; agents join only where one listens; addressed by name, "Lightbulb" or a tile)
+  - Phone voice / Spanish / stock samples ... references/voice.md ("Phone voice and Spanish")
+                              <- backend routers/{voice,voice_phone}.py + core/services/voice_preferences.py;
+                                 apps/huddle-agent/src/huddle_agent/{phone,live}.py;
+                                 frontend components/voice/PhoneVoiceSettings.tsx + native counterpart;
+                                 packages/shared/src/voicePreferences.ts + frontend public/voice-samples/
   - Voice requests .......... references/voice.md + SKILL.md routing row
                               <- apps/infra/hermes/bridge/server.py + turn.py (a voice run is locked and scoped on the room
                                  session key, lightbulb_session_key, and recorded in the call's own transcript,
@@ -516,3 +521,5 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
 - Roster + connected integrations routing row ("Who is on the team?" / "What's connected?") — `references/boundaries.md` Quick answers; source: `core/services/owner_facts.py` (`teammates`, `connected_integrations`, #3851). Added 2026-10-08 after a dev check where the CEO answered a roster question from the room's member list.
 - Ask and count rules (SKILL.md, the two lines after "A person's decision is an approval in Needs you") — tool `ask_person` in `apps/infra/hermes/plugins/lightbulb/__init__.py`; the paperclip skill's `references/interactions.md` "When you need an answer, not a sign-off: ask_person". Added 2026-10-30 from G1's failures (comments nobody read; "3 open cards" with 55 open). The count rule points at the paperclip skill's list route; the `lightbulb_board` wrapper was removed 30 Oct (same route, same key). Test: `tests/test_ask_and_count_skill.py`.
 - Task handoffs (super-agent only) — `references/tasks.md`, deliberately NOT in SKILL.md's routing table: only a super-agent Worker run loads it, because its instructions name it (`WORKER_INSTRUCTIONS` in `apps/backend/core/temporal/activities.py`). Every other run keeps the Paperclip handoffs in platform-primitives.md, company-and-plans.md, software-projects.md. Added 2026-11-05 after #4760 rewrote the global text (skills are fleet-wide). Test: `apps/backend/tests/unit/super_agent/orchestration/test_task_board_signals.py::test_task_wording_is_super_agent_only`.
+
+- Voice Settings/provider confirmation — references/surfaces.md and references/company-and-plans.md; anchors: VoiceSettings.tsx, chat/page.tsx, ProvisioningStepper.ProviderPicker and ChatGPTOAuthStep.tsx. Authentication and explicit provider confirmation are separate; cancellation preserves the saved provider.

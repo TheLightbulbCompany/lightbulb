@@ -38,9 +38,13 @@ class FakeLive:
         self.session = Emitter()
         self.session.user_state, self.session.agent_state = "listening", "listening"
         self.sent: list[tuple] = []
+        self.instructed: list[str] = []
         self.pending: dict[str, str | None] = {}
         self.awaiting = self.pending
         self.closed = 0
+
+    def send_instructions(self, text):
+        self.instructed.append(text)
 
     def send_result(self, delegation_id, text):
         self.sent.append((delegation_id, text))
@@ -165,8 +169,13 @@ async def test_phone_opening_carries_three_facts(monkeypatch):
     assert first_id is None
 
 
-async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlation(monkeypatch):
-    call = await Call(monkeypatch, replies={"turn": {"messageId": "followup", "taskId": "existing-task"}}).answer()
+async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlation(
+    monkeypatch,
+):
+    call = await Call(
+        monkeypatch,
+        replies={"turn": {"messageId": "followup", "taskId": "existing-task"}},
+    ).answer()
     posted = await call.started["post"]("The first time works", [])
     assert posted == phone.live.Posted("followup", ("existing-task",))
     call.state("listening", "speaking")
@@ -175,7 +184,7 @@ async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlat
     )
     call.state("speaking", "listening")
     await asyncio.sleep(0.01)  # the opening's turn is over
-    fix = [t for d, t in call.live.sent[1:] if d is None]
+    fix = call.live.instructed
     assert (
         len(fix) == 1
         and '"I\'m Nova, an AI assistant, and this call is recorded."' in fix[0]
@@ -190,7 +199,7 @@ async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlat
     )
     good.state("speaking", "listening")
     await asyncio.sleep(0.01)
-    assert len(good.live.sent) == 1  # only the opening: nothing corrected
+    assert len(good.live.sent) == 1 and good.live.instructed == []  # only the opening: nothing corrected
     good.ctx.room.emit("participant_disconnected", good.caller)
     await asyncio.sleep(0.01)
     (end,) = [b for p, b in good.backend.calls if p == "end"]
@@ -208,7 +217,7 @@ async def test_phone_caller_talks_over_opening(monkeypatch):
     call.item("assistant", "Hi, this is Nova, an AI", 1.0, interrupted=True)
     call.state("speaking", "listening")
     call.item("assistant", "Sure, let me check.", 3.0)
-    fixes = [t for d, t in call.live.sent[1:] if d is None]
+    fixes = call.live.instructed
     assert (
         len(fixes) == 1
         and "I'm Nova, an AI assistant, and this call is recorded." in fixes[0]
@@ -249,7 +258,7 @@ async def test_the_end_record_does_not_reclassify_a_corrected_opening(monkeypatc
     call.item("assistant", "Hi, this is Nova. How can I help?", 1.0)
     call.state("speaking", "listening")
     await asyncio.sleep(0.01)
-    assert len(call.live.sent) == 2  # the guard requested the missing disclosure
+    assert len(call.live.sent) == 1 and len(call.live.instructed) == 1  # one instruction correction, no commentary
     call.item("assistant", "I'm Nova, an AI assistant, and this call is recorded.", 3.0)
     call.ctx.room.emit("participant_disconnected", call.caller)
     await asyncio.sleep(0.01)
@@ -487,3 +496,97 @@ async def test_completed_work_restores_normal_silence_timeout_without_losing_cor
     await asyncio.gather(reader, return_exceptions=True)
     assert call.live.pending == {"item_1": "m1"}
     assert call.deleted == 1 and call.shutdowns == ["caller silent"]
+
+
+async def test_bilingual_bootstrap_sets_voice_and_language_without_changing_delegation(
+    monkeypatch,
+):
+    call = await Call(monkeypatch, info={"voice": "quartz", "spanish": True}).answer()
+    assert call.started["voice"] == "quartz"
+    assert "following the caller's choice" in call.started["prompt"]
+    assert "Speak only English" not in call.started["prompt"]
+    assert "Speak first in English" in call.started["opening"]
+    assert call.live.sent[0] == (None, call.started["opening"])
+    call.state("listening", "speaking")
+    call.item(
+        "assistant",
+        "Soy Nova, un asistente de inteligencia artificial. Esta llamada se está grabando.",
+        1,
+    )
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    assert len(call.live.sent) == 1 and call.live.instructed == []  # valid Spanish disclosure: no correction
+    await call.on_shutdown[0]()
+
+
+async def test_legacy_bootstrap_keeps_current_default_and_english_policy(monkeypatch):
+    call = await Call(monkeypatch, info={"voice": "Warm"}).answer()
+    assert call.started["voice"] == "marin"
+    assert "Speak only English" in call.started["prompt"]
+    await call.on_shutdown[0]()
+
+
+async def test_missed_disclosure_is_one_time_instruction_and_later_turns_do_not_re_greet(monkeypatch):
+    call = await Call(monkeypatch).answer()
+    call.state("listening", "speaking")
+    call.item("assistant", "Hello, how can I help?", 1)
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    assert len(call.live.instructed) == 1
+    assert "one-time correction" in call.live.instructed[0]
+    assert "do not repeat it on later turns" in call.live.instructed[0]
+    call.item("user", "I need a booking", 2)
+    call.state("listening", "speaking")
+    call.item("assistant", "Which day?", 3)
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    assert len(call.live.instructed) == 1
+    assert len(call.live.sent) == 1  # opening only; ordinary model turns are not locally generated
+    await call.on_shutdown[0]()
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("Soy Nova, asistente de IA. Si nos das permiso, esta llamada será grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Si nos das permiso, esta llamada está siendo grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Quizás, esta llamada está siendo grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Esta llamada sí está siendo grabada.", "ok"),
+    ("Soy Nova, asistente de IA. Esta llamada si\u0301 está siendo grabada.", "ok"),
+    ("Soy Nova, asistente de IA. Sí, esta llamada se está grabando.", "ok"),
+    ("Soy Nova, asistente de IA. Esta llamada será grabada.", "missing"),
+    ("Soy Nova, asistente de IA. Esta llamada no está siendo grabada.", "missing"),
+    ("Soy Nova, no soy una asistente de IA. Esta llamada está siendo grabada.", "missing"),
+    ("Soy Nova, no soy humana, soy asistente de IA. Esta llamada está siendo grabada.", "ok"),
+    ("I'm Nova, an AI assistant. If you give permission, this call is being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. Perhaps, this call is being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. This call will be recorded.", "missing"),
+    ("I'm Nova, an AI assistant. This call may be recorded.", "missing"),
+    ("I'm Nova, not an AI assistant. This call is being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. This call is not being recorded.", "missing"),
+    ("I'm Nova, an AI assistant. Yes, this call is being recorded.", "ok"),
+])
+async def test_recording_truth_controls_the_once_only_disclosure_correction(monkeypatch, spoken, expected):
+    # Exercise the real transcript classifier and phone guard/instruction wiring, not a standalone regex.
+    items = [{"role": "assistant", "text": spoken, "t": 1}]
+    assert phone.disclosure_of(items, "Nova", spanish=True) == expected
+    call = await Call(monkeypatch, info={"spanish": True}).answer()
+    call.state("listening", "speaking")
+    call.item("assistant", spoken, 1)
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    corrections = 1 if expected == "missing" else 0
+    assert len(call.live.instructed) == corrections
+    if corrections:
+        assert call.live.instructed == [phone.say_exactly("I'm Nova, an AI assistant, and this call is recorded.")]
+    # Later caller/model turns neither erase the original verdict nor repeat the correction.
+    call.item("user", "Hello", 2)
+    call.state("listening", "speaking")
+    call.item("assistant", "How can I help?", 3)
+    call.state("speaking", "listening")
+    await asyncio.sleep(0.01)
+    assert len(call.live.instructed) == corrections
+    assert len(call.live.sent) == 1  # ordinary turns remain model-owned; only startup commentary was appended
+    assert "turn" not in call.paths()
+    await call.on_shutdown[0]()
+    (ended,) = [body for path, body in call.backend.calls if path == "end"]
+    assert ended["disclosure"] == expected
+    assert ended["disclosureRepeated"] is bool(corrections)

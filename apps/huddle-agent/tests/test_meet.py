@@ -28,7 +28,10 @@ async def test_a_line_split_at_the_name_is_joined():
     j.final("maya", "what have we shipped in the last week?")
     j.final("leo", "Sounds good.")
     await asyncio.sleep(0.1)
-    assert got == [("maya", "Nova. what have we shipped in the last week?"), ("leo", "Sounds good.")]
+    assert got == [
+        ("maya", "Nova. what have we shipped in the last week?"),
+        ("leo", "Sounds good."),
+    ]
 
 
 async def test_a_long_line_with_pauses_is_one_line():
@@ -45,8 +48,6 @@ async def test_a_long_line_with_pauses_is_one_line():
     assert got == ["Nova, for the gel colors, they are nail gels. We have none of red. Pink are nearly gone."]
     j.speaking("leo")  # nothing pending for them: nothing held
     j.close()
-
-
 
 
 class _Backend:
@@ -129,7 +130,11 @@ async def test_meet_link_result_reaches_chat():
     await asyncio.sleep(0.01)
     assert not nxt.done()  # someone is talking: held
     quiet["v"] = True
-    assert await nxt == {"kind": "agent", "id": "a9", "text": "Drafted the holiday-hours post: holiday-hours-post.md"}
+    assert await nxt == {
+        "kind": "agent",
+        "id": "a9",
+        "text": "Drafted the holiday-hours post: holiday-hours-post.md",
+    }
     assert m.lines[-1]["kind"] == "agent" and m.lines[-1]["text"] == line
     assert b.sent[0] == ("events", {"after": 3})
     nxt = asyncio.create_task(it.__anext__())
@@ -157,7 +162,12 @@ async def test_the_ask_after_a_thread_question_answers_it():
     one is a new ask."""
     from huddle_agent import mouth
 
-    q = {"id": "q1", "seq": 8, "text": "**Pulse** asks: What holiday hours?", "question": {"taskId": "t1", "qid": "q-1"}}
+    q = {
+        "id": "q1",
+        "seq": 8,
+        "text": "**Pulse** asks: What holiday hours?",
+        "question": {"taskId": "t1", "qid": "q-1"},
+    }
     b = _Backend([{"messages": [q], "after": 8}])
     m = _meeting(b)
     assert (await m.events().__anext__())["question"] == {"taskId": "t1", "qid": "q-1"}
@@ -256,7 +266,14 @@ async def test_meet_wakes_on_the_name_carrying_history():
     """Asleep, the first interim or final line with the name reopens it, told the recent meeting; the team messages
     from while it slept are fetched alongside, into the notes (not said), and the next wake's history has them as
     "Team". The words that named it come as the Mix pre-roll's audio."""
-    b = _Backend([{"messages": [{"id": "a7", "seq": 7, "text": "Pulse posted the holiday hours."}], "after": 7}])
+    b = _Backend(
+        [
+            {
+                "messages": [{"id": "a7", "seq": 7, "text": "Pulse posted the holiday hours."}],
+                "after": 7,
+            }
+        ]
+    )
     m, opened = _sleepy(b)
     m.line(MAYA, "Let's look at the holiday hours.")
     m.heard(SAM, "Lightbulb, are those", final=False)
@@ -285,7 +302,9 @@ async def test_meet_no_reopen_on_unaddressed_talk_while_asleep():
     assert m.opening is None and opened == [] and meet.names_it("Nova", "I asked Nova.")  # contains the name: wakes
 
 
-async def test_meet_runs_asleep_until_named_and_closes_the_voice_with_the_meeting(monkeypatch):
+async def test_meet_runs_asleep_until_named_and_closes_the_voice_with_the_meeting(
+    monkeypatch,
+):
     """Nothing is billed until someone names it; the open voice is closed with the meeting. The tile shows its
     state."""
     monkeypatch.setenv("OPENAI_API_KEY", "k")
@@ -398,7 +417,12 @@ async def test_a_wake_holds_the_pre_roll_and_paces_what_is_past_the_burst():
 async def test_the_wake_catch_up_records_a_question_without_answering_it():
     """A sleeping Worker's question is silent context, not a question the voice asked the room. An unrelated new
     delegation must never be submitted as its answer."""
-    q = {"id": "q1", "seq": 9, "text": "**Pulse** asks: What holiday hours?", "question": {"taskId": "t1", "qid": "q-1"}}
+    q = {
+        "id": "q1",
+        "seq": 9,
+        "text": "**Pulse** asks: What holiday hours?",
+        "question": {"taskId": "t1", "qid": "q-1"},
+    }
     b = _Backend([{"messages": [q], "after": 9}])
     m, opened = _sleepy(b)
     m.asked.append({"t": 0, "who": "Sam", "q": "draft it", "a": ""})
@@ -480,7 +504,12 @@ async def test_slow_wake_catch_up_precedes_the_live_events_reader():
     """live.start starts its events reader before returning. That reader must not race the wake's slow HTTP fetch
     and turn an old, unheard question into spoken commentary and an answer binding."""
     fetching, opened, reading, release = (asyncio.Event() for _ in range(4))
-    q = {"id": "q11", "seq": 11, "text": "What holiday hours?", "question": {"taskId": "t1", "qid": "q-11"}}
+    q = {
+        "id": "q11",
+        "seq": 11,
+        "text": "What holiday hours?",
+        "question": {"taskId": "t1", "qid": "q-11"},
+    }
 
     class B(_Backend):
         async def meet(self, op, body):
@@ -541,3 +570,107 @@ async def test_a_voice_that_closed_itself_is_reopened_by_the_name():
     m.heard(SAM, "Nova, are you there?", final=False)
     await m.opening
     assert len(opened) == 2 and m.voice is opened[1]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Nova, don't transcribe me",
+        "Hey Nova, can you not transcribe me?",
+        "Lightbulb, turn off transcription for my voice",
+        "Nova, opt me out",
+    ],
+)
+def test_opt_out_is_a_request_to_the_assistant_about_this_speaker(text):
+    assert meet.opts_out("Nova", text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Customers can opt out of reminder texts",
+        "Nova, don't record my screen",
+        "Don't transcribe me",
+        "Sam said Nova should not transcribe me",
+    ],
+)
+def test_ordinary_talk_and_other_peoples_requests_do_not_opt_anyone_out(text):
+    assert not meet.opts_out("Nova", text)
+
+
+async def test_opt_out_removes_only_that_person_from_notes_and_audio_and_persists():
+    b, mix, stopped = _Backend(), meet.Mix(), []
+    m = _meeting(b, mix=mix, on_opt_out=stopped.append)
+    m.joiner.final(SAM, "Nova.")  # split STT final at the name
+    frame = rtc.AudioFrame(np.full(meet.FRAME, 2000, dtype=np.int16).tobytes(), meet.RATE, 1, meet.FRAME)
+    mix.push(SAM, frame)
+    mix.tick()
+    m.heard(SAM, "Please stop transcribing my voice", final=True)
+    await asyncio.sleep(0)
+    assert stopped == [SAM] and m.excluded(SAM) and not m.excluded(MAYA)
+    assert not mix.ring and SAM not in mix._q  # mixed pre-roll contains their voice too
+    mix.push(SAM, frame)  # a frame already in flight must not get back in
+    mix.push(MAYA, frame)
+    mix.tick()
+    assert np.frombuffer((await mix.__anext__()).data, dtype=np.int16).tolist() == [2000] * meet.FRAME
+    m.heard(SAM, "I should never enter the notes", final=True)
+    m.joiner._flush(SAM)
+    assert not m.lines and not m.joiner._parts
+    assert b.sent == [("transcription", {"participantId": "12", "name": "Sam", "optOut": True})]
+    # A new worker restores the persisted name when Recall gives the person another id.
+    restored = _meeting(not_transcribed=m.not_transcribed)
+    restored.names.pop(SAM)  # the old participant id is no longer in the current meeting roster
+    restored.person("meet:r:99", "Sam")
+    assert restored.excluded("meet:r:99", "sAm") and not restored.excluded(MAYA, "Maya")
+    restored.heard("meet:r:99", "This is excluded after restart", final=True)
+    assert not restored.joiner._parts
+    m.joiner.close()
+    restored.joiner.close()
+
+
+async def test_opt_out_stays_local_and_retries_a_transient_persistence_failure():
+    b = _Backend()
+    saved = b.meet
+    attempts = []
+
+    async def flaky(op, body):
+        attempts.append((op, body))
+        if len(attempts) == 1:
+            raise OSError("temporary transport failure")
+        return await saved(op, body)
+
+    b.meet = flaky
+    m = _meeting(b, mix=meet.Mix())
+    m.heard(SAM, "Nova, stop transcribing me", final=True)
+    assert m.excluded(SAM)
+    m.heard(SAM, "Private words while persistence is retrying", final=True)
+    assert not m.lines
+    await m.close()
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    assert b.sent == [attempts[1]]
+
+
+def test_opt_out_name_fallback_does_not_exclude_a_distinct_same_named_attendee():
+    m = _meeting(not_transcribed=[{"id": "12", "name": "Sam"}])
+    m.person("meet:r:99", "Sam")
+    assert m.excluded(SAM)
+    assert not m.excluded("meet:r:99", "Sam")
+    # After a restart, two same-named attendees cannot be matched to the old id by name.
+    m.names.pop(SAM)
+    m.person("meet:r:98", "Sam")
+    assert not m.excluded("meet:r:99", "Sam")
+    assert not m.excluded("meet:r:98", "Sam")
+    # A genuinely unambiguous rejoin still restores the exclusion.
+    m.names.pop("meet:r:98")
+    assert m.excluded("meet:r:99", "Sam")
+
+
+def test_opt_out_name_fallback_uses_the_current_roster_not_historical_speaker_names():
+    present = {"meet:r:99": "Sam"}
+    m = _meeting(not_transcribed=[{"id": "12", "name": "Sam"}], participants=lambda: present)
+    assert SAM in m.names  # historical speech names retain the old id for labels
+    assert m.excluded("meet:r:99", "Sam")
+    present["meet:r:98"] = "Sam"
+    assert not m.excluded("meet:r:99", "Sam")
+    present.pop("meet:r:98")
+    assert m.excluded("meet:r:99", "Sam")

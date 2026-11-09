@@ -753,12 +753,13 @@ def _release(table: str, pk: str, row: dict, keep: set[str] = frozenset()) -> li
         if key == row["sk"]:
             condition, values = voice_booking.row_condition(row)
         elif row.get("bookingId"):
+            # A cell the table's TTL already removed is released; one that exists must still be this booking's.
             condition, values = (
-                "bookingId = :bid AND booking = :booking",
+                "attribute_not_exists(sk) OR (bookingId = :bid AND booking = :booking)",
                 {":bid": row["bookingId"], ":booking": row["sk"]},
             )
         else:
-            condition, values = "booking = :booking", {":booking": row["sk"]}
+            condition, values = "attribute_not_exists(sk) OR (booking = :booking)", {":booking": row["sk"]}
         out.append(
             {
                 "Delete": {

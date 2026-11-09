@@ -296,6 +296,38 @@ async def test_own_booking_stored_before_booking_state_still_counts_as_confirmed
     assert await vp._has_upcoming("org_1", legacy["phone"])
 
 
+async def test_release_tolerates_cells_already_removed_by_ttl(client, google):
+    from core.dynamodb import run_in_thread
+
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    start = f"{_tomorrow()}T14:00"
+    assert create(client, base, start).json()["booked"]
+    booked = await row(start)
+    assert booked["cells"]
+    for cell in booked["cells"]:
+        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": booked["pk"], "sk": cell})
+    assert change(client, base, start).json()["cancelled"]
+    assert await row(start) is None
+
+
+def test_release_still_refuses_a_cell_another_booking_holds():
+    booked = {
+        "pk": "OWNER#org_1",
+        "sk": "VOICEBOOK#2026-11-11T14:00",
+        "bookingId": "b1",
+        "generation": 1,
+        "createdAt": "c",
+        "callId": "k",
+        "cells": ["VOICECELL#x"],
+    }
+    for row_ in (booked, {k: v for k, v in booked.items() if k != "bookingId"}):
+        [_, cell] = vp._release("t", "OWNER#org_1", row_)
+        condition = cell["Delete"]["ConditionExpression"]
+        assert condition.startswith("attribute_not_exists(sk) OR (")
+        assert "booking = :booking" in condition
+
+
 async def test_unknown_cross_day_move_keeps_target_out_of_availability(client, google):
     _, base = await begin(client)
     day = _tomorrow()

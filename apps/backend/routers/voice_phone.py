@@ -1107,12 +1107,11 @@ async def _has_upcoming(ws: str, caller: str) -> bool:
     """The caller has a booking from now on (the one `business_profile` lists for them)."""
     if not caller:
         return False
-    from core.services import business_profile
+    from core.services import business_profile, voice_booking
 
     now = f"{_now(await agent_config(ws)):%Y-%m-%dT%H:%M}"
     return any(
-        b.get("phone") == caller and b.get("bookingState") == "confirmed"
-        for b in await business_profile._upcoming(ws, now)
+        b.get("phone") == caller and voice_booking.confirmed(b) for b in await business_profile._upcoming(ws, now)
     )
 
 

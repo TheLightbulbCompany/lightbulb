@@ -97,7 +97,7 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
     if pointer and (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:  # fmt: skip
         return
     now = vp._now(cfg).strftime("%Y-%m-%dT%H:%M")
-    held = sum(1 for b in await vp._bookings(ws, "") if b.get("bookingState") != "confirmed" and b["sk"][10:] >= now)
+    held = sum(1 for b in await vp._bookings(ws, "") if not confirmed(b) and b["sk"][10:] >= now)
     title = f"Google Calendar needs checking; {held} booking(s) unconfirmed"
     brief = (
         f"{title}. External booking outcomes may be unknown; preserve holds and verify the provider before changing them. Ask the owner "
@@ -183,6 +183,11 @@ def row_condition(row: dict) -> tuple[str, dict]:
     }
 
 
+def confirmed(row: dict) -> bool:
+    """The booking stands. A row written before `bookingState` existed was always a confirmed own-calendar booking."""
+    return (row.get("bookingState") or "confirmed") == "confirmed"
+
+
 def _result(row: dict | None, state: str, code: str = "", *, action: str = "create") -> dict:
     return {
         "state": state,
@@ -190,11 +195,7 @@ def _result(row: dict | None, state: str, code: str = "", *, action: str = "crea
         "action": action,
         "provider": (row or {}).get("bookingProvider", "google"),
         "operationId": ((row or {}).get("pending") or {}).get("id"),
-        "currentStart": (
-            (row or {}).get("sk", "").removeprefix("VOICEBOOK#")
-            if (row or {}).get("bookingState") == "confirmed"
-            else None
-        ),
+        "currentStart": (row or {}).get("sk", "").removeprefix("VOICEBOOK#") if row and confirmed(row) else None,
         "requestedStart": ((row or {}).get("pending") or {}).get("newStart"),
     }
 

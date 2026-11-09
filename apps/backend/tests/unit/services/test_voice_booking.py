@@ -281,6 +281,21 @@ async def test_own_booking_stored_before_provider_field_still_moves_and_cancels(
     assert not google.calls
 
 
+async def test_own_booking_stored_before_booking_state_still_counts_as_confirmed(client, google):
+    from core.dynamodb import run_in_thread
+
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    start = f"{_tomorrow()}T14:00"
+    assert create(client, base, start).json()["booked"]
+    legacy = await row(start)
+    legacy.pop("bookingState")
+    legacy.pop("bookingProvider", None)
+    await run_in_thread(messaging_repo._table().put_item, Item=legacy)
+    assert booking.confirmed(legacy)
+    assert await vp._has_upcoming("org_1", legacy["phone"])
+
+
 async def test_unknown_cross_day_move_keeps_target_out_of_availability(client, google):
     _, base = await begin(client)
     day = _tomorrow()

@@ -23,6 +23,7 @@ export function AgentSettings() {
   const [frontIssue, setFrontIssue] = useState<string | null>(null);
   const [draft, setDraft] = useState<AgentDocument | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(dirty);
@@ -34,12 +35,12 @@ export function AgentSettings() {
     let alive = true;
     setLoading(true);
     void (api.get("/voice/agent") as Promise<{ config: AgentDocument | null; agents?: { id: string; name: string }[]; frontAgentIssue?: string; frontAgentId?: string }>).then(({ config, agents, frontAgentIssue, frontAgentId }) => {
-      if (alive) { setEffectiveFront(frontAgentId ?? null); setAgents(agents ?? []); setFrontIssue(frontAgentIssue ?? null); setDraft(config); setDirty(false); setMessage(""); }
+      if (alive) { setLoaded(true); setEffectiveFront(frontAgentId ?? null); setAgents(agents ?? []); setFrontIssue(frontAgentIssue ?? null); setDraft(config); setDirty(false); setMessage(""); }
     }).catch(() => { if (alive) setMessage("Couldn’t load agent settings. Try again."); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [api, retry]));
-  const patch = (next: Partial<AgentDocument>) => { setDraft((current) => current ? { ...current, ...next } : current); setDirty(true); setMessage(""); };
+  const patch = (next: Partial<AgentDocument>) => { setDraft((current) => ({ ...(current ?? { onboardingStep: 1 }), ...next })); setDirty(true); setMessage(""); };
   const save = async () => {
     if (!draft || saving) return;
     setSaving(true);
@@ -58,40 +59,44 @@ export function AgentSettings() {
       editable={!saving} multiline={multiline} textAlignVertical="top"
       style={[styles.input, text, { borderColor: palette.edge, backgroundColor: palette.surface }, multiline && styles.multiline]} />
   </View>;
+  // A receptionist-only save resumes web onboarding without inventing phone settings.
+  const phoneConfigured = !!draft && Object.keys(draft).some((key) => key !== "frontAgentId" && key !== "onboardingStep");
   return <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
     style={{ backgroundColor: palette.ground }} contentContainerStyle={styles.page}>
     <Text style={[text, styles.title]}>Your assistant, your way</Text>
     <Text style={[text, styles.description, { color: palette.fgSoft }]}>Lightbulb in the app. Choose what callers hear and what your assistant can do.</Text>
-    {loading ? <ActivityIndicator accessibilityLabel="Loading agent settings" color={palette.fg} /> : draft ? <>
-      <Text style={[text, styles.status, { color: palette.fgSoft }]}>{draft.live ? draft.paused ? "Phone answering is paused" : "Phone answering is live" : "Phone answering is not live"}</Text>
+    {loading ? <ActivityIndicator accessibilityLabel="Loading agent settings" color={palette.fg} /> : loaded ? <>
       <Text accessibilityRole="header" style={[text, styles.label]}>Front-door agent</Text>
       <Text style={[text, { color: palette.fgSoft }]}>Choose an existing worker to greet people as Lightbulb. Every agent can still do work. New conversations use this choice; existing conversations keep their agent.</Text>
       {frontIssue && <Text accessibilityRole="alert" style={[text, { color: palette.alert }]}>{frontIssue}</Text>}
-      {[{ id: "", name: `Workspace default${!draft.frontAgentId && effectiveFront ? ` · ${agents.find((a) => a.id === effectiveFront)?.name ?? "existing agent"}` : ""}` }, ...agents].map((a) => <Pressable key={a.id}
-        accessibilityRole="radio" accessibilityState={{ checked: (draft.frontAgentId ?? "") === a.id, disabled: saving }}
+      {[{ id: "", name: `Workspace default${!draft?.frontAgentId && effectiveFront ? ` · ${agents.find((a) => a.id === effectiveFront)?.name ?? "existing agent"}` : ""}` }, ...agents].map((a) => <Pressable key={a.id}
+        accessibilityRole="radio" accessibilityState={{ checked: (draft?.frontAgentId ?? "") === a.id, disabled: saving }}
         accessibilityLabel={`Receptionist: ${a.name}`} disabled={saving} onPress={() => patch({ frontAgentId: a.id || null })}
-        style={[styles.input, { borderColor: (draft.frontAgentId ?? "") === a.id ? palette.fg : palette.edge }]}>
+        style={[styles.input, { borderColor: (draft?.frontAgentId ?? "") === a.id ? palette.fg : palette.edge }]}>
         <Text style={text}>{a.name}</Text>
       </Pressable>)}
-      {field("Name callers hear", "name")}
-      {field("Phone greeting", "greeting", true)}
-      {field("Instructions", "instructions", true)}
-      <Text accessibilityRole="header" style={[text, styles.label]}>Permissions</Text>
-      {([['book', 'Book appointments'], ['move', 'Move appointments'], ['waitlist', 'Offer the waitlist'], ['answer', 'Answer business questions'], ['greetByName', 'Greet returning callers by name']] as const).map(([key, label]) =>
-        <View key={key} style={[styles.toggle, { borderColor: palette.edge }]}>
-          <Text style={[text, styles.toggleLabel]}>{label}</Text>
-          <Switch accessibilityLabel={label} disabled={saving} value={draft.allow?.[key] ?? true} onValueChange={(value) => patch({ allow: { ...draft.allow, [key]: value } })} />
-        </View>)}
-      {draft.live ? <View style={[styles.toggle, { borderColor: palette.edge }]}>
-        <Text style={[text, styles.toggleLabel]}>Pause phone answering</Text>
-        <Switch accessibilityLabel="Pause phone answering" disabled={saving} value={!!draft.paused} onValueChange={(paused) => patch({ paused })} />
-      </View> : null}
+      {draft && phoneConfigured ? <>
+        <Text style={[text, styles.status, { color: palette.fgSoft }]}>{draft.live ? draft.paused ? "Phone answering is paused" : "Phone answering is live" : "Phone answering is not live"}</Text>
+        {field("Name callers hear", "name")}
+        {field("Phone greeting", "greeting", true)}
+        {field("Instructions", "instructions", true)}
+        <Text accessibilityRole="header" style={[text, styles.label]}>Permissions</Text>
+        {([['book', 'Book appointments'], ['move', 'Move appointments'], ['waitlist', 'Offer the waitlist'], ['answer', 'Answer business questions'], ['greetByName', 'Greet returning callers by name']] as const).map(([key, label]) =>
+          <View key={key} style={[styles.toggle, { borderColor: palette.edge }]}>
+            <Text style={[text, styles.toggleLabel]}>{label}</Text>
+            <Switch accessibilityLabel={label} disabled={saving} value={draft.allow?.[key] ?? true} onValueChange={(value) => patch({ allow: { ...draft.allow, [key]: value } })} />
+          </View>)}
+        {draft.live ? <View style={[styles.toggle, { borderColor: palette.edge }]}>
+          <Text style={[text, styles.toggleLabel]}>Pause phone answering</Text>
+          <Switch accessibilityLabel="Pause phone answering" disabled={saving} value={!!draft.paused} onValueChange={(paused) => patch({ paused })} />
+        </View> : null}
+      </> : <Text style={[text, { color: palette.fgSoft }]}>Set up your phone assistant on the web to configure its number, hours, and services. You can still talk and type to Lightbulb from Home.</Text>}
       <Pressable accessibilityRole="button" accessibilityLabel="Save agent settings" disabled={!dirty || saving}
         accessibilityState={{ disabled: !dirty || saving, busy: saving }} onPress={() => void save()}
         style={({ pressed }) => [styles.save, { backgroundColor: palette.fg, opacity: !dirty || saving ? 0.45 : pressed ? 0.7 : 1 }]}>
         <Text style={[text, { color: palette.onFg }]}>{saving ? "Saving…" : "Save changes"}</Text>
       </Pressable>
-    </> : !message ? <Text style={[text, { color: palette.fgSoft }]}>Set up your phone assistant on the web to configure its number, hours, and services. You can still talk and type to Lightbulb from Home.</Text> : null}
+    </> : null}
     {!!message && <Text accessibilityRole={message === "Saved" ? "text" : "alert"} accessibilityLiveRegion="polite" style={[text, { color: message === "Saved" ? palette.live : palette.alert }]}>{message}</Text>}
     {!loading && !draft && !!message && <Pressable accessibilityRole="button" onPress={() => setRetry((n) => n + 1)} style={styles.save}><Text style={[text, { color: palette.link }]}>Retry</Text></Pressable>}
   </ScrollView>;

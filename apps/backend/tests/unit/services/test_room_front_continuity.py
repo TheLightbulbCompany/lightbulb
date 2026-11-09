@@ -542,3 +542,65 @@ async def test_router_reactions_use_new_room_selected_front(world, monkeypatch):
     assert all(call.args[0] == room_id for call in publish.await_args_list)
     repo.get_voice_agent.assert_not_awaited()
     assert await repo.list_members(room_id) == before
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids=["legacy", "pinned"])
+@pytest.mark.parametrize("selected_seated", [False, True], ids=["selected-absent", "selected-seated"])
+@pytest.mark.parametrize("changed", [A, C], ids=["front-mode", "other-mode"])
+async def test_member_mode_update_preserves_conversation_front(world, monkeypatch, pinned, selected_seated, changed):
+    from core.auth import AuthContext
+
+    meta = await _room(
+        "member-mode-front",
+        pinned=pinned,
+        other_seats=[_seat(C, "finance"), *([_seat(B, "next")] if selected_seated else [])],
+    )
+    room_id = meta["roomId"]
+    before = await repo.list_members(room_id)
+    world.config["frontAgentId"] = B
+    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value=meta))
+
+    await messaging.upsert_member(
+        AuthContext(user_id=HUMAN, org_id=OWNER),
+        room_id,
+        messaging.UpsertRoomMemberRequest(kind="agent", id=changed, role="member", listen_mode="active"),
+    )
+
+    assert await tc.front_agent_id(OWNER, room_id=room_id) == A
+    assert (await repo.get_member(room_id, "agent", A))["mentionHandle"] == "lightbulb"
+    assert (await repo.get_member(room_id, "agent", changed))["listenMode"] == "active"
+    after = await repo.list_members(room_id)
+    assert {(m["kind"], m["id"]) for m in after} == {(m["kind"], m["id"]) for m in before}
+    if selected_seated:
+        assert (await repo.get_member(room_id, "agent", B))["mentionHandle"] != "lightbulb"
+    else:
+        assert await repo.get_member(room_id, "agent", B) is None
+    answer = await _answer(room_id, "after-mode-update")
+    assert (await repo.get_message_by_id(room_id, answer))["author"]["id"] == A
+
+
+@pytest.mark.parametrize("invalid", ["paused", "deleted", "conflicting"])
+async def test_member_mode_update_cannot_erase_unavailable_legacy_front(world, monkeypatch, invalid):
+    from core.auth import AuthContext
+
+    meta = await _room(
+        "invalid-member-mode-front",
+        pinned=False,
+        other_seats=[_seat(B, "lightbulb" if invalid == "conflicting" else "next"), _seat(C, "finance")],
+    )
+    world.config["frontAgentId"] = B
+    if invalid != "conflicting":
+        world.roster[0]["status"] = invalid
+    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value=meta))
+    with pytest.raises(tc.NoFrontAgent):
+        await tc.front_agent_id(OWNER, room_id=meta["roomId"])
+    await messaging.upsert_member(
+        AuthContext(user_id=HUMAN, org_id=OWNER),
+        meta["roomId"],
+        messaging.UpsertRoomMemberRequest(kind="agent", id=C, role="member", listen_mode="active"),
+    )
+    assert (await repo.get_member(meta["roomId"], "agent", A))["mentionHandle"] == "lightbulb"
+    with pytest.raises(tc.NoFrontAgent):
+        await tc.front_agent_id(OWNER, room_id=meta["roomId"])

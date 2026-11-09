@@ -53,3 +53,23 @@ it("selects an existing worker while preserving founder configuration", async ()
   await screen.findByText("Saved");
   expect(mockPut).toHaveBeenCalledWith("/voice/agent", { config: { ...config, frontAgentId: "existing-worker" } });
 });
+
+
+it("saves and reloads a receptionist before phone setup without creating phone settings", async () => {
+  const agents = [{ id: "existing-worker", name: "Founders custom name" }];
+  mockGet.mockResolvedValue({ config: null, agents, frontAgentId: "starter" });
+  const first = await render(<AgentSettings />);
+  await fireEvent.press(await screen.findByLabelText("Receptionist: Founders custom name"));
+  await fireEvent.press(screen.getByRole("button", { name: "Save agent settings" }));
+  await screen.findByText("Saved");
+  const saved = { frontAgentId: "existing-worker", onboardingStep: 1 };
+  expect(mockPut).toHaveBeenCalledWith("/voice/agent", { config: saved });
+  expect(screen.getByText(/Set up your phone assistant on the web/)).toBeTruthy();
+  expect(screen.queryByLabelText("Name callers hear")).toBeNull();
+  await first.unmount();
+  mockGet.mockResolvedValue({ config: saved, agents, frontAgentId: "existing-worker" });
+  await render(<AgentSettings />);
+  expect((await screen.findByLabelText("Receptionist: Founders custom name")).props.accessibilityState.checked).toBe(true);
+  expect(screen.getByText(/Set up your phone assistant on the web/)).toBeTruthy();
+  expect(screen.queryByLabelText("Name callers hear")).toBeNull();
+});

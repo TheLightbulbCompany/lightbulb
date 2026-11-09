@@ -3198,9 +3198,24 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         member = {**member, "modeSetBy": "user"}
     if request.kind == "human" and await messaging_repo.ensure_user_stream(owner_id, request.id) is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")  # a removed member
-    handles = await _handles_for(owner_id, roster) if roster else {}
     current = await messaging_repo.list_members(room_id)
     room_agents = [row for row in current if row.get("kind") == "agent"]
+    # Updating membership is not a new conversation. The room's existing front keeps its
+    # reserved handle; the workspace default must not acquire it in an older private room.
+    handles = mention_handles(roster, reserved=RESERVED_HANDLES) if roster else {}
+    front = await _front_agent_id(owner_id, room_id=room_id) if roster else None
+    if front in handles:
+        handles[front] = "lightbulb"
+    else:
+        # Preserve an unavailable/conflicting legacy designation as a refusal. Erasing it
+        # would let the resolver fall through to a different, seated workspace default.
+        for row in room_agents:
+            if row["id"] in handles and row.get("mentionHandle") == "lightbulb":
+                handles[row["id"]] = "lightbulb"
+    if request.kind == "agent":
+        member["mentionHandle"] = handles[request.id]
+        if request.id == front:
+            member["displayName"] = FRONT_AGENT_NAME
     handle_updates = {row["id"]: handles[row["id"]] for row in room_agents if row["id"] in handles}
     try:
         meta = await messaging_repo.upsert_member(

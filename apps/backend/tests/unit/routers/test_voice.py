@@ -349,3 +349,21 @@ async def test_phone_preferences_round_trip_without_rewriting_legacy(repos, asyn
     response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})
     assert response.status_code == 200
     assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] == cfg
+
+
+@pytest.mark.usefixtures("repos")
+async def test_receptionist_can_be_saved_before_phone_setup_without_phone_effects(async_client_org_admin, monkeypatch):
+    from routers import voice
+
+    monkeypatch.setattr(
+        voice.agent_registry, "get", AsyncMock(return_value={"agentId": "existing", "status": "active"})
+    )
+    provision = AsyncMock()
+    monkeypatch.setattr(voice.voice_onboarding, "provision_at_go_live", provision)
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] is None
+    config = {"frontAgentId": "existing", "onboardingStep": 1}
+    response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": config})
+    assert response.status_code == 200
+    assert response.json()["config"] == config
+    assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] == config
+    provision.assert_not_awaited()

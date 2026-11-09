@@ -63,3 +63,52 @@ async def test_refuses_cross_environment_messaging_table_before_read(monkeypatch
     with pytest.raises(RuntimeError, match="non-DEV messaging table"):
         await mod.validate(tmp_path / "receipt.json")
     preference.assert_not_awaited()
+
+
+@pytest.mark.parametrize("fault", [None, "legacy", "wrong_image", "updating", "unstable_backend"])
+def test_deployed_transport_fences_exact_stable_dev_pool(monkeypatch, fault):
+    from unittest.mock import MagicMock
+
+    arn = "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/lightbulb_dev_hermes_pool-test"
+    image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-test"
+    definition = "arn:aws:ecs:us-east-1:877352799272:task-definition/lightbulb-dev-backend:965"
+    ecs, runtime = MagicMock(), MagicMock()
+    ecs.describe_services.return_value = {
+        "services": [
+            {
+                "taskDefinition": definition,
+                "deployments": [{"rolloutState": "IN_PROGRESS" if fault == "unstable_backend" else "COMPLETED"}],
+            }
+        ]
+    }
+    ecs.describe_task_definition.return_value = {
+        "taskDefinition": {
+            "containerDefinitions": [
+                {
+                    "name": "backend",
+                    "environment": [
+                        {"name": "HERMES_SHARED_RUNTIME_ARN", "value": "" if fault == "legacy" else arn},
+                        {"name": "AGENTCORE_HERMES_IMAGE", "value": image},
+                    ],
+                }
+            ]
+        }
+    }
+    runtime.get_agent_runtime.return_value = {
+        "status": "UPDATING" if fault == "updating" else "READY",
+        "agentRuntimeVersion": "5",
+        "agentRuntimeArtifact": {
+            "containerConfiguration": {"containerUri": "old" if fault == "wrong_image" else image}
+        },
+    }
+    monkeypatch.setattr(mod.boto3, "client", lambda service, **_: ecs if service == "ecs" else runtime)
+    monkeypatch.setattr(mod.settings, "HERMES_SHARED_RUNTIME_ARN", "")
+    monkeypatch.setattr(mod.settings, "AGENTCORE_HERMES_IMAGE", "")
+    if fault:
+        with pytest.raises(RuntimeError):
+            mod.deployed_transport("h-test")
+        assert not mod.settings.HERMES_SHARED_RUNTIME_ARN
+    else:
+        receipt = mod.deployed_transport("h-test")
+        assert receipt["runtimeArn"] == mod.settings.HERMES_SHARED_RUNTIME_ARN == arn
+        assert receipt["runtimeVersion"] == "5" and receipt["image"] == image

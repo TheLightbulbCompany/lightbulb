@@ -27,11 +27,50 @@ from temporalio.testing import ActivityEnvironment
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo, tasks_repo
-from core.services import meeting_context, memory_tags, runtime_runs
+from core.services import meeting_context, memory_tags, runtime_runs, runtime_transport
 from core.temporal import activities
 from core.temporal.types import RouterTurnIn
 from scripts.multiparty_e2e.runner import Clerk, _secret
 from scripts.super_agent.acceptance.ctx import API_ROOT, Ctx, DEFAULT_WORKSPACE, aws_profile_default, guard
+
+
+def deployed_transport(expected_tag: str) -> dict:
+    """Read only the two non-secret transport settings from the stable deployed DEV backend."""
+    ecs = boto3.client("ecs", region_name="us-east-1")
+    response = ecs.describe_services(cluster="lightbulb-dev-container", services=["lightbulb-dev-backend"])
+    services = response.get("services") or []
+    if response.get("failures") or len(services) != 1:
+        raise RuntimeError("DEV backend service unavailable")
+    deployments = services[0].get("deployments") or []
+    if len(deployments) != 1 or deployments[0].get("rolloutState") != "COMPLETED":
+        raise RuntimeError("DEV backend deployment is not stable")
+    definition = services[0]["taskDefinition"]
+    if not definition.startswith("arn:aws:ecs:us-east-1:877352799272:task-definition/lightbulb-dev-backend:"):
+        raise RuntimeError("unexpected DEV task definition")
+    task = ecs.describe_task_definition(taskDefinition=definition)["taskDefinition"]
+    backend = next(c for c in task["containerDefinitions"] if c["name"] == "backend")
+    wanted = {"HERMES_SHARED_RUNTIME_ARN", "AGENTCORE_HERMES_IMAGE"}
+    env = {item["name"]: item["value"] for item in backend.get("environment", []) if item["name"] in wanted}
+    arn, image = env.get("HERMES_SHARED_RUNTIME_ARN", ""), env.get("AGENTCORE_HERMES_IMAGE", "")
+    expected_image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:" + expected_tag
+    if (
+        not arn.startswith("arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/lightbulb_dev_hermes_pool-")
+        or image != expected_image
+    ):
+        raise RuntimeError("deployed DEV transport does not match the reviewed candidate")
+    runtime = boto3.client("bedrock-agentcore-control", region_name="us-east-1").get_agent_runtime(
+        agentRuntimeId=arn.split("/")[-1]
+    )
+    actual = ((runtime.get("agentRuntimeArtifact") or {}).get("containerConfiguration") or {}).get("containerUri")
+    if runtime.get("status") != "READY" or actual != image:
+        raise RuntimeError("actual DEV pool is not READY on the reviewed image")
+    settings.HERMES_SHARED_RUNTIME_ARN, settings.AGENTCORE_HERMES_IMAGE = arn, image
+    return {
+        "backendTaskDefinition": definition,
+        "runtimeArn": arn,
+        "runtimeVersion": runtime.get("agentRuntimeVersion"),
+        "image": image,
+    }
 
 
 async def fixture(ctx: Ctx, label: str) -> dict:
@@ -162,7 +201,7 @@ async def native_receipt(owner: str, identity, grant: str, marker: str) -> dict:
     raise AssertionError("unreachable")
 
 
-async def validate(receipt_path: Path) -> None:
+async def validate(receipt_path: Path, expected_image_tag: str = "h-2026.11.9-a29f9bb") -> None:
     guard()  # must precede every secret read, identity lookup, write and model invocation
     aws_profile_default()
     if settings.MESSAGING_TABLE != "lightbulb-dev-messaging":
@@ -171,6 +210,10 @@ async def validate(receipt_path: Path) -> None:
         raise RuntimeError("unexpected validation workspace")
     if not await meeting_context.enabled(DEFAULT_WORKSPACE):
         raise RuntimeError("followUps is disabled; refusing to change the owner's preference")
+    transport = await run_in_thread(deployed_transport, expected_image_tag)
+    container = await runtime_runs._container(DEFAULT_WORKSPACE)
+    if await run_in_thread(runtime_transport.live_arn, container) != transport["runtimeArn"]:
+        raise RuntimeError("legacy writer still live; run the scoped idle-safe CI roll first")
     # Existing DEV secrets, process only. Never print or persist these values.
     settings.CLERK_SECRET_KEY = _secret("lightbulb/dev/clerk_secret_key")
     os.environ["PAPERCLIP_SERVICE_TOKEN_KEY"] = _secret("lightbulb/dev/paperclip_service_token_key")
@@ -186,6 +229,7 @@ async def validate(receipt_path: Path) -> None:
         "maxIterations": 4,
         "modelBudgetSeconds": 75,
     }
+    receipt["transport"] = transport
     original_create = runtime_runs.create_run
     original_budget, original_iterations = activities.ROUTER_BUDGET_S, activities.ROUTER_MAX_ITERATIONS
     private = {}
@@ -194,6 +238,9 @@ async def validate(receipt_path: Path) -> None:
         # The actual production _router_run already reauthorized stored batch IDs and minted this grant.
         # Only the diagnostic instructions/limits change; there is no ad-hoc grant construction.
         assert request.effects == "off" and request.context_grant
+        current = await runtime_runs._container(owner)
+        if await run_in_thread(runtime_transport.live_arn, current) != transport["runtimeArn"]:
+            raise RuntimeError("runtime writer changed before diagnostic invocation")
         private.update(grant=request.context_grant, identity=identity)
         request = replace(
             request,
@@ -288,5 +335,6 @@ async def validate(receipt_path: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--expected-image-tag", default="h-2026.11.9-a29f9bb")
     args = parser.parse_args()
-    asyncio.run(validate(args.receipt))
+    asyncio.run(validate(args.receipt, args.expected_image_tag))

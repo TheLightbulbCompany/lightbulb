@@ -24,3 +24,10 @@ it("failure and cancellation remain visible even with prior attendance", () => {
   expect(meetingStatus({ status: "bot_failed", inCallAt: 1 }).label).toBe("Connection ended");
   expect(meetingStatus({ status: "cancelled", inCallAt: 1 }).label).toBe("Cancelled");
 });
+
+
+it("an invite without a provider booking cannot promise a scheduled bot", () => {
+  expect(meetingStatus({ status: "scheduled", startAt: 100 }, 0).label).toBe("Invitation received");
+  expect(meetingStatus({ status: "scheduled", startAt: 100 }, 0).detail).toMatch(/scheduling.*not.*confirmed/i);
+  expect(meetingStatus({ status: "bot_created", startAt: 100 }, 0).label).toBe("Scheduled");
+});

@@ -13,7 +13,8 @@ export function meetingStatus(meeting: MeetingStatusInput, now = Date.now()) {
   if (meeting.status === "bot_failed") return { label: joined ? "Connection ended" : "Couldn't join", detail: "Check the meeting link and host access.", joined };
   if (meeting.status === "ended") return { label: "Ended", detail: joined ? "Lightbulb joined this meeting." : "Join confirmation is unavailable for this meeting.", joined };
   if (meeting.status === "in_call") return { label: "Live", detail: "Lightbulb is in the meeting.", joined };
-  if (meeting.status === "scheduled" || meeting.status === "bot_created") {
+  if (meeting.status === "scheduled") return { label: "Invitation received", detail: "Bot scheduling has not been confirmed.", joined: false };
+  if (meeting.status === "bot_created") {
     if (meeting.lastBotStatus === "in_waiting_room") return { label: "Waiting for host", detail: "Let Lightbulb in from the meeting lobby.", joined: false };
     if (meeting.lastBotStatus === "joining_call") return { label: "Joining", detail: "Lightbulb is connecting to the meeting.", joined: false };
     if (meeting.startAt != null && meeting.startAt * 1000 > now) return { label: "Scheduled", detail: "Lightbulb is scheduled to join this meeting.", joined: false };

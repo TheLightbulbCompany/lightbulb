@@ -254,3 +254,23 @@ async def test_facts_follow_the_phones_answer_and_pause_rule(sources, off):
     sources.return_value = {**CFG, **off}
     for text in (await bp.facts_text("org_x"), await bp.business_profile("org_x")):
         assert "Glow Nails" in text and "Pedicure" not in text and "$50 deposit" not in text
+
+
+async def test_worker_facts_reader_preserves_a_saved_policy_after_the_profile_excerpt(sources):
+    sources.return_value = CFG | {
+        "knowledge": [
+            *[{"q": f"Other question {i}", "a": "Earlier saved business detail. " * 10} for i in range(12)],
+            {"q": "Can I cancel anytime?", "a": "Yes, you can cancel any time."},
+        ]
+    }
+    facts = await bp.facts_text("org_x")
+    assert "Can I cancel anytime?" in facts
+    assert "Yes, you can cancel any time." in facts
+
+
+async def test_bounded_router_excerpt_is_explicitly_partial_and_full_reader_stays_complete(sources):
+    sources.return_value = CFG | {"knowledge": [{"q": f"Policy {i}", "a": "Saved answer " * 40} for i in range(20)]}
+    profile = await bp.business_profile("org_x", "+15550001")
+    assert len(profile) <= 2100
+    assert "Partial profile" in profile and "business_facts" in profile
+    assert "Policy 19" in await bp.facts_text("org_x")

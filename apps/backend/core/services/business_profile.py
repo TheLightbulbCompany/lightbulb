@@ -46,10 +46,11 @@ def _ranges(starts: list[str]) -> str:
     return ", ".join(say(a) if a == b else f"{say(a)}–{say(b)}" for a, b in out)
 
 
-async def facts_text(ws: str, cfg: dict | None = None) -> str:
+async def facts_text(ws: str, cfg: dict | None = None, *, max_chars: int | None = None) -> str:
     """The business's name, time zone and Agent page facts; "" with no saved Agent page (the phone's defaults are
     not facts). As on the phone (voice_phone.start_call), the facts are left out when the Agent page's "answer
-    questions" is off or the line is paused. Shared by the caller profile and a Worker's `business_facts`."""
+    questions" is off or the line is paused. The explicit facts tool reads the complete saved facts;
+    only the caller profile requests an excerpt."""
     from core.repositories import messaging_repo
     from core.services import clerk_admin
     from routers import voice_phone as vp
@@ -61,7 +62,11 @@ async def facts_text(ws: str, cfg: dict | None = None) -> str:
     head = f"Business: {await _org_name(ws, clerk_admin) or 'not named'}. Time zone: {vp._tz(cfg).key}."
     if not cfg["allow"].get("answer") or cfg.get("paused"):
         return head
-    return f"{head}\n{_cap(vp._facts(cfg), _FACTS_MAX)}"
+    facts = vp._facts(cfg)
+    if max_chars is not None and len(facts) > max_chars:
+        notice = "\n[Partial profile; complete saved answers are available from business_facts.]"
+        facts = _cap(facts, max_chars - len(notice)) + notice
+    return f"{head}\n{facts}"
 
 
 async def _org_name(ws: str, clerk_admin) -> str:
@@ -118,7 +123,10 @@ async def _build(ws: str, caller: str | None) -> str:
             return ""  # no saved Agent page: nothing is known, and the phone's defaults are not facts
         cfg = await vp.agent_config(ws)
     now, minutes = vp._now(cfg), vp._minutes(cfg, "")
-    parts = [asyncio.create_task(facts_text(ws, cfg)), asyncio.create_task(_open_days(ws, cfg, now, minutes))]
+    parts = [
+        asyncio.create_task(facts_text(ws, cfg, max_chars=_FACTS_MAX)),
+        asyncio.create_task(_open_days(ws, cfg, now, minutes)),
+    ]
     if caller:
         parts.append(asyncio.create_task(_callers_bookings(ws, caller, now)))
     try:

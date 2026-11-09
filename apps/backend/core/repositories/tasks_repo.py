@@ -50,7 +50,20 @@ TRANSITIONS: dict[str, frozenset[str | None]] = {
 
 # Attributes a field update may never touch: keys, the status machine and the writer-owned counters.
 _PROTECTED = frozenset(
-    {"pk", "sk", "type", "taskId", "n", "threadKey", "status", "statusKey", "statusReason", "version", "createdAt"}
+    {
+        "pk",
+        "sk",
+        "type",
+        "taskId",
+        "n",
+        "threadKey",
+        "status",
+        "statusKey",
+        "statusReason",
+        "version",
+        "createdAt",
+        "initialQuestion",
+    }
 )
 
 

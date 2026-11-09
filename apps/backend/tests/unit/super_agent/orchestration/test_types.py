@@ -28,6 +28,11 @@ ALLOWED = {
     "posted_message_ids",
     "fallback",
     "n",
+    "initial_question",  # optional typed IDs-only startup gate; old payloads default None
+    "qid",
+    "principal_user_id",
+    "state",  # pending/answered/cancelled enum
+    "answered_trigger_id",
     "outcome",
     "error",
     "queue",

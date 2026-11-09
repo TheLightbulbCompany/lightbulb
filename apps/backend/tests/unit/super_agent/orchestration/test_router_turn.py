@@ -1406,7 +1406,7 @@ def test_recurring_asks_are_automations_not_requests():
     Worker made an Active Paperclip routine in UTC, with no confirm card. The prompt listed five tools and not
     propose_automation, and said to start everything: recurring work is propose_automation, never start_task."""
     text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
-    assert "ignore, propose_automation, meeting_chat)" in text
+    assert "ignore, propose_automation, meeting_chat, meeting_context)" in text
     assert "Recurring work" in text and "propose_automation, never start_task" in text
 
 
@@ -1956,3 +1956,61 @@ async def test_ceo_frontdoor_remains_a_worker_that_can_receive_tasks(world):
     task = await repo.get_task(WS, outcome.started_task_ids[0])
     assert task["specialist"] == CEO
     assert world["starts"] == [(task["taskId"], "router")]
+
+
+async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or_plain_reply(world, monkeypatch):
+    from core.services import meeting_context, meeting_followups, questions
+
+    tid = await _trig(
+        "completion:clarify",
+        source="webhook",
+        ref={"roomId": ROOM, "origin": "meeting", "confirmAll": True, "meetingFollowups": {"requestId": "notes:1"}},
+    )
+    monkeypatch.setattr(meeting_context, "authorize", AsyncMock())
+    monkeypatch.setattr(meeting_followups, "record_task", AsyncMock(return_value=True))
+    question = {
+        "qid": questions.qid_for("meeting-clarification:" + ts.router_task_id(BATCH, 0, 0)),
+        "kind": "question",
+        "subkind": "question",
+        "title": "Clarify meeting follow-up",
+        "text": "Which report?",
+        "options": [],
+        "blocking": True,
+        "before_attempt": True,
+        "attempt": None,
+        "run_id": None,
+    }
+    monkeypatch.setattr(
+        meeting_followups, "clarification", AsyncMock(return_value=("Original meeting request and question", question))
+    )
+    from temporalio.testing import ActivityEnvironment
+    from core.temporal import task_questions
+    from core.repositories import questions_repo
+
+    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": SAM}]))
+
+    async def update(ws, task_id, name, ref):
+        assert name == "ask"
+        return await ActivityEnvironment().run(task_questions.open_asked_question, ws, task_id, ref)
+
+    monkeypatch.setattr(acts.temporal_client, "update_task", update)
+    opened = AsyncMock(wraps=acts.task_asks.open_ask)
+    monkeypatch.setattr(acts.task_asks, "open_ask", opened)
+    inp = RouterTurnIn(WS, "shared", BATCH, [tid])
+    decision = ts.Ask(kind="ask", trigger_ids=[tid], text="Which report?")
+    for _ in range(2):
+        out = await acts._apply(WS, inp, {tid: await repo.get_trigger(WS, tid)}, [decision], None)
+    task_id = ts.router_task_id(BATCH, 0, 0)
+    # _apply_decisions starts numbering at zero; the same decision replay names the same canonical task.
+    task = await repo.get_task(WS, task_id)
+    assert task and task["status"] == "queued" and task["ownerUserId"] == SAM
+    # This fixture runs the real Question row activity, not TaskWorkflow: only the Workflow owns waiting.
+    assert task["triggerId"] == tid and task["origin"] == "meeting" and task["confirmAll"] is True
+    assert task["audience"]["roomId"] == ROOM
+    assert world["starts"] == [] and world["runs"] == []
+    assert opened.await_count == 2 and opened.await_args.kwargs == question
+    assert out.started_task_ids == [task_id]
+    needs, _ = await questions_repo.needs_for_user(WS, SAM)
+    assert len(needs) == 1 and needs[0]["taskId"] == task_id
+    assert needs[0]["qid"] == question["qid"]
+    assert (await questions_repo.get_question(WS, task_id, question["qid"]))["answerers"] == [SAM]

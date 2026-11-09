@@ -105,9 +105,19 @@ class RouterTurnOut:
 
 
 @dataclass(frozen=True)
+class InitialQuestionRef:
+    qid: str
+    trigger_id: str
+    principal_user_id: str
+    state: Literal["pending", "answered", "cancelled"] = "pending"
+    answered_trigger_id: str | None = None
+
+
+@dataclass(frozen=True)
 class AttemptRef:
     n: int
     run_id: str
+    initial_question: InitialQuestionRef | None = None
 
 
 @dataclass(frozen=True)

@@ -24,7 +24,7 @@ from temporalio.exceptions import TimeoutError as ActivityTimeout
 from temporalio.workflow import ActivityCancellationType
 
 from core.temporal.automations import PATCH_AUTOMATION_RUN, AutomationRunMixin
-from core.temporal.task_questions import TaskQuestionsMixin
+from core.temporal.task_questions import AskRef, TaskQuestionsMixin
 from core.temporal.watches import WatchMixin, WatchSpec
 from core.temporal.types import (
     ActionRequest,
@@ -184,6 +184,7 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
         self._ws, self._task_id = start.ws, start.task_id
         # `migrated` = started by a signal/update-with-start: wait for what came with it.
         self._attempt_needed = start.reason != "migrated"
+        self._execution_requested = False  # local replay-derived guard; no new commands for old histories
         # Consent for a proposed task is an explicit Start only (the route's start, or the `start` signal).
         # Proposals were removed 5 Nov 2026 (nothing creates `proposed` rows or sends `start`/`dismiss`); this path,
         # the `start` signal and the `dismiss` update stay so histories already recorded with them still replay.
@@ -442,6 +443,7 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
 
     async def _run_attempt(self) -> WorkerTurnOut | None:
         """One attempt. None ⇒ nothing ran (budget, hook, stop while waiting for a slot)."""
+        self._execution_requested = True
         if not await self._before_attempt():
             self._blocked_at = self._wakes  # wait for the next input or action, as documented (no busy loop)
             return None
@@ -473,6 +475,23 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
             await _act("release_slot", self._ws, self._task_id)
             self._pending = inputs + self._pending
             raise
+        if ref.initial_question is not None:
+            initial = ref.initial_question
+            if self._pre_attempt_trigger is not None and self._pre_attempt_trigger != initial.trigger_id:
+                raise ValueError("different_initial_question")
+            # The persisted Task reference reserved the gate before it was observable. Claim before any await.
+            self._pre_attempt_trigger = initial.trigger_id
+            self._execution_requested = False  # begin_attempt returned WITHOUT creating an Attempt
+            self._pending = inputs + self._pending
+            await _act("release_slot", self._ws, self._task_id)
+            if initial.state == "cancelled":
+                self._blocked_at = self._wakes
+                await self._transition("waiting", "initial_question_cancelled")
+            else:
+                await self.ask(AskRef(initial.trigger_id, "question", "question", True, True))
+                if self._pre_attempt_qid in self._open_qs:
+                    self._blocked_at = self._wakes
+            return None
         if ref.n == 0:  # still proposed: a thread reply alone never starts work (consent is Start)
             await _act("release_slot", self._ws, self._task_id)
             self._pending = inputs + self._pending

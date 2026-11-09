@@ -146,6 +146,14 @@ async def _admit_trigger(ws: str, trigger_id: str) -> None:
     if trig is None:
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
         return
+    if "meetingFollowups" in (trig.get("ref") or {}):
+        from core.services import meeting_context
+
+        try:
+            await meeting_context.authorize(ws, trig)
+        except meeting_context.NotAuthorized:
+            put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "meeting_followups"})
+            return
     # Voice starts, A2A, proactive ideas, schedules: nothing new starts in a paused project.
     if await paused_room(ts.trigger_room(trig)):
         put_metric("admission.outcome", dimensions={"outcome": "paused", "source": trig["source"]})

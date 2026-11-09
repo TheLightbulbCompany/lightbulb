@@ -60,7 +60,7 @@ export interface AgentConfig {
   /** Onboarding step 4, stored by POST /voice/number; Go live reads it. */
   numberChoice?: { path: "keep" | "new"; areaCode?: string | null; carrier?: string | null; mode?: "missed" | "all" | null };
   handoff: { number: string; onlyOpenHours: boolean };
-  meetings: { followUps: boolean; emailNotes: boolean };
+  meetings: { followUps: boolean };
   reminders: { dayBefore: boolean; missedCallers: boolean; waitlist: boolean };
   /** Past the included minutes: keep answering at the overage rate, or send calls to the owner's phone. */
   runOut?: "keep" | "forward";
@@ -80,7 +80,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   bookingsGo: "own", otherSystem: "",
   number: "", forwardFrom: "",
   handoff: { number: "", onlyOpenHours: true },
-  meetings: { followUps: true, emailNotes: true },
+  meetings: { followUps: true },
   reminders: { dayBefore: true, missedCallers: false, waitlist: false },
 };
 

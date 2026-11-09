@@ -293,6 +293,31 @@
           "title": "Audience",
           "type": "object"
         },
+        "InitialQuestion": {
+          "additionalProperties": false,
+          "description": "Server-owned immutable startup gate; text and authority stay with the existing Question owner.",
+          "properties": {
+            "qid": {
+              "title": "Qid",
+              "type": "string"
+            },
+            "triggerId": {
+              "title": "Triggerid",
+              "type": "string"
+            },
+            "principalUserId": {
+              "title": "Principaluserid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "qid",
+            "triggerId",
+            "principalUserId"
+          ],
+          "title": "InitialQuestion",
+          "type": "object"
+        },
         "TaskOutput": {
           "additionalProperties": false,
           "description": "What a task made, kept on its row for every status (UX slice 5): a landed effect (mail, PR, published app),\na file its result attached, an app it handed to Apps, a short text result (walk 15). `id` dedupes a retried write:\n`effect:{idemKey}`, `file:{attachmentId}`, `app:{appId}`, `text:{attempt n}` (kind document, or mail for an\nemail draft; ref {roomId, messageId, text}: the result post in the task room and the deliverable's words).",
@@ -556,6 +581,18 @@
           "default": false,
           "title": "Confirmall",
           "type": "boolean"
+        },
+        "initialQuestion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InitialQuestion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "readOnly": true
         },
         "question": {
           "default": false,

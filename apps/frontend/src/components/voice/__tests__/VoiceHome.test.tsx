@@ -122,7 +122,7 @@ it("meeting pane shows follow-up status", () => {
   fireEvent.click(screen.getByRole("button", { name: /Standup/ }));
   const pane = screen.getByRole("complementary", { name: "Details" });
   expect(within(pane).getByText("Pat: send deck").closest("li")).toHaveTextContent("Recorded");
-  expect(within(pane).getByRole("link", { name: "Send deck" })).toHaveAttribute("href", "/chat?panel=task&taskId=finished-task");
+  expect(within(pane).getByRole("link", { name: "Send deck" })).toHaveAttribute("href", "/chat?panel=task-detail&taskId=finished-task");
   expect(within(pane).getByText("Send deck").closest("li")).toHaveTextContent("Done");
   expect(within(pane).getByText("Pick vendor").closest("li")).toHaveTextContent("Needs you");
   expect(within(pane).getByText("Book room").closest("li")).toHaveTextContent("Working");

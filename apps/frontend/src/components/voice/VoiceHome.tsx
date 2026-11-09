@@ -214,7 +214,7 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
     </section>
     {!!meeting.followUps?.length && <section><h3>Follow-ups</h3>
       <ul className="vx-tx">{meeting.followUps.map((f, n) => <li key={f.id ?? n} style={{ display: "flex", gap: 8 }}>
-        <span className="vx-tag" data-tone={f.status === "done" ? "ok" : f.status === "needs_you" ? "warn" : undefined}>{f.status === "done" ? "Done" : f.status === "needs_you" ? "Needs you" : f.status === "working" ? "Working" : f.status === "queued" ? "Queued" : "Recorded"}</span>{f.taskId ? <Link href={`/chat?panel=task&taskId=${encodeURIComponent(f.taskId)}`}>{f.text}</Link> : f.text}</li>)}</ul>
+        <span className="vx-tag" data-tone={f.status === "done" ? "ok" : f.status === "needs_you" ? "warn" : undefined}>{f.status === "done" ? "Done" : f.status === "needs_you" ? "Needs you" : f.status === "working" ? "Working" : f.status === "queued" ? "Queued" : "Recorded"}</span>{f.taskId ? <Link href={`/chat?panel=task-detail&taskId=${encodeURIComponent(f.taskId)}`}>{f.text}</Link> : f.text}</li>)}</ul>
     </section>}
   </>;
 }

@@ -113,7 +113,9 @@ async def test_meeting_task_done_posts_link_in_chat(m):
     m["say"].assert_awaited_once()
     line = m["say"].await_args.args[1]
     assert m["say"].await_args.args[0] == "bot_1"
-    assert line.startswith("Draft ready: Draft the holiday-hours post — ") and line.endswith("panel=task&taskId=k1")
+    assert line.startswith("Draft ready: Draft the holiday-hours post — ") and line.endswith(
+        "panel=task-detail&taskId=k1"
+    )
     assert m["meeting"]["followUps"][0]["status"] == "done"
     await voice_meet.task_moved(_meet_task(), "idle")  # a retried Activity: said once
     m["say"].assert_awaited_once()
@@ -369,7 +371,7 @@ async def test_a_meeting_thread_that_made_something_posts_its_link_in_the_room_a
     a task card and nothing reached the Meet's chat (`task_moved` says a link only for follow-ups, never written)."""
     m["meeting"].update(status="in_call")
     line = await _announce_made(m, _made_task())
-    assert line.startswith("Drafted the holiday-hours post.") and line.endswith("/chat?panel=task&taskId=k9")
+    assert line.startswith("Drafted the holiday-hours post.") and line.endswith("/chat?panel=task-detail&taskId=k9")
     m["say"].assert_awaited_once_with("bot_1", line)
     await _announce_made(m, _made_task())  # a retried Activity: the Meet chat gets it once
     m["say"].assert_awaited_once()

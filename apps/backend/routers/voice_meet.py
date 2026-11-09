@@ -298,7 +298,7 @@ async def task_moved(task: dict, to: str) -> None:
             and meeting.get("status") == "in_call"
             and meeting.get("recallBotId")
         ):
-            link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task&taskId={task['taskId']}"
+            link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task['taskId']}"
             await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
             await _tile_phase(room_id, "page_ready")
         elif meeting and current_changed and status != "done" and meeting.get("status") == "in_call":
@@ -308,7 +308,7 @@ async def task_moved(task: dict, to: str) -> None:
 
 
 def task_link(task_id: str) -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task&taskId={task_id}"
+    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task_id}"
 
 
 async def with_link(room_id: str, task: dict, line: str) -> str:

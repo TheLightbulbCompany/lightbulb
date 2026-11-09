@@ -52,7 +52,7 @@ from core.services import (
     task_board,
 )
 from core.services import local_session_grants
-from core.services import container_rpc, message_search, runtime_transport, voice_calls
+from core.services import container_rpc, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
 from core.services.messaging import (
     AbortRunResponse,
@@ -267,14 +267,6 @@ AGENT_ACTIONS = {
     "update_room": (lambda args: (PatchRoomRequest(**args),), lambda *a: service.patch_room(*a)),
     "pin": (lambda args: (args["message_id"], True), lambda *a: service.set_pin(*a)),
     "unpin": (lambda args: (args["message_id"], False), lambda *a: service.set_pin(*a)),
-    "search_messages": (
-        lambda args: (message_search.MessageSearchRequest(**args),),
-        lambda auth, room, req: message_search.search(auth, req),
-    ),
-    "search_sessions": (
-        lambda args: (message_search.SessionSearchRequest(**args),),
-        lambda auth, room, req: message_search.search_sessions(auth, req),
-    ),
 }
 
 
@@ -907,24 +899,6 @@ async def list_room_messages(
     auth: AuthContext = Depends(get_current_user),
 ):
     return await service.list_messages(auth, room_id, after_seq, limit, before_seq)
-
-
-@router.post("/messaging/search", response_model=message_search.MessageSearchResponse)
-async def search_messages(body: message_search.MessageSearchRequest, auth: AuthContext = Depends(get_current_user)):
-    # POST, not GET: a query string would land in the access log.
-    return await message_search.search(auth, body)
-
-
-@router.post("/messaging/sessions/search", response_model=message_search.SessionSearchResponse)
-async def search_sessions(body: message_search.SessionSearchRequest, auth: AuthContext = Depends(get_current_user)):
-    """What was said in coding sessions: prompts and replies of the sessions the caller may read."""
-    return await message_search.search_sessions(auth, body)
-
-
-@router.post("/messaging/search/warm", status_code=204)
-async def warm_message_search(auth: AuthContext = Depends(get_current_user)) -> Response:
-    await message_search.warm(auth)
-    return Response(status_code=204)
 
 
 @router.post("/messaging/rooms/{room_id}/messages", response_model=CanonicalMessage, status_code=201)

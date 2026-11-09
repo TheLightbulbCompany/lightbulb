@@ -2136,25 +2136,6 @@ async def still_opens_room(owner_id: str, user_id: str, room_id: str) -> bool:
     return True
 
 
-async def searchable_room_metas(owner_id: str, user_id: str) -> list[dict]:
-    """The META row of every room the caller can read right now -- the same membership
-    rule as ``require_room_member``."""
-    limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
-
-    async def check(meta: dict) -> dict | None:
-        async with limit:
-            ok = await still_reads_room(owner_id, user_id, meta["roomId"], meta["ownerId"])
-        return meta if ok else None
-
-    checked = await asyncio.gather(*(check(meta) for meta in await _visible_room_metas(owner_id, user_id)))
-    return [meta for meta in checked if meta]
-
-
-async def searchable_rooms(owner_id: str, user_id: str) -> dict[str, str]:
-    """Room id -> the room's OWNER (whose search index holds it), for every room the caller can read right now."""
-    return {meta["roomId"]: meta["ownerId"] for meta in await searchable_room_metas(owner_id, user_id)}
-
-
 async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
     """Every room the caller can see, with the members each row needs to name
     itself.

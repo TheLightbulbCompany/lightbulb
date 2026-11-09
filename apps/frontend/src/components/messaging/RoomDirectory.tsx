@@ -18,7 +18,6 @@ import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type 
 import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { foldedEntries, ownWaitingCount, sessionRowGone, sessionRowGroups, sessionRowKey, NEEDS_YOU_GROUP, SESSION_GROUP_FOLD, type SessionGroupBy, type SessionShow } from "./sessionGroups";
 import { SessionListRow } from "./SessionListRow";
-import { SessionSearch } from "./SessionSearch";
 import { StartSessionDialog } from "./StartSessionDialog";
 import { readSessionMarks, readSidebarPrefs, writeSessionMarks, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
@@ -484,7 +483,6 @@ function DirectoryContent({
         badge: <>
           {collapsed && waiting > 0 && <span className="room-count session-count--waiting" aria-label={`${waiting} waiting on you`}>{waiting}</span>}
           {collapsed && live > 0 && <span className="room-count" aria-label={`${live} live session${live === 1 ? "" : "s"}`}>{live}</span>}
-          <SessionSearch />
           {sessionRows.length > 0 && <DropdownMenu>
             <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Session view"><SlidersHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">

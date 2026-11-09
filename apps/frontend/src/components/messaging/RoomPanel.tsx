@@ -2,7 +2,7 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, Circle, CircleAlert, Clock, FolderOpen, Link, ListChecks, Search, Square } from "lucide-react";
+import { Check, Circle, CircleAlert, Clock, FolderOpen, Link, ListChecks, Square } from "lucide-react";
 import type { Components } from "react-markdown";
 import { cardAnswersFor, soleChannelOwner, type CardReply, type CreateMessageRequest, type MemberPrefsRequest, type MemberRef, type PatchRoomRequest, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -50,7 +50,6 @@ import { SpecialistDmBanner } from "./SpecialistDmBanner";
 import { useRoomThreads } from "@/components/tasks/useRoomThreads";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { PANE_SHEET_QUERY } from "@/components/workspace/paneSheet";
-import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
 import { LiveTranscript } from "./LiveTranscript";
 import { collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessageDelegations, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
@@ -455,7 +454,6 @@ function RoomContent({
   if (paneState.visit !== visit) setPaneState({ visit, view: null, closed: false, auto: false });
   const paneView = paneState.visit === visit ? paneState.view : null;
   const restoreRequestsFocus = useRef(false);
-  const [searchToken, setSearchToken] = useState(0);
   const paneBusy = !!pane && pane.panelId !== THREAD_PANE_ID;
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
@@ -699,18 +697,6 @@ function RoomContent({
     window.addEventListener(ROOM_PANE_VIEW_EVENT, onView);
     return () => window.removeEventListener(ROOM_PANE_VIEW_EVENT, onView);
   }, [roomOnScreen]);
-  // ⌘F searches this project (Search left the header for ⋯).
-  useEffect(() => {
-    if (!roomOnScreen || !actionable) return;
-    const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f" && !hasBlockingShortcutDialog()) {
-        event.preventDefault();
-        setSearchToken((token) => token + 1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [roomOnScreen, actionable]);
   // Skip to requests: the room's first Tab stop whenever it has Requests (W8-6). It opens the column (or sheet) when
   // it is closed, then lands on its heading.
   const focusRequests = useRef(false);
@@ -906,34 +892,15 @@ function RoomContent({
       {!visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to threads</button>}
       <RoomHeader voiceControls={voiceControls} room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable}
-        search={<RoomMessageSearch roomId={roomId} openToken={searchToken} hideTrigger
-          onSelect={(hit) => {
-            // Otherwise the [selection] effect's else-branch focuses a stale trigger once selection clears below,
-            // racing RoomTimeline's own focus of the newly targeted message.
-            trigger.current = null;
-            // Same race against the [contextCollapsed] effect below: closing an open Details panel here must not
-            // steal focus back to it once RoomTimeline focuses this result.
-            contextWasOpen.current = false;
-            setContextCollapsed(true);
-            setSelection(null);
-            // A reply in an old thread lands on its root (threads are gone). Server hits may not be loaded yet: the
-            // permalink target pages history until it is. A fresh token makes picking it again scroll again.
-            const messageId = hit.threadRootMessageId ?? hit.messageId;
-            setSearchTarget({ messageId, token: ++searchTargetToken.current });
-            onJumpToMessage?.(roomId, messageId);
-          }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onAddPeople={canAddMembers ? openMemberPicker : undefined}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
         oneToOne={oneToOne}
         onPatchRoom={onPatchRoom} settingsPeople={oneToOne ? undefined : membersSection} memoryClient={messagingClient} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
-        // Search, then this project's views: Tasks (its warn dot = something here needs you while the pane
+        // This project's views: Tasks (its warn dot = something here needs you while the pane
         // is closed), Files and Scheduled. View labels show from 1280 px (messaging.css).
         views={<>
-          <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={!actionable}
-            aria-label="Search in channel" title="Search (⌘F)" onClick={() => setSearchToken((token) => token + 1)}>
-            <Search aria-hidden="true" /></Button>
           {!visibleRoom?.feed && <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
             aria-label={waitingOnMe > 0 ? `Threads, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Threads"} title="Threads"
             onClick={() => { if (!requestsShown) capture("overview_opened", { source: "room", count: waitingOnMe }); toggleView("tasks"); }}>

@@ -33,7 +33,6 @@ interface RoomHeaderProps {
   ownerCannotLeave?: boolean;
   ownerHandsOff?: boolean; // the viewer owns this channel and leaving hands it to someone else
   actionable: boolean;
-  search: ReactNode; // the shipped <RoomMessageSearch />
   views?: ReactNode; // RoomPanel's About button
   onOpenDetails: (tab?: "members" | "files" | "about") => void;
   onAddPeople?: () => void;
@@ -72,7 +71,6 @@ export function RoomHeader({
   ownerCannotLeave,
   ownerHandsOff,
   actionable,
-  search,
   views,
   onOpenDetails,
   onAddPeople,
@@ -311,11 +309,9 @@ export function RoomHeader({
       {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {topicForm}
     </div>
-    {/* Like prod and Slack: the common actions sit in the header as icons (search and the views come in `views`),
+    {/* Like prod and Slack: the common actions sit in the header as icons (the views come in `views`),
         people as a facepile with the count, Go live; ⋯ keeps the rare ones. */}
     <div className="room-audience">
-      {/* The dialog only; its trigger is the search icon in `views` (and ⌘F). */}
-      {search}
       {voiceControls && <LiveStrip roomId={room?.roomId} members={participants} />}
       {views}
       {goLive && <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={Boolean(huddle.joining)}

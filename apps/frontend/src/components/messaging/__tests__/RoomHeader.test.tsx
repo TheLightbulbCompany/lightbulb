@@ -17,7 +17,7 @@ const people: RoomParticipant[] = ["Aden", "Bo", "Cy", "Dee", "Eve"].map((name, 
 }));
 const props = {
   room, roomName: "Roadmap", counterparts: people, participantCount: 6, canEditRoom: true,
-  canLeave: true, actionable: true, search: <span />,
+  canLeave: true, actionable: true,
   onOpenDetails: vi.fn(),
 };
 

@@ -105,7 +105,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.workspace_repo import Identity, WorkspaceRepo
-from core.services import clerk_admin, company_stripe, message_search, text_lines, voice_onboarding
+from core.services import clerk_admin, company_stripe, text_lines, voice_onboarding
 from core.services.billing_service import delete_stripe_customer
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
@@ -607,14 +607,6 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     )
     steps.append(
         WipeStep(
-            system="search",
-            action="drop_owner_index",
-            status="would_delete",
-            detail="the owner's message search index",
-        )
-    )
-    steps.append(
-        WipeStep(
             system="person_memory",
             action="delete_person_memory",
             status="would_delete",
@@ -935,11 +927,6 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
         action="delete_owner_rooms_and_streams",
         fn=_s9a2,
     )
-
-    async def _s9a3() -> str:
-        return await message_search.delete_owner_index(owner_id)
-
-    await _step(steps, system="search", action="drop_owner_index", fn=_s9a3)
 
     async def _s9a4() -> str:
         # The person's own memory data, in no workspace's keeping: uploaded sessions, drafts and

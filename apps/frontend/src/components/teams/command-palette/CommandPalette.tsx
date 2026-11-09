@@ -3,7 +3,7 @@
 // Ported from upstream Paperclip's CommandPalette
 // (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
 // Vanilla shadcn Dialog + Input + result list (no cmdk dep). v1: navigate +
-// search across chats, tasks, files, messages and agents.
+// search across chats, tasks, files and agents.
 
 import { useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -16,16 +16,12 @@ import { navigateShell } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
 import { useRoomCommandResults } from "@/components/messaging/roomCommands";
-import { useMessageSearch } from "@/components/messaging/useMessageSearch";
-import { plainSnippet, SearchSnippet } from "@/components/messaging/searchSnippet";
-import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
-import { roomDisplayName } from "@lightbulb/shared";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import { KIND_WORD, openOutput, outputName } from "@/components/creations/openOutput";
-import { MIN_TERM, useTaskSearch } from "./useTaskSearch";
+import { useTaskSearch } from "./useTaskSearch";
 
 type FlatItem = {
-  kind: "conversation" | "task" | "file" | "message" | "nav" | "agent";
+  kind: "conversation" | "task" | "file" | "nav" | "agent";
   id: string;
   label: string;
   path: string;
@@ -50,15 +46,6 @@ export interface CommandPaletteProps {
 //
 // No open/close animation, deliberately: ⌘K is keyboard-initiated and fires
 // dozens of times a day, where motion only reads as lag (Raycast has none).
-/** Hits whose text holds the query as a whole word come first; the rest keep the index's order. */
-export function wholeWordFirst<T extends { snippet: string }>(hits: readonly T[], query: string): T[] {
-  const term = query.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (!term) return [...hits];
-  const word = new RegExp(`(^|[^\\p{L}\\p{N}])${term}($|[^\\p{L}\\p{N}])`, "iu");
-  const exact = (h: T) => word.test(plainSnippet(h.snippet));
-  return [...hits.filter(exact), ...hits.filter((h) => !exact(h))];
-}
-
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   // A result was opened: focus stays where it took the person (the message it scrolled to), not back on the page.
   const opened = useRef(false);
@@ -100,31 +87,15 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
   const { agents } = useFilteredCommandResults(query, open);
   const found = useTaskSearch(query, open);
   const conversations = useRoomCommandResults(query, open);
-  const workspace = useMessagingWorkspaceOptional();
-  const messageSearch = useMessageSearch(query, { enabled: open && !!workspace, limit: 8, minLength: MIN_TERM });
-  // Whole-word matches first: the index also matches near spellings ("Lindell" found "on-line hello", W15-10).
-  const messageHits = useMemo(() => wholeWordFirst(messageSearch.hits, query).map((hit) => {
-    const room = workspace?.directoryProps?.rooms.find((candidate) => candidate.roomId === hit.roomId);
-    return {
-      id: `message:${hit.messageId}`,
-      label: plainSnippet(hit.snippet),
-      snippet: hit.snippet,
-      sublabel: room ? `${hit.authorName || "Unknown author"} · ${roomDisplayName(room, room.participants)}` : hit.authorName || "Unknown author",
-      run: () => workspace?.openNotificationTarget(hit.roomId, hit.threadRootMessageId, hit.messageId),
-    };
-  }), [messageSearch.hits, query, workspace]);
-  const warming = messageSearch.state === "warming";
-
   const flatItems = useMemo<FlatItem[]>(() => {
     const items: FlatItem[] = [];
     conversations.forEach((c) => items.push({ kind: "conversation", id: c.id, label: c.label, path: "", run: c.run }));
     found.tasks.forEach((t) => items.push({ kind: "task", id: t.taskId, label: t.title, path: "", run: () => openTaskPane(t.taskId) }));
     found.files.forEach((o) => items.push({ kind: "file", id: `${o.taskId}:${o.id}`, label: outputName(o), path: "", run: () => openOutput(o) }));
-    messageHits.forEach((m) => items.push({ kind: "message", id: m.id, label: m.label, path: "", run: m.run }));
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
     agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
     return items;
-  }, [conversations, found, messageHits, navResults, agents]);
+  }, [conversations, found, navResults, agents]);
 
   // Derive a clamped index from raw state — no setState-in-effect needed.
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
@@ -167,7 +138,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
         />
         <input
           autoFocus
-          placeholder="Search projects, threads, files and messages"
+          placeholder="Search projects, threads, files and agents"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -185,7 +156,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
                 fontFamily: "var(--font-serif), Georgia, serif",
               }}
             >
-              {warming ? "Search is starting up…" : messageSearch.state === "loading" ? "Searching…" : "No results."}
+              No results.
             </div>
           ) : (
             <>
@@ -227,17 +198,6 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
                       <Row key={id} label={o.snippet ? <span className="grid min-w-0"><span className="truncate">{outputName(o)}</span>
                         <span className="truncate text-caption text-[var(--midnight-muted)]">{o.snippet}</span></span> : outputName(o)}
                         sublabel={KIND_WORD[o.kind]} selected={selectedIndex === idx}
-                        onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
-                    );
-                  })}
-                </Group>
-              )}
-              {messageHits.length > 0 && (
-                <Group label="Messages">
-                  {messageHits.map((m) => {
-                    const idx = flatItems.findIndex((it) => it.kind === "message" && it.id === m.id);
-                    return (
-                      <Row key={m.id} label={<SearchSnippet snippet={m.snippet} around />} sublabel={m.sublabel} selected={selectedIndex === idx}
                         onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}

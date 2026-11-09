@@ -7,7 +7,7 @@ vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
 // The Tasks and Files groups read the tasks client; these suites are about navigation and messages.
 vi.mock("@/components/teams/command-palette/useTaskSearch", async (importOriginal) => ({ ...(await importOriginal<object>()), useTaskSearch: () => ({ tasks: [], files: [] }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({
-  useLiveEvents: () => ({ messaging: { searchMessages: vi.fn().mockResolvedValue({ hits: [] }), warmSearch: vi.fn().mockResolvedValue(undefined) } }),
+  useLiveEvents: () => ({ messaging: {} }),
 }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: null }),
@@ -34,7 +34,7 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
 
 test("typing in search filters nav actions", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
-  const input = screen.getByPlaceholderText(/Search projects, threads, files and messages/);
+  const input = screen.getByPlaceholderText(/Search projects, threads, files and agents/);
   fireEvent.change(input, { target: { value: "mai" } });
   expect(screen.getByText("Mail")).toBeInTheDocument();
   expect(screen.queryByText("Activity")).not.toBeInTheDocument();

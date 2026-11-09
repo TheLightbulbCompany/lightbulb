@@ -58,8 +58,6 @@ export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
 export { useSubagentTail } from "./messaging/useSubagentTail";
-export { useSessionSearch } from "./messaging/useSessionSearch";
-export type { SearchState } from "./messaging/useSessionSearch";
 export { PERSON_COLORS, personColor } from "./messaging/personColor";
 export type { PersonColor } from "./messaging/personColor";
 export type { MessagingClient, RoomAttachmentInput, SubagentTail } from "./messaging/client";
@@ -292,10 +290,6 @@ export type {
   PatchRoomRequest,
   MemberRef,
   MessagePage,
-  MessageSearchHit,
-  MessageSearchResponse,
-  SessionSearchHit,
-  SessionSearchResponse,
   ActiveRoomRun,
   RoomDetail,
   NotedFact,

@@ -1,22 +1,12 @@
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import { caretOffset, typeInComposer } from "@/test-utils/composer";
 import type { RoomRunView } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "../types";
 
-// Search results come from the server; the query picks which hit comes back.
-const searchHits = vi.hoisted(() => ({ byQuery: {} as Record<string, unknown[]> }));
-vi.mock("../useMessageSearch", () => ({
-  useMessageSearch: (query: string) => {
-    const hits = searchHits.byQuery[query.trim()] ?? [];
-    return { hits, state: hits.length ? "done" : "idle" };
-  },
-}));
-
-afterEach(() => { searchHits.byQuery = {}; });
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 

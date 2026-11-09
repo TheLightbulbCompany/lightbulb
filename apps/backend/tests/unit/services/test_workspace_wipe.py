@@ -110,7 +110,6 @@ def ws_mocks():
     messaging_delete_room = AsyncMock(return_value=2)
     messaging_delete_owner = AsyncMock(return_value=3)
     phone_release = AsyncMock(return_value=1)
-    search_delete = AsyncMock(return_value="dropped")
 
     secrets_list = AsyncMock(return_value=[f"lightbulb/dev/user-keys/{ORG_ID}/anthropic"])
     secrets_delete = AsyncMock(side_effect=lambda oid: [f"lightbulb/dev/user-keys/{oid}/anthropic"])
@@ -161,7 +160,6 @@ def ws_mocks():
         ("core.services.workspace_wipe.messaging_repo.delete_room_partition", messaging_delete_room),
         ("core.services.workspace_wipe.messaging_repo.delete_owner_partition", messaging_delete_owner),
         ("core.services.workspace_wipe.voice_onboarding.release_number", phone_release),
-        ("core.services.workspace_wipe.message_search.delete_owner_index", search_delete),
         ("core.services.workspace_wipe.list_owner_secret_names", secrets_list),
         ("core.services.workspace_wipe.delete_owner_secrets", secrets_delete),
         ("core.services.workspace_wipe.list_owner_agent_key_secret_names", agent_keys_list),
@@ -211,7 +209,6 @@ def ws_mocks():
             messaging_delete_room=messaging_delete_room,
             messaging_delete_owner=messaging_delete_owner,
             phone_release=phone_release,
-            search_delete=search_delete,
             secrets_delete=secrets_delete,
             agent_keys_delete=agent_keys_delete,
             integrations_delete=integrations_delete,
@@ -613,16 +610,6 @@ async def test_org_scoped_leftovers_are_deleted(ws_mocks):
     ws_mocks.join_link_delete.assert_awaited_once_with(ORG_ID)
     # The org's own pending brief is attempted even though members exist.
     ws_mocks.paperclip_instance.delete_pending_brief.assert_any_await(ORG_ID)
-
-
-@pytest.mark.asyncio
-async def test_search_index_drop_is_its_own_step_and_fails_alone(ws_mocks):
-    ws_mocks.search_delete.side_effect = RuntimeError("search down")
-    _, report = await _preview_then_wipe()
-    step = _step(report, "search", "drop_owner_index")
-    assert step.status == "failed"
-    assert _step(report, "messaging").status == "ok"
-    ws_mocks.search_delete.assert_awaited_once_with(ORG_ID)
 
 
 @pytest.mark.asyncio

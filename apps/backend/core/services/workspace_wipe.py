@@ -104,7 +104,7 @@ from core.repositories import (
     workspace_join_repo,
 )
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import clerk_admin, company_stripe, message_search, voice_onboarding
+from core.services import clerk_admin, company_stripe, voice_onboarding
 from core.services.account_wipe import (
     release_text_lines,
     text_release_note,
@@ -534,10 +534,6 @@ async def _usage_run(snap: WorkspaceSnapshot) -> str:
     return f"deleted {count} row(s)"
 
 
-async def _search_run(snap: WorkspaceSnapshot) -> str:
-    return await message_search.delete_owner_index(snap.org_id)
-
-
 async def _messaging_run(snap: WorkspaceSnapshot) -> str:
     # Fresh re-list: a message racing the wipe creates rooms the snapshot
     # predates. Keep the owner catalog until every room partition is gone so a
@@ -846,13 +842,6 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
             f"{len(snap.room_ids)} owned room partition(s), then owner catalog and private user-stream mappings",
         ),
         _messaging_run,
-    ),
-    WorkspaceStepDef(
-        "search",
-        "drop_owner_index",
-        LAYER_MESSAGING,
-        lambda snap: (True, "the workspace's message search index"),
-        _search_run,
     ),
     WorkspaceStepDef(
         "paperclip_row", "paperclip_repo.delete", LAYER_PAPERCLIP, _paperclip_rows_preview, _paperclip_rows_run

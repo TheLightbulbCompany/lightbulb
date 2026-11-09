@@ -619,8 +619,9 @@ async def test_opt_out_removes_only_that_person_from_notes_and_audio_and_persist
     assert b.sent == [("transcription", {"participantId": "12", "name": "Sam", "optOut": True})]
     # A new worker restores the persisted name when Recall gives the person another id.
     restored = _meeting(not_transcribed=m.not_transcribed)
-    assert restored.excluded("meet:r:99", "sAm") and not restored.excluded(MAYA, "Maya")
+    restored.names.pop(SAM)  # the old participant id is no longer in the current meeting roster
     restored.person("meet:r:99", "Sam")
+    assert restored.excluded("meet:r:99", "sAm") and not restored.excluded(MAYA, "Maya")
     restored.heard("meet:r:99", "This is excluded after restart", final=True)
     assert not restored.joiner._parts
     m.joiner.close()
@@ -647,3 +648,29 @@ async def test_opt_out_stays_local_and_retries_a_transient_persistence_failure()
     await m.close()
     assert len(attempts) == 2 and attempts[0] == attempts[1]
     assert b.sent == [attempts[1]]
+
+
+def test_opt_out_name_fallback_does_not_exclude_a_distinct_same_named_attendee():
+    m = _meeting(not_transcribed=[{"id": "12", "name": "Sam"}])
+    m.person("meet:r:99", "Sam")
+    assert m.excluded(SAM)
+    assert not m.excluded("meet:r:99", "Sam")
+    # After a restart, two same-named attendees cannot be matched to the old id by name.
+    m.names.pop(SAM)
+    m.person("meet:r:98", "Sam")
+    assert not m.excluded("meet:r:99", "Sam")
+    assert not m.excluded("meet:r:98", "Sam")
+    # A genuinely unambiguous rejoin still restores the exclusion.
+    m.names.pop("meet:r:98")
+    assert m.excluded("meet:r:99", "Sam")
+
+
+def test_opt_out_name_fallback_uses_the_current_roster_not_historical_speaker_names():
+    present = {"meet:r:99": "Sam"}
+    m = _meeting(not_transcribed=[{"id": "12", "name": "Sam"}], participants=lambda: present)
+    assert SAM in m.names  # historical speech names retain the old id for labels
+    assert m.excluded("meet:r:99", "Sam")
+    present["meet:r:98"] = "Sam"
+    assert not m.excluded("meet:r:99", "Sam")
+    present.pop("meet:r:98")
+    assert m.excluded("meet:r:99", "Sam")

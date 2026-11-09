@@ -247,7 +247,7 @@ class Meeting:
     delegation posted (`post`) and the team's messages (`events`)."""
 
     def __init__(self, backend, name: str, after: int = 0, quiet=lambda: True, poll_s: float = POLL_S,
-                 open_voice=None, mix: Mix | None = None, not_transcribed=(), on_opt_out=None) -> None:  # fmt: skip
+                 open_voice=None, mix: Mix | None = None, not_transcribed=(), on_opt_out=None, participants=None) -> None:  # fmt: skip
         self._b, self.name, self.after, self.quiet, self.poll_s = (
             backend,
             name,
@@ -269,6 +269,7 @@ class Meeting:
         self.opening: asyncio.Task | None = None
         self.active_at = time.monotonic()  # GPT-Live's last delegation or speech
         self.names: dict[str, str] = {}
+        self._participants = participants or (lambda: self.names)
         self.context = Context()
         self.lines: list[dict] = []
         self.asked: list[dict] = []  # {t, who, q, a}: the meeting's record
@@ -290,8 +291,15 @@ class Meeting:
             who.rsplit(":", 1)[-1],
             (name if name is not None else self.names.get(who, "")).strip().casefold(),
         )
+        if any(e.get("id") == pid for e in self.not_transcribed if e.get("id")):
+            return True
+        present = self._participants()
+        same_name = [identity for identity, label in present.items() if label.strip().casefold() == name]
+        if not name or same_name != [who]:
+            return False
+        present_ids = {identity.rsplit(":", 1)[-1] for identity in present}
         return any(
-            (e.get("id") and e["id"] == pid) or (name and (e.get("name") or "").strip().casefold() == name)
+            (e.get("name") or "").strip().casefold() == name and e.get("id") not in present_ids
             for e in self.not_transcribed
         )
 
@@ -555,7 +563,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
         return voice
 
     meeting = Meeting(backend, name, int(info.get("after") or 0), open_voice=open_voice, mix=mix, not_transcribed=info.get("notTranscribed") or [],
-                      quiet=lambda: time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S)  # fmt: skip
+                      quiet=lambda: time.monotonic() - heard_at["voiced"] >= MEET_QUIET_S,
+                      participants=lambda: {p.identity: p.name for p in ctx.room.remote_participants.values() if p.identity.startswith("meet:")})  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
 
     def stop_transcribing(who: str) -> None:

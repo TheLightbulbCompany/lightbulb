@@ -27,7 +27,7 @@ export interface MeetingItem {
   type: "meeting"; roomId: string; at: number;
   title?: string; startAt?: number; endAt?: number; status?: string; inCallAt?: number; endedAt?: number; lastBotStatus?: string; people?: string[]; summary?: string;
   asked?: { t?: number; who?: string; q: string; a?: string }[];
-  followUps?: { text: string; status?: string }[];
+  followUps?: { id?: string; text: string; status?: string; taskId?: string }[];
 }
 
 export type TimelineItem = CallItem | MeetingItem;

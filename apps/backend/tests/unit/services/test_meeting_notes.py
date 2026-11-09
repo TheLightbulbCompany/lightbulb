@@ -25,6 +25,7 @@ def env(monkeypatch):
             "status": "ended",
             "startAt": 1790972400,
             "inCallAt": 1790972500,
+            "endedAt": 1790976100,
         },
     }
 
@@ -78,8 +79,8 @@ def env(monkeypatch):
     monkeypatch.setattr(mod.container_repo, "try_claim_owner_lifecycle", m.claim)
     monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
-    m.task_titles = AsyncMock(return_value=[])
-    monkeypatch.setattr(mod, "_meeting_task_titles", m.task_titles)
+    m.meeting_tasks = AsyncMock(return_value=[])
+    monkeypatch.setattr(mod, "_meeting_tasks", m.meeting_tasks)
     monkeypatch.setattr(mod.meeting_invites, "_post_line", m.line)
     monkeypatch.setattr(mod.messaging, "store_attachment", m.store)
     monkeypatch.setattr(mod.agent_email, "team_address", AsyncMock(return_value="agents@acme.thelightbulb.company"))
@@ -146,7 +147,7 @@ async def test_on_ended_dispatches_exactly_one_notes_run(env):
     assert env.meta["meeting"]["notesRunId"] == mod.messaging_repo.run_id_for(CEO, "msg-1")
     assert env.requests["msg-1"] == {
         "roomId": ROOM, "occurrence": 1790972400, "targetRoomId": DEFAULT, "agentId": CEO, "triggerSeq": 7,
-        "meeting": {"title": "Weekly sync", "organizer": "pat@acme.com", "transcriptAttachedAt": 1, "inCallAt": 1790972500},
+        "meeting": {"title": "Weekly sync", "organizer": "pat@acme.com", "transcriptAttachedAt": 1, "inCallAt": 1790972500, "endedAt": 1790976100},
     }  # fmt: skip
     env.sleep.assert_not_awaited()
     await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
@@ -436,102 +437,104 @@ async def test_the_notes_request_asks_for_action_items_not_paperclip_tasks(env):
     assert "Paperclip" not in text and "Action items:" in text and "do not create" in text
 
 
-async def test_each_action_item_becomes_a_thread_through_the_meeting_rooms_router(env, monkeypatch):
-    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
-    env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
-    made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
-    monkeypatch.setattr(mod.messaging, "create_human_message", made)
-    notes = ("Decisions: ship Friday.\n\nAction items:\n- Pat: send the holiday post\n* Ada: order nail gels\n\n"
-             "Thanks all.")  # fmt: skip
-    await ended_and_noted(env, notes)
-    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
-    auth, room, req = made.await_args.args
-    assert (auth.user_id, auth.org_id, room) == ("user_1", "org_1", ROOM)  # the meeting's room, the inviter
-    assert req.text == ("Action items from the meeting Weekly sync, one thread each:\n- Pat: send the holiday post\n"
-                        "- Ada: order nail gels")  # fmt: skip
-    assert made.await_args.kwargs == {"via": "meeting_notes"}  # nobody spoke it: no spoken-reply hint
-    ids = {c.args[2].client_message_id for c in made.await_args_list}
-    assert len(ids) == 1  # the reply and the run's end: one message
-
-
-async def test_notes_with_no_action_items_file_nothing(env, monkeypatch):
-    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
+async def test_notes_record_commitments_once_without_authorizing_agent_work(env, monkeypatch):
+    env.meta["meeting"].update(transcriptAttachedAt=1)
     made = AsyncMock()
     monkeypatch.setattr(mod.messaging, "create_human_message", made)
-    await ended_and_noted(env, "Decisions: none. Action items: none.")
+    notes = "Action items:\n- Pat: send the holiday post\n- Ada: order nail gels"
+    await ended_and_noted(env, notes)
+    first = list(env.meta["meeting"]["followUps"])
+    await mod._keep_notes("org_1", "msg-1", env.requests["msg-1"], notes + "\n- Nova: invent more work")
+    await mod._file_action_items("org_1", "different-retry", env.requests["msg-1"], notes)
+    assert env.meta["meeting"]["followUps"] == first
+    assert [f["text"] for f in first] == ["Pat: send the holiday post", "Ada: order nail gels"]
+    assert len({f["id"] for f in first}) == 2
+    assert all(f["status"] == "recorded" and not f.get("taskId") for f in first)
+    made.assert_not_awaited()  # model-written notes are neither human messages nor authorization
+
+
+async def test_notes_link_completed_work_without_rerunning_it(env, monkeypatch):
+    env.meta["meeting"].update(transcriptAttachedAt=1)
+    made = AsyncMock()
+    monkeypatch.setattr(mod.messaging, "create_human_message", made)
+    env.meeting_tasks.return_value = [
+        {"taskId": "t-done", "title": "Draft the holiday-hours post", "status": "idle", "triggerId": "chat:ask1"},
+        {"taskId": "t-working", "title": "Order more gel colors from OPI", "status": "working"},
+    ]
+    notes = (
+        "Action items:\n- Pulse: Draft the holiday-hours post\n- Vera: Order more gel colors from OPI\n"
+        "- Pat: book the venue for the party"
+    )
+    await ended_and_noted(env, notes)
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    done, working, human = env.meta["meeting"]["followUps"]
+    assert (done["taskId"], done["status"], done["sourceTriggerId"]) == ("t-done", "done", "chat:ask1")
+    assert (working["taskId"], working["status"]) == ("t-working", "working")
+    assert human["status"] == "recorded" and not human.get("taskId")
+    env.meeting_tasks.assert_awaited_with("org_1", ROOM, 1790972500, 1790976100)
     made.assert_not_awaited()
 
 
-async def test_action_items_the_meeting_already_started_are_not_filed_again(env, monkeypatch):
-    """8 Nov prod Meet re-run: LB-24 "Finalize and share holiday-hours post" duplicated LB-19, which had finished.
-    Re-run #3: a covered item listed as "Already a thread: ..." in the waking message was handed by the Router to
-    the finished LB-28, which ran again. Covered items are left out of the Router's message (they stay in the
-    mailed notes); with nothing new, nothing is posted."""
-    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="pat@acme.com")
-    env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
-    made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
-    monkeypatch.setattr(mod.messaging, "create_human_message", made)
-    env.task_titles.return_value = ["Draft the holiday-hours post", "Order more gel colors from OPI"]
-    notes = ("Action items:\n- Pulse: Finalize and share holiday-hours post\n- Vera: order the gel colours\n"
-             "- Pat: book the venue for the party")  # fmt: skip
-    await ended_and_noted(env, notes)
-    assert made.await_args.args[2].text == (
-        "Action items from the meeting Weekly sync, one thread each:\n- Pat: book the venue for the party"
-    )
-    assert made.await_args.kwargs == {"via": "meeting_notes"}
-    assert env.task_titles.await_args.args == ("org_1", ROOM, 1790972500)  # the meeting room's, since the call
-    env.task_titles.return_value = [
-        "Draft the holiday-hours post",
-        "Order more gel colors",
-        "Book the venue for the party",
+async def test_ambiguous_tasks_and_missing_call_window_stay_recorded(env):
+    env.meeting_tasks.return_value = [
+        {"taskId": "a", "title": "Draft holiday post", "status": "idle"},
+        {"taskId": "b", "title": "Draft holiday post", "status": "working"},
     ]
-    made.reset_mock()
-    await mod._file_action_items("org_1", "msg-2", {"roomId": ROOM, "meeting": {"inCallAt": 1790972500}}, notes)
-    made.assert_not_awaited()  # all covered: nothing for the Router, nothing posted
-
-
-async def test_without_in_call_at_every_action_item_is_filed(env, monkeypatch):
-    """No call start: no window to match against, so no scan of the workspace's tasks."""
-    env.members.return_value = [{"kind": "human", "id": "user_1", "role": "owner"}, {"kind": "agent", "id": CEO}]
-    env.meta["meeting"].update(invitedBy="pat@acme.com")
+    request = {"roomId": ROOM, "occurrence": env.meta["meeting"]["startAt"]}
+    await mod._file_action_items("org_1", "msg-3", request, "Action items:\n- Pulse: draft holiday post")
+    assert env.meta["meeting"]["followUps"][0]["status"] == "recorded"
     env.meta["meeting"].pop("inCallAt")
-    made = AsyncMock(return_value=SimpleNamespace(message_id="m-ai"))
-    monkeypatch.setattr(mod.messaging, "create_human_message", made)
-    env.task_titles.return_value = ["Draft the holiday-hours post"]
-    await mod._file_action_items(
-        "org_1", "msg-3", {"roomId": ROOM, "meeting": {}}, "Action items:\n- Pulse: draft the holiday-hours post"
-    )
-    env.task_titles.assert_not_awaited()
-    assert made.await_args.args[2].text.endswith("one thread each:\n- Pulse: draft the holiday-hours post")
+    env.meeting_tasks.reset_mock()
+    await mod._file_action_items("org_1", "msg-4", request, "Action items:\n- Pat: book venue")
+    env.meeting_tasks.assert_not_awaited()
+    assert env.meta["meeting"]["followUps"][-1]["status"] == "recorded"
+
+
+async def test_late_notes_record_actions_on_the_original_occurrence(env):
+    occurrence = env.meta["meeting"]["startAt"]
+    env.meta["meeting"].update(startAt=occurrence + 86400, history=[{"startAt": occurrence}])
+    request = {"roomId": ROOM, "occurrence": occurrence, "meeting": {"inCallAt": 1790972500, "endedAt": 1790976100}}
+    await mod._keep_notes("org_1", "late", request, "Action items:\n- Pat: book venue")
+    assert not env.meta["meeting"].get("followUps")
+    past = env.meta["meeting"]["history"][0]
+    assert past["followUps"][0]["text"] == "Pat: book venue"
+    assert past["followUps"][0]["status"] == "recorded"
 
 
 @pytest.mark.parametrize(
     ("item", "title", "hit"),
     [
-        ("Pulse: Finalize and share holiday-hours post", "Draft the holiday-hours post", True),  # LB-24 vs LB-19
-        ("Vera: order the gel colours", "Order more gel colors from OPI", True),
-        ("Pat: email the holiday post", "Send the holiday post", True),
-        ("Pat: send the holiday post", "Draft the holiday post", False),  # another verb: other work
-        ("Pat: draft the email", "Draft the post", False),  # "email" and "post" are objects, not stop words
-        ("Ada: order nail gels", "Order nail polish", False),  # another object
-        ("Pat: book the venue for the party", "Book the venue", False),  # only part of the object
-        ("Ada: order nail gels", "Book a nail appointment", False),
+        ("Pulse: Draft the holiday-hours post", "Draft the holiday hours post", True),
+        ("Pat: draft product test", "Draft product pivots test", False),
+        ("Pulse: Finalize and share holiday-hours post", "Draft the holiday-hours post", False),
+        ("Pat: book the venue", "Book the venue for the party", False),
     ],
 )
-def test_covered_needs_the_verb_and_the_object(item, title, hit):
-    assert mod.covered(item, [title]) is hit
-    assert not mod.covered(item, [])
+def test_action_link_requires_exact_normalized_work(item, title, hit):
+    assert mod.same_action(item, {"title": title}) is hit
+    assert mod.same_action(item, {"description": title}) is hit
+
+
+async def test_shared_keywords_never_mark_a_human_commitment_done(env):
+    env.meeting_tasks.return_value = [{"taskId": "other", "title": "Draft product pivots test", "status": "idle"}]
+    request = {"roomId": ROOM, "occurrence": env.meta["meeting"]["startAt"]}
+    await mod._file_action_items("org_1", "msg-x", request, "Action items:\n- Pat: draft product test")
+    assert env.meta["meeting"]["followUps"][0]["status"] == "recorded"
+    assert not env.meta["meeting"]["followUps"][0].get("taskId")
 
 
 async def test_the_meeting_tasks_are_the_rooms_threads_since_the_call(monkeypatch):
     """Only the meeting room's tasks are read (its THREAD rows), never a workspace-wide scan."""
-    threads = [{"threadKey": f"room:{ROOM}:r1", "taskId": "t1", "history": ["t0"]},
+    threads = [{"threadKey": f"room:{ROOM}:r1", "taskId": "t1", "history": ["t0", "later"]},
                {"threadKey": f"room:{ROOM}", "taskId": "t2", "history": []}]  # fmt: skip
     tasks = {
         "TASK#t0": {"taskId": "t0", "title": "Old", "createdAt": "2026-11-07T10:00:00+00:00"},
         "TASK#t1": {"taskId": "t1", "title": "Order gels", "createdAt": "2026-11-08T14:00:29+00:00"},
         "TASK#t2": {"taskId": "t2", "title": "Holiday post", "createdAt": "2026-11-08T13:57:42+00:00"},
     }
+    tasks["TASK#later"] = {"taskId": "later", "title": "Next occurrence", "createdAt": "2026-11-09T13:57:42+00:00"}
+    for task in tasks.values():
+        task.update(origin="meeting", audience={"kind": "room", "roomId": ROOM, "userIds": []})
     rooms = AsyncMock(return_value=threads)
     monkeypatch.setattr(mod.tasks_repo, "list_room_threads", rooms)
     monkeypatch.setattr(
@@ -539,7 +542,10 @@ async def test_the_meeting_tasks_are_the_rooms_threads_since_the_call(monkeypatc
     )
     monkeypatch.setattr(mod.tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=AssertionError("no scan")))
     since = 1794146120  # 2026-11-08T13:55:20Z, when Recall joined
-    assert sorted(await mod._meeting_task_titles("org_1", ROOM, since)) == ["Holiday post", "Order gels"]
+    assert sorted(r["title"] for r in await mod._meeting_tasks("org_1", ROOM, since, since + 3600)) == [
+        "Holiday post",
+        "Order gels",
+    ]
     rooms.assert_awaited_once_with("org_1", ROOM)
 
 

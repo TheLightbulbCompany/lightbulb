@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import re
 import secrets
 import time
@@ -382,6 +383,8 @@ async def _patch_meeting(
             return None
         kept = _kept_transcript(stored) if keep_transcript else {}
         merged = {k: v for k, v in {**stored, **own, **kept}.items() if k not in drop}
+        if "history" in merged:
+            merged["history"] = _bounded_history(merged["history"])
         if merged == stored:
             return stored
         try:
@@ -860,6 +863,31 @@ _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
 _HISTORY_MAX = 30
 _HISTORY_UNSAID = 3  # unsaid is up to ~44 KB an occurrence: only the newest few keep it (META is 400 KB)
 
+_HISTORY_BYTES = 200 * 1024  # reserve the other half of DynamoDB META's 400KiB for the current occurrence
+_HISTORY_REFS = ("startAt", "endedAt", "transcriptId", "transcriptRoomId", "notesRunId", "notesSkipped")
+
+
+def _bounded_history(history: list[dict]) -> list[dict]:
+    """A newest-first, bounded inline cache of canonical transcript/notes artifacts, not their store.
+    Keep up to 30 contiguous recent occurrences within 200KiB, including UTF8 text and metadata. Late
+    notes/status writes use the same bound as advance. An individually oversized occurrence keeps its
+    artifact references with an explicit omission marker; the original messages/S3 objects are untouched."""
+
+    def size(value) -> int:
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+    kept = []
+    for n, entry in enumerate(history[:_HISTORY_MAX]):
+        own = dict(entry) if n < _HISTORY_UNSAID else {k: v for k, v in entry.items() if k != "unsaid"}
+        if not kept and size([own]) > _HISTORY_BYTES:
+            own = {k: own[k] for k in _HISTORY_REFS if k in own} | {"detailsOmitted": True}
+            if size([own]) > _HISTORY_BYTES:
+                raise ValueError("Meeting history artifact references exceed the inline byte budget")
+        if size([*kept, own]) > _HISTORY_BYTES:
+            break  # retain a contiguous newest prefix, never edit an older occurrence in place
+        kept.append(own)
+    return kept
+
 
 def _kept_transcript(meeting: dict) -> dict:
     """Before the occurrence keys are dropped: its transcript, end time, notes state and unsaid
@@ -869,7 +897,7 @@ def _kept_transcript(meeting: dict) -> dict:
     past = {k: meeting.get(k) for k in ("startAt", "transcriptId", "transcriptRoomId")}
     past |= {
         k: meeting[k]
-        for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+        for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
         if meeting.get(k)
     }
     history = [past, *(meeting.get("history") or [])][:_HISTORY_MAX]

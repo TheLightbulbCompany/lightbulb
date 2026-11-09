@@ -5,7 +5,8 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { StripeSecretRetirementBootstrapStack } from "../lib/stripe-secret-retirement-bootstrap";
 
-const template = Template.fromStack(new StripeSecretRetirementBootstrapStack(new cdk.App(), "Retirement", {
+const cliContext = JSON.parse(readFileSync(resolve(__dirname, "../cdk.json"), "utf8")).context;
+const template = Template.fromStack(new StripeSecretRetirementBootstrapStack(new cdk.App({ context: cliContext }), "Retirement", {
   env: { account: "877352799272", region: "us-east-1" },
   // The CLI enables analytics in real deployment. It must not add a third
   // resource that the exact authority preflight would correctly reject.
@@ -84,7 +85,7 @@ with tempfile.TemporaryDirectory() as directory, patch.object(r, "source_referen
     assert len(receipt["secrets"]) == 2
     sm.delete_secret.assert_not_called()
     sm.get_secret_value.assert_not_called()
-for mutation in ("lambda", "permissions", "other-stack"):
+for mutation in ("lambda", "permissions", "other-stack", "missing-action", "duplicate-action", "resource", "recovery", "trust"):
     changed = copy.deepcopy(template)
     stack_name = r.AUTHORITY_STACK
     if mutation == "lambda": changed["Resources"]["Unexpected"] = {"Type":"AWS::Lambda::Function"}
@@ -92,6 +93,16 @@ for mutation in ("lambda", "permissions", "other-stack"):
         policy = next(v for v in changed["Resources"].values() if v["Type"] == "AWS::IAM::Policy")
         policy["Properties"]["PolicyDocument"]["Statement"].append({"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":"*"})
     if mutation == "other-stack": stack_name = "lightbulb-unrelated-bootstrap"
+    if mutation in ("missing-action", "duplicate-action", "resource", "recovery"):
+        statements = next(v["Properties"]["PolicyDocument"]["Statement"] for v in changed["Resources"].values() if v["Type"] == "AWS::IAM::Policy")
+        reads = next(v for v in statements if v["Sid"] == "InspectDeployedConsumers")
+        if mutation == "missing-action": reads["Action"].pop()
+        if mutation == "duplicate-action": reads["Action"].append(reads["Action"][0])
+        if mutation == "resource": next(v for v in statements if v["Sid"] == "DescribeExactRetiredSecrets")["Resource"][0] = "*"
+        if mutation == "recovery": next(v for v in statements if v["Sid"] == "RecoverablyDeleteExactRetiredSecrets")["Condition"]["NumericEquals"]["secretsmanager:RecoveryWindowInDays"] = 7
+    if mutation == "trust":
+        trust = next(v["Properties"]["AssumeRolePolicyDocument"] for v in changed["Resources"].values() if v["Type"] == "AWS::IAM::Role")
+        trust["Statement"][0]["Condition"]["StringEquals"]["token.actions.githubusercontent.com:sub"] = "repo:other"
     cf.get_template.return_value = {"TemplateBody":changed}
     cf.get_paginator.return_value.paginate.return_value = [{"StackSummaries":[{"StackName":stack_name,"StackId":"owned","StackStatus":"CREATE_COMPLETE"}]}]
     try: r.consumer_checks(session,["lightbulb/dev/stripe_connect_webhook_secret"])

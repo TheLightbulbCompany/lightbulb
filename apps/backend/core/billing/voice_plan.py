@@ -157,13 +157,15 @@ def period(account: dict, at: datetime | None = None) -> tuple[datetime, datetim
     return start, min(end, ending_at) if ending_at else end
 
 
-async def usage(account: dict, *, client=None) -> dict:
+async def usage(account: dict, *, client=None, at: datetime | None = None) -> dict:
     if not settings.METRONOME_VOICE_METRIC_ID:
         raise VoicePlanError("voice_usage_unavailable")
-    start, end = period(account)
+    # A delayed, durable usage check must query the period that its original
+    # voice event belongs to, even if a Temporal retry runs after UTC rollover.
+    start, end = period(account, at=at)
     if client is None:
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=10) as http:
-            return await usage(account, client=metronome_client.for_settings(http))
+            return await usage(account, client=metronome_client.for_settings(http), at=at)
     seconds = await client.scoped_voice_seconds(
         customer_id=account["metronome_customer_id"],
         metric_id=settings.METRONOME_VOICE_METRIC_ID,

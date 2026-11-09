@@ -562,14 +562,14 @@ WORKSPACE_SCHEMA = {
     "name": "lightbulb_workspace",
     "description": "Act in the Lightbulb workspace with exactly the access of the person who asked you: room "
                    "members (add_member, remove_member, set_listen_mode), create_room, update_room "
-                   "(rename or archive), pin and unpin a message, search_messages and search_sessions. Never "
+                   "(rename or archive), pin and unpin a message. Never "
                    "change Lightbulb data any other way.",
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": [
                 "add_member", "set_listen_mode", "remove_member", "create_room",
-                "update_room", "pin", "unpin", "search_messages", "search_sessions"]},
+                "update_room", "pin", "unpin"]},
             "roomId": {"type": "string"},
             "args": {"type": "object"},
         },

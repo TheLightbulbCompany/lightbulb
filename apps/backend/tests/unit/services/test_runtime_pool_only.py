@@ -73,7 +73,6 @@ async def test_real_rpc_cause_chain_never_treats_legacy_refusal_as_idle(monkeypa
         return {"statusCode": 200}, json.dumps({"status": 200, "body": {"ok": True, "payload": {"busy": 0}}})
 
     monkeypatch.setattr(rt, "_invoke_envelope", invoke)
-    monkeypatch.setattr(rt, "_ensure_session", lambda *a, **k: None)
     stop = AsyncMock(return_value=True)
     monkeypatch.setattr(hp, "stop_runtime_session", stop)
     monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", AsyncMock())

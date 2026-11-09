@@ -2,9 +2,11 @@
 
 import pytest
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from core.temporal import client as tc
 from core.temporal.types import ActionRequest, TaskInputRef, TaskStart, TriggerRef
+from core.temporal.voice_usage_notices import VoiceUsageNoticeInput
 
 
 class FakeClient:
@@ -66,6 +68,25 @@ async def test_signal_task_input_signal_with_start(fake):
     _, workflow, arg, kw = fake.calls[0]
     assert arg == TaskStart("ws1", "t1", "migrated")
     assert (kw["start_signal"], kw["start_signal_args"]) == ("input", [ref])
+
+
+async def test_voice_notice_start_uses_stable_nonreusable_workflow_id(fake):
+    item = VoiceUsageNoticeInput("org_1", "call-1", "contract-1", "usage-1", "start", "end")
+    await tc.start_voice_usage_notice(item)
+    _, workflow, arg, kw = fake.calls[0]
+    assert workflow == "VoiceUsageNoticeWorkflow" and arg == item
+    assert kw["id"].startswith("voice-usage-notice:")
+    assert kw["id_conflict_policy"] == WorkflowIDConflictPolicy.USE_EXISTING
+    assert kw["id_reuse_policy"] == WorkflowIDReusePolicy.REJECT_DUPLICATE
+
+
+async def test_voice_notice_start_treats_already_closed_event_as_scheduled(fake):
+    async def already_started(*_args, **_kwargs):
+        raise WorkflowAlreadyStartedError("voice-usage-notice:id", "VoiceUsageNoticeWorkflow")
+
+    fake.start_workflow = already_started
+    item = VoiceUsageNoticeInput("org_1", "call-1", "contract-1", "usage-1", "start", "end")
+    assert await tc.start_voice_usage_notice(item) is None
 
 
 def test_task_handle(fake):

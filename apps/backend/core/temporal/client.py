@@ -2,11 +2,13 @@
 connect it; callers take it from `get_client()`, which raises instead of hanging when it is not up."""
 
 import asyncio
+import hashlib
 import logging
 from typing import Any
 
 from temporalio.client import Client, WithStartWorkflowOperation, WorkflowHandle
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from core import tasks_schema as ts
 from core.config import settings
@@ -99,6 +101,29 @@ async def signal_task_input(ws: str, task_id: str, ref: TaskInputRef) -> None:
         start_signal="input",
         start_signal_args=[ref],
     )
+
+
+async def start_voice_usage_notice(item: Any) -> None:
+    """Start one bounded allowance check for a frozen metered occurrence.
+
+    Temporal is shared across workspaces; the workflow sleeps only for its
+    finite provider-visibility retries and never owns a per-workspace process.
+    """
+    identity = f"{item.owner_id}\0{item.transaction_id}".encode("utf-8")
+    workflow_id = "voice-usage-notice:" + hashlib.sha256(identity).hexdigest()
+    try:
+        await get_client().start_workflow(
+            "VoiceUsageNoticeWorkflow",
+            item,
+            id=workflow_id,
+            task_queue=settings.TEMPORAL_TASK_QUEUE,
+            id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        )
+    except WorkflowAlreadyStartedError:
+        # The deterministic id also fences queue redrives after this exact event
+        # workflow completed; the immutable usage receipt proves its input.
+        return
 
 
 async def update_task(ws: str, task_id: str, update_name: str, arg: Any) -> Any:

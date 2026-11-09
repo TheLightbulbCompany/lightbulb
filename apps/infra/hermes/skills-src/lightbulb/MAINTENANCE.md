@@ -497,10 +497,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               + references/workspace.md (the action list and each action's args)
                               <- apps/infra/hermes/plugins/lightbulb/__init__.py (`lightbulb_workspace`) -> apps/backend/routers/messaging.py
                                  AGENT_ACTIONS / agent_actor (acts as the turn's requester; no person = refused). Args mirror
-                                 UpsertRoomMemberRequest/CreateRoomRequest/PatchRoomRequest (core/services/messaging.py) and
-                                 MessageSearchRequest/SessionSearchRequest (core/services/message_search.py): edit both together.
+                                 UpsertRoomMemberRequest/CreateRoomRequest/PatchRoomRequest (core/services/messaging.py): edit both together.
                                  Lesson 2026-10-18: a hand-written member row skipped the delivery cursor and silenced an agent.
-                                 lightbulb-api.sh's owner-only refusal points room/member/search actions at the tool.
+                                 lightbulb-api.sh's owner-only refusal points room/member actions at the tool.
   - Writing a document ...... references/documents.md
                               <- owner complaint 2026-10-16 (a GTM document opened with "Observed … UTC",
                                  "Decision", "Current-state audit" and task-id bullets); the pane header now carries

@@ -44,6 +44,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     ACTIVITY#<home>#<user>  SEEN                       the reader's Activity ``seenUpTo`` (monotonic)
     OWNER#<owner>   VOICEAGENT                         the voice assistant's settings (Agent page), one JSON
                                                        document in ``config``; no TTL
+    OWNER#<owner>   VOICEUSAGE#<transaction>           immutable voice metering event; never TTL'd
+    OWNER#<owner>   WORK#VOICEUSAGE#<transaction>      one-shot outbox for Metronome + allowance notice work
 
 ``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#``, ``FOLLOWUP#`` and ``DECISION#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
@@ -265,6 +267,123 @@ def followup_sk(follow_up_id: str) -> str:
 
 def work_followup_sk(agent_id: str, follow_up_id: str) -> str:
     return f"WORK#FOLLOWUP#{agent_id}#{follow_up_id}"
+
+
+def voice_usage_sk(transaction_id: str) -> str:
+    return f"VOICEUSAGE#{transaction_id}"
+
+
+def work_voice_usage_sk(transaction_id: str) -> str:
+    return f"WORK#VOICEUSAGE#{transaction_id}"
+
+
+async def put_voice_usage_event(owner_id: str, transaction_id: str, event: dict) -> dict:
+    """Persist an immutable Metronome event with its FIFO work pointer atomically.
+
+    A prior owner-voice receipt may already occupy ``VOICEUSAGE#``; in that
+    case this transaction adds the frozen event to that row. Replays read and
+    return the original event, so current plan or changed callback data cannot
+    rewrite the billed occurrence.
+    """
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    table = _table()
+    key = {"pk": owner_pk(owner_id), "sk": voice_usage_sk(transaction_id)}
+    outbox = {
+        "pk": key["pk"],
+        "sk": work_voice_usage_sk(transaction_id),
+        "payload": {"kind": "voice_usage", "ownerId": owner_id, "transactionId": transaction_id},
+        "messageGroupId": owner_id,
+        "messageDeduplicationId": hashlib.sha256(f"{owner_id}\0{transaction_id}".encode()).hexdigest(),
+        "expiresAt": int((datetime.now(UTC) + timedelta(seconds=OUTBOX_TTL_S)).timestamp()),
+    }
+    source = {
+        **key,
+        "ownerId": owner_id,
+        "voiceUsageEvent": event,
+    }
+    prior = await _get(**key)
+    if prior and prior.get("voiceUsageEvent") is not None:
+        work_key = {"pk": key["pk"], "sk": outbox["sk"]}
+        if await _get(**work_key):
+            return prior
+        try:
+            await _transact(
+                [
+                    {
+                        "Put": {
+                            "TableName": table.name,
+                            "Item": _ddb_safe(outbox),
+                            "ConditionExpression": "attribute_not_exists(pk)",
+                        }
+                    }
+                ]
+            )
+        except ClientError as exc:
+            if not _is_cancelled(exc) or not await _get(**work_key):
+                raise
+        return prior
+    try:
+        if prior:
+            await _transact(
+                [
+                    {
+                        "Update": {
+                            "TableName": table.name,
+                            "Key": key,
+                            "UpdateExpression": "SET voiceUsageEvent = :event, ownerId = :owner",
+                            "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(voiceUsageEvent)",
+                            "ExpressionAttributeValues": {":event": event, ":owner": owner_id},
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": table.name,
+                            "Item": _ddb_safe(outbox),
+                            "ConditionExpression": "attribute_not_exists(pk)",
+                        }
+                    },
+                ]
+            )
+            return {**prior, "ownerId": owner_id, "voiceUsageEvent": event}
+        await _transact(
+            [
+                {
+                    "Put": {
+                        "TableName": table.name,
+                        "Item": _ddb_safe(source),
+                        "ConditionExpression": "attribute_not_exists(pk)",
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": table.name,
+                        "Item": _ddb_safe(outbox),
+                        "ConditionExpression": "attribute_not_exists(pk)",
+                    }
+                },
+            ]
+        )
+        return source
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+        winner = await _get(**key)
+        if winner and winner.get("voiceUsageEvent") is not None:
+            return winner
+        raise
+
+
+async def mark_voice_usage_ingested(owner_id: str, transaction_id: str) -> None:
+    """Record the provider's accepted response after a deduplicated ingest call."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"pk": owner_pk(owner_id), "sk": voice_usage_sk(transaction_id)},
+        UpdateExpression="SET metronomeIngestedAt = if_not_exists(metronomeIngestedAt, :at)",
+        ConditionExpression="attribute_exists(voiceUsageEvent)",
+        ExpressionAttributeValues={":at": utc_now_iso()},
+    )
 
 
 def workspace_sk() -> str:

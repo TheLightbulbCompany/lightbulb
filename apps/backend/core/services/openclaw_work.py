@@ -175,6 +175,12 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
         ):
             raise ValueError("invalid admit_trigger pointer")
         return value
+    if kind == "voice_usage":
+        if set(value) != {"kind", "ownerId", "transactionId"} or not all(
+            isinstance(value[k], str) and value[k] for k in ("ownerId", "transactionId")
+        ):
+            raise ValueError("invalid voice_usage pointer")
+        return value
     raise ValueError("unknown work pointer kind")
 
 
@@ -369,6 +375,10 @@ class OpenClawWorkWorker:
                 from core.services import admission  # lazy: admission imports messaging
 
                 await admission.admit_pointer(pointer)
+            elif pointer["kind"] == "voice_usage":
+                from core.billing import voice_billing
+
+                await voice_billing.deliver_usage_event(pointer["ownerId"], pointer["transactionId"])
             else:
                 await self._runtime_operation(pointer)
             await asyncio.to_thread(

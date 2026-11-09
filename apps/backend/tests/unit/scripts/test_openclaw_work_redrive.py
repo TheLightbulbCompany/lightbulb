@@ -126,6 +126,12 @@ _ROOM_POINTER = {
     "throughSeq": {"N": "11"},
 }
 
+_VOICE_USAGE_POINTER = {
+    "kind": {"S": "voice_usage"},
+    "ownerId": {"S": "org_1"},
+    "transactionId": {"S": "meeting-1"},
+}
+
 
 @pytest.mark.parametrize("mode", ["--list", "--redrive", "--drop"])
 def test_every_mode_is_read_only_without_apply(monkeypatch, capsys, mode):
@@ -184,6 +190,21 @@ def test_redrive_with_apply_keeps_the_group_and_mints_a_new_dedup_id(monkeypatch
     # The original dedup id is still inside the FIFO's 5-minute window.
     assert send[send.index("--message-deduplication-id") + 1] != "group-1"
     assert ("sqs", "delete-message") in [args[:2] for args in commands]
+
+
+def test_voice_usage_dlq_pointer_can_be_redriven_but_never_dropped(monkeypatch, capsys):
+    commands: list[tuple] = []
+    monkeypatch.setattr(mod, "aws", _fake_aws(commands, pointer=_VOICE_USAGE_POINTER))
+
+    assert mod.main(["--env", "dev", "--drop", "--apply"]) == 0
+
+    assert ("sqs", "delete-message") not in [args[:2] for args in commands]
+    assert "must be redriven, not dropped" in capsys.readouterr().out
+
+
+def test_voice_usage_dlq_description_includes_the_event_identity():
+    pointer = mod.parse_pointer(_stream_body(_VOICE_USAGE_POINTER))
+    assert mod.describe(pointer) == "kind=voice_usage owner=org_1 transaction=meeting-1"
 
 
 def test_undeserializable_pointer_still_describes_itself():

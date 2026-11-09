@@ -12,7 +12,7 @@ import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -163,6 +163,7 @@ def _parse(calendar_text: str) -> Invite | None:
     uid, instance_of, rid_line = props.get("UID", ("", ""))[1].strip(), None, None
     if uid and "RECURRENCE-ID" in props:  # one occurrence on its own: a one-off meeting of its own
         rid_params, rid = props["RECURRENCE-ID"]
+        _when(rid_params, rid)  # validate inside parse's total-input boundary
         instance_of, uid = uid, f"{uid}#{rid.strip()}"
         rid_line = f"RECURRENCE-ID{';' + rid_params if rid_params else ''}:{rid.strip()}"
     if not uid or len(uid) > 512 or not ("DTSTART" in props or cancelled):
@@ -578,14 +579,95 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
         return "meeting_ignored"
     series_room = messaging_repo.meeting_room_id(owner_id, invite.instance_of) if invite.instance_of else None
     if series_room and ((await messaging_repo.get_room(series_room)) or {}).get("meeting"):
-        # ponytail: a move or cancel of one occurrence of a series we follow is not followed; the
-        # series' next occurrence still books. Follow single-instance edits when customers need them.
-        return "meeting_ignored"
+        return await _apply_instance(owner_id, series_room, invite, creator, team, sender)
     room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
     # The lease serializes everything below (sequence check, META, line, bot, RSVP) across
     # concurrent deliveries; the loser 503s and SES redelivers after the holder is done.
     async with meeting_lease(room_id):
         return await _apply(owner_id, invite, room_id, creator, team, sender)
+
+
+async def _apply_instance(
+    owner_id: str, parent_room: str, invite: Invite, creator: str, team: dict, sender: str
+) -> str:
+    """The original slot belongs either to the series or to this deterministic child, never both.
+
+    Always acquire parent before child. Advancing the parent and a master resend therefore
+    observe the exclusion before either can book the original slot again.
+    """
+    room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
+    async with meeting_lease(parent_room), meeting_lease(room_id):
+        parent = await messaging_repo.get_room(parent_room) or {}
+        meeting = parent.get("meeting") or {}
+        if (
+            parent.get("ownerId") != owner_id
+            or meeting.get("organizer") != invite.organizer_email
+            or meeting.get("uid") != invite.instance_of
+            or not meeting.get("recurrence")
+            or parent.get("archivedAt")
+            or parent.get("deletedAt")
+        ):
+            return "meeting_ignored"
+        child = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+        if int(child.get("sequence", -1)) > invite.sequence or (
+            child.get("status") == "cancelled"
+            and invite.method == "REQUEST"
+            and int(child.get("sequence", -1)) >= invite.sequence
+        ):
+            return "meeting_stale"
+        # The parser retains the original occurrence's timezone, independently of its new DTSTART.
+        match = _LINE.match(invite.recurrence_id_line)
+        name, value = match.groups()
+        params = name.partition(";")[2]
+        original = int(_when(params, value).timestamp())
+        if meeting.get("status") == "cancelled" and not (
+            str(original) in meeting.get("instanceRooms", {}) and int(meeting.get("startAt", 0)) == original
+        ):
+            return "meeting_ignored"  # a cancelled whole series cannot be revived by a late exception
+        children = {**meeting.get("instanceRooms", {}), str(original): room_id}
+        meeting = await _patch_meeting(parent_room, {"instanceRooms": children})
+        if int(meeting.get("startAt", 0)) == original:
+            # Stop/adopt the old bot through its existing cancellation transition. A failed
+            # leave keeps its identity and retries; no child is booked while it might still join.
+            cancelled = await _patch_meeting(parent_room, {"status": "cancelled"})
+            cancelled = await _sync_bot(owner_id, parent_room, cancelled, meeting)
+            if cancelled.get("recallBotId"):
+                raise MeetingBusy(parent_room)
+            ended = await _patch_meeting(parent_room, {"status": "ended"})
+            await _reschedule_locked(owner_id, parent_room, ended, now=time.time())
+        if invite.method == "CANCEL" and not child:
+            # Keep the cancellation sequence even when the REQUEST is late or never delivered.
+            # Normal _apply then uses the same cancellation/idempotency path as every meeting.
+            await _create_room(
+                owner_id,
+                room_id,
+                invite,
+                creator,
+                {
+                    "uid": invite.uid,
+                    "sequence": invite.sequence,
+                    "status": "cancelled",
+                    "organizer": invite.organizer_email,
+                    "invitedBy": sender,
+                    "title": invite.summary or meeting.get("title") or "Meeting",
+                    "startAt": original,
+                    "endAt": original + int(meeting["recurrence"]["duration"]),
+                    "meetingUrl": invite.meeting_url or meeting.get("meetingUrl"),
+                },
+            )
+        outcome = await _apply(owner_id, invite, room_id, creator, team, sender)
+        if invite.method == "CANCEL":
+            cancelled = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+            if cancelled.get("recallBotId"):
+                raise MeetingBusy(room_id)  # keep SES retrying until the provider actually pulls it
+        return outcome
+
+
+def _with_overrides(recurrence: dict, meeting: dict) -> dict:
+    return {
+        **recurrence,
+        "exdates": sorted({int(t) for t in recurrence["exdates"]} | {int(t) for t in meeting.get("instanceRooms", {})}),
+    }
 
 
 _ENDED = ("ended", "bot_failed")  # an occurrence is over; only advance() schedules a series' next one
@@ -596,6 +678,12 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     if room.get("archivedAt") or room.get("deletedAt"):
         return "meeting_ignored"  # a member closed this meeting's room; a move/cancel must not reopen it
     current = room.get("meeting")
+    if invite.recurrence and current and current.get("instanceRooms"):
+        recurrence = _with_overrides(invite.recurrence, current)
+        nxt = await asyncio.to_thread(next_occurrence, recurrence, time.time())
+        if nxt is None:
+            return "meeting_ignored"
+        invite = replace(invite, recurrence=recurrence, start=nxt[0], end=nxt[1])
     if current and int(current.get("sequence", 0)) > invite.sequence:
         return "meeting_stale"
     allowed = settings.meetings_available()
@@ -709,6 +797,23 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
         await _post_line(owner_id, room_id, f"meeting:{invite.uid}:{invite.sequence}:{start_at}:{before}>{after}", text)
     if not hold_bot:  # the bot in a live call, or a booked next occurrence, is never moved by an invite
         meeting = await _sync_bot(owner_id, room_id, meeting, current)
+    if invite.method == "CANCEL":
+        # The master owns future scheduling even when an exception owns its own bot.
+        # Parent-before-child is the same ordering used by an instance update.
+        for child_room in meeting.get("instanceRooms", {}).values():
+            async with meeting_lease(child_room):
+                child = ((await messaging_repo.get_room(child_room)) or {}).get("meeting") or {}
+                if int(child.get("endAt", 0)) > time.time():
+                    cancel = replace(
+                        invite,
+                        uid=child["uid"],
+                        recurrence=None,
+                        sequence=max(invite.sequence, int(child.get("sequence", 0))),
+                    )
+                    await _apply(owner_id, cancel, child_room, creator, team, sender)
+                    remaining = ((await messaging_repo.get_room(child_room)) or {}).get("meeting") or {}
+                    if remaining.get("recallBotId"):
+                        raise MeetingBusy(child_room)
     logger.info("meeting room %s: %s", room_id, meeting["status"])
     if invite.method == "CANCEL":
         return "meeting_cancelled"
@@ -784,7 +889,7 @@ async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now:
     if booking and end > now:
         fields, drop = {}, _CALL_KEYS
     else:
-        nxt = await asyncio.to_thread(next_occurrence, meeting["recurrence"], max(now, end))
+        nxt = await asyncio.to_thread(next_occurrence, _with_overrides(meeting["recurrence"], meeting), max(now, end))
         if nxt is None:
             return "series_over"
         fields = {"startAt": int(nxt[0].timestamp()), "endAt": int(nxt[1].timestamp()), "status": "scheduled"}

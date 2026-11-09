@@ -1,22 +1,24 @@
-"""Where a phone booking goes: the Agent page's `bookingsGo`. "google" is the owner's own Google Calendar
-(the workspace's existing grant, `access_token.get(ws, "google")`); anything
-else is Nova's own calendar (routers/voice_phone `VOICEBOOK#` rows and `VOICECELL#` cells), unchanged.
+"""Canonical phone booking effects, beside the existing row/cell reservation owner.
 
-Google Calendar API v3, on the primary calendar, as Google documents it:
-    freeBusy.query  https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query
-    events.insert   https://developers.google.com/workspace/calendar/api/v3/reference/events/insert
-    events.patch    https://developers.google.com/workspace/calendar/api/v3/reference/events/patch
-    events.delete   https://developers.google.com/workspace/calendar/api/v3/reference/events/delete
+New Google holds persist concrete calendar/event identity and one frozen pending
+operation before a write. Only verified provider results can settle a local
+change; unknown results preserve reservations and permit read-only reconciliation.
+Existing records without a verifiable binding refuse provider mutation rather
+than guessing from today's Agent configuration. Own-calendar bookings stay local.
 
-With Google, Nova's hold (row + cells, one transaction) is written first, so a booking never double-books Nova's
-own slots and survives Google failing. Each Google call gets GOOGLE_S; a failure, a timeout or an expired or missing
-grant keeps the hold and raises one Line-problem per workspace.
+Google Calendar API v3: freeBusy.query, events.list/get/insert/patch/delete.
+https://developers.google.com/workspace/calendar/api/v3/reference/events/list
+https://developers.google.com/workspace/calendar/api/guides/version-resources
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from urllib.parse import quote, urlencode
+
+from botocore.exceptions import ClientError
 from datetime import datetime, timedelta
 
 import httpx
@@ -29,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_S = 2.0  # token + request, per Google call (the speed rule's integration bound)
 API = "https://www.googleapis.com/calendar/v3"
-EVENTS = f"{API}/calendars/primary/events"
 _PROBLEM_SK = "VOICELINEPROBLEM#google"  # -> the open Line-problem's task, so a workspace has at most one
 _OPEN = ("queued", "working", "waiting")  # tasks_schema.TaskStatus; idle (Done), resolved, failed are closed
 
@@ -53,19 +54,27 @@ def _google(cfg: dict) -> bool:
     return cfg.get("bookingsGo") == "google"
 
 
-async def _request(ws: str, method: str, url: str, body: dict | None = None) -> dict:
+async def _request(ws: str, method: str, url: str, body: dict | None = None, *, etag: str | None = None) -> dict:
     async def go() -> dict:
         token = await access_token.get(ws, "google")
         async with httpx.AsyncClient(timeout=GOOGLE_S) as c:
-            r = await c.request(method, url, headers={"Authorization": f"Bearer {token}"}, json=body)
+            r = await c.request(
+                method,
+                url,
+                headers={"Authorization": f"Bearer {token}", **({"If-Match": etag} if etag else {})},
+                json=body,
+            )
             r.raise_for_status()
-            return r.json() if r.content else {}
+            answer = r.json() if r.content else {}
+            if not isinstance(answer, dict):
+                raise ValueError("invalid provider response")
+            return answer
 
     return await asyncio.wait_for(go(), GOOGLE_S)
 
 
 async def _try(ws: str, cfg: dict, call_id: str | None, method: str, url: str, body: dict | None = None) -> dict | None:
-    """The Google answer, or None after raising the Line-problem. Never raises: the hold is the booking."""
+    """Read answer or None after surfacing a problem; callers must not interpret None as free."""
     try:
         return await _request(ws, method, url, body)
     except Exception:  # noqa: BLE001 -- expired grant, timeout, 4xx/5xx: all keep the hold
@@ -80,7 +89,7 @@ async def _try(ws: str, cfg: dict, call_id: str | None, method: str, url: str, b
 
 
 async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
-    """One open Line-problem per workspace: "Google Calendar sign-in expired; N booking(s) held in Nova's calendar".
+    """One existing question per workspace for external booking failures/uncertainty.
     ponytail: it rides the existing phone Questions path (start_work -> a Worker task that asks the owner, kind
     `question`); Task 6 adds the `line_problem` kind and renames it."""
     vp, pk = _vp(), messaging_repo.owner_pk(ws)
@@ -88,12 +97,11 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
     if pointer and (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:  # fmt: skip
         return
     now = vp._now(cfg).strftime("%Y-%m-%dT%H:%M")
-    held = sum(1 for b in await vp._bookings(ws, "") if not b.get("eventId") and b["sk"][10:] >= now)
-    name = cfg.get("name", "").strip() or "Lightbulb"
-    title = f"Google Calendar sign-in expired; {held} booking(s) held in {name}'s calendar"
+    held = sum(1 for b in await vp._bookings(ws, "") if b.get("bookingState") != "confirmed" and b["sk"][10:] >= now)
+    title = f"Google Calendar needs checking; {held} booking(s) unconfirmed"
     brief = (
-        f"{title}. Phone bookings are safe in {name}'s own calendar but are not in Google Calendar. Ask the owner "
-        "to reconnect Google in Settings. Do nothing else until they answer."
+        f"{title}. External booking outcomes may be unknown; preserve holds and verify the provider before changing them. Ask the owner "
+        "to check Google in Settings and reconcile the recorded booking operation. Do not assume sign-in expired."
     )
     out = await vp.start_work(call_id, vp.WorkIn(title=title, brief=brief))
     await run_in_thread(messaging_repo._table().put_item, Item={"pk": pk, "sk": _PROBLEM_SK, "taskId": out["taskId"]})
@@ -111,20 +119,9 @@ def _event(cfg: dict, call: dict, start: str, service: str, name: str) -> dict:
     }
 
 
-async def _keep(ws: str, start: str, event_id: str) -> str:
-    if event_id:
-        await run_in_thread(
-            messaging_repo._table().update_item,
-            Key={"pk": messaging_repo.owner_pk(ws), "sk": f"VOICEBOOK#{start}"},
-            UpdateExpression="SET eventId = :e",
-            ExpressionAttributeValues={":e": event_id},
-        )
-    return event_id
-
-
 async def free(ws: str, cfg: dict, call_id: str | None, date: str, minutes: int) -> list[str]:
     """Open half-hour starts on `date`: opening hours minus Nova's own bookings, and with Google minus the primary
-    calendar's busy blocks (a failed freeBusy offers Nova's slots only)."""
+    calendar's busy blocks (a failed freeBusy is unavailable)."""
     vp = _vp()
     taken = await vp._taken(ws, date)
     window = vp._open_window(cfg, date) if _google(cfg) else None
@@ -136,16 +133,27 @@ async def free(ws: str, cfg: dict, call_id: str | None, date: str, minutes: int)
     return vp.free_slots(cfg, date, taken, vp._now(cfg), minutes)
 
 
-def _blocks(answer: dict | None, tz) -> list[tuple[datetime, datetime]]:
+def _blocks(answer: dict | None, tz, calendar_id: str = "primary") -> list[tuple[datetime, datetime]]:
     """A freeBusy answer's primary-calendar busy blocks, in the business's local time."""
-    busy = (answer or {}).get("calendars", {}).get("primary", {}).get("busy", [])
-    return [tuple(datetime.fromisoformat(b[k]).astimezone(tz).replace(tzinfo=None) for k in ("start", "end")) for b in busy]  # fmt: skip
+    try:
+        calendar = answer["calendars"][calendar_id]
+        if not isinstance(calendar, dict) or calendar.get("errors") or not isinstance(calendar.get("busy"), list):
+            raise ValueError("invalid calendar availability")
+        blocks = []
+        for block in calendar["busy"]:
+            start, end = (datetime.fromisoformat(block[k]) for k in ("start", "end"))
+            if start.tzinfo is None or end.tzinfo is None or end <= start:
+                raise ValueError("invalid busy interval")
+            blocks.append((start.astimezone(tz).replace(tzinfo=None), end.astimezone(tz).replace(tzinfo=None)))
+        return blocks
+    except (KeyError, ValueError, TypeError):
+        raise _vp()._err(503, "provider_availability_unknown") from None
 
 
 async def busy_across(ws: str, cfg: dict, dates: list[str], bound: float) -> list[tuple[datetime, datetime]]:
     """The primary calendar's busy blocks over `dates`' opening hours: one freeBusy for all of them, `bound` s at
-    most. [] when bookings do not go to Google, or Google is slow, refused or not signed in: the open slots are
-    then the hours minus Nova's own bookings, as before Google (google_grant warns once that it needs reconnecting)."""
+    most. [] only when bookings do not go to Google or there are no open windows.
+    A failed provider read raises: local slots are not externally verified."""
     vp = _vp()
     windows = [w for d in dates if (w := vp._open_window(cfg, d))] if _google(cfg) else []
     if not windows:
@@ -155,56 +163,505 @@ async def busy_across(ws: str, cfg: dict, dates: list[str], bound: float) -> lis
             "timeZone": tz.key, "items": [{"id": "primary"}]}  # fmt: skip
     try:
         return _blocks(await asyncio.wait_for(_request(ws, "POST", f"{API}/freeBusy", body), bound), tz)
-    except Exception as exc:  # noqa: BLE001 -- the profile still offers Nova's own slots
+    except Exception as exc:  # noqa: BLE001 -- facts survive; provider availability does not
         logger.info("google freeBusy skipped for the profile ws=%s (%s)", ws, type(exc).__name__)
-        return []
+        raise _vp()._err(503, "provider_availability_unknown") from None
 
 
-async def _busy(ws: str, cfg: dict, start: str, minutes: int) -> bool:
-    """Whether the primary calendar is busy in [start, start + minutes). A failed check is "not busy": book as before."""
+def row_condition(row: dict) -> tuple[str, dict]:
+    """Exact observed row, including legacy identity, never a start-time-only delete."""
+    if row.get("bookingId"):
+        return "attribute_exists(sk) AND bookingId = :bid AND generation = :g", {
+            ":bid": row["bookingId"],
+            ":g": row["generation"],
+        }
+    # Old records cannot be provider-rebound; local releases still compare their
+    # original creation/call fingerprint in the same transaction as cell deletes.
+    return "attribute_exists(sk) AND createdAt = :created AND callId = :call", {
+        ":created": row.get("createdAt", ""),
+        ":call": row.get("callId", ""),
+    }
+
+
+def _result(row: dict | None, state: str, code: str = "", *, action: str = "create") -> dict:
+    return {
+        "state": state,
+        "code": code,
+        "action": action,
+        "provider": (row or {}).get("bookingProvider", "google"),
+        "operationId": ((row or {}).get("pending") or {}).get("id"),
+        "currentStart": (
+            (row or {}).get("sk", "").removeprefix("VOICEBOOK#")
+            if (row or {}).get("bookingState") == "confirmed"
+            else None
+        ),
+        "requestedStart": ((row or {}).get("pending") or {}).get("newStart"),
+    }
+
+
+async def _read(ws: str, sk: str) -> dict | None:
+    return (
+        await run_in_thread(
+            messaging_repo._table().get_item, Key={"pk": messaging_repo.owner_pk(ws), "sk": sk}, ConsistentRead=True
+        )
+    ).get("Item")
+
+
+async def _transaction(items: list[dict]) -> None:
+    if len(items) > 100:
+        raise _vp()._err(400, "booking_too_long")
+    try:
+        await messaging_repo._transact(items)
+    except ClientError as exc:
+        if messaging_repo.is_cancelled(exc):
+            raise _vp()._err(409, "booking_changed") from None
+        raise
+
+
+async def _save(row: dict, new: dict, extra: list[dict] | None = None) -> dict:
+    condition, values = row_condition(row)
+    new = {**new, "generation": int(row["generation"]) + 1}
+    await _transaction(
+        [
+            {
+                "Put": {
+                    "TableName": messaging_repo.settings.MESSAGING_TABLE,
+                    "Item": new,
+                    "ConditionExpression": condition,
+                    "ExpressionAttributeValues": values,
+                }
+            },
+            *(extra or []),
+        ]
+    )
+    return new
+
+
+def _events(row: dict) -> str:
+    return f"{API}/calendars/{quote(row['calendarId'], safe='')}/events"
+
+
+async def _busy(ws: str, cfg: dict, start: str, minutes: int, calendar_id: str = "primary") -> bool:
     tz = _vp()._tz(cfg)
     t = datetime.strptime(start, "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
     body = {
         "timeMin": t.isoformat(),
         "timeMax": (t + timedelta(minutes=minutes)).isoformat(),
-        "items": [{"id": "primary"}],
+        "items": [{"id": calendar_id}],
     }
     try:
-        return bool((await _request(ws, "POST", f"{API}/freeBusy", body))["calendars"]["primary"].get("busy"))
-    except Exception:  # noqa: BLE001 -- the insert that follows raises the Line-problem if Google is down
-        logger.warning("google freeBusy at book failed ws=%s", ws, exc_info=True)
+        return bool(_blocks(await _request(ws, "POST", f"{API}/freeBusy", body), tz, calendar_id))
+    except Exception:
+        raise _vp()._err(503, "provider_availability_unknown") from None
+
+
+async def _problem(ws: str, cfg: dict, call_id: str) -> None:
+    try:
+        await _line_problem(ws, cfg, call_id)
+    except Exception:
+        logger.warning("booking problem could not be recorded ws=%s", ws)
+
+
+def _matches(row: dict, event: dict, body: dict) -> bool:
+    try:
+        marker = (event.get("extendedProperties") or {}).get("private") or {}
+        return (
+            event.get("id") == row["eventId"]
+            and event.get("status") == "confirmed"
+            and isinstance(event.get("etag"), str)
+            and bool(event["etag"])
+            and marker.get("lightbulbBookingId") == row["bookingId"]
+            and marker.get("lightbulbOperationId") == row["pending"]["id"]
+            and all(_instant(event.get(k)) == _instant(body.get(k)) for k in ("start", "end"))
+        )
+    except (AttributeError, TypeError, KeyError):
         return False
 
 
-async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> str:
-    """Nova's hold first (Task 2's transaction), then the Google event; the event id ("" if none) is on the row."""
+def _instant(value: dict | None) -> datetime | None:
+    try:
+        from zoneinfo import ZoneInfo
+
+        stamp = datetime.fromisoformat(value["dateTime"])
+        return stamp.replace(tzinfo=ZoneInfo(value["timeZone"])) if stamp.tzinfo is None else stamp
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _drop_target(row: dict) -> dict:
+    return {
+        "Delete": {
+            "TableName": messaging_repo.settings.MESSAGING_TABLE,
+            "Key": {"pk": row["pk"], "sk": row["pending"]["targetHold"]},
+            "ConditionExpression": "bookingId = :bid AND operationId = :op",
+            "ExpressionAttributeValues": {":bid": row["bookingId"], ":op": row["pending"]["id"]},
+        }
+    }
+
+
+async def _settle(row: dict, event: dict | None) -> dict:
+    """Only exact provider evidence reaches here; all row/cell changes are one CAS transaction."""
+    vp, pending = _vp(), row["pending"]
+    action, table, pk = pending["action"], messaging_repo.settings.MESSAGING_TABLE, row["pk"]
+    if action == "cancel":
+        await _transaction(vp._release(table, pk, row))
+        return _result(row, "confirmed", action=action)
+    new = {**row, "bookingState": "confirmed", "providerEvent": event, "eventId": event["id"]}
+    del new["pending"]
+    if action == "create":
+        await _save(row, new)
+    else:
+        new_sk, new_cells = f"VOICEBOOK#{pending['newStart']}", pending["targetCells"]
+        new |= {"sk": new_sk, "cells": new_cells, "generation": int(row["generation"]) + 1}
+        # Delete old row/old-only cells; common cells get exactly one update.
+        items = vp._release(table, pk, row, keep=set(new_cells))
+        items.append(_drop_target(row))
+        items.append({"Put": {"TableName": table, "Item": new, "ConditionExpression": "attribute_not_exists(sk)"}})
+        for cell in new_cells:
+            items.append(
+                {
+                    "Update": {
+                        "TableName": table,
+                        "Key": {"pk": pk, "sk": cell},
+                        "UpdateExpression": "SET booking = :new",
+                        "ConditionExpression": "bookingId = :bid AND booking = :old",
+                        "ExpressionAttributeValues": {":new": new_sk, ":bid": row["bookingId"], ":old": row["sk"]},
+                    }
+                }
+            )
+        await _transaction(items)
+    return _result(row, "confirmed", action=action)
+
+
+async def _fail(row: dict, cfg: dict, call_id: str, *, rejected: bool) -> dict:
+    vp, pending = _vp(), row["pending"]
+    table, pk, action = messaging_repo.settings.MESSAGING_TABLE, row["pk"], pending["action"]
+    if rejected:
+        if action == "create":
+            await _transaction(vp._release(table, pk, row))
+        else:
+            new = {k: v for k, v in row.items() if k != "pending"}
+            extra = [
+                {
+                    "Delete": {
+                        "TableName": table,
+                        "Key": {"pk": pk, "sk": cell},
+                        "ConditionExpression": "bookingId = :bid AND booking = :old",
+                        "ExpressionAttributeValues": {":bid": row["bookingId"], ":old": row["sk"]},
+                    }
+                }
+                for cell in pending.get("targetCells", [])
+                if cell not in row["cells"]
+            ]
+            if action == "move":
+                extra.append(_drop_target(row))
+            await _save(row, new, extra)
+        return _result(row, "rejected", "provider_rejected", action=action)
+    new = {**row, "pending": {**pending, "state": "unknown"}}
+    await _save(row, new)
+    await _problem(row["pk"].removeprefix("OWNER#"), cfg, call_id)
+    return _result(new, "pending", "provider_outcome_unknown", action=action)
+
+
+async def _dispatch(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
+    pending = row["pending"]
+    row = await _save(row, {**row, "pending": {**pending, "state": "sending"}})
+    pending = row["pending"]
+    try:
+        event = await _request(ws, pending["method"], pending["url"], pending.get("body"), etag=pending.get("etag"))
+    except (Exception, asyncio.CancelledError) as exc:
+        # A documented precondition/authorization rejection proves THIS first
+        # dispatch did not apply. Lost/5xx/interrupted responses are ambiguous.
+        rejected = isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (
+            400,
+            401,
+            403,
+            404,
+            412,
+            422,
+            429,
+        )
+        return await asyncio.shield(_fail(row, cfg, call_id, rejected=rejected))
+    if pending["action"] == "cancel":
+        return await _settle(row, None)  # successful bound DELETE (204)
+    if _matches(row, event, pending["body"]):
+        return await _settle(row, event)
+    return await _fail(row, cfg, call_id, rejected=False)
+
+
+async def _resume(ws: str, cfg: dict, call_id: str, row: dict, action: str, new_start: str | None = None) -> dict:
+    """Read-only reconciliation; an ambiguous write is never repeated with fresh identity."""
+    pending = row["pending"]
+    if (pending["action"], pending.get("newStart")) != (action, new_start):
+        return _result(row, "pending", "operation_pending", action=action)
+    if pending["state"] == "prepared":
+        # No HTTP has been sent. A lost process before dispatch may safely resume
+        # the same frozen operation, after verifying target availability again.
+        return _result(row, "held", "operation_requires_review", action=action)
+    try:
+        event = await _request(ws, "GET", f"{_events(row)}/{quote(row['eventId'], safe='')}")
+        if action == "cancel" and event.get("status") == "cancelled":
+            return await _settle(row, None)
+        if action != "cancel" and _matches(row, event, pending["body"]):
+            return await _settle(row, event)
+    except httpx.HTTPStatusError as exc:
+        if action == "cancel" and exc.response.status_code in (404, 410):
+            # An inaccessible calendar also returns 404. Only a readable bound
+            # calendar plus missing event establishes that capacity is now free.
+            try:
+                calendar = await _request(ws, "GET", f"{API}/calendars/{quote(row['calendarId'], safe='')}")
+                if calendar.get("id") == row["calendarId"]:
+                    return await _settle(row, None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return _result(row, "pending", "provider_outcome_unknown", action=action)
+
+
+async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> dict:
     vp = _vp()
+    existing = await _read(ws, f"VOICEBOOK#{start}")
+    if existing and existing.get("bookingProvider") == "google" and existing.get("callId") == call_id:
+        if (existing.get("service"), existing.get("name")) != (service, name):
+            raise vp._err(409, "booking_changed")
+        return (
+            await _resume(ws, cfg, call_id, existing, "create")
+            if existing.get("pending")
+            else _result(
+                existing,
+                "confirmed" if existing.get("bookingState") == "confirmed" else "held",
+                "" if existing.get("bookingState") == "confirmed" else "operation_requires_review",
+            )
+        )
+    if not _google(cfg):
+        await vp._book(ws, call_id, call, cfg, start, service, name)
+        return {"state": "confirmed", "provider": "own"}
+    try:
+        calendar = await _request(ws, "GET", f"{API}/calendars/primary")
+        calendar_id = calendar["id"]
+        if not isinstance(calendar_id, str) or not calendar_id or calendar_id == "primary":
+            raise ValueError("concrete calendar identity required")
+        if await _busy(ws, cfg, start, vp._minutes(cfg, service) + int(cfg.get("bufferMin") or 0), calendar_id):
+            raise vp._err(409, "slot_taken")
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 409:
+            raise
+        await _problem(ws, cfg, call_id)
+        return _result(None, "unavailable", "provider_availability_unknown")
     await vp._book(ws, call_id, call, cfg, start, service, name)
-    if not _google(cfg):
-        return ""
-    if await _busy(ws, cfg, start, vp._minutes(cfg, service) + int(cfg.get("bufferMin") or 0)):
-        pk = messaging_repo.owner_pk(ws)
-        row = await messaging_repo._get(pk, f"VOICEBOOK#{start}")
-        await messaging_repo._transact(vp._release(messaging_repo.settings.MESSAGING_TABLE, pk, row))
-        raise vp._err(409, "slot_taken")  # busy in the owner's real calendar: Nova offers another time
-    got = await _try(ws, cfg, call_id, "POST", EVENTS, _event(cfg, call, start, service, name))
-    return await _keep(ws, start, (got or {}).get("id", ""))
-
-
-async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_start: str) -> str:
-    """Move the hold, then patch its Google event (or insert one for a booking only Nova held)."""
-    await _vp()._book(ws, call_id, call, cfg, new_start, row["service"], row["name"], old=row)
-    if not _google(cfg):
-        return ""
-    ev, old_id = _event(cfg, call, new_start, row["service"], row["name"]), row.get("eventId", "")
-    got = await (_try(ws, cfg, call_id, "PATCH", f"{EVENTS}/{old_id}", ev) if old_id else _try(ws, cfg, call_id, "POST", EVENTS, ev))  # fmt: skip
-    return await _keep(ws, new_start, (got or {}).get("id") or old_id)
-
-
-async def cancel(ws: str, cfg: dict, call_id: str, row: dict) -> None:
-    vp = _vp()
-    await messaging_repo._transact(
-        vp._release(messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(ws), row)
+    row = await _read(ws, f"VOICEBOOK#{start}")
+    operation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-google:{row['bookingId']}:create").hex
+    body = _event(cfg, call, start, service, name)
+    body |= {
+        "id": uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-google-event:{ws}:{row['bookingId']}").hex,
+        "extendedProperties": {
+            "private": {"lightbulbBookingId": row["bookingId"], "lightbulbOperationId": operation_id}
+        },
+    }
+    row = await _save(
+        row,
+        {
+            **row,
+            "calendarId": calendar_id,
+            "eventId": body["id"],
+            "timezone": vp._tz(cfg).key,
+            "pending": {
+                "id": operation_id,
+                "action": "create",
+                "state": "prepared",
+                "body": body,
+                "method": "POST",
+                "url": f"{API}/calendars/{quote(calendar_id, safe='')}/events",
+            },
+        },
     )
-    if _google(cfg) and row.get("eventId"):
-        await _try(ws, cfg, call_id, "DELETE", f"{EVENTS}/{row['eventId']}")
+    return await _dispatch(ws, cfg, call_id, row)
+
+
+async def _observe(ws: str, row: dict) -> dict:
+    if not all(row.get(k) for k in ("bookingId", "calendarId", "eventId", "providerEvent")):
+        raise _vp()._err(409, "booking_binding_unverified")
+    event = await _request(ws, "GET", f"{_events(row)}/{quote(row['eventId'], safe='')}")
+    observed = row["providerEvent"]
+    if (
+        event.get("id") != row["eventId"]
+        or event.get("status") != "confirmed"
+        or event.get("etag") != observed.get("etag")
+        or any(_instant(event.get(k)) != _instant(observed.get(k)) for k in ("start", "end"))
+    ):
+        raise _vp()._err(409, "provider_booking_changed")
+    return event
+
+
+async def _target_free(ws: str, row: dict, body: dict, buffer_min: int) -> bool:
+    async with asyncio.timeout(GOOGLE_S):
+        return await _target_events_free(ws, row, body, buffer_min)
+
+
+async def _target_events_free(ws: str, row: dict, body: dict, buffer_min: int) -> bool:
+    # Google Events.list supports expanded recurrence and pagination, but no
+    # exclude-id filter. Exclude exactly this event in the complete result.
+    start, end = _instant(body["start"]), _instant(body["end"])
+    params = {
+        "timeMin": (start - timedelta(minutes=buffer_min)).isoformat(),
+        "timeMax": (end + timedelta(minutes=buffer_min)).isoformat(),
+        "singleEvents": "true",
+    }
+    for _ in range(20):
+        answer = await _request(ws, "GET", f"{_events(row)}?{urlencode(params)}")
+        if not isinstance(answer.get("items"), list):
+            raise _vp()._err(503, "provider_availability_unknown")
+        for event in answer["items"]:
+            if (
+                event.get("id") == row["eventId"]
+                or event.get("status") == "cancelled"
+                or event.get("transparency") == "transparent"
+            ):
+                continue
+            # Any other returned occupied event overlaps the expanded interval;
+            # all-day and recurrence instances must never be subtracted with ours.
+            return False
+        if not answer.get("nextPageToken"):
+            return True
+        params["pageToken"] = answer["nextPageToken"]
+    raise _vp()._err(503, "provider_availability_unknown")
+
+
+async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_start: str) -> dict:
+    vp = _vp()
+    if row.get("pending"):
+        return await _resume(ws, cfg, call_id, row, "move", new_start)
+    if row.get("bookingProvider") == "own":
+        await vp._book(ws, call_id, call, {**cfg, "bookingsGo": "own"}, new_start, row["service"], row["name"], old=row)
+        return {"state": "confirmed", "provider": "own"}
+    try:
+        event = await _observe(ws, row)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 409:
+            raise
+        return _result(row, "unavailable", "provider_read_unavailable", action="move")
+    if new_start == row["sk"].removeprefix("VOICEBOOK#"):
+        return _result(row, "confirmed", action="move")
+    cfg = {**cfg, "timezone": row["timezone"]}
+    minutes = int(row["minutes"])
+    if new_start not in vp.free_slots(cfg, new_start[:10], [], vp._now(cfg), minutes):
+        raise vp._err(400, "slot_unavailable")
+    start = datetime.strptime(new_start, "%Y-%m-%dT%H:%M").replace(tzinfo=vp._tz(cfg))
+    end = start + (_instant(event["end"]) - _instant(event["start"]))
+    operation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{row['bookingId']}:{row['generation']}:move:{new_start}").hex
+    body = {
+        "start": {"dateTime": start.isoformat(), "timeZone": row["timezone"]},
+        "end": {"dateTime": end.isoformat(), "timeZone": row["timezone"]},
+        "extendedProperties": {
+            "private": {
+                **((event.get("extendedProperties") or {}).get("private") or {}),
+                "lightbulbBookingId": row["bookingId"],
+                "lightbulbOperationId": operation_id,
+            }
+        },
+    }
+    try:
+        target_free = await _target_free(ws, row, body, int(cfg.get("bufferMin") or 0))
+    except Exception:
+        return _result(row, "unavailable", "provider_availability_unknown", action="move")
+    if not target_free:
+        raise vp._err(409, "slot_taken")
+    cells, table = vp._cells(cfg, new_start, minutes), messaging_repo.settings.MESSAGING_TABLE
+    # Refuse upfront if either prepare or final transfer would exceed DDB's cap.
+    if len(set(row["cells"]) | set(cells)) + 3 > 100:
+        raise vp._err(400, "booking_too_long")
+    extra = [
+        {
+            "Put": {
+                "TableName": table,
+                "ConditionExpression": "attribute_not_exists(sk)",
+                "Item": {
+                    "pk": row["pk"],
+                    "sk": cell,
+                    "bookingId": row["bookingId"],
+                    "booking": row["sk"],
+                    "expiresAt": vp._cell_expiry(cell),
+                },
+            }
+        }
+        for cell in cells
+        if cell not in row["cells"]
+    ]
+    target_key = f"VOICEHOLD#{new_start}#{row['bookingId']}"
+    extra.append(
+        {
+            "Put": {
+                "TableName": table,
+                "ConditionExpression": "attribute_not_exists(sk)",
+                "Item": {
+                    "pk": row["pk"],
+                    "sk": target_key,
+                    "start": new_start,
+                    "minutes": minutes,
+                    "bookingId": row["bookingId"],
+                    "operationId": operation_id,
+                },
+            }
+        }
+    )
+    # Snapshot transaction prevents a new start row being occupied without cells.
+    extra.append(
+        {
+            "ConditionCheck": {
+                "TableName": table,
+                "Key": {"pk": row["pk"], "sk": f"VOICEBOOK#{new_start}"},
+                "ConditionExpression": "attribute_not_exists(sk)",
+            }
+        }
+    )
+    row = await _save(
+        row,
+        {
+            **row,
+            "pending": {
+                "id": operation_id,
+                "action": "move",
+                "state": "prepared",
+                "method": "PATCH",
+                "url": f"{_events(row)}/{quote(row['eventId'], safe='')}",
+                "etag": event["etag"],
+                "body": body,
+                "newStart": new_start,
+                "targetCells": cells,
+                "targetHold": target_key,
+            },
+        },
+        extra,
+    )
+    return await _dispatch(ws, cfg, call_id, row)
+
+
+async def cancel(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
+    if row.get("pending"):
+        return await _resume(ws, cfg, call_id, row, "cancel")
+    if row.get("bookingProvider") == "own":
+        await _transaction(_vp()._release(messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(ws), row))
+        return {"state": "confirmed", "provider": "own"}
+    try:
+        event = await _observe(ws, row)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 409:
+            raise
+        return _result(row, "unavailable", "provider_read_unavailable", action="cancel")
+    operation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{row['bookingId']}:{row['generation']}:cancel").hex
+    row = await _save(
+        row,
+        {
+            **row,
+            "pending": {
+                "id": operation_id,
+                "action": "cancel",
+                "state": "prepared",
+                "method": "DELETE",
+                "url": f"{_events(row)}/{quote(row['eventId'], safe='')}",
+                "etag": event["etag"],
+            },
+        },
+    )
+    return await _dispatch(ws, cfg, call_id, row)

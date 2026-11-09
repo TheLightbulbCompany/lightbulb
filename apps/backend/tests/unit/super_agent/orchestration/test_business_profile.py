@@ -145,7 +145,7 @@ async def test_the_facts_and_slots_never_wait_on_google_or_clerk(sources, monkey
     text = await bp.business_profile("org_x", "+15550001")
     assert asyncio.get_running_loop().time() - started < 1
     assert "Pedicure $45" in text and "$50 deposit" in text and "Business: not named" in text
-    assert "9:00 AM–9:30 AM, 2:00 PM" in text  # Nova's own slots: hours minus the workspace's bookings
+    assert "Open start times: unknown" in text and "9:00 AM" not in text
     assert google.await_count == 1  # Google was asked once for the week, and not waited for
 
 
@@ -169,7 +169,11 @@ async def test_googles_busy_blocks_are_one_bounded_freebusy_for_the_week(monkeyp
         raise ValueError("google: no exportable grant in the workspace keyring")
 
     monkeypatch.setattr(voice_booking, "_request", refused)
-    assert await _real_busy_across("org_x", cfg, ["2026-11-14"], 1.0) == []  # Nova's own slots, not none
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await _real_busy_across("org_x", cfg, ["2026-11-14"], 1.0)
+    assert exc.value.status_code == 503
 
 
 def test_the_batch_fences_the_profile_as_data_and_the_rule_lets_the_router_answer_from_it():

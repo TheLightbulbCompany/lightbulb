@@ -6,9 +6,8 @@ It reuses the phone's readers: the Agent page (`voice_phone.agent_config`, `_fac
 hours, the Knowledge answers that hold the policies), open slots (`voice_phone.free_slots`) and the caller's own
 bookings (`VOICEBOOK#` rows with their number). Best-effort: bounded to ~2k characters, cached 60 s, 2 s at most.
 
-The facts never wait on Google (8 Nov prod: an expired grant timed the whole profile out on every phone turn, so the
-Router decided with no facts, hours or slots): the open slots are the hours minus Nova's own bookings, less Google's
-busy blocks only when one freeBusy answers within GOOGLE_S.
+Business facts and optional availability return independently: provider failures or
+calendar-level errors mark availability unknown and never manufacture free slots.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT_S = 2.0
 TTL_S = 60.0
-GOOGLE_S = 1.0  # the week's freeBusy; past it the slots are Nova's own
+GOOGLE_S = 1.0  # the week's freeBusy; past it external availability is unknown
 ORG_S, ORG_TTL_S = 1.0, 3600.0  # the business's name (Clerk): bounded, and cached once read
 DAYS = 7
 _FACTS_MAX, _SLOTS_MAX, _BOOKINGS_MAX = 1200, 600, 200
@@ -89,7 +88,7 @@ async def _org_name(ws: str, clerk_admin) -> str:
 
 async def _open_days(ws: str, cfg: dict, now: datetime, minutes: int) -> str:
     """The week's open start times: the hours minus Nova's own bookings (all days at once), less Google's busy
-    blocks when one bounded freeBusy answers (voice_booking.busy_across)."""
+    blocks after a verified bounded freeBusy; provider failure marks the section unknown."""
     from core.services import voice_booking
     from routers import voice_phone as vp
 
@@ -108,7 +107,18 @@ async def _callers_bookings(ws: str, caller: str, now: datetime) -> str:
     from routers import voice_phone as vp
 
     mine = [b for b in await _upcoming(ws, f"{now:%Y-%m-%dT%H:%M}") if b.get("phone") == caller]
-    said = "; ".join(f"{b['service']} {vp._pretty(b['sk'][10:])}" for b in mine) or "none"
+
+    def describe(b: dict) -> str:
+        text = f"{b['service']} {vp._pretty(b['sk'][10:])}"
+        if b.get("pending"):
+            pending = b["pending"]
+            target = f"; requested {vp._pretty(pending['newStart'])}" if pending.get("newStart") else ""
+            return f"{text} ({pending['action']} not confirmed{target})"
+        if b.get("bookingState") == "held":
+            return f"{text} (local hold; provider not confirmed)"
+        return text
+
+    said = "; ".join(describe(b) for b in mine) or "none"
     return _cap(f"This caller's upcoming bookings: {said}", _BOOKINGS_MAX)
 
 

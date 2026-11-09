@@ -414,7 +414,9 @@ class Meeting:
             return []
         context = []
         for m in out.get("messages", []):
-            if (text := speakable(m.get("text") or "")) and not self._keys(m) & self.seen:
+            raw = (m.get("text") or "").strip()
+            text = raw if m.get("voiceDelivery") == "context" else speakable(raw)
+            if text and not self._keys(m) & self.seen:
                 self._record(m, text)
                 context.append(f"Team: {m['text'].strip()}")
         self.after = max(self.after, int(out.get("after") or 0))
@@ -540,15 +542,15 @@ class Meeting:
                 logger.warning("meet: events failed (%s)", e.code)
                 continue
             for m in out.get("messages", []):
-                if self._keys(m) & self.seen or not (
-                    text := speakable(m.get("text") or "")
-                ):
+                raw = (m.get("text") or "").strip()
+                text = raw if m.get("voiceDelivery") == "context" else speakable(raw)
+                if self._keys(m) & self.seen or not text:
                     continue
                 self._record(m, text)
                 if q := m.get("question"):
                     self.question, self.question_at = q, time.monotonic()
                 yield {"kind": "agent", "id": m["id"], "text": text,
-                       **{k: m[k] for k in ("question", "inReplyTo", "waiting", "taskIds") if k in m}}  # fmt: skip
+                       **{k: m[k] for k in ("question", "inReplyTo", "waiting", "taskIds", "voiceDelivery") if k in m}}  # fmt: skip
             self.after = max(self.after, int(out.get("after") or 0))
 
 

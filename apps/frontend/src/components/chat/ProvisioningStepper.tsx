@@ -1483,6 +1483,7 @@ export function ProviderPicker({
   // copy for the same three paths in the first place.
   const { startCheckout, changeProvider, account } = useBilling();
   const [connectingChatGPT, setConnectingChatGPT] = useState(false);
+  const [chatGPTReady, setChatGPTReady] = useState(false);
   const { membership } = useOrganization();
   const api = useApi();
   const [connectionStatus, setConnectionStatus] = useState("Checking ChatGPT connection…");
@@ -1537,6 +1538,7 @@ export function ProviderPicker({
     setError(null);
     if (!account?.is_subscribed) return;
     if (provider === "chatgpt_oauth") {
+      setChatGPTReady(false);
       setConnectingChatGPT(true);
       return;
     }
@@ -1585,17 +1587,39 @@ export function ProviderPicker({
     }
   }, [startCheckout, isOrg, selectedProvider, source]);
 
-  const finishChatGPT = useCallback(async () => {
-    await changeProvider("chatgpt_oauth");
-    setCurrentProvider("chatgpt_oauth");
+  const authenticatedChatGPT = useCallback(async () => { setChatGPTReady(true); }, []);
+  const cancelChatGPT = useCallback(() => {
     setConnectingChatGPT(false);
-    setError("ChatGPT connected and selected.");
+    setChatGPTReady(false);
+    setError(null);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("action");
+    params.delete("provider");
+    replaceSearchParams(params);
+  }, [searchParams]);
+  const finishChatGPT = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await changeProvider("chatgpt_oauth");
+      setCurrentProvider("chatgpt_oauth");
+      setConnectingChatGPT(false);
+      setError("ChatGPT connected and selected.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save your provider choice. Try again.");
+    } finally {
+      setLoading(false);
+    }
   }, [changeProvider]);
 
   if (connectingChatGPT && canManageWorkspace) return (
     <div className="space-y-4">
-      <ChatGPTOAuthStep onComplete={finishChatGPT} />
-      <Button variant="outline" onClick={() => setConnectingChatGPT(false)}>Cancel sign-in</Button>
+      <ChatGPTOAuthStep onComplete={authenticatedChatGPT} onCancel={cancelChatGPT} />
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {chatGPTReady && <Button disabled={loading} onClick={() => void finishChatGPT()}>
+        {loading ? "Saving provider…" : "Use connected ChatGPT"}
+      </Button>}
+      <Button variant="outline" disabled={loading} onClick={cancelChatGPT}>Cancel sign-in</Button>
     </div>
   );
 

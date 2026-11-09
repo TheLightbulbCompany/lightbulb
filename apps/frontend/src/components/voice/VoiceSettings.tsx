@@ -56,11 +56,12 @@ function Section({ name, children }: { name: string; children: React.ReactNode }
 
 export function VoiceSettings() {
   const desktop = useSyncExternalStore(noSubscribe, isDesktopApp, () => false);
-  const { members: Members, approvals: Approvals, connections: Connections } = PANELS;
+  const { billing: Billing, members: Members, approvals: Approvals, connections: Connections } = PANELS;
   return <div className="vx-page vx-settings">
     <h1 className="vx-title">Settings</h1>
     <Section name="Voice plan"><VoicePlanCard /></Section>
     <Section name="Billing & minutes"><BillingMinutes /></Section>
+    <Section name="Workspace billing"><Billing /></Section>
     <Section name="Members"><Members /></Section>
     <Section name="Connections"><Connections /></Section>
     <Section name="Approvals"><Approvals /></Section>

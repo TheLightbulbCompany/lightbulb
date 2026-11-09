@@ -5,6 +5,7 @@ import React from "react";
 import { ProviderPicker } from "../ProvisioningStepper";
 
 const billing = vi.hoisted(() => ({
+  query: "",
   role: "org:admin",
   api: { get: vi.fn().mockResolvedValue({ connected: false }), post: vi.fn() },
   startCheckout: vi.fn().mockResolvedValue(undefined),
@@ -13,14 +14,16 @@ const billing = vi.hoisted(() => ({
 }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => billing }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: { role: billing.role } }) }));
-vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams() }));
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(billing.query) }));
 vi.mock("@/lib/api", () => ({ useApi: () => billing.api }));
+vi.mock("@/lib/shellNav", () => ({ replaceSearchParams: (params: URLSearchParams) => { billing.query = params.toString(); } }));
 
 vi.mock("../ChatGPTOAuthStep", () => ({ ChatGPTOAuthStep: ({ onComplete }: { onComplete: () => Promise<void> }) =>
   <button onClick={() => void onComplete()}>Finish test sign-in</button> }));
 
 describe("ProviderPicker", () => {
   beforeEach(() => {
+    billing.query = "";
     billing.role = "org:admin";
     billing.api.get.mockResolvedValue({ connected: false });
     billing.changeProvider.mockReset().mockResolvedValue({ status: "ok" });
@@ -97,6 +100,8 @@ describe("ProviderPicker", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Use ChatGPT$/i }));
     expect(billing.changeProvider).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /Finish test sign-in/i }));
+    expect(billing.changeProvider).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Use connected ChatGPT" }));
     await waitFor(() => expect(billing.changeProvider).toHaveBeenCalledWith("chatgpt_oauth"));
   });
 
@@ -108,6 +113,33 @@ describe("ProviderPicker", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Use ChatGPT$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Cancel sign-in/i }));
     expect(billing.changeProvider).not.toHaveBeenCalled();
+    expect(screen.getByText(/Current provider:/)).toHaveTextContent("OpenRouter managed");
+  });
+
+  it("a sign-in return URL cannot switch a connected workspace without a confirmation click", async () => {
+    billing.query = "action=connect-chatgpt&checkout=success";
+    billing.account.is_subscribed = true;
+    billing.account.provider_choice = "openrouter_managed";
+    render(<ProviderPicker isOrg />);
+    fireEvent.click(await screen.findByRole("button", { name: "Finish test sign-in" }));
+    expect(await screen.findByRole("button", { name: "Use connected ChatGPT" })).toBeInTheDocument();
+    expect(billing.changeProvider).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+    expect(billing.changeProvider).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved provider when confirming ChatGPT fails and allows canceling", async () => {
+    billing.account.is_subscribed = true;
+    billing.account.provider_choice = "openrouter_managed";
+    billing.changeProvider.mockRejectedValueOnce(new Error("Could not save provider"));
+    render(<ProviderPicker isOrg />);
+    fireEvent.click(screen.getByRole("button", { name: /sign in with chatgpt/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Use ChatGPT$/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish test sign-in" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use connected ChatGPT" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save provider");
+    expect(billing.changeProvider).toHaveBeenCalledExactlyOnceWith("chatgpt_oauth");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
     expect(screen.getByText(/Current provider:/)).toHaveTextContent("OpenRouter managed");
   });
 

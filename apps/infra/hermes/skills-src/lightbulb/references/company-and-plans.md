@@ -127,8 +127,12 @@ cannot be added. Do not suggest API-key setup as a current option.
 
 If the file is missing or the owner says something that contradicts it,
 trust the owner and suggest they check thelightbulb.company/settings. Plans are
-managed in Settings → Billing. Provider choices are made during workspace
-setup and in Settings → Billing; you cannot change a provider for them.
+managed in Settings → Workspace billing at `/voice/settings`. Workspace admins
+choose Lightbulb-managed via OpenRouter or Sign in with ChatGPT there or during
+setup. Connecting ChatGPT authenticates the account; the saved provider changes
+only after the admin clicks **Use connected ChatGPT**. Cancelling sign-in keeps
+the current provider. Guide the admin through these controls; you cannot change
+the provider for them.
 
 ## Voice calls
 

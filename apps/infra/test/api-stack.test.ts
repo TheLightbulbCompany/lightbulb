@@ -303,12 +303,15 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
     expect(retained.every((resource) => resource.DeletionPolicy === "Retain")).toBe(true);
   });
 
-  test("creates one application FIFO plus its FIFO DLQ, one standard Pipe DLQ without search queues", () => {
+  test("creates one application FIFO plus its FIFO DLQ, one standard Pipe DLQ and retained derived search queues until import detachment", () => {
     const queues = Object.values(API_TEMPLATE.findResources("AWS::SQS::Queue")) as any[];
     const byName = Object.fromEntries(
       queues.map((queue) => [queue.Properties.QueueName, queue.Properties]),
     );
     expect(Object.keys(byName).sort()).toEqual([
+      "lightbulb-dev-message-search-index",
+      "lightbulb-dev-message-search-index-batch",
+      "lightbulb-dev-message-search-index-dlq",
       "lightbulb-dev-openclaw-work-dlq.fifo",
       "lightbulb-dev-openclaw-work-pipe-failures",
       "lightbulb-dev-openclaw-work.fifo",
@@ -827,8 +830,8 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
     const sqsResources = JSON.stringify(
       statements.filter((st) => actions(st).some((a) => a.startsWith("sqs:"))).map((st) => st.Resource),
     );
-    expect(sqsActions).toEqual([]);
-    expect(sqsResources).not.toContain("MessageSearch");
+    expect(sqsResources).toContain("MessageSearchIndexQueue");
+    expect(sqsResources).toContain("MessageSearchBatchQueue");
     expect(sqsResources).not.toContain("OpenClawWork");
     const publishResources = statements
       .filter((statement) => actions(statement).includes("appsync:EventPublish"))
@@ -1000,16 +1003,131 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
   });
 });
 
-describe("ApiStack — retired advanced search", () => {
-  test.each(["dev", "prod"])("%s keeps canonical messaging without an indexer or search network", (env) => {
-    const template = env === "dev" ? API_TEMPLATE : synthApiStack(env);
-    const resources = template.toJSON().Resources;
-    expect(Object.values(resources).some((r: any) => r.Type.startsWith("AWS::OpenSearchServerless::"))).toBe(false);
-    expect(Object.keys(resources).filter((id) => id.startsWith("MessageSearch"))).toEqual([]);
-    expect(JSON.stringify(resources)).not.toContain("SEARCH_INDEX_QUEUE_URL");
-    expect(JSON.stringify(resources)).not.toContain("SEARCH_INDEX_BATCH_QUEUE_URL");
-    template.hasResourceProperties("AWS::Lambda::Function", { FunctionName: `lightbulb-${env}-messaging-projector` });
-    expect(Object.values(resources).some((r: any) => r.Type === "AWS::DynamoDB::Table")).toBe(true);
+describe("ApiStack — staged search retirement exports", () => {
+  test.each(["dev", "prod"] as const)("%s retains exact deployed export identities and values while consumers detach", (env) => {
+    const deployed = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/message-search-deployed-exports.json"), "utf8"))[env];
+    const stack = buildApiStack(env);
+    const template = Template.fromStack(stack).toJSON();
+    const outputs = Object.fromEntries(Object.entries(template.Outputs).filter(([key]) => key.includes("MessageSearch")));
+    for (const output of Object.values(outputs) as any[]) {
+      // The helper uses a throwaway stack name; deployed stages use lightbulb-{env}-api.
+      output.Export.Name = output.Export.Name.replace(`${stack.stackName}:`, `lightbulb-${env}-api:`);
+    }
+    expect(outputs).toEqual(deployed);
+    expect(Object.values(template.Resources).some((r: any) => r.Type === "AWS::OpenSearchServerless::Collection")).toBe(true);
+    expect(JSON.stringify(template.Resources)).toContain("message-search-indexer");
+  });
+});
+
+describe("ApiStack — message search (OpenSearch Serverless)", () => {
+  const dev = API_TEMPLATE;
+
+  test("a NextGen collection group (standby replicas are mandatory there) with capped OCUs", () => {
+    dev.hasResourceProperties("AWS::OpenSearchServerless::CollectionGroup", {
+      Generation: "NEXTGEN",
+      StandbyReplicas: "ENABLED",
+      CapacityLimits: {
+        MinIndexingCapacityInOcu: 0,
+        MinSearchCapacityInOcu: 0,
+        MaxIndexingCapacityInOcu: 2,
+        MaxSearchCapacityInOcu: 2,
+      },
+    });
+    dev.hasResourceProperties("AWS::OpenSearchServerless::Collection", {
+      Name: "lightbulb-dev-messages",
+      Type: "SEARCH",
+      EncryptionConfig: Match.objectLike({ AWSOwnedKey: false }),
+    });
+  });
+
+  test("the collection is reachable only through the VPC endpoint", () => {
+    const policies = Object.values(dev.findResources("AWS::OpenSearchServerless::SecurityPolicy")) as any[];
+    const network = policies.find((p) => p.Properties.Type === "network");
+    expect(JSON.stringify(network.Properties.Policy)).toContain('\\"AllowFromPublic\\":false');
+    dev.resourceCountIs("AWS::OpenSearchServerless::VpcEndpoint", 0);
+    const vpces = Object.values(dev.findResources("AWS::EC2::VPCEndpoint")) as any[];
+    const aossVpce = vpces.filter((v) => JSON.stringify(v.Properties.ServiceName).includes("aoss-data"));
+    expect(aossVpce).toHaveLength(1);
+    expect(aossVpce[0].Properties.PrivateDnsEnabled).toBe(true);
+    expect(aossVpce[0].Properties.VpcEndpointType).toBe("Interface");
+  });
+
+  test("exactly two principals: the indexer writes, the backend reads and drops indexes", () => {
+    const access = Object.values(dev.findResources("AWS::OpenSearchServerless::AccessPolicy")) as any[];
+    expect(access).toHaveLength(1);
+    const text = JSON.stringify(access[0].Properties.Policy);
+    expect(text).toContain("role/lightbulb-dev-backend-task");
+    expect(text).toContain("aoss:WriteDocument");
+    expect(text).toContain("aoss:DeleteIndex");
+    // Session search extends an existing index's mapping: the indexer (and only it) may update an index.
+    expect(text).toMatch(/aoss:CreateIndex[^\]]*aoss:UpdateIndex[^\]]*aoss:WriteDocument/);
+    expect(text.match(/aoss:UpdateIndex/g)).toHaveLength(1);
+    expect(text).not.toContain("aoss:*");
+  });
+
+  test("the projector only enqueues; the indexer runs in the VPC, one job at a time", () => {
+    dev.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("messaging-projector"),
+      Environment: { Variables: Match.objectLike({ SEARCH_INDEX_QUEUE_URL: Match.anyValue() }) },
+    });
+    dev.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("message-search-indexer"),
+      VpcConfig: Match.objectLike({ SubnetIds: Match.anyValue() }),
+    });
+    dev.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 1,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      ScalingConfig: { MaximumConcurrency: 5 },
+    });
+  });
+
+  test("new messages batch: a 39-minute schedule drains the batch queue; edits stay on the immediate queue", () => {
+    const rules = Object.values(dev.findResources("AWS::Events::Rule")).filter(
+      (r: any) => r.Properties.ScheduleExpression === "rate(39 minutes)",
+    ) as any[];
+    expect(rules).toHaveLength(1);
+    expect(rules[0].Properties.Targets).toHaveLength(1);
+    expect(rules[0].Properties.Targets[0].Input).toBe('{"drain":true}');
+    expect(JSON.stringify(rules[0].Properties.Targets[0].Arn)).toContain("MessageSearchIndexer");
+    const queues = Object.values(dev.findResources("AWS::SQS::Queue")) as any[];
+    const batch = queues.find((q) => q.Properties.QueueName === "lightbulb-dev-message-search-index-batch");
+    expect(batch.Properties.VisibilityTimeout).toBe(1800);
+    expect(batch.Properties.MessageRetentionPeriod).toBe(1209600);
+    expect(JSON.stringify(batch.Properties.RedrivePolicy)).toContain("MessageSearchIndexDlq");
+    expect(batch.Properties.RedrivePolicy.maxReceiveCount).toBe(5);
+    const sqsMappings = Object.values(dev.findResources("AWS::Lambda::EventSourceMapping")).filter((m: any) =>
+      JSON.stringify(m.Properties.EventSourceArn).includes("MessageSearch"),
+    ) as any[];
+    expect(sqsMappings).toHaveLength(1);
+    expect(JSON.stringify(sqsMappings[0].Properties.EventSourceArn)).toContain("MessageSearchIndexQueue");
+    dev.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("message-search-indexer"),
+      Timeout: 300,
+      Environment: { Variables: Match.objectLike({ SEARCH_INDEX_BATCH_QUEUE_URL: Match.anyValue() }) },
+    });
+  });
+
+  test("a stalled batch drain pages", () => {
+    dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-message-search-batch-stale",
+      Threshold: 5400,
+      EvaluationPeriods: 1,
+      TreatMissingData: "notBreaching",
+      MetricName: "ApproximateAgeOfOldestMessage",
+    });
+  });
+
+  test("a stuck index job pages", () => {
+    dev.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-message-search-index-dlq-visible",
+    });
+  });
+
+  test("prod has the same search resources", () => {
+    const prod = synthApiStack("prod");
+    prod.hasResourceProperties("AWS::OpenSearchServerless::Collection", { Name: "lightbulb-prod-messages", Type: "SEARCH" });
+    prod.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(39 minutes)" });
+    prod.hasResourceProperties("AWS::SQS::Queue", { QueueName: "lightbulb-prod-message-search-index-batch" });
   });
 });
 

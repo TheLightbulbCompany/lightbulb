@@ -39,3 +39,27 @@ async def test_native_receipt_retries_only_bounded_expected_missing_artifacts(mo
         )
     assert s3.get_object.call_count == tries
     assert wait.await_count == tries - 1
+
+
+async def test_initializes_dev_messaging_before_preference_read(monkeypatch, tmp_path):
+    monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev")
+    monkeypatch.setattr(mod.settings, "MESSAGING_TABLE", "")
+    monkeypatch.setattr(mod.settings, "OAUTH_TOKENS_TABLE", "")
+
+    async def preference(_):
+        assert mod.settings.MESSAGING_TABLE == "lightbulb-dev-messaging"
+        return False
+
+    monkeypatch.setattr(mod.meeting_context, "enabled", preference)
+    with pytest.raises(RuntimeError, match="followUps is disabled"):
+        await mod.validate(tmp_path / "receipt.json")
+
+
+async def test_refuses_cross_environment_messaging_table_before_read(monkeypatch, tmp_path):
+    monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev")
+    monkeypatch.setattr(mod.settings, "MESSAGING_TABLE", "lightbulb-prod-messaging")
+    preference = AsyncMock()
+    monkeypatch.setattr(mod.meeting_context, "enabled", preference)
+    with pytest.raises(RuntimeError, match="non-DEV messaging table"):
+        await mod.validate(tmp_path / "receipt.json")
+    preference.assert_not_awaited()

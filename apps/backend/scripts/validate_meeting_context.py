@@ -31,7 +31,7 @@ from core.services import meeting_context, runtime_runs
 from core.temporal import activities
 from core.temporal.types import RouterTurnIn
 from scripts.multiparty_e2e.runner import Clerk, _secret
-from scripts.super_agent.acceptance.ctx import API_ROOT, Ctx, DEFAULT_WORKSPACE, guard
+from scripts.super_agent.acceptance.ctx import API_ROOT, Ctx, DEFAULT_WORKSPACE, aws_profile_default, guard
 
 
 async def fixture(ctx: Ctx, label: str) -> dict:
@@ -164,6 +164,9 @@ async def native_receipt(owner: str, identity, grant: str, marker: str) -> dict:
 
 async def validate(receipt_path: Path) -> None:
     guard()  # must precede every secret read, identity lookup, write and model invocation
+    aws_profile_default()
+    if settings.MESSAGING_TABLE != "lightbulb-dev-messaging":
+        raise RuntimeError("refusing non-DEV messaging table")
     if DEFAULT_WORKSPACE != "org_3LgB9twuJbYCjGILfOL5JjgQV0p":
         raise RuntimeError("unexpected validation workspace")
     if not await meeting_context.enabled(DEFAULT_WORKSPACE):

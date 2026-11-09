@@ -1203,7 +1203,7 @@ async def _apply(
     routed_to: dict[str, list[str]] = {}  # every trigger a start or pass_through covers → its tasks, in order
 
     def slot(tid: str) -> dict:
-        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "passes": [], "acks": set()})
+        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "passes": [], "acks": set(), "asks": {}})
 
     def ack(sl: dict, line: str | None) -> None:
         """One ack line per trigger: several start/pass_through decisions on one ask are one message with
@@ -1296,7 +1296,22 @@ async def _apply(
             else:
                 sl["react"] = True
         elif isinstance(dec, ts.Ask):
-            sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
+            if "meetingFollowups" in (trig.get("ref") or {}):
+                from core.services import meeting_followups
+
+                task_id = ts.router_task_id(inp.batch_id, i, 0)
+                brief, question = await meeting_followups.clarification(ws, trig, task_id, dec.text, dec.options)
+                await _ensure_task(
+                    ws, task_id, trig, inp.lane, "queued", title="Clarify meeting follow-up", description=brief
+                )
+                sl["asks"][task_id] = question
+                sl["refs"].append({"taskId": task_id, "role": "started"})
+                sl["starts"].append(task_id)
+                sl["lines"].append("A meeting follow-up needs your answer in Needs You.")
+                for tid in dec.trigger_ids:
+                    routed_to.setdefault(tid, []).append(task_id)
+            else:
+                sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
             if primary not in carded:
                 replies.append(
@@ -1354,8 +1369,13 @@ async def _apply(
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
             try:
-                if ref.get("ask"):  # a phone call's Question (voice_phone.call_ask): the task waits on it, no attempt
-                    await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **ref["ask"])
+                if question := sl["asks"].get(task_id) or ref.get("ask"):
+                    # A canonical Question (phone or completed meeting): no Worker until its authenticated answer.
+                    opened = await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **question)
+                    if task_id in sl["asks"] and opened.get("state") == "open":
+                        current = await tasks_repo.get_task(ws, task_id)
+                        if current and current.get("status") == "queued":
+                            await transition(ws, task_id, "waiting", "question")
                 else:
                     await temporal_client.start_task_workflow(ws, task_id, "router")
             except Exception:  # noqa: BLE001 -- one bad start never skips the batch's other starts

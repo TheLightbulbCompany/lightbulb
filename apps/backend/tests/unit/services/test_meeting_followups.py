@@ -96,3 +96,23 @@ async def test_real_task_provenance_links_only_original_history_not_a_matching_c
     assert history[0] == {"id": "human-commitment", "text": "Research", "status": "recorded"}
     assert len(history) == 2 and history[1]["taskId"] == "actual-task" and history[1]["status"] == "done"
     assert not world["meta"]["meeting"].get("followUps")
+
+
+async def test_clarification_keeps_original_source_bounded_and_inviter_policy(world):  # noqa: F811
+    from core.services import questions
+
+    original = world["meta"]["meeting"]["history"][0]
+    original["notes"] = "Original notes " * 1000
+    world["meta"]["meeting"]["notes"] = "Next occurrence private notes"
+    brief, ask = await mod.clarification("org_a", world["trigger"], "task-1", "Which report?", ["Weekly", "Monthly"])
+    assert "Original notes" in brief and "Notes truncated" in brief
+    assert "Next occurrence" not in brief and "original-transcript" in brief
+    assert ask["kind"] == "question" and ask["attempt"] is None and ask["run_id"] is None and ask["blocking"]
+    task = {"ownerUserId": "original-user", "origin": "meeting", "confirmAll": True}
+    answerers, rule, base = await questions.answerers("org_a", task, ask["kind"], ask["subkind"])
+    assert answerers == base == ["original-user"]
+    question = {"answerers": answerers, "answererRule": rule, "baseAnswerers": base, "subkind": "question"}
+    assert await questions.can_answer_now("org_a", question, "original-user")
+    assert not await questions.can_answer_now("org_a", question, "new-inviter")
+    world["members"] = []
+    assert not await questions.can_answer_now("org_a", question, "original-user")

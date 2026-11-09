@@ -306,7 +306,13 @@ async def task_moved(task: dict, to: str) -> None:
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task['taskId']}"
             await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
             await _tile_phase(room_id, "page_ready")
-        elif meeting and current_changed and status != "done" and meeting.get("status") == "in_call":
+        elif (
+            meeting
+            and current_changed
+            and status != "done"
+            and meeting.get("status") == "in_call"
+            and await _result_occurrence(task, room_id, {**meta, "meeting": meeting})
+        ):
             await _tile_phase(room_id, "drafting" if status == "working" else "")
     except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
         logger.warning("meet follow-up not updated task=%s to=%s", task.get("taskId"), to, exc_info=True)

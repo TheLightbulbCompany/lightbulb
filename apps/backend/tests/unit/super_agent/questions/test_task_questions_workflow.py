@@ -351,3 +351,23 @@ async def test_worker_ask_after_stop_refused(temporal_env, fakes):
         with pytest.raises((WorkflowUpdateFailedError, RPCError)):
             await h.execute_update(TaskWorkflow.ask, AskRef("ask:late", "question", "question", True))
     assert "open_asked_question" not in fakes.names()
+
+
+async def test_pre_task_clarification_holds_first_worker_until_original_answer(temporal_env, fakes):
+    """Meeting completion Ask uses update-with-start/migrated: zero Worker attempts before the card answer."""
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-clarify:{uuid.uuid4()}", task_queue=queue
+        )
+        qid = await h.execute_update(TaskWorkflow.ask, AskRef("ask:meeting", "question", "question", True))
+        await _until(lambda: "relay_question" in fakes.names())
+        assert "begin_attempt" not in fakes.names() and "worker_turn" not in fakes.names()
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:yes", "message"))
+        with pytest.raises(WorkflowUpdateFailedError):
+            await h.execute_update(TaskWorkflow.answer, _press(qid=qid, option="answer", by=PRIYA))
+        assert "begin_attempt" not in fakes.names()
+        await h.execute_update(TaskWorkflow.answer, _press(qid=qid, option="answer", by=SAM))
+        await _until(lambda: "begin_attempt" in fakes.names())
+        assert fakes.args("record_answer")[0][2].by_user_id == SAM
+        assert "answer:" + qid + ":c-1" in fakes.args("begin_attempt")[0][2]

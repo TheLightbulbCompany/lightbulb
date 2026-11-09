@@ -113,27 +113,30 @@ async def _report_minutes(room_id: str, seconds: float, in_call_at: int) -> None
 async def _finish(
     room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None, ended_at: int | None = None
 ) -> None:
-    """Finish ancillary work after status is written, surfacing metering failure for callback retry.
-    Notes first (only for a call the bot was in; a series advances after them, or at once without
-    them), the room's close last. Presence is a metric only: we pay for the bot's time, the
-    workspace's allowance pays only for agent speech (voice_billing). Both are fired, never awaited:
-    the caller may hold the meeting lease that ``advance`` waits for."""
+    """Admit usage before scheduling notes or advancing a recurring series.
+
+    If metering admission fails, publish/close still run, but the callback raises for provider
+    retry and no notes task may advance the series past the unrecorded occurrence. Presence is a
+    metric only: we pay for the bot's time, the workspace's allowance pays only for agent speech.
+    """
     # From the written endedAt (the event's own time): a redelivery or leave retry is not time in the call.
     presence = max(0, (ended_at or time.time()) - in_call_at) if in_call_at else None
     notes = notes and bool(in_call_at)
     steps = [
         ("presence", lambda: put_metric("meeting.presence.seconds", presence, unit="Seconds") if presence else None),
+        ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
+        ("minutes", lambda: _count_minutes(room_id, presence, in_call_at) if presence else None),
         (
             "notes",
             lambda: voice_calls._fire(meeting_notes.on_ended(room_id) if notes else meeting_invites.advance(room_id)),
         ),
-        ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
-        ("minutes", lambda: _count_minutes(room_id, presence, in_call_at) if presence else None),
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
     ]
     metering_error = None
     for step, run in steps:
+        if step == "notes" and metering_error:
+            continue  # a series must not advance past an occurrence with unadmitted usage
         try:
             result = run()
             if result is not None:

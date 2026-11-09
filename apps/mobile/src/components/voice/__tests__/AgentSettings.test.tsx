@@ -1,12 +1,15 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
+import { AgentSettings } from "../AgentSettings";
+
 const mockGet = jest.fn();
 const mockPut = jest.fn();
 const mockApi = { get: mockGet, put: mockPut };
-jest.mock("@lightbulb/shared", () => ({ createApiClient: () => mockApi }));
+jest.mock("@lightbulb/shared", () => ({ ...jest.requireActual("../../../../../../packages/shared/src/voicePreferences"), createApiClient: () => mockApi }));
+jest.mock("../../../providers/live", () => ({ useLive: () => ({ roomId: null, joining: null }) }));
+jest.mock("react-native-webview", () => ({ WebView: "WebView" }));
 jest.mock("../../../lib/teamsData", () => ({ useTeamsConfig: () => null }));
-jest.mock("expo-router", () => ({ useFocusEffect: (fn: () => void) => require("react").useEffect(fn, [fn]) }));
-import { AgentSettings } from "../AgentSettings";
+jest.mock("expo-router", () => ({ useFocusEffect: (fn: () => void) => jest.requireActual("react").useEffect(fn, [fn]) }));
 
 const config = { name: "Nova", greeting: "Hello", instructions: "Be helpful", live: true, paused: false, services: [{ name: "Haircut", minutes: 30 }], allow: { book: true, answer: true, futurePermission: false }, handoff: { number: "+15555555555", onlyOpenHours: true } };
 beforeEach(() => {
@@ -42,4 +45,21 @@ it("does not write an incomplete document for a workspace awaiting phone setup",
   await render(<AgentSettings />);
   expect(await screen.findByText(/Set up your phone assistant on the web/)).toBeTruthy();
   expect(mockPut).not.toHaveBeenCalled();
+});
+
+
+it("retains Warm on unrelated edits and saves chosen phone voice and Spanish", async () => {
+  mockGet.mockResolvedValue({ config: { ...config, voice: "Warm", spanish: false } });
+  await render(<AgentSettings />);
+  await screen.findByDisplayValue("Nova");
+  expect(screen.getByRole("radio", { name: "Marin (default)" }).props.accessibilityState.selected).toBe(true);
+  await fireEvent.changeText(screen.getByLabelText("Instructions"), "Brief replies");
+  await fireEvent.press(screen.getByRole("button", { name: "Save agent settings" }));
+  await screen.findByText("Saved");
+  expect(mockPut).toHaveBeenLastCalledWith("/voice/agent", { config: { ...config, voice: "Warm", spanish: false, instructions: "Brief replies" } });
+  await fireEvent.press(screen.getByRole("radio", { name: "Quartz" }));
+  await fireEvent(screen.getByLabelText("Also speaks Spanish"), "valueChange", true);
+  await fireEvent.press(screen.getByRole("button", { name: "Save agent settings" }));
+  await screen.findByText("Saved");
+  expect(mockPut).toHaveBeenLastCalledWith("/voice/agent", { config: { ...config, instructions: "Brief replies", voice: "quartz", spanish: true } });
 });

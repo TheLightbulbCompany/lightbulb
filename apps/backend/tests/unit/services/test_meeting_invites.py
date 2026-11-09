@@ -995,7 +995,7 @@ def test_the_master_wins_over_an_edited_occurrence(now):
 
 def test_a_lone_occurrence_is_a_one_off_of_its_own():
     inv = meeting_invites.parse(ONE_OCCURRENCE)
-    assert inv.uid == f"{UID}#20261010T150000" and inv.instance_of == UID and inv.recurrence is None
+    assert inv.uid == f"{UID}#{_epoch(2026, 10, 10, 15, 0)}" and inv.instance_of == UID and inv.recurrence is None
 
 
 async def test_one_occurrence_of_a_followed_series_is_ignored(room):
@@ -1015,7 +1015,9 @@ async def test_one_occurrence_alone_books_its_own_meeting(room):
     assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_scheduled"
     assert reads[0] == meeting_invites.messaging_repo.meeting_room_id("org_1", UID)  # the series looked up first
     kw = room.create.await_args.kwargs
-    assert kw["room_id"] == meeting_invites.messaging_repo.meeting_room_id("org_1", f"{UID}#20261010T150000")
+    assert kw["room_id"] == meeting_invites.messaging_repo.meeting_room_id(
+        "org_1", f"{UID}#{_epoch(2026, 10, 10, 15, 0)}"
+    )
 
 
 async def test_a_series_invite_stores_its_rule_and_says_so(room, now):
@@ -1690,3 +1692,23 @@ async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_not
         AsyncMock(side_effect=meeting_invites.messaging.ApiProblem("ROOM_FORBIDDEN", "no")),
     )
     assert await meeting_invites.output_room("org_1", "meeting-room") == "meeting-room"
+
+
+async def test_verified_secondary_sender_uses_current_member_identity(room):
+    out = await meeting_invites.handle_team_mail(
+        "org_1", _mail(GOOGLE, sender="secondary@acme.com"), TEAM, verified_sender_user_id="user_p"
+    )
+    assert out == "meeting_scheduled"
+    assert room.create.await_args.kwargs["creator_user_id"] == "user_p"
+
+
+@pytest.mark.parametrize("member", ["user_removed", "user_p"])
+async def test_verified_sender_still_requires_member_and_authenticated_from(room, member):
+    out = await meeting_invites.handle_team_mail(
+        "org_1",
+        _mail(GOOGLE, sender="secondary@acme.com", dmarc="FAIL" if member == "user_p" else "PASS"),
+        TEAM,
+        verified_sender_user_id=member,
+    )
+    assert out is None
+    room.create.assert_not_awaited()

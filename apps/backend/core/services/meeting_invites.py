@@ -163,8 +163,8 @@ def _parse(calendar_text: str) -> Invite | None:
     uid, instance_of, rid_line = props.get("UID", ("", ""))[1].strip(), None, None
     if uid and "RECURRENCE-ID" in props:  # one occurrence on its own: a one-off meeting of its own
         rid_params, rid = props["RECURRENCE-ID"]
-        _when(rid_params, rid)  # validate inside parse's total-input boundary
-        instance_of, uid = uid, f"{uid}#{rid.strip()}"
+        original = int(_when(rid_params, rid).timestamp())
+        instance_of, uid = uid, f"{uid}#{original}"  # the same instant has one identity across timezones
         rid_line = f"RECURRENCE-ID{';' + rid_params if rid_params else ''}:{rid.strip()}"
     if not uid or len(uid) > 512 or not ("DTSTART" in props or cancelled):
         return None
@@ -547,7 +547,9 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
     return written
 
 
-async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
+async def handle_team_mail(
+    owner_id: str, payload, team: dict, *, verified_sender_user_id: str | None = None
+) -> str | None:
     """A member's invite creates (or updates, or cancels) the meeting's room -- the room META's
     ``meeting`` is the record -- and returns the outcome. None means "this is mail": no calendar
     part, an unreadable one, or a stranger's invite."""
@@ -558,13 +560,14 @@ async def handle_team_mail(owner_id: str, payload, team: dict) -> str | None:
     sender = parse_from_address(payload.from_)
     if not authenticated_sender(payload.verdicts or {}, payload.headers or {}, sender):
         return None
-    by_email = {
-        str(m["email"]).lower(): m["user_id"]
-        # strict: a Clerk blip must 503 (SES retries), not read the member as a stranger forever
-        for m in await clerk_admin.list_organization_members(owner_id, strict=True)
-        if m.get("email")
-    }
-    creator = by_email.get(sender) if sender else None
+    # The shared-address router can resolve a verified secondary email to a Clerk user.
+    # Recheck current workspace membership here; no value from the mail payload grants authority.
+    members = await clerk_admin.list_organization_members(owner_id, strict=True)
+    if verified_sender_user_id is not None:
+        creator = next((m["user_id"] for m in members if m.get("user_id") == verified_sender_user_id), None)
+    else:
+        by_email = {str(m["email"]).lower(): m["user_id"] for m in members if m.get("email")}
+        creator = by_email.get(sender) if sender else None
     if creator is None:
         return None  # a stranger's mail: no bot, no room -- the CEO reads it as mail
     invite = await asyncio.to_thread(parse, payload.calendar)  # the rule walk is CPU work

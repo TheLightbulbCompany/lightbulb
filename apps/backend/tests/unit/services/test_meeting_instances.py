@@ -52,7 +52,7 @@ def override(*, hour=16, sequence=1, cancel=False, day="20261107"):
 
 
 PARENT = mi.messaging_repo.meeting_room_id("org_1", UID)
-CHILD = mi.messaging_repo.meeting_room_id("org_1", UID + "#20261107T150000")
+CHILD = mi.messaging_repo.meeting_room_id("org_1", f"{UID}#{_epoch(2026, 11, 7, 15, 0)}")
 
 
 @pytest.mark.parametrize("hour", [14, 16])
@@ -176,3 +176,16 @@ async def test_failed_child_cancel_retries_without_losing_bot_identity(store, bo
     bots.leave.side_effect = None
     await mi.handle_team_mail("org_1", _mail(override(cancel=True, sequence=2)), TEAM)
     assert "recallBotId" not in store[CHILD]["meeting"]
+
+
+async def test_equivalent_timezone_representation_updates_same_occurrence(store, bots, now):
+    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("org_1", _mail(override()), TEAM)
+    count = bots.create.await_count
+    utc = override(hour=17, sequence=2).replace(
+        "RECURRENCE-ID;TZID=America/New_York:20261107T150000", "RECURRENCE-ID:20261107T200000Z"
+    )
+    await mi.handle_team_mail("org_1", _mail(utc), TEAM)
+    assert len(store) == 2
+    assert bots.create.await_count == count
+    assert store[CHILD]["meeting"]["startAt"] == _epoch(2026, 11, 7, 17, 0)

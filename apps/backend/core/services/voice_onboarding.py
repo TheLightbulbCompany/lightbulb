@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
 import logging
 import re
@@ -33,9 +34,11 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from core.config import settings
+from core.billing import voice_billing
 from core.dynamodb import run_in_thread
-from core.repositories import messaging_repo
-from core.services import link_preview
+from core.repositories import billing_repo, container_repo, messaging_repo
+from core.services import link_preview, livekit_huddles
+from livekit import api
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +177,12 @@ TWILIO_API = "https://api.twilio.com/2010-04-01/Accounts"
 async def _twilio(method: str, path: str, **params: str) -> dict:
     """One Twilio REST call under the account (GET params as the query, POST as the form); {} for a 204."""
     url = f"{TWILIO_API}/{settings.TWILIO_ACCOUNT_SID}/{path}"
-    async with httpx.AsyncClient(auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN), timeout=10) as client:
+    credentials = (
+        (settings.TWILIO_API_KEY_SID, settings.TWILIO_API_KEY_SECRET)
+        if settings.TWILIO_API_KEY_SID and settings.TWILIO_API_KEY_SECRET
+        else (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    )
+    async with httpx.AsyncClient(auth=credentials, timeout=10) as client:
         kw = {"params": params} if method == "GET" else {"data": params}
         resp = await client.request(method, url, **kw)
     resp.raise_for_status()
@@ -188,8 +196,12 @@ async def release_number(ws: str) -> str:
     ponytail: the 30-day paused/unused release has no caller yet: nothing is bought while VOICE_BUY_NUMBERS is off.
     Call it from the watchdog's daily tick (core/temporal/watchdog_workflow.py) once buying is on."""
     cfg = await messaging_repo.get_voice_agent(ws) or {}
-    number = str(cfg.get("number") or "") or settings.VOICE_LINE_NUMBER
+    provision_key = {"pk": messaging_repo.owner_pk(ws), "sk": "VOICENUMBER"}
+    pending = await messaging_repo._get(**provision_key) or {}
+    number = str(cfg.get("number") or pending.get("number") or "") or settings.VOICE_LINE_NUMBER
     line = await messaging_repo._get(f"PHONE#{number}", "LINE") if number else None
+    if not line and pending.get("number") == number and pending.get("sid"):
+        line = {"ownerId": ws, "sid": pending["sid"]}  # purchase succeeded before config/line save failed
     if not line or line.get("ownerId") != ws:
         return ""  # no line, or another workspace's
     if line.get("sid"):  # bought by provision_at_go_live: back to Twilio first, so a retried wipe still finds it
@@ -198,7 +210,10 @@ async def release_number(ws: str) -> str:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:  # 404: already released
                 raise
+        if settings.VOICE_INBOUND_TRUNK_ID:
+            await _route_number(number, remove=True)
     await run_in_thread(messaging_repo._table().delete_item, Key={"pk": f"PHONE#{number}", "sk": "LINE"})
+    await run_in_thread(messaging_repo._table().delete_item, Key=provision_key)
     return number
 
 
@@ -251,11 +266,35 @@ def _area_code(raw) -> str | None:
     return digits[:3] if len(digits) == 10 else None
 
 
+async def _route_number(number: str, *, remove: bool = False) -> None:
+    """Atomically add/remove without replacing the shared trunk list or its IP restrictions."""
+    async with livekit_huddles._api() as lk:
+        await lk.sip.update_sip_inbound_trunk(
+            api.UpdateSIPInboundTrunkRequest(
+                sip_trunk_id=settings.VOICE_INBOUND_TRUNK_ID,
+                update=api.SIPInboundTrunkUpdate(numbers=api.ListUpdate(**{"remove" if remove else "add": [number]})),
+            )
+        )
+
+
 async def provision_at_go_live(ws: str, cfg: dict, user_id: str) -> str:
-    """The number the workspace answers on, given when its Agent page flips `live: true`. Idempotent: a number the
-    workspace's line row already has is kept. While VOICE_BUY_NUMBERS is off (until Twilio KYC clears) it is the one
-    configured VOICE_LINE_NUMBER (`assign_number`); on, one local number is bought in the chosen area code (new) or
-    the business line's (keep), attached to the SIP trunk in the same call, and its line row written."""
+    """Serialize paid provisioning; recover provider outcomes before buying another number on retry."""
+    if not settings.VOICE_BUY_NUMBERS:
+        have = cfg.get("number")
+        if have and ((await messaging_repo._get(f"PHONE#{have}", "LINE")) or {}).get("ownerId") == ws:
+            return have
+        return await assign_number(ws, user_id)
+    lease = f"voice-number#{ws}"
+    token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=180)
+    if not token:
+        raise NoNumber("provisioning_in_progress")
+    try:
+        return await _provision_number(ws, cfg, user_id)
+    finally:
+        await container_repo.release_owner_lifecycle_claim(lease, token=token)
+
+
+async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
     have = cfg.get("number")
     if (
         isinstance(have, str)
@@ -263,25 +302,131 @@ async def provision_at_go_live(ws: str, cfg: dict, user_id: str) -> str:
         and ((await messaging_repo._get(f"PHONE#{have}", "LINE")) or {}).get("ownerId") == ws
     ):
         return have
-    if not settings.VOICE_BUY_NUMBERS:
-        return await assign_number(ws, user_id)
-    if not (settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN and settings.TWILIO_TRUNK_SID):
+    key = {"pk": messaging_repo.owner_pk(ws), "sk": "VOICENUMBER"}
+    pending = await messaging_repo._get(**key) or {}
+    if (
+        pending.get("number")
+        and ((await messaging_repo._get(f"PHONE#{pending['number']}", "LINE")) or {}).get("ownerId") == ws
+    ):
+        return pending["number"]  # an earlier config-save failure must not purchase or gate a second number
+    paid = voice_billing.has_voice_plan(await billing_repo.get_by_owner_id(ws, consistent_read=True))
+    if not paid and not pending:
+        raise NoNumber("voice_payment_required")
+    if not (
+        settings.TWILIO_ACCOUNT_SID
+        and (settings.TWILIO_AUTH_TOKEN or (settings.TWILIO_API_KEY_SID and settings.TWILIO_API_KEY_SECRET))
+        and settings.TWILIO_TRUNK_SID
+        and settings.VOICE_INBOUND_TRUNK_ID
+    ):
         raise NoNumber("not_available")
-    choice = cfg.get("numberChoice") if isinstance(cfg.get("numberChoice"), dict) else {}
-    area = choice.get("areaCode") if choice.get("path") == "new" else _area_code(cfg.get("forwardFrom"))
+    tag = f"lightbulb-{settings.ENVIRONMENT}-{hashlib.sha256(ws.encode()).hexdigest()[:24]}"
+    query = {"FriendlyName": tag, **({"PhoneNumber": pending["number"]} if pending.get("number") else {})}
+    owned = await _twilio("GET", "IncomingPhoneNumbers.json", **query)
+    matches = owned.get("incoming_phone_numbers") or []
+    if len(matches) > 1 or any(x.get("friendly_name") != tag for x in matches):
+        raise NoNumber("provider_ownership_mismatch")
+    bought_now = False
+    if matches:
+        bought = matches[0]
+        number = bought["phone_number"]
+        if pending.get("number") and pending["number"] != number:
+            raise NoNumber("provider_ownership_mismatch")
+        if bought.get("trunk_sid") != settings.TWILIO_TRUNK_SID:
+            raise NoNumber("provider_route_mismatch")
+    else:
+        if not paid:
+            raise NoNumber("voice_payment_required")  # recovery of an existing purchase is allowed; a new charge is not
+        number = pending.get("number")
+        if not number:
+            choice = cfg.get("numberChoice") if isinstance(cfg.get("numberChoice"), dict) else {}
+            area = choice.get("areaCode") if choice.get("path") == "new" else _area_code(cfg.get("forwardFrom"))
+            found = await _twilio(
+                "GET",
+                "AvailablePhoneNumbers/US/Local.json",
+                **({"AreaCode": area} if area else {}),
+                VoiceEnabled="true",
+                SmsEnabled="true",
+            )
+            if not found.get("available_phone_numbers"):
+                raise NoNumber("none_in_area_code")
+            number = found["available_phone_numbers"][0]["phone_number"]
+            await run_in_thread(
+                messaging_repo._table().put_item,
+                Item={**key, "number": number, "friendlyName": tag, "ownerUserId": user_id},
+            )
+        try:
+            bought = await _twilio(
+                "POST",
+                "IncomingPhoneNumbers.json",
+                PhoneNumber=number,
+                TrunkSid=settings.TWILIO_TRUNK_SID,
+                FriendlyName=tag,
+            )
+            bought_now = True
+        except httpx.HTTPError as exc:
+            # Twilio documents 21422 as a confirmed unavailable/reserved number. Reconcile once more
+            # before discarding only an unpurchased choice; ambiguous timeouts/5xx keep their receipt.
+            code = None
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
+                try:
+                    code = exc.response.json().get("code")
+                except ValueError:
+                    pass
+            if code == 21422:
+                recovered = await _twilio("GET", "IncomingPhoneNumbers.json", FriendlyName=tag, PhoneNumber=number)
+                rows = recovered.get("incoming_phone_numbers") or []
+                if (
+                    len(rows) == 1
+                    and rows[0].get("friendly_name") == tag
+                    and rows[0].get("trunk_sid") == settings.TWILIO_TRUNK_SID
+                ):
+                    bought = rows[0]
+                else:
+                    await run_in_thread(
+                        messaging_repo._table().delete_item,
+                        Key=key,
+                        ConditionExpression="attribute_not_exists(sid) AND #n = :number",
+                        ExpressionAttributeNames={"#n": "number"},
+                        ExpressionAttributeValues={":number": number},
+                    )
+                    raise NoNumber("none_in_area_code") from None
+            else:
+                # Keep the chosen number on an uncertain response: retry reconciles this exact resource.
+                logger.warning("number buy failed: %s", type(exc).__name__)
+                raise NoNumber("buy_failed") from None
+    if bought["phone_number"] != number:
+        raise NoNumber("provider_ownership_mismatch")
+    await run_in_thread(
+        messaging_repo._table().put_item,
+        Item={
+            **key,
+            "number": number,
+            "sid": bought["sid"],
+            "friendlyName": tag,
+            "ownerUserId": pending.get("ownerUserId") or user_id,
+        },
+    )
     try:
-        found = await _twilio("GET", "AvailablePhoneNumbers/US/Local.json",
-                              **({"AreaCode": area} if area else {}), VoiceEnabled="true", SmsEnabled="true")  # fmt: skip
-        if not found.get("available_phone_numbers"):
-            raise NoNumber("none_in_area_code")
-        pick = found["available_phone_numbers"][0]["phone_number"]
-        bought = await _twilio(
-            "POST", "IncomingPhoneNumbers.json", PhoneNumber=pick, TrunkSid=settings.TWILIO_TRUNK_SID
-        )
-    except httpx.HTTPError as exc:
-        logger.warning("number buy failed: %s", type(exc).__name__)
-        raise NoNumber("buy_failed") from None
-    number = bought["phone_number"]
-    item = {"pk": f"PHONE#{number}", "sk": "LINE", "ownerId": ws, "ownerUserId": user_id, "sid": bought["sid"]}
-    await run_in_thread(messaging_repo._table().put_item, Item=item)
+        await _route_number(number)
+    except Exception as exc:
+        if bought_now:
+            try:  # Compensate unroutable purchases; retain receipt if release fails for later recovery.
+                await _twilio("DELETE", f"IncomingPhoneNumbers/{bought['sid']}.json")
+                await run_in_thread(messaging_repo._table().delete_item, Key=key)
+            except Exception:
+                logger.exception("unroutable number release failed")
+        raise NoNumber("route_failed") from exc
+    item = {
+        "pk": f"PHONE#{number}",
+        "sk": "LINE",
+        "ownerId": ws,
+        "ownerUserId": pending.get("ownerUserId") or user_id,
+        "sid": bought["sid"],
+    }
+    await run_in_thread(
+        messaging_repo._table().put_item,
+        Item=item,
+        ConditionExpression="attribute_not_exists(pk) OR ownerId = :ws",
+        ExpressionAttributeValues={":ws": ws},
+    )
     return number

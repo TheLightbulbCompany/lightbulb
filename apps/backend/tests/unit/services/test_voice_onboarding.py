@@ -129,11 +129,31 @@ NEW = "+16105550123"
 def _fake_twilio(monkeypatch, number: str = NEW) -> AsyncMock:
     """Every Twilio REST call, mocked: the search finds `number`, the buy returns its PN sid, the release is 204."""
 
+    purchased = []
+
     async def call(method, path, **params):
         if path.startswith("AvailablePhoneNumbers"):
             return {"available_phone_numbers": [{"phone_number": number}]}
+        if method == "GET" and path == "IncomingPhoneNumbers.json":
+            return {
+                "incoming_phone_numbers": [
+                    x
+                    for x in purchased
+                    if x["friendly_name"] == params.get("FriendlyName")
+                    and (not params.get("PhoneNumber") or x["phone_number"] == params["PhoneNumber"])
+                ]
+            }
         if method == "POST":
-            return {"sid": "PN123", "phone_number": params["PhoneNumber"]}
+            row = {
+                "sid": "PN123",
+                "phone_number": params["PhoneNumber"],
+                "friendly_name": params["FriendlyName"],
+                "trunk_sid": params["TrunkSid"],
+            }
+            purchased.append(row)
+            return row
+        if method == "DELETE":
+            purchased.clear()
         return {}
 
     fake = AsyncMock(side_effect=call)
@@ -147,6 +167,23 @@ def _buying(monkeypatch, on: bool) -> None:
     monkeypatch.setattr(vo.settings, "TWILIO_AUTH_TOKEN", "tok" if on else "")
     monkeypatch.setattr(vo.settings, "TWILIO_TRUNK_SID", "TK123" if on else "")
     monkeypatch.setattr(vo.settings, "VOICE_LINE_NUMBER", LINE)
+    monkeypatch.setattr(vo.settings, "VOICE_INBOUND_TRUNK_ID", "ST_inbound" if on else "")
+    monkeypatch.setattr(vo.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
+    monkeypatch.setattr(vo.container_repo, "release_owner_lifecycle_claim", AsyncMock())
+    monkeypatch.setattr(vo, "_route_number", AsyncMock())
+    monkeypatch.setattr(
+        vo.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "metronome_voice_contract_id": "contract",
+                "voice_plan_status": "active",
+                "voice_plan_paid_periods": {
+                    "invoice": {"start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
+                },
+            }
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -199,15 +236,16 @@ async def test_go_live_buys_in_area_code_when_on(repos, async_client_org_admin, 
     twilio = _fake_twilio(monkeypatch)
     r = await _go_live(async_client_org_admin, {"numberChoice": {"path": "new", "areaCode": "610"}})
     assert r.status_code == 200 and r.json()["config"]["number"] == NEW
-    search, buy = twilio.await_args_list
+    lookup, search, buy = twilio.await_args_list
+    assert lookup.args == ("GET", "IncomingPhoneNumbers.json")
     assert search.args == ("GET", "AvailablePhoneNumbers/US/Local.json")
     assert search.kwargs == {"AreaCode": "610", "VoiceEnabled": "true", "SmsEnabled": "true"}
     assert buy.args == ("POST", "IncomingPhoneNumbers.json")
-    assert buy.kwargs == {"PhoneNumber": NEW, "TrunkSid": "TK123"}
+    assert buy.kwargs == {"PhoneNumber": NEW, "TrunkSid": "TK123", "FriendlyName": lookup.kwargs["FriendlyName"]}
     line = await messaging_repo._get(f"PHONE#{NEW}", "LINE")
     assert line["ownerId"] == WS and line["sid"] == "PN123"
     assert (await _go_live(async_client_org_admin, {"number": NEW})).status_code == 200
-    assert twilio.await_count == 2  # already live: nothing bought again
+    assert twilio.await_count == 3  # already live: nothing bought again
 
 
 @pytest.mark.asyncio
@@ -216,7 +254,157 @@ async def test_keep_path_buys_in_business_line_area_code(repos, monkeypatch):  #
     twilio = _fake_twilio(monkeypatch, "+14845550199")
     cfg = {"forwardFrom": "(484) 555-0100", "numberChoice": {"path": "keep", "carrier": "att", "mode": "all"}}
     assert await vo.provision_at_go_live(WS, cfg, "user_a") == "+14845550199"
-    assert twilio.await_args_list[0].kwargs["AreaCode"] == "484"
+    assert twilio.await_args_list[1].kwargs["AreaCode"] == "484"
+
+
+async def test_retry_after_config_save_failure_recovers_same_provider_number(repos, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = _fake_twilio(monkeypatch)
+    first = await vo.provision_at_go_live(WS, {}, "user_a")
+    # The HTTP config save failed after purchasing/routing; retry still has no config.number.
+    assert await vo.provision_at_go_live(WS, {}, "user_b") == first
+    assert sum(c.args[0] == "POST" for c in twilio.await_args_list) == 1
+    line = await messaging_repo._get(f"PHONE#{first}", "LINE")
+    assert line["ownerUserId"] == "user_a"
+
+
+async def test_route_failure_compensates_new_purchase(repos, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = _fake_twilio(monkeypatch)
+    monkeypatch.setattr(vo, "_route_number", AsyncMock(side_effect=RuntimeError("LiveKit down")))
+    with pytest.raises(vo.NoNumber, match="route_failed"):
+        await vo.provision_at_go_live(WS, {}, "user_a")
+    assert twilio.await_args_list[-1].args == ("DELETE", "IncomingPhoneNumbers/PN123.json")
+    assert await messaging_repo._get(f"PHONE#{NEW}", "LINE") is None
+    assert await messaging_repo._get(messaging_repo.owner_pk(WS), "VOICENUMBER") is None
+
+
+async def test_busy_workspace_cannot_buy_concurrent_second_number(repos, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = _fake_twilio(monkeypatch)
+    monkeypatch.setattr(vo.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value=None))
+    with pytest.raises(vo.NoNumber, match="provisioning_in_progress"):
+        await vo.provision_at_go_live(WS, {}, "user_a")
+    twilio.assert_not_awaited()
+
+
+async def test_provider_result_for_another_owner_is_never_routed_or_claimed(repos, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = AsyncMock(
+        return_value={
+            "incoming_phone_numbers": [
+                {"friendly_name": "another-owner", "sid": "PNother", "phone_number": NEW, "trunk_sid": "TK123"}
+            ]
+        }
+    )
+    monkeypatch.setattr(vo, "_twilio", twilio)
+    with pytest.raises(vo.NoNumber, match="provider_ownership_mismatch"):
+        await vo.provision_at_go_live(WS, {}, "user_a")
+    vo._route_number.assert_not_awaited()
+    assert await messaging_repo._get(f"PHONE#{NEW}", "LINE") is None
+
+
+async def test_ambiguous_purchase_timeout_recovers_exact_number_without_buying_again(repos, monkeypatch):  # noqa: F811
+    import httpx
+
+    _buying(monkeypatch, True)
+    provider = _fake_twilio(monkeypatch)
+
+    async def uncertain(method, path, **params):
+        result = await provider(method, path, **params)
+        if method == "POST":
+            raise httpx.ReadTimeout("purchase succeeded but response was lost")
+        return result
+
+    monkeypatch.setattr(vo, "_twilio", uncertain)
+    with pytest.raises(vo.NoNumber, match="buy_failed"):
+        await vo.provision_at_go_live(WS, {}, "user_a")
+    assert await vo.provision_at_go_live(WS, {}, "user_a") == NEW
+    assert sum(c.args[0] == "POST" for c in provider.await_args_list) == 1
+
+
+async def test_confirmed_unavailable_choice_can_be_replaced_on_next_go_live(repos, monkeypatch):  # noqa: F811
+    import httpx
+
+    _buying(monkeypatch, True)
+    provider = _fake_twilio(monkeypatch)
+
+    async def collision(method, path, **params):
+        if method == "POST":
+            response = httpx.Response(
+                400, json={"code": 21422}, request=httpx.Request("POST", "https://api.twilio.com")
+            )
+            raise httpx.HTTPStatusError("unavailable", request=response.request, response=response)
+        return await provider(method, path, **params)
+
+    monkeypatch.setattr(vo, "_twilio", collision)
+    with pytest.raises(vo.NoNumber, match="none_in_area_code"):
+        await vo.provision_at_go_live(WS, {}, "user_a")
+    assert await messaging_repo._get(messaging_repo.owner_pk(WS), "VOICENUMBER") is None
+    other = "+16105550999"
+    new_provider = _fake_twilio(monkeypatch, other)
+    assert await vo.provision_at_go_live(WS, {}, "user_a") == other
+    assert sum(c.args[0] == "POST" for c in new_provider.await_args_list) == 1
+
+
+@pytest.mark.parametrize(
+    "account",
+    [
+        None,
+        {},
+        {"subscription_status": "active", "plan": "standard"},
+        {
+            "metronome_voice_contract_id": "contract",
+            "voice_plan_paid_periods": {"i": {"start": "2000-01-01T00:00:00Z", "end": "2000-02-01T00:00:00Z"}},
+        },
+        {
+            "metronome_voice_contract_id": "contract",
+            "voice_plan_unpaid_invoice_ids": ["unpaid"],
+            "voice_plan_paid_periods": {"i": {"start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}},
+        },
+    ],
+)
+async def test_unpaid_or_expired_plan_cannot_purchase_number(repos, monkeypatch, account):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = _fake_twilio(monkeypatch)
+    monkeypatch.setattr(vo.billing_repo, "get_by_owner_id", AsyncMock(return_value=account))
+    with pytest.raises(vo.NoNumber, match="voice_payment_required"):
+        await vo.provision_at_go_live(WS, {}, "user_a")
+    twilio.assert_not_awaited()
+
+
+async def test_existing_founder_line_and_idempotent_retrieval_do_not_require_new_payment(repos, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = _fake_twilio(monkeypatch)
+    messaging_repo._table().put_item(Item={"pk": f"PHONE#{LINE}", "sk": "LINE", "ownerId": WS})
+    monkeypatch.setattr(vo.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    assert await vo.provision_at_go_live(WS, {"number": LINE}, "user_a") == LINE
+    twilio.assert_not_awaited()
+
+
+async def test_go_live_returns_semantic_payment_error_without_buy(repos, async_client_org_admin, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = _fake_twilio(monkeypatch)
+    monkeypatch.setattr(vo.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    result = await _go_live(async_client_org_admin)
+    assert result.status_code == 402 and result.json()["detail"]["code"] == "voice_payment_required"
+    twilio.assert_not_awaited()
+
+
+async def test_route_add_is_atomic_and_preserves_shared_number_and_ip_configuration(monkeypatch):
+    from types import SimpleNamespace
+
+    sip = SimpleNamespace(update_sip_inbound_trunk=AsyncMock())
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=SimpleNamespace(sip=sip))
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(vo.livekit_huddles, "_api", lambda: context)
+    monkeypatch.setattr(vo.settings, "VOICE_INBOUND_TRUNK_ID", "ST_owned")
+    await vo._route_number(NEW)
+    request = sip.update_sip_inbound_trunk.await_args.args[0]
+    assert request.sip_trunk_id == "ST_owned" and list(request.update.numbers.add) == [NEW]
+    assert not request.update.numbers.set and not request.update.numbers.remove
+    assert not request.update.allowed_addresses.ListFields()
 
 
 @pytest.mark.asyncio

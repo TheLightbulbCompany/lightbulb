@@ -54,6 +54,16 @@ it("go live 409 shows retry message", async () => {
   expect(await screen.findByText(/try Go live again from the Agent page/)).toBeInTheDocument();
 });
 
+it("unpaid Go live preserves setup and links to explicit payment without claiming a number", async () => {
+  const save = vi.fn().mockRejectedValueOnce({ status: 402, body: { detail: { code: "voice_payment_required" } } }).mockResolvedValue(undefined);
+  render(<Onboarding config={at(5, { name: "Nova" })} save={save} />);
+  fireEvent.click(screen.getByRole("button", { name: "Go live" }));
+  expect(await screen.findByRole("link", { name: "Activate voice plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ name: "Nova", live: false, onboardingStep: 5 }));
+  expect(screen.getByText(/Your setup is saved/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Go live" })).toBeEnabled();
+});
+
 it("check forwarding shows tick when ok", async () => {
   vi.useFakeTimers();
   post.mockResolvedValue({ ok: true });

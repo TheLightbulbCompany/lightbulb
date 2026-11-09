@@ -1,0 +1,42 @@
+name: Phone telephony provisioning
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Reconcile certified Twilio trunks and production configuration secret (no numbers or calls)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: lightbulb-phone-telephony
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    if: github.ref == 'refs/heads/main' || inputs.apply == false
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Validate provisioning behavior
+        working-directory: apps/backend
+        run: uv run pytest tests/unit/scripts/test_provision_phone_telephony.py -q --no-cov
+      - name: Read-only readiness
+        if: inputs.apply == false
+        working-directory: apps/backend
+        run: uv run python scripts/provision_phone_telephony.py
+      - name: Reconcile trunks and configuration secret
+        if: inputs.apply == true
+        working-directory: apps/backend
+        run: uv run python scripts/provision_phone_telephony.py --apply

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
 
-type Save = "idle" | "saving" | "saved" | "error" | "forbidden";
+type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
@@ -32,7 +32,14 @@ export function AgentPage() {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       save(next).then(() => setSaveState("saved"),
-        (e: { status?: number }) => setSaveState(e?.status === 403 ? "forbidden" : "error"));
+        async (e: { status?: number; body?: { detail?: { code?: string } } }) => {
+          if (e.body?.detail?.code === "voice_payment_required") {
+            const pending = { ...next, live: false };
+            setDraft(pending);
+            try { await save(pending); setSaveState("payment"); }
+            catch { setSaveState("error"); }
+          } else setSaveState(e?.status === 403 ? "forbidden" : "error");
+        });
     }, 600);
   };
   const name = nameOf(c);
@@ -47,7 +54,9 @@ export function AgentPage() {
         <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
             : saveState === "forbidden" ? "Only an admin can change the assistant."
+            : saveState === "payment" ? "Your setup is saved. Activate your voice plan, then return and choose Go live to get your number."
             : "Changes save as you make them."}</p>
+        {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
       </div>
       <div className="vx-actions" style={{ marginTop: 0 }}>
         {c.number && <Button asChild variant="outline" size="sm"><a href={`tel:${c.number}`}>Test call</a></Button>}

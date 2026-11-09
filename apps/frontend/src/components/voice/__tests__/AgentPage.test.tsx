@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { name: "Salon" } }) }));
@@ -26,6 +26,20 @@ it("greeting style is optional and never blocks save", async () => {
   expect(document.querySelector("[data-err='true']")).toBeNull();
   await vi.advanceTimersByTimeAsync(700);
   expect(cfg.save).toHaveBeenCalledWith(expect.objectContaining({ greeting: "Warm and brief, mention the sale" }));
+  vi.useRealTimers();
+});
+
+it("unpaid Go live keeps the assistant off and offers the existing payment flow", async () => {
+  vi.useFakeTimers();
+  cfg.value = { ...cfg.value, live: false, number: "" };
+  cfg.save.mockRejectedValueOnce({ status: 402, body: { detail: { code: "voice_payment_required" } } }).mockResolvedValue(undefined);
+  render(<AgentPage />);
+  fireEvent.click(screen.getByRole("button", { name: "Go live" }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(screen.getByRole("link", { name: "Activate voice plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
+  expect(screen.getByText("Not live yet")).toBeInTheDocument();
+  expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ live: false }));
+  expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();
   vi.useRealTimers();
 });
 

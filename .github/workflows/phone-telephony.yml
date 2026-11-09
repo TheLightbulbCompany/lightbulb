@@ -39,7 +39,7 @@ jobs:
         working-directory: apps/infra
         run: npx vitest run test/phone-telephony-bootstrap.test.ts
       - name: Bootstrap scoped phone IAM through CloudFormation
-        if: github.ref == 'refs/heads/main'
+        if: inputs.apply == true && github.ref == 'refs/heads/main'
         working-directory: apps/infra
         # CDK assumes the existing cdk deploy/CloudFormation execution roles. No direct IAM mutations.
         run: npx cdk deploy --app 'npx ts-node --prefer-ts-exts lib/phone-telephony-bootstrap-app.ts' lightbulb-phone-telephony-bootstrap --require-approval never --outputs-file /tmp/phone-telephony-bootstrap-outputs.json

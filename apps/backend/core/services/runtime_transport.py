@@ -66,6 +66,14 @@ _NOT_READY_SNIPPETS = ("not ready", "not in valid state", "is still creating", "
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="agentcore-invoke")
 
 
+class LegacyRuntimeSessionRefused(httpx.ConnectError):
+    """A live ledger names a previous runtime that may not receive new invocations.
+
+    This is unknown/busy to lifecycle guards, never evidence that the VM is absent or idle.
+    HTTPError inheritance preserves the existing RPC retryable-error contract.
+    """
+
+
 class TaskSessionRefused(ValueError):
     """A call with ``task_id`` that is not a runs-v1 call for that task's own task run."""
 
@@ -317,7 +325,7 @@ async def _request_agentcore(
         if arn != runtime_arn(container):
             # Lifecycle/teardown can still identify and stop the previous writer, but no new
             # invoke may reach it. Do not start another writer while that session may be live.
-            raise httpx.ConnectError("legacy runtime session is still draining")
+            raise LegacyRuntimeSessionRefused("legacy runtime session is still draining")
         # Keyword only for a task session: the workspace call keeps its exact pre-task shape.
         session = _ensure_session(
             owner_id, arn, deadline, _wake, **({"task_id": task_id} if task_id is not None else {})

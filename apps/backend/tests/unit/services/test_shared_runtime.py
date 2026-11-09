@@ -162,8 +162,9 @@ async def test_a_live_legacy_run_is_refused_without_polling_or_starting_a_pool_w
     monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
     identity = runtime_runs.RunIdentity("r1", "org_a", "t1", 1, "agent-1")
     with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: session):
-        with pytest.raises(runtime_runs.RuntimeBusy, match="ConnectError"):
+        with pytest.raises(runtime_runs.RuntimeBusy) as refused:
             await runtime_runs.get_run("org_a", identity)
+        assert isinstance(refused.value.__cause__, rt.LegacyRuntimeSessionRefused)
         assert sent == []
         session["warm_until"] = 0  # idled out (no heartbeat): the next session starts on the pool
         with pytest.raises(runtime_runs.RunLost):
@@ -206,8 +207,9 @@ async def test_a_missed_legacy_heartbeat_inside_grace_still_refuses_new_invocati
     monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
     identity = runtime_runs.RunIdentity("r1", "org_a", "t1", 1, "agent-1")
     with patch.object(hp.container_repo, "get_session_sync", lambda owner_id, **k: session):
-        with pytest.raises(runtime_runs.RuntimeBusy, match="ConnectError"):
+        with pytest.raises(runtime_runs.RuntimeBusy) as refused:
             await runtime_runs.get_run("org_a", identity)
+        assert isinstance(refused.value.__cause__, rt.LegacyRuntimeSessionRefused)
         assert sent == []
         session["warm_until"] = now - rt.LIVE_GRACE_S - 1  # past the grace window: idle, the pool takes it
         with pytest.raises(runtime_runs.RunLost):

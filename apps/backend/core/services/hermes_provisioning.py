@@ -973,8 +973,10 @@ async def _idle_payload(owner_id: str, deadline: float) -> dict | None:
     separates the two is that ``container_rpc``'s transport fold is its ONLY chaining raise
     (``raise _unavailable() from exc``); every no-runtime raise leaves ``__cause__`` as None.
 
-    ``httpx.ConnectError`` (a throttle, or a genuine ResourceNotFound) is left on the idle side
-    by ruling — the timeout is the one that must not be.
+    Ordinary ``httpx.ConnectError`` (a throttle, or a genuine ResourceNotFound) remains on
+    the idle side by ruling. Explicit ``LegacyRuntimeSessionRefused`` is different: the
+    ledger still names a previous live writer. Its typed cause must remain unknown/busy,
+    or refusing the drain probe would authorize stopping that writer without a drain hold.
 
     The probe is an ``InvokeAgentRuntime`` and there is no way to suppress the wake, so on a
     parked workspace it starts a session -- on the NEW image, since the update has already
@@ -983,12 +985,13 @@ async def _idle_payload(owner_id: str, deadline: float) -> dict | None:
 
     from core.services import container_rpc
     from core.services.messaging import ApiProblem
+    from core.services.runtime_transport import LegacyRuntimeSessionRefused
 
     while True:
         try:
             payload = await container_rpc.call(owner_id, "health", {"drain": True})
         except ApiProblem as exc:
-            if not isinstance(exc.__cause__, httpx.TimeoutException):
+            if not isinstance(exc.__cause__, (httpx.TimeoutException, LegacyRuntimeSessionRefused)):
                 return {}  # no reachable runtime: there is no warm session to protect
             payload = {"busy": 1}  # it did not answer in ~95 s, which is not proof it is idle
         except Exception:  # noqa: BLE001 -- a 504 or an ok:false is not proof of idle either

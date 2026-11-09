@@ -1,0 +1,105 @@
+name: Roll one Hermes workspace
+on:
+  pull_request:
+    paths:
+      - .github/workflows/roll-hermes-runtime.yml
+      - apps/backend/scripts/run_runtime_roll.py
+      - apps/backend/tests/unit/scripts/test_run_runtime_roll.py
+      - apps/infra/lib/runtime-roll-bootstrap*.ts
+      - apps/infra/test/runtime-roll-bootstrap.test.ts
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment whose deployed backend configuration to use
+        type: choice
+        options: [dev, prod]
+        default: dev
+      owner_id:
+        description: One workspace org ID (no fleet roll)
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: lightbulb-runtime-roll-${{ github.event_name }}-${{ inputs.environment || github.head_ref }}-${{ inputs.owner_id }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+      - name: Check launcher
+        working-directory: apps/backend
+        run: |
+          uv run ruff check scripts/run_runtime_roll.py tests/unit/scripts/test_run_runtime_roll.py
+          uv run pytest tests/unit/scripts/test_run_runtime_roll.py -q --no-cov
+      - name: Check IAM boundary
+        working-directory: apps/infra
+        run: |
+          npm ci
+          npx vitest run test/runtime-roll-bootstrap.test.ts
+          npx tsc --noEmit
+  roll:
+    needs: check
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    timeout-minutes: 25
+    env:
+      ROLL_ENVIRONMENT: ${{ inputs.environment }}
+      ROLL_OWNER_ID: ${{ inputs.owner_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+      - name: Validate inputs and launcher
+        working-directory: apps/backend
+        run: |
+          uv run python scripts/run_runtime_roll.py "$ROLL_ENVIRONMENT" "$ROLL_OWNER_ID" --validate-only
+          uv run pytest tests/unit/scripts/test_run_runtime_roll.py -q --no-cov
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Install infrastructure dependencies
+        working-directory: apps/infra
+        run: npm ci
+      - name: Check and deploy scoped rollout IAM
+        working-directory: apps/infra
+        run: |
+          npx vitest run test/runtime-roll-bootstrap.test.ts
+          npx cdk deploy --app 'npx ts-node --prefer-ts-exts lib/runtime-roll-bootstrap-app.ts' lightbulb-runtime-roll-bootstrap --require-approval never
+      - name: Assume single-environment rollout role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          unset-current-credentials: true
+          role-session-name: runtime-roll-${{ github.run_id }}-${{ github.run_attempt }}
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-${{ inputs.environment }}-runtime-roll
+      - name: Roll using the deployed backend image and configuration
+        working-directory: apps/backend
+        run: uv run python scripts/run_runtime_roll.py "$ROLL_ENVIRONMENT" "$ROLL_OWNER_ID" --receipt "$RUNNER_TEMP/runtime-roll.json"
+      - name: Clean up only this workflow's temporary task
+        if: always()
+        working-directory: apps/backend
+        run: uv run python scripts/run_runtime_roll.py "$ROLL_ENVIRONMENT" "$ROLL_OWNER_ID" --receipt "$RUNNER_TEMP/runtime-roll.json" --cleanup
+      - name: Retain rollout receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-roll-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-roll.json
+          if-no-files-found: ignore

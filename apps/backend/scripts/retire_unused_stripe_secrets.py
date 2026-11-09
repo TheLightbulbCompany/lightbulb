@@ -17,6 +17,108 @@ from pathlib import Path
 ACCOUNT = "877352799272"
 REGION = "us-east-1"
 SUFFIXES = ("stripe_connect_webhook_secret", "stripe_marketplace_webhook_secret")
+AUTHORITY_STACK = "lightbulb-stripe-secret-retirement-bootstrap"
+READ_ACTIONS = [
+    "cloudformation:ListStacks",
+    "ecs:ListClusters",
+    "ecs:ListServices",
+    "ecs:DescribeServices",
+    "ecs:ListTasks",
+    "ecs:DescribeTasks",
+    "ecs:DescribeTaskDefinition",
+    "lambda:ListFunctions",
+    "lambda:GetFunctionConfiguration",
+]
+
+
+def validate_authority_template(template):
+    """Only our exact two-resource operation authority is not a credential consumer."""
+    if isinstance(template, str):
+        template = json.loads(template)
+    resources = template.get("Resources", {})
+    roles = [(key, value) for key, value in resources.items() if value.get("Type") == "AWS::IAM::Role"]
+    policies = [value for value in resources.values() if value.get("Type") == "AWS::IAM::Policy"]
+    if (
+        len(resources) != 2
+        or len(roles) != 1
+        or len(policies) != 1
+        or template.get("Transform")
+        or template.get("Conditions")
+    ):
+        raise ValueError("Unexpected retirement authority resources")
+    role_id, resource = roles[0]
+    role, policy = resource.get("Properties", {}), policies[0].get("Properties", {})
+    trust = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Principal": {"Federated": f"arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com"},
+                "Condition": {
+                    "StringEquals": {
+                        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                        "token.actions.githubusercontent.com:sub": "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
+                    }
+                },
+            }
+        ],
+    }
+    if (
+        role.get("RoleName") != "lightbulb-retire-stripe-secrets"
+        or role.get("AssumeRolePolicyDocument") != trust
+        or role.get("MaxSessionDuration") != 3600
+        or set(role) - {"RoleName", "AssumeRolePolicyDocument", "MaxSessionDuration", "Description"}
+        or policy.get("Roles") != [{"Ref": role_id}]
+        or set(policy) - {"Roles", "PolicyDocument", "PolicyName"}
+    ):
+        raise ValueError("Unexpected retirement authority role")
+
+    def plain(value):
+        if isinstance(value, dict) and set(value) == {"Fn::Join"}:
+            delimiter, parts = value["Fn::Join"]
+            return delimiter.join("aws" if part == {"Ref": "AWS::Partition"} else plain(part) for part in parts)
+        if isinstance(value, dict):
+            return {key: plain(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [plain(item) for item in value]
+        return value
+
+    secrets = [
+        f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:lightbulb/{env}/{name}-??????"
+        for env in ("dev", "prod")
+        for name in SUFFIXES
+    ]
+    expected = [
+        {
+            "Sid": "DescribeExactRetiredSecrets",
+            "Effect": "Allow",
+            "Action": "secretsmanager:DescribeSecret",
+            "Resource": secrets,
+        },
+        {
+            "Sid": "RecoverablyDeleteExactRetiredSecrets",
+            "Effect": "Allow",
+            "Action": "secretsmanager:DeleteSecret",
+            "Resource": secrets,
+            "Condition": {"NumericEquals": {"secretsmanager:RecoveryWindowInDays": 30}},
+        },
+        {
+            "Sid": "InspectDeployedConsumers",
+            "Effect": "Allow",
+            "Action": READ_ACTIONS,
+            "Resource": "*",
+            "Condition": {"StringEquals": {"aws:RequestedRegion": ["us-east-1", "us-west-2"]}},
+        },
+        {
+            "Sid": "InspectPlatformTemplates",
+            "Effect": "Allow",
+            "Action": "cloudformation:GetTemplate",
+            "Resource": f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/lightbulb-*/*",
+        },
+    ]
+    if plain(policy.get("PolicyDocument")) != {"Version": "2012-10-17", "Statement": expected}:
+        raise ValueError("Unexpected retirement authority permissions")
 
 
 def scope_hash(rows):
@@ -69,6 +171,9 @@ def consumer_checks(session, names):
             if stack["StackStatus"] == "DELETE_COMPLETE" or not stack["StackName"].startswith("lightbulb-"):
                 continue
             template = cf.get_template(StackName=stack["StackId"], TemplateStage="Original")["TemplateBody"]
+            if stack["StackName"] == AUTHORITY_STACK:
+                validate_authority_template(template)
+                continue
             assert_unreferenced(template, names, stack["StackName"])
     for region in ("us-east-1", "us-west-2"):
         ecs = session.client("ecs", region_name=region)

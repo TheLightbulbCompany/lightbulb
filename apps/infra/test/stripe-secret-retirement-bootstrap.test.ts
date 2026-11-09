@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { StripeSecretRetirementBootstrapStack } from "../lib/stripe-secret-retirement-bootstrap";
 
 const template = Template.fromStack(new StripeSecretRetirementBootstrapStack(new cdk.App(), "Retirement", {
@@ -56,4 +57,44 @@ test("plan cannot bootstrap IAM and execution never assumes the limited general 
   expect(retire).not.toContain("role/lightbulb-github-actions");
   expect(retire).toContain("role/lightbulb-retire-stripe-secrets");
   expect(workflow.slice(workflow.indexOf("jobs:"))).not.toContain("\n    environment:");
+});
+
+test("actual synthesized bootstrap template passes plan without self-reference and rejects scope changes", () => {
+  const result = spawnSync("python3", ["-c", `
+import copy, json, sys, tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import Mock, patch
+sys.path.insert(0, "apps/backend/scripts")
+import retire_unused_stripe_secrets as r
+template = json.load(sys.stdin)
+cf, ecs, lm, sm, sts, session = [Mock() for _ in range(6)]
+cf.get_paginator.return_value.paginate.return_value = [{"StackSummaries": [{"StackName": r.AUTHORITY_STACK, "StackId": "owned", "StackStatus": "CREATE_COMPLETE"}]}]
+cf.get_template.return_value = {"TemplateBody": template}
+ecs.get_paginator.return_value.paginate.return_value = [{"clusterArns": []}]
+lm.get_paginator.return_value.paginate.return_value = [{"Functions": []}]
+sts.get_caller_identity.return_value = {"Account": r.ACCOUNT}
+session.client.side_effect = lambda name, **kwargs: {"cloudformation":cf,"ecs":ecs,"lambda":lm,"secretsmanager":sm,"sts":sts}[name]
+sm.describe_secret.side_effect = lambda SecretId: {"Name":SecretId,"ARN":f"arn:aws:secretsmanager:{r.REGION}:{r.ACCOUNT}:secret:{SecretId}-abcdef","LastChangedDate":datetime(2026,8,1,tzinfo=timezone.utc)}
+with tempfile.TemporaryDirectory() as directory, patch.object(r, "source_references", return_value=[]):
+    receipt = r.run(session,"dev","plan","",Path(directory))
+    assert len(receipt["secrets"]) == 2
+    sm.delete_secret.assert_not_called()
+    sm.get_secret_value.assert_not_called()
+for mutation in ("lambda", "permissions", "other-stack"):
+    changed = copy.deepcopy(template)
+    stack_name = r.AUTHORITY_STACK
+    if mutation == "lambda": changed["Resources"]["Unexpected"] = {"Type":"AWS::Lambda::Function"}
+    if mutation == "permissions":
+        policy = next(v for v in changed["Resources"].values() if v["Type"] == "AWS::IAM::Policy")
+        policy["Properties"]["PolicyDocument"]["Statement"].append({"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":"*"})
+    if mutation == "other-stack": stack_name = "lightbulb-unrelated-bootstrap"
+    cf.get_template.return_value = {"TemplateBody":changed}
+    cf.get_paginator.return_value.paginate.return_value = [{"StackSummaries":[{"StackName":stack_name,"StackId":"owned","StackStatus":"CREATE_COMPLETE"}]}]
+    try: r.consumer_checks(session,["lightbulb/dev/stripe_connect_webhook_secret"])
+    except ValueError: pass
+    else: raise AssertionError("Unsafe bootstrap was excluded: " + mutation)
+`], { input: JSON.stringify(template.toJSON()), cwd: resolve(__dirname, "../../.."), encoding: "utf8" });
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
 });

@@ -138,6 +138,73 @@ def test_load_environment_sets_the_plain_env_then_every_mapped_secret(lam):
     assert sm.calls == ["arn:clerk"]
 
 
+def test_load_environment_resolves_ecs_json_secret_selectors_once(lam):
+    """The shared work Lambda must receive fields, never pass ECS's selector to AWS."""
+    arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:lightbulb/prod/voice_telephony-abcdef"
+    calls = []
+
+    class Sm:
+        def get_secret_value(self, **kwargs):
+            assert kwargs == {"SecretId": arn}
+            calls.append(kwargs)
+            return {"SecretString": json.dumps({"account_sid": "AC-test", "api_key_sid": "SK-test"})}
+
+    environ = {
+        "LAMBDA_SECRET_ENV_MAP": json.dumps(
+            {
+                "TWILIO_ACCOUNT_SID": f"{arn}:account_sid::",
+                "TWILIO_API_KEY_SID": f"{arn}:api_key_sid::",
+            }
+        )
+    }
+    lam.load_environment(environ, secretsmanager=Sm())
+    assert environ["TWILIO_ACCOUNT_SID"] == "AC-test"
+    assert environ["TWILIO_API_KEY_SID"] == "SK-test"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "selector,version",
+    [
+        ("field:AWSPREVIOUS:", {"VersionStage": "AWSPREVIOUS"}),
+        ("field::version-id", {"VersionId": "version-id"}),
+        (":AWSPREVIOUS:", {"VersionStage": "AWSPREVIOUS"}),
+        ("::version-id", {"VersionId": "version-id"}),
+    ],
+)
+def test_load_environment_preserves_ecs_secret_version_selector(lam, selector, version):
+    arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-abcdef"
+
+    class Sm:
+        def get_secret_value(self, **kwargs):
+            assert kwargs == {"SecretId": arn, **version}
+            return {"SecretString": '{"field":"selected"}'}
+
+    environ = {"LAMBDA_SECRET_ENV_MAP": json.dumps({"VALUE": f"{arn}:{selector}"})}
+    lam.load_environment(environ, secretsmanager=Sm())
+    assert environ["VALUE"] == ("selected" if selector.startswith("field:") else '{"field":"selected"}')
+
+
+def test_load_environment_reads_plain_secret_arn_unchanged(lam):
+    arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-abcdef"
+    environ = {"LAMBDA_SECRET_ENV_MAP": json.dumps({"VALUE": arn})}
+    sm = _Sm()
+    lam.load_environment(environ, secretsmanager=sm)
+    assert sm.calls == [arn]
+    assert environ["VALUE"] == f"value-of-{arn}"
+
+
+@pytest.mark.parametrize("suffix", ["field", "field:AWSCURRENT:version-id"])
+def test_load_environment_rejects_invalid_ecs_selector_before_secret_fetch(lam, suffix):
+    arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-abcdef"
+    environ = {"LAMBDA_SECRET_ENV_MAP": json.dumps({"VALUE": f"{arn}:{suffix}"})}
+    sm = _Sm()
+    with pytest.raises(ValueError, match="ECS secret selector"):
+        lam.load_environment(environ, secretsmanager=sm)
+    assert not sm.calls
+    assert "VALUE" not in environ
+
+
 def test_secrets_are_in_the_environment_before_settings_is_first_imported():
     """Cold start in a clean interpreter: importing the handler module does NOTHING heavy
     (Lambda's 10 s init cap), and the first invocation loads the mapped secrets BEFORE

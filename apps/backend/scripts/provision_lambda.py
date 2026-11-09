@@ -32,7 +32,8 @@ def load_environment(environ=os.environ, *, ssm=None, secretsmanager=None) -> No
 
     The plain env (``LAMBDA_ENV_PARAMETER``, an SSM parameter holding the task def's env
     as JSON -- it is larger than Lambda's 4 KB env limit) first, then each secret in
-    ``LAMBDA_SECRET_ENV_MAP`` (``{ENV_NAME: secret arn}``) from Secrets Manager."""
+    ``LAMBDA_SECRET_ENV_MAP`` (``{ENV_NAME: ECS secret valueFrom}``) from Secrets Manager.
+    ECS's optional JSON key/version suffix is interpreted here, not sent as a SecretId."""
     import boto3
 
     parameter = environ.get("LAMBDA_ENV_PARAMETER")
@@ -42,10 +43,30 @@ def load_environment(environ=os.environ, *, ssm=None, secretsmanager=None) -> No
         for name, value in plain.items():
             environ.setdefault(name, value)
     secret_map = json.loads(environ.get("LAMBDA_SECRET_ENV_MAP") or "{}")
+    fetched: dict[tuple[str, str, str], str] = {}
     for name, arn in secret_map.items():
         if name not in environ:
             secretsmanager = secretsmanager or boto3.client("secretsmanager")
-            environ[name] = secretsmanager.get_secret_value(SecretId=arn)["SecretString"]
+            parts = arn.split(":")
+            secret_id, key, stage, version = arn, "", "", ""
+            if len(parts) > 7 and parts[0] == "arn" and parts[2] == "secretsmanager":
+                if len(parts) != 10:
+                    raise ValueError("invalid ECS secret selector")
+                secret_id, key, stage, version = ":".join(parts[:7]), *parts[7:]
+                if stage and version:
+                    raise ValueError("ECS secret selector cannot specify both version stage and ID")
+            ref = (secret_id, stage, version)
+            if ref not in fetched:
+                request = {"SecretId": secret_id}
+                if stage:
+                    request["VersionStage"] = stage
+                if version:
+                    request["VersionId"] = version
+                fetched[ref] = secretsmanager.get_secret_value(**request)["SecretString"]
+            value = json.loads(fetched[ref])[key] if key else fetched[ref]
+            if not isinstance(value, str):
+                raise ValueError("ECS secret environment value must be a string")
+            environ[name] = value
 
 
 #: ``scripts.provision_runner``, imported by the first invocation once the env is loaded.

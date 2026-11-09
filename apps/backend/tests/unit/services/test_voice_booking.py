@@ -263,6 +263,24 @@ async def test_own_calendar_still_books_moves_and_cancels_without_provider(clien
     assert not google.calls
 
 
+async def test_own_booking_stored_before_provider_field_still_moves_and_cancels(client, google):
+    from core.dynamodb import run_in_thread
+
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    old, new = f"{_tomorrow()}T14:00", f"{_tomorrow()}T14:30"
+    assert create(client, base, old).json()["booked"]
+    legacy = await row(old)
+    legacy.pop("bookingProvider")
+    await run_in_thread(messaging_repo._table().put_item, Item=legacy)
+    assert change(client, base, old, new).json()["moved"]
+    moved = await row(new)
+    moved.pop("bookingProvider", None)
+    await run_in_thread(messaging_repo._table().put_item, Item=moved)
+    assert change(client, base, new).json()["cancelled"]
+    assert not google.calls
+
+
 async def test_unknown_cross_day_move_keeps_target_out_of_availability(client, google):
     _, base = await begin(client)
     day = _tomorrow()

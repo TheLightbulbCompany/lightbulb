@@ -528,11 +528,16 @@ async def _target_events_free(ws: str, row: dict, body: dict, buffer_min: int) -
     raise _vp()._err(503, "provider_availability_unknown")
 
 
+def _own(row: dict) -> bool:
+    """Our own calendar's booking. A row written before `bookingProvider` existed, with no Google event, is one too."""
+    return row.get("bookingProvider") == "own" or not (row.get("bookingProvider") or row.get("eventId"))
+
+
 async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_start: str) -> dict:
     vp = _vp()
     if row.get("pending"):
         return await _resume(ws, cfg, call_id, row, "move", new_start)
-    if row.get("bookingProvider") == "own":
+    if _own(row):
         await vp._book(ws, call_id, call, {**cfg, "bookingsGo": "own"}, new_start, row["service"], row["name"], old=row)
         return {"state": "confirmed", "provider": "own"}
     try:
@@ -640,7 +645,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
 async def cancel(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
     if row.get("pending"):
         return await _resume(ws, cfg, call_id, row, "cancel")
-    if row.get("bookingProvider") == "own":
+    if _own(row):
         await _transaction(_vp()._release(messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(ws), row))
         return {"state": "confirmed", "provider": "own"}
     try:

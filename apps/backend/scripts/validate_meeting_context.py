@@ -27,7 +27,7 @@ from temporalio.testing import ActivityEnvironment
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo, tasks_repo
-from core.services import meeting_context, runtime_runs
+from core.services import meeting_context, memory_tags, runtime_runs
 from core.temporal import activities
 from core.temporal.types import RouterTurnIn
 from scripts.multiparty_e2e.runner import Clerk, _secret
@@ -222,7 +222,7 @@ async def validate(receipt_path: Path) -> None:
             ctx.ws,
             inp,
             "Read original source for trigger " + allowed["triggerId"],
-            {},
+            memory_tags.block_for_router("shared", None, allowed["roomId"]),
             allowed["roomId"],
             ctx.users["owner"],
         )
@@ -273,6 +273,10 @@ async def validate(receipt_path: Path) -> None:
         print(json.dumps({"receipt": str(receipt_path), "passed": receipt["passed"], "runId": identity.run_id}))
         if not receipt["passed"]:
             raise RuntimeError("meeting-context diagnostic did not pass; inspect boolean receipt")
+    except Exception as exc:
+        receipt.update(passed=False, errorType=type(exc).__name__)
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+        raise
     finally:
         runtime_runs.create_run = original_create
         activities.ROUTER_BUDGET_S, activities.ROUTER_MAX_ITERATIONS = original_budget, original_iterations

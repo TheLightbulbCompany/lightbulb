@@ -1407,7 +1407,7 @@ def test_recurring_asks_are_automations_not_requests():
     Worker made an Active Paperclip routine in UTC, with no confirm card. The prompt listed five tools and not
     propose_automation, and said to start everything: recurring work is propose_automation, never start_task."""
     text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
-    assert "ignore, propose_automation)" in text
+    assert "ignore, propose_automation, meeting_chat)" in text
     assert "Recurring work" in text and "propose_automation, never start_task" in text
 
 
@@ -1901,3 +1901,11 @@ async def test_a_pass_through_to_a_waiting_task_never_claims_progress(world):
 def test_a_fact_question_repeated_after_an_hour_gets_a_fresh_thread():
     rule = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
     assert "A fact question asked again more than 1 hour after the earlier answer is a fresh thread" in rule
+
+
+async def test_meeting_chat_tool_receipt_covers_trigger_without_spoken_fallback(world):
+    tid = await _trig("chat:m1", routed={"meetingChat": "sent-chat-message"})
+    trig = await repo.get_trigger(WS, tid)
+    result = await acts._apply(WS, RouterTurnIn(WS, "shared", BATCH, [tid]), {tid: trig}, [], "Done")
+    assert world["posts"] == []
+    assert result.started_task_ids == []

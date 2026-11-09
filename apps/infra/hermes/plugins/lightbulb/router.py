@@ -253,6 +253,50 @@ def _transfer_call(args: dict, *, session_id: str = "", **_kw) -> str:
     return "transferring"
 
 
+MEETING_CHAT_SCHEMA = {
+    "name": "meeting_chat",
+    "description": "Send a message to everyone in the current Google Meet. Choose chat when useful for the "
+    "conversation, links or typed replies. At most 500 characters. The backend checks the trigger's "
+    "workspace and active occurrence. Returns sent, refused or unknown; never retry an unknown send.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "trigger_ids": _TRIGGERS,
+            "text": {"type": "string", "minLength": 1, "maxLength": 500},
+        },
+        "required": ["trigger_ids", "text"],
+    },
+}
+
+
+def _meeting_chat(args: dict, *, session_id: str = "", **_kw) -> str:
+    from . import _post
+
+    ctx = turn_context.read(session_id)
+    if not ctx or ctx.get("mode") != "router":
+        return NOT_ROUTER
+    tids, text = (args or {}).get("trigger_ids"), (args or {}).get("text")
+    if (
+        not isinstance(tids, list)
+        or not 1 <= len(tids) <= 10
+        or not all(isinstance(t, str) and t for t in tids)
+    ):
+        return json.dumps({"error": "trigger_ids must list the batch's trigger ids"})
+    if not isinstance(text, str) or not text.strip() or len(text.strip()) > 500:
+        return json.dumps({"error": "text must be between 1 and 500 characters"})
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/meeting-chat"
+    try:
+        return json.dumps(
+            _post(url, ctx["hookToken"], {"triggerIds": tids, "text": text.strip()})
+        )
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"error": _backend_code(exc)})
+    except (
+        Exception
+    ) as exc:  # a lost tool response may have sent; the backend retains its receipt
+        return json.dumps({"status": "unknown", "error": type(exc).__name__})
+
+
 def _problem(kind: str, args: dict) -> str | None:
     if (
         not isinstance(args.get("trigger_ids"), list)
@@ -300,6 +344,8 @@ def _handler(kind: str):
 
 
 def register(ctx) -> None:
+    ctx.register_tool("meeting_chat", TOOLSET, MEETING_CHAT_SCHEMA, _meeting_chat,
+                      description=MEETING_CHAT_SCHEMA["description"], emoji="💬")
     for kind, schema in SCHEMAS.items():
         ctx.register_tool(kind, TOOLSET, schema, _handler(kind), description=schema["description"], emoji="🧭")
     ctx.register_tool(

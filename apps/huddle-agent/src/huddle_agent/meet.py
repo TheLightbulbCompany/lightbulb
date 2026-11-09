@@ -73,6 +73,7 @@ JOIN_S = 1.5
 STT_LANGUAGE = LANGUAGE  # pinned, as the phone and the orb (openai.STT defaults to it today)
 TOOLS = [
     "The Router: the team's brain in this meeting's room. It knows the team's work across GitHub, email, calendar and docs.",
+    "Meeting chat: the Router can send a message or link to everyone in this Google Meet. It also receives typed meeting chat. Hand raising is not available.",
     "Memory: the Router remembers and recalls what the team has said and decided.",
     "Work threads: the Router starts work threads that hand tasks to the team's agents, such as a draft or a post, and "
     "puts their links in the meeting chat.",

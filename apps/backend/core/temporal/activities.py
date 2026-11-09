@@ -780,6 +780,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         "text": await _input_text(ws, trig["triggerId"]),
         "who": None,
         "where": None,
+        "meetingChat": bool(ref.get("meetingBotId")),
         "caller": ref.get("origin") == "phone_contact",  # a phone caller's line: fenced as data in the batch
     }
     if ref.get("roomId") and ref.get("messageId"):
@@ -1198,7 +1199,9 @@ async def _apply(
     # is the answer, so no Router reply or fallback line is posted beside it (dev walk R7: one line above the card,
     # another below).
     # transfer_call's line likewise answers a phone caller who asked for a person (routedTo.transfer).
-    carded = {tid for tid, t in triggers.items() if {"automationId", "transfer"} & set(t.get("routedTo") or {})}
+    carded = {
+        tid for tid, t in triggers.items() if {"automationId", "transfer", "meetingChat"} & set(t.get("routedTo") or {})
+    }
     replies: list[tuple[dict, str]] = []
     covered.update(carded)
     ignored: set[str] = set()  # the Router chose silence for these (people talking to each other)

@@ -382,6 +382,11 @@ async def test_business_facts_reads_only_the_runs_own_workspace(api, monkeypatch
         return pages.get(owner_id)
 
     monkeypatch.setattr(messaging_repo, "get_voice_agent", page)
+    # Agent configuration reads billing; isolate that dependency as well as the saved page.
+    from unittest.mock import AsyncMock
+    from routers import voice_phone
+
+    monkeypatch.setattr(voice_phone.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
     tid = await _task()
     ref = await _running(tid)
     body = {"taskId": tid, "runId": ref.run_id, "attempt": 1, "runSecret": await _secret(tid)}
@@ -436,3 +441,20 @@ async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch
     assert r.status_code == 403 and r.json()["detail"] == "not_allowed"
     assert posted.await_count == 1
     assert (await api.post(url, json={"triggerIds": ["voice:c1:turn-0"], "text": "x"})).status_code in (401, 403)
+
+
+async def test_meeting_chat_route_checks_hook_and_preserves_limit(api, monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.services import meeting_chat
+
+    sent = AsyncMock(return_value={"status": "unknown", "replayed": False})
+    monkeypatch.setattr(meeting_chat, "send", sent)
+    url = f"/api/v1/internal/runtime/{WS}/meeting-chat"
+    body = {"triggerIds": ["chat:m"], "text": "https://example.com/report"}
+    assert (await api.post(url, json=body)).status_code in (401, 403)
+    sent.assert_not_awaited()
+    assert (await api.post(url, json={**body, "text": "x" * 501}, headers=H)).status_code == 422
+    sent.assert_not_awaited()
+    response = await api.post(url, json=body, headers=H)
+    assert response.status_code == 200 and response.json()["status"] == "unknown"
+    sent.assert_awaited_once_with(WS, ["chat:m"], body["text"])

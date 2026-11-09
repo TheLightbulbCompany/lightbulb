@@ -175,6 +175,18 @@ async def _admit_message(room_id: str, seq: int) -> None:
         ref["threadRoot"] = msg["threadRootMessageId"]
     if meta.get("meeting"):
         ref["origin"] = "meeting"  # anyone in a Meet acts as the inviter: every spend, send or publish gets a card
+        from datetime import datetime
+
+        meeting = meta["meeting"]
+        try:
+            current = datetime.fromisoformat(
+                str(msg.get("createdAt") or "").replace("Z", "+00:00")
+            ).timestamp() >= float(meeting.get("inCallAt") or 0)
+        except ValueError:
+            current = False
+        if meeting.get("status") == "in_call" and current:
+            ref["meetingBotId"] = meeting.get("recallBotId")
+            ref["meetingInCallAt"] = meeting.get("inCallAt")
     if msg.get("via") == "voice":
         # DeepSeek §4.2, channel-appropriate replies: the Router's and a Worker's input (`activities._input_text`
         # reads `ref.text` first) says the line was spoken, so the answer the voice says back is short
@@ -232,6 +244,8 @@ async def _admit_message(room_id: str, seq: int) -> None:
     routed: dict[str, str] | None = None
     if listen == "observe":
         admission = None
+    elif meta.get("meeting") and msg.get("via") == "meeting_chat":
+        admission = "candidate"  # the Router decides whether chat is directed to it
     elif addressed or named or meta.get("kind") == "dm" or meta.get("meeting"):
         admission = "respond"  # a meeting's lines are posted only when they named the assistant (meet.py's gate)
     elif listen == "mentions":

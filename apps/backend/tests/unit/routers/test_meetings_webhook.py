@@ -645,3 +645,75 @@ def test_older_joining_callback_cannot_overwrite_lobby_presence(env):
     _post(env["client"], _at_time(_status("joining_call"), "2026-10-03T00:00:01Z"))
     assert env["meta"]["meeting"]["lastBotStatus"] == "in_waiting_room"
     env["dispatch"].assert_not_awaited()
+
+
+def _chat_event(text="Nova, please put the link here", *, name="Maya", bot="bot-1", nonce="n", stamp=None):
+    return {
+        "event": "participant_events.chat_message",
+        "data": {
+            "bot": {"id": bot, "metadata": {"roomId": ROOM, "nonce": nonce}},
+            "data": {
+                "participant": {"id": 7, "name": name},
+                "timestamp": {"absolute": stamp or datetime.now(timezone.utc).isoformat()},
+                "data": {"text": text, "to": "everyone"},
+            },
+        },
+    }
+
+
+def test_signed_chat_is_durable_candidate_input_with_stable_replay_identity(env):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
+    from routers import voice_meet
+    from types import SimpleNamespace
+
+    store = AsyncMock(return_value=SimpleNamespace(message_id="m"))
+    with (
+        patch.object(voice_meet, "inviting_member", return_value="maya"),
+        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(mod.messaging, "create_human_message", store),
+    ):
+        event = _chat_event()
+        assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
+        assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
+    assert store.await_count == 2  # canonical message writer dedupes the stable client ID transactionally
+    assert store.await_args_list[0].args[2].client_message_id == store.await_args_list[1].args[2].client_message_id
+    assert store.await_args.kwargs["via"] == "meeting_chat"
+    assert store.await_args.args[0].org_id == "org_a"
+
+
+@pytest.mark.parametrize("change", ["old_bot", "old_nonce", "old_time", "ended", "self", "no_inviter"])
+def test_stale_or_self_chat_cannot_start_work(env, change):
+    from routers import voice_meet
+
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
+    event = _chat_event()
+    if change == "old_bot":
+        event["data"]["bot"]["id"] = "old"
+    elif change == "old_nonce":
+        event["data"]["bot"]["metadata"]["nonce"] = "old"
+    elif change == "old_time":
+        event["data"]["data"]["timestamp"]["absolute"] = "2020-01-01T00:00:00Z"
+    elif change == "ended":
+        env["meta"]["meeting"]["status"] = "ended"
+    elif change == "self":
+        event["data"]["data"]["participant"]["name"] = "Acme agents · Lightbulb"
+    store = AsyncMock()
+    with (
+        patch.object(voice_meet, "inviting_member", return_value=None if change == "no_inviter" else "maya"),
+        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(mod.messaging, "create_human_message", store),
+    ):
+        assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
+    store.assert_not_awaited()
+
+
+def test_chat_store_failure_is_retryable_instead_of_acknowledged_and_lost(env):
+    from routers import voice_meet
+
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
+    with (
+        patch.object(voice_meet, "inviting_member", return_value="maya"),
+        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(mod.messaging, "create_human_message", AsyncMock(side_effect=RuntimeError("down"))),
+    ):
+        assert _post(env["client"], _chat_event(), path="/api/v1/webhooks/recall/realtime").status_code == 503

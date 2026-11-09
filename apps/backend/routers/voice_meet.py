@@ -93,7 +93,7 @@ async def agent_lines(room_id: str, after: int) -> dict:
                          "waiting": bool(r.get("voiceWaiting", r.get("taskRefs") and r.get("kind") != "task_line")) if not question else False,
                          **({"taskIds": r.get("voiceTaskIds") or [ref["taskId"] for ref in r["taskRefs"]]} if r.get("voiceTaskIds") or r.get("taskRefs") else {}),
                          **({"question": question} if question else {}),
-                         **{k: r[k] for k in ("inReplyTo", "action") if r.get(k)}})  # fmt: skip
+                         **{k: r[k] for k in ("inReplyTo", "action", "voiceDelivery") if r.get(k)}})  # fmt: skip
     return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
 
 

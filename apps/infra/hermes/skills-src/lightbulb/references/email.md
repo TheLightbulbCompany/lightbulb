@@ -37,15 +37,18 @@ past that their mail is inbox-only until the next day. Everything you send is
 marked as machine-generated (`Auto-Submitted`), so well-behaved autoresponders
 will not answer it.
 
-**Meetings.** Put the team address on a Google Calendar event with a Meet link:
-one "<Company> agents · Lightbulb" participant joins each time it meets. No
-room opens; every agent is in the call. In the Meet someone asks an agent by
-saying its name (or "Lightbulb") anywhere in a sentence; the next thing that
-person says within a few seconds needs no name. The agent says nothing while it
-works: its tile shows it listening, then working, then a raised hand when the
-answer is ready. It speaks in the next pause in the talk, or at once when
-someone turns to it by name. Talked over, it stops, keeps its hand up and says
-the whole answer at the next pause. It stays out of all other talk. Afterwards the transcript posts in
+**Meetings.** Invite the team address to a Google Calendar event with a Meet link.
+One "<Company> agents · Lightbulb" participant joins. The configured assistant
+listens and uses GPT-Live for conversation; the existing Router and Workers do
+backend work. Saying the assistant's name wakes a sleeping voice session.
+While awake, the model decides when to speak, clarify or delegate.
+The Router's `meeting_chat` tool sends a message or link to everyone in the
+current meeting (at most 500 characters); it reports sent, refused or unknown.
+Never retry an unknown send or claim it was delivered. Incoming meeting chat is
+conversation input the Router may answer or ignore. Hand raising and reading
+other people's raised hands are not supported. Chat delivery is context for the
+voice, not an instruction to read the same message aloud.
+Afterwards the transcript posts in
 the general channel and one agent there writes the notes; action items become
 tasks. Notes and transcripts stay in the app; they are not emailed automatically.
 If no agent is in that channel, no notes are written. An answer nobody got to

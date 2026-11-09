@@ -530,3 +530,16 @@ async def test_no_room_triggers_batch_per_conversation(world, monkeypatch):
     a1, b1, a2 = (r.room_id for r in world["router"][-3:])
     assert a1 and b1 and a1 != b1 and a1 == a2
     assert "thread-a" not in a1  # hashed: no sender id in the workflow payload
+
+
+async def test_meeting_chat_is_a_candidate_and_carries_current_occurrence(world):
+    world["meta"]["meeting"] = {"status": "in_call", "recallBotId": "bot", "inCallAt": 1}
+    msg = _msg()
+    msg["via"] = "meeting_chat"
+    await _admit(world, msg)
+    trig = await repo.get_trigger(WS, ts.trigger_id("chat", msg["messageId"]))
+    assert trig["admission"] == "candidate"
+    assert trig["ref"]["origin"] == "meeting"
+    assert trig["ref"]["meetingBotId"] == "bot"
+    assert trig["ref"]["meetingInCallAt"] == 1
+    assert world["jev"] == []  # no extra participation classifier

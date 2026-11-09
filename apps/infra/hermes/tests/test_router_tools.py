@@ -58,7 +58,7 @@ def test_registered_under_router_toolset():
 
     rt.register(Ctx())
     assert seen == [(k, "lightbulb_router") for k in (
-        "meeting_chat", "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")] + [
+        "meeting_context", "meeting_chat", "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")] + [
         ("transfer_call", "lightbulb_router_call")]  # a phone caller's batch only
 
 
@@ -241,4 +241,24 @@ def test_meeting_chat_uses_run_workspace_and_reports_exact_backend_outcome(
     assert "error" in json.loads(
         rt._meeting_chat({"trigger_ids": ["chat:m"], "text": "x" * 501})
     )
+    assert len(calls) == 1
+
+
+def test_meeting_context_pages_only_the_run_workspace_and_no_decision(router_turn, monkeypatch):
+    import plugins.lightbulb as plugin
+
+    monkeypatch.setattr(rt.turn_context, "read", lambda _: {
+        "mode": "router", "ownerId": "org_a", "apiUrl": "https://api.test", "hookToken": "secret",
+    })
+    calls = []
+    monkeypatch.setattr(plugin, "_post", lambda url, token, body: calls.append((url, token, body)) or {
+        "section": "transcript", "quotedSource": True, "text": "source", "nextCursor": "next",
+    })
+    result = json.loads(rt._meeting_context({"trigger_id": "completion:1", "section": "transcript", "ownerId": "other"}))
+    assert result["quotedSource"] is True and result["nextCursor"] == "next"
+    assert calls == [("https://api.test/api/v1/internal/runtime/org_a/meeting-context", "secret",
+                      {"triggerId": "completion:1", "section": "transcript", "cursor": None})]
+    assert "decisions" not in turn.RUNS[RUN]
+    assert "error" in json.loads(rt._meeting_context({"trigger_id": "completion:1", "section": "other"}))
+    assert "error" in json.loads(rt._meeting_context({"trigger_id": "completion:1", "section": "tasks", "cursor": "x" * 513}))
     assert len(calls) == 1

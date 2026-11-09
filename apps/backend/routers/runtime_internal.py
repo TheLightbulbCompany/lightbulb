@@ -578,6 +578,25 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
 
 
+class MeetingContextBody(BaseModel):
+    trigger_id: str = Field(alias="triggerId", min_length=1, max_length=500)
+    section: Literal["transcript", "tasks"]
+    cursor: str | None = Field(default=None, max_length=512)
+
+
+@router.post("/{owner_id}/meeting-context")
+async def meeting_context(owner_id: str, body: MeetingContextBody, request: Request) -> dict:
+    from core.services import meeting_context as source
+
+    await _gate(owner_id, request)
+    try:
+        return await source.context(owner_id, body.trigger_id, body.section, body.cursor)
+    except source.NotAuthorized as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+
+
 class MeetingChatBody(BaseModel):
     trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
     text: str = Field(min_length=1, max_length=500)

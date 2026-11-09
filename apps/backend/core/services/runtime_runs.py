@@ -46,7 +46,7 @@ class RuntimeBusy(Exception):
 @dataclass(frozen=True)
 class RunIdentity:
     """A Worker turn of one task, or (mode "router") one Router batch: `task_id` is then the batch id and
-    `agent_id` the CEO's, and the run lives in the lane's Router session (`lane`: "shared" or a lane key)."""
+    `agent_id` the frozen front agent's, and the run lives in the lane's Router session (`lane`: "shared" or a lane key)."""
 
     run_id: str
     owner_id: str

@@ -342,7 +342,12 @@ async def start_call(body: StartIn) -> dict:
             kind="call",
             members=members,
             req_hash=messaging_repo.request_hash(name, "call", body.livekitRoom),
-            extra={"call": call, "hidden": True, "ownerUserId": line["ownerUserId"]},
+            extra={
+                "call": call,
+                "hidden": True,
+                "ownerUserId": line["ownerUserId"],
+                **({"frontAgentId": front["id"]} if front else {}),
+            },
         )
     except messaging_repo.MessagingRepoError:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made

@@ -150,6 +150,8 @@ def _wire_agent_message(
         AsyncMock(side_effect=lambda _room, message_id: (links or {}).get(message_id)),
     )
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
+    # Email/handle lookup is unrelated to reply telemetry; this fixture has no saved user rows.
+    monkeypatch.setattr("core.repositories.user_repo.get", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", AsyncMock(return_value=(created, replayed)))
     scan = AsyncMock(return_value=before or [])
     monkeypatch.setattr(messaging.messaging_repo, "list_messages_before", scan)

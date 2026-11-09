@@ -85,3 +85,22 @@ def _no_registry_outside_moto(request, monkeypatch):
         return await real_default(*args, **kwargs) if MockAWS._mocks_active else []
 
     monkeypatch.setattr(session_chat, "_default_agents", default_agents)
+
+    # The same no-registry workspace has neither a saved front-door choice nor a
+    # workspace META row. The canonical resolver now reads both before its legacy
+    # fallback. Keep real reads under moto and let individual tests override these
+    # defaults, just as they override list_agents above.
+    from core.repositories import messaging_repo
+    from core.repositories.workspace_repo import WorkspaceRepo
+
+    real_voice_agent = messaging_repo.get_voice_agent
+    real_owner_row = WorkspaceRepo.resolve_owner_row
+
+    async def voice_agent(*args, **kwargs):
+        return await real_voice_agent(*args, **kwargs) if MockAWS._mocks_active else None
+
+    async def owner_row(self, *args, **kwargs):
+        return await real_owner_row(self, *args, **kwargs) if MockAWS._mocks_active else None
+
+    monkeypatch.setattr(messaging_repo, "get_voice_agent", voice_agent)
+    monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", owner_row)

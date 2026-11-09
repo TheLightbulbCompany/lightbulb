@@ -21,34 +21,86 @@ logger = logging.getLogger(__name__)
 
 
 class NoFrontAgent(RuntimeError):
-    """The workspace has no active CEO agent to speak as Lightbulb."""
+    """The workspace has no available designated agent to speak as Lightbulb."""
 
 
-async def _front_agent(ws: str) -> dict:
-    """The CEO as a room seat from the `AGENT#` registry; Paperclip's default (`session_chat._default_agents`)
-    when the registry has no active CEO."""
-    ceo = next(
-        (a for a in await agent_registry.roster(ws) if a.get("role") == "ceo" and a.get("status") == "active"),
-        None,
-    )
-    if ceo:
-        return {
-            "kind": "agent",
-            "id": ceo["id"],
-            "displayName": messaging.FRONT_AGENT_NAME,
-            "mentionHandle": "lightbulb",
-            "role": "member",
-            "listenMode": "mentions",
-        }
-    agents = await session_chat._default_agents(ws)
-    if not agents:
-        raise NoFrontAgent(ws)
-    return agents[0]
+async def _front_agent(ws: str, *, room_id: str | None = None) -> dict:
+    """One existing worker speaks for the workspace; selection never renames or recreates it.
+
+    An explicit unavailable selection fails closed, so another agent cannot silently take its place.
+    Fresh rosters use the persisted CEO UUID; legacy rosters retain their existing root mechanism.
+    """
+    from core.repositories.workspace_repo import WorkspaceRepo
+
+    if room_id:
+        meta = await messaging_repo.get_room(room_id)
+        if meta is None or meta.get("ownerId") != ws or meta.get("deletedAt"):
+            raise NoFrontAgent("Conversation unavailable.")
+        pinned = meta.get("frontAgentId")
+        # New rooms pin the server-selected UUID. Older rooms retain their server-reserved seat.
+        room_members = await messaging_repo.list_members(room_id)
+        seats = [
+            m
+            for m in room_members
+            if m.get("kind") == "agent"
+            and m.get("role") == "member"
+            and (m.get("id") == pinned if pinned else m.get("mentionHandle") == "lightbulb")
+            and messaging_repo.member_home(m, ws) == ws
+        ]
+        if len(seats) > 1:
+            raise NoFrontAgent("This conversation has conflicting front-door seats.")
+        if pinned and not seats:
+            raise NoFrontAgent("This conversation's front-door agent is no longer a member.")
+        if seats:
+            roster = await agent_registry.roster(ws)
+            if any(a["id"] == seats[0]["id"] and a.get("status") == "active" for a in roster):
+                return seats[0]
+            raise NoFrontAgent(
+                "This conversation's agent is unavailable. Start a new conversation with an active front-door agent."
+            )
+    config = await messaging_repo.get_voice_agent(ws) or {}
+    roster = await agent_registry.roster(ws)
+    selected = config.get("frontAgentId")
+    company = await WorkspaceRepo().resolve_owner_row(ws)
+    stable = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
+    target = selected or stable
+    if target:
+        agent = next((a for a in roster if a["id"] == target and a.get("status") == "active"), None)
+        if agent is None:
+            raise NoFrontAgent(
+                "The selected front-door agent is unavailable. Choose an active agent in Agent settings."
+            )
+    else:
+        agent = next(
+            (a for a in roster if a.get("role") == "ceo" and not a.get("reportsTo") and a.get("status") == "active"),
+            None,
+        )
+        if agent is None:
+            agents = await session_chat._default_agents(ws)
+            if not agents:
+                raise NoFrontAgent(ws)
+            agent = agents[0]
+    if room_id and not any(
+        m.get("kind") == "agent"
+        and m.get("role") == "member"
+        and m.get("id") == agent["id"]
+        and messaging_repo.member_home(m, ws) == ws
+        for m in room_members
+    ):
+        raise NoFrontAgent("This conversation has no authorized front-door member.")
+    return {
+        "kind": "agent",
+        "id": agent["id"],
+        "displayName": messaging.FRONT_AGENT_NAME,
+        "mentionHandle": "lightbulb",
+        "role": "member",
+        "listenMode": "mentions",
+    }
 
 
-async def front_agent_id(ws: str) -> str:
-    """The CEO agent id: the identity every Lightbulb post uses (displayed "Lightbulb" / `@lightbulb`)."""
-    return (await _front_agent(ws))["id"]
+async def front_agent_id(ws: str, *, room_id: str | None = None) -> str:
+    """The designated existing agent id: the identity every Lightbulb post uses (displayed "Lightbulb" / `@lightbulb`)."""
+    return (await _front_agent(ws, room_id=room_id))["id"]
 
 
 async def read_quietly(ws: str, ref: dict) -> None:
@@ -58,7 +110,7 @@ async def read_quietly(ws: str, ref: dict) -> None:
     if not ref.get("roomId") or not ref.get("messageId"):
         return
     try:
-        agent_id = await front_agent_id(ws)
+        agent_id = await front_agent_id(ws, room_id=ref["roomId"])
         await messaging._publish_room_event(
             ref["roomId"],
             messaging.make_live_event(
@@ -100,7 +152,7 @@ async def ensure_task_room(ws: str, task: dict, *, seat_viewer: str | None = Non
                 kind="channel",
                 members=members,
                 req_hash=messaging_repo.request_hash("task-conversation-v1", task["taskId"]),
-                extra={"hidden": True, "task": {"taskId": task["taskId"]}},
+                extra={"hidden": True, "task": {"taskId": task["taskId"]}, "frontAgentId": members[0]["id"]},
             )
         except messaging_repo.MessagingRepoError:
             meta = await messaging_repo.get_room(room_id)  # a concurrent first open created it
@@ -169,7 +221,7 @@ async def post_as_lightbulb(
             text, task_id, qid = hit
             kind = "question"  # one card, bound to {taskId, qid}: the client renders its buttons once
             task_refs = [{**r, "qid": qid} if r.get("taskId") == task_id else r for r in task_refs or []]
-    agent_id = await front_agent_id(ws)
+    agent_id = await front_agent_id(ws, room_id=room_id)
     receipt = await messaging.create_agent_message(
         ws,
         messaging.AgentMessageRequest(

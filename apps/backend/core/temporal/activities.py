@@ -202,10 +202,13 @@ async def _frames_target(tree: dict) -> dict | None:
 
 
 async def _agent_for(ws: str, task: dict) -> str:
-    """The specialist's agent id when it is one of this workspace's agents, else Lightbulb's (the CEO)."""
+    """Choose a new attempt's explicit specialist, otherwise its conversation's front door."""
     spec = task.get("specialist")
     if spec and spec in {a["id"] for a in await messaging.load_agent_roster(ws)}:
         return spec
+    room = ts.task_room_id(task["taskId"])
+    if await messaging_repo.get_room(room) is not None:
+        return await task_conversation.front_agent_id(ws, room_id=room)
     return await task_conversation.front_agent_id(ws)
 
 
@@ -571,7 +574,7 @@ async def _react(ws: str, ref: dict, emoji: str) -> None:
                 ws,
                 ref["roomId"],
                 msg["messageSeq"],
-                await task_conversation.front_agent_id(ws),
+                await task_conversation.front_agent_id(ws, room_id=ref["roomId"]),
                 emoji,
                 True,
                 member_kind="agent",
@@ -814,7 +817,7 @@ async def _recent_lines(ws: str, trig: dict, batch: set[str], lane: str, user_id
     msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"])
     if not msg or not msg.get("messageSeq"):
         return []
-    front = await task_conversation.front_agent_id(ws)
+    front = await task_conversation.front_agent_id(ws, room_id=ref["roomId"])
     seq = int(msg["messageSeq"])
     if ref.get("threadRoot"):  # a follow-up in a thread ("make it shorter") sees its thread, not the room
         rows = (await messaging_repo.list_thread(ref["roomId"], ref["threadRoot"], seq))[-_RECENT:]
@@ -908,17 +911,42 @@ async def _meter_router(ws: str, user_id: str | None, status: runtime_runs.RunSt
 
 
 async def _router_identity(ws: str, inp: RouterTurnIn, scope: str, call: bool = False) -> runtime_runs.RunIdentity:
+    row = await tasks_repo.get_router_identity(ws, inp.batch_id)
+    if row is None:
+        # trigger_scope preserves a canonical room id; outside conversations are r:<hash>.
+        agent = (
+            await task_conversation.front_agent_id(ws)
+            if scope.startswith("r:")
+            else await task_conversation.front_agent_id(ws, room_id=scope)
+        )
+        row = await tasks_repo.claim_router_identity(
+            ws, inp.batch_id, agent_id=agent, lane=inp.lane, scope=scope, model=await _cheap_model(ws), call=call
+        )
+    expected = {
+        "ownerId": ws,
+        "batchId": inp.batch_id,
+        "runId": ts.router_run_id(ws, inp.batch_id),
+        "lane": inp.lane,
+        "scope": scope,
+        "call": call,
+    }
+    if (
+        any(row.get(k) != v for k, v in expected.items())
+        or not isinstance(row.get("agentId"), str)
+        or not row["agentId"]
+    ):
+        raise RuntimeError("Router batch identity does not match its authorized scope.")
     return runtime_runs.RunIdentity(
-        ts.router_run_id(ws, inp.batch_id),
+        row["runId"],
         ws,
         inp.batch_id,
         1,
-        await task_conversation.front_agent_id(ws),
+        row["agentId"],
         mode="router",
         lane=inp.lane,
-        room=ts.router_room_key(scope),  # the batch's conversation: a batch is one (lane, trigger_scope)
-        model=await _cheap_model(ws),
-        call=call,  # a phone caller's batch: the bridge adds transfer_call
+        room=ts.router_room_key(scope),
+        model=row.get("model"),
+        call=call,
     )
 
 

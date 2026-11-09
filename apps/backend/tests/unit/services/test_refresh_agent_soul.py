@@ -30,18 +30,24 @@ def world(monkeypatch):
     roster = [{"id": AGENT, "name": "Nova", "role": "ceo"}]
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(side_effect=lambda owner: [dict(r) for r in roster]))
     monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value="front-agent"))  # not the renamed one
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     labels = {R_LIVE: "Ada", R_QUIET: "Ada"}
 
     async def rooms(owner, kind, agent_id):
         return [
-            {"member": {"displayName": labels[r]}, "meta": {"roomId": r, "ownerId": OWNER}} for r in (R_LIVE, R_QUIET)
+            {"member": await member(r, kind, agent_id), "meta": {"roomId": r, "ownerId": OWNER}}
+            for r in (R_LIVE, R_QUIET)
         ]
+
+    async def member(room_id, kind, agent_id):
+        return {"kind": "agent", "id": AGENT, "role": "member", "displayName": labels[room_id]}
 
     async def set_names(room_id, agent_id, name, handle):
         labels[room_id] = name
         return True
 
     monkeypatch.setattr(messaging_repo, "list_rooms_for_member", rooms)
+    monkeypatch.setattr(messaging_repo, "get_member", member)
     set_agent_names = AsyncMock(side_effect=set_names)
     monkeypatch.setattr(messaging_repo, "set_agent_names", set_agent_names)
     monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": "user_1"}]))

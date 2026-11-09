@@ -60,7 +60,7 @@ def world(table, monkeypatch):  # noqa: F811
         w["rooms"].append(task["taskId"])
         return ts.task_room_id(task["taskId"])
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     async def roster(ws):
@@ -565,8 +565,7 @@ async def test_pinned_specialist_in_prompt(world):
     assert f"pinned specialist: Finance ({FIN})" in request.input
     assert "Sam: pay acme and book the flights" in request.input and "the channel #general" in request.input
     assert (
-        f"- {FIN} · Finance · Books and invoices" in request.input
-        and CEO not in request.input.split("## Specialists")[1]
+        f"- {FIN} · Finance · Books and invoices" in request.input and CEO in request.input.split("## Specialists")[1]
     )
     assert request.instructions == router_prompt.ROUTER_INSTRUCTIONS
     assert request.memory == {
@@ -1407,7 +1406,7 @@ def test_recurring_asks_are_automations_not_requests():
     Worker made an Active Paperclip routine in UTC, with no confirm card. The prompt listed five tools and not
     propose_automation, and said to start everything: recurring work is propose_automation, never start_task."""
     text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
-    assert "ignore, propose_automation, meeting_chat)" in text
+    assert "ignore, propose_automation, meeting_chat, meeting_context)" in text
     assert "Recurring work" in text and "propose_automation, never start_task" in text
 
 
@@ -1757,7 +1756,7 @@ async def test_react_sets_lightbulbs_reaction_and_shows_it_live(monkeypatch):
     async def publish(room_id, event):
         events.append((room_id, event["type"] if isinstance(event, dict) and "type" in event else event))
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return CEO
 
     monkeypatch.setattr(acts.messaging_repo, "get_message_by_id", get_msg)
@@ -1946,6 +1945,17 @@ async def test_meeting_context_revocation_prevents_router_launch(world, monkeypa
     with pytest.raises(meeting_context.NotAuthorized):
         await acts._router_run(WS, RouterTurnIn(WS, "shared", BATCH, [completion]), "prompt", {}, ROOM, SAM)
     assert world["runs"] == []
+
+
+@pytest.mark.asyncio
+async def test_ceo_frontdoor_remains_a_worker_that_can_receive_tasks(world):
+    trigger = await _trig("chat:ceo-worker")
+    world["decisions"] = [_start([trigger], specialist=CEO, title="Review the business plan")]
+    outcome = await _run([trigger])
+    assert len(outcome.started_task_ids) == 1
+    task = await repo.get_task(WS, outcome.started_task_ids[0])
+    assert task["specialist"] == CEO
+    assert world["starts"] == [(task["taskId"], "router")]
 
 
 async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or_plain_reply(world, monkeypatch):

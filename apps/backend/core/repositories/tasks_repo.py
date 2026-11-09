@@ -470,6 +470,37 @@ async def task_for_thread(ws: str, thread_key: str) -> str | None:
     return row["taskId"] if row and row["active"] else None
 
 
+async def get_router_identity(ws: str, batch_id: str) -> dict | None:
+    return await _get(ws, ts.router_identity_sk(batch_id))
+
+
+async def claim_router_identity(
+    ws: str, batch_id: str, *, agent_id: str, lane: str, scope: str, model: str | None, call: bool
+) -> dict:
+    """First writer wins before run creation; retries/late polling use the same profile and session.
+
+    No prompt, grant or secret is retained. This record follows the workspace's task history lifecycle.
+    """
+    row, _ = await _put_new(
+        ws,
+        {
+            "pk": ts.ws_pk(ws),
+            "sk": ts.router_identity_sk(batch_id),
+            "type": "router_run_identity",
+            "ownerId": ws,
+            "batchId": batch_id,
+            "runId": ts.router_run_id(ws, batch_id),
+            "agentId": agent_id,
+            "lane": lane,
+            "scope": scope,
+            "model": model,
+            "call": call,
+            "createdAt": utc_now_iso(),
+        },
+    )
+    return row
+
+
 # --- Trigger ---------------------------------------------------------------------------------------
 
 

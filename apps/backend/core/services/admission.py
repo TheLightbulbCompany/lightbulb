@@ -283,7 +283,9 @@ async def _can_view(ws: str, task_id: str, user_id: str) -> bool:
 
 async def _front_member(room_id: str, ws: str) -> dict | None:
     try:
-        return await messaging_repo.get_member(room_id, "agent", await task_conversation.front_agent_id(ws))
+        return await messaging_repo.get_member(
+            room_id, "agent", await task_conversation.front_agent_id(ws, room_id=room_id)
+        )
     except task_conversation.NoFrontAgent:
         return None
 

@@ -244,6 +244,7 @@ def room(monkeypatch):
         {"id": HIRED, "name": "Hired"},
     ]
     monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr(meeting_invites.messaging, "_front_agent_id", AsyncMock(return_value=CEO))
     m.seated = AsyncMock(return_value=[{"id": a["id"]} for a in roster])  # every agent already in the room
     m.upsert = AsyncMock()
     monkeypatch.setattr(repo, "list_members", m.seated)
@@ -1769,3 +1770,17 @@ async def test_oversized_newest_history_keeps_canonical_refs_with_explicit_omiss
     assert "notes" not in kept and "followUps" not in kept
     assert len(json.dumps(kept).encode()) <= 200 * 1024
     assert entry == original
+
+
+async def test_new_meeting_uses_selected_uuid_for_reserved_front_handle(room, monkeypatch):
+    # An unrelated worker can have the same edited display name; it cannot take the front-door alias.
+    roster = [{"id": CEO, "name": "Lightbulb"}, {"id": ENG, "name": "Lightbulb"}]
+    monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr(meeting_invites.messaging, "_front_agent_id", AsyncMock(return_value=ENG))
+    invite = meeting_invites.parse(GOOGLE)
+    assert invite is not None
+    await meeting_invites._create_room("org_1", "room-front", invite, "user_p", {"status": "scheduled"})
+    seats = {member["id"]: member for member in room.create.await_args.kwargs["members"] if member["kind"] == "agent"}
+    assert room.create.await_args.kwargs["extra"]["frontAgentId"] == ENG
+    assert seats[ENG]["mentionHandle"] == "lightbulb"
+    assert seats[CEO]["mentionHandle"] != "lightbulb"

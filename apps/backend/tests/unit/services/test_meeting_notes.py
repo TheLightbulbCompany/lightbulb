@@ -1,11 +1,11 @@
-"""A meeting's transcript lands in its room once; its end runs one notes turn and mails the organizer."""
+"""A meeting keeps its transcript and notes in the app; completion never automatically emails anyone."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.services import meeting_notes as mod
+from core.services import meeting_notes as mod, ses_email
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 CEO = "22222222-2222-4222-8222-222222222222"
@@ -41,11 +41,9 @@ def env(monkeypatch):
         store=MagicMock(return_value=attachment),
         line=AsyncMock(return_value={"messageId": "msg-1", "messageSeq": 7}),
         send=AsyncMock(return_value="<id@ses>"),
-        row={"address": "agents@acme.thelightbulb.company"},
         sleep=AsyncMock(),
         claim=AsyncMock(return_value="tok"),
         release=AsyncMock(),
-        cap=AsyncMock(return_value=True),
         members=AsyncMock(return_value=[{"kind": "human", "id": "user_1"}, {"kind": "agent", "id": CEO}]),
         ceo=AsyncMock(return_value=CEO),
         advance=AsyncMock(),
@@ -75,7 +73,6 @@ def env(monkeypatch):
     monkeypatch.setattr(mod.meeting_invites, "advance", m.advance)
     monkeypatch.setattr(mod, "put_metric", m.metric)
     monkeypatch.setattr(mod.container_repo, "release_owner_lifecycle_claim", m.release)
-    monkeypatch.setattr(mod.agent_mail_send, "consume_cap", m.cap)
     monkeypatch.setattr(mod.container_repo, "try_claim_owner_lifecycle", m.claim)
     monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
@@ -83,11 +80,7 @@ def env(monkeypatch):
     monkeypatch.setattr(mod, "_meeting_tasks", m.meeting_tasks)
     monkeypatch.setattr(mod.meeting_invites, "_post_line", m.line)
     monkeypatch.setattr(mod.messaging, "store_attachment", m.store)
-    monkeypatch.setattr(mod.agent_email, "team_address", AsyncMock(return_value="agents@acme.thelightbulb.company"))
-    monkeypatch.setattr(mod.agent_email_repo, "get_by_address", AsyncMock(side_effect=lambda _a: m.row))
-    monkeypatch.setattr(mod.agent_mail_tenant, "ensure_tenant", AsyncMock(return_value="tenant-1"))
-    monkeypatch.setattr(mod.ses_email, "send_ses_email", m.send)
-    monkeypatch.setattr(mod.settings, "FRONTEND_URL", "https://flickmeon.ai")
+    monkeypatch.setattr(ses_email, "send_ses_email", m.send)
     monkeypatch.setattr(mod.asyncio, "sleep", m.sleep)
     return m
 
@@ -186,23 +179,14 @@ async def test_on_ended_proceeds_without_a_transcript_after_sixty_seconds(env):
     assert env.meta["meeting"]["notesSkipped"] == "no_transcript"
 
 
-async def test_a_paused_team_address_sends_no_mail(env):
-    env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.row["outbound_disabled"] = "complaint"
-    await ended_and_noted(env)
-    env.line.assert_awaited_once()
-    env.send.assert_not_awaited()
-
-
 async def test_on_ended_never_raises(env):
     env.line.side_effect = RuntimeError("boom")
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     await mod.on_ended(ROOM)
 
 
-async def test_a_pre_send_skip_is_done_without_an_attempted_marker(env):
+async def test_app_notes_use_a_legacy_completion_marker_without_a_delivery_claim(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.row["outbound_disabled"] = "complaint"
     await ended_and_noted(env)
     env.send.assert_not_awaited()
     assert env.meta["meeting"]["notesMailedAt"] and "notesMailAttemptedAt" not in env.meta["meeting"]
@@ -560,3 +544,19 @@ async def test_the_notes_request_says_the_assistants_lines_are_not_action_items(
     await mod.on_ended(ROOM)
     text = " ".join(env.line.await_args.args[3].split())
     assert "never from a line marked (the assistant)" in text
+
+
+async def test_stored_notes_recover_admission_failure_before_consuming_completion_claim(env, monkeypatch):
+    from core.services import meeting_followups
+
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    request = env.requests["msg-1"]
+    enqueue = AsyncMock(side_effect=[OSError("admission unavailable"), True])
+    monkeypatch.setattr(meeting_followups, "enqueue", enqueue)
+    with pytest.raises(OSError):
+        await mod._keep_notes("org_1", "msg-1", request, NOTES)
+    assert env.meta["meeting"]["notes"] == NOTES and not request.get("mailAttemptedAt")
+    await mod._keep_notes("org_1", "msg-1", request, "a later conflicting reply")
+    assert env.meta["meeting"]["notes"] == NOTES and request["mailAttemptedAt"] == 1
+    assert enqueue.await_count == 2

@@ -203,6 +203,7 @@ async def get_agent(auth: AuthContext = Depends(get_current_user)) -> dict:
 @router.put("/voice/agent")
 async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current_user)) -> dict:
     require_org_admin(auth)
+    body.config = messaging_repo.voice_agent_config(body.config)
     if len(json.dumps(body.config)) > MAX_CONFIG_BYTES:
         raise HTTPException(status_code=413, detail={"code": "too_large"})
     if "spanish" in body.config and type(body.config["spanish"]) is not bool:

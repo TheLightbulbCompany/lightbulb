@@ -3414,13 +3414,23 @@ async def list_owner_rooms(owner_id: str) -> list[dict]:
     return await _query(owner_pk(owner_id), begins_with="ROOM#")
 
 
+def voice_agent_config(config: dict) -> dict:
+    """The current app-only meeting settings; a retired email toggle has no behavior or promise."""
+    meetings = config.get("meetings")
+    return (
+        {**config, "meetings": {k: v for k, v in meetings.items() if k != "emailNotes"}}
+        if isinstance(meetings, dict)
+        else dict(config)
+    )
+
+
 async def get_voice_agent(owner_id: str) -> dict | None:
     row = await _get(owner_pk(owner_id), "VOICEAGENT")
-    return json.loads(row["config"]) if row else None
+    return voice_agent_config(json.loads(row["config"])) if row else None
 
 
 async def put_voice_agent(owner_id: str, config: dict, updated_by: str) -> None:
-    item = {"pk": owner_pk(owner_id), "sk": "VOICEAGENT", "config": json.dumps(config),
+    item = {"pk": owner_pk(owner_id), "sk": "VOICEAGENT", "config": json.dumps(voice_agent_config(config)),
             "updatedAt": utc_now_iso(), "updatedBy": updated_by}  # fmt: skip
     await run_in_thread(_table().put_item, Item=item)
 

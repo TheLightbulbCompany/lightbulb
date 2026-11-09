@@ -62,6 +62,7 @@ class AskRef:
     kind: str  # question | approval
     subkind: str
     blocking: bool
+    before_attempt: bool = False  # old payloads/history preserve the existing command sequence
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,9 @@ class TaskQuestionsMixin:
     def _q_init(self) -> None:
         self._open_qs: dict[str, list[str]] = {}  # qid → answerers (the validator's no-I/O check)
         self._nonblocking: set[str] = set()  # open questions the Worker need not wait for
+        self._pre_attempt_trigger: str | None = None
+        self._pre_attempt_qid: str | None = None
+        self._pre_attempt_inflight = False
         self._asked_questions: set[str] = set()  # `question`-kind rows the Worker asked (one open at a time)
         self._q_remind_at: dict[str, datetime] = {}  # unreminded open questions
         self._landings: list[tuple[str, str]] = []  # (effect idem key, answered by) waiting to land
@@ -118,7 +122,8 @@ class TaskQuestionsMixin:
 
     async def _q_before_attempt(self) -> bool:
         """An open blocking Question holds the next attempt: inputs wait behind it (spec 05 §3.5 layer 2)."""
-        return not (set(self._open_qs) - self._nonblocking)
+        opening = self._pre_attempt_trigger is not None and self._pre_attempt_qid is None
+        return not opening and not (set(self._open_qs) - self._nonblocking)
 
     async def _q_after_attempt(self, outcome: str) -> None:
         if outcome != "waiting_approval":
@@ -216,7 +221,7 @@ class TaskQuestionsMixin:
 
     async def _q_cancel_open(self, by: str, reason: str) -> None:
         """The task is ending: its open Questions are cancelled (an answer after this is refused, not lost)."""
-        if self._open_qs:
+        if self._open_qs or self._pre_attempt_inflight:
             await _act("cancel_open_questions", self._ws, self._task_id, by, reason)
             self._open_qs.clear()
             self._nonblocking.clear()
@@ -239,15 +244,44 @@ class TaskQuestionsMixin:
 
     @workflow.update
     async def ask(self, ref: AskRef) -> str:
-        """A Worker's question or approval on this task (runtime_internal's ask route). One open `question` per
-        task: a new one supersedes the earlier unanswered one. Returns the qid."""
-        opened = await _act("open_asked_question", self._ws, self._task_id, ref, result_type=QuestionRef)
-        if ref.kind == "question":
-            for qid in [q for q in self._asked_questions if q != opened.qid]:
-                self._q_forget(qid)
-            self._asked_questions = {opened.qid}
-        await self._q_track(opened)
-        return opened.qid
+        """One canonical Question; pre-attempt duplicate updates never write waiting twice."""
+        if ref.before_attempt:
+            if self._pre_attempt_trigger is not None and self._pre_attempt_trigger != ref.trigger_id:
+                raise ValueError("different_before_attempt_question")
+            # Mark before the first await. Two service calls may both miss the Question row.
+            while self._pre_attempt_inflight and self._pre_attempt_qid is None:
+                await workflow.wait_condition(
+                    lambda: not self._pre_attempt_inflight or self._pre_attempt_qid is not None
+                )
+            if self._pre_attempt_qid is not None:
+                return self._pre_attempt_qid
+            self._pre_attempt_trigger = ref.trigger_id
+            self._pre_attempt_inflight = True
+        try:
+            if ref.before_attempt:
+                # Old payloads default false and preserve the recorded command sequence.
+                # No Question row/card exists yet, so no answer can race a later waiting write.
+                await self._transition("waiting", "question")
+                if self._stop_by is not None or self._action is not None or self._status == "resolved":
+                    raise ValueError("task_closed")
+            opened = await _act("open_asked_question", self._ws, self._task_id, ref, result_type=QuestionRef)
+            if ref.before_attempt:
+                self._pre_attempt_qid = opened.qid
+                # Stop/Close can finish while the opening Activity is in flight. Its
+                # earlier cancellation saw no row; retire the late row before relay.
+                if self._stop_by is not None or self._action is not None or self._status == "resolved":
+                    by = self._stop_by or (self._action[1] if self._action else "__system__")
+                    await _act("cancel_open_questions", self._ws, self._task_id, by, "task_closed")
+                    return opened.qid
+            if ref.kind == "question":
+                for qid in [q for q in self._asked_questions if q != opened.qid]:
+                    self._q_forget(qid)
+                self._asked_questions = {opened.qid}
+            await self._q_track(opened)
+            return opened.qid
+        finally:
+            if ref.before_attempt:
+                self._pre_attempt_inflight = False
 
     @ask.validator
     def _validate_ask(self, ref: AskRef) -> None:
@@ -255,6 +289,16 @@ class TaskQuestionsMixin:
             raise ValueError("task_closed")
         if ref.kind not in ("question", "approval"):
             raise ValueError("bad_kind")
+        if ref.before_attempt:
+            if self._pre_attempt_trigger is not None and self._pre_attempt_trigger != ref.trigger_id:
+                raise ValueError("different_before_attempt_question")
+            replay = self._pre_attempt_trigger == ref.trigger_id and self._pre_attempt_qid is not None
+            if (
+                ref.kind != "question"
+                or not ref.blocking
+                or (not replay and (self._execution_requested or self._attempt is not None or self._running()))
+            ):
+                raise ValueError("before_attempt_requires_unstarted_blocking_question")
 
     @answer.validator
     def _validate_answer(self, ref: AnswerRef) -> None:
@@ -456,7 +500,7 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     q = await questions_repo.get_question(ws, task_id, qid)
     tree = await tasks_repo.get_task_tree(ws, task_id)
     task = tree["task"]
-    if q is None or task is None or q["state"] != "open":
+    if q is None or task is None or q["state"] != "open" or task["status"] == "resolved":
         return
     label = await _specialist_label(ws, task.get("specialist"))
     title, body = questions.card_copy(q, label)
@@ -464,11 +508,28 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     room = await task_conversation.ensure_task_room(ws, task)
     for uid in q["answerers"]:
         await task_conversation.ensure_task_room(ws, task, seat_viewer=uid)
+
+    async def still_open() -> bool:
+        # Each delivery can await provider I/O. Retiring a Question cannot retract
+        # a delivery already started, but must suppress subsequent deliveries.
+        current = await questions_repo.get_question(ws, task_id, qid)
+        current_task = await tasks_repo.get_task(ws, task_id)
+        return (
+            current is not None
+            and current["state"] == "open"
+            and current_task is not None
+            and current_task["status"] != "resolved"
+        )
+
+    if not await still_open():
+        return
     await task_conversation.post_as_lightbulb(
         ws, room, text=title, event_id=f"q:{qid}", specialist=task.get("specialist"), task_refs=refs, kind="question"
     )
     origin = _origin_thread(tree.get("subscriptions") or [])
     if origin:
+        if not await still_open():
+            return
         card = dict(text=title, event_id=f"q:{qid}:origin", specialist=task.get("specialist"), task_refs=refs,
                     kind="question")  # fmt: skip
         try:
@@ -479,12 +540,18 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
             # The card goes to the origin room itself (which sends a Meet room's post to the output room again).
             if exc.error.code != "MESSAGE_NOT_FOUND" or not origin[1]:
                 raise
+            if not await still_open():
+                return
             activity.logger.warning("origin thread %s gone for task %s; card posted unthreaded", origin[1], task_id)
             await task_conversation.post_as_lightbulb(ws, origin[0], thread_root=None, **card)
     data = {"source": "task_question", "taskId": task_id, "qid": qid}
     push_title = f"{label} needs your answer" if q["kind"] == "question" else f"{label} needs your OK"
     for uid in q["answerers"]:
+        if not await still_open():
+            return
         await _push_once(f"qpush:{ws}:{qid}:{uid}", uid, push_title, body, data)
+    if not await still_open():
+        return
     await needs_you_email.queue_question(ws, task_id, qid, list(q["answerers"]), title.replace("**", ""), body)
 
 
@@ -567,12 +634,24 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
         ):
             land = q["effectIdemKey"]
     trigger_id = ref.trigger_id or ts.trigger_id("answer", ref.qid, ref.client_answer_id)
+    # Button IDs are opaque. Preserve the authenticated selection from the
+    # canonical Question for the Worker, alongside its correlation IDs. An
+    # existing free-text answer Trigger remains first-write-wins.
+    selected = next((o["label"] for o in q.get("options", []) if o["id"] == option), None)
+    answer_text = (
+        f"{q.get('text') or q['title']}\nSelected answer: {selected}" if q["kind"] == "question" and selected else None
+    )
     await tasks_repo.put_trigger(
         ws,
         {
             "triggerId": trigger_id,
             "source": "answer",
-            "ref": {"taskId": task_id, "qid": ref.qid, "optionId": option},
+            "ref": {
+                "taskId": task_id,
+                "qid": ref.qid,
+                "optionId": option,
+                **({"text": answer_text} if answer_text else {}),
+            },
             "admission": "respond",
             "lane": "shared",
             "actorUserId": ref.by_user_id,

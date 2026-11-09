@@ -351,3 +351,261 @@ async def test_worker_ask_after_stop_refused(temporal_env, fakes):
         with pytest.raises((WorkflowUpdateFailedError, RPCError)):
             await h.execute_update(TaskWorkflow.ask, AskRef("ask:late", "question", "question", True))
     assert "open_asked_question" not in fakes.names()
+
+
+async def test_pre_task_clarification_holds_first_worker_until_original_answer(temporal_env, fakes):
+    """Meeting completion Ask uses update-with-start/migrated: zero Worker attempts before the card answer."""
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-clarify:{uuid.uuid4()}", task_queue=queue
+        )
+        qid = await h.execute_update(TaskWorkflow.ask, AskRef("ask:meeting", "question", "question", True, True))
+        await _until(lambda: "relay_question" in fakes.names())
+        assert "begin_attempt" not in fakes.names() and "worker_turn" not in fakes.names()
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:yes", "message"))
+        with pytest.raises(WorkflowUpdateFailedError):
+            await h.execute_update(TaskWorkflow.answer, _press(qid=qid, option="answer", by=PRIYA))
+        assert "begin_attempt" not in fakes.names()
+        await h.execute_update(TaskWorkflow.answer, _press(qid=qid, option="answer", by=SAM))
+        await _until(lambda: "begin_attempt" in fakes.names())
+        assert fakes.args("record_answer")[0][2].by_user_id == SAM
+        assert "answer:" + qid + ":c-1" in fakes.args("begin_attempt")[0][2]
+
+
+async def test_immediate_answer_during_pre_task_question_relay_has_no_late_waiting_write(temporal_env, fakes):
+    relay_entered, release_relay = asyncio.Event(), asyncio.Event()
+
+    async def relay(*_):
+        relay_entered.set()
+        await release_relay.wait()
+
+    fakes.behaviour["relay_question"] = relay
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-race:{uuid.uuid4()}", task_queue=queue
+        )
+        ask = asyncio.create_task(
+            h.execute_update(TaskWorkflow.ask, AskRef("ask:fast", "question", "question", True, True))
+        )
+        await asyncio.wait_for(relay_entered.wait(), timeout=5)
+        assert fakes.args("transition") == [(WS, TID, "waiting", "question")]
+        await h.execute_update(TaskWorkflow.answer, _press(qid="q-ask:fast", option="answer"))
+        await _until(lambda: "begin_attempt" in fakes.names())
+        worker_start = fakes.names().index("begin_attempt")
+        release_relay.set()
+        await ask
+        assert not any(name == "transition" and args[2] == "waiting" for name, args in fakes.calls[worker_start:])
+
+
+async def test_before_attempt_question_refuses_an_existing_worker_attempt(temporal_env, fakes):
+    async with worker(temporal_env, fakes) as queue:
+        h = await _start(temporal_env, queue)
+        await _until(lambda: "relay_question" in fakes.names())
+        with pytest.raises(WorkflowUpdateFailedError):
+            await h.execute_update(TaskWorkflow.ask, AskRef("ask:late", "question", "question", True, True))
+
+
+async def test_concurrent_open_ask_misses_share_one_waiting_write_even_with_immediate_answer(
+    temporal_env, fakes, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from core.services import task_asks
+    from core.temporal import client
+
+    both_missed, release_reads, release_open, release_relay = (asyncio.Event() for _ in range(4))
+    state = {"reads": 0, "opened": False}
+
+    async def get_question(*_):
+        if state["opened"]:
+            return {"qid": "meeting-duplicate", "state": "open"}
+        state["reads"] += 1
+        if state["reads"] == 2:
+            both_missed.set()
+        await release_reads.wait()
+        return None
+
+    async def opened(*_):
+        await release_open.wait()
+        state["opened"] = True
+        return QuestionRef("meeting-duplicate", [SAM], True)
+
+    async def relay(*_):
+        await release_relay.wait()
+
+    monkeypatch.setattr(task_asks.questions_repo, "get_question", get_question)
+    monkeypatch.setattr(task_asks.tasks_repo, "put_trigger", AsyncMock())
+    fakes.behaviour["open_asked_question"] = opened
+    fakes.behaviour["relay_question"] = relay
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-duplicate:{uuid.uuid4()}", task_queue=queue
+        )
+
+        async def update(ws, task_id, name, ref):
+            assert (ws, task_id, name) == (WS, TID, "ask")
+            return await h.execute_update(TaskWorkflow.ask, ref)
+
+        monkeypatch.setattr(client, "update_task", update)
+
+        async def call():
+            return await task_asks.open_ask(
+                WS,
+                {"taskId": TID},
+                qid="meeting-duplicate",
+                kind="question",
+                subkind="question",
+                title="Which report?",
+                text="Weekly or monthly?",
+                options=[],
+                blocking=True,
+                attempt=None,
+                run_id=None,
+                before_attempt=True,
+            )
+
+        first, second = asyncio.create_task(call()), asyncio.create_task(call())
+        await asyncio.wait_for(both_missed.wait(), 5)
+        release_reads.set()
+        await _until(lambda: "open_asked_question" in fakes.names())
+        with pytest.raises(WorkflowUpdateFailedError):
+            await h.execute_update(TaskWorkflow.ask, AskRef("ask:different", "question", "question", True, True))
+        release_open.set()
+        await _until(lambda: "relay_question" in fakes.names())
+        await h.execute_update(TaskWorkflow.answer, _press(qid="meeting-duplicate", option="answer"))
+        await _until(lambda: "begin_attempt" in fakes.names())
+        worker_start = fakes.names().index("begin_attempt")
+        release_relay.set()
+        assert [r["qid"] for r in await asyncio.gather(first, second)] == ["meeting-duplicate"] * 2
+        assert fakes.args("transition").count((WS, TID, "waiting", "question")) == 1
+        assert len(fakes.args("open_asked_question")) == 1
+        assert not any(name == "transition" and args[2] == "waiting" for name, args in fakes.calls[worker_start:])
+
+
+@pytest.mark.parametrize("phase", ["transition", "open_asked_question"])
+async def test_typed_input_cannot_start_worker_while_pre_task_question_is_opening(temporal_env, fakes, phase):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(*_):
+        entered.set()
+        await release.wait()
+        return QuestionRef("opening-question", [SAM], True) if phase == "open_asked_question" else None
+
+    fakes.behaviour[phase] = blocked
+    if phase != "open_asked_question":
+        fakes.behaviour["open_asked_question"] = lambda *_: QuestionRef("opening-question", [SAM], True)
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-opening:{uuid.uuid4()}", task_queue=queue
+        )
+        ask = asyncio.create_task(
+            h.execute_update(TaskWorkflow.ask, AskRef("ask:opening", "question", "question", True, True))
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:yes", "message"))
+        await asyncio.sleep(0.2)
+        assert "begin_attempt" not in fakes.names() and "worker_turn" not in fakes.names()
+        release.set()
+        await ask
+        assert "begin_attempt" not in fakes.names()
+        await h.execute_update(TaskWorkflow.answer, _press(qid="opening-question", option="answer"))
+        await _until(lambda: "begin_attempt" in fakes.names())
+
+
+@pytest.mark.parametrize("reason", ["migrated", "router"])
+async def test_persisted_initial_question_blocks_earliest_input_and_preserves_it_until_answer(
+    temporal_env, fakes, reason
+):
+    from core.temporal.types import AttemptRef, InitialQuestionRef
+
+    initial = InitialQuestionRef("initial-question", "ask:initial-question", SAM)
+    calls = 0
+
+    def begin(*_):
+        nonlocal calls
+        calls += 1
+        return AttemptRef(0, "", initial) if calls == 1 else AttemptRef(1, str(uuid.uuid4()))
+
+    fakes.behaviour["begin_attempt"] = begin
+    fakes.behaviour["open_asked_question"] = lambda *_: QuestionRef(initial.qid, [SAM], True)
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, reason), id=f"row-visible:{uuid.uuid4()}", task_queue=queue
+        )
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:before-open-ask", "message"))
+        await _until(lambda: "relay_question" in fakes.names())
+        assert "worker_turn" not in fakes.names()
+        assert fakes.names().count("release_slot") == 1
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:plain-yes", "message"))
+        await asyncio.sleep(0.2)
+        assert fakes.names().count("begin_attempt") == 1
+        await h.execute_update(TaskWorkflow.answer, _press(qid=initial.qid, option="answer"))
+        await _until(lambda: "worker_turn" in fakes.names())
+        inputs = fakes.args("begin_attempt")[1][2]
+        assert "chat:before-open-ask" in inputs and "chat:plain-yes" in inputs
+        assert inputs.count("answer:initial-question:c-1") == 1
+
+
+async def test_cancelled_persisted_initial_question_stays_blocked_on_plain_input(temporal_env, fakes):
+    from core.temporal.types import AttemptRef, InitialQuestionRef
+
+    fakes.behaviour["begin_attempt"] = lambda *_: AttemptRef(
+        0, "", InitialQuestionRef("cancelled", "ask:cancelled", SAM, "cancelled")
+    )
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "router"), id=f"initial-cancelled:{uuid.uuid4()}", task_queue=queue
+        )
+        await _until(lambda: "transition" in fakes.names())
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:yes", "message"))
+        await asyncio.sleep(0.2)
+        assert "worker_turn" not in fakes.names() and len(fakes.args("begin_attempt")) == 1
+
+
+def test_old_attempt_result_payload_defaults_to_no_initial_question_gate():
+    from temporalio.converter import value_to_type
+    from core.temporal.types import AttemptRef
+
+    assert value_to_type(AttemptRef, {"n": 1, "run_id": "recorded-before-gate"}) == AttemptRef(
+        1, "recorded-before-gate"
+    )
+
+
+async def test_stop_during_initial_question_open_cancels_late_row_without_relay(temporal_env, fakes):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def opening(*_):
+        entered.set()
+        await release.wait()
+        return QuestionRef("late-initial", [SAM], True)
+
+    fakes.behaviour["open_asked_question"] = opening
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run,
+            TaskStart(WS, TID, "migrated"),
+            id=f"meeting-stop-opening:{uuid.uuid4()}",
+            task_queue=queue,
+        )
+        ask = asyncio.create_task(
+            h.execute_update(
+                TaskWorkflow.ask,
+                AskRef("ask:late-initial", "question", "question", True, True),
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        await h.execute_update(TaskWorkflow.stop, StopRequest(PRIYA))
+        assert fakes.args("transition")[-1] == (WS, TID, "resolved", "stopped")
+        release.set()
+        assert await ask == "late-initial"
+        await h.result()
+    assert fakes.args("cancel_open_questions") == [
+        (WS, TID, PRIYA, "stopped"),
+        (WS, TID, PRIYA, "task_closed"),
+    ]
+    assert "relay_question" not in fakes.names()
+    assert "worker_turn" not in fakes.names()

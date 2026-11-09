@@ -475,6 +475,14 @@ class TaskOutput(Output):
     created_at: str
 
 
+class InitialQuestion(_Model):
+    """Server-owned immutable startup gate; text and authority stay with the existing Question owner."""
+
+    qid: str
+    trigger_id: str
+    principal_user_id: str
+
+
 class Task(_Row):
     type: Literal["task"] = "task"
     task_id: TaskId
@@ -497,6 +505,7 @@ class Task(_Row):
     origin: str | None = None
     previous_run_task_id: str | None = None  # an automation run's previous run (lane A chaining)
     confirm_all: bool = False  # started from a meeting: every spend, send or publish gets a card, in any mode
+    initial_question: InitialQuestion | None = Field(None, json_schema_extra={"readOnly": True})
     question: bool = False  # a question a Worker answers from the source: its answer is the chat reply, not an output
     hidden: bool = False  # §18 speculative work
     watch_until: str | None = None  # "Watching" when set

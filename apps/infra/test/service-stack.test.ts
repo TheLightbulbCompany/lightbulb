@@ -1890,7 +1890,6 @@ describe("ServiceStack — the tier's shared Hermes runtime (shared runtime step
 });
 
 
-<<<<<<< HEAD
 describe("ServiceStack — search consumer detached before API retirement", () => {
   test.each(["dev", "prod"] as const)("%s has no derived search endpoint, permission or cross-stack import", (env) => {
     const template = env === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack(env);
@@ -1902,7 +1901,9 @@ describe("ServiceStack — search consumer detached before API retirement", () =
     const tasks = Object.values(template.findResources("AWS::ECS::TaskDefinition"));
     const backend = tasks.flatMap((r: any) => r.Properties.ContainerDefinitions).find((c: any) => c.Name === "backend");
     expect(backend.Environment).toContainEqual({ Name: "MESSAGING_TABLE", Value: "lightbulb-" + env + "-messaging" });
-=======
+  });
+});
+
 describe("ServiceStack — coherent ARM64 backend image consumers", () => {
   test.each(["dev", "prod"] as const)("%s publishes ARM64 and runs all five consumers on that architecture", (env) => {
     let assetHash = "";
@@ -1925,6 +1926,5 @@ describe("ServiceStack — coherent ARM64 backend image consumers", () => {
     for (const fn of lambdas) expect(fn.Properties.Architectures).toEqual(["arm64"]);
     const images = [...tasks.flatMap((task) => task.Properties.ContainerDefinitions.map((c: any) => JSON.stringify(c.Image))), ...lambdas.map((fn) => JSON.stringify(fn.Properties.Code.ImageUri))];
     for (const image of images) expect(image).toContain(assetHash);
->>>>>>> origin/main
   });
 });

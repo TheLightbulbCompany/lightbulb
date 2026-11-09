@@ -513,3 +513,63 @@ async def test_typed_input_cannot_start_worker_while_pre_task_question_is_openin
         assert "begin_attempt" not in fakes.names()
         await h.execute_update(TaskWorkflow.answer, _press(qid="opening-question", option="answer"))
         await _until(lambda: "begin_attempt" in fakes.names())
+
+
+@pytest.mark.parametrize("reason", ["migrated", "router"])
+async def test_persisted_initial_question_blocks_earliest_input_and_preserves_it_until_answer(
+    temporal_env, fakes, reason
+):
+    from core.temporal.types import AttemptRef, InitialQuestionRef
+
+    initial = InitialQuestionRef("initial-question", "ask:initial-question", SAM)
+    calls = 0
+
+    def begin(*_):
+        nonlocal calls
+        calls += 1
+        return AttemptRef(0, "", initial) if calls == 1 else AttemptRef(1, str(uuid.uuid4()))
+
+    fakes.behaviour["begin_attempt"] = begin
+    fakes.behaviour["open_asked_question"] = lambda *_: QuestionRef(initial.qid, [SAM], True)
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, reason), id=f"row-visible:{uuid.uuid4()}", task_queue=queue
+        )
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:before-open-ask", "message"))
+        await _until(lambda: "relay_question" in fakes.names())
+        assert "worker_turn" not in fakes.names()
+        assert fakes.names().count("release_slot") == 1
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:plain-yes", "message"))
+        await asyncio.sleep(0.2)
+        assert fakes.names().count("begin_attempt") == 1
+        await h.execute_update(TaskWorkflow.answer, _press(qid=initial.qid, option="answer"))
+        await _until(lambda: "worker_turn" in fakes.names())
+        inputs = fakes.args("begin_attempt")[1][2]
+        assert "chat:before-open-ask" in inputs and "chat:plain-yes" in inputs
+        assert inputs.count("answer:initial-question:c-1") == 1
+
+
+async def test_cancelled_persisted_initial_question_stays_blocked_on_plain_input(temporal_env, fakes):
+    from core.temporal.types import AttemptRef, InitialQuestionRef
+
+    fakes.behaviour["begin_attempt"] = lambda *_: AttemptRef(
+        0, "", InitialQuestionRef("cancelled", "ask:cancelled", SAM, "cancelled")
+    )
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "router"), id=f"initial-cancelled:{uuid.uuid4()}", task_queue=queue
+        )
+        await _until(lambda: "transition" in fakes.names())
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:yes", "message"))
+        await asyncio.sleep(0.2)
+        assert "worker_turn" not in fakes.names() and len(fakes.args("begin_attempt")) == 1
+
+
+def test_old_attempt_result_payload_defaults_to_no_initial_question_gate():
+    from temporalio.converter import value_to_type
+    from core.temporal.types import AttemptRef
+
+    assert value_to_type(AttemptRef, {"n": 1, "run_id": "recorded-before-gate"}) == AttemptRef(
+        1, "recorded-before-gate"
+    )

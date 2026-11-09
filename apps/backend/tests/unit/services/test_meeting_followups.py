@@ -105,7 +105,7 @@ async def test_clarification_keeps_original_source_bounded_and_inviter_policy(wo
     original["notes"] = "Original notes " * 1000
     world["meta"]["meeting"]["notes"] = "Next occurrence private notes"
     brief, ask = await mod.clarification("org_a", world["trigger"], "task-1", "Which report?", ["Weekly", "Monthly"])
-    assert "Original notes" in brief and "Notes truncated" in brief
+    assert "Original notes" in brief and "Notes truncated" in brief and len(brief) <= 8192
     assert "Next occurrence" not in brief and "original-transcript" in brief
     assert ask["kind"] == "question" and ask["attempt"] is None and ask["run_id"] is None and ask["blocking"]
     task = {"ownerUserId": "original-user", "origin": "meeting", "confirmAll": True}

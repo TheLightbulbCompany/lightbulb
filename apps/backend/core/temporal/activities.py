@@ -292,6 +292,14 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
         await _move(ws, task_id, "working", fields={"attemptCount": last["n"]})
         await _announce(ws, task_id, "working")
         return AttemptRef(last["n"], last["runId"])
+    if not attempts:
+        initial = await task_asks.initial_question(ws, tree["task"])
+        if initial is not None:
+            if initial.state != "answered":
+                return AttemptRef(0, "", initial)  # no Attempt row, no Worker before the canonical answer
+            if not initial.answered_trigger_id:
+                raise ValueError("initial_question_has_no_answer_trigger")
+            input_trigger_ids = list(dict.fromkeys([*input_trigger_ids, initial.answered_trigger_id]))
     n = len(attempts) + 1
     kind = await _session_kind(ws)
     att, _ = await tasks_repo.put_attempt(
@@ -1101,6 +1109,8 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
         await meeting_context.authorize(ws, trig)  # recheck after model work and on a retried start
     existing = await tasks_repo.get_task(ws, task_id)
     if existing:
+        if fields.get("initialQuestion") is not None and existing.get("initialQuestion") != fields["initialQuestion"]:
+            raise ValueError("initial_question_binding_changed")
         if "meetingFollowups" in ref:
             await meeting_followups.record_task(ws, existing)
         return existing
@@ -1301,9 +1311,18 @@ async def _apply(
 
                 task_id = ts.router_task_id(inp.batch_id, i, 0)
                 brief, question = await meeting_followups.clarification(ws, trig, task_id, dec.text, dec.options)
-                await _ensure_task(
-                    ws, task_id, trig, inp.lane, "queued", title="Clarify meeting follow-up", description=brief
+                initial = await task_asks.prepare_initial_question(ws, task_id, trig["actorUserId"], inp.lane, question)
+                task = await _ensure_task(
+                    ws,
+                    task_id,
+                    trig,
+                    inp.lane,
+                    "queued",
+                    title="Clarify meeting follow-up",
+                    description=brief,
+                    initialQuestion=initial,
                 )
+                await task_asks.open_ask(ws, task, **question)  # gate BEFORE card/subscription exposure
                 sl["asks"][task_id] = question
                 sl["refs"].append({"taskId": task_id, "role": "started"})
                 sl["starts"].append(task_id)
@@ -1369,9 +1388,10 @@ async def _apply(
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
             try:
-                if question := sl["asks"].get(task_id) or ref.get("ask"):
-                    # A canonical Question (phone or completed meeting): no Worker until its authenticated answer.
-                    await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **question)
+                if task_id in sl["asks"]:
+                    pass  # completion's persisted startup gate and Question were installed before the card
+                elif ref.get("ask"):
+                    await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **ref["ask"])
                 else:
                     await temporal_client.start_task_workflow(ws, task_id, "router")
             except Exception:  # noqa: BLE001 -- one bad start never skips the batch's other starts

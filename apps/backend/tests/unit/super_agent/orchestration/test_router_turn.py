@@ -1949,7 +1949,7 @@ async def test_meeting_context_revocation_prevents_router_launch(world, monkeypa
 
 
 async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or_plain_reply(world, monkeypatch):
-    from core.services import meeting_context, meeting_followups
+    from core.services import meeting_context, meeting_followups, questions
 
     tid = await _trig(
         "completion:clarify",
@@ -1959,13 +1959,14 @@ async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or
     monkeypatch.setattr(meeting_context, "authorize", AsyncMock())
     monkeypatch.setattr(meeting_followups, "record_task", AsyncMock(return_value=True))
     question = {
-        "qid": "q-original",
+        "qid": questions.qid_for("meeting-clarification:" + ts.router_task_id(BATCH, 0, 0)),
         "kind": "question",
         "subkind": "question",
         "title": "Clarify meeting follow-up",
         "text": "Which report?",
         "options": [],
         "blocking": True,
+        "before_attempt": True,
         "attempt": None,
         "run_id": None,
     }
@@ -1974,7 +1975,6 @@ async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or
     )
     from temporalio.testing import ActivityEnvironment
     from core.temporal import task_questions
-    from core.services import questions
     from core.repositories import questions_repo
 
     monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": SAM}]))

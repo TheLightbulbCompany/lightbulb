@@ -150,3 +150,40 @@ def test_shared_alias_cannot_pin_every_sender_to_founder(client, shared):
     assert fixtures._post(client, payload()).json()["status"] == "meeting_scheduled"
     assert handler.await_args.args[0] == "org_other_business"
     inbound.get_by_address.assert_awaited_once_with("agents@business.thelightbulb.company")
+
+
+def test_first_shared_sender_cannot_self_authorize_a_closed_legacy_mailbox(client, shared, monkeypatch):
+    from core.services import agent_email
+
+    address = "agents@business.thelightbulb.company"
+    state = {}
+
+    async def put(**row):
+        state.update(row)
+        return dict(row)
+
+    monkeypatch.setattr(inbound, "ensure_team_address", agent_email.ensure_team_address)
+    monkeypatch.setattr(agent_email, "team_address", AsyncMock(return_value=address))
+    monkeypatch.setattr(agent_email.agent_email_repo, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        agent_email.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {
+                    "send_to_anyone": False,
+                    "verified_senders": ["owner@business.example"],
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(agent_email.agent_email_repo, "put", AsyncMock(side_effect=put))
+    monkeypatch.setattr(inbound, "get_by_address", AsyncMock(side_effect=lambda _address: dict(state)))
+    monkeypatch.setattr(inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(inbound, "deliver_to_agent", deliver)
+
+    response = fixtures._post(client, {**payload(), "calendar": None})
+    assert response.json()["status"] == "stored_not_woken"
+    assert state["verified_senders"] == ["owner@business.example"]
+    deliver.assert_not_awaited()

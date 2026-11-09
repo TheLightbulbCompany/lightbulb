@@ -1,5 +1,6 @@
 """Provider bootstrap never buys phones and only mutates exact existing owned routing objects."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,7 +10,16 @@ from livekit import api
 from scripts import provision_phone_telephony as p
 
 
+CONFIG = {
+    "managed_by": p.MANAGED,
+    "account_sid": "ACtest",
+    "sip_auth_username": "lightbulb-livekit",
+    "sip_auth_password": "Aa1!" + "test-only-password-" * 3,
+}
+
+
 class Twilio:
+    sid = "ACtest"
     account = "https://api.twilio.com/2010-04-01/Accounts/ACtest"
 
     def __init__(self):
@@ -32,7 +42,7 @@ class Twilio:
         if url.endswith("/SIP/CredentialLists.json"):
             return {"credential_lists": [{"sid": "CLtest", "friendly_name": "lightbulb-livekit-termination"}]}
         if url.endswith("/Credentials.json"):
-            return {"credentials": [{"sid": "CRtest", "username": "livekit-user"}]}
+            return {"credentials": [{"sid": "CRtest", "username": "lightbulb-livekit"}]}
         if url.endswith("/CredentialLists"):
             if method == "POST":
                 self.mappings.append({"sid": fields["CredentialListSid"]})
@@ -56,7 +66,7 @@ def livekit():
         sip_trunk_id=p.OUTBOUND,
         name="twilio-outbound",
         address=p.DOMAIN,
-        auth_username="livekit-user",
+        auth_username="lightbulb-livekit",
         auth_password="test-only-password",
     )
     dispatch = api.SIPDispatchRuleInfo(
@@ -73,6 +83,7 @@ def livekit():
             list_sip_inbound_trunk=AsyncMock(return_value=SimpleNamespace(items=[inbound])),
             list_sip_outbound_trunk=AsyncMock(return_value=SimpleNamespace(items=[outbound])),
             list_sip_dispatch_rule=AsyncMock(return_value=SimpleNamespace(items=[dispatch])),
+            update_sip_outbound_trunk=AsyncMock(),
         )
     )
 
@@ -86,8 +97,8 @@ async def test_dry_run_certifies_existing_route_without_writes():
 
 async def test_apply_reuses_resources_on_retry_and_never_purchases_numbers():
     twilio = Twilio()
-    first = await p.reconcile(twilio, livekit(), apply=True)
-    again = await p.reconcile(twilio, livekit(), apply=True)
+    first = await p.reconcile(twilio, livekit(), apply=True, config=CONFIG)
+    again = await p.reconcile(twilio, livekit(), apply=True, config=CONFIG)
     assert first["twilioTrunkId"] == again["twilioTrunkId"] == "TKtest"
     assert len(twilio.trunks) == len(twilio.urls) == len(twilio.mappings) == 1
     assert all("IncomingPhoneNumbers" not in url and "/Calls" not in url for _, url, _ in twilio.writes)
@@ -97,12 +108,12 @@ async def test_failed_new_trunk_is_compensated_without_removing_existing_trunk()
     twilio = Twilio()
     twilio.fail_origin = True
     with pytest.raises(RuntimeError, match="origination failed"):
-        await p.reconcile(twilio, livekit(), apply=True)
+        await p.reconcile(twilio, livekit(), apply=True, config=CONFIG)
     assert not twilio.trunks and twilio.writes[-1][0] == "DELETE"
     twilio.trunks = [{"sid": "TKexisting", "friendly_name": "lightbulb-livekit", "domain_name": p.DOMAIN}]
     count = len(twilio.writes)
     with pytest.raises(RuntimeError):
-        await p.reconcile(twilio, livekit(), apply=True)
+        await p.reconcile(twilio, livekit(), apply=True, config=CONFIG)
     assert twilio.trunks and all(method != "DELETE" for method, _, _ in twilio.writes[count:])
 
 
@@ -116,5 +127,119 @@ async def test_mismatched_ownership_or_unapproved_profile_never_mutates(cause):
     else:
         lk.sip.list_sip_dispatch_rule.return_value.items[0].room_config.agents[0].agent_name = "other-worker"
     with pytest.raises(p.ProviderMismatch):
-        await p.reconcile(twilio, lk, apply=True)
+        await p.reconcile(twilio, lk, apply=True, config=CONFIG)
     assert not twilio.writes
+
+
+class SecretStore:
+    exceptions = SimpleNamespace(ResourceNotFoundException=KeyError)
+
+    def __init__(self, value=None):
+        self.value, self.versions = value, []
+
+    def get_secret_value(self, **_kwargs):
+        if self.value is None:
+            raise KeyError("missing")
+        return {"SecretString": json.dumps(self.value)}
+
+    def describe_secret(self, **_kwargs):
+        return {"KmsKeyId": "test-kms-key"}
+
+    def create_secret(self, **kwargs):
+        assert self.value is None
+        self.put_secret_value(**kwargs)
+
+    def put_secret_value(self, **kwargs):
+        self.value = json.loads(kwargs["SecretString"])
+        self.versions.append(dict(self.value))
+
+
+CREDENTIALS = {"account_sid": "ACtest", "api_key_sid": "SKtest", "api_key_secret": "test-only-api-secret"}
+
+
+async def test_masked_livekit_password_is_never_used_and_saved_secret_is_reused():
+    sm, twilio, lk = SecretStore(), Twilio(), livekit()
+    lk.sip.list_sip_outbound_trunk.return_value.items[0].auth_password = "********"
+    first = await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    desired = sm.value["sip_auth_password"]
+    assert len(desired) == 32 and desired != "********"
+    assert sm.versions[0]["status"] == "pending" and sm.value["status"] == "ready"
+    assert first["configSecretReady"] is True
+    await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    assert sm.value["sip_auth_password"] == desired
+    password_writes = [fields["Password"] for method, url, fields in twilio.writes if "Password" in fields]
+    assert password_writes == [desired, desired]
+    for call in lk.sip.update_sip_outbound_trunk.await_args_list:
+        assert call.args[0].sip_trunk_id == p.OUTBOUND and call.args[0].update.auth_password == desired
+
+
+async def test_partial_failure_retains_desired_password_pending_then_retry_completes():
+    sm, twilio, lk = SecretStore(), Twilio(), livekit()
+    lk.sip.update_sip_outbound_trunk.side_effect = [RuntimeError("LiveKit update failed"), None]
+    with pytest.raises(RuntimeError, match="LiveKit update failed"):
+        await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    saved = sm.value["sip_auth_password"]
+    assert sm.value["status"] == "pending" and not twilio.trunks
+    dry = await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=False)
+    assert dry["configSecretReady"] is False and dry["configStatus"] == "pending"
+    await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    assert sm.value["sip_auth_password"] == saved and sm.value["status"] == "ready"
+
+
+async def test_foreign_config_secret_blocks_before_any_provider_or_secret_writes():
+    sm = SecretStore({"managed_by": "another-system"})
+    twilio, lk = Twilio(), livekit()
+    with pytest.raises(p.ProviderMismatch, match="telephony_secret_not_owned"):
+        await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    assert not twilio.writes and not sm.versions
+    lk.sip.update_sip_outbound_trunk.assert_not_awaited()
+
+
+@pytest.mark.parametrize("raw", ["not valid JSON", "[]"])
+async def test_malformed_preexisting_secret_fails_before_writes(monkeypatch, raw):
+    sm, twilio, lk = SecretStore(), Twilio(), livekit()
+    monkeypatch.setattr(sm, "get_secret_value", lambda **kwargs: {"SecretString": raw})
+    with pytest.raises(p.ProviderMismatch):
+        await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    assert not twilio.writes and not sm.versions
+
+
+async def test_final_secret_write_failure_stays_pending_and_retry_reuses_password(monkeypatch):
+    sm, twilio, lk = SecretStore(), Twilio(), livekit()
+    original = sm.put_secret_value
+
+    def interrupted(**kwargs):
+        if json.loads(kwargs["SecretString"]).get("status") == "ready":
+            raise RuntimeError("final secret save failed")
+        return original(**kwargs)
+
+    monkeypatch.setattr(sm, "put_secret_value", interrupted)
+    with pytest.raises(RuntimeError, match="final secret save failed"):
+        await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    desired = sm.value["sip_auth_password"]
+    assert sm.value["status"] == "pending" and len(twilio.trunks) == 1
+    monkeypatch.setattr(sm, "put_secret_value", original)
+    result = await p.provision(sm, twilio, lk, credentials=CREDENTIALS, apply=True)
+    assert result["configSecretReady"] is True and sm.value["status"] == "ready"
+    assert sm.value["sip_auth_password"] == desired and len(twilio.trunks) == 1
+
+
+async def test_provider_failure_reports_code_but_redacts_credentials_and_request_values():
+    import httpx
+
+    twilio = p.Twilio("ACtest", "SK-private-test", "api-private-test")
+    await twilio.http.aclose()
+
+    def fail(request):
+        return httpx.Response(
+            400, json={"code": 21220, "message": "Invalid password password-private-test or api-private-test"}
+        )
+
+    twilio.http = httpx.AsyncClient(transport=httpx.MockTransport(fail))
+    try:
+        with pytest.raises(p.TwilioFailure) as failure:
+            await twilio.request("POST", "https://api.twilio.test/credentials", Password="password-private-test")
+        text = str(failure.value)
+        assert "21220" in text and "password-private-test" not in text and "api-private-test" not in text
+    finally:
+        await twilio.http.aclose()

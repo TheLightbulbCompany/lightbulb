@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import secrets
 
 import boto3
 import httpx
@@ -20,20 +21,37 @@ INBOUND = "ST_VbiHBUhL5Z8h"
 OUTBOUND = "ST_VNjjGfGcKdUm"
 DISPATCH = "SDR_D3AtyzHbPKkF"
 MANAGED = "lightbulb-phone-bootstrap-v1"
+CONFIG_SECRET = "lightbulb/prod/voice_telephony"
 
 
 class ProviderMismatch(RuntimeError):
     pass
 
 
+class TwilioFailure(RuntimeError):
+    """Sanitized provider diagnostics; never print request credentials or parameter values."""
+
+
 class Twilio:
     def __init__(self, sid: str, key: str, secret: str):
         self.sid = sid
+        self._sensitive = (sid, key, secret)
         self.http = httpx.AsyncClient(auth=(key, secret), timeout=20)
 
     async def request(self, method: str, url: str, **fields) -> dict:
         response = await self.http.request(method, url, **({"data": fields} if method != "GET" else {"params": fields}))
-        response.raise_for_status()
+        if response.is_error:
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            message = str(body.get("message") or "provider request failed")
+            for value in (*self._sensitive, *(str(x) for x in fields.values())):
+                if value:
+                    message = message.replace(value, "[redacted]")
+            code = body.get("code")
+            code = str(code) if isinstance(code, int) or str(code).isdigit() else "unknown"
+            raise TwilioFailure(f"Twilio HTTP {response.status_code}, code {code}: {message[:300]}")
         return response.json() if response.content else {}
 
     @property
@@ -41,8 +59,19 @@ class Twilio:
         return f"https://api.twilio.com/2010-04-01/Accounts/{self.sid}"
 
 
-async def reconcile(twilio, lk, *, apply: bool) -> dict:
+async def reconcile(twilio, lk, *, apply: bool, config: dict | None = None) -> dict:
     """Require exact existing project objects; never fall back to another account's trunk or route."""
+    if apply:
+        if not config or config.get("managed_by") != MANAGED or config.get("account_sid") != twilio.sid:
+            raise ProviderMismatch("owned_persisted_configuration_required")
+        desired_password = config.get("sip_auth_password") or ""
+        if not (
+            len(desired_password) >= 32
+            and any(c.isupper() for c in desired_password)
+            and any(c.islower() for c in desired_password)
+            and any(c.isdigit() for c in desired_password)
+        ):
+            raise ProviderMismatch("strong_persisted_sip_password_required")
     profiles = await twilio.request("GET", "https://trusthub.twilio.com/v1/CustomerProfiles", PageSize=100)
     if not any(row.get("status") == "twilio-approved" for row in profiles.get("results", [])):
         raise ProviderMismatch("approved_twilio_profile_required")
@@ -74,8 +103,10 @@ async def reconcile(twilio, lk, *, apply: bool) -> dict:
         raise ProviderMismatch("existing_inbound_trunk_mismatch")
     if not outbound or outbound.name != "twilio-outbound" or outbound.address != DOMAIN:
         raise ProviderMismatch("existing_outbound_trunk_mismatch")
-    if not (outbound.auth_username and outbound.auth_password):
+    if not outbound.auth_username:
         raise ProviderMismatch("existing_outbound_auth_missing")
+    if apply and config.get("sip_auth_username") != outbound.auth_username:
+        raise ProviderMismatch("existing_outbound_username_mismatch")
     if (
         not dispatch
         or set(dispatch.trunk_ids) != {INBOUND}
@@ -130,11 +161,19 @@ async def reconcile(twilio, lk, *, apply: bool) -> dict:
     created = not matches
     trunk_url = f"https://trunking.twilio.com/v1/Trunks/{trunk['sid']}"
     try:
-        # Reconcile to the existing LiveKit password in memory; neither credential is ever printed or committed.
+        # ListSIPOutboundTrunk masks its password. Only the persisted desired secret is authoritative.
         await twilio.request(
             "POST",
             f"{twilio.account}/SIP/CredentialLists/{credential_list}/Credentials/{users[0]['sid']}.json",
-            Password=outbound.auth_password,
+            Password=config["sip_auth_password"],
+        )
+        await lk.sip.update_sip_outbound_trunk(
+            api.UpdateSIPOutboundTrunkRequest(
+                sip_trunk_id=OUTBOUND,
+                update=api.SIPOutboundTrunkUpdate(
+                    auth_username=config["sip_auth_username"], auth_password=config["sip_auth_password"]
+                ),
+            )
         )
         mapped = (await twilio.request("GET", f"{trunk_url}/CredentialLists")).get("credential_lists", [])
         if not any(x.get("sid") == credential_list for x in mapped):
@@ -164,6 +203,75 @@ async def reconcile(twilio, lk, *, apply: bool) -> dict:
     return report
 
 
+def read_configuration(sm, account: str) -> dict | None:
+    try:
+        raw = sm.get_secret_value(SecretId=CONFIG_SECRET)["SecretString"]
+    except sm.exceptions.ResourceNotFoundException:
+        return None
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        raise ProviderMismatch("telephony_secret_invalid_json") from None
+    if not isinstance(value, dict):
+        raise ProviderMismatch("telephony_secret_not_owned")
+    if (
+        value.get("managed_by") != MANAGED
+        or value.get("account_sid") != account
+        or value.get("inbound_trunk_id") != INBOUND
+        or value.get("outbound_trunk_id") != OUTBOUND
+    ):
+        raise ProviderMismatch("telephony_secret_not_owned")
+    return value
+
+
+def write_configuration(sm, value: dict, *, create: bool = False) -> None:
+    if create:
+        kms = sm.describe_secret(SecretId="lightbulb/prod/livekit_api_secret").get("KmsKeyId")
+        sm.create_secret(Name=CONFIG_SECRET, SecretString=json.dumps(value), **({"KmsKeyId": kms} if kms else {}))
+    else:
+        sm.put_secret_value(SecretId=CONFIG_SECRET, SecretString=json.dumps(value))
+
+
+async def provision(sm, twilio, lk, *, credentials: dict, apply: bool) -> dict:
+    previous = read_configuration(sm, credentials["account_sid"])  # BEFORE any provider writes
+    value = {
+        **(previous or {}),
+        **credentials,
+        "managed_by": MANAGED,
+        "inbound_trunk_id": INBOUND,
+        "outbound_trunk_id": OUTBOUND,
+    }
+    if apply:
+        # Persist once before either provider changes. Partial failures keep this same desired password for retry.
+        if not value.get("sip_auth_password"):
+            value["sip_auth_password"] = "Lv1!" + secrets.token_urlsafe(21)
+        value.setdefault("sip_auth_username", "lightbulb-livekit")
+        value["status"] = "pending"
+        write_configuration(sm, value, create=previous is None)
+    report = await reconcile(twilio, lk, apply=apply, config=value)
+    if apply:
+        value["twilio_trunk_sid"] = report["twilioTrunkId"]
+        if not all(
+            value.get(name)
+            for name in (
+                "account_sid",
+                "api_key_sid",
+                "api_key_secret",
+                "twilio_trunk_sid",
+                "inbound_trunk_id",
+                "outbound_trunk_id",
+            )
+        ):
+            raise ProviderMismatch("incomplete_phone_configuration")
+        value["status"] = "ready"
+        write_configuration(sm, value)
+        report["configSecretReady"] = True
+    else:
+        report["configSecretReady"] = False  # a read-only plan never certifies successful reconciliation
+    report["configStatus"] = value.get("status", "not_created")
+    return report
+
+
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
@@ -184,29 +292,13 @@ async def main():
         secret("lightbulb/prod/livekit_api_secret"),
     )
     try:
-        report = await reconcile(twilio, lk, apply=args.apply)
-        if args.apply:
-            value = {
-                "managed_by": MANAGED,
-                "account_sid": account,
-                "api_key_sid": key,
-                "api_key_secret": password,
-                "twilio_trunk_sid": report["twilioTrunkId"],
-                "inbound_trunk_id": INBOUND,
-                "outbound_trunk_id": OUTBOUND,
-            }
-            name = "lightbulb/prod/voice_telephony"
-            try:
-                previous = json.loads(secret(name))
-            except sm.exceptions.ResourceNotFoundException:
-                kms = sm.describe_secret(SecretId="lightbulb/prod/livekit_api_secret").get("KmsKeyId")
-                sm.create_secret(Name=name, SecretString=json.dumps(value), **({"KmsKeyId": kms} if kms else {}))
-            else:
-                if previous.get("managed_by") != MANAGED:
-                    raise ProviderMismatch("telephony_secret_not_owned")
-                if previous != value:
-                    sm.put_secret_value(SecretId=name, SecretString=json.dumps(value))
-            report["configSecretReady"] = True
+        report = await provision(
+            sm,
+            twilio,
+            lk,
+            credentials={"account_sid": account, "api_key_sid": key, "api_key_secret": password},
+            apply=args.apply,
+        )
         print(json.dumps(report, sort_keys=True))
     finally:
         await twilio.http.aclose()

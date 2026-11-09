@@ -1371,11 +1371,7 @@ async def _apply(
             try:
                 if question := sl["asks"].get(task_id) or ref.get("ask"):
                     # A canonical Question (phone or completed meeting): no Worker until its authenticated answer.
-                    opened = await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **question)
-                    if task_id in sl["asks"] and opened.get("state") == "open":
-                        current = await tasks_repo.get_task(ws, task_id)
-                        if current and current.get("status") == "queued":
-                            await transition(ws, task_id, "waiting", "question")
+                    await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **question)
                 else:
                     await temporal_client.start_task_workflow(ws, task_id, "router")
             except Exception:  # noqa: BLE001 -- one bad start never skips the batch's other starts

@@ -1993,7 +1993,8 @@ async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or
     task_id = ts.router_task_id(BATCH, 0, 0)
     # _apply_decisions starts numbering at zero; the same decision replay names the same canonical task.
     task = await repo.get_task(WS, task_id)
-    assert task and task["status"] == "waiting" and task["ownerUserId"] == SAM
+    assert task and task["status"] == "queued" and task["ownerUserId"] == SAM
+    # This fixture runs the real Question row activity, not TaskWorkflow: only the Workflow owns waiting.
     assert task["triggerId"] == tid and task["origin"] == "meeting" and task["confirmAll"] is True
     assert task["audience"]["roomId"] == ROOM
     assert world["starts"] == [] and world["runs"] == []

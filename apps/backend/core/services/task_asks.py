@@ -31,6 +31,7 @@ async def open_ask(
     attempt: int | None,
     run_id: str | None,
     preview: dict | None = None,
+    before_attempt: bool = False,
 ) -> dict:
     """The Question row (an existing one replays). Raises `AskRefused`."""
     from temporalio.service import RPCError
@@ -66,7 +67,9 @@ async def open_ask(
         },
     )
     try:
-        await temporal.update_task(ws, task["taskId"], "ask", AskRef(trigger_id, kind, subkind, blocking))
+        await temporal.update_task(
+            ws, task["taskId"], "ask", AskRef(trigger_id, kind, subkind, blocking, before_attempt)
+        )
     except (temporal.TemporalUnavailable, RPCError) as exc:
         raise AskRefused("temporal_unavailable") from exc
     except Exception as exc:  # noqa: BLE001 -- the update was refused (stopped task, nobody can answer)

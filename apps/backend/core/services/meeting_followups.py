@@ -143,6 +143,7 @@ async def clarification(owner_id: str, trigger: dict, task_id: str, text: str, o
         "text": text if len(text) <= 500 else text[:450] + "… [Full question is in the task details.]",
         "options": [{"id": "option-" + str(i), "label": label[:200]} for i, label in enumerate(options[:6])],
         "blocking": True,
+        "before_attempt": True,
         "attempt": None,
         "run_id": None,
     }

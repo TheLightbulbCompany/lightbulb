@@ -360,7 +360,7 @@ async def test_pre_task_clarification_holds_first_worker_until_original_answer(t
         h = await temporal_env.client.start_workflow(
             TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-clarify:{uuid.uuid4()}", task_queue=queue
         )
-        qid = await h.execute_update(TaskWorkflow.ask, AskRef("ask:meeting", "question", "question", True))
+        qid = await h.execute_update(TaskWorkflow.ask, AskRef("ask:meeting", "question", "question", True, True))
         await _until(lambda: "relay_question" in fakes.names())
         assert "begin_attempt" not in fakes.names() and "worker_turn" not in fakes.names()
         await h.signal(TaskWorkflow.input, TaskInputRef("chat:yes", "message"))
@@ -371,3 +371,37 @@ async def test_pre_task_clarification_holds_first_worker_until_original_answer(t
         await _until(lambda: "begin_attempt" in fakes.names())
         assert fakes.args("record_answer")[0][2].by_user_id == SAM
         assert "answer:" + qid + ":c-1" in fakes.args("begin_attempt")[0][2]
+
+
+async def test_immediate_answer_during_pre_task_question_relay_has_no_late_waiting_write(temporal_env, fakes):
+    relay_entered, release_relay = asyncio.Event(), asyncio.Event()
+
+    async def relay(*_):
+        relay_entered.set()
+        await release_relay.wait()
+
+    fakes.behaviour["relay_question"] = relay
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-race:{uuid.uuid4()}", task_queue=queue
+        )
+        ask = asyncio.create_task(
+            h.execute_update(TaskWorkflow.ask, AskRef("ask:fast", "question", "question", True, True))
+        )
+        await asyncio.wait_for(relay_entered.wait(), timeout=5)
+        assert fakes.args("transition") == [(WS, TID, "waiting", "question")]
+        await h.execute_update(TaskWorkflow.answer, _press(qid="q-ask:fast", option="answer"))
+        await _until(lambda: "begin_attempt" in fakes.names())
+        worker_start = fakes.names().index("begin_attempt")
+        release_relay.set()
+        await ask
+        assert not any(name == "transition" and args[2] == "waiting" for name, args in fakes.calls[worker_start:])
+
+
+async def test_before_attempt_question_refuses_an_existing_worker_attempt(temporal_env, fakes):
+    async with worker(temporal_env, fakes) as queue:
+        h = await _start(temporal_env, queue)
+        await _until(lambda: "relay_question" in fakes.names())
+        with pytest.raises(WorkflowUpdateFailedError):
+            await h.execute_update(TaskWorkflow.ask, AskRef("ask:late", "question", "question", True, True))

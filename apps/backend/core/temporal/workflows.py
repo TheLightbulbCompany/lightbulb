@@ -184,6 +184,7 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
         self._ws, self._task_id = start.ws, start.task_id
         # `migrated` = started by a signal/update-with-start: wait for what came with it.
         self._attempt_needed = start.reason != "migrated"
+        self._execution_requested = False  # local replay-derived guard; no new commands for old histories
         # Consent for a proposed task is an explicit Start only (the route's start, or the `start` signal).
         # Proposals were removed 5 Nov 2026 (nothing creates `proposed` rows or sends `start`/`dismiss`); this path,
         # the `start` signal and the `dismiss` update stay so histories already recorded with them still replay.
@@ -442,6 +443,7 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
 
     async def _run_attempt(self) -> WorkerTurnOut | None:
         """One attempt. None ⇒ nothing ran (budget, hook, stop while waiting for a slot)."""
+        self._execution_requested = True
         if not await self._before_attempt():
             self._blocked_at = self._wakes  # wait for the next input or action, as documented (no busy loop)
             return None

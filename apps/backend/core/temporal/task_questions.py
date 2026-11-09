@@ -62,6 +62,7 @@ class AskRef:
     kind: str  # question | approval
     subkind: str
     blocking: bool
+    before_attempt: bool = False  # old payloads/history preserve the existing command sequence
 
 
 @dataclass(frozen=True)
@@ -241,6 +242,10 @@ class TaskQuestionsMixin:
     async def ask(self, ref: AskRef) -> str:
         """A Worker's question or approval on this task (runtime_internal's ask route). One open `question` per
         task: a new one supersedes the earlier unanswered one. Returns the qid."""
+        if ref.before_attempt:
+            # Only new explicit payloads take this branch: old recorded histories default false.
+            # No Question row/card exists yet, so no answer can race a later waiting write.
+            await self._transition("waiting", "question")
         opened = await _act("open_asked_question", self._ws, self._task_id, ref, result_type=QuestionRef)
         if ref.kind == "question":
             for qid in [q for q in self._asked_questions if q != opened.qid]:
@@ -255,6 +260,14 @@ class TaskQuestionsMixin:
             raise ValueError("task_closed")
         if ref.kind not in ("question", "approval"):
             raise ValueError("bad_kind")
+        if ref.before_attempt and (
+            ref.kind != "question"
+            or not ref.blocking
+            or self._execution_requested
+            or self._attempt is not None
+            or self._running()
+        ):
+            raise ValueError("before_attempt_requires_unstarted_blocking_question")
 
     @answer.validator
     def _validate_answer(self, ref: AnswerRef) -> None:

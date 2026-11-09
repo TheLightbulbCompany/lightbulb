@@ -1434,7 +1434,7 @@ async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, 
         "transcriptId": "t1",
         "transcriptRoomId": "default-room",
         **{
-            k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+            k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
         },  # _ended_series sets each to 1
     }
 
@@ -1449,6 +1449,7 @@ async def test_history_keeps_each_occurrences_end_notes_and_unsaid_but_unsaid_on
         endedAt=99,
         notesRunId="run-1",
         notes="Meeting notes",
+        followUps=[{"id": "action-1", "text": "Pat: book venue", "status": "recorded"}],
         decisions=["Ship Friday"],
         notesSkipped=None,
         unsaid=unsaid,
@@ -1459,6 +1460,8 @@ async def test_history_keeps_each_occurrences_end_notes_and_unsaid_but_unsaid_on
     history = room.state["meta"]["meeting"]["history"]
     assert history[0]["endedAt"] == 99 and history[0]["notesRunId"] == "run-1"
     assert history[0]["notes"] == "Meeting notes" and history[0]["decisions"] == ["Ship Friday"]
+    assert history[0]["followUps"] == [{"id": "action-1", "text": "Pat: book venue", "status": "recorded"}]
+    assert "followUps" not in room.state["meta"]["meeting"]
     assert "notes" not in room.state["meta"]["meeting"] and "decisions" not in room.state["meta"]["meeting"]
     assert "notesSkipped" not in history[0]  # only the fields the occurrence has
     assert [bool(h.get("unsaid")) for h in history] == [True, True, True, False, False, False]
@@ -1536,7 +1539,7 @@ async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots
             "transcriptId": "t1",
             "transcriptRoomId": "default-room",
             **{
-                k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid")
+                k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
             },  # _ended_series sets each to 1
         }
     ]

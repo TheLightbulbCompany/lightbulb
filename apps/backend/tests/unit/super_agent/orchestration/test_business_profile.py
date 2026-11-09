@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.repositories import messaging_repo
+from core.repositories import billing_repo, messaging_repo
 from core.services import business_profile as bp
 from core.services import clerk_admin, voice_booking
 from core.temporal import activities as acts
@@ -28,6 +28,7 @@ def sources(monkeypatch):
     bp._cache.clear()
     get = AsyncMock(return_value=CFG)
     monkeypatch.setattr(messaging_repo, "get_voice_agent", get)
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Glow Nails"}))
     monkeypatch.setattr(vp, "_taken", AsyncMock(return_value=[]))
     monkeypatch.setattr(voice_booking, "busy_across", AsyncMock(return_value=[]))

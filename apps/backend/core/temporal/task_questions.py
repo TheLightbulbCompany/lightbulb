@@ -111,6 +111,9 @@ class TaskQuestionsMixin:
     def _q_init(self) -> None:
         self._open_qs: dict[str, list[str]] = {}  # qid → answerers (the validator's no-I/O check)
         self._nonblocking: set[str] = set()  # open questions the Worker need not wait for
+        self._pre_attempt_trigger: str | None = None
+        self._pre_attempt_qid: str | None = None
+        self._pre_attempt_inflight = False
         self._asked_questions: set[str] = set()  # `question`-kind rows the Worker asked (one open at a time)
         self._q_remind_at: dict[str, datetime] = {}  # unreminded open questions
         self._landings: list[tuple[str, str]] = []  # (effect idem key, answered by) waiting to land
@@ -240,19 +243,36 @@ class TaskQuestionsMixin:
 
     @workflow.update
     async def ask(self, ref: AskRef) -> str:
-        """A Worker's question or approval on this task (runtime_internal's ask route). One open `question` per
-        task: a new one supersedes the earlier unanswered one. Returns the qid."""
+        """One canonical Question; pre-attempt duplicate updates never write waiting twice."""
         if ref.before_attempt:
-            # Only new explicit payloads take this branch: old recorded histories default false.
-            # No Question row/card exists yet, so no answer can race a later waiting write.
-            await self._transition("waiting", "question")
-        opened = await _act("open_asked_question", self._ws, self._task_id, ref, result_type=QuestionRef)
-        if ref.kind == "question":
-            for qid in [q for q in self._asked_questions if q != opened.qid]:
-                self._q_forget(qid)
-            self._asked_questions = {opened.qid}
-        await self._q_track(opened)
-        return opened.qid
+            if self._pre_attempt_trigger is not None and self._pre_attempt_trigger != ref.trigger_id:
+                raise ValueError("different_before_attempt_question")
+            # Mark before the first await. Two service calls may both miss the Question row.
+            while self._pre_attempt_inflight and self._pre_attempt_qid is None:
+                await workflow.wait_condition(
+                    lambda: not self._pre_attempt_inflight or self._pre_attempt_qid is not None
+                )
+            if self._pre_attempt_qid is not None:
+                return self._pre_attempt_qid
+            self._pre_attempt_trigger = ref.trigger_id
+            self._pre_attempt_inflight = True
+        try:
+            if ref.before_attempt:
+                # Old payloads default false and preserve the recorded command sequence.
+                # No Question row/card exists yet, so no answer can race a later waiting write.
+                await self._transition("waiting", "question")
+            opened = await _act("open_asked_question", self._ws, self._task_id, ref, result_type=QuestionRef)
+            if ref.before_attempt:
+                self._pre_attempt_qid = opened.qid
+            if ref.kind == "question":
+                for qid in [q for q in self._asked_questions if q != opened.qid]:
+                    self._q_forget(qid)
+                self._asked_questions = {opened.qid}
+            await self._q_track(opened)
+            return opened.qid
+        finally:
+            if ref.before_attempt:
+                self._pre_attempt_inflight = False
 
     @ask.validator
     def _validate_ask(self, ref: AskRef) -> None:
@@ -260,14 +280,16 @@ class TaskQuestionsMixin:
             raise ValueError("task_closed")
         if ref.kind not in ("question", "approval"):
             raise ValueError("bad_kind")
-        if ref.before_attempt and (
-            ref.kind != "question"
-            or not ref.blocking
-            or self._execution_requested
-            or self._attempt is not None
-            or self._running()
-        ):
-            raise ValueError("before_attempt_requires_unstarted_blocking_question")
+        if ref.before_attempt:
+            if self._pre_attempt_trigger is not None and self._pre_attempt_trigger != ref.trigger_id:
+                raise ValueError("different_before_attempt_question")
+            replay = self._pre_attempt_trigger == ref.trigger_id and self._pre_attempt_qid is not None
+            if (
+                ref.kind != "question"
+                or not ref.blocking
+                or (not replay and (self._execution_requested or self._attempt is not None or self._running()))
+            ):
+                raise ValueError("before_attempt_requires_unstarted_blocking_question")
 
     @answer.validator
     def _validate_answer(self, ref: AnswerRef) -> None:

@@ -405,3 +405,80 @@ async def test_before_attempt_question_refuses_an_existing_worker_attempt(tempor
         await _until(lambda: "relay_question" in fakes.names())
         with pytest.raises(WorkflowUpdateFailedError):
             await h.execute_update(TaskWorkflow.ask, AskRef("ask:late", "question", "question", True, True))
+
+
+async def test_concurrent_open_ask_misses_share_one_waiting_write_even_with_immediate_answer(
+    temporal_env, fakes, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from core.services import task_asks
+    from core.temporal import client
+
+    both_missed, release_reads, release_open, release_relay = (asyncio.Event() for _ in range(4))
+    state = {"reads": 0, "opened": False}
+
+    async def get_question(*_):
+        if state["opened"]:
+            return {"qid": "meeting-duplicate", "state": "open"}
+        state["reads"] += 1
+        if state["reads"] == 2:
+            both_missed.set()
+        await release_reads.wait()
+        return None
+
+    async def opened(*_):
+        await release_open.wait()
+        state["opened"] = True
+        return QuestionRef("meeting-duplicate", [SAM], True)
+
+    async def relay(*_):
+        await release_relay.wait()
+
+    monkeypatch.setattr(task_asks.questions_repo, "get_question", get_question)
+    monkeypatch.setattr(task_asks.tasks_repo, "put_trigger", AsyncMock())
+    fakes.behaviour["open_asked_question"] = opened
+    fakes.behaviour["relay_question"] = relay
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as queue:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "migrated"), id=f"meeting-duplicate:{uuid.uuid4()}", task_queue=queue
+        )
+
+        async def update(ws, task_id, name, ref):
+            assert (ws, task_id, name) == (WS, TID, "ask")
+            return await h.execute_update(TaskWorkflow.ask, ref)
+
+        monkeypatch.setattr(client, "update_task", update)
+
+        async def call():
+            return await task_asks.open_ask(
+                WS,
+                {"taskId": TID},
+                qid="meeting-duplicate",
+                kind="question",
+                subkind="question",
+                title="Which report?",
+                text="Weekly or monthly?",
+                options=[],
+                blocking=True,
+                attempt=None,
+                run_id=None,
+                before_attempt=True,
+            )
+
+        first, second = asyncio.create_task(call()), asyncio.create_task(call())
+        await asyncio.wait_for(both_missed.wait(), 5)
+        release_reads.set()
+        await _until(lambda: "open_asked_question" in fakes.names())
+        with pytest.raises(WorkflowUpdateFailedError):
+            await h.execute_update(TaskWorkflow.ask, AskRef("ask:different", "question", "question", True, True))
+        release_open.set()
+        await _until(lambda: "relay_question" in fakes.names())
+        await h.execute_update(TaskWorkflow.answer, _press(qid="meeting-duplicate", option="answer"))
+        await _until(lambda: "begin_attempt" in fakes.names())
+        worker_start = fakes.names().index("begin_attempt")
+        release_relay.set()
+        assert [r["qid"] for r in await asyncio.gather(first, second)] == ["meeting-duplicate"] * 2
+        assert fakes.args("transition").count((WS, TID, "waiting", "question")) == 1
+        assert len(fakes.args("open_asked_question")) == 1
+        assert not any(name == "transition" and args[2] == "waiting" for name, args in fakes.calls[worker_start:])

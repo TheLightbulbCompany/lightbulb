@@ -321,7 +321,7 @@ export default function Activity() {
   const { items, markSeen, runAction } = activity;
   // A push tap lands here with the approval to show (`focus`); it shows under any chip.
   const { focus } = useLocalSearchParams<{ focus?: string }>();
-  const [filter, setFilter] = useState<ActivityFilter>("all");
+  const [filter, setFilter] = useState<ActivityFilter>("needs-you");
   const [focusedFor, setFocusedFor] = useState<string | null>(null);
   if (focus && focus !== focusedFor && items.some((entry) => entry.id === focus)) {
     setFocusedFor(focus);

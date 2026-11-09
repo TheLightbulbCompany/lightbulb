@@ -203,6 +203,8 @@ async def test_three_asks_one_reply_three_cards(world):
     post = world["posts"][0]
     assert post["room"] == ROOM and post["event_id"] == f"router:{BATCH}:0" and post["thread_root"] is None
     assert post["text"] == "On it: paying Acme."  # one ack per trigger: the first decision's (the cards say the rest)
+    assert post["attrs"]["voiceWaiting"] is True
+    assert len(post["attrs"]["voiceTaskIds"]) == 3
     assert post["remember"] is False  # acks only: kept out of room memory (audit item 12)
     ids = [r["taskId"] for r in post["task_refs"]]
     assert [r["role"] for r in post["task_refs"]] == ["started", "started", "started"]
@@ -547,6 +549,7 @@ async def test_pass_through_signals_input(world):
     out = await _run([t1])
     assert world["inputs"] == [(open_id, t1, "message")] and out.started_task_ids == []
     assert world["posts"][0]["text"] == "Passed to the Acme task." and world["posts"][0]["task_refs"] is None
+    assert world["posts"][0]["attrs"]["voiceWaiting"] is True
     assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": open_id}
     assert len(world["noted"]) == 1
     assert open_id in world["runs"][0][1].input  # the open task was offered to the Router
@@ -732,6 +735,7 @@ async def test_deterministic_start_skips_router_run(world):
             "event_id": f"router:{BATCH}:0",
             "thread_root": None,
             "task_refs": [{"taskId": task_id, "role": "started"}],
+            "attrs": {"voiceWaiting": True, "voiceTaskIds": [task_id]},
             "remember": False,
         }
     ]

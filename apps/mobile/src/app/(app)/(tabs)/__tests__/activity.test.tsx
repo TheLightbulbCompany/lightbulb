@@ -81,6 +81,7 @@ it("pins a needs-you item under its header with the why, time, unread dot and a 
   mockState = { items: [item()] };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByRole("header", { name: /Needs you/ })).toBeTruthy();
   expect(screen.getByText("Growth")).toBeTruthy();
   expect(screen.getByText("wants to publish a post on LinkedIn")).toBeTruthy();
@@ -104,6 +105,7 @@ it("filters with chips and groups the rest by day", async () => {
     ],
   };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByText("Today")).toBeTruthy();
   await fireEvent.press(screen.getByRole("button", { name: "Mentions" }));
   expect(screen.queryByRole("header", { name: /Needs you/ })).toBeNull();
@@ -116,6 +118,7 @@ it("opens on a pushed approval, highlighted, under All", async () => {
   mockParams = { focus: "paperclip:approval:1" };
   mockState = { items: [item()] };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByRole("button", { name: "All" }).props.accessibilityState.selected).toBe(true);
   const row = screen.getByLabelText("Growth wants to publish a post on LinkedIn");
   expect(row).toBeTruthy();
@@ -131,6 +134,7 @@ it("offers an ordinary row's actions on long press", async () => {
       actions: [action({ id: "mark_done", label: "Mark done" })] })],
   };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.queryByRole("button", { name: "Mark done" })).toBeNull();
   await fireEvent(screen.getByLabelText("Bob mentioned you in #general"), "longPress");
   const buttons = alert.mock.calls[0][2]!;
@@ -147,6 +151,7 @@ it("shows who resolved an item and no buttons", async () => {
     })],
   };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByText("Resolved by Dana · 5m")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   expect(screen.queryByLabelText("Unread")).toBeNull();
@@ -156,6 +161,7 @@ it("runs a plain action from the Review sheet", async () => {
   mockState = { items: [item()] };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
   const buttons = alert.mock.calls[0][2]!;
   await act(async () => { buttons.find((b) => b.text === "Approve")!.onPress!(); });
@@ -166,6 +172,7 @@ it("confirms, then asks for the note, then runs with it", async () => {
   mockState = { items: [item()] };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
   const reviewButtons = alert.mock.calls[0][2]!;
   await act(async () => { reviewButtons.find((b) => b.text === "Reject")!.onPress!(); });
@@ -186,6 +193,7 @@ it("picks a select option and sends its value", async () => {
   };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
   const buttons = alert.mock.calls[0][2]!;
   await act(async () => { buttons.find((b) => b.text === "Change status")!.onPress!(); });
@@ -200,6 +208,7 @@ it("picks a person from the workspace roster", async () => {
   };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
   const buttons = alert.mock.calls[0][2]!;
   await act(async () => { buttons.find((b) => b.text === "Reassign")!.onPress!(); });
@@ -212,6 +221,7 @@ it("shows the server's message when an action fails", async () => {
   mockRunAction.mockRejectedValue(new Error("You can't decide this approval."));
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
   const buttons = alert.mock.calls[0][2]!;
   await act(async () => { buttons.find((b) => b.text === "Approve")!.onPress!(); });
@@ -224,6 +234,7 @@ it("shows local neutral copy, not the server's, for a purchase-gate action failu
   mockRunAction.mockRejectedValue(new ApiError(402, { detail }, detail.message));
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
   const buttons = alert.mock.calls[0][2]!;
   await act(async () => { buttons.find((b) => b.text === "Approve")!.onPress!(); });
@@ -242,6 +253,7 @@ it("navigates a thread row (to its room); old issue and run targets go nowhere",
     ],
   };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
   expect(mockPush).not.toHaveBeenCalled();
   expect(mockRunAction).not.toHaveBeenCalled();
@@ -264,6 +276,7 @@ it("opens a mention's room from its Open thread action (threads are gone)", asyn
     ],
   };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Ann mentioned you in #general"));
   expect(mockPush.mock.calls).toEqual([["/(app)/room/room-1"]]);
 });
@@ -281,6 +294,7 @@ it("pins an agent's question and confirms it inline", async () => {
   };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByRole("header", { name: /Needs you/ })).toBeTruthy();
   await fireEvent.press(screen.getByLabelText("Review: Growth needs your confirmation: Launch email"));
   const buttons = alert.mock.calls[0][2]!;
@@ -295,6 +309,7 @@ it("falls back to the Review sheet when the row has review actions but no naviga
   };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
   expect(alert).toHaveBeenCalledWith(
     "Growth wants to publish a post on LinkedIn",
@@ -312,6 +327,7 @@ it("suppresses reopening the Review sheet (press, fallback press, long-press) wh
   };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   // Opens via the row's press fallback (no target on this item).
   await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
   const buttons = alert.mock.calls[0][2]!;
@@ -332,6 +348,7 @@ it("is not pressable with no review actions and no navigation target", async () 
   mockState = { items: [item({ roomId: null, threadRootMessageId: null, actions: [] })] };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
   expect(alert).not.toHaveBeenCalled();
   expect(mockPush).not.toHaveBeenCalled();
@@ -356,6 +373,7 @@ it("offers Open on a message, with its Reply one long press away", async () => {
     })],
   };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByLabelText("Open: Aden Kim sent you a direct message")).toBeTruthy();
   expect(screen.queryByText("Review")).toBeNull();
   await fireEvent(screen.getByLabelText("Aden Kim sent you a direct message"), "longPress");
@@ -367,6 +385,7 @@ it("offers Open on a message, with its Reply one long press away", async () => {
 it("offers Open, not Review, when the only actions navigate", async () => {
   mockState = { items: [item({ actions: [action({ id: "open", label: "Open task", navigate: { kind: "task", id: "t-1", roomId: null } })] })] };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Open: Growth wants to publish a post on LinkedIn"));
   expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } });
   expect(screen.queryByText("Review")).toBeNull();
@@ -375,6 +394,7 @@ it("offers Open, not Review, when the only actions navigate", async () => {
 it("rings an agent actor that is running", async () => {
   mockState = { items: [item({ actor: { kind: "agent", id: "agent-9", name: "Growth" } })] };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByLabelText("Working")).toBeTruthy();
 });
 
@@ -383,6 +403,7 @@ it("marks seen up to the newest item while focused, and not while blurred", asyn
   mockState = { items: [item({ createdAt: new Date(Date.now() - 3_600_000).toISOString() }), item({ id: "b", createdAt: newest })] };
   mockFocused = false;
   const view = await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(mockMarkSeen).not.toHaveBeenCalled();
   mockFocused = true;
   await view.rerender(<Activity />);
@@ -392,6 +413,7 @@ it("marks seen up to the newest item while focused, and not while blurred", asyn
 it("shows the empty state, the Paperclip footnote and skeletons", async () => {
   mockState = { paperclipAvailable: false };
   const view = await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByText("You’re all caught up.")).toBeTruthy();
   expect(screen.getByText(/Paperclip is unavailable/)).toBeTruthy();
 
@@ -404,6 +426,7 @@ it("shows the empty state, the Paperclip footnote and skeletons", async () => {
 it("reports a load failure in plain words", async () => {
   mockState = { error: new Error("Network request failed") };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.getByText("Couldn’t load activity: Network request failed")).toBeTruthy();
   await fireEvent.press(screen.getByRole("button", { name: "Retry" }));
   expect(mockRefresh).toHaveBeenCalled();
@@ -431,6 +454,7 @@ describe("activity links", () => {
     });
     mockState = { items: [turn("a", "Finished: newest"), turn("b", "Finished: older")] };
     await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
     expect(await screen.findByText("Finished: newest")).toBeTruthy();
     expect(screen.queryByText("Finished: older")).toBeNull();
   });
@@ -446,6 +470,7 @@ describe("activity links", () => {
     });
     mockState = { items: [about("a", "finished", "Finished: newest"), about("b", "join_request", "Bob asked to join")] };
     await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
     expect(await screen.findByText("Finished: newest")).toBeTruthy();
     expect(screen.getByText("Bob asked to join")).toBeTruthy();
   });
@@ -457,6 +482,7 @@ describe("activity links", () => {
       summary: { title: "Claude · Fix the header", requester: { kind: "agent", id: "claude", name: "Claude" }, reason: "Finished: all green", preview: null, links: [] },
     })] };
     await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
     expect(await screen.findByText("Fix the header")).toBeTruthy();
     expect(screen.queryByText(/^· /)).toBeNull();
   });
@@ -477,6 +503,7 @@ it("answers a login ask with the web's value shape and forgets the password", as
   mockState = { items: [loginItem("Google is connected. This password is only for the browser.")] };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   await fireEvent.press(screen.getByLabelText("Review: Growth needs the login for accounts.google.com"));
   const buttons = alert.mock.calls[0][2]!;
   await act(async () => { buttons.find((b) => b.text === "Add login")!.onPress!(); });
@@ -503,6 +530,7 @@ it("opens the login form straight from a focused sign-in link", async () => {
   mockParams = { focus: "login:0123456789abcdef0123456789abcdef" };
   mockState = { items: [loginItem()] };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(await screen.findByLabelText("Password")).toBeTruthy();
   expect(mockRunAction).not.toHaveBeenCalled();
 });
@@ -511,5 +539,13 @@ it("does not open a form for a focused login ask that is already resolved", asyn
   mockParams = { focus: "login:0123456789abcdef0123456789abcdef" };
   mockState = { items: [{ ...loginItem(), state: "resolved" }] };
   await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "All" }));
   expect(screen.queryByLabelText("Password")).toBeNull();
+});
+
+it("opens Needs you with decisions selected, keeping the full activity feed one tap away", async () => {
+  mockState = { items: [item()] };
+  await render(<Activity />);
+  expect(screen.getByRole("button", { name: /Needs you/ }).props.accessibilityState.selected).toBe(true);
+  expect(screen.getByRole("button", { name: "All" }).props.accessibilityState.selected).toBe(false);
 });

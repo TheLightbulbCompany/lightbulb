@@ -24,6 +24,7 @@ import asyncio
 import sys
 
 from core.repositories import container_repo
+from core.services.runtime_transport import runtime_arn
 from core.services.owner_facts import write_owner_facts
 
 
@@ -32,7 +33,7 @@ async def _targets(args: argparse.Namespace) -> list[str]:
         return [args.owner_id]
     rows = await container_repo.scan_all(consistent=True)
     # No runtime ARN = no provisioned profiles to write into.
-    return sorted(r["owner_id"] for r in rows if r.get("agentcore_runtime_arn") and r.get("owner_id"))
+    return sorted(r["owner_id"] for r in rows if runtime_arn(r) and r.get("owner_id"))
 
 
 async def main(argv: list[str] | None = None) -> int:

@@ -62,6 +62,7 @@ def _task_body(kind: str = "task", task_id: str = TASK) -> dict:
 
 @pytest.fixture
 def invoked(monkeypatch):
+    monkeypatch.setattr(container_repo, "get_session_sync", lambda *a, **k: {})
     seen: list[str] = []
 
     class _Client:

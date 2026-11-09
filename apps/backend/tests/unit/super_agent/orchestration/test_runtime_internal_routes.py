@@ -475,3 +475,34 @@ async def test_meeting_chat_whitespace_is_invalid_without_effects(api, monkeypat
     assert response.status_code == 422 and response.json()["detail"] == "invalid_arguments"
     lookup.assert_not_awaited()
     provider.assert_not_awaited()
+
+
+async def test_meeting_context_authenticates_hook_before_access_and_bounds_cursor(api, monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.services import meeting_context
+
+    source = AsyncMock(return_value={"quotedSource": True, "text": "page", "nextCursor": "next"})
+    monkeypatch.setattr(meeting_context, "context", source)
+    url = f"/api/v1/internal/runtime/{WS}/meeting-context"
+    body = {"runId": "current-run", "triggerId": "meeting-followups:r:1", "section": "transcript"}
+    assert (await api.post(url, json=body)).status_code in (401, 403)
+    assert (await api.post(url, json={**body, "cursor": "x" * 513}, headers=H)).status_code == 422
+    source.assert_not_awaited()
+    response = await api.post(url, json=body, headers={**H, meeting_context.GRANT_HEADER: "private-grant"})
+    assert response.status_code == 200 and response.json()["quotedSource"] is True
+    source.assert_awaited_once_with(WS, body["runId"], body["triggerId"], "transcript", None, grant="private-grant")
+
+
+async def test_owner_hook_cannot_read_private_meeting_without_current_batch_grant(api, monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.services import meeting_context
+
+    lookup = AsyncMock()
+    monkeypatch.setattr(meeting_context.tasks_repo, "get_trigger", lookup)
+    response = await api.post(
+        f"/api/v1/internal/runtime/{WS}/meeting-context",
+        json={"runId": "other-run", "triggerId": "known-private-trigger", "section": "transcript"},
+        headers=H,
+    )
+    assert response.status_code == 403
+    lookup.assert_not_awaited()

@@ -130,6 +130,8 @@ class RunRequest:
     # "caller": a phone caller's thread. The bridge gives it only the caller's booking tools and no integration
     # tokens (governance P2, the caller case); absent = a member's run, unchanged.
     principal: Literal["caller"] | None = None
+    # Ephemeral transport header only: never to_wire, model input, fingerprint or durable request.
+    context_grant: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.effects not in ("off", "required"):
@@ -181,12 +183,17 @@ async def _call(
     body: dict,
     timeout_s: float,
     grant: str | None = None,
+    context_grant: str | None = None,
     task_id: str | None = None,
 ):
     container = await _container(owner_id)
     headers = {"Authorization": f"Bearer {container.get('gateway_token') or ''}"}
     if grant is not None:
         headers["X-Lightbulb-Local-Session-Token"] = grant
+    if context_grant is not None:
+        from core.services.meeting_context import GRANT_HEADER
+
+        headers[GRANT_HEADER] = context_grant
     # The workspace path calls the transport exactly as before; only a task session names its task.
     session = {"task_id": task_id} if task_id is not None else {}
     try:
@@ -308,6 +315,7 @@ async def create_run(owner_id: str, identity: RunIdentity, request: RunRequest) 
             body={"identity": identity.to_wire(), "request": request.to_wire()},
             timeout_s=CREATE_TIMEOUT_S,
             grant=grant,
+            **({"context_grant": request.context_grant} if request.context_grant else {}),
             **_task_session(identity),
         )
     except RunRefused as exc:

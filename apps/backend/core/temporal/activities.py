@@ -928,12 +928,22 @@ async def _router_run(
     Returned still running, unmetered, once `settled(status)` holds: the decisions are in and the rest of the run
     is the Router's closing word, so the ack need not wait for it (`_finish_router_run` meters it)."""
     identity = await _router_identity(ws, inp, scope, call)
+    from core.services import meeting_context
+
+    context_triggers = []
+    for trigger_id in inp.trigger_ids:
+        trigger = await tasks_repo.get_trigger(ws, trigger_id)
+        if trigger and "meetingFollowups" in (trigger.get("ref") or {}):
+            await meeting_context.authorize(ws, trigger)
+            context_triggers.append(trigger_id)
+    grant = meeting_context.mint_grant(ws, identity.run_id, context_triggers) if context_triggers else None
     request = runtime_runs.RunRequest(
         input=prompt,
         instructions=router_prompt.ROUTER_INSTRUCTIONS,
         max_iterations=ROUTER_MAX_ITERATIONS,
         run_budget_seconds=ROUTER_BUDGET_S,
         memory=memory,
+        context_grant=grant,
     )
     try:
         try:

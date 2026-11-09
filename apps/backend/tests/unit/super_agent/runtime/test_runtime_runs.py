@@ -184,3 +184,15 @@ async def test_a_callers_run_is_created_on_the_caller_route(bridge):
 
     await rr.create_run(OWNER, IDENTITY, REQUEST)  # a member's run is unchanged
     assert bridge.calls[-1]["path"] == "/internal/v1/runs"
+
+
+async def test_router_context_grant_is_transport_only_not_model_request_or_repr(bridge):
+    request = rr.RunRequest(input="Review this completion", instructions="Router", context_grant="private-read-grant")
+    identity = rr.RunIdentity(
+        IDENTITY.run_id, OWNER, TASK, 1, AGENT, mode="router", lane="shared", room=ts.router_room_key("meeting")
+    )
+    await rr.create_run(OWNER, identity, request)
+    call = bridge.calls[0]
+    assert call["headers"]["X-Lightbulb-Meeting-Context-Grant"] == "private-read-grant"
+    assert "private-read-grant" not in json.dumps(call["body"])
+    assert "private-read-grant" not in repr(request)

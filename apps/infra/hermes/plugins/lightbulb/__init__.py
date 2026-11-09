@@ -51,10 +51,10 @@ SEND_SCHEMA = {
 }
 
 
-def _post(url: str, token: str, body: dict) -> dict:
+def _post(url: str, token: str, body: dict, *, headers: dict | None = None) -> dict:
     request = urllib.request.Request(
         url, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}, method="POST")
+        headers={**(headers or {}), "Content-Type": "application/json", "Authorization": f"Bearer {token}"}, method="POST")
     with urllib.request.urlopen(request, timeout=20) as res:
         return json.loads(res.read() or b"{}")
 

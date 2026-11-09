@@ -449,7 +449,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Meetings (invite the team address) references/email.md ("Meetings")
                               <- backend core/services/meeting_invites.py (handle_team_mail: member's Meet invite -> hidden room with every agent, RSVP, bot; output_room; advance for series),
                                  meeting_bots.py (bot_name + chat event subscription), routers/meetings.py (Recall status, endedAt, roster relay + signed chat),
-                                 core/services/meeting_chat.py + plugins/lightbulb/router.py (meeting_chat tool; occurrence-scoped receipts), meeting_notes.py (transcript + notes run to the
+                                 core/services/meeting_chat.py + plugins/lightbulb/router.py (meeting_chat tool; occurrence-scoped receipts);
+                                 core/services/meeting_context.py + routers/runtime_internal.py (read-only meeting_context pages; immutable original principal and occurrence), meeting_notes.py (transcript + notes run to the
                                  default room by the CEO or a fallback agent in it, notesSkipped, app-only notes and occurrence history), voice_calls.post_late_answer (a Meet's unheard
                                  answers -> meeting.unsaid); who an agent answers in a Meet: apps/huddle-agent huddle.py (_mine, MEET_FOLLOWUP_S)
   - Teammates in a room ..... references/platform-primitives.md ("Teammates in a room") + SKILL.md non-negotiable + routing row

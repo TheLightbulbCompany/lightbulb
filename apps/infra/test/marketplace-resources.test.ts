@@ -267,3 +267,21 @@ describe("ServiceStack — gog file-keyring password", () => {
     });
   });
 });
+
+// First retirement deploy: removing constructs while prod still says Retain would orphan the tables.
+describe.each(["dev", "prod"] as const)("Marketplace retirement policy (%s)", (environment) => {
+  const template = buildDbStack(environment);
+  test("only the five retired marketplace tables opt into physical deletion", () => {
+    const tables = Object.values(template.findResources("AWS::DynamoDB::Table")) as any[];
+    const retired = tables.filter((resource) => resource.Properties.TableName.startsWith(`${tablePrefix(environment)}marketplace-`));
+    expect(retired).toHaveLength(5);
+    for (const resource of retired) {
+      expect(resource.DeletionPolicy).toBe("Delete");
+      expect(resource.UpdateReplacePolicy).toBe("Delete");
+    }
+    for (const resource of tables.filter((table) => !retired.includes(table))) {
+      expect(resource.DeletionPolicy).toBe(environment === "prod" ? "Retain" : "Delete");
+      expect(resource.UpdateReplacePolicy).toBe(environment === "prod" ? "Retain" : "Delete");
+    }
+  });
+});

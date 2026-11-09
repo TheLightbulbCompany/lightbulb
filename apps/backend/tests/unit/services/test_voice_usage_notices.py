@@ -222,7 +222,19 @@ async def test_billing_recipient_is_current_plan_accepting_admin_not_provisioner
     with (
         patch.object(notices.billing_repo, "get_by_owner_id", AsyncMock(return_value=account)),
         patch.object(notices.clerk_admin, "list_organization_members", AsyncMock(return_value=members)) as list_members,
-        patch.object(notices.clerk_admin, "get_primary_email", AsyncMock(return_value="payer@example.com")) as email,
+        patch.object(
+            notices.clerk_admin,
+            "get_user_strict",
+            AsyncMock(
+                return_value={
+                    "primary_email_address_id": "primary",
+                    "email_addresses": [
+                        {"id": "old", "email_address": "old@example.com"},
+                        {"id": "primary", "email_address": "payer@example.com"},
+                    ],
+                }
+            ),
+        ) as email,
     ):
         assert await notices._owner_email("org_test") == "payer@example.com"
     list_members.assert_awaited_once_with("org_test", strict=True)
@@ -239,7 +251,7 @@ async def test_removed_or_non_admin_plan_acceptor_fails_closed():
             "list_organization_members",
             AsyncMock(return_value=[{"user_id": "user-payer", "role": "org:member"}]),
         ),
-        patch.object(notices.clerk_admin, "get_primary_email", AsyncMock()) as email,
+        patch.object(notices.clerk_admin, "get_user_strict", AsyncMock()) as email,
     ):
         assert await notices._owner_email("org_test") is None
     email.assert_not_awaited()
@@ -253,7 +265,7 @@ async def test_user_owned_billing_recipient_must_be_the_owner():
             AsyncMock(return_value={"voice_plan_accepted_by": "user-other"}),
         ),
         patch.object(notices.clerk_admin, "list_organization_members", AsyncMock()) as members,
-        patch.object(notices.clerk_admin, "get_primary_email", AsyncMock()) as email,
+        patch.object(notices.clerk_admin, "get_user_strict", AsyncMock()) as email,
     ):
         assert await notices._owner_email("user-owner") is None
     members.assert_not_awaited()
@@ -267,7 +279,16 @@ async def test_user_owned_billing_recipient_uses_only_the_matching_acceptor():
             "get_by_owner_id",
             AsyncMock(return_value={"voice_plan_accepted_by": "user-owner"}),
         ),
-        patch.object(notices.clerk_admin, "get_primary_email", AsyncMock(return_value="owner@example.com")) as email,
+        patch.object(
+            notices.clerk_admin,
+            "get_user_strict",
+            AsyncMock(
+                return_value={
+                    "primary_email_address_id": "primary",
+                    "email_addresses": [{"id": "primary", "email_address": "owner@example.com"}],
+                }
+            ),
+        ) as email,
     ):
         assert await notices._owner_email("user-owner") == "owner@example.com"
     email.assert_awaited_once_with("user-owner")

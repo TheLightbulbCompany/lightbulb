@@ -87,6 +87,19 @@ async def _publish(room_id: str, status: str) -> None:
 
 async def _count_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
     """Report the occurrence to Metronome and count it toward the workspace's voice allowance."""
+    await _report_minutes(room_id, seconds, in_call_at)
+    meta = await messaging_repo.get_room(room_id) or {}
+    if meta.get("ownerId"):
+        try:
+            await voice_billing.add_month_seconds(
+                meta["ownerId"], int(seconds), datetime.fromtimestamp(in_call_at, UTC)
+            )
+        except Exception:
+            logger.warning("meeting room %s: allowance counter update failed", room_id, exc_info=True)
+
+
+async def _report_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
+    """Await durable usage-source and outbox admission for one frozen occurrence."""
     meta = await messaging_repo.get_room(room_id) or {}
     if meta.get("ownerId"):
         at = datetime.fromtimestamp(in_call_at, UTC)
@@ -95,14 +108,12 @@ async def _count_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
         await voice_billing.report_minutes(
             meta["ownerId"], f"meeting:{room_id}:{in_call_at}", at.isoformat(), int(seconds), "meeting"
         )
-        await voice_billing.add_month_seconds(meta["ownerId"], int(seconds), at)
 
 
 async def _finish(
     room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None, ended_at: int | None = None
 ) -> None:
-    """The rest of the one end path, once ``status`` is written. Never raises: the written status
-    turns every retry into a no-op, so a step that failed here would otherwise be lost for good.
+    """Finish ancillary work after status is written, surfacing metering failure for callback retry.
     Notes first (only for a call the bot was in; a series advances after them, or at once without
     them), the room's close last. Presence is a metric only: we pay for the bot's time, the
     workspace's allowance pays only for agent speech (voice_billing). Both are fired, never awaited:
@@ -121,6 +132,7 @@ async def _finish(
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
     ]
+    metering_error = None
     for step, run in steps:
         try:
             result = run()
@@ -129,6 +141,10 @@ async def _finish(
         except Exception:  # noqa: BLE001 -- one failed step must not cost the others
             put_metric("meeting.finish_step_failed", dimensions={"step": step})
             logger.warning("meeting room %s: end step %s failed", room_id, step, exc_info=True)
+            if step == "minutes":
+                metering_error = True
+    if metering_error:
+        raise RuntimeError("meeting usage event was not durably admitted; retry the terminal callback")
 
 
 async def _on_status(
@@ -166,6 +182,10 @@ async def _on_status(
                         logger.warning("meeting room %s: extra bot leave failed", room_id, exc_info=True)
                 return
         if status in _TERMINAL:  # never revived; a redelivery retries notes or a series' advance left undone
+            if meeting.get("inCallAt") and meeting.get("endedAt"):
+                seconds = max(0, int(meeting["endedAt"]) - int(meeting["inCallAt"]))
+                if seconds:
+                    await _report_minutes(room_id, seconds, int(meeting["inCallAt"]))
             if meeting_notes.owed(meeting):
                 voice_calls._fire(meeting_notes.on_ended(room_id))
             elif meeting.get("recurrence"):
@@ -387,13 +407,23 @@ async def leave(room_id: str, body: RoomBody):
             if not meta or meta.get("ownerId") != body.ownerId:
                 raise _problem(404, "room_not_found")
             meeting = meta.get("meeting") or {}
-            if not meeting.get("recallBotId") or meeting.get("status") in _TERMINAL:
+            already_terminal = meeting.get("status") in _TERMINAL
+            if not meeting.get("recallBotId") and not already_terminal:
                 return {"ok": True}
-            # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
-            fields = {"status": "ended", "lastBotStatus": "idle_leave", "endedAt": int(time.time())}
-            await meeting_invites._patch_meeting(room_id, fields)
+            if already_terminal:
+                fields = {"endedAt": meeting.get("endedAt")}
+            else:
+                # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
+                fields = {"status": "ended", "lastBotStatus": "idle_leave", "endedAt": int(time.time())}
+                await meeting_invites._patch_meeting(room_id, fields)
     except meeting_invites.MeetingBusy:
         raise _problem(503, "meeting_busy") from None
+    if already_terminal:
+        if meeting.get("inCallAt") and fields.get("endedAt"):
+            seconds = max(0, int(fields["endedAt"]) - int(meeting["inCallAt"]))
+            if seconds:
+                await _report_minutes(room_id, seconds, int(meeting["inCallAt"]))
+        return {"ok": True}
     for attempt in range(1, _LEAVE_TRIES + 1):
         try:
             await meeting_bots.leave(meeting["recallBotId"])

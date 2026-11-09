@@ -117,7 +117,18 @@ async def _owner_email(owner_id: str) -> str | None:
             return None
     elif accepted_by != owner_id:
         return None
-    return (await clerk_admin.get_primary_email(accepted_by)).strip() or None
+    user = await clerk_admin.get_user_strict(accepted_by)
+    if not user:
+        return None
+    primary_id = user.get("primary_email_address_id")
+    return next(
+        (
+            email.strip()
+            for address in user.get("email_addresses") or []
+            if address.get("id") == primary_id and (email := address.get("email_address")) and email.strip()
+        ),
+        None,
+    )
 
 
 def _content(threshold: int, used_seconds: int) -> tuple[str, str, str]:

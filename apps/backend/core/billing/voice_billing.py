@@ -151,37 +151,98 @@ async def counted_seconds(owner_id: str, tz_name: str | None) -> int | None:
 
 
 async def report_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int, kind: str) -> None:
-    """One ``voice_minutes`` event per call or meeting occurrence; Metronome dedupes transaction_id retries.
-    Pricing requires a voice-minutes metric and plan on the customer's contract. Best effort: an ingest
-    failure is logged and never raises, so provider downtime cannot prevent call or meeting cleanup."""
-    if not settings.METRONOME_API_KEY or seconds <= 0:
+    """Persist one immutable Metronome event and enqueue durable delivery.
+
+    Metronome's transaction id dedupes replays. The messaging stream/Pipe/FIFO
+    outbox delivers events after the voice lifecycle callback returns, so a
+    provider or Temporal outage cannot discard its only scheduling attempt.
+    """
+    if seconds <= 0:
         return
-    at = datetime.fromisoformat(started_at).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    try:
-        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-        properties = {"seconds": str(seconds), "kind": kind}
-        # A late end callback still belongs to the paid occurrence that started before cancellation.
-        if (
-            account
-            and account.get("metronome_voice_contract_id")
-            and account.get("voice_plan_usage_key")
-            and (
-                not account.get("voice_plan_started_at")
-                or datetime.fromisoformat(started_at) >= datetime.fromisoformat(account["voice_plan_started_at"])
+    event_at = datetime.fromisoformat(started_at).astimezone(UTC)
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    properties = {"seconds": str(seconds), "kind": kind}
+    event = {
+        "transactionId": transaction_id,
+        "customerId": owner_id,
+        "timestamp": event_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "seconds": seconds,
+        "kind": kind,
+        "properties": properties,
+    }
+    # A late end callback still belongs to the paid occurrence that started before cancellation.
+    if (
+        account.get("metronome_voice_contract_id")
+        and account.get("voice_plan_usage_key")
+        and (
+            not account.get("voice_plan_started_at")
+            or event_at >= datetime.fromisoformat(account["voice_plan_started_at"])
+        )
+        and (
+            not account.get("voice_plan_ending_at")
+            or event_at < datetime.fromisoformat(account["voice_plan_ending_at"])
+        )
+    ):
+        from core.billing import voice_plan
+
+        period_start, period_end = voice_plan.period(account, at=event_at)
+        properties["voice_plan"] = account["voice_plan_usage_key"]
+        event.update(
+            {
+                "contractId": account["metronome_voice_contract_id"],
+                "usageKey": account["voice_plan_usage_key"],
+                "periodStart": period_start.astimezone(UTC).isoformat(),
+                "periodEnd": period_end.astimezone(UTC).isoformat(),
+            }
+        )
+    await messaging_repo.put_voice_usage_event(owner_id, transaction_id, event)
+
+
+async def deliver_usage_event(owner_id: str, transaction_id: str) -> str:
+    """Retry-safe worker for the durable voice usage outbox pointer."""
+    key = {"pk": messaging_repo.owner_pk(owner_id), "sk": messaging_repo.voice_usage_sk(transaction_id)}
+    row = await messaging_repo._get(key["pk"], key["sk"])
+    event = (row or {}).get("voiceUsageEvent")
+    if not row or row.get("ownerId") != owner_id or not isinstance(event, dict):
+        raise RuntimeError("voice usage outbox has no matching immutable event")
+    if event.get("transactionId") != transaction_id or event.get("customerId") != owner_id:
+        raise RuntimeError("voice usage outbox identity does not match its frozen event")
+
+    if not row.get("metronomeIngestedAt"):
+        if not settings.METRONOME_API_KEY:
+            raise RuntimeError("voice usage delivery requires METRONOME_API_KEY")
+        provider_event = {
+            "transaction_id": transaction_id,
+            "customer_id": owner_id,
+            "event_type": "voice_minutes",
+            "timestamp": event["timestamp"],
+            "properties": event["properties"],
+        }
+        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=10.0) as http:
+            await metronome_client.for_settings(http).ingest([provider_event])
+        await messaging_repo.mark_voice_usage_ingested(owner_id, transaction_id)
+        from core.observability.metrics import put_metric
+
+        put_metric("voice.usage_delivery", dimensions={"step": "metronome", "result": "accepted"})
+
+    if event.get("contractId"):
+        from core.temporal.client import start_voice_usage_notice
+        from core.temporal.voice_usage_notices import VoiceUsageNoticeInput
+
+        await start_voice_usage_notice(
+            VoiceUsageNoticeInput(
+                owner_id=owner_id,
+                transaction_id=transaction_id,
+                contract_id=event["contractId"],
+                usage_key=event["usageKey"],
+                period_start=event["periodStart"],
+                period_end=event["periodEnd"],
             )
-            and (
-                not account.get("voice_plan_ending_at")
-                or datetime.fromisoformat(started_at) < datetime.fromisoformat(account["voice_plan_ending_at"])
-            )
-        ):
-            properties["voice_plan"] = account["voice_plan_usage_key"]
-        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=5.0) as http:
-            await metronome_client.for_settings(http).ingest(
-                [{"transaction_id": transaction_id, "customer_id": owner_id, "event_type": "voice_minutes",
-                  "timestamp": at, "properties": properties}]
-            )  # fmt: skip
-    except Exception:
-        logger.warning("voice_minutes ingest failed for %s", transaction_id, exc_info=True)
+        )
+        from core.observability.metrics import put_metric
+
+        put_metric("voice.usage_delivery", dimensions={"step": "notice_workflow", "result": "started"})
+    return "delivered"
 
 
 async def report_owner_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int) -> None:

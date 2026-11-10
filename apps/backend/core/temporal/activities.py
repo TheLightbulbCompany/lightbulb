@@ -368,8 +368,8 @@ CALLER_THREAD_NOTE = (
     'time back once and wait for their yes; a pick ("the first one works") is not a yes. On their "yes", book it '
     "at once, with no further question. "
     "Your final answer, and any note, states only what the tool results say happened: a result that starts with "
-    '"Not done" or says a message was taken means the booking was NOT changed, so say that plainly and say what '
-    "was done instead (a message for the team). Never write that a change is under way, being finalized or done "
+    '"Not done" or says a message was taken means the booking was NOT changed, so say that plainly. Say a '
+    "message was taken only when the message action itself returned a saved result. Never write that a change is under way, being finalized or done "
     "unless a tool result confirmed it."
 )
 

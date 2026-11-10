@@ -218,6 +218,7 @@ async def test_a_callers_thread_gets_the_profile_and_the_caller_principal(monkey
     assert "read the exact service, day and time back once" in note and 'On their "yes", book it at once' in note
     # 10 Nov prod call: a refused cancel was narrated as "finalizing"; the answer states only what a result said
     assert 'starts with "Not done"' in note and "NOT changed" in note and "being finalized" in note
+    assert "only when the message action itself returned a saved result" in note
     assert "never that a booking change is being made, started or finished" in " ".join(
         router_prompt.ROUTER_INSTRUCTIONS.split()
     )

@@ -10,6 +10,8 @@ comes from that record, never from the model. The assistant's settings are the A
 Rows in the messaging table:
     PHONE#<e164>    LINE                  the number's workspace (ownerId) and the member tasks run as (ownerUserId)
     OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM");
+                                          with an Agent-page `staff` list, the first person's; another person's is
+                                          VOICEBOOK#<local>#<name> (and its cells VOICECELL#<utc>#<name>): see _lanes
                                           with bookingsGo "google" it is the hold, eventId its Google event
                                           (core/services/voice_booking)
     OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
@@ -584,13 +586,42 @@ async def resolve_call(owner_id: str, call_id: str, by: str) -> None:
 # --- the assistant's own calendar (spec §4.1b: a hold in its calendar when the business has no API) --------
 
 
-def _minutes(cfg: dict, service: str) -> int:
+def _service(cfg: dict, service: str) -> dict:
     s = service.strip().lower()
     for x in cfg["services"]:
         n = str(x.get("name", "")).strip().lower()
         if n and (n in s or s in n):
-            return int(x.get("minutes") or 60)
-    return 60
+            return x
+    return {}
+
+
+def _minutes(cfg: dict, service: str) -> int:
+    return int(_service(cfg, service).get("minutes") or 60)
+
+
+def _staff(cfg: dict) -> list[str]:
+    """The Agent page's people (names only), deduplicated, at most 20."""
+    raw = cfg.get("staff") if isinstance(cfg.get("staff"), list) else []
+    return list(dict.fromkeys(n.strip()[:40] for n in raw if isinstance(n, str) and n.strip()))[:20]
+
+
+def _lanes(cfg: dict, service: str) -> list[tuple[str, str]]:
+    """(key suffix, person) for everyone who can do `service`, in staff-list order: a slot's capacity is one booking
+    per lane. The first person takes the unsuffixed keys, so a config with no staff list (one lane, "") and the
+    bookings made before it had one keep exactly today's keys. A service's `staff` ("Ana, Mei") names who does it;
+    empty, or naming nobody on the list, is anyone.
+    ponytail: keys follow names and list order, so renaming or reordering people does not move bookings they already
+    hold (a renamed person starts free). Per-person schedules and days off are not modelled."""
+    staff = _staff(cfg)
+    if not staff:
+        return [("", "")]
+    named = {n.strip().lower() for n in str(_service(cfg, service).get("staff") or "").split(",")}
+    return [("" if p == staff[0] else f"#{p}", p) for p in [p for p in staff if p.lower() in named] or staff]
+
+
+def _start(row: dict) -> str:
+    """A VOICEBOOK# row's local start (the 16 characters after the prefix; a person's suffix may follow)."""
+    return row["sk"][10:26]
 
 
 def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
@@ -599,6 +630,17 @@ def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
         return None
     return (datetime.strptime(f"{date}T{h['open']}", "%Y-%m-%dT%H:%M"),
             datetime.strptime(f"{date}T{h['close']}", "%Y-%m-%dT%H:%M"))  # fmt: skip
+
+
+def open_starts(
+    cfg: dict, date: str, taken: list[tuple], now: datetime, minutes: int, lanes: list[tuple[str, str]]
+) -> list[str]:
+    """`free_slots` where at least one of `lanes` is free. `taken` holds (start, end, lane) bookings and
+    (start, end) blocks, such as a Google busy block, that every lane shares."""
+    out: set[str] = set()
+    for lane, _ in lanes:
+        out.update(free_slots(cfg, date, [(t[0], t[1]) for t in taken if len(t) == 2 or t[2] == lane], now, minutes))
+    return sorted(out)
 
 
 def free_slots(cfg: dict, date: str, taken: list[tuple[datetime, datetime]], now: datetime, minutes: int) -> list[str]:
@@ -635,14 +677,15 @@ async def _bookings(owner_id: str, prefix: str) -> list[dict]:
     return await _booking_rows(owner_id, f"VOICEBOOK#{prefix}")
 
 
-async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime]]:
-    # Provisional move targets stay visible, including moves to a different date.
+async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime, str]]:
+    """(start, end, lane) for every booking on `date`. Provisional move targets stay visible, including moves to a
+    different date; a hold's lane is its `lane` (a hold written before lanes had none: the one lane)."""
     holds = await _booking_rows(owner_id, f"VOICEHOLD#{date}")
     out = []
     for b in [*(await _bookings(owner_id, date)), *holds]:
-        start = b.get("start") or b["sk"].removeprefix("VOICEBOOK#")
-        s = datetime.strptime(start, "%Y-%m-%dT%H:%M")
-        out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60))))
+        hold = b["sk"].startswith("VOICEHOLD#")
+        s = datetime.strptime(b["start"] if hold else _start(b), "%Y-%m-%dT%H:%M")
+        out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60)), b.get("lane", "") if hold else b["sk"][26:]))
     return out
 
 
@@ -663,11 +706,11 @@ def _now(cfg: dict) -> datetime:
     return datetime.now(_tz(cfg)).replace(tzinfo=None)
 
 
-def _cells(cfg: dict, start: str, minutes: int) -> list[str]:
-    """The 5-minute UTC cells a booking holds: [start, start + minutes + bufferMin)."""
+def _cells(cfg: dict, start: str, minutes: int, lane: str = "") -> list[str]:
+    """The 5-minute UTC cells a booking holds in its lane: [start, start + minutes + bufferMin)."""
     t = datetime.strptime(start, "%Y-%m-%dT%H:%M").replace(tzinfo=_tz(cfg)).astimezone(ZoneInfo("UTC"))
     n = -(-(minutes + int(cfg.get("bufferMin") or 0)) // 5)
-    return [f"VOICECELL#{(t + timedelta(minutes=5 * i)):%Y-%m-%dT%H:%M}" for i in range(n)]
+    return [f"VOICECELL#{(t + timedelta(minutes=5 * i)):%Y-%m-%dT%H:%M}{lane}" for i in range(n)]
 
 
 class DateIn(BaseModel):
@@ -680,7 +723,8 @@ async def availability(call_id: str, body: DateIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book", "move")
-    slots = await voice_booking.free(meta["ownerId"], cfg, call_id, body.date, _minutes(cfg, body.service))
+    minutes, lanes = _minutes(cfg, body.service), _lanes(cfg, body.service)
+    slots = await voice_booking.free(meta["ownerId"], cfg, call_id, body.date, minutes, lanes)
     return {"date": body.date, "slots": slots}
 
 
@@ -691,29 +735,47 @@ class BookIn(BaseModel):
 
 
 async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,
-                old: dict | None = None) -> None:  # fmt: skip
+                old: dict | None = None) -> dict:  # fmt: skip
     """Write the booking and its cells in one TransactWriteItems with `attribute_not_exists` on every cell, so an
     overlap fails atomically (https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html,
     https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html). `old` is the booking
-    being moved: its row and cells go in the same transaction."""
+    being moved: its row and cells go in the same transaction. Returns the booking row written."""
     minutes, pk, table = (
         _minutes(cfg, service),
         messaging_repo.owner_pk(owner_id),
         messaging_repo.settings.MESSAGING_TABLE,
     )
-    cells = _cells(cfg, start, minutes)
+    if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and _start(old) == start):
+        raise _err(400, "slot_unavailable")
+    # A move keeps its person; a new booking takes the first eligible person whose keys are free. A lost race on
+    # one person's keys (the transaction is cancelled) tries the next, so capacity is never over-booked.
+    lanes = [(old["sk"][26:], old.get("staff", ""))] if old else _lanes(cfg, service)
+    for n, (lane, person) in enumerate(lanes):
+        items = _booking_items(table, pk, call_id, call, cfg, start, service, name, minutes, lane, person, old)
+        try:
+            await messaging_repo._transact(items)
+            return items[0]["Put"]["Item"]
+        except ClientError as exc:
+            if not messaging_repo.is_cancelled(exc):
+                raise
+            if n == len(lanes) - 1:
+                raise _err(409, "slot_taken") from exc
+    raise AssertionError("unreachable: _lanes is never empty")
+
+
+def _booking_items(table: str, pk: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,
+                   minutes: int, lane: str, person: str, old: dict | None) -> list[dict]:  # fmt: skip
+    cells = _cells(cfg, start, minutes, lane)
     if len(cells) > 99:  # DynamoDB caps a transaction at 100 items (the booking row is one)
         raise _err(400, "booking_too_long")
-    if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and old["sk"] == f"VOICEBOOK#{start}"):
-        raise _err(400, "slot_unavailable")
-    sk, mine = f"VOICEBOOK#{start}", set(old.get("cells", [])) if old else set()
+    sk, mine = f"VOICEBOOK#{start}{lane}", set(old.get("cells", [])) if old else set()
     items = [{"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
         "pk": pk, "sk": sk, "bookingId": (old or {}).get("bookingId") or str(uuid.uuid4()),
         "generation": int((old or {}).get("generation", 0)) + 1,
         "bookingProvider": (old or {}).get("bookingProvider") or ("google" if cfg.get("bookingsGo") == "google" else "own"),
         "bookingState": "held" if cfg.get("bookingsGo") == "google" else "confirmed",
         "service": service, "minutes": minutes, "name": name, "phone": call.get("caller", ""),
-        "callId": call_id, "createdAt": utc_now_iso(), "cells": cells}}}]  # fmt: skip
+        "callId": call_id, "createdAt": utc_now_iso(), "cells": cells, **({"staff": person} if person else {})}}}]  # fmt: skip
     for c in cells:
         put = {
             "TableName": table,
@@ -736,16 +798,11 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
         items += _release(table, pk, old, keep=set(cells))
     if len(items) > 100:
         raise _err(400, "booking_too_long")
-    try:
-        await messaging_repo._transact(items)
-    except ClientError as exc:
-        if messaging_repo.is_cancelled(exc):
-            raise _err(409, "slot_taken") from exc
-        raise
+    return items
 
 
 def _cell_expiry(cell: str) -> int:  # the table's TTL attribute: the cell's end + 1 day
-    t = datetime.strptime(cell.removeprefix("VOICECELL#"), "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("UTC"))
+    t = datetime.strptime(cell[10:26], "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("UTC"))  # after it: a lane
     return int(t.timestamp()) + 300 + 86400
 
 
@@ -788,11 +845,12 @@ async def book(call_id: str, body: BookIn) -> dict:
         await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
         return {"booked": False, **result}
     entry = {"start": body.start, "service": body.service, "name": body.name}
-    line = f"{body.service} · {_pretty(body.start)} for {body.name}"
+    who = f" with {result['staff']}" if result.get("staff") else ""
+    line = f"{body.service} · {_pretty(body.start)} for {body.name}{who}"
     await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
                                           "callerName": c.get("callerName") or body.name,
                                           "steps": _step(c, f"Booked {line}")})  # fmt: skip
-    return {"booked": True, **entry}
+    return {"booked": True, **entry, **({"staff": result["staff"]} if result.get("staff") else {})}
 
 
 class ChangeIn(BaseModel):
@@ -806,9 +864,10 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "move")
-    owner_pk, sk = messaging_repo.owner_pk(meta["ownerId"]), f"VOICEBOOK#{body.start}"
-    row = await messaging_repo._get(owner_pk, sk)
-    if not row or not call.get("caller") or row.get("phone") != call["caller"]:
+    # Every person's booking at that start (VOICEBOOK#<start>[#<name>]); only one made from this caller's number.
+    rows = await _bookings(meta["ownerId"], body.start) if call.get("caller") else []
+    row = next((r for r in rows if r.get("phone") == call["caller"]), None)
+    if not row:
         raise _err(404, "booking_not_found")
     if body.newStart:
         result = await voice_booking.move(meta["ownerId"], cfg, call_id, call, row, body.newStart)
@@ -836,7 +895,7 @@ async def my_bookings(call_id: str) -> dict:
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
 
     def public_booking(b: dict) -> dict:
-        out = {"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b["service"]}
+        out = {"start": _start(b), "service": b["service"]}
         if b.get("pending") or b.get("bookingState") == "held":
             out |= {
                 "state": "pending" if b.get("pending") else "held",

@@ -117,3 +117,26 @@ it("saves supported voice and Spanish settings without rewriting the saved legac
   expect(screen.getByLabelText("Sample language")).toBeInTheDocument();
   vi.useRealTimers();
 });
+
+it("who does a service is a choice from the staff list, stored as names", async () => {
+  const { WhoDoesIt } = await import("../AgentPage");
+  const set = vi.fn();
+  const { rerender } = render(<WhoDoesIt staff={[]} value="Ana" set={set} />);
+  expect(screen.getByText("Anyone")).toBeInTheDocument(); // no staff list: one at a time, anyone
+  rerender(<WhoDoesIt staff={["Ana", "Mei", "Jo"]} value="Ana" set={set} />);
+  expect((screen.getByLabelText("Ana") as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(screen.getByLabelText("Jo"));
+  expect(set).toHaveBeenLastCalledWith("Ana, Jo");
+  fireEvent.click(screen.getByLabelText("Ana"));
+  expect(set).toHaveBeenLastCalledWith(""); // none ticked is anyone
+});
+
+it("the staff list adds and names people", async () => {
+  vi.useFakeTimers();
+  render(<AgentPage />);
+  fireEvent.click(screen.getByRole("button", { name: /Add a person/ }));
+  fireEvent.change(screen.getByLabelText("Staff name"), { target: { value: "Ana" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ staff: ["Ana"] }));
+  vi.useRealTimers();
+});

@@ -113,6 +113,7 @@ export function AgentPage() {
     </Sec>
 
     <Sec title="Services & staff">
+      <StaffEditor c={c} set={set} name={name} />
       <ServicesEditor c={c} set={set} />
       <div style={{ display: "flex", gap: 16, alignItems: "end", flexWrap: "wrap" }}>
         <Button size="sm" variant="outline" onClick={() => set({ services: [...c.services, { name: "", minutes: 45, price: "", staff: "" }] })}><Plus /> Add a service</Button>
@@ -203,6 +204,31 @@ export function HoursEditor({ c, set }: Edit) {
   </>;
 }
 
+/** The people who take bookings: the assistant books one appointment per free person at a time. */
+export function StaffEditor({ c, set, name }: Edit & { name: string }) {
+  const staff = c.staff ?? [];
+  return <div>
+    <b className="vx-label">Staff</b>
+    <p className="vx-sub">{staff.length ? `${name} books up to ${staff.length} appointment${staff.length === 1 ? "" : "s"} at the same time, one per person.` : `With no one listed, ${name} books one appointment at a time.`}</p>
+    {staff.map((p, n) => <div key={n} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+      <input className="vx-field" aria-label="Staff name" value={p} maxLength={40} placeholder="Ana" onChange={(e) => set({ staff: staff.map((x, i) => (i === n ? e.target.value : x)) })} />
+      <Button size="icon-sm" variant="ghost" aria-label={`Remove ${p || "person"}`} onClick={() => set({ staff: staff.filter((_, i) => i !== n) })}><X /></Button>
+    </div>)}
+    {staff.length < 20 && <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => set({ staff: [...staff, ""] })}><Plus /> Add a person</Button></div>}
+  </div>;
+}
+
+/** Who can do a service, from the staff list; none ticked is anyone. Stored as "Ana, Mei" (the field's old shape). */
+export function WhoDoesIt({ staff, value, set }: { staff: string[]; value: string; set: (v: string) => void }) {
+  const people = staff.filter((p) => p.trim());
+  if (!people.length) return <span className="vx-muted" style={{ fontSize: "var(--text-ui)" }}>Anyone</span>;
+  const on = new Set(value.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean));
+  return <div role="group" aria-label="Who does it" style={{ display: "flex", flexWrap: "wrap", gap: "0 12px" }}>
+    {people.map((p) => <Check key={p} label={p} on={on.has(p.trim().toLowerCase())}
+      set={(v) => set(people.filter((x) => (x === p ? v : on.has(x.trim().toLowerCase()))).join(", "))} />)}
+  </div>;
+}
+
 export function ServicesEditor({ c, set }: Edit) {
   return <>
   {c.services.map((s, n) => {
@@ -213,7 +239,7 @@ export function ServicesEditor({ c, set }: Edit) {
         title={s.minutesGuessed ? "A guess: the site doesn't say how long this takes" : undefined}
         onChange={(e) => put({ minutes: Number(e.target.value), minutesGuessed: false })} />
       <input className="vx-field" aria-label="Price" value={s.price} placeholder="$55" onChange={(e) => put({ price: e.target.value })} />
-      <input className="vx-field" aria-label="Who does it" value={s.staff} placeholder="Ana, Mei" onChange={(e) => put({ staff: e.target.value })} />
+      <WhoDoesIt staff={c.staff ?? []} value={s.staff} set={(staff) => put({ staff })} />
       <Button size="icon-sm" variant="ghost" aria-label={`Remove ${s.name || "service"}`} onClick={() => set({ services: c.services.filter((_, i) => i !== n) })}><X /></Button>
     </div>;
   })}

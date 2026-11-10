@@ -439,6 +439,122 @@ def _utc(day: str, hm: str) -> str:  # New York wall time -> the UTC cell key
     return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
 
 
+# --- staff capacity: one booking per free person at a time (board 3.23) ------------------------------------------
+
+STAFFED = {
+    "staff": ["Ana", "Mei"],
+    "services": [
+        {"name": "Gel manicure", "minutes": 60, "price": "$45", "staff": ""},  # anyone
+        {"name": "Pedicure", "minutes": 60, "price": "$40", "staff": "Mei"},  # only Mei
+    ],
+}
+
+
+def _book_as(client, call, start, service="gel manicure", name="Priya"):
+    return client.post(
+        f"/api/v1/internal/voice/calls/{call['callId']}/book",
+        json={"start": start, "service": service, "name": name},
+        headers=W,
+    )
+
+
+async def _row(start: str, lane: str = "") -> dict | None:
+    return await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICEBOOK#{start}{lane}")
+
+
+def _slots(client, call, service: str) -> list[str]:
+    r = client.post(
+        f"/api/v1/internal/voice/calls/{call['callId']}/availability",
+        json={"date": _tomorrow(), "service": service},
+        headers=W,
+    )
+    return r.json()["slots"]
+
+
+async def test_two_staff_take_two_bookings_at_once_and_refuse_a_third(client):
+    calls = [await _start(client, caller=f"+1415555013{i}", room=f"phone-dev-_s{i}", **STAFFED) for i in range(3)]
+    at = f"{_tomorrow()}T11:00"
+    first, second = _book_as(client, calls[0], at), _book_as(client, calls[1], at)
+    assert first.status_code == second.status_code == 200
+    assert {first.json()["staff"], second.json()["staff"]} == {"Ana", "Mei"}
+    third = _book_as(client, calls[2], f"{_tomorrow()}T11:30")  # overlaps both
+    assert third.status_code == 409 and third.json()["detail"]["code"] == "slot_taken"
+    assert (await _row(at))["staff"] == "Ana" and (await _row(at, "#Mei"))["staff"] == "Mei"
+    slots = _slots(client, calls[2], "gel")
+    assert at not in slots and f"{_tomorrow()}T12:00" in slots
+
+
+async def test_a_service_one_person_does_books_only_that_persons_time(client):
+    a = await _start(client, caller="+14155550141", room="phone-dev-_r1", **STAFFED)
+    b = await _start(client, caller="+14155550142", room="phone-dev-_r2", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    took = _book_as(client, a, at, service="pedicure")
+    assert took.status_code == 200 and took.json()["staff"] == "Mei" and await _row(at, "#Mei")
+    assert _book_as(client, b, at, service="pedicure").status_code == 409  # Ana is free but doesn't do pedicures
+    assert at not in _slots(client, b, "pedicure") and at in _slots(client, b, "gel")
+    assert _book_as(client, b, at).json()["staff"] == "Ana"  # an anyone-service still gets Ana
+
+
+async def test_cancel_frees_the_person_it_took(client):
+    a = await _start(client, caller="+14155550151", room="phone-dev-_c1", **STAFFED)
+    b = await _start(client, caller="+14155550152", room="phone-dev-_c2", **STAFFED)
+    c = await _start(client, caller="+14155550153", room="phone-dev-_c3", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at).json()["staff"] == "Ana"
+    assert _book_as(client, b, at).json()["staff"] == "Mei"
+    assert _book_as(client, c, at, service="pedicure").status_code == 409
+    r = client.post(f"/api/v1/internal/voice/calls/{b['callId']}/change", json={"start": at}, headers=W)
+    assert r.status_code == 200 and r.json()["cancelled"] and await _row(at, "#Mei") is None
+    assert await _row(at)  # Ana's booking stands
+    assert _book_as(client, c, at, service="pedicure").json()["staff"] == "Mei"
+
+
+async def test_a_move_keeps_the_person(client):
+    a = await _start(client, caller="+14155550161", room="phone-dev-_m1", **STAFFED)
+    at, to = f"{_tomorrow()}T11:00", f"{_tomorrow()}T14:00"
+    assert _book_as(client, a, at, service="pedicure").json()["staff"] == "Mei"
+    r = client.post(f"/api/v1/internal/voice/calls/{a['callId']}/change", json={"start": at, "newStart": to}, headers=W)
+    assert r.status_code == 200 and await _row(at, "#Mei") is None and (await _row(to, "#Mei"))["staff"] == "Mei"
+    assert client.post(f"/api/v1/internal/voice/calls/{a['callId']}/my-bookings", headers=W).json()["bookings"] == [
+        {"start": to, "service": "pedicure"}
+    ]
+
+
+async def test_no_staff_list_keeps_todays_keys_and_one_at_a_time(client):
+    a = await _start(client, caller="+14155550171", room="phone-dev-_o1")
+    b = await _start(client, caller="+14155550172", room="phone-dev-_o2")
+    day, at = _tomorrow(), f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at).status_code == 200
+    row = await _row(at)
+    assert "staff" not in row and row["cells"][0] == "VOICECELL#" + _utc(day, "11:00")
+    assert _book_as(client, b, at).status_code == 409
+    # Staff added later: the old booking holds the first person's time, the second person is free.
+    await messaging_repo.put_voice_agent("org_1", {**CONFIG, **STAFFED}, "user_owner")
+    assert _book_as(client, b, at, service="pedicure").json()["staff"] == "Mei"
+    assert _book_as(client, b, at).status_code == 409
+
+
+async def test_a_concurrent_double_book_on_the_last_person_lets_exactly_one_win(client):
+    a = await _start(client, caller="+14155550181", room="phone-dev-_k1", **STAFFED)
+    b = await _start(client, caller="+14155550182", room="phone-dev-_k2", **STAFFED)
+    cfg = await voice_phone.agent_config("org_1")
+    at = f"{_tomorrow()}T11:00"
+    real, raced = messaging_repo._transact, []
+
+    async def interleaved(items):
+        # Both callers saw Mei free; the other caller's write lands between this one's choice and its write.
+        if not raced:
+            raced.append(True)
+            await voice_phone._book("org_1", b["callId"], {"caller": "+14155550182"}, cfg, at, "pedicure", "Bo")
+        return await real(items)
+
+    with patch.object(messaging_repo, "_transact", interleaved):
+        with pytest.raises(voice_phone.HTTPException) as lost:
+            await voice_phone._book("org_1", a["callId"], {"caller": "+14155550181"}, cfg, at, "pedicure", "Al")
+    assert lost.value.status_code == 409 and lost.value.detail["code"] == "slot_taken"
+    assert (await _row(at, "#Mei"))["name"] == "Bo" and await _row(at) is None
+
+
 async def test_end_emits_outcome_metric(client, monkeypatch):
     """The end of a call emits VoiceCallOutcome tagged with the outcome; a failing emit never fails the route."""
     seen = []

@@ -51,6 +51,9 @@ export interface AgentConfig {
   hours: Record<string, Day>; holidays: string;
   /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
   services: { name: string; minutes: number; price: string; staff: string; minutesGuessed?: boolean }[]; bufferMin: number;
+  /** The people who take bookings (names only): one booking per free person at a time. A service's `staff` is the
+   *  comma-separated names of who does it ("" = anyone). Empty list: one booking at a time, as before. */
+  staff: string[];
   /** IANA zone the hours are in; Onboarding saves the browser's. The server defaults to America/New_York. */
   timezone?: string;
   bookingsGo: "google" | "square" | "other" | "own"; otherSystem: string;
@@ -76,7 +79,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   knowledge: [], toAdd: [], instructions: "",
   hours: Object.fromEntries(DAYS.map((d) => [d, { open: "09:00", close: "18:00", closed: d === "Sun" }])),
   holidays: "",
-  services: [], bufferMin: 10,
+  services: [], bufferMin: 10, staff: [],
   bookingsGo: "own", otherSystem: "",
   number: "", forwardFrom: "",
   handoff: { number: "", onlyOpenHours: true },

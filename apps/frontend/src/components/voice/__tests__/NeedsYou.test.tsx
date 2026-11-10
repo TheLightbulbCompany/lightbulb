@@ -51,11 +51,11 @@ it("a call's handoff Question reads as the caller wanting a person", () => {
   expect(screen.queryByLabelText("Your answer")).toBeNull();
 });
 
-it("four card kinds render their labels", () => {
+it("five card kinds render their labels", () => {
   qs.data = [call({ id: "a" }), call({ id: "b", subkind: "handoff" }), call({ id: "c", subkind: "line_problem" }),
-    call({ id: "d", kind: "approval", subkind: null })];
+    call({ id: "d", kind: "approval", subkind: null }), call({ id: "e", subkind: "message" })];
   render(<NeedsYou />);
-  for (const l of ["Lightbulb didn't know", "Caller wanted a person", "Line problem", "Needs your OK"]) expect(screen.getByText(l)).toBeInTheDocument();
+  for (const l of ["Lightbulb didn't know", "Caller wanted a person", "Line problem", "Needs your OK", "Message"]) expect(screen.getByText(l)).toBeInTheDocument();
 });
 
 it("line problem links to reconnect", () => {

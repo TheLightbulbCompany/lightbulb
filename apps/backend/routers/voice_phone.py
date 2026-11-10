@@ -308,6 +308,17 @@ def _require_verified(call: dict) -> None:
         raise _err(403, "caller_not_verified")  # the voice offers a message for the team instead
 
 
+def _callers(rows: list[dict], call_id: str, call: dict) -> list[dict]:
+    """The bookings this caller may see, move and cancel: every one from their number when it is verified, and
+    always the ones made on this very call (the call is the proof). 10 Nov prod: an unattested caller booked 2 PM,
+    asked to move it, was refused, and the Front desk booked 3 PM as a second booking. Nothing of theirs on an
+    unverified number: caller_not_verified, so the voice offers a message."""
+    mine = [r for r in rows if r.get("callId") == call_id or (_verified(call) and r.get("phone") == call["caller"])]
+    if not mine:
+        _require_verified(call)
+    return mine
+
+
 def _facts(cfg: dict) -> str:
     """What the assistant may tell callers: services, prices, hours and the owner's answers (allow.answer)."""
     services = "; ".join(
@@ -626,13 +637,27 @@ def transcript_lines(transcript: list[dict]) -> list[dict]:
 OPEN_CALLS_PK = "VOICEOPENCALLS"
 
 
-def _fallback_summary(call: dict, lines: list[dict]) -> str:
-    """The worker's summary lists only what it did itself (messages, transfers), so a call that just answered
-    questions arrives with none: say what the caller asked, factually."""
-    ask = next((x["text"] for x in lines if x["who"] == "caller" and x["text"].strip()), "")
-    if ask:
-        return f"Caller asked: {ask.strip()[:140]}"
-    return (call.get("steps") or [{}])[-1].get("text") or "Answered the call; no request made"
+#: A caller's opening that is not yet their request ("Hi.", "Hello, this is Sam.", "Yes.").
+_NOT_A_REQUEST = re.compile(r"^(hi|hello|hey|good (morning|afternoon|evening)|yes|yeah|yep|no|ok|okay|sure|thanks|"
+                            r"thank you|this is|my name is|it'?s)\b[\w ,']{0,24}[.!?]?$", re.I)  # fmt: skip
+
+
+def call_summary(call: dict, lines: list[dict], worker: str = "") -> str:
+    """One line for the Home row and the call's detail: what the caller wanted (their own first request, quoted)
+    and what happened (the record's steps, which only the tools write, so nothing is claimed that was not done).
+    10 Nov prod: rows read "Caller asked: Hi, this is Sam Tester. Can you cancel…" or "Open conversation"."""
+    said = [s for x in lines if x["who"] == "caller" for s in re.split(r"(?<=[.?!])\s+", x["text"].strip()) if s]
+    ask = next((s for s in said if "?" in s and not _NOT_A_REQUEST.match(s)), None) or next(
+        (s for s in said if not _NOT_A_REQUEST.match(s)), ""
+    )
+    if len(ask) > 120:
+        ask = ask[:120].rsplit(" ", 1)[0] + "…"
+    done = "; ".join(s["text"] for s in call.get("steps") or []) or worker
+    if not done:
+        done = "Answered on the call." if ask else "Answered the call; no request made."
+    elif done[-1] not in ".!?…":
+        done += "."
+    return (f'"{ask}" ' if ask else "") + done
 
 
 @router.post("/internal/voice/calls/{call_id}/end")
@@ -661,7 +686,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             "endedAt": utc_now_iso(),
             "durationSec": seconds,
             "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
-            "summary": body.summary or _fallback_summary(call, lines),
+            "summary": call_summary(call, lines, body.summary),
             "transcript": lines,
         }
 
@@ -714,6 +739,10 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     if out["outcome"] not in NO_CALL_PUSH and meta.get("ownerUserId"):
         await _first_calls_push(meta["ownerUserId"], meta["ownerId"], call_id, out)
     asks = [("didnt_know", q) for q in dict.fromkeys(out.get("unknown", []))]
+    asks += [  # every taken message is the owner's to call back: a card in Needs you, not only a Home row
+        ("message", m["text"] + (f" (call back on {m['callbackNumber']})" if m.get("callbackNumber") else ""))
+        for m in out.get("messages", [])
+    ]
     if out.get("handoffMissed"):
         asks.append(("handoff", ""))  # nobody free or the transfer failed: line_problem is for system issues
     for kind, question in asks if meta.get("ownerUserId") else ():
@@ -724,8 +753,8 @@ async def end_call(call_id: str, body: EndIn) -> dict:
 
 
 # After Go live the owner hears about the first answered calls, so they see it working; then no more.
-# Cards (needs_you, handoff_missed) push on their own, silent/forwarded calls were not answered.
-NO_CALL_PUSH = {"silent", "forwarded", "needs_you", "handoff_missed"}
+# Cards (needs_you, handoff_missed, message) push on their own, silent/forwarded calls were not answered.
+NO_CALL_PUSH = {"silent", "forwarded", "needs_you", "handoff_missed", "message"}
 CALL_PUSHES = 3
 
 
@@ -759,6 +788,7 @@ CALL_OPTIONS = {
     "didnt_know": [("answer", "Answer"), ("call_myself", "I'll call them"), ("done", "Done")],
     "handoff": [("call_myself", "I'll call them"), ("done", "Done")],
     "line_problem": [("call_myself", "I'll call them"), ("done", "Done")],
+    "message": [("call_myself", "I'll call them"), ("done", "Done")],
 }
 KNOWLEDGE_SOURCE = "you answered this in Needs you"
 
@@ -768,13 +798,15 @@ def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
     Its qid is the call, kind and question, so a retried end opens it once."""
     who = call.get("callerName") or call.get("caller") or "a caller"
     title = {"didnt_know": f"Answer {who}: {question}", "handoff": f"{who} wanted a person",
-             "line_problem": f"{who}'s call hit a problem on the line"}[kind]  # fmt: skip
+             "line_problem": f"{who}'s call hit a problem on the line",
+             # the message is in the title: the title is the call's task id (_start_task), one per message
+             "message": f"Message from {who}: {question}"}[kind]  # fmt: skip
     return {
         "qid": questions.qid_for(f"{call_id}:{kind}:{question}"),
         "kind": "question",
         "subkind": kind,
         "title": title[:200],
-        "text": f"Caller: {call.get('caller') or 'unknown number'}",
+        "text": (f"{question}\n" if kind == "message" else "") + f"Caller: {call.get('caller') or 'unknown number'}",
         "options": [{"id": i, "label": label} for i, label in CALL_OPTIONS[kind]],
         "blocking": True,
         "attempt": None,
@@ -1270,11 +1302,9 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "move")
-    _require_verified(call)
-    # Every person's booking at that start (VOICEBOOK#<start>[#<id>]), only those made from this caller's number.
+    # Every person's booking at that start (VOICEBOOK#<start>[#<id>]), only this caller's (_callers).
     # One caller can hold two at one start (two people): then `bookingId` says which, or the model is asked to.
-    rows = await _bookings(meta["ownerId"], body.start) if call.get("caller") else []
-    mine = [r for r in rows if r.get("phone") == call["caller"]]
+    mine = _callers(await _bookings(meta["ownerId"], body.start), call_id, call)
     if body.bookingId:
         mine = [r for r in mine if body.bookingId == _booking_id(r)]
     if not mine:
@@ -1311,9 +1341,7 @@ def _booking_id(row: dict) -> str:
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
     _allowed(await agent_config(meta["ownerId"]), call, "move")
-    _require_verified(call)
-    caller = call.get("caller")
-    rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
+    rows = _callers(await _bookings(meta["ownerId"], ""), call_id, call)
 
     def public_booking(b: dict) -> dict:
         out = {"start": _start(b), "service": b["service"], "bookingId": _booking_id(b)}
@@ -1396,7 +1424,7 @@ async def take_message(call_id: str, body: MessageIn) -> dict:
     entry = {**body.model_dump(), "name": real_name(body.name), "at": utc_now_iso()}
     await _patch_call(call_id, lambda c: {"messages": [*c.get("messages", []), entry],
                                           "callerName": c.get("callerName") or body.name,
-                                          "steps": _step(c, f"Took a message: {body.text[:160]}")})  # fmt: skip
+                                          "steps": _step(c, f"Took a message: {body.text}")})  # fmt: skip
     return {"taken": True}
 
 
@@ -1496,7 +1524,9 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
 #: Said to the Router with each line: who is speaking, and that the reply is spoken on the phone.
 CALLER_HINT = (
     "(Said by a caller on the business's phone line, an outside contact, not a member. The reply is read out on "
-    "the call: one or two short spoken sentences, no lists, links or markdown. Offer at most three open times.)"
+    "the call: one or two short spoken sentences, no lists, links or markdown. Offer at most three open times. "
+    "Never give the caller another phone number to call: when something cannot be done here, offer to take a "
+    "message for the owner.)"
 )
 
 
@@ -1657,6 +1687,10 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
             m["text"] = " ".join(
                 NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])
             )
+    for m in out["messages"]:
+        if _PHONE.search(m["text"]):  # the caller's own, or the hand-off number while it takes calls, may be said
+            ok = {call.get("caller") or "", handoff_to(await agent_config(meta["ownerId"])) or ""}
+            m["text"] = no_other_number(m["text"], ok)
     return out
 
 
@@ -1718,6 +1752,27 @@ async def _caller_words(ws: str, messages: list[dict]) -> None:
             if not (s == HOLD and said and said[-1] == HOLD):
                 said.append(s)
         m["text"] = " ".join(said)
+
+
+#: A phone number in a reply ("484-616-3004", "(484) 616 3004", "+1 484.616.3004").
+_PHONE = re.compile(r"(?<!\d)(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
+_SEND_ELSEWHERE = re.compile(r"\b(call|ring|dial|text|reach|contact)\b", re.I)
+OTHER_NUMBER = "I can take a message for the owner instead."
+
+
+def no_other_number(text: str, allowed: set[str]) -> str:
+    """A sentence that sends the caller to another number is said as an offer to take a message (10 Nov prod: a
+    refused cancel told the caller to ring the salon's listed number). `allowed`: numbers that may be said (the
+    caller's own read back; the hand-off number while it takes calls)."""
+    ok = {re.sub(r"\D", "", n)[-10:] for n in allowed if n}
+
+    def elsewhere(sentence: str) -> bool:
+        return bool(_SEND_ELSEWHERE.search(sentence)) and any(
+            re.sub(r"\D", "", n)[-10:] not in ok for n in _PHONE.findall(sentence)
+        )
+
+    out = [OTHER_NUMBER if elsewhere(s) else s for s in re.split(r"(?<=[.?!])\s+", text)]
+    return " ".join(dict.fromkeys(out)) if OTHER_NUMBER in out else text
 
 
 #: A line that says a booking is being made right now. Only `/book` and `/change` (the Front desk's booking tools)

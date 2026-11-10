@@ -367,6 +367,36 @@ async def test_front_desk_acts_only_for_a_callers_thread(api, monkeypatch):
     assert r.status_code == 403 and r.json()["detail"] == "not_a_caller_thread"
 
 
+async def test_a_waitlist_ask_is_a_message_the_owner_sees(api, monkeypatch):
+    """The waitlist has no owner screen (founder 10 Nov): the ask is also a taken message (a Needs-you card), and
+    the reply never says the caller holds a spot, even when the waitlist itself refused."""
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from routers import voice_phone as vp
+
+    call = "11111111-2222-3333-4444-555555555555"
+    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
+    joined = AsyncMock(side_effect=[{"waitlisted": True}, HTTPException(status_code=403, detail="not_allowed")])
+    taken = AsyncMock(return_value={"taken": True})
+    monkeypatch.setattr(vp, "join_waitlist", joined)
+    monkeypatch.setattr(vp, "take_message", taken)
+    tid = await _task(origin="phone_contact", triggerId="voice:c1:r1")
+    trig = {"voice:c1:r1": {"ref": {"origin": "phone_contact", "callId": call}}}
+    monkeypatch.setattr(repo, "get_trigger", AsyncMock(side_effect=lambda _ws, t: trig.get(t)))
+    ref = await _running(tid)
+    body = {"taskId": tid, "runId": ref.run_id, "attempt": 1, "runSecret": await _secret(tid), "action": "waitlist",
+            "date": "2026-11-14", "service": "Haircut", "note": "after 1pm", "name": "Alex"}  # fmt: skip
+    url = f"/api/v1/internal/runtime/{WS}/front-desk"
+    for _ in range(2):  # joined, then refused: a message either way
+        r = await api.post(url, json=body, headers=H)
+        assert r.status_code == 200 and r.json()["messageTaken"] is True and "waitlisted" not in r.json()
+        msg = taken.await_args.args[1]
+        assert msg.text == "Wants a waitlist spot: Haircut 2026-11-14 after 1pm" and msg.name == "Alex"
+    assert taken.await_count == 2
+
+
 async def test_business_facts_reads_only_the_runs_own_workspace(api, monkeypatch):
     """business_facts (router-latency-2026-11-08): a Worker reads its own workspace's Agent page, never another's;
     a wrong secret or another workspace's path reads nothing."""

@@ -53,9 +53,9 @@ function QuestionCard({ q, name }: { q: QuestionView; name: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const ok = q.kind !== "question";
-  // #5028: a call's Question carries subkind didnt_know | handoff | line_problem and preview {caller, question}.
+  // #5028: a call's Question carries subkind didnt_know | handoff | line_problem | message and preview {caller, question}.
   const label = ok ? "Needs your OK" : q.subkind === "handoff" ? "Caller wanted a person"
-    : q.subkind === "line_problem" ? "Line problem" : `${name} didn't know`;
+    : q.subkind === "line_problem" ? "Line problem" : q.subkind === "message" ? "Message" : `${name} didn't know`;
   const caller = (q.preview as { caller?: string } | null | undefined)?.caller;
   const google = q.subkind === "line_problem" && /google|calendar/i.test(`${q.title} ${q.text}`);
   // A call's "didn't know": the answer goes into Knowledge server-side (routers/questions.py), for any answerer.

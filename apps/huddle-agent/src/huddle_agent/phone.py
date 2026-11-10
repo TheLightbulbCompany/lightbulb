@@ -24,6 +24,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import time
 
 import httpx
@@ -88,7 +89,11 @@ Do not guess the missing value.
 While backend work is running, say only neutral holding words ("one moment"): never that a booking is being changed, canceled or finalized, or how far along it is, because no result has said so. Wait for the backend's result before describing this business or its services, stating a price or a time, confirming a booking, or saying that a message was
 taken or a transfer is under way. Never share anything about other customers.
 If the caller objects to being recorded, answer honestly that the business may keep a transcript of the call, and
-offer a person or a message."""
+offer a person or a message.
+Never give the caller a phone number to call instead, not even one the business lists. When something cannot be
+done on this call, offer to take a message for the owner. Never promise a waitlist spot or a callback time.
+If the caller talks over an answer from the backend, give the rest of that answer once they finish, unless they
+moved on."""
 
 #: Facts the call tells GPT-Live (commentary with delegation_id null): GPT-Live chooses what to say.
 QUIET = "The line has been quiet for a while. If the caller stays silent, the call will end."
@@ -132,8 +137,9 @@ def prompt(info: dict) -> str:
         if info.get("callerName")
         else ""
         if info.get("callerVerified")
-        else "This caller's number is not verified: you cannot look up, move or cancel existing bookings; offer "
-        "to take a message for the team instead.\n",
+        else "This caller's number is not verified: you cannot look up, move or cancel bookings from earlier calls "
+        "(a booking made on this call can still be moved or cancelled); for those, offer to take a message for "
+        "the team instead.\n",
         paused="This line is not taking bookings or questions right now: it only takes messages.\n"
         if paused
         else "" if info.get("transfer") else "No person is available to transfer a call to; take a message instead.\n",
@@ -150,15 +156,28 @@ def e164(number: str) -> str:
     return "+" + n if n.isdigit() else n
 
 
+#: A bare backchannel from the voice ("Hmm.", "Mhm."): heard as listening, not a line of the record.
+_BACKCHANNEL = re.compile(r"^(h+m+|m+-?h?m+|mm-?hmm|uh-?huh|um+|uh+)[.!?…]*$", re.I)
+
+
 def clean_transcript(items: list[dict]) -> list[dict]:
-    """The call's transcript for the record: final lines only (an interrupted, cut-off reply is dropped), in spoken
-    order (`t`, seconds since the call started), consecutive repeats once. Only what was transcribed; nothing added."""
+    """The call's transcript for the record, in spoken order (`t`, seconds since the call started), consecutive
+    repeats once. An interrupted reply stays (the caller heard it; 10 Nov prod: the hours answer was talked over and
+    dropped, leaving "Hmm." as the reply) unless it was said again in full; a bare backchannel is not a line. Only
+    what was transcribed; nothing added."""
+    full = [i["text"].strip() for i in items if i["role"] == "assistant" and not i.get("interrupted")]
     out: list[dict] = []
     for i in sorted(items, key=lambda i: i["t"]):
         who = {"user": "caller", "assistant": "assistant"}.get(i["role"])
-        if not who or i.get("interrupted") or not i["text"].strip():
+        text = i["text"].strip()
+        if not who or not text:
             continue
-        line = {"who": who, "text": i["text"].strip(), "t": round(max(i["t"], 0.0), 1)}
+        if who == "assistant" and (
+            _BACKCHANNEL.match(text)
+            or (i.get("interrupted") and any(f.startswith(text.rstrip(".,!?… ")) for f in full))
+        ):
+            continue
+        line = {"who": who, "text": text, "t": round(max(i["t"], 0.0), 1)}
         if out and (out[-1]["who"], out[-1]["text"]) == (who, line["text"]):
             continue
         out.append(line)

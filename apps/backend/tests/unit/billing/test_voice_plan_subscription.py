@@ -84,6 +84,7 @@ async def test_checkout_is_a_subscription_with_promotion_codes():
     kwargs = run.await_args.kwargs
     assert out["checkoutUrl"] == "https://checkout/x"
     assert kwargs["mode"] == "subscription" and kwargs["allow_promotion_codes"] is True
+    assert kwargs["payment_method_collection"] == "if_required"
     assert kwargs["line_items"] == [{"price": "price_voice", "quantity": 1}]
     assert kwargs["subscription_data"]["metadata"]["workspace_id"] == OWNER
 

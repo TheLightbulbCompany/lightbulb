@@ -42,6 +42,8 @@ async def start(owner_id: str, *, accepted_by: str) -> dict:
         customer=account["stripe_customer_id"],
         line_items=[{"price": settings.STRIPE_VOICE_PLAN_PRICE_ID, "quantity": 1}],
         allow_promotion_codes=True,
+        # A 100%-off code owes nothing: don't ask for a card.
+        payment_method_collection="if_required",
         success_url=f"{settings.FRONTEND_URL}/voice/settings?voice=checkout_complete",
         cancel_url=f"{settings.FRONTEND_URL}/voice/settings?voice=checkout_canceled",
         client_reference_id=owner_id,

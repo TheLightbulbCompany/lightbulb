@@ -366,7 +366,11 @@ CALLER_THREAD_NOTE = (
     "already named a service or time, reuse it; never ask for it again. Before you book, move or cancel, have "
     "everything the booking needs (ask for a missing service with the times), then read the exact service, day and "
     'time back once and wait for their yes; a pick ("the first one works") is not a yes. On their "yes", book it '
-    "at once, with no further question."
+    "at once, with no further question. "
+    "Your final answer, and any note, states only what the tool results say happened: a result that starts with "
+    '"Not done" or says a message was taken means the booking was NOT changed, so say that plainly and say what '
+    "was done instead (a message for the team). Never write that a change is under way, being finalized or done "
+    "unless a tool result confirmed it."
 )
 
 

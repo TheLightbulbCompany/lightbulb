@@ -208,3 +208,17 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
     expect(decidePaperclipLinkRedirect('/goals/g-142')).toBeNull();
   });
 });
+
+describe('protected routes', () => {
+  it('protects /voice pages but not the public stock voice samples', async () => {
+    const { createRouteMatcher } = await import('@clerk/nextjs/server');
+    const { NextRequest } = await import('next/server');
+    const { PROTECTED_ROUTES } = await import('@/middleware');
+    const isProtected = createRouteMatcher(PROTECTED_ROUTES);
+    const at = (path: string) => isProtected(new NextRequest(`https://thelightbulb.company${path}`));
+    expect(at('/voice')).toBe(true);
+    expect(at('/voice/agent')).toBe(true);
+    expect(at('/voice/settings')).toBe(true);
+    expect(at('/voice-samples/gpt-live-1-marin-en.wav')).toBe(false);
+  });
+});

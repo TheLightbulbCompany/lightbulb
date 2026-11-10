@@ -236,7 +236,13 @@ async def test_unknown_creates_question_and_to_add(client):
     assert voice_phone.CONTACT_NOTE in args[1].brief and q in args[1].brief
     ask = kwargs["ask"]
     assert ask["kind"] == "question" and ask["subkind"] == "didnt_know" and ask["blocking"] is True
-    assert ask["preview"] == {"kind": "didnt_know", "roomId": call["callId"], "caller": "+14155550133", "question": q}
+    assert ask["preview"] == {
+        "kind": "didnt_know",
+        "roomId": call["callId"],
+        "caller": "+14155550133",
+        "question": q,
+        "firstName": "",
+    }
     assert [o["id"] for o in ask["options"]] == ["answer", "call_myself", "done"]
     run = await messaging_repo.get_voice_run("org_1", args[1].run_id)
     assert run["requesterUserId"] == "user_owner" and run["roomId"] == call["callId"]
@@ -960,3 +966,38 @@ async def test_router_turns_per_call_are_capped(client, router_seat, monkeypatch
     assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
     assert client.post(url, json={"n": 0, "text": "line 0"}, headers=W).status_code == 403  # the call is limited now
     assert (await messaging_repo.get_room(call["callId"]))["call"]["limited"]
+
+
+async def test_first_three_answered_calls_push_the_owner_and_the_fourth_does_not(client):
+    with patch.object(voice_phone.push_service, "send_push_to_user", AsyncMock()) as push:
+        for i in range(4):
+            call = await _start(client, room=f"phone-dev-_x_{i}")
+            url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+            client.post(url, json={"durationSec": 30}, headers=W)
+            client.post(url, json={"durationSec": 30}, headers=W)  # a retried end never pushes twice
+    assert push.await_count == 3
+    assert push.await_args.args[0] == "user_owner" and push.await_args.args[3]["source"] == "voice_call"
+
+
+async def test_a_call_that_needs_you_leaves_the_push_to_its_card(client):
+    with patch.object(voice_phone.push_service, "send_push_to_user", AsyncMock()) as push:
+        call = await _start(client)
+        base = f"/api/v1/internal/voice/calls/{call['callId']}"
+        client.post(f"{base}/unknown", json={"question": "Parking?"}, headers=W)
+        client.post(f"{base}/end", json={"durationSec": 30}, headers=W)
+    push.assert_not_awaited()
+
+
+def test_call_card_push_carries_the_kind_and_a_first_name_only():
+    from core.services import questions
+
+    q = {
+        "kind": "question",
+        "subkind": "handoff",
+        "title": "Maria wanted a person",
+        "text": "Caller: +14155550133",
+        "preview": {"firstName": "Maria"},
+    }
+    assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person: Maria"
+    q["preview"] = {}
+    assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person"

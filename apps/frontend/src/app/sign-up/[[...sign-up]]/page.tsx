@@ -282,7 +282,7 @@ export default function Page() {
                 </div>
                 <div>
                   <div className="auth-feat-title">Your team in the same rooms</div>
-                  <div className="auth-feat-desc">The first five people are included in the plan.</div>
+                  <div className="auth-feat-desc">Your whole team shares one plan, with no per-seat fees.</div>
                 </div>
               </div>
               <div className="auth-feat" role="listitem">

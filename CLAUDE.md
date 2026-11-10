@@ -118,7 +118,6 @@ The `isol8` brand is retired. A naive `s/isol8/lightbulb/` sweep breaks each of 
 | `-isol8.N` image tags | Rollback refs. |
 | Historical refs (`Isol8AI/isol8#2053`) | Quote verbatim; GitHub web URLs redirect. |
 | `isol8` reserved in slug and handle allowlists | Nobody can claim the retired brand. |
-| `X-Isol8-Public-Host` | API Gateway still sets it (`api-stack.ts` parameter mapping). On `main` no backend code reads it any more (checked: no match outside `api-stack.ts`). Rename or remove it in `api-stack.ts` only. |
 | `ISOL8_OWNER_ID`, `ISOL8_API_URL` | Read by the Hermes bridge and the bundled skills. A rename is a backend change plus an image rebuild plus a roll. |
 | `isol8.hire_suggestion` | `HIRE_KIND` in the Hermes `lightbulb` plugin. Do not "finish" it. |
 | `ISOL8_CURATOR_EMAIL` | Human-gated mail (`core/constants.py`, read by `curator.py`). |
@@ -156,8 +155,9 @@ Names from deleted systems that still carry load. Prove nothing reads a resource
   stack (detached, not deleted).
 - **`LitestreamReplicaLifecycle`** in `service-stack.ts`: carries the bucket-scoped `s3:ListBucket` every profile
   read, write and delete needs.
-- **`components/messaging`** in the web app: still powers `/voice/lightbulb`. (`components/workspace`,
-  `teams` and `control` are unrouted and can be deleted.)
+- **`components/messaging`, `workspace`, `teams` and `control`** in the web app: partly live. `/voice/lightbulb`
+  mounts `workspace/RightPane` (which renders `teams` and `control` panels) and `messaging`; `/voice/settings`
+  mounts `settings/SettingsPlace`, which pulls in `control` panels. Prove a file has no importer before you delete it.
 
 ## Critical Rules
 
@@ -555,7 +555,7 @@ fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client re
 React 19, Tailwind v4, Clerk, SWR. The app lives under `src/app/voice/`: Home (`/voice`), `/voice/lightbulb` (the
 orb and the conversation), `/voice/agent`, `/voice/needs-you`, `/voice/settings`, `/voice/setup`, with components in
 `components/voice/`. Sign-in, sign-up and the Mac app land on `/voice`. `/chat` redirects to `/voice/lightbulb`
-(or `/voice/settings` for provider and settings links); the old workspace shell is unrouted. `src/middleware.ts`
+(or `/voice/settings` for provider and settings links); the old workspace shell is deleted; `RightPane` survives inside `/voice/lightbulb`. `src/middleware.ts`
 protects `/voice` and the other app routes and runs the admin-host gate (`/admin` 404s off admin hosts).
 
 - **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the API client, the AppSync live-events client and

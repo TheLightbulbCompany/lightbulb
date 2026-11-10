@@ -1777,14 +1777,6 @@ export class ServiceStack extends cdk.Stack {
       // records provisioned by dns-stack.ts.
       PUBLIC_API_BASE:
         env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`,
-      // PAPERCLIP_PUBLIC_URL is gone with the Paperclip server (task 9 removed
-      // the backend read). PAPERCLIP_INTERNAL_URL stays until its readers go.
-      // Cloud Map A record published by PaperclipStack at:
-      //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
-      // Namespace name is `lightbulb-${env}.local` (ContainerStack). Reading
-      // it off the namespace handle keeps this string in lockstep with
-      // ContainerStack rather than hard-coding the env suffix here.
-      PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
       // Apple IAP (StoreKit 2). Product ids live in apple_iap.PRODUCT_PLANS.
       // SELLING is the one switch that makes the iOS app offer purchases; prod
       // stays off until the Paid Apps Agreement is active. ACCEPT_XCODE lets
@@ -1828,16 +1820,10 @@ export class ServiceStack extends cdk.Stack {
       // sandbox + prod (token decides env). Fast-gate table backs the
       // synchronous chat gate's balance projection.
       METRONOME_BASE_URL: "https://api.metronome.com/v1",
-      // Literal name (not a cross-stack tableName Ref) — same posture as
-      // BEDROCK_AIP_OWNERS_TABLE above: the table is covered by the
+      // Literal name (not a cross-stack tableName Ref): the table is covered by the
       // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
       // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
-      // owner_id -> Paperclip agent id that platform-failed, recovery-blocked issues
-      // escalate to (core/services/paperclip_escalation.py). Prod: founder org -> Forge.
-      PAPERCLIP_ESCALATION_AGENT_OVERRIDES: env === "prod"
-        ? JSON.stringify({ org_3H3viGAfq2SXc9dIdcatmGXg8Td: "f293693d-1ec4-4dc3-bd3c-e54109e324bf" })
-        : "{}",
       OPENROUTER_WORKSPACE_ID: env === "dev"
         ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
         : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
@@ -1887,11 +1873,8 @@ export class ServiceStack extends cdk.Stack {
           : env === "prod"
             ? "5cb6c7ce-501b-4760-b35d-8d4bb6cfa8ce"
             : "",
-      // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
-      // table is granted BY NAME above, so the env var is the literal name
-      // (not a cross-stack tableName ref). The boundary + base-policy ARNs
+      // Per-owner scoped-role enforcement. The boundary + base-policy ARNs
       // come from the container stack's live members.
-      BEDROCK_AIP_OWNERS_TABLE: tableName(env, "bedrock-aip-owners"),
       BEDROCK_OWNER_BOUNDARY_ARN:
         props.container.ownerBedrockBoundary.managedPolicyArn,
       BEDROCK_OWNER_BASE_POLICY_ARN:

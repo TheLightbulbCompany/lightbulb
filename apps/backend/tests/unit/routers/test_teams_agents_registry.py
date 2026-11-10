@@ -67,9 +67,3 @@ async def test_members_need_no_paperclip_context(client):
     assert r.json()["members"] == [
         {"userId": "user_sam", "name": "Sam", "email": "s@x.test", "imageUrl": None, "paperclipUserId": "pcu_sam"}
     ]
-
-
-@pytest.mark.parametrize("path", ["heartbeat", "wakeup"])
-async def test_heartbeat_and_wake_are_gone(client, path):
-    r = await client.post(f"/api/v1/teams/agents/{CEO}/{path}", json={})
-    assert r.status_code == 410

@@ -361,18 +361,6 @@ export class ApiStack extends cdk.Stack {
     });
 
     // --- HTTP Integration → ALB via VPC Link ---
-    // We set X-Isol8-Public-Host = $context.domainName so the FastAPI backend
-    // can dispatch per public hostname (api.isol8.co vs company.isol8.co).
-    // API Gateway rewrites the upstream Host to the ALB DNS, so the original
-    // requesting host is otherwise lost.
-    //
-    // NOTE: We deliberately use a custom header name (`X-Isol8-Public-Host`)
-    // rather than `X-Forwarded-Host` — API Gateway HTTP API blocks parameter
-    // mapping on `x-forwarded-*` headers (they're managed by the gateway
-    // itself; AWS rejects with "Operations on header x-forwarded-host are
-    // restricted"). The backend's HostDispatcherMiddleware reads this custom
-    // header. The same integration (and so the same X-Isol8-Public-Host)
-    // serves all custom-domain mappings on this API.
     const httpIntegration = new apigatewayv2.CfnIntegration(
       this,
       "HttpAlbIntegration",
@@ -386,7 +374,6 @@ export class ApiStack extends cdk.Stack {
         payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
         requestParameters: {
-          "overwrite:header.X-Isol8-Public-Host": "$context.domainName",
           // The WAF per-IP rate rule (network-stack.ts) keys on this. `overwrite`
           // replaces anything the client sent, unlike X-Forwarded-For, which
           // API Gateway only appends to.

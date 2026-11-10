@@ -52,7 +52,6 @@ def api(table, monkeypatch):
         return [datetime(2027, 1, 4, 14, 0, tzinfo=timezone.utc)]
 
     with (
-        patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)) as flags,
         patch.object(automation_schedule, "upsert", upsert),
         patch.object(automation_schedule, "delete", delete),
         patch.object(automation_schedule, "next_runs", next_runs),
@@ -68,7 +67,6 @@ def api(table, monkeypatch):
             app=app,
             temporal=temporal,
             calls=calls,
-            flags=flags,
             gate=gate,
             billing=billing,
             room_door=room_door,

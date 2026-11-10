@@ -48,7 +48,6 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from core.config import settings
 from core.repositories import automations_repo, billing_repo, integrations_repo
 from core.services.provision_gate import has_always_on_entitlement
-from core.services.super_agent_flags import flags_for
 from routers import hooks
 from routers._public_ingress import _check_rate_limit, _extract_caller_ip
 
@@ -240,10 +239,7 @@ async def receive_meta_event(request: Request) -> Response:
             if not has_always_on_entitlement(billing):
                 logger.info("meta webhook: owner %s not entitled, dropping asset=%s", binding["owner_id"], asset_id)
                 continue
-            if not (
-                await flags_for(binding["owner_id"])
-                and await automations_repo.get_hook(binding["owner_id"], binding["trigger_public_id"])
-            ):
+            if not await automations_repo.get_hook(binding["owner_id"], binding["trigger_public_id"]):
                 # An older binding with no `HOOK#` row has nothing to fire any more.
                 logger.info(
                     "meta webhook: no hook for owner=%s trigger=%s", binding["owner_id"], binding["trigger_public_id"]

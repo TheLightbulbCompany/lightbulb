@@ -57,7 +57,6 @@ from routers import (
     desktop_session_pickup,
     desktop_session_resume,
     google_accounts,
-    integrations,
     launch,
     mac_cdp,
     meet_audio,
@@ -72,7 +71,6 @@ from routers import (
     photon_inbound,
     platform_info,
     runtime_rpc,
-    sendblue_inbound,
     ses_inbound,
     agent_keys as agent_keys_router,
     network as network_router,
@@ -529,7 +527,6 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 
 # SES-inbound agent-email ingest (provisioned agent email, inbound leg).
 # A Lambda parses raw SES mail and POSTs the clean JSON payload here.
-app.include_router(sendblue_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
@@ -607,9 +604,6 @@ app.include_router(network_router.router, prefix="/api/v1/network", tags=["netwo
 # Hosted apps on the free network: the computer route link (on the bv door's /gateway/ path),
 # its cross-task door, the wake-up page and the bridge's app-mail notice.
 app.include_router(network_route_router.router, prefix="/api/v1", tags=["network"])
-
-# Integrations (MCP servers, ClawHub)
-app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 
 # Connections (Bucket A paste-key integrations: list / connect / disconnect)
 app.include_router(connections.router, prefix="/api/v1", tags=["connections"])

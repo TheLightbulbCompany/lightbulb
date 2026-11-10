@@ -14,7 +14,6 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
     { roomId: "r-walk9", kind: "channel", name: "walk-9", participants: [], isDefault: false },
   ] } }),
 }));
-vi.mock("@/components/home/HomeProjects", () => ({ projectRooms: (rooms: unknown[]) => rooms }));
 
 import { MadeHere } from "../MadeHere";
 import { ProjectFiles } from "../ProjectFiles";

@@ -744,6 +744,8 @@ async def handle_voice_plan_reversal(event: dict[str, Any], billing_service: Bil
         if not obj.get("refunded"):  # partial refund: the plan stands
             return None
         charge_id = obj["id"]
+    elif str(obj.get("status", "")).startswith("warning_"):  # an inquiry, not yet a chargeback
+        return None
     else:
         charge_id = obj.get("charge")
     if not charge_id or not settings.STRIPE_VOICE_PLAN_PRICE_ID:

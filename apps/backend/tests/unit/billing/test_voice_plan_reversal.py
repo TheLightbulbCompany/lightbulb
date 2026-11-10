@@ -133,3 +133,15 @@ async def test_card_renders_with_support_copy():
     assert item.kind == "reconnect" and item.state == "open"
     assert item.summary.title == "Your voice plan has ended"
     assert "hello@thelightbulb.company" in item.summary.reason
+
+
+async def test_dispute_inquiry_does_not_end_the_plan():
+    run, calls = _run()
+    event = {
+        "type": "charge.dispute.created",
+        "data": {"object": {"charge": "ch_1", "status": "warning_needs_response"}},
+    }
+    synced, announce = await _fire(event, run)
+    assert calls == []
+    synced.assert_not_awaited()
+    announce.assert_not_awaited()

@@ -103,6 +103,24 @@ async def test_timeline_lists_calls_and_meetings_newest_first(repos, async_clien
 
 
 @pytest.mark.asyncio
+async def test_a_recurring_meetings_past_occurrences_are_their_own_rows(repos, async_client_org_admin):  # noqa: F811
+    """Codex P2 on #5186: the series advances before the notes land, so they sit in history; the pane never saw them."""
+    past = {"startAt": 1793466000, "transcriptId": "t1", "notes": "Hours set.", "decisions": [{"text": "Open 10 to 4"}]}
+    await _room(
+        "m1",
+        "channel",
+        "2026-11-01T00:00:00+00:00",
+        meeting={"title": "Weekly", "startAt": 1794070800, "status": "bot_created", "history": [past]},
+    )
+    items = (await async_client_org_admin.get("/api/v1/voice/timeline")).json()["items"]
+    assert [(i["roomId"], i.get("occurrence")) for i in items] == [("m1", None), ("m1", 1793466000)]
+    current, held = items
+    assert current["status"] == "bot_created" and "decisions" not in current and "history" not in current
+    assert held | {"title": "Weekly", "status": "ended", "hasTranscript": True, "notes": "Hours set."} == held
+    assert held["decisions"] == [{"text": "Open 10 to 4"}] and held["at"] == 1793466000 * 1000
+
+
+@pytest.mark.asyncio
 async def test_done_marks_the_call_resolved(repos, async_client_org_admin):  # noqa: F811
     await _room("c1", "call", "2026-11-07T10:00:00+00:00", call={"outcome": "needs_you"})
     assert (await async_client_org_admin.post("/api/v1/voice/calls/c1/done")).status_code == 200

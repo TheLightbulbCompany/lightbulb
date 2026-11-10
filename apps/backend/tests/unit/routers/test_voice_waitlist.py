@@ -36,6 +36,25 @@ async def test_a_caller_joins_the_waitlist_keyed_to_their_number(client):  # noq
     assert (await messaging_repo.get_room(call["callId"]))["call"]["steps"][-1]["text"].startswith("Waitlisted")
 
 
+async def test_a_retry_after_a_failed_call_record_write_adds_no_second_entry(client):  # noqa: F811
+    from unittest.mock import AsyncMock, patch
+
+    call = await _start(client)
+    day = _tomorrow()
+    for i in range(2):  # two other entries, so a duplicate would also hit the cap
+        client.post(_url(call), json={"date": day, "service": f"s{i}"}, headers=W)
+    body = {"date": day, "service": "Gel", "windowFrom": "13:00"}
+    real = voice_phone._patch_call
+    with patch.object(voice_phone, "_patch_call", AsyncMock(side_effect=RuntimeError("boom"))):
+        with pytest.raises(RuntimeError):
+            client.post(_url(call), json=body, headers=W)
+    assert len(await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")) == 3
+    assert voice_phone._patch_call is real
+    retry = client.post(_url(call), json=body, headers=W)  # the model retries the same request
+    assert retry.status_code == 200 and retry.json()["waitlisted"] is True
+    assert len(await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")) == 3
+
+
 async def test_a_withheld_caller_cannot_join_the_waitlist(client):  # noqa: F811
     call = await _start(client, caller="")
     r = client.post(_url(call), json={"date": _tomorrow()}, headers=W)
@@ -53,9 +72,9 @@ async def test_waitlist_off_refuses_server_side(client):  # noqa: F811
 async def test_waitlist_is_capped_at_three_per_caller_per_day(client):  # noqa: F811
     call = await _start(client)
     day = _tomorrow()
-    for _ in range(3):
-        assert client.post(_url(call), json={"date": day}, headers=W).status_code == 200
-    assert client.post(_url(call), json={"date": day}, headers=W).status_code == 429
+    for i in range(3):  # different asks; an identical one is a retry, not another entry
+        assert client.post(_url(call), json={"date": day, "service": f"s{i}"}, headers=W).status_code == 200
+    assert client.post(_url(call), json={"date": day, "service": "s3"}, headers=W).status_code == 429
     other_day = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
     assert client.post(_url(call), json={"date": other_day}, headers=W).status_code == 200
     past = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")

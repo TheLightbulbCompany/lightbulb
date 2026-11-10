@@ -892,15 +892,21 @@ async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
         raise _err(422, "invalid_date") from None
     if day < _now(cfg).date():
         raise _err(400, "date_in_past")
+    # The id comes from the request, so a retry of the same ask is the same entry (it neither doubles nor spends a slot).
+    ask = "|".join((call_id, body.date, body.service.strip(), body.windowFrom or "", body.windowTo or ""))
+    entry_id = hashlib.sha256(ask.encode()).hexdigest()[:32]
+    pk, sk = messaging_repo.owner_pk(owner_id), f"VOICEWAIT#{body.date}#{entry_id}"
+    done = {"waitlisted": True, "date": body.date, "service": body.service.strip()}
+    if await messaging_repo._get(pk, sk):
+        return done
     mine = [r for r in await _booking_rows(owner_id, f"VOICEWAIT#{body.date}#") if r.get("phone") == phone]
     if len(mine) >= WAITLIST_PER_CALLER_DAY:
         raise _err(429, "waitlist_full")
-    entry_id = str(uuid.uuid4())
     name = real_name(body.name) or call.get("callerName") or ""
     midnight = datetime.combine(day, datetime.min.time(), tzinfo=_tz(cfg))
     row = {
-        "pk": messaging_repo.owner_pk(owner_id),
-        "sk": f"VOICEWAIT#{body.date}#{entry_id}",
+        "pk": pk,
+        "sk": sk,
         "id": entry_id,
         "date": body.date,
         "phone": phone,
@@ -912,7 +918,12 @@ async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
         "createdAt": utc_now_iso(),
         "expiresAt": int(midnight.timestamp()) + 2 * 86400,
     }  # TTL: a day after the date
-    await run_in_thread(messaging_repo._table().put_item, Item=row)
+    try:
+        await run_in_thread(messaging_repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(sk)")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return done  # a concurrent retry wrote it first
     line = f"Waitlisted for {body.date}" + (f" · {row['service']}" if row["service"] else "")
     await _patch_call(call_id, lambda c: {"callerName": c.get("callerName") or name, "steps": _step(c, line)})
     return {"waitlisted": True, "date": body.date, "service": row["service"]}

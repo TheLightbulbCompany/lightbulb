@@ -68,6 +68,10 @@ async def sync_subscription(subscription: dict) -> None:
     if not owner_id or metadata.get("purpose") != "voice_plan":
         return
     async with _operation(owner_id):
+        # Webhooks arrive out of order: mirror Stripe's current state, never the event's snapshot.
+        subscription = await run_in_thread(
+            stripe.Subscription.retrieve, subscription["id"], api_key=settings.STRIPE_SECRET_KEY
+        )
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
         if not account or account.get("stripe_customer_id") != subscription.get("customer"):
             return

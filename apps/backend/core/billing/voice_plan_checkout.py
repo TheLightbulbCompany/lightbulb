@@ -36,6 +36,21 @@ async def start(owner_id: str, *, accepted_by: str) -> dict:
         "accepted_by": accepted_by,
         "plan_version": voice_plan.PLAN_VERSION,
     }
+    customer, key = account["stripe_customer_id"], settings.STRIPE_SECRET_KEY
+    # One payable door per workspace: a paid-but-unsynced subscription or an open session is reused, never doubled.
+    subs = await run_in_thread(
+        stripe.Subscription.list, customer=customer, price=settings.STRIPE_VOICE_PLAN_PRICE_ID, limit=10, api_key=key
+    )
+    if subs["data"]:
+        return {"status": "processing", "planVersion": voice_plan.PLAN_VERSION}
+    sessions = await run_in_thread(
+        stripe.checkout.Session.list, customer=customer, status="open", limit=20, api_key=key
+    )
+    for s in sessions["data"]:
+        if (s.get("metadata") or {}).get("purpose") == PURPOSE and (s.get("metadata") or {}).get(
+            "workspace_id"
+        ) == owner_id:
+            return {"status": "checkout", "checkoutUrl": s["url"]}
     session = await run_in_thread(
         stripe.checkout.Session.create,
         mode="subscription",

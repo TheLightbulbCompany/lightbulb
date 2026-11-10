@@ -188,11 +188,11 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | # | Promise | Built | Prod | Machine | 1st | Owner | Note |
 |---|---|---|---|---|---|---|---|
 | 6.1 | One pool of credits covers voice and text | no | no | no | 1st | Platform | Founder ruling 9 Nov, replacing the built plan ($250, 1,500 minutes, $0.35 after; sandbox billed 1,600 minutes at $285). How one pool works across OpenAI voice and OpenRouter text is being looked into |
-| 6.2 | Pay, get the plan | yes | yes | part | 1st | Platform | Passed in the Stripe sandbox on dev. 0 of 33 prod billing rows hold a voice contract |
+| 6.2 | Pay, get the plan | yes | no | no | 1st | Platform | Replaced 10 Nov (#5208): the $250 is a Stripe subscription (Checkout with promotion codes, no card when nothing is owed); Metronome bills only minutes past 1,500. The old flow's sandbox pass does not cover it. Checkout page checked in the sandbox; webhook-to-access not yet run on dev or prod |
 | 6.3 | A new business is offered one plan, the voice agent | no | no | no | 1st | Product | Sign-up still gives the old $50 plan and a free trial. A leftover "Front desk" add-on is in checkout. Founder ruling 9 Nov: one plan |
 | 6.4 | Phone, Meet and orb usage all draw on the customer's credits | part | part | no | 1st | Platform | Today only the orb debits credits. Phone and Meet minutes are sent to the voice plan's meter and debit nothing, so a business with no voice contract is not charged for them. A business on the voice plan gets text inference free, capped only by a daily key limit |
 | 6.5 | 80% and 100% notices; run-out choice; never a silent cut-off | part | no | no | | Platform | |
-| 6.6 | Cancel, renewal, failed payments, refunds | part | part | no | | Platform | Cancel at period end exists. No refund or dispute handling |
+| 6.6 | Cancel, renewal, failed payments, refunds | part | no | no | | Platform | Since #5208, cancel sets cancel_at_period_end on the Stripe subscription and Stripe's status (active/trialing) is the access; renewal and failed payments follow it. Not run end to end. No refund or dispute handling |
 | 6.7 | Old plans and purchase doors closed for new buyers (web, mobile, Apple) | no | no | no | | Product | |
 | 6.8 | Pay, then Go live buys the number, then the first call is answered | yes | yes | no | 1st | Product | Four steps, never run together |
 | 6.9 | Pricing page presents the receptionist | no | no | no | 1st | Product | Founder ruling 9 Nov |

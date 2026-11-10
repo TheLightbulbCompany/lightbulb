@@ -55,10 +55,12 @@ async def test_zero_dollar_subscription_grants_access_and_enrolls_usage_contract
         patch.object(voice_plan, "_enroll", enroll),
         patch.object(voice_plan, "_operation") as op,
         patch.object(voice_plan.voice_plan_payments, "refresh", AsyncMock()),
+        patch.object(voice_plan, "run_in_thread", AsyncMock(return_value=_sub())),
     ):
         op.return_value.__aenter__ = AsyncMock()
         op.return_value.__aexit__ = AsyncMock(return_value=False)
-        await voice_plan.sync_subscription(_sub())
+        # A stale "incomplete" event arriving late still mirrors Stripe's current (active) state.
+        await voice_plan.sync_subscription(_sub("incomplete"))
     assert enrolled and voice_billing.has_voice_plan(account)
     assert voice_plan.status(account) == "active"
 
@@ -72,21 +74,44 @@ async def test_unpaid_or_canceled_subscription_has_no_access():
     )
 
 
-async def test_checkout_is_a_subscription_with_promotion_codes():
+def _stripe(subs=(), sessions=()):
+    async def run(fn, *a, **k):
+        name = getattr(fn, "__qualname__", "")
+        if "Subscription" in name:
+            return {"data": list(subs)}
+        if k.get("status") == "open":
+            return {"data": list(sessions)}
+        return {"url": "https://checkout/x"}
+
+    return AsyncMock(side_effect=run)
+
+
+async def _start(run):
     account = {"owner_id": OWNER, "stripe_customer_id": "cus_1"}
     with (
         patch.object(voice_plan_checkout.billing_repo, "get_by_owner_id", AsyncMock(return_value=account)),
-        patch.object(
-            voice_plan_checkout, "run_in_thread", AsyncMock(return_value={"url": "https://checkout/x"})
-        ) as run,
+        patch.object(voice_plan_checkout, "run_in_thread", run),
     ):
-        out = await voice_plan_checkout.start(OWNER, accepted_by="user_1")
+        return await voice_plan_checkout.start(OWNER, accepted_by="user_1")
+
+
+async def test_checkout_is_a_subscription_with_promotion_codes():
+    run = _stripe()
+    out = await _start(run)
     kwargs = run.await_args.kwargs
     assert out["checkoutUrl"] == "https://checkout/x"
     assert kwargs["mode"] == "subscription" and kwargs["allow_promotion_codes"] is True
     assert kwargs["payment_method_collection"] == "if_required"
     assert kwargs["line_items"] == [{"price": "price_voice", "quantity": 1}]
     assert kwargs["subscription_data"]["metadata"]["workspace_id"] == OWNER
+
+
+async def test_checkout_never_opens_a_second_payable_door():
+    meta = {"purpose": "voice_plan", "workspace_id": OWNER}
+    reused = await _start(_stripe(sessions=[{"url": "https://checkout/open", "metadata": meta}]))
+    assert reused["checkoutUrl"] == "https://checkout/open"
+    paid = await _start(_stripe(subs=[{"id": "sub_1"}]))
+    assert paid["status"] == "processing" and "checkoutUrl" not in paid
 
 
 async def test_voice_subscription_is_recognised_by_price():

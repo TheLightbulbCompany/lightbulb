@@ -147,5 +147,7 @@ def test_recording_objections_do_not_promise_unrecorded_service():
     assert "may keep a transcript" in instructions and "this call is recorded" not in instructions.lower()
     assert "sincerely asks whether they are speaking to a person" in instructions
     assert "Wait for the backend's result" in instructions
+    # 10 Nov prod call: "They're finalizing the cancellation" was said while the cancel had been refused
+    assert "say only neutral holding words" in instructions and "or finalized" in instructions
 
 

@@ -216,6 +216,12 @@ async def test_a_callers_thread_gets_the_profile_and_the_caller_principal(monkey
     note = acts.CALLER_THREAD_NOTE
     assert "never pick a time yourself" in note and "already named a service or time, reuse it" in note
     assert "read the exact service, day and time back once" in note and 'On their "yes", book it at once' in note
+    # 10 Nov prod call: a refused cancel was narrated as "finalizing"; the answer states only what a result said
+    assert 'starts with "Not done"' in note and "NOT changed" in note and "being finalized" in note
+    assert "only when the message action itself returned a saved result" in note
+    assert "never that a booking change is being made, started or finished" in " ".join(
+        router_prompt.ROUTER_INSTRUCTIONS.split()
+    )
     member = await acts._request("org_x", task | {"origin": "member"}, att, tree)
     assert "## Business profile" not in member.input and "principal" not in member.to_wire()
     assert "offer up to 3" not in member.instructions

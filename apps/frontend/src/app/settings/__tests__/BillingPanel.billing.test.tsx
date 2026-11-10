@@ -167,6 +167,9 @@ describe("BillingPanel — workspace billing", () => {
 
     render(<SettingsPage />);
 
+    expect(screen.getByRole("heading", { name: "OpenRouter managed" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sign in with ChatGPT" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Subscribe to workspace plan" })).toHaveLength(1);
     expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
     await act(async () => {
@@ -278,7 +281,10 @@ describe("BillingPanel — org trial_local conversion", () => {
 
     render(<SettingsPage />);
 
-    // One workspace plan card, one checkout.
+    // Two inference choices share one workspace subscription checkout.
+    expect(screen.getByRole("heading", { name: "OpenRouter managed" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sign in with ChatGPT" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Subscribe to workspace plan" })).toHaveLength(1);
     expect(screen.queryByText("Current plan")).toBeNull();
     expect(screen.queryByText(/Ultra|Base/)).toBeNull();

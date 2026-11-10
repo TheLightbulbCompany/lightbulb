@@ -100,9 +100,6 @@ it("check forwarding says when a check is running or the number is not US", asyn
   post.mockResolvedValue({ ok: false, reason: "us_only" });
   fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
   expect(await screen.findByText("Forwarding checks work for US and Canadian numbers for now")).toBeInTheDocument();
-  post.mockResolvedValue({ ok: false, reason: "daily_limit" });
-  fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
-  expect(await screen.findByText("That's five checks today. Try again tomorrow")).toBeInTheDocument();
 });
 
 

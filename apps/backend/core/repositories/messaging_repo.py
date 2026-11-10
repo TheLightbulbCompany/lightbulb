@@ -65,7 +65,7 @@ import uuid
 import weakref
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
 from botocore.exceptions import ClientError
 
@@ -2993,65 +2993,6 @@ async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) 
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return False
         raise
-
-
-async def take_voice_count(owner_id: str, sk: str, limit: int, ttl_s: int = 2 * 86400) -> bool:
-    """One unit of the counter row ``sk`` (the forwarding checks cap); False once ``limit``
-    are used. The pattern of ``count_voice_edit``."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": sk},
-            UpdateExpression="ADD n :one SET expiresAt = if_not_exists(expiresAt, :exp)",
-            ConditionExpression="attribute_not_exists(n) OR n < :limit",
-            ExpressionAttributeValues={":one": 1, ":limit": limit, ":exp": int(time.time()) + ttl_s},
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-
-
-async def take_voice_unit(owner_id: str, sk: str, unit: str, limit: int) -> Literal["new", "had"] | None:
-    """Count ``unit`` (a turn number, a booking's start) once in the set row ``sk``: "new" when this call added it,
-    "had" when it was already counted (a retry: never a second unit), None once ``limit`` distinct units are used."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": sk},
-            UpdateExpression="ADD units :u SET expiresAt = if_not_exists(expiresAt, :exp)",
-            ConditionExpression="attribute_not_exists(units) OR (size(units) < :limit AND NOT contains(units, :one))",
-            ExpressionAttributeValues={
-                ":u": {unit},
-                ":one": unit,
-                ":limit": limit,
-                ":exp": int(time.time()) + 2 * 86400,
-            },
-        )
-        return "new"
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-    row = await _get(owner_pk(owner_id), sk)
-    return "had" if unit in ((row or {}).get("units") or set()) else None
-
-
-async def give_back_voice_unit(owner_id: str, sk: str, unit: str, keep: str | None = None) -> None:
-    """Undo a "new" `take_voice_unit`; with ``keep``, first count ``keep`` instead (a placeholder becomes the
-    identity it turned out to be). Two writes: DynamoDB refuses ADD and DELETE on one attribute in one update."""
-    key = {"pk": owner_pk(owner_id), "sk": sk}
-    if keep:
-        await run_in_thread(
-            _table().update_item, Key=key, UpdateExpression="ADD units :u", ExpressionAttributeValues={":u": {keep}}
-        )
-    await run_in_thread(
-        _table().update_item, Key=key, UpdateExpression="DELETE units :u", ExpressionAttributeValues={":u": {unit}}
-    )
-
-
-async def has_voice_unit(owner_id: str, sk: str, unit: str) -> bool:
-    return unit in ((await _get(owner_pk(owner_id), sk) or {}).get("units") or set())
 
 
 async def claim_voice_slot(owner_id: str, sk: str, holder: str, hold_s: int) -> bool:

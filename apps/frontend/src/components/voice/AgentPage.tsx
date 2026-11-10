@@ -287,7 +287,6 @@ const REFUSED: Record<string, string> = {
   outbound_not_configured: "Forwarding check isn't switched on yet",
   check_in_progress: "A check is already running",
   us_only: "Forwarding checks work for US and Canadian numbers for now",
-  daily_limit: "That's five checks today. Try again tomorrow",
 };
 const POLL_MS = 3000, POLL_FOR_MS = 70_000;  // as long as the server counts a call as the probe (voice_outbound.WINDOW_S)
 

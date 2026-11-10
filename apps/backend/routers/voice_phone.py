@@ -16,8 +16,6 @@ Rows in the messaging table:
                                           (core/services/voice_booking)
     OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
     OWNER#<owner>   VOICELIVE#<line>#<i>  a live-call slot (LIVE_CALLS_PER_LINE), held by a call id until its end
-    OWNER#<owner>   VOICECALLS#<day>#<c>  calls from caller c today; VOICEBOOKS#<day>#<c> its bookings ("withheld": "")
-    OWNER#<owner>   VOICETURNS#<call>     the call's `/turn` numbers (TURNS_PER_CALL)
 """
 
 import asyncio
@@ -66,9 +64,6 @@ logger = logging.getLogger(__name__)
 
 # --- abuse caps (security review 9 Nov, M5). Over one, the call is still answered, but only takes a message. ---------
 LIVE_CALLS_PER_LINE = 5  # calls on one line at once
-CALLS_PER_CALLER_PER_DAY = 20  # calls from one number to one workspace per UTC day (withheld callers share one)
-BOOKINGS_PER_CALLER_PER_DAY = 5  # bookings from one number per UTC day (withheld callers share one)
-TURNS_PER_CALL = 60  # the caller's lines delegated to the Router (`/turn`) in one call
 LIVE_SLOT_S = 25 * 60  # a live-call slot frees itself after this (the worker's 20 min cap + grace) if no end came
 END_GRACE_S = 30  # billed durationSec may exceed the server-measured time since startedAt by this much
 #: What carriers present for a withheld number (Twilio: "anonymous", "restricted", "unknown", "private",
@@ -100,14 +95,6 @@ def caller_id(raw: str) -> str:
 
 def _day() -> str:
     return datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
-
-
-async def _limit(call_id: str, why: str) -> None:
-    """A cap was hit mid-call: from now on the call only takes messages."""
-    await _patch_call(
-        call_id,
-        lambda c: {} if c.get("limited") else {"limited": why, "steps": _step(c, f"Limited to a message: {why}")},
-    )
 
 
 _Str = Annotated[str, Field(min_length=1, max_length=500)]
@@ -373,10 +360,6 @@ async def start_call(body: StartIn) -> dict:
         limited = (existing.get("call") or {}).get("limited") or ""
     elif not slot:
         limited = "too many calls on the line at once"
-    elif not await messaging_repo.take_voice_unit(  # keyed by call id: overlapping starts of one call count once
-        owner_id, f"VOICECALLS#{_day()}#{caller or 'withheld'}", call_id, CALLS_PER_CALLER_PER_DAY
-    ):
-        limited = "too many calls from this number today"
     else:
         limited = ""
     # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.
@@ -535,9 +518,8 @@ async def owner_pin(call_id: str, body: PinIn) -> dict:
     ws = meta["ownerId"]
     if call.get("ownerMode") and await _owner_seated(call_id, ws, call):
         return {"ok": True, "after": await latest_seq(call["dmRoomId"])}
-    # the try is taken (atomically, before any hash is checked) or there is none left
-    if call.get("status") != "live" or not await phone_pin.reserve_call_try(ws, call_id):
-        return {"ok": False, "locked": True}
+    if call.get("status") != "live":
+        return {"ok": False}
     member = await phone_pin.check(ws, call.get("caller") or "", body.pin)
     if member:
         try:
@@ -546,7 +528,7 @@ async def owner_pin(call_id: str, body: PinIn) -> dict:
             member = None
     if not member:
         await _patch_call(call_id, lambda c: {"steps": _step(c, "A phone PIN was entered and refused")})
-        return {"ok": False, "locked": await phone_pin.call_tries(ws, call_id) >= phone_pin.CALL_TRIES}
+        return {"ok": False}
     await _patch_call(call_id, lambda c: {"ownerMode": True, "ownerModeUserId": member, "dmRoomId": dm,
                                           "steps": _step(c, "The owner's PIN was right: owner mode")})  # fmt: skip
     return {"ok": True, "after": await latest_seq(dm)}
@@ -1247,33 +1229,8 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
-    # One unit per reservation, keyed by its booking id. A retry that returns or reconciles a reservation already
-    # counted spends nothing (so the cap never locks a pending booking out of its reconciliation); anything else
-    # holds a placeholder unit while it books (the cap stays atomic), which becomes the new booking's id.
-    ws, slot_sk = meta["ownerId"], f"VOICEBOOK#{body.start}"
-    held = await messaging_repo._get(messaging_repo.owner_pk(ws), slot_sk) or {}
-    caller = call.get("caller") if _verified(call) else None  # as voice_booking.book: only A claims a number's hold
-    ours = held.get("callId") == call_id or bool(caller and held.get("phone") == caller)
-    counted = bool(ours and held.get("bookingId")) and await messaging_repo.has_voice_unit(
-        ws, counter, held["bookingId"]
-    )
-    placeholder = None if counted else f"booking-in-progress:{uuid.uuid4().hex}"
-    if placeholder and not await messaging_repo.take_voice_unit(ws, counter, placeholder, BOOKINGS_PER_CALLER_PER_DAY):
-        await _limit(call_id, "too many bookings from this number today")
-        raise _err(403, "not_allowed")
-    try:
-        result = await voice_booking.book(ws, cfg, call_id, call, body.start, body.service, body.name)
-    except BaseException:
-        if placeholder:
-            await messaging_repo.give_back_voice_unit(ws, counter, placeholder)  # nothing was reserved
-        raise
-    if placeholder:
-        made = await messaging_repo._get(messaging_repo.owner_pk(ws), slot_sk) or {}
-        reserved = result["state"] in ("confirmed", "pending", "held") and made.get("bookingId")
-        await messaging_repo.give_back_voice_unit(
-            ws, counter, placeholder, keep=made["bookingId"] if reserved else None
-        )
+    ws = meta["ownerId"]
+    result = await voice_booking.book(ws, cfg, call_id, call, body.start, body.service, body.name)
     if result["state"] != "confirmed":
         await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
         return {"booked": False, **result}
@@ -1545,9 +1502,6 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
         raise _err(403, "no_requester")
     if call_mode(await agent_config(ws), call) != "live":
         raise _err(403, "not_allowed")  # a paused line only takes messages (/message)
-    if not await messaging_repo.take_voice_unit(ws, f"VOICETURNS#{call_id}", str(body.n), TURNS_PER_CALL):
-        await _limit(call_id, f"more than {TURNS_PER_CALL} lines to the team")
-        raise _err(403, "not_allowed")  # the worker takes it as a message instead
     who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()
     key = f"call-turn:{call_id}:{body.n}"
     msg, _ = await messaging_repo.create_message(

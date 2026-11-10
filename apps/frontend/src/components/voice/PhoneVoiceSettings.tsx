@@ -40,10 +40,18 @@ function StockSample({ src }: { src: string }) {
     const player = audio.current;
     return () => { player?.pause(); }; // source change, active Live, navigation: stop the old sample
   }, []);
+  // A stalled load shows the retry, never a spinner that never ends.
+  useEffect(() => {
+    if (!loading) return;
+    const t = setTimeout(() => { setLoading(false); setError(true); }, 10_000);
+    return () => clearTimeout(t);
+  }, [loading]);
+  const ready = () => { setLoading(false); setError(false); };
   return <>
     <audio ref={audio} aria-label="Voice sample player" controls preload="none" src={src}
       onLoadStart={() => setLoading(true)} onError={() => { setLoading(false); setError(true); }}
-      onCanPlay={() => { setLoading(false); setError(false); }} />
+      // preload="none": the browser fires loadstart then suspend and never canplay until Play, so suspend means "ready".
+      onCanPlay={ready} onSuspend={ready} onLoadedMetadata={ready} />
     {loading && <p className="vx-hint" role="status">Loading voice sample…</p>}
     {error && <><p className="vx-hint" role="alert">Couldn’t load this voice sample.</p>
       <button type="button" className="vx-chip" onClick={() => { setError(false); audio.current?.load(); }}>Reload voice sample</button></>}

@@ -9,6 +9,7 @@ import { PANELS } from "@/components/settings/SettingsPlace";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
 import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { useBilling } from "@/hooks/useBilling";
 import { useAgentConfig, useUsage } from "./data";
 import { VoicePlanCard } from "./VoicePlanCard";
 import { PhonePinCard } from "./PhonePinCard";
@@ -55,6 +56,12 @@ function Section({ name, children }: { name: string; children: React.ReactNode }
     <p className="vx-sub">This section couldn&apos;t load. The rest of Settings still works.</p></section>}>{children}</ErrorBoundary>;
 }
 
+/** The old $50 Team plan stays manageable for workspaces already on it; nobody new is offered it here. */
+function WorkspaceBilling({ Billing }: { Billing: () => React.ReactElement }) {
+  const { account } = useBilling();
+  return account?.is_subscribed ? <Billing /> : null;
+}
+
 export function VoiceSettings() {
   const desktop = useSyncExternalStore(noSubscribe, isDesktopApp, () => false);
   const { billing: Billing, members: Members, approvals: Approvals, connections: Connections } = PANELS;
@@ -62,7 +69,7 @@ export function VoiceSettings() {
     <h1 className="vx-title">Settings</h1>
     <Section name="Voice plan"><VoicePlanCard /></Section>
     <Section name="Billing & minutes"><BillingMinutes /></Section>
-    <Section name="Workspace billing"><Billing /></Section>
+    <Section name="Workspace billing"><WorkspaceBilling Billing={Billing} /></Section>
     <Section name="Phone PIN"><PhonePinCard /></Section>
     <Section name="Members"><Members /></Section>
     <Section name="Connections"><Connections /></Section>

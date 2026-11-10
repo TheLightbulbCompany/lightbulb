@@ -5,7 +5,9 @@ import { vi, it, expect, beforeEach } from "vitest";
 const desktop = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/lib/desktopNotify", () => ({ isDesktopApp: () => desktop.enabled }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => <button type="button">Check for updates</button> }));
-beforeEach(() => { desktop.enabled = false; });
+const billing = vi.hoisted(() => ({ subscribed: true }));
+vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: { is_subscribed: billing.subscribed } }) }));
+beforeEach(() => { desktop.enabled = false; billing.subscribed = true; });
 
 vi.mock("@/components/settings/SettingsPlace", () => ({
   PANELS: {
@@ -49,4 +51,12 @@ it.each([true, false])("shows the existing desktop updater only in the desktop a
     expect(screen.queryByRole("heading", { name: "Desktop updates" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument();
   }
+});
+
+it("does not offer the old Team plan to a workspace that is not on it", () => {
+  billing.subscribed = false;
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  render(<VoiceSettings />);
+  quiet.mockRestore();
+  expect(screen.queryByText("workspace billing and provider choices")).not.toBeInTheDocument();
 });

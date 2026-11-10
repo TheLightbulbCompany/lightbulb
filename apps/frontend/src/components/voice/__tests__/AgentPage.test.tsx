@@ -92,25 +92,10 @@ it("tells people to invite the workspace's own address, the one that receives", 
 });
 
 
-it("designates an existing worker without renaming it or changing caller settings", async () => {
-  vi.useFakeTimers();
-  cfg.value = { ...cfg.value, voice: "Warm", spanish: true };
+it("shows no front-door agent picker", () => {
   render(<AgentPage />);
-  fireEvent.change(screen.getByLabelText("Receptionist"), { target: { value: "existing-worker" } });
-  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
-  expect(cfg.save).toHaveBeenCalledWith(expect.objectContaining({ frontAgentId: "existing-worker", name: "Nova", voice: "Warm", spanish: true }));
-  expect(screen.getByText(/existing conversations keep their agent/)).toBeInTheDocument();
-  vi.useRealTimers();
-});
-
-
-it("keeps an unavailable saved selection visible and offers an existing replacement", () => {
-  cfg.value = { ...cfg.value, frontAgentId: "deleted-worker" };
-  cfg.issue = "Choose an active front-door agent. Your saved selection is unavailable.";
-  render(<AgentPage />);
-  expect(screen.getByRole("alert")).toHaveTextContent("Choose an active front-door agent");
-  expect(screen.getByLabelText("Receptionist")).toHaveValue("deleted-worker");
-  expect(screen.getByRole("option", { name: "Founders custom name" })).toHaveValue("existing-worker");
+  expect(screen.queryByLabelText("Receptionist")).toBeNull();
+  expect(screen.queryByText(/Workspace default/)).toBeNull();
 });
 
 it("saves supported voice and Spanish settings without rewriting the saved legacy default on an unrelated edit", async () => {

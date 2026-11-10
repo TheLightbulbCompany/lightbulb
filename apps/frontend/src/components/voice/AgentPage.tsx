@@ -18,7 +18,6 @@ export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
   const invite = useInviteAddress();
   const { organization } = useOrganization();
-  const business = organization?.name || "your business";
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [saveState, setSaveState] = useState<Save>("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -45,6 +44,8 @@ export function AgentPage() {
     }, 600);
   };
   const name = nameOf(c);
+  // The name typed at setup is what callers hear (voice_phone.start_call); the workspace name is only a fallback.
+  const business = c.business?.trim() || organization?.name || "your business";
   const status = c.paused ? "Paused" : c.live ? "Live" : "Not live yet";
 
   return <div className="vx-page">
@@ -52,7 +53,7 @@ export function AgentPage() {
       <div>
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
-          {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
+          {c.number ? <> · answering {usPhone(c.number)}</> : <> · no number yet</>}</p>
         <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "handoff"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
             : saveState === "forbidden" ? "Only an admin can change the assistant."
@@ -83,16 +84,12 @@ export function AgentPage() {
       <div>
         <Check label="Book appointments" on={c.allow.book} set={(book) => set({ allow: { ...c.allow, book } })} />
         <Check label="Move and cancel appointments" on={c.allow.move} set={(move) => set({ allow: { ...c.allow, move } })} />
-        <Check label="Add callers to the waitlist" on={c.allow.waitlist ?? true} set={(waitlist) => set({ allow: { ...c.allow, waitlist } })} />
         <Check label="Greet returning clients by name" on={c.allow.greetByName} set={(greetByName) => set({ allow: { ...c.allow, greetByName } })} />
         <Check label="Answer prices, hours, services and directions" on={c.allow.answer} set={(answer) => set({ allow: { ...c.allow, answer } })} />
-        <Check label="Take deposits or payments (not available yet)" on={false} disabled />
       </div>
     </Sec>
 
-    <Sec title="Waitlist" hint={`Callers ${name} put on the waitlist when the time they wanted was full. Nobody is texted yet: call them when a slot opens.`}>
-      <WaitlistList />
-    </Sec>
+    <WaitlistList name={name} />
 
     <Sec title={`Knowledge: what ${name} knows about ${business}`}>
       <KnowledgeList c={c} set={set} />
@@ -125,7 +122,7 @@ export function AgentPage() {
     </Sec>
 
     <Sec title="Number & forwarding">
-      <p style={{ fontSize: "var(--text-ui)" }}>{name}&apos;s number: {c.number ? <b>{c.number}</b> : <span className="vx-muted">not set up yet</span>}</p>
+      <p style={{ fontSize: "var(--text-ui)" }}>{name}&apos;s number: {c.number ? <b>{usPhone(c.number)}</b> : <span className="vx-muted">not set up yet</span>}</p>
       <label className="vx-label">Your business line
         <input className="vx-field" type="tel" value={c.forwardFrom} placeholder="(415) 555-0199" onChange={(e) => set({ forwardFrom: e.target.value })} /></label>
       <p className="vx-hint" style={{ fontSize: "var(--text-caption)", color: "var(--fg-mute)" }}>
@@ -142,14 +139,6 @@ export function AgentPage() {
     <Sec title="Meetings" hint={<>Invite {invite ? <span className="vx-code">{invite}</span> : "the assistant's team address (Mail)"} to any Google Meet. {name} joins and listens. Say &ldquo;{name}&rdquo; to bring it into the conversation; while active, it responds naturally. Guests are told it&apos;s there; anyone can say &ldquo;{name}, don&apos;t transcribe me&rdquo;.</>}>
       <div>
         <Check label="Turn action items into follow-ups" on={c.meetings.followUps} set={(followUps) => set({ meetings: { ...c.meetings, followUps } })} />
-      </div>
-    </Sec>
-
-    <Sec title="Reminders & follow-ups">
-      <div>
-        <Check label="Text clients the day before their appointment" on={false} disabled note="Not available yet" />
-        <Check label="Text back missed callers who didn't leave a message" on={false} disabled note="Not available yet" />
-        <Check label="Text the waitlist when a slot frees up" on={false} disabled note="Not available yet" />
       </div>
     </Sec>
   </div>;
@@ -180,14 +169,15 @@ export function Check({ label, on, set, disabled, note }: { label: string; on: b
     <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set?.(e.target.checked)} />{label}{note && <small className="vx-muted">{note}</small>}</label>;
 }
 
-function WaitlistList() {
+/** Shown only while someone is waiting: the toggle is hidden (10 Nov demo ruling), but a caller already waiting must not be lost. */
+function WaitlistList({ name }: { name: string }) {
   const { entries, remove } = useWaitlist();
-  if (!entries.length) return <p className="vx-muted">No one is waiting.</p>;
-  return <div>{entries.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+  if (!entries.length) return null;
+  return <Sec title="Waitlist" hint={`Callers ${name} put on the waitlist when the time they wanted was full. Nobody is texted yet: call them when a slot opens.`}><div>{entries.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
     <span style={{ flex: 1 }}><b>{e.name || "Caller"}</b> · <a className="vx-link" href={`tel:${e.phone}`}>{usPhone(e.phone)}</a> · {e.date}
       {e.service && <> · {e.service}</>}{e.note && <> · {e.note}</>}</span>
     <Button size="sm" variant="outline" aria-label={`Remove ${e.name || e.phone} from the waitlist`} onClick={() => void remove(e)}><X /></Button>
-  </div>)}</div>;
+  </div>)}</div></Sec>;
 }
 
 export function KnowledgeList({ c, set }: { c: AgentConfig; set: (p: Partial<AgentConfig>) => void }) {

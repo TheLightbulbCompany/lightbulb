@@ -53,19 +53,27 @@ it("a hand-off number outside the US and Canada says why it was not saved", asyn
   vi.useRealTimers();
 });
 
-it("hides what does nothing yet and shows the texts as off", () => {
+it("hides what does nothing yet, and the waitlist toggle (10 Nov demo ruling)", () => {
   render(<AgentPage />);
-  expect((screen.getByLabelText("Add callers to the waitlist") as HTMLInputElement).checked).toBe(true); // it acts now
   expect(screen.queryByLabelText(/Email me the notes/)).toBeNull();
   expect(screen.queryByText("Square")).toBeNull();
-  for (const t of [/Text back missed callers/, /Text the waitlist/]) {
-    const box = screen.getByLabelText(t) as HTMLInputElement;
-    expect(box.checked).toBe(false); expect(box.disabled).toBe(true);
+  for (const t of [/Text clients the day before/, /Text back missed callers/, /Text the waitlist/, /waitlist/i, /deposits/]) {
+    expect(screen.queryByLabelText(t)).toBeNull();
   }
-  expect(screen.getAllByText("Not available yet")).toHaveLength(3);
-  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).disabled).toBe(true);
-  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).checked).toBe(false);
+  expect(screen.queryByText("Not available yet")).toBeNull();
   expect(screen.getByRole("link", { name: "Test call" }).getAttribute("href")).toBe("tel:+14155550199");
+});
+
+it("names the business typed at setup, not the workspace", () => {
+  cfg.value = { ...cfg.value, business: "Corner Barbers" };
+  const { unmount } = render(<AgentPage />);
+  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Nova · Corner Barbers");
+  expect(screen.getByText("Knowledge: what Nova knows about Corner Barbers")).toBeInTheDocument();
+  unmount();
+  cfg.value = { ...cfg.value, business: "" };
+  render(<AgentPage />);
+  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Nova · Salon"); // the workspace, as a fallback
+  expect(screen.getAllByText(/\(415\) 555-0199/).length).toBeGreaterThan(0); // the number, formatted
 });
 
 it("a stored square or other shows as the assistant's own calendar", () => {

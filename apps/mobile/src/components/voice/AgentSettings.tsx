@@ -85,7 +85,7 @@ export function AgentSettings() {
         <PhoneVoiceSettings config={draft} patch={(next) => patch({ ...next })} disabled={saving} />
         {field("Instructions", "instructions", true)}
         <Text accessibilityRole="header" style={[text, styles.label]}>Permissions</Text>
-        {([['book', 'Book appointments'], ['move', 'Move appointments'], ['waitlist', 'Add callers to the waitlist'], ['answer', 'Answer business questions'], ['greetByName', 'Greet returning callers by name']] as const).map(([key, label]) =>
+        {([['book', 'Book appointments'], ['move', 'Move appointments'],['answer', 'Answer business questions'], ['greetByName', 'Greet returning callers by name']] as const).map(([key, label]) =>
           <View key={key} style={[styles.toggle, { borderColor: palette.edge }]}>
             <Text style={[text, styles.toggleLabel]}>{label}</Text>
             <Switch accessibilityLabel={label} disabled={saving} value={draft.allow?.[key] ?? true} onValueChange={(value) => patch({ allow: { ...draft.allow, [key]: value } })} />

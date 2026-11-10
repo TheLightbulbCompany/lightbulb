@@ -1213,6 +1213,61 @@ async def test_a_callers_upcoming_booking_keeps_the_line(client, router_seat):
     has.assert_awaited_once_with("org_1", "+14155550133")
 
 
+ROSTER = [{"name": "Rosa", "title": "Customer Operations"}, {"name": "Nova"}]
+
+
+async def _said(client, lines: list[tuple[str, bool]]) -> list[str]:
+    """The /events text for agent lines in a fresh call; True marks a hold (an ack while its task runs)."""
+    call = await _start(client)
+    cid = call["callId"]
+    for i, (text, waiting) in enumerate(lines):
+        await _agent_line(cid, text, f"n{i}", [{"taskId": f"t{i}"}] if waiting else None)
+    with patch.object(voice_phone.agent_registry_repo, "list_agents", AsyncMock(return_value=ROSTER)):
+        out = client.post(f"/api/v1/internal/voice/calls/{cid}/events", json={"after": 0}, headers=W).json()
+    return [m["text"] for m in out["messages"]]
+
+
+async def test_a_caller_never_hears_a_specialist_or_a_third_party_working(client, router_seat):
+    """10 Nov prod calls: "Customer Operations is checking this for you" and "They're finalizing the cancellation"
+    were said to callers. On a hold, someone else's progress becomes the assistant's own hold; on any line, a
+    specialist's name (a starter's, or one the owner renamed) becomes "the team"."""
+    hold = voice_phone.HOLD
+    said = await _said(client, [
+        ("Customer Operations is checking this for you.", True),
+        ("On it! They\u2019re still working on it. They're finalizing the cancellation.", True),
+        ("Then Customer Operations will call you back.", False),
+        ("Okay Rosa moved you to 3 PM. I'm checking the CEO's notes.", False),
+        ("The Finance team will text you.", False),
+    ])  # fmt: skip
+    assert said == [
+        hold,
+        hold,
+        "Then the team will call you back.",
+        "Okay the team moved you to 3 PM. I'm checking the team's notes.",
+        "The team will text you.",
+    ]
+
+
+SALON_ANSWERS = [
+    "Color includes 45 minutes of processing time. It's $120.",
+    "There's a $5 processing fee for cards.",
+    "Maria is working on Saturdays from 9 to 5.",
+    "We're handling walk-ins until 6.",
+    "We can put a gloss on it for $15.",
+    "Your appointment is canceled and the refund is processing.",
+    "We're checking you in at 3:30 p.m. tomorrow.",
+    "Ask about our Growth package, it's $40.",
+    "Our Hair Growth Treatment is $40. Nova here, anything else?",
+]
+
+
+@pytest.mark.parametrize("waiting", [False, True])
+async def test_real_answers_reach_the_caller_unchanged(client, router_seat, waiting):
+    """Review of #5224: "processing", "working on <day>" and "on it" are salon words; an answer (and a hold that
+    names no third party at work) is never replaced, and a service named like a specialist is left alone."""
+    assert await _said(client, [(t, waiting) for t in SALON_ANSWERS]) == SALON_ANSWERS
+
+
 async def test_another_calls_caller_thread_is_never_picked(client, router_seat):
     _, enq = router_seat
     call = await _start(client)

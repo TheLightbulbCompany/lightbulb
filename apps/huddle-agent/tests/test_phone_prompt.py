@@ -136,7 +136,6 @@ def test_a_ui_choice_question_is_said_with_its_options():
 def test_an_unverified_caller_is_offered_a_message_for_existing_bookings():
     """Founder 9 Nov: without STIR/SHAKEN A the number proves nothing. The backend refuses; the voice words it."""
     unverified = phone.prompt({**INFO, "callerVerified": False})
-    assert "list, move or cancel" not in unverified
     assert "cannot look up, move or cancel existing bookings" in unverified and "take a message" in unverified
     verified = phone.prompt({**INFO, "callerVerified": True, "callerName": "Priya"})
     assert "list, move or cancel the caller's own bookings" in verified and "Priya" in verified

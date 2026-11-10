@@ -209,9 +209,7 @@ async def caller_of(trigger: dict | None) -> str | None:
         return None
     from core.repositories import messaging_repo
 
-    from routers import voice_phone as vp
-
     meta = await messaging_repo.get_room(ref["callId"]) or {}
     call = meta.get("call") or {}
     # Only an A-attested number lists "This caller's upcoming bookings": a spoofed one would read the victim's.
-    return call["caller"] if meta.get("kind") == "call" and vp._verified(call) else None
+    return call.get("caller") or None if meta.get("kind") == "call" and call.get("callerVerified") is True else None

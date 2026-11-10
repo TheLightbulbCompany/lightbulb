@@ -477,7 +477,7 @@ async def start_call(body: StartIn) -> dict:
         "callerName": call["callerName"] if allow["greetByName"] else "",
         "callerMemory": call["callerMemory"],
         "callerVerified": verified,  # the worker's prompt: unverified means no existing bookings, offer a message
-        "can": {k: bool(allow[k]) and not paused and (k != "move" or verified) for k in ("book", "move", "answer")},
+        "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
         "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),

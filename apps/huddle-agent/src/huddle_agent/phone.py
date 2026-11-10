@@ -58,12 +58,6 @@ TOOLS = [
     "Messages: take a message for the owner, with the caller's name and a callback number.",
     "A person: hand the call to a person at the business, when someone is available.",
 ]
-#: The carrier did not attest (STIR/SHAKEN A) that the caller owns the number: it may be spoofed, so the backend
-#: refuses its bookings (founder 9 Nov). The model words it; the backend enforces it.
-UNVERIFIED_BOOKINGS = (
-    "Bookings: book a new time. You cannot look up, move or cancel existing bookings on this call: if the caller "
-    "asks, offer to take a message for the team instead."
-)
 MESSAGE_ONLY_TOOLS = ["Messages: take a message for the team; the owner will call back."]
 
 #: Said once after start, as the docs greet: the same instructions as the prompt's opening, as commentary with
@@ -137,18 +131,15 @@ def prompt(info: dict) -> str:
         business=info["businessName"],
         caller=f"The caller is {info['callerName']}, a returning client.\n"
         if info.get("callerName")
-        else "",
+        else ""
+        if info.get("callerVerified")
+        else "This caller's number is not verified: you cannot look up, move or cancel existing bookings; offer "
+        "to take a message for the team instead.\n",
         paused="This line is not taking bookings or questions right now: it only takes messages.\n"
         if paused
         else "",
         owner=OWNER_PIN if info.get("ownerPin") else "",
-        delegation=live.delegation_policy(
-            MESSAGE_ONLY_TOOLS
-            if paused
-            else TOOLS
-            if info.get("callerVerified")
-            else [UNVERIFIED_BOOKINGS if t.startswith("Bookings:") else t for t in TOOLS]
-        ),
+        delegation=live.delegation_policy(MESSAGE_ONLY_TOOLS if paused else TOOLS),
     )
 
 

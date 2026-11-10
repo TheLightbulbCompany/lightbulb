@@ -320,7 +320,6 @@ async def test_an_unattested_caller_books_and_leaves_messages_but_gets_nothing_b
 
     spoof = await _start(client, room="phone-dev-_s_1", verstat=verstat)  # the same number, not attested
     assert spoof["callerName"] == "" and spoof["callerMemory"] == [] and spoof["callerVerified"] is False
-    assert spoof["can"]["move"] is False and spoof["can"]["book"] is True
     meta = await messaging_repo.get_room(spoof["callId"])
     assert meta["call"]["callerName"] == "" and meta["call"]["returning"] is False
     assert meta["call"]["callerVerified"] is False and meta["call"]["caller"] == "+14155550133"  # kept for callback

@@ -617,19 +617,31 @@ def free_slots(cfg: dict, date: str, taken: list[tuple[datetime, datetime]], now
     return out
 
 
+async def _booking_rows(owner_id: str, prefix: str) -> list[dict]:
+    args = {
+        "KeyConditionExpression": Key("pk").eq(messaging_repo.owner_pk(owner_id)) & Key("sk").begins_with(prefix),
+        "ConsistentRead": True,
+    }
+    rows = []
+    while True:
+        result = await run_in_thread(messaging_repo._table().query, **args)
+        rows.extend(result.get("Items", []))
+        if not result.get("LastEvaluatedKey"):
+            return rows
+        args["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+
 async def _bookings(owner_id: str, prefix: str) -> list[dict]:
-    r = await run_in_thread(
-        messaging_repo._table().query,
-        KeyConditionExpression=Key("pk").eq(messaging_repo.owner_pk(owner_id))
-        & Key("sk").begins_with(f"VOICEBOOK#{prefix}"),
-    )
-    return r.get("Items", [])
+    return await _booking_rows(owner_id, f"VOICEBOOK#{prefix}")
 
 
 async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime]]:
+    # Provisional move targets stay visible, including moves to a different date.
+    holds = await _booking_rows(owner_id, f"VOICEHOLD#{date}")
     out = []
-    for b in await _bookings(owner_id, date):
-        s = datetime.strptime(b["sk"].removeprefix("VOICEBOOK#"), "%Y-%m-%dT%H:%M")
+    for b in [*(await _bookings(owner_id, date)), *holds]:
+        start = b.get("start") or b["sk"].removeprefix("VOICEBOOK#")
+        s = datetime.strptime(start, "%Y-%m-%dT%H:%M")
         out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60))))
     return out
 
@@ -696,12 +708,22 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
         raise _err(400, "slot_unavailable")
     sk, mine = f"VOICEBOOK#{start}", set(old.get("cells", [])) if old else set()
     items = [{"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
-        "pk": pk, "sk": sk, "service": service, "minutes": minutes, "name": name, "phone": call.get("caller", ""),
+        "pk": pk, "sk": sk, "bookingId": (old or {}).get("bookingId") or str(uuid.uuid4()),
+        "generation": int((old or {}).get("generation", 0)) + 1,
+        "bookingProvider": (old or {}).get("bookingProvider") or ("google" if cfg.get("bookingsGo") == "google" else "own"),
+        "bookingState": "held" if cfg.get("bookingsGo") == "google" else "confirmed",
+        "service": service, "minutes": minutes, "name": name, "phone": call.get("caller", ""),
         "callId": call_id, "createdAt": utc_now_iso(), "cells": cells}}}]  # fmt: skip
     for c in cells:
         put = {
             "TableName": table,
-            "Item": {"pk": pk, "sk": c, "booking": sk, "expiresAt": _cell_expiry(c)},
+            "Item": {
+                "pk": pk,
+                "sk": c,
+                "booking": sk,
+                "bookingId": items[0]["Put"]["Item"]["bookingId"],
+                "expiresAt": _cell_expiry(c),
+            },
             "ConditionExpression": "attribute_not_exists(sk)",
         }
         if c in mine:  # the booking being moved holds it now and gives it up in this same transaction
@@ -729,11 +751,31 @@ def _cell_expiry(cell: str) -> int:  # the table's TTL attribute: the cell's end
 
 def _release(table: str, pk: str, row: dict, keep: set[str] = frozenset()) -> list[dict]:
     # ponytail: VOICEBOOK# rows made before cells existed have no "cells" and hold nothing; no migration, they age out.
-    return [
-        {"Delete": {"TableName": table, "Key": {"pk": pk, "sk": k}}}
-        for k in [row["sk"], *row.get("cells", [])]
-        if k not in keep
-    ]
+    out = []
+    for key in [row["sk"], *row.get("cells", [])]:
+        if key in keep:
+            continue
+        if key == row["sk"]:
+            condition, values = voice_booking.row_condition(row)
+        elif row.get("bookingId"):
+            # A cell the table's TTL already removed is released; one that exists must still be this booking's.
+            condition, values = (
+                "attribute_not_exists(sk) OR (bookingId = :bid AND booking = :booking)",
+                {":bid": row["bookingId"], ":booking": row["sk"]},
+            )
+        else:
+            condition, values = "attribute_not_exists(sk) OR (booking = :booking)", {":booking": row["sk"]}
+        out.append(
+            {
+                "Delete": {
+                    "TableName": table,
+                    "Key": {"pk": pk, "sk": key},
+                    "ConditionExpression": condition,
+                    "ExpressionAttributeValues": values,
+                }
+            }
+        )
+    return out
 
 
 @router.post("/internal/voice/calls/{call_id}/book")
@@ -741,7 +783,10 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
+    result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
+    if result["state"] != "confirmed":
+        await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
+        return {"booked": False, **result}
     entry = {"start": body.start, "service": body.service, "name": body.name}
     line = f"{body.service} · {_pretty(body.start)} for {body.name}"
     await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
@@ -766,9 +811,12 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     if not row or not call.get("caller") or row.get("phone") != call["caller"]:
         raise _err(404, "booking_not_found")
     if body.newStart:
-        await voice_booking.move(meta["ownerId"], cfg, call_id, call, row, body.newStart)
+        result = await voice_booking.move(meta["ownerId"], cfg, call_id, call, row, body.newStart)
     else:
-        await voice_booking.cancel(meta["ownerId"], cfg, call_id, row)
+        result = await voice_booking.cancel(meta["ownerId"], cfg, call_id, row)
+    if result["state"] != "confirmed":
+        await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking change not confirmed: {result['code']}")})
+        return {"moved" if body.newStart else "cancelled": False, **result}
     entry = {"start": body.start, "newStart": body.newStart, "service": row["service"], "name": row["name"]}
     line = (
         f"{row['service']} moved from {_pretty(body.start)} to {_pretty(body.newStart)}"
@@ -786,7 +834,19 @@ async def my_bookings(call_id: str) -> dict:
     _allowed(await agent_config(meta["ownerId"]), call, "move")
     caller = call.get("caller")
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
-    return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b["service"]} for b in rows]}
+
+    def public_booking(b: dict) -> dict:
+        out = {"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b["service"]}
+        if b.get("pending") or b.get("bookingState") == "held":
+            out |= {
+                "state": "pending" if b.get("pending") else "held",
+                "confirmed": False,
+                "pendingAction": (b.get("pending") or {}).get("action"),
+                "requestedStart": (b.get("pending") or {}).get("newStart"),
+            }
+        return out
+
+    return {"bookings": [public_booking(b) for b in rows]}
 
 
 # --- message, didn't know, transfer, start_work -----------------------------------------------------------
@@ -1053,10 +1113,12 @@ async def _has_upcoming(ws: str, caller: str) -> bool:
     """The caller has a booking from now on (the one `business_profile` lists for them)."""
     if not caller:
         return False
-    from core.services import business_profile
+    from core.services import business_profile, voice_booking
 
     now = f"{_now(await agent_config(ws)):%Y-%m-%dT%H:%M}"
-    return any(b.get("phone") == caller for b in await business_profile._upcoming(ws, now))
+    return any(
+        b.get("phone") == caller and voice_booking.confirmed(b) for b in await business_profile._upcoming(ws, now)
+    )
 
 
 NOT_BOOKED = "The team is still working on that and hasn't made the booking yet."

@@ -23,6 +23,7 @@ import functools
 import hashlib
 import hmac
 import re
+import time
 import logging
 import secrets
 import uuid
@@ -291,6 +292,20 @@ class StartIn(BaseModel):
     calledNumber: _Str
     callerNumber: str = Field(default="", max_length=40)
     livekitRoom: _Str
+    #: The carrier's STIR/SHAKEN result (Twilio's X-Twilio-VerStat, the SIP participant's `sip.verstat` attribute).
+    verstat: str = Field(default="", max_length=80)
+
+
+def _verified(call: dict) -> bool:
+    """The carrier attested at level A that the caller owns their number (founder 9 Nov, security review). Only then
+    does the number grant anything: name, caller memory, existing bookings, move and cancel. Anyone can still book
+    and leave a message. A record written before this field reads as unverified."""
+    return bool(call.get("caller")) and call.get("callerVerified") is True
+
+
+def _require_verified(call: dict) -> None:
+    if not _verified(call):
+        raise _err(403, "caller_not_verified")  # the voice offers a message for the team instead
 
 
 def _facts(cfg: dict) -> str:
@@ -330,7 +345,11 @@ async def start_call(body: StartIn) -> dict:
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
     caller = caller_id(body.callerNumber)
-    seen = await _seen(owner_id, caller)
+    verified = body.verstat.strip() in (
+        "TN-Validation-Passed-A",
+        "TN-Validation-Passed-A-Passthrough",
+    )  # B, C, none, failed: the number may be spoofed
+    seen = await _seen(owner_id, caller) if verified else None  # no name or memory by a spoofable number
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     existing = await messaging_repo.get_room(call_id)  # a replayed start: its token and its caps, counted once
     token = (existing or {}).get("callToken") or secrets.token_urlsafe(32)
@@ -382,6 +401,7 @@ async def start_call(body: StartIn) -> dict:
         "ownerMode": False,
         "resolvedAt": None,
         "calledNumber": body.calledNumber,
+        "callerVerified": verified,  # _verified(): what the caller's number may unlock on every later route
         "status": "live",
         "bookings": [],
         "messages": [],
@@ -421,6 +441,10 @@ async def start_call(body: StartIn) -> dict:
     except messaging_repo.MessagingRepoError:
         if (room := await messaging_repo.get_room(call_id)) is None:  # a replay keeps the room it made
             raise
+    await run_in_thread(  # the stale-call sweep's index: removed by end_call (voice_calls.sweep_phone_calls)
+        messaging_repo._table().put_item,
+        Item={"pk": OPEN_CALLS_PK, "sk": call_id, "ownerId": owner_id, "startedAtEpoch": int(time.time())},
+    )
     # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes,
     # so the answer is always the persisted META's, never this request's candidate.
     token = str(room.get("callToken") or "")
@@ -443,6 +467,7 @@ async def start_call(body: StartIn) -> dict:
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
         "callerMemory": call["callerMemory"],
+        "callerVerified": verified,  # the worker's prompt: unverified means no existing bookings, offer a message
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
         "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
@@ -590,6 +615,9 @@ def transcript_lines(transcript: list[dict]) -> list[dict]:
     return lines
 
 
+OPEN_CALLS_PK = "VOICEOPENCALLS"
+
+
 @router.post("/internal/voice/calls/{call_id}/end")
 async def end_call(call_id: str, body: EndIn) -> dict:
     lines = transcript_lines(body.transcript)
@@ -645,11 +673,12 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     # return an error so the worker retries; terminal retries keep the first
     # stored duration/start time rather than trusting a new request body.
     await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], int(out["durationSec"]), "phone")
-    seen = await _seen(meta["ownerId"], out["caller"]) if out.get("caller") else None
-    if out.get("caller") and (seen or {}).get("lastCallId") != call_id:  # a retried end counts the visit once
+    # An unattested call never writes a name, facts or a visit onto that number's row.
+    seen = await _seen(meta["ownerId"], out["caller"]) if _verified(out) else None
+    if _verified(out) and (seen or {}).get("lastCallId") != call_id:  # a retried end counts the visit once
         seen = seen or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
-                "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
+                "visits": int(seen.get("visits", 0)) + (seen.get("lastCallId") != call_id)}  # a retried end counts once  # fmt: skip
         if seen.get("forgottenAt"):
             item["forgottenAt"] = seen["forgottenAt"]
         if seen.get("forgottenAt") and datetime.fromisoformat(seen["forgottenAt"]) >= datetime.fromisoformat(
@@ -673,6 +702,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     for kind, question in asks if meta.get("ownerUserId") else ():
         ask = call_ask(call_id, out, kind, question)
         await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
+    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": OPEN_CALLS_PK, "sk": call_id})
     return out
 
 
@@ -785,6 +815,8 @@ async def remember(call_id: str, body: RememberIn) -> dict:
         raise _err(403, "not_allowed")
     if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
         raise _err(400, "looks_like_a_card")
+    if body.kind == "caller":
+        _require_verified(call)
     if body.kind == "business":
         cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
         await messaging_repo.put_voice_agent(meta["ownerId"], {**cfg, "toAdd": _to_add(cfg, body.fact)}, "voice")
@@ -1224,6 +1256,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "move")
+    _require_verified(call)
     # Every person's booking at that start (VOICEBOOK#<start>[#<id>]), only those made from this caller's number.
     # One caller can hold two at one start (two people): then `bookingId` says which, or the model is asked to.
     rows = await _bookings(meta["ownerId"], body.start) if call.get("caller") else []
@@ -1264,6 +1297,7 @@ def _booking_id(row: dict) -> str:
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
     _allowed(await agent_config(meta["ownerId"]), call, "move")
+    _require_verified(call)
     caller = call.get("caller")
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
 
@@ -1539,7 +1573,11 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
         return {"messages": [], "after": await latest_seq(call_id), "ownerModeEnded": True}
     out = await agent_lines(call_id, body.after)
     claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
-    if claimed and not call.get("bookings") and not await _has_upcoming(meta["ownerId"], call.get("caller") or ""):
+    if (
+        claimed
+        and not call.get("bookings")
+        and not await _has_upcoming(meta["ownerId"], call["caller"] if _verified(call) else "")
+    ):
         for m in claimed:
             m["text"] = " ".join(
                 NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])

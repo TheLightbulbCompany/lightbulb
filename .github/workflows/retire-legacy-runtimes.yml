@@ -1,0 +1,104 @@
+name: Retire legacy Hermes runtimes
+on:
+  pull_request:
+    paths:
+      - .github/workflows/retire-legacy-runtimes.yml
+      - apps/backend/scripts/retire_legacy_runtimes.py
+      - apps/backend/scripts/legacy_runtime_retirement_allowlist.json
+      - apps/backend/tests/unit/scripts/test_retire_legacy_runtimes.py
+      - apps/infra/lib/legacy-runtime-retirement-bootstrap*.ts
+      - apps/infra/test/legacy-runtime-retirement-bootstrap.test.ts
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+      mode:
+        description: plan is read-only; apply deletes only allowlisted runtime definitions that pass every refusal
+        type: choice
+        options: [plan, apply, bootstrap]
+        default: plan
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: retire-legacy-runtimes-${{ inputs.environment || github.head_ref }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+      - name: Check script and refusals
+        working-directory: apps/backend
+        run: |
+          uv run ruff check scripts/retire_legacy_runtimes.py tests/unit/scripts/test_retire_legacy_runtimes.py
+          uv run pytest tests/unit/scripts/test_retire_legacy_runtimes.py -q --no-cov
+      - name: Check IAM boundary
+        working-directory: apps/infra
+        run: |
+          npm ci
+          npx vitest run test/legacy-runtime-retirement-bootstrap.test.ts
+  bootstrap:
+    needs: check
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mode == 'bootstrap'
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Deploy only the scoped retirement role
+        working-directory: apps/infra
+        run: |
+          npm ci
+          npx cdk deploy --app 'npx ts-node --prefer-ts-exts lib/legacy-runtime-retirement-bootstrap-app.ts' lightbulb-legacy-runtime-retirement-bootstrap --require-approval never
+  retire:
+    needs: check
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mode != 'bootstrap'
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          role-skip-session-tagging: true
+          role-session-name: retire-legacy-runtimes-${{ github.run_id }}
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-retire-legacy-runtimes
+      - name: Plan or apply the checked-in allowlist
+        working-directory: apps/backend
+        env:
+          RETIRE_ENV: ${{ inputs.environment }}
+          RETIRE_MODE: ${{ inputs.mode }}
+        run: |
+          set --
+          if [ "$RETIRE_MODE" = apply ]; then set -- --apply; fi
+          uv run python scripts/retire_legacy_runtimes.py --environment "$RETIRE_ENV" --receipt "$RUNNER_TEMP/retirement.json" "$@"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retire-legacy-runtimes-${{ inputs.environment }}-${{ inputs.mode }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/retirement.json
+          if-no-files-found: ignore

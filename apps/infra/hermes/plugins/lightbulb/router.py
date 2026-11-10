@@ -216,8 +216,8 @@ def _propose_automation(args: dict, *, session_id: str = "", **_kw) -> str:
 
 
 NOBODY_AVAILABLE = (
-    "No person can take the call right now. Reply to the caller in plain words: nobody is available at the moment, "
-    "and offer to take a message for the team. Never say you are checking or connecting anyone."
+    "No person is available to take this call now, so the call was not transferred. A message for the team can "
+    "still be taken."
 )
 TRANSFER_SCHEMA = {
     "name": "transfer_call",

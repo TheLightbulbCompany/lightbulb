@@ -882,10 +882,8 @@ FRONT_DESK_SCHEMA = {
 
 
 NOT_VERIFIED = (
-    "Not done, and this is not a fault: the phone network could not verify this caller's number, so bookings can "
-    "only be changed or listed for a verified number. Tell the caller that in plain words, do not call it a snag "
-    "or a problem, and do not give out the business's phone number. Offer to take a message for the team "
-    "(front_desk message)."
+    "Not done: caller_not_verified. The phone network could not verify this caller's number, so existing bookings "
+    "cannot be listed, moved or cancelled for it. A message for the team can still be taken (front_desk message)."
 )
 
 

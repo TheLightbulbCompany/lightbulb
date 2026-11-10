@@ -97,4 +97,4 @@ def test_an_unverified_caller_refusal_is_explained_not_a_snag(monkeypatch):
 
     monkeypatch.setattr(lightbulb, "_post", refused)
     out = lightbulb._front_desk({"action": "cancel", "start": "2026-11-11T10:00"})
-    assert "could not verify" in out and "message" in out and "not a fault" in out
+    assert "caller_not_verified" in out and "could not verify" in out and "message" in out

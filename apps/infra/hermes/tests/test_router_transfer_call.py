@@ -61,4 +61,4 @@ def test_transfer_call_nobody_available_tells_the_model_what_to_say(monkeypatch)
 
     monkeypatch.setattr(pkg, "_post", closed)
     out = json.loads(_call(trigger_ids=["t"], text="x"))
-    assert "nobody is available" in out["instruction"] and "message" in out["instruction"]
+    assert "not transferred" in out["instruction"] and "message" in out["instruction"]

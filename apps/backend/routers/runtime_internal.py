@@ -679,6 +679,9 @@ async def transfer_call(owner_id: str, body: TransferCallBody, request: Request)
     if vp.call_mode(cfg, meta.get("call") or {}) != "live":
         raise HTTPException(status_code=403, detail="not_allowed")  # a paused line only takes messages
     if not vp.handoff_to(cfg):  # closed or no number: refuse BEFORE the caller hears "hang on"
+        await vp._patch_call(  # the same bookkeeping /transfer does, so /end raises the hand-off Question
+            call_id, lambda c: {"handoffMissed": True, "steps": vp._step(c, "Asked for a person; nobody was available")}
+        )
         raise HTTPException(status_code=403, detail={"code": "nobody_available"})
     message_id = await task_conversation.post_as_lightbulb(
         owner_id,

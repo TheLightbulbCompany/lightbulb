@@ -94,9 +94,11 @@ async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
     )  # past close
     moved = client.post(f"{base}/change", json={"start": f"{day}T14:00", "newStart": f"{day}T14:30"}, headers=W)
     assert moved.status_code == 200 and moved.json()["moved"]  # its own old slot doesn't block the move
-    assert client.post(f"{base}/my-bookings", headers=W).json()["bookings"] == [
+    mine = client.post(f"{base}/my-bookings", headers=W).json()["bookings"]
+    assert [{k: b[k] for k in ("start", "service")} for b in mine] == [
         {"start": f"{day}T14:30", "service": "gel manicure"}
     ]
+    assert mine[0]["bookingId"]  # what /change takes when two bookings share a start
     tx = [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "Hello!"}, {"role": "system", "text": "x"}]
     end = client.post(f"{base}/end", json={"durationSec": 160, "summary": "Moved Priya.", "transcript": tx}, headers=W)
     rec = end.json()
@@ -518,8 +520,9 @@ async def test_a_move_keeps_the_person(client):
     assert _book_as(client, a, at, service="pedicure").json()["staff"] == "Mei"
     r = client.post(f"/api/v1/internal/voice/calls/{a['callId']}/change", json={"start": at, "newStart": to}, headers=W)
     assert r.status_code == 200 and await _row(at, "#m1") is None and (await _row(to, "#m1"))["staff"] == "Mei"
-    assert client.post(f"/api/v1/internal/voice/calls/{a['callId']}/my-bookings", headers=W).json()["bookings"] == [
-        {"start": to, "service": "pedicure"}
+    mine = client.post(f"/api/v1/internal/voice/calls/{a['callId']}/my-bookings", headers=W).json()["bookings"]
+    assert [{k: b[k] for k in ("start", "service", "staff")} for b in mine] == [
+        {"start": to, "service": "pedicure", "staff": "Mei"}
     ]
 
 
@@ -655,6 +658,44 @@ def test_an_empty_service_is_the_whole_roster():
     cfg = {"staff": [ANA, MEI], "services": [{"name": "Pedicure", "minutes": 60, "staff": "m1"}]}
     assert voice_phone._lanes(cfg, "") == [("#a1", "Ana"), ("#m1", "Mei")]
     assert voice_phone._lanes(cfg, "pedicure") == [("#m1", "Mei")]
+
+
+async def test_with_google_one_shared_calendar_holds_one_booking_at_a_time(client):
+    """Bookings that go to Google share one calendar: a held booking (its Google write still pending) blocks the
+    slot for every person."""
+    a = await _start(client, caller="+14155550251", room="phone-dev-_g1", **STAFFED, bookingsGo="google")
+    cfg = await voice_phone.agent_config("org_1")
+    at = f"{_tomorrow()}T11:00"
+    assert voice_phone._capacity(cfg) == 1 and voice_phone._capacity({**cfg, "bookingsGo": "own"}) == 2
+    held = await voice_phone._book("org_1", a["callId"], {"caller": "+14155550251"}, cfg, at, "gel", "Al")
+    assert held["bookingState"] == "held"
+    with pytest.raises(voice_phone.HTTPException) as refused:
+        await voice_phone._book("org_1", "other-call", {"caller": "+14155550252"}, cfg, at, "gel", "Bo")
+    assert refused.value.detail["code"] == "slot_taken"
+    assert at not in voice_phone.open_starts(
+        cfg,
+        at[:10],
+        await voice_phone._taken("org_1", at[:10]),
+        voice_phone._now(cfg),
+        60,
+        voice_phone._lanes(cfg, "gel"),
+    )
+
+
+async def test_two_bookings_at_one_start_are_changed_by_id(client):
+    a = await _start(client, caller="+14155550261", room="phone-dev-_d1", **STAFFED)
+    base, at = f"/api/v1/internal/voice/calls/{a['callId']}", f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at, name="Priya").status_code == _book_as(client, a, at, name="Sam").status_code == 200
+    r = client.post(f"{base}/change", json={"start": at}, headers=W)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "ambiguous_booking"
+    options = r.json()["detail"]["options"]
+    assert sorted(o["name"] for o in options) == ["Priya", "Sam"] and all(o["bookingId"] for o in options)
+    sam = next(o for o in options if o["name"] == "Sam")
+    gone = client.post(f"{base}/change", json={"start": at, "bookingId": sam["bookingId"]}, headers=W)
+    assert gone.status_code == 200 and gone.json()["cancelled"] and gone.json()["name"] == "Sam"
+    assert client.post(f"{base}/change", json={"start": at}, headers=W).json()["name"] == "Priya"  # unambiguous now
+    wrong = client.post(f"{base}/change", json={"start": at, "bookingId": "nope"}, headers=W)
+    assert wrong.status_code == 404
 
 
 async def test_a_move_keeps_the_slot_totals_right(client):

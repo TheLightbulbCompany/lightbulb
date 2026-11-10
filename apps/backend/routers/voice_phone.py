@@ -653,8 +653,10 @@ def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
 
 
 def _capacity(cfg: dict) -> int:
-    """Bookings one slot can hold, across every lane: one per person on the roster, one with no roster."""
-    return max(1, len(_staff(cfg)))
+    """Bookings one slot can hold, across every lane: one per person on the roster, one with no roster. Bookings
+    that go to Google share the business's one calendar, which cannot hold two at once: always one there, so a
+    held booking (its Google write still pending) blocks the slot for everyone."""
+    return 1 if cfg.get("bookingsGo") == "google" else max(1, len(_staff(cfg)))
 
 
 def open_starts(
@@ -955,6 +957,7 @@ async def book(call_id: str, body: BookIn) -> dict:
 class ChangeIn(BaseModel):
     start: _Local
     newStart: _Local | None = None  # None cancels
+    bookingId: str = Field(default="", max_length=200)  # from my-bookings: which one, when two share a start
 
 
 @router.post("/internal/voice/calls/{call_id}/change")
@@ -963,11 +966,19 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "move")
-    # Every person's booking at that start (VOICEBOOK#<start>[#<name>]); only one made from this caller's number.
+    # Every person's booking at that start (VOICEBOOK#<start>[#<id>]), only those made from this caller's number.
+    # One caller can hold two at one start (two people): then `bookingId` says which, or the model is asked to.
     rows = await _bookings(meta["ownerId"], body.start) if call.get("caller") else []
-    row = next((r for r in rows if r.get("phone") == call["caller"]), None)
-    if not row:
+    mine = [r for r in rows if r.get("phone") == call["caller"]]
+    if body.bookingId:
+        mine = [r for r in mine if body.bookingId == _booking_id(r)]
+    if not mine:
         raise _err(404, "booking_not_found")
+    if len(mine) > 1:
+        options = [{"bookingId": _booking_id(r), "service": r["service"], "name": r["name"],
+                    **({"staff": r["staff"]} if r.get("staff") else {})} for r in mine]  # fmt: skip
+        raise HTTPException(status_code=409, detail={"code": "ambiguous_booking", "options": options})
+    row = mine[0]
     if body.newStart:
         result = await voice_booking.move(meta["ownerId"], cfg, call_id, call, row, body.newStart)
     else:
@@ -986,6 +997,11 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     return {"moved" if body.newStart else "cancelled": True, **entry}
 
 
+def _booking_id(row: dict) -> str:
+    """A booking's id for the caller's tools; a row from before booking ids had none and is named by its key."""
+    return row.get("bookingId") or row["sk"]
+
+
 @router.post("/internal/voice/calls/{call_id}/my-bookings")
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
@@ -994,7 +1010,9 @@ async def my_bookings(call_id: str) -> dict:
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
 
     def public_booking(b: dict) -> dict:
-        out = {"start": _start(b), "service": b["service"]}
+        out = {"start": _start(b), "service": b["service"], "bookingId": _booking_id(b)}
+        if b.get("staff"):
+            out["staff"] = b["staff"]
         if b.get("pending") or b.get("bookingState") == "held":
             out |= {
                 "state": "pending" if b.get("pending") else "held",

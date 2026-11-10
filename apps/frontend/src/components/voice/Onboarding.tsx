@@ -132,7 +132,8 @@ function Business({ c, set, go, busy }: StepProps) {
       <label className="vx-label">Website
         <input className="vx-field" type="text" inputMode="url" maxLength={300} value={c.website ?? ""} placeholder="mayasnails.com" autoComplete="url" onChange={(e) => set({ website: e.target.value })} /></label>
       <label className="vx-label">Your mobile, for hand-offs and alerts
-        <input className="vx-field" type="tel" required maxLength={30} value={c.handoff.number} placeholder="(415) 555-0147" autoComplete="tel" onChange={(e) => set({ handoff: { ...c.handoff, number: e.target.value } })} /></label>
+        <input className="vx-field" type="tel" maxLength={30} value={c.handoff.number} placeholder="(415) 555-0147" autoComplete="tel" onChange={(e) => set({ handoff: { ...c.handoff, number: e.target.value } })} /></label>
+      <p className="vx-hint">Add a number to let callers reach a person. You can add it later on the Agent page.</p>
       {reading ? <p className="vx-reading" role="status">Reading {c.website}. This takes about a minute.</p>
         : note && <p className="vx-save" role="status">{note}</p>}
       <Foot back={null}><Button type="submit" disabled={busy || reading}>{c.website?.trim() ? "Read my site" : "Continue"}</Button></Foot>

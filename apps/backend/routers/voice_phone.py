@@ -73,9 +73,10 @@ DEFAULTS: dict = {
     "live": False,
     "paused": False,
     "instructions": "",
-    "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
+    "allow": {"book": True, "move": True, "greetByName": True, "answer": True},
     "knowledge": [],
     "hours": {d: {"open": "09:00", "close": "18:00", "closed": d == "Sun"} for d in _DAYS},
+    "holidays": [],  # closures: [{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}], local dates; an old free-text value means none
     "services": [],
     "bufferMin": 10,
     "timezone": "America/New_York",  # IANA; Onboarding saves the browser's
@@ -264,7 +265,7 @@ async def start_call(body: StartIn) -> dict:
     owner_id = line["ownerId"]
     cfg = await agent_config(owner_id)
     if _is_probe(cfg, body):
-        # Our own forwarding check came back: no caller is on it, so no greeting (and no disclosure) is owed.
+        # Our own forwarding check came back: no caller is on it, so no greeting is owed.
         raw = await messaging_repo.get_voice_agent(owner_id) or {}
         raw.pop("forwardingCheck", None)
         await messaging_repo.put_voice_agent(
@@ -388,20 +389,14 @@ def _is_probe(cfg: dict, body: StartIn) -> bool:
 
 
 def greeting(custom: str, business: str, assistant: str) -> str:
-    """The owner's greeting only when it still discloses the AI, the recording and the assistant's name; else ours."""
-    g = custom.strip()
-    if all(w.lower() in g.lower() for w in ("AI assistant", "recorded", assistant)):
-        return g
-    return f"Hi, I'm {assistant}, {business}'s AI assistant, and this call is recorded. How can I help?"
+    """The owner's greeting as written; ours only when they have none. The business owns its opening."""
+    return custom.strip() or f"Hi, I'm {assistant}, {business}'s AI assistant. How can I help?"
 
 
 class EndIn(BaseModel):
     durationSec: int = Field(ge=0, le=86400)
     summary: str = Field(default="", max_length=4000)
     transcript: list[dict] = Field(default=[], max_length=2000)
-    #: Whether the transcribed first line carried the AI and recording disclosure (worker `disclosure_of`).
-    disclosure: Literal["ok", "missing", "unknown"] | None = None
-    disclosureRepeated: bool = False  # the worker said the disclosure sentence after a failed first line
     silent: bool = False  # the worker hung up a line nobody spoke on ("are you still there?", then goodbye)
     forwarded: bool = False  # the run-out forward (start's forwardTo) connected; the assistant never answered
 
@@ -447,11 +442,14 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
                     "outcome": "forwarded", "transferredTo": forwarded_to,
                     "steps": _step(call, "Minutes used up: forwarded to you")}  # fmt: skip
-        return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
-                "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
-                "summary": body.summary, "transcript": lines,
-                **({"disclosure": body.disclosure, "disclosureRepeated": body.disclosureRepeated}
-                   if body.disclosure else {})}  # fmt: skip
+        return {
+            "status": "ended",
+            "endedAt": utc_now_iso(),
+            "durationSec": body.durationSec,
+            "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
+            "summary": body.summary,
+            "transcript": lines,
+        }
 
     out = await _patch_call(call_id, change)
     if before.get("status") != "ended":
@@ -624,7 +622,22 @@ def _start(row: dict) -> str:
     return row["sk"][10:26]
 
 
+def _closed_on(cfg: dict, date: str) -> bool:
+    """True when `date` (local "YYYY-MM-DD") falls in a closure range. ISO dates compare as strings; anything that is
+    not a list of {from, to} ranges (the old free-text value) closes nothing."""
+    h = cfg.get("holidays")
+    return isinstance(h, list) and any(
+        isinstance(r, dict)
+        and isinstance(r.get("from"), str)
+        and r["from"]
+        and r["from"] <= date <= str(r.get("to") or r["from"])
+        for r in h
+    )
+
+
 def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
+    if _closed_on(cfg, date):
+        return None
     h = cfg["hours"].get(_DAYS[datetime.strptime(date, "%Y-%m-%d").weekday()]) or {}
     if not h or h.get("closed"):
         return None

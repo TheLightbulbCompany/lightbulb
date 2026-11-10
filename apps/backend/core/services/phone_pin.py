@@ -2,14 +2,12 @@
 types their PIN on the keypad talks as themselves (the orb's owner mode), not as a caller.
 
 Caller ID alone is never proof (it is spoofable): the number only says whose PIN to check. The PIN is stored as a
-salted scrypt hash and compared in constant time. Wrong tries lock out per call (the call record's `pinTries`,
-routers/voice_phone.py) and per member per UTC day. Each try is reserved atomically before the hash is checked.
+salted scrypt hash and compared in constant time. Wrong tries lock out per member per UTC day. Each try is reserved atomically before the hash is checked.
 Nothing is ever said back about why a try failed.
 
 Rows in the messaging table:
     OWNER#<owner>   PHONEPIN#<user>                 mobile (E.164), salt, hash, updatedAt
     OWNER#<owner>   PHONEPINFAIL#<user>#<YYYY-MM-DD> tries that day (expiresAt: two days on)
-    OWNER#<owner>   PHONEPINCALL#<call>             tries on one call
 """
 
 import hashlib
@@ -24,7 +22,6 @@ from botocore.exceptions import ClientError
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 
-CALL_TRIES = 3  # PINs tried on one call before owner mode is off for it
 DAY_TRIES = 5  # PINs tried (right or wrong) for one member in a UTC day; then it stops working until tomorrow
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}
 
@@ -87,19 +84,6 @@ async def _reserve(key: dict, limit: int) -> bool:
             return False
         raise
     return True
-
-
-def _call_key(owner_id: str, call_id: str) -> dict:
-    return {"pk": messaging_repo.owner_pk(owner_id), "sk": f"PHONEPINCALL#{call_id}"}
-
-
-async def reserve_call_try(owner_id: str, call_id: str) -> bool:
-    """One of the call's CALL_TRIES, taken before anything is checked."""
-    return await _reserve(_call_key(owner_id, call_id), CALL_TRIES)
-
-
-async def call_tries(owner_id: str, call_id: str) -> int:
-    return int(((await messaging_repo._get(**_call_key(owner_id, call_id))) or {}).get("tries", 0))
 
 
 async def check(owner_id: str, caller: str, pin: str) -> str | None:

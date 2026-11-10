@@ -59,7 +59,7 @@ async def test_the_pin_is_stored_hashed_and_never_shown_back(client):
 async def test_no_pin_set_means_owner_mode_is_impossible(client, router_seat, dm):
     call = await _start(client)
     assert call["ownerPin"] is False
-    assert _pin(client, call, "4821") == {"ok": False, "locked": False}
+    assert _pin(client, call, "4821") == {"ok": False}
     assert (await messaging_repo.get_room(call["callId"]))["call"]["ownerMode"] is False
     dm.assert_not_awaited()
 
@@ -75,21 +75,9 @@ async def test_caller_id_without_the_pin_stays_a_caller(client, router_seat, dm)
     assert enq.await_args.args[1].ref["origin"] == "phone_contact"
 
 
-async def test_wrong_pins_lock_the_call_and_then_the_right_one_is_refused(client, router_seat, dm):
-    await _set()
-    call = await _start(client)
-    assert [_pin(client, call, "0000") for _ in range(3)] == [
-        {"ok": False, "locked": False}, {"ok": False, "locked": False}, {"ok": False, "locked": True}]  # fmt: skip
-    assert _pin(client, call, "4821") == {"ok": False, "locked": True}
-    rec = (await messaging_repo.get_room(call["callId"]))["call"]
-    assert rec["ownerMode"] is False
-    assert "0000" not in str(rec) and "4821" not in str(rec)
-    dm.assert_not_awaited()
-
-
-async def test_concurrent_guesses_never_exceed_the_limits(client, router_seat, dm):
-    """Every attempt reserves a try with a conditional update before the hash is checked: ten guesses at once on
-    one call check at most CALL_TRIES PINs, and calls at once never check more than DAY_TRIES for the member."""
+async def test_concurrent_guesses_never_exceed_the_day_limit(client, router_seat, dm):
+    """Every attempt reserves a try with a conditional update before the hash is checked: guesses at once never
+    check more than DAY_TRIES PINs for the member, and the right PIN is refused once they are spent."""
     await _set()
     checked = []
     real = voice_phone.phone_pin._hash
@@ -99,16 +87,10 @@ async def test_concurrent_guesses_never_exceed_the_limits(client, router_seat, d
         return real(pin, salt)
 
     with patch.object(voice_phone.phone_pin, "_hash", counting):
-        call = await _start(client)
-        outs = await asyncio.gather(*(voice_phone.owner_pin(call["callId"], voice_phone.PinIn(pin=f"{i:04d}"))
-                                      for i in range(10)))  # fmt: skip
-        assert sum(o["ok"] for o in outs) == 0 and len(checked) == voice_phone.phone_pin.CALL_TRIES
-        checked.clear()
-        calls = [await _start(client, room=f"phone-{i}") for i in range(6)]
-        await asyncio.gather(*(voice_phone.owner_pin(c["callId"], voice_phone.PinIn(pin=f"{j}{j}{j}{j}"))
-                               for c in calls for j in range(3)))  # fmt: skip
-    # the day's tries left after the first call's three, all wrong; the right PIN is refused once they are spent
-    assert len(checked) == voice_phone.phone_pin.DAY_TRIES - voice_phone.phone_pin.CALL_TRIES
+        calls = [await _start(client, room=f"phone-{i}") for i in range(4)]
+        outs = await asyncio.gather(*(voice_phone.owner_pin(c["callId"], voice_phone.PinIn(pin=f"{i}{j}{j}{j}"))
+                                      for i, c in enumerate(calls) for j in range(3)))  # fmt: skip
+    assert sum(o["ok"] for o in outs) == 0 and len(checked) == voice_phone.phone_pin.DAY_TRIES
     last = await _start(client, room="phone-last")
     assert _pin(client, last, "4821")["ok"] is False
 
@@ -187,7 +169,7 @@ async def test_a_day_of_wrong_pins_locks_the_member_across_calls(client, router_
         for _ in range(3):
             _pin(client, call, "1111")  # 6 wrong tries over two calls: past DAY_TRIES
     call = await _start(client, room="phone-c")
-    assert _pin(client, call, "4821") == {"ok": False, "locked": False}
+    assert _pin(client, call, "4821") == {"ok": False}
     dm.assert_not_awaited()
 
 

@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 PROBE_S = 60  # the outbound leg rings and lives at most this long ("missed" forwarding waits ~20-30 s; LiveKit max 80)
 WINDOW_S = 70  # how long after the dial an arriving call counts as the probe
-CHECKS_PER_DAY = 5  # forwarding checks per workspace per UTC day: each one dials out on our trunk
 
 
 async def forward_check(ws: str, cfg: dict) -> dict:
@@ -49,9 +48,6 @@ async def forward_check(ws: str, cfg: dict) -> dict:
         ws, "VOICEFWDCHECK#lock", call_id, WINDOW_S
     ):
         return {"ok": False, "reason": "check_in_progress"}
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if not await messaging_repo.take_voice_count(ws, f"VOICEFWDCHECK#{day}", CHECKS_PER_DAY):
-        return {"ok": False, "reason": "daily_limit"}
     # Written before the dial so the call coming back always finds it. A failed dial leaves it (and the lock), so a
     # retry waits out the window too.
     await messaging_repo.put_voice_agent(

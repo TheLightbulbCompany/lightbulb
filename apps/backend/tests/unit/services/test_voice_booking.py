@@ -652,15 +652,3 @@ async def test_lost_move_response_settles_after_shared_cells_aged_out(client, go
     moved = await row(new)
     for cell in moved["cells"]:
         assert (await messaging_repo._get(o["pk"], cell))["booking"] == f"VOICEBOOK#{new}"
-
-
-async def test_retries_of_a_booking_never_spend_the_callers_daily_allowance(client, google, monkeypatch):
-    """#5193 review: a retried book returns or reconciles its reservation; only a new reservation counts."""
-    monkeypatch.setattr(vp, "BOOKINGS_PER_CALLER_PER_DAY", 2)
-    _, base = await begin(client)
-    first = f"{_tomorrow()}T14:00"
-    assert create(client, base, first).json()["booked"] is True
-    for _ in range(5):  # the existing confirmed booking, returned each time
-        assert create(client, base, first).json()["booked"] is True
-    assert create(client, base, f"{_tomorrow()}T16:00").json()["booked"] is True  # the second new one still fits
-    assert create(client, base, f"{_tomorrow()}T17:00").status_code == 403  # the third is over the cap

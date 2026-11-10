@@ -1253,45 +1253,6 @@ async def test_a_full_line_answers_with_messages_only(client, router_seat, monke
     assert (await _start(client, caller="+14155550149", room="phone-c-9"))["mode"] == "live"
 
 
-async def test_one_number_calling_all_day_is_limited_to_messages(client, router_seat, monkeypatch):
-    """M5: CALLS_PER_CALLER_PER_DAY per number per workspace per day; withheld callers count as one number."""
-    monkeypatch.setattr(voice_phone, "CALLS_PER_CALLER_PER_DAY", 2)
-    modes = []
-    for i in range(3):
-        call = await _start(client, room=f"phone-n-{i}")
-        modes.append(call["mode"])
-        client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 5}, headers=W)
-    assert modes == ["live", "live", "message_only"]
-    withheld = [(await _start(client, caller=c, room=f"phone-a-{c}"))["mode"] for c in ("anonymous", "", "unknown")]
-    assert withheld == ["live", "live", "message_only"]
-
-
-async def test_bookings_per_caller_per_day_are_capped(client, monkeypatch):
-    """M5: BOOKINGS_PER_CALLER_PER_DAY; a refused or failed booking does not count; over it, messages only."""
-    monkeypatch.setattr(voice_phone, "BOOKINGS_PER_CALLER_PER_DAY", 1)
-    call = await _start(client)
-    base, day = f"/api/v1/internal/voice/calls/{call['callId']}", _tomorrow()
-    book = lambda t: client.post(f"{base}/book", json={"start": f"{day}T{t}", "service": "gel", "name": "A"}, headers=W)  # noqa: E731
-    assert book("23:30").status_code == 400  # past close: nothing booked, nothing counted
-    assert book("11:00").status_code == 200
-    r = book("15:00")
-    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
-    assert (await messaging_repo.get_room(call["callId"]))["call"]["limited"]
-    assert client.post(f"{base}/message", json={"text": "call me"}, headers=W).status_code == 200
-
-
-async def test_router_turns_per_call_are_capped(client, router_seat, monkeypatch):
-    """M5: TURNS_PER_CALL distinct lines (a retried line is the same); then the worker takes a message."""
-    monkeypatch.setattr(voice_phone, "TURNS_PER_CALL", 2)
-    call = await _start(client)
-    url = f"/api/v1/internal/voice/calls/{call['callId']}/turn"
-    assert [client.post(url, json={"n": n, "text": f"line {n}"}, headers=W).status_code for n in (0, 1, 1)] == [200] * 3
-    r = client.post(url, json={"n": 2, "text": "line 2"}, headers=W)
-    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
-    assert client.post(url, json={"n": 0, "text": "line 0"}, headers=W).status_code == 403  # the call is limited now
-    assert (await messaging_repo.get_room(call["callId"]))["call"]["limited"]
-
-
 async def test_first_three_answered_calls_push_the_owner_and_the_fourth_does_not(client):
     with patch.object(voice_phone.push_service, "send_push_to_user", AsyncMock()) as push:
         for i in range(4):
@@ -1373,25 +1334,6 @@ async def test_two_interleaved_starts_for_one_room_both_return_the_stored_token(
     stored = (await messaging_repo.get_room(a["callId"]))["callToken"]
     assert len(set(arrived)) == 2  # two candidates were minted
     assert a["callToken"] == b["callToken"] == stored
-    # ...and the one call is one unit of the caller's daily allowance (Codex, #5193 :357)
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    row = await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICECALLS#{day}#+14155550133")
-    assert row["units"] == {a["callId"]}
-
-
-async def test_a_new_booking_at_a_start_already_used_counts_again(client, monkeypatch):
-    """#5193 review (Codex :1041): the allowance is keyed by booking id, not start. Book 10:00, move it away, book
-    10:00 again: two reservations, two units, so a third new booking is over a cap of 2."""
-    monkeypatch.setattr(voice_phone, "BOOKINGS_PER_CALLER_PER_DAY", 2)
-    call = await _start(client)
-    base, day = f"/api/v1/internal/voice/calls/{call['callId']}", _tomorrow()
-    book = lambda t: client.post(f"{base}/book", json={"start": f"{day}T{t}", "service": "gel", "name": "A"}, headers=W)  # noqa: E731
-    assert book("10:00").json()["booked"] is True
-    moved = client.post(f"{base}/change", json={"start": f"{day}T10:00", "newStart": f"{day}T12:00"}, headers=W)
-    assert moved.json()["moved"] is True  # a move is the same reservation: no unit
-    assert book("10:00").json()["booked"] is True  # a new reservation at the freed start: the second unit
-    r = book("15:00")
-    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
 
 
 async def test_a_failed_slot_release_still_bills_and_a_retried_end_finishes_once(client):

@@ -28,9 +28,16 @@ export interface MeetingItem {
   title?: string; startAt?: number; endAt?: number; status?: string; inCallAt?: number; endedAt?: number; lastBotStatus?: string; people?: string[]; summary?: string; notes?: string;
   asked?: { t?: number; who?: string; q: string; a?: string }[];
   followUps?: { id?: string; text: string; status?: string; taskId?: string }[];
+  /** From the notes run's "Decisions:" section; `by` only when someone said who decided. */
+  decisions?: { text: string; by?: string }[];
+  /** Set on a recurring series' held occurrence (its own row, from the meeting's history): that `startAt`. */
+  occurrence?: number; hasTranscript?: boolean;
 }
 
 export type TimelineItem = CallItem | MeetingItem;
+
+/** One row per occurrence: a series' past occurrences share its room. */
+export const rowId = (i: TimelineItem) => i.type === "meeting" && i.occurrence != null ? `${i.roomId}@${i.occurrence}` : i.roomId;
 
 export function useTimeline() {
   const api = useApi();

@@ -35,6 +35,7 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from core.auth import AuthContext
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
@@ -44,6 +45,8 @@ from core.services import (
     push_service,
     admission,
     clerk_admin,
+    messaging,
+    phone_pin,
     questions,
     task_conversation,
     voice_booking,
@@ -53,7 +56,7 @@ from core.services import (
 )
 from routers.huddles import _Worker
 from routers.voice import _E164, _e164, month_seconds, us_number
-from routers.voice_meet import agent_lines, latest_seq
+from routers.voice_meet import QuestionRef, agent_lines, answer_said_question, latest_seq
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
 logger = logging.getLogger(__name__)
@@ -458,6 +461,8 @@ async def start_call(body: StartIn) -> dict:
         "transfer": bool(cfg["handoff"]["number"]),
         "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
+        # the number is a member's saved mobile with a PIN: the voice may say a PIN can be typed. Never proof.
+        "ownerPin": bool(not forward_to and caller and await phone_pin.holders(owner_id, caller)),
     }
 
 
@@ -468,6 +473,89 @@ async def _live_slot(owner_id: str, line: str, call_id: str) -> str | None:
         if await messaging_repo.claim_voice_slot(owner_id, sk, call_id, LIVE_SLOT_S):
             return sk
     return None
+
+
+# --- the owner calls in (board row 3.29): caller ID plus the PIN, then the orb's owner path --------------------
+
+
+class PinIn(BaseModel):
+    pin: Annotated[str, Field(pattern=r"^\d{4,8}$")]
+
+
+async def owner_dm(ws: str, member: str) -> str:
+    """The member's DM with the assistant, where the orb talks (found or created, as /voice/lightbulb opens it)."""
+    front = await task_conversation._front_agent(ws)
+    room = await messaging.create_room(
+        AuthContext(user_id=member, org_id=ws),
+        messaging.CreateRoomRequest(
+            client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-owner-dm|{ws}|{member}|{front['id']}"),
+            name=None,
+            kind="dm",
+            members=[messaging.CreateRoomMember(kind="agent", id=front["id"], role="member", listen_mode="active")],
+        ),
+    )
+    return str(room.room_id)
+
+
+@router.post("/internal/voice/calls/{call_id}/owner-pin")
+async def owner_pin(call_id: str, body: PinIn) -> dict:
+    """The digits the caller typed (DTMF, read by the worker; the model never sees them). Right, from the saved
+    mobile of a member who set that PIN: the call becomes that member's owner mode, and `/turn` and `/events` use
+    their DM from now on (`after` is its first cursor). Anything else: `{ok: false}`, the same for a wrong PIN, an
+    unknown number or a lockout; `locked` says only that this call has no tries left."""
+    meta, call = await _call(call_id)
+    ws = meta["ownerId"]
+    if call.get("ownerMode") and await _owner_seated(call_id, ws, call):
+        return {"ok": True, "after": await latest_seq(call["dmRoomId"])}
+    # the try is taken (atomically, before any hash is checked) or there is none left
+    if call.get("status") != "live" or not await phone_pin.reserve_call_try(ws, call_id):
+        return {"ok": False, "locked": True}
+    member = await phone_pin.check(ws, call.get("caller") or "", body.pin)
+    if member:
+        try:
+            dm = await owner_dm(ws, member)
+        except (messaging.ApiProblem, task_conversation.NoFrontAgent):  # a removed member, or no assistant yet
+            member = None
+    if not member:
+        await _patch_call(call_id, lambda c: {"steps": _step(c, "A phone PIN was entered and refused")})
+        return {"ok": False, "locked": await phone_pin.call_tries(ws, call_id) >= phone_pin.CALL_TRIES}
+    await _patch_call(call_id, lambda c: {"ownerMode": True, "ownerModeUserId": member, "dmRoomId": dm,
+                                          "steps": _step(c, "The owner's PIN was right: owner mode")})  # fmt: skip
+    return {"ok": True, "after": await latest_seq(dm)}
+
+
+async def _owner_turn(call_id: str, ws: str, call: dict, body: "TurnIn") -> dict:
+    """An owner-mode line: the member's own message in their DM, exactly as the orb posts it (voice_owner.turn), so
+    the DM's Router decides it with the member as the principal. A line that answers the Worker question the voice
+    just said answers it through the card's own path and wakes nobody (an approval stays card-only)."""
+    member, dm, key = call["ownerModeUserId"], call["dmRoomId"], f"call-owner-turn:{call_id}:{body.n}"
+    answered = await answer_said_question(ws, dm, member, body.answers, body.text, key)
+    msg = await messaging.create_human_message(
+        AuthContext(user_id=member, org_id=ws),
+        dm,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+            text=body.text,
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+        via="voice",
+        **({"wake": False} if answered else {}),
+    )
+    out = {"messageId": str(msg.message_id)}
+    return {**out, "answered": body.answers.qid} if answered else out
+
+
+async def _owner_seated(call_id: str, ws: str, call: dict) -> bool:
+    """The owner-mode member is still a member seated in their DM (voice_owner._owner's check), re-read on every
+    owner-mode turn and poll. Not any more: owner mode ends and the call is a caller's again."""
+    members = await messaging_repo.list_members(call["dmRoomId"])
+    if voice_calls._voice_requester(members, ws, call["ownerModeUserId"]):
+        return True
+    await _patch_call(
+        call_id, lambda c: {"ownerMode": False, "steps": _step(c, "Owner mode ended: no longer a member")}
+    )
+    return False
 
 
 def _is_probe(cfg: dict, body: StartIn) -> bool:
@@ -1129,6 +1217,7 @@ CALLER_HINT = (
 class TurnIn(BaseModel):
     n: int = Field(ge=0, le=100000)  # the line's place in the call: with the call id, its one message and trigger
     text: Annotated[str, Field(min_length=1, max_length=4000)]
+    answers: QuestionRef | None = None  # owner mode: the Worker question the voice said last (voice_owner.TurnIn)
 
 
 @router.post("/internal/voice/calls/{call_id}/turn")
@@ -1137,7 +1226,15 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
     row, no memory), and a `phone_contact` trigger for that room, so the Router decides it with the caller's scope
     and the Business profile, and its Front desk threads run as the caller. Keyed on (call, n): a retry is the same."""
     meta, call = await _call(call_id)
-    body = TurnIn(n=body.n, text=redact_cards(body.text))  # the room message and the Router's trigger alike
+    body = body.model_copy(update={"text": redact_cards(body.text)})  # the room message and the Router's trigger
+    # the PIN was right (owner_pin) and the member is still seated: the orb's owner path, not the caller's
+    ended: dict = {}
+    if call.get("ownerMode"):
+        if await _owner_seated(call_id, meta["ownerId"], call):
+            return await _owner_turn(call_id, meta["ownerId"], call, body)
+        # removed mid-call, found here before any poll: this answer carries the transition `/events` would have
+        # (the worker's cursor goes back to the call room, just before this line)
+        ended = {"ownerModeEnded": True, "after": await latest_seq(call_id)}
     ws, requester = meta["ownerId"], meta.get("ownerUserId")
     if not requester:
         raise _err(403, "no_requester")
@@ -1209,7 +1306,8 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
             await admission._to_task(ws, task_id, trigger.trigger_id)
     else:
         await admission.enqueue_trigger(ws, trigger, room_id=call_id)
-    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id, **({"taskId": task_id} if task_id else {})}
+    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id, **({"taskId": task_id} if task_id else {}),
+            **ended}  # fmt: skip
 
 
 _CLOSED = ("resolved", "failed")
@@ -1258,6 +1356,11 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
     """Lightbulb's messages in the call's room after seq `after` (the Router's ack and replies, the Front desk's
     answers), oldest first: the phone voice says each once (huddle-agent mouth.py)."""
     meta, call = await _call(call_id)
+    if call.get("ownerMode"):  # the member's DM, as the orb's /events: the cursor is the DM's (owner_pin's after)
+        if await _owner_seated(call_id, meta["ownerId"], call):
+            return await agent_lines(call["dmRoomId"], body.after)
+        # removed mid-call: nothing from the DM; the worker goes back to the call room's cursor and the caller prompt
+        return {"messages": [], "after": await latest_seq(call_id), "ownerModeEnded": True}
     out = await agent_lines(call_id, body.after)
     claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
     if claimed and not call.get("bookings") and not await _has_upcoming(meta["ownerId"], call.get("caller") or ""):

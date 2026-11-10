@@ -180,6 +180,40 @@ it("meeting details show the completed notes instead of the short timeline summa
   expect(within(pane).queryByText("Quick timeline summary")).not.toBeInTheDocument();
 });
 
+it("meeting pane lists the decisions with who made them", () => {
+  items.list = [{ type: "meeting", roomId: "decided", at: Date.now(), title: "Holiday planning",
+    decisions: [{ text: "Closed on Dec 25", by: "Maya" }, { text: "Holiday hours are 10 to 4" }] }];
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Holiday planning/ }));
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).getByRole("heading", { name: "Decisions" })).toBeInTheDocument();
+  expect(within(pane).getByText("Closed on Dec 25").closest("li")).toHaveTextContent("Closed on Dec 25 · Maya");
+  expect(within(pane).getByText("Holiday hours are 10 to 4").closest("li")).toHaveTextContent(/^Holiday hours are 10 to 4$/);
+});
+
+it("a recurring meeting's past occurrence opens its own decisions; the current one is unchanged", () => {
+  const start = Math.floor(Date.now() / 1000);
+  items.list = [
+    { type: "meeting", roomId: "series", at: (start + 86400) * 1000, startAt: start + 86400, status: "bot_created", title: "Weekly" },
+    { type: "meeting", roomId: "series", occurrence: start - 7 * 86400, at: (start - 7 * 86400) * 1000, startAt: start - 7 * 86400,
+      status: "ended", hasTranscript: true, title: "Weekly", decisions: [{ text: "Open 10 to 4" }] }];
+  render(<VoiceHome />);
+  const [next, held] = screen.getAllByRole("button", { name: /Weekly/ });
+  fireEvent.click(held);
+  expect(within(screen.getByRole("complementary", { name: "Details" })).getByText("Open 10 to 4")).toBeInTheDocument();
+  fireEvent.click(next);
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).queryByRole("heading", { name: "Decisions" })).not.toBeInTheDocument();
+  expect(within(pane).getByText("Scheduled")).toBeInTheDocument();
+});
+
+it("meeting pane has no Decisions section when none were made", () => {
+  items.list = [{ type: "meeting", roomId: "undecided", at: Date.now(), title: "Chat", decisions: [] }];
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Chat/ }));
+  expect(within(screen.getByRole("complementary", { name: "Details" })).queryByRole("heading", { name: "Decisions" })).not.toBeInTheDocument();
+});
+
 it("meeting details retain the summary while completed notes are unavailable", () => {
   items.list = [{ type: "meeting", roomId: "summarized", at: Date.now(), title: "Review",
     summary: "Waiting for the final notes.", notes: "  " }];

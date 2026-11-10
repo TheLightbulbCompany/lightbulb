@@ -77,7 +77,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 2.1 | One shared Hermes runtime pool per tier; a session per owner or per task | yes | yes | part | Platform | Tenant isolation not yet proven. #5170 fences every call to the pool |
 | 2.2 | Idle timeout 5 min; typing and new-room prewake deleted; the curator runs only when warm | yes | yes | no | Platform | |
 | 2.3 | The curator works without waking a business's session | yes | ? | no | Platform | When the session is cold it returns without an invoke. It then waits for the next turn; a phone-only business is curated only when it next has a turn |
-| 2.4 | Old per-business runtimes and roles retired | no | no | no | Platform | 25 old definitions remain. By exact allowlist |
+| 2.4 | Old per-business runtimes and roles retired | part | no | no | Platform | 27 old definitions remain (25 prod, 2 dev). The dry-run tool and workflow are built (`retire_legacy_runtimes.py`, `retire-legacy-runtimes.yml`). The allowlist is empty: every owner row still names its old runtime and every runtime was invoked in the last 7 days. Roles are kept. See `docs/ops/2026-11-10-legacy-runtime-inventory.md` |
 | 2.5 | Boot identity seeds replaced, then retired | no | no | no | Platform | 28 seeds are KEPT until network identity custody has a replacement |
 | 2.6 | Per-business secrets moved to encrypted DynamoDB envelopes | yes | yes | part | Platform | Unit tests and live provider use exist in earlier receipts. Still to do: classify it per connector |
 | 2.7 | Secrets Manager under 20 | no | no | no | Platform | About 130 today. 14 platform OAuth client secrets are required and stay |
@@ -127,7 +127,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.26 | 10DLC registration, per-business brand path | n/a | n/a | n/a | | Founder | Founder said start (9 Nov) |
 | 3.27 | Square booking | part | no | no | | Platform | #5173, hidden adapter |
 | 3.28 | Booking sites with no API, by browser, with steps and screenshots in the call record | no | no | no | | Product | Generic browser tool exists; no product path |
-| 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | |
+| 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | In review in #5190: Settings → Phone PIN (mobile and a hashed PIN); caller ID names whose PIN to check, keypad digits (DTMF) go to `/owner-pin`, 3 tries a call and 5 a day, each reserved atomically; a right PIN moves the call's lines to the member's DM with the assistant (the orb's owner path), rechecked on every turn. Needs a dev phone walk and a worker deploy |
 | 3.30 | Spanish, and a voice choice with preview | yes | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the next prod train. Mobile controls are in #5183 (type-check and voice tests pass; not yet seen on a device) and reach phones by OTA when it merges |
 | 3.31 | Choose which agent is the receptionist | yes | no | no | | Platform | #5166 merged 9 Nov; on dev, next prod train |
 | 3.32 | `VoiceCallOutcome` metric and an alarm on worker and route errors | yes | yes | no | | Platform | The metric is emitted. The alarm is W85 (voice route errors), present in prod and dev. No alarm reads the outcome metric itself |
@@ -177,8 +177,8 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 5.14 | Starts follow-up work it was clearly given; records human commitments without acting | yes | no | no | Platform | #5163 merged, on dev |
 | 5.15 | Everyone acts with the inviter's authority; spend, send and publish need the inviter's card tap | yes | yes | no | Product | |
 | 5.16 | Notes in the app after the meeting; no email | yes | part | part | Product | Notes in the app are verified on screen on prod. The removal of the automatic email reaches prod with the queued train |
-| 5.17 | Structured decisions, recallable by voice ("what did we decide") | no | no | no | Product | #5018 parked |
-| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked |
+| 5.17 | Structured decisions, recallable by voice ("what did we decide") | yes | no | no | Product | #5186: the notes run also returns a Decisions section; stored on the meeting, shown in the pane, each written once to the workspace's team memory for recall. Not yet seen in a real meeting or recalled live |
+| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked. Built in #5185, unverified live: GPT-Live hands the request to the Router, whose `meeting_stop_transcribing` excludes only the recorded speaker; the worker adopts it from `/events`; the tile shows the count. Needs a real-meeting run. |
 | 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |
 | 5.20 | Meeting minutes counted | yes | part | part | Platform | #5155, verified on dev |
 | 5.21 | The scenario list (`tests/replay/scenarios/`) passes in a real Meet | n/a | n/a | no | Product | No simulator exists; the earlier one was removed |

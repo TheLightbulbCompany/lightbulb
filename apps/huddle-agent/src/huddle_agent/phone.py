@@ -8,6 +8,10 @@ record, billing at hang-up, the run-out forward) and the two routes only the wor
 the SIP transfer (the Router's transfer_call line, an events item with `action: "transfer"`) and a paused line's
 message (`/turn` refuses: `/message`).
 
+The owner calling in (board row 3.29): keypad digits (LiveKit SIP's `sip_dtmf_received`) go to `/owner-pin`, which
+alone decides. Once it says yes, the same `/turn` and `/events` carry the member's own lines in their DM with the
+assistant (the orb's owner path, the same Router), and GPT-Live is told it now talks to the owner.
+
 Dispatched by a LiveKit SIP dispatch rule: in prod to the one deployed agent, `lightbulb-huddle` (agent.py
 routes `phone-` rooms here); on a dev Mac to its own name (`lightbulb-phone-dev`).
 Run: `AGENT_MODULE=huddle_agent.phone uv run python -m huddle_agent.phone dev`.
@@ -67,7 +71,7 @@ PROMPT = """You are {assistant}, the calm, friendly AI receptionist on the phone
 Speak warmly and naturally, at an unhurried pace, one or two short sentences at a time, like a good front desk. Be
 clear and direct, not overly cheerful. {language}
 If the caller is frustrated, acknowledge it briefly and focus on the next helpful step.
-{caller}{paused}
+{caller}{paused}{owner}
 Opening: your very first words follow the business's greeting, then you listen.
 If a caller sincerely asks whether they are speaking to a person, answer truthfully that this is an AI assistant.
 
@@ -90,6 +94,28 @@ offer a person or a message."""
 QUIET = "The line has been quiet for a while. If the caller stays silent, the call will end."
 NOBODY = "Nobody at the business can take the call right now. The team can take a message instead."
 PAUSED = "The caller's message was passed on to the team; the owner will call back."
+#: The number is a member's saved mobile with a phone PIN (start's `ownerPin`). Caller ID is no proof: only the PIN,
+#: typed on the keypad and checked by the backend, is. The model never hears the digits or decides if they are right.
+OWNER_PIN = (
+    "This number belongs to someone at the business. If they say they are the owner or want to talk as the owner, "
+    "they can type their phone PIN on the keypad, then the pound key. You never hear the PIN and never decide "
+    "whether it is right: you are told the result. Until then they are a caller like any other.\n"
+)
+#: The backend's answer to the typed PIN, told to GPT-Live (commentary): it chooses the words.
+PIN_OK = (
+    "The PIN typed on the keypad was right: this is the business's owner. From now on they talk as the owner, "
+    "with the team's full help, as in the Lightbulb app."
+)
+PIN_WRONG = "The PIN typed on the keypad was not accepted."
+OWNER_ENDED = "Owner mode has ended: this person is no longer a member of the business. They are a caller again."
+ANSWER_WITHIN_S = 60.0  # owner.py's: a line this soon after a Worker's question answers it; later, a new ask
+PIN_LOCKED = "The PIN typed on the keypad was not accepted, and no more tries are allowed on this call."
+#: The prompt from then on (owner.py's, on the phone): the team's brain, not the front desk.
+OWNER_NOW = """The caller has proven they are the business's owner. They are no longer a caller.
+Backend tools now: the team's brain, which knows the team's work across email, calendar and docs, remembers what
+the team said and decided, and starts work for the team's agents. Delegate their requests as before.
+Approvals happen on the card in the Lightbulb app, never by voice: when something needs approval, say it is waiting
+on the card in the app. A spoken yes approves nothing."""
 
 
 def prompt(info: dict) -> str:
@@ -109,6 +135,7 @@ def prompt(info: dict) -> str:
         paused="This line is not taking bookings or questions right now: it only takes messages.\n"
         if paused
         else "",
+        owner=OWNER_PIN if info.get("ownerPin") else "",
         delegation=live.delegation_policy(MESSAGE_ONLY_TOOLS if paused else TOOLS),
     )
 
@@ -238,12 +265,21 @@ async def entrypoint(ctx: JobContext) -> None:
     tasks: set[asyncio.Task] = set()
     turn_n = itertools.count()
     asked: dict[str, float] = {}  # each posted ask's message id -> when it was posted (monotonic)
+    question: list = [None, 0.0]  # the last Worker question {taskId, qid} the voice was given, and when
     ls: list[live.LiveSession] = []  # bound once started; post and events run only after
 
     def spawn(coro) -> None:
         t = asyncio.create_task(coro)
         tasks.add(t)
         t.add_done_callback(tasks.discard)
+
+    def owner_ended(out: dict) -> None:
+        """The member was removed mid-call (`/events` or `/turn` says so once): a caller again, from the call room's
+        cursor, with the caller prompt."""
+        cursor[0] = int(out.get("after") or 0)
+        question[:] = [None, 0.0]
+        ls[0].transport.instructions(prompt(info))
+        ls[0].send_result(None, OWNER_ENDED)
 
     async def post(text: str, turns: list[str]) -> str | live.Posted | None:
         """One delegation: the caller's line in the call's room, numbered in the order asked (live.py posts one at a
@@ -252,7 +288,13 @@ async def entrypoint(ctx: JobContext) -> None:
         said = "\n".join(f"> {t}" for t in turns)
         body = (text.strip() + (f"\n\nSaid on the call since the last ask:\n{said}" if said else ""))[:4000]
         n = next(turn_n)
-        out = await backend.post("turn", {"n": n, "text": body})
+        q, at = question  # owner mode: the Worker question just said is answered by this line (owner.py's rule)
+        answers = q if q and time.monotonic() - at <= ANSWER_WITHIN_S else None
+        out = await backend.post("turn", {"n": n, "text": body, **({"answers": answers} if answers else {})})
+        if answers is not None and question[0] is q:
+            question[:] = [None, 0.0]
+        if out.get("ownerModeEnded"):  # /turn found the member removed before any poll did
+            owner_ended(out)
         if out.get("error") == "not_allowed":
             did.append(f"Message: {text[:120]}")
             await backend.post("message", {"text": body, "name": info.get("callerName") or "", "callbackNumber": ""})
@@ -282,17 +324,26 @@ async def entrypoint(ctx: JobContext) -> None:
     transferred: set[str] = set()  # the events iterator may restart; an admitted SIP action must not replay
     silence_checks: list = []  # bound after startup; events can arrive while the model is opening
 
+    cursor = [int(info.get("after") or 0)]  # owner mode moves it to the member's DM (pin_typed)
+
     async def events():
         """The room's new agent messages, oldest first, each once (the cursor moves past it)."""
-        after = int(info.get("after") or 0)
         while True:
             await asyncio.sleep(POLL_S)
+            after = cursor[0]
             out = await backend.post("events", {"after": after})
             if out.get("error"):
                 logger.warning("phone %s: events failed (%s)", backend.call_id, out["error"])
                 continue
-            after = max(after, int(out.get("after") or 0))
+            if cursor[0] != after:
+                continue  # owner mode began while this was in flight: these were the call room's
+            if out.get("ownerModeEnded"):
+                owner_ended(out)
+                continue
+            cursor[0] = max(after, int(out.get("after") or 0))
             for m in out.get("messages", []):
+                if m.get("question"):
+                    question[:] = [m["question"], time.monotonic()]
                 if m.get("action") == "transfer" and (mid := m.get("id")) and mid not in transferred:
                     transferred.add(mid)
                     spawn(hand_off())
@@ -439,6 +490,35 @@ async def entrypoint(ctx: JobContext) -> None:
     def _left(participant) -> None:
         if participant.identity == caller.identity and not left:  # end now: the job lingers ~22 s, billed
             left.append(asyncio.create_task(hung_up(ending.now())))
+
+    digits: list[str] = []
+
+    async def pin_typed(pin: str) -> None:
+        """The typed PIN goes to the backend, which alone decides (owner-pin); never to the model or the log."""
+        out = await backend.post("owner-pin", {"pin": pin})
+        if out.get("ok"):
+            cursor[0] = int(out.get("after") or 0)
+            live_session.transport.instructions(OWNER_NOW)
+            live_session.send_result(None, PIN_OK)
+            did.append("The owner proved it was them with the PIN")
+        else:
+            live_session.send_result(None, PIN_LOCKED if out.get("locked") else PIN_WRONG)
+
+    @ctx.room.on("sip_dtmf_received")
+    def _dtmf(ev) -> None:
+        """Keypad digits from the caller: `#` sends them, `*` starts over. Only on a number start called ownerPin."""
+        if not info.get("ownerPin") or getattr(ev.participant, "identity", None) != caller.identity:
+            return
+        if ev.digit == "#":
+            pin, digits[:] = "".join(digits), []
+            if 4 <= len(pin) <= 8:
+                spawn(pin_typed(pin))
+            else:
+                live_session.send_result(None, PIN_WRONG)
+        elif ev.digit == "*":
+            digits.clear()
+        elif ev.digit.isdigit() and len(digits) < 8:
+            digits.append(ev.digit)
 
     ctx.add_shutdown_callback(shutdown)
     live_session.send_result(None, OPENING.format(assistant=info["assistantName"], greeting=info["greeting"]))

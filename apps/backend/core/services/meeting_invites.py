@@ -850,6 +850,7 @@ _CALL_KEYS = (
     "notesRunId",
     "notes",
     "decisions",
+    "decisionsRemembered",
     "notesMailedAt",
     "notesMailAttemptedAt",
     "roster",
@@ -862,6 +863,7 @@ _CALL_KEYS = (
     "followUps",
     "summary",
     "linksSaid",
+    "askSpeakers",
 )
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
 _HISTORY_MAX = 30
@@ -901,7 +903,16 @@ def _kept_transcript(meeting: dict) -> dict:
     past = {k: meeting.get(k) for k in ("startAt", "transcriptId", "transcriptRoomId")}
     past |= {
         k: meeting[k]
-        for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
+        for k in (
+            "endedAt",
+            "notesRunId",
+            "notesSkipped",
+            "notes",
+            "decisions",
+            "decisionsRemembered",
+            "unsaid",
+            "followUps",
+        )
         if meeting.get(k)
     }
     history = [past, *(meeting.get("history") or [])][:_HISTORY_MAX]

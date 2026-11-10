@@ -1049,6 +1049,10 @@ async def test_two_interleaved_starts_for_one_room_both_return_the_stored_token(
     stored = (await messaging_repo.get_room(a["callId"]))["callToken"]
     assert len(set(arrived)) == 2  # two candidates were minted
     assert a["callToken"] == b["callToken"] == stored
+    # ...and the one call is one unit of the caller's daily allowance (Codex, #5193 :357)
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    row = await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICECALLS#{day}#+14155550133")
+    assert row["units"] == {a["callId"]}
 
 
 async def test_a_booking_returned_again_is_one_unit_of_the_daily_cap(client, monkeypatch):

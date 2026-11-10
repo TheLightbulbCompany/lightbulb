@@ -352,8 +352,8 @@ async def start_call(body: StartIn) -> dict:
         limited = (existing.get("call") or {}).get("limited") or ""
     elif not slot:
         limited = "too many calls on the line at once"
-    elif not await messaging_repo.take_voice_count(
-        owner_id, f"VOICECALLS#{_day()}#{caller or 'withheld'}", CALLS_PER_CALLER_PER_DAY
+    elif not await messaging_repo.take_voice_unit(  # keyed by call id: overlapping starts of one call count once
+        owner_id, f"VOICECALLS#{_day()}#{caller or 'withheld'}", call_id, CALLS_PER_CALLER_PER_DAY
     ):
         limited = "too many calls from this number today"
     else:

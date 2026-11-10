@@ -2996,7 +2996,7 @@ async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) 
 
 
 async def take_voice_count(owner_id: str, sk: str, limit: int, ttl_s: int = 2 * 86400) -> bool:
-    """One unit of the counter row ``sk`` (a VOICE…# cap: forwarding checks, calls per caller); False once ``limit``
+    """One unit of the counter row ``sk`` (the forwarding checks cap); False once ``limit``
     are used. The pattern of ``count_voice_edit``."""
     try:
         await run_in_thread(

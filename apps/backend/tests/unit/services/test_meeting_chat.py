@@ -135,6 +135,17 @@ async def test_stop_transcribing_needs_a_recorded_speaker(optout, world):
     optout.assert_not_awaited()
 
 
+async def test_stop_transcribing_refuses_a_previous_occurrences_trigger(optout, world):
+    world["meta"]["meeting"].update(recallBotId="b2", inCallAt=200)  # the series advanced to a new live occurrence
+    with pytest.raises(mod.NotCurrentMeeting, match="not_current_meeting"):
+        await mod.stop_transcribing("org_a", ["chat:t"])
+    optout.assert_not_awaited()
+
+
+def test_advancing_the_series_clears_who_spoke():
+    assert "askSpeakers" in mod.meeting_invites._CALL_KEYS and "askSpeakers" in mod.meeting_invites._OCCURRENCE_KEYS
+
+
 async def test_stop_transcribing_is_for_a_live_meeting_only(optout, world):
     world["trigger"]["ref"] = {"roomId": "r", "messageId": "m"}  # a plain chat trigger, no meeting origin
     with pytest.raises(mod.NotCurrentMeeting, match="not_a_meeting"):

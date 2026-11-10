@@ -96,7 +96,14 @@ async def stop_transcribing(owner_id: str, trigger_ids: list[str], participant_i
     async with meeting_invites.meeting_lease(room_id):
         meta = await messaging_repo.get_room(room_id) or {}
         meeting = meta.get("meeting") or {}
-        if meta.get("ownerId") != owner_id or meeting.get("status") != "in_call":
+        bot_id, occurrence = meeting.get("recallBotId"), meeting.get("inCallAt")
+        if (
+            meta.get("ownerId") != owner_id
+            or meeting.get("status") != "in_call"
+            or not bot_id
+            or not occurrence
+            or any(r.get("meetingBotId") != bot_id or r.get("meetingInCallAt") != occurrence for r in refs)
+        ):  # the same occurrence fence send() uses: a previous occurrence's turn never writes into this one
             raise NotCurrentMeeting("not_current_meeting")
         rows = [await messaging_repo.get_message_by_id(room_id, r.get("messageId")) or {} for r in refs]
         speakers = {(meeting.get("askSpeakers") or {}).get(row.get("clientMessageId")) for row in rows}

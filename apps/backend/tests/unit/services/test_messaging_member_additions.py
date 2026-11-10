@@ -6,6 +6,12 @@ from core.auth import AuthContext
 from core.services import messaging
 
 
+@pytest.fixture(autouse=True)
+def _no_front_seat(monkeypatch):
+    """`upsert_member` and member additions read the room's front seat (#5166); these tests have no table."""
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))
+
+
 OWNER = "org_1"
 ROOM = "11111111-1111-4111-8111-111111111111"
 AGENT = "22222222-2222-4222-8222-222222222222"

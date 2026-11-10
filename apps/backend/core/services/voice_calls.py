@@ -496,25 +496,6 @@ async def _publish_huddle_presence(room_id: str) -> None:
 
 
 PHONE_STALE_S = 25 * 60  # the worker's 20 min cap plus grace: a call still live past this lost its `end`
-PHONE_MAX_S = 20 * 60
-
-
-def _last_activity_seconds(meta: dict, call: dict) -> int:
-    """Start to the room's last message (every caller line and agent reply stamps it): what the call provably used.
-    No message: 0, so a dead worker's call bills nothing."""
-    from datetime import datetime
-
-    try:
-        return max(
-            0,
-            int(
-                (
-                    datetime.fromisoformat(meta["lastMessageAt"]) - datetime.fromisoformat(call["startedAt"])
-                ).total_seconds()
-            ),
-        )
-    except (KeyError, TypeError, ValueError):
-        return 0
 
 
 async def sweep_phone_calls(now: int) -> int:
@@ -531,14 +512,9 @@ async def sweep_phone_calls(now: int) -> int:
         if now - started < PHONE_STALE_S:
             continue
         try:
-            meta, call = await voice_phone._call(row["sk"])
-            seconds = _last_activity_seconds(meta, call)
-            note = "Closed by cleanup: the call's worker never reported its end" + (
-                "" if seconds else " and nothing was said on the line"
-            )
-            await voice_phone.end_call(
-                row["sk"], voice_phone.EndIn(durationSec=min(seconds, PHONE_MAX_S), summary=note)
-            )
+            # duration unknown (the worker died): bill 0 rather than guess
+            note = "Closed by cleanup: the call's worker never reported its end"
+            await voice_phone.end_call(row["sk"], voice_phone.EndIn(durationSec=0, summary=note))
             done += 1
         except HTTPException as exc:
             if exc.status_code != 404:

@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.services import hermes_profiles
 
@@ -27,7 +27,6 @@ CONFIG_ALLOWLIST: set[str] = {
     "TOOLS.md",
     "IDENTITY.md",
     "USER.md",
-    "HEARTBEAT.md",
     "AGENTS.md",
 }
 
@@ -44,8 +43,6 @@ MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
 #: read and written verbatim; ``AGENTS.md`` sits at the profile root as it does on EFS. The
 #: config tab is also the ONLY door to these three -- the Files panel hides every top-level
 #: CONFIG_ALLOWLIST name from its workspace tree on the grounds that the config tab has them.
-#: ``HEARTBEAT.md`` is the agent's own heartbeat checklist, read by the paperclip skill on every
-#: timer wake (``core.services.heartbeat_checklist``); only an org admin may save it.
 #: ``MEMORY.md`` is Hermes's own agent-notes store (``tools/memory_tool.py`` ``_path_for``:
 #: ``memories/MEMORY.md``), written by the agent and shown in its prompt in every room, so people
 #: can read and clear it here (memory-scopes D7). TOOLS.md has no Hermes reader at all, so it is
@@ -55,7 +52,6 @@ _AGENTCORE_CONFIG_PATHS = {
     "USER.md": "memories/USER.md",
     "MEMORY.md": "memories/MEMORY.md",
     "AGENTS.md": "AGENTS.md",
-    "HEARTBEAT.md": "HEARTBEAT.md",
 }
 
 #: IDENTITY.md has no Hermes equivalent at all -- an agent has ONE identity document and it is
@@ -230,12 +226,6 @@ async def write_workspace_file(
     if body.tab not in ("workspace", "config"):
         raise HTTPException(status_code=400, detail="tab must be 'workspace' or 'config'")
 
-    try:
-        target = hermes_profiles.normalize_profile_rel(body.path)
-    except ValueError:
-        target = None  # the write below answers the 400
-    if target == "HEARTBEAT.md":
-        require_org_admin(auth)
     written = await _agentcore_write(owner_id, agent_id, body.path, body.content, body.tab)
     logger.info("Wrote %s into the Hermes profile for owner %s (tab=%s)", written, owner_id, body.tab)
     return {"status": "ok", "path": written}

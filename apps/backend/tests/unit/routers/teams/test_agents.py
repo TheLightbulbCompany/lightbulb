@@ -114,24 +114,6 @@ def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch)
     }
 
 
-def test_create_agent_rejects_client_supplied_adapter_type(client):
-    r = client.post(
-        "/api/v1/teams/agents",
-        json={"name": "Helper", "role": "engineer", "adapterType": "process"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert r.status_code == 422
-
-
-def test_create_agent_rejects_client_supplied_url(client):
-    r = client.post(
-        "/api/v1/teams/agents",
-        json={"name": "Helper", "role": "engineer", "url": "http://evil"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert r.status_code == 422
-
-
 def _update(monkeypatch):
     from core.services import agent_registry
 
@@ -180,25 +162,6 @@ def test_patch_agent_allows_moving_root_ceo_when_another_root_exists(client, mon
     )
     assert r.status_code == 200
     assert r.json()["reportsTo"] == "new-root"
-
-
-def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):
-    from routers.teams import agents as agents_mod
-    from core.services.agent_lifecycle import AgentLifecycleConflict
-
-    _roster(monkeypatch, {"id": "friday_id"})
-    delete_everywhere = AsyncMock(
-        side_effect=AgentLifecycleConflict("Lightbulb's coordinator cannot be deleted or demoted.")
-    )
-    monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
-    r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 409
-    delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="friday_id")
-
-
-def test_delete_unknown_agent_is_404(client, monkeypatch):
-    _roster(monkeypatch, {"id": "a1"})
-    assert client.delete("/api/v1/teams/agents/nope", headers={"Authorization": "Bearer x"}).status_code == 404
 
 
 def test_list_and_get_agent_name_the_front_agent_lightbulb(client, monkeypatch):

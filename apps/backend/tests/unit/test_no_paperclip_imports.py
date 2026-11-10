@@ -71,7 +71,6 @@ MENTIONS = {
     "core/services/daily_digest.py",
     "core/services/entitlement_guards.py",
     "core/services/google_watch.py",
-    "core/services/heartbeat_checklist.py",
     "core/services/hermes_profiles.py",
     "core/services/hermes_provisioning.py",
     "core/services/hook_signatures.py",
@@ -102,7 +101,6 @@ MENTIONS = {
     "routers/teams/agents.py",
     "routers/webhooks.py",
     "routers/websocket_chat.py",
-    "routers/workspace_files.py",
 }
 
 

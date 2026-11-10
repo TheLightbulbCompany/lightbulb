@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 PAGE_CHARS = 12_000
 MAX_PAGES = 4
 _USEFUL = re.compile(r"service|menu|price|pricing|hour|about|team|staff|stylist|faq|contact|book", re.I)
+_FIRST = re.compile(r"contact|hour|about", re.I)  # where the hours live; fetched before the rest
 _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 PROMPT = """You set up a phone receptionist for a small business from its own website text.
@@ -57,7 +58,10 @@ Return ONLY one JSON object, no prose:
  "toAdd": ["common caller questions the site does NOT answer, e.g. Parking? Walk-ins? Gift cards?"],
  "phone": "the business phone number the site lists, or empty"}
 Rules: only facts the text states. Durations the site does not give: your best guess with minutesGuessed true.
-Prices exactly as written. At most 30 services, 12 knowledge items, 5 toAdd. 24-hour HH:MM times."""
+Prices exactly as written. If a page has [structured data] openingHours, use it for hours over a footer or
+prose; when two sources disagree on hours (or anything else), use the structured one and add a "toAdd" item naming
+the conflict, e.g. "Check hours: site footer says 9-7, structured data says Mon-Fri 9:30-19:00". A duration given as
+a range ("15-30 minutes") is the upper bound. At most 30 services, 12 knowledge items, 5 toAdd. 24-hour HH:MM times."""
 
 
 @functools.cache
@@ -74,9 +78,11 @@ def _site_url(raw: str) -> str:
 def _page(html: str) -> tuple[str, list[tuple[str, str]]]:
     soup = BeautifulSoup(html, "html.parser")
     links = [(a.get("href") or "", a.get_text(" ", strip=True)) for a in soup.find_all("a")]
+    # JSON-LD often carries the real openingHours; keep it, drop every other script.
+    ld = [t.string.strip() for t in soup.find_all("script", type="application/ld+json") if t.string]
     for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()
-    return " ".join(soup.get_text(" ").split())[:PAGE_CHARS], links
+    return " ".join(soup.get_text(" ").split())[:PAGE_CHARS] + "".join(f"\n[structured data] {j}" for j in ld), links
 
 
 async def _fetch(url: str) -> tuple[str, str, list[tuple[str, str]]]:
@@ -96,6 +102,7 @@ async def read_site(website: str) -> str:
         url = urljoin(home, href).split("#")[0]
         if urlsplit(url).hostname == host and url != home and url not in more and _USEFUL.search(f"{href} {label}"):
             more.append(url)
+    more.sort(key=lambda u: not _FIRST.search(u))
     pages = [f"[{home}]\n{text}"]
     for got in await asyncio.gather(*(_fetch(u) for u in more[: MAX_PAGES - 1]), return_exceptions=True):
         if not isinstance(got, BaseException):

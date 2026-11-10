@@ -694,41 +694,47 @@ async def test_a_voice_that_closed_itself_is_reopened_by_the_name():
     assert len(opened) == 2 and m.voice is opened[1]
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Nova, don't transcribe me",
-        "Hey Nova, can you not transcribe me?",
-        "Lightbulb, turn off transcription for my voice",
-        "Nova, opt me out",
-    ],
-)
-def test_opt_out_is_a_request_to_the_assistant_about_this_speaker(text):
-    assert meet.opts_out("Nova", text)
+@pytest.fixture
+def model_opts_out(monkeypatch):
+    """The model's tool call, stubbed: it fires only for a request about the speaker's own voice."""
+    async def decide(_name, text):
+        return "transcrib" in text
+
+    monkeypatch.setattr(meet, "asks_opt_out", decide)
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Customers can opt out of reminder texts",
-        "Nova, don't record my screen",
-        "Don't transcribe me",
-        "Sam said Nova should not transcribe me",
-    ],
-)
-def test_ordinary_talk_and_other_peoples_requests_do_not_opt_anyone_out(text):
-    assert not meet.opts_out("Nova", text)
+async def _settle(m):
+    await asyncio.gather(*m._privacy_saves)
 
 
-async def test_opt_out_removes_only_that_person_from_notes_and_audio_and_persists():
+async def test_unnamed_talk_never_reaches_the_model(monkeypatch):
+    async def boom(*_):
+        raise AssertionError("asked the model")
+
+    monkeypatch.setattr(meet, "asks_opt_out", boom)
+    m = _meeting()
+    m.heard(SAM, "Don't transcribe me", final=True)
+    assert not m._privacy_saves and not m.excluded(SAM)
+    m.joiner.close()
+
+
+async def test_a_no_tool_call_excludes_nobody(model_opts_out):
+    m = _meeting()
+    m.heard(SAM, "Nova, what is on the calendar?", final=True)
+    await _settle(m)
+    assert not m.excluded(SAM)
+    m.joiner.close()
+
+
+async def test_opt_out_removes_only_that_person_from_notes_and_audio_and_persists(model_opts_out):
     b, mix, stopped = _Backend(), meet.Mix(), []
     m = _meeting(b, mix=mix, on_opt_out=stopped.append)
     m.joiner.final(SAM, "Nova.")  # split STT final at the name
     frame = rtc.AudioFrame(np.full(meet.FRAME, 2000, dtype=np.int16).tobytes(), meet.RATE, 1, meet.FRAME)
     mix.push(SAM, frame)
     mix.tick()
-    m.heard(SAM, "Please stop transcribing my voice", final=True)
-    await asyncio.sleep(0)
+    m.heard(SAM, "Nova, please stop transcribing my voice", final=True)
+    await _settle(m)
     assert stopped == [SAM] and m.excluded(SAM) and not m.excluded(MAYA)
     assert not mix.ring and SAM not in mix._q  # mixed pre-roll contains their voice too
     mix.push(SAM, frame)  # a frame already in flight must not get back in
@@ -750,7 +756,7 @@ async def test_opt_out_removes_only_that_person_from_notes_and_audio_and_persist
     restored.joiner.close()
 
 
-async def test_opt_out_stays_local_and_retries_a_transient_persistence_failure():
+async def test_opt_out_stays_local_and_retries_a_transient_persistence_failure(model_opts_out):
     b = _Backend()
     saved = b.meet
     attempts = []
@@ -764,6 +770,7 @@ async def test_opt_out_stays_local_and_retries_a_transient_persistence_failure()
     b.meet = flaky
     m = _meeting(b, mix=meet.Mix())
     m.heard(SAM, "Nova, stop transcribing me", final=True)
+    await asyncio.sleep(0)
     assert m.excluded(SAM)
     m.heard(SAM, "Private words while persistence is retrying", final=True)
     assert not m.lines

@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import time
 from collections import deque
 
@@ -101,23 +100,36 @@ Do not generate <|SpawnThinking|> when:
 Anything that spends, sends or publishes waits for the inviting member's OK on a card in the chat. Never approve, confirm or promise one by voice."""
 
 
-_ME = r"(?:me|myself|my (?:voice|speech|words|audio))\b"
-_OPT_OUT = re.compile(
-    rf"\b(?:don'?t|do not|not|stop|quit|no longer|no more)\s+(?:transcrib\w*|record\w*)\s+{_ME}"
-    rf"|\b(?:turn off|switch off|stop|disable|pause)\s+(?:the\s+)?(?:transcription|transcript|transcribing|recording)"
-    rf"\s+(?:for|of)\s+{_ME}"
-    r"|\bopt me out\b|\bleave me out of the (?:transcript|transcription|recording)\b",
-    re.I,
-)
+OPT_OUT_MODEL = os.environ.get("MEET_OPTOUT_MODEL", "gpt-4.1-mini")
+_OPT_OUT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "stop_transcribing_speaker",
+        "description": "Call only when the speaker asks the assistant to stop transcribing or listening to their own voice "
+        "in this meeting. Do not call for other talk, other people's voices, or anything else about recording.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
 
 
-def opts_out(name: str, text: str) -> bool:
-    """Only a request addressed to the assistant, about this speaker's own voice."""
-    tokens = _tokens(text)
-    while tokens and tokens[0] in {"hey", "hi", "hello", "please"}:
-        tokens = tokens[1:]
-    addressed = any(n and tuple(tokens[: len(n)]) == n for n in (tuple(_tokens(name)), *_LIGHTBULB))
-    return addressed and bool(_OPT_OUT.search(text))
+async def asks_opt_out(name: str, text: str) -> bool:
+    """The model decides: a small tool-calling model reads a line that names the assistant and calls the tool only for
+    a request about the speaker's own voice. Code enforces the exclusion; it never matches the words."""
+    res = await openai_client().chat.completions.create(
+        model=OPT_OUT_MODEL,
+        messages=[
+            {"role": "system", "content": f'You listen to one meeting line spoken to the assistant "{name}".'},
+            {"role": "user", "content": text},
+        ],
+        tools=[_OPT_OUT_TOOL],
+    )
+    return bool(res.choices[0].message.tool_calls)
+
+
+def openai_client():
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI()
 
 
 class Joiner:
@@ -319,33 +331,30 @@ class Meeting:
                 else:
                     await asyncio.sleep(0.5 * (attempt + 1))
 
+    async def _decide_opt_out(self, who: str, text: str) -> None:
+        try:
+            if not await asks_opt_out(self.name, text) or self.excluded(who):
+                return
+        except Exception:  # noqa: BLE001 -- no decision, no exclusion; the person can ask again
+            logger.exception("meet: opt-out decision failed")
+            return
+        entry = {"id": who.rsplit(":", 1)[-1], "name": self.names.get(who, "")[:200]}
+        self.not_transcribed.append(entry)
+        self.joiner.discard(who)
+        if self.mix is not None:
+            self.mix.exclude(who)
+        if self.on_opt_out:
+            self.on_opt_out(who)
+        await self._save_opt_out({"participantId": entry["id"], "name": entry["name"], "optOut": True})
+
     def heard(self, who: str, text: str, final: bool) -> None:
         if not text.strip() or self.excluded(who):
             return
         combined = " ".join([*self.joiner._parts.get(who, []), text])
-        if final and opts_out(self.name, combined):
-            entry = {
-                "id": who.rsplit(":", 1)[-1],
-                "name": self.names.get(who, "")[:200],
-            }
-            self.not_transcribed.append(entry)
-            self.joiner.discard(who)
-            if self.mix is not None:
-                self.mix.exclude(who)
-            if self.on_opt_out:
-                self.on_opt_out(who)
-            task = asyncio.create_task(
-                self._save_opt_out(
-                    {
-                        "participantId": entry["id"],
-                        "name": entry["name"],
-                        "optOut": True,
-                    }
-                )
-            )
+        if final and names_it(self.name, combined):
+            task = asyncio.create_task(self._decide_opt_out(who, combined))
             self._privacy_saves.add(task)
             task.add_done_callback(self._privacy_saves.discard)
-            return
         if self.voice is None and self.opening is None and self._open_voice and names_it(self.name, text):
             self.opening = asyncio.create_task(self._wake())
         if final:
@@ -616,6 +625,12 @@ async def run(ctx: JobContext, meta: dict) -> None:
     def stop_transcribing(who: str) -> None:
         if (task := readers.pop(who, None)) is not None:
             task.cancel()
+        show_excluded()
+
+    def show_excluded() -> None:  # the tile says it; a rejoining worker restores the count from the meeting record
+        asyncio.create_task(ctx.room.local_participant.set_attributes(
+            {"lightbulb.meet.not_transcribed": str(len(meeting.not_transcribed))}
+        ))  # fmt: skip
 
     meeting.on_opt_out = stop_transcribing
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
@@ -717,6 +732,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         await backend.aclose()
 
     ctx.add_shutdown_callback(on_end)
+    show_excluded()
     await ctx.room.local_participant.set_attributes(
         {**tile, f"lightbulb.agent.{ASSISTANT_ID}.status": "listening"}
     )

@@ -1024,20 +1024,31 @@ async def test_overlapping_starts_for_one_room_return_the_stored_token(client):
     assert client.post(url, json={"after": 0}, headers=headers).status_code == 200
 
 
-async def test_start_answers_with_the_token_the_persisted_room_holds(client):
-    """#5193 review: the token returned is the stored META's (create_room's answer), never this request's own."""
-    real = messaging_repo.create_room
+async def test_two_interleaved_starts_for_one_room_both_return_the_stored_token(client):
+    """#5193 review (Codex): two starts for one LiveKit room both find no room and both mint a candidate token
+    before either create_room runs. The winner's create stores its token; the loser's create replays the stored
+    META. Both must answer with the stored token, or the loser's worker gets 401 on every later route."""
+    import asyncio
 
-    async def persisted(**kw):
-        await real(**kw)
-        return {**await messaging_repo.get_room(kw["room_id"]), "callToken": "stored-by-the-winner"}
+    real, arrived, both = messaging_repo.create_room, [], asyncio.Event()
+
+    async def held_until_both_minted(**kw):
+        arrived.append(kw["extra"]["callToken"])
+        if len(arrived) == 2:
+            both.set()
+        await both.wait()  # neither create runs until both starts have their own candidate
+        if kw["extra"]["callToken"] == arrived[1]:
+            await asyncio.sleep(0.05)  # the second to arrive creates last: it is the loser
+        return await real(**kw)
 
     await voice_phone.put_line(NUMBER, LINE)
     await messaging_repo.put_voice_agent("org_1", CONFIG, "user_owner")
-    with patch.object(voice_phone.messaging_repo, "create_room", persisted):
-        r = client.post("/api/v1/internal/voice/calls", headers=W,
-                        json={"calledNumber": NUMBER, "callerNumber": "+14155550133", "livekitRoom": "phone-p"})  # fmt: skip
-    assert r.status_code == 200 and r.json()["callToken"] == "stored-by-the-winner"
+    body = voice_phone.StartIn(calledNumber=NUMBER, callerNumber="+14155550133", livekitRoom="phone-interleaved")
+    with patch.object(voice_phone.messaging_repo, "create_room", held_until_both_minted):
+        a, b = await asyncio.gather(voice_phone.start_call(body), voice_phone.start_call(body))
+    stored = (await messaging_repo.get_room(a["callId"]))["callToken"]
+    assert len(set(arrived)) == 2  # two candidates were minted
+    assert a["callToken"] == b["callToken"] == stored
 
 
 async def test_a_booking_returned_again_is_one_unit_of_the_daily_cap(client, monkeypatch):

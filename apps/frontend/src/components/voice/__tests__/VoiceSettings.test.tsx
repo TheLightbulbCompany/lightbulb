@@ -5,39 +5,28 @@ import { vi, it, expect, beforeEach } from "vitest";
 const desktop = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/lib/desktopNotify", () => ({ isDesktopApp: () => desktop.enabled }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => <button type="button">Check for updates</button> }));
-const billing = vi.hoisted(() => ({ subscribed: true }));
-vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: { is_subscribed: billing.subscribed } }) }));
-beforeEach(() => { desktop.enabled = false; billing.subscribed = true; });
+const conn = vi.hoisted(() => ({ connections: [] as { provider: string; status: string }[], startOAuth: vi.fn() }));
+vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: conn.connections, isLoading: false, startOAuth: conn.startOAuth }) }));
+beforeEach(() => { desktop.enabled = false; });
 
-vi.mock("@/components/settings/SettingsPlace", () => ({
-  PANELS: {
-    billing: () => <div>workspace billing and provider choices</div>,
-    members: () => <div>members ok</div>,
-    approvals: () => { throw new Error("approvals exploded"); },
-    connections: () => <div>connections ok</div>,
-  },
-}));
+vi.mock("@/components/settings/WorkspaceMembersSection", () => ({ WorkspaceMembersSection: () => { throw new Error("members exploded"); } }));
 vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => <div>daily ok</div> }));
-vi.mock("@/components/settings/SessionNotificationsCard", () => ({ SessionNotificationsCard: () => <div>session ok</div> }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => null }));
 vi.mock("../PhonePinCard", () => ({ PhonePinCard: () => null }));
 vi.mock("../data", () => ({ useUsage: () => ({ data: undefined, isLoading: true }), useAgentConfig: () => ({ data: undefined, save: () => {} }) }));
 
+import { fireEvent, waitFor } from "@testing-library/react";
 import { VoiceSettings } from "../VoiceSettings";
 
 it("one section throwing leaves the other sections on the page", () => {
   const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
   render(<VoiceSettings />);
   quiet.mockRestore();
-  expect(screen.getByText("members ok")).toBeInTheDocument();
-  expect(screen.getByText("workspace billing and provider choices")).toBeInTheDocument();
-  expect(screen.getByText("connections ok")).toBeInTheDocument();
   expect(screen.getByText("daily ok")).toBeInTheDocument();
   const broken = screen.getByRole("alert");
-  expect(broken).toHaveTextContent("Approvals");
+  expect(broken).toHaveTextContent("Members");
   expect(broken).toHaveTextContent("couldn't load");
 });
-
 
 it.each([true, false])("shows the existing desktop updater only in the desktop app (desktop=%s)", (enabled) => {
   desktop.enabled = enabled;
@@ -53,10 +42,17 @@ it.each([true, false])("shows the existing desktop updater only in the desktop a
   }
 });
 
-it("does not offer the old Team plan to a workspace that is not on it", () => {
-  billing.subscribed = false;
-  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+it("calendar card: connected shows the tag and no button", () => {
+  conn.connections = [{ provider: "google", status: "connected" }];
   render(<VoiceSettings />);
-  quiet.mockRestore();
-  expect(screen.queryByText("workspace billing and provider choices")).not.toBeInTheDocument();
+  expect(screen.getByText("Connected")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Google/ })).not.toBeInTheDocument();
+});
+
+it("calendar card: reconnect_required offers Reconnect, and a 403 shows an admin hint", async () => {
+  conn.connections = [{ provider: "google", status: "reconnect_required" }];
+  conn.startOAuth.mockRejectedValue({ status: 403 });
+  render(<VoiceSettings />);
+  fireEvent.click(screen.getByRole("button", { name: "Reconnect Google" }));
+  await waitFor(() => expect(screen.getByText(/Ask a workspace admin/)).toBeInTheDocument());
 });

@@ -15,7 +15,6 @@ const CONFIG_ALLOWLIST = [
   "TOOLS.md",
   "IDENTITY.md",
   "USER.md",
-  "HEARTBEAT.md",
   "AGENTS.md",
 ];
 

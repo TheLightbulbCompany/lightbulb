@@ -470,3 +470,76 @@ it("a physical pointer click is not counted again after its release", () => {
   expect(mic).not.toHaveBeenCalled();
   expect(orb()).toHaveAttribute("aria-pressed", "true");
 });
+
+const gum = (impl: () => Promise<unknown>) => Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(impl) } });
+afterEach(() => Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined }));
+
+it("asks for the microphone on the tap, says so while the prompt is open, and joins once allowed", async () => {
+  let allow!: (s: unknown) => void;
+  gum(() => new Promise((res) => { allow = res; }));
+  render(<TalkOrb name="Nova" />);
+  tap();
+  expect(huddle.join).not.toHaveBeenCalled();
+  expect(status()).toHaveTextContent("Allow microphone access to talk");
+  const stop = vi.fn();
+  await act(async () => allow({ getTracks: () => [{ stop }] }));
+  expect(stop).toHaveBeenCalled(); // the probe stream is released; the join acquires its own mic
+  expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+});
+
+it("a release after a slow allow is not a hold, and the next tap still works", async () => {
+  let allow!: (s: unknown) => void;
+  gum(() => new Promise((res) => { allow = res; }));
+  render(<TalkOrb name="Nova" />);
+  fireEvent.keyDown(orb(), { key: " " });
+  now += HOLD_MS + 5_000; // time on the browser prompt
+  await act(async () => allow({ getTracks: () => [] }));
+  fireEvent.keyUp(orb(), { key: " " });
+  expect(mic).not.toHaveBeenCalledWith(false);
+  expect(huddle.join).toHaveBeenCalledTimes(1);
+  tap(); // not ignored: no stale press
+  expect(huddle.leave).toHaveBeenCalled();
+});
+
+it("a busy microphone gets its own message, not the blocked one", async () => {
+  gum(() => Promise.reject(Object.assign(new Error("x"), { name: "NotReadableError" })));
+  render(<TalkOrb name="Nova" />);
+  tap();
+  await settle();
+  expect(screen.getByRole("alert")).toHaveTextContent(/Close other apps/);
+});
+
+it("a refused microphone shows how to fix it and never joins", async () => {
+  gum(() => Promise.reject(Object.assign(new Error("no"), { name: "NotAllowedError" })));
+  render(<TalkOrb name="Nova" />);
+  tap();
+  await settle();
+  expect(huddle.join).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent(/Microphone is blocked.*lock icon/);
+  expect(orb()).toHaveAttribute("data-state", "idle");
+});
+
+it("tapping again while the prompt is open cancels, and a late allow does not join", async () => {
+  let allow!: (s: unknown) => void;
+  gum(() => new Promise((res) => { allow = res; }));
+  render(<TalkOrb name="Nova" />);
+  tap();
+  tap();
+  expect(orb()).toHaveAttribute("data-state", "idle");
+  await act(async () => allow({ getTracks: () => [] }));
+  expect(huddle.join).not.toHaveBeenCalled();
+});
+
+it("with the mic already allowed, a first press that is a hold still mutes on release", async () => {
+  gum(() => Promise.resolve({ getTracks: () => [] })); // no prompt: answers at once
+  const { rerender } = render(<TalkOrb name="Nova" />);
+  fireEvent.keyDown(orb(), { key: " " });
+  await settle();
+  expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+  listening(); connectedRoom.localParticipant.isMicrophoneEnabled = true;
+  rerender(<TalkOrb name="Nova" />);
+  mic.mockClear();
+  now += HOLD_MS + 50;
+  fireEvent.keyUp(orb(), { key: " " });
+  expect(mic).toHaveBeenCalledWith(false);
+});

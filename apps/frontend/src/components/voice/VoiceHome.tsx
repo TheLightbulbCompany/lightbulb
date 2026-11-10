@@ -13,7 +13,7 @@ import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, rowId, useAgentConfig, useTimeline, who,
+  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, rowId, useAgentConfig, useTimeline, usPhone, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -85,14 +85,17 @@ export function VoiceHome() {
       {!error && isLoading && <p className="vx-empty">Loading calls and meetings…</p>}
       {!error && !isLoading && shown.length === 0 && <p className="vx-empty">{filter === "all"
         ? `No calls or meetings yet. When ${name} answers your line or joins a Meet, every conversation shows here with what it did.`
-        : "Nothing here yet."}</p>}
+        : filter === "meetings" ? `No meetings yet. Invite ${name} to a Google Meet; the address is on the Agent page.`
+        : filter === "yours" ? `Nothing yet. Conversations you start with ${name} show here.`
+        : filter === "needs" ? "No calls need you."
+        : "No calls yet."}</p>}
       {groups.map(([day, rows]) => <section key={day} aria-label={day}>
         <h2 className="vx-day">{day}</h2>
         {rows.map((i) => <Row key={rowId(i)} item={i} name={name} now={now} current={rowId(i) === openId} onOpen={() => setOpenId(rowId(i))} />)}
       </section>)}
       {all.length > 0 && <p className="vx-foot">
         Today {today.length} answered · {today.filter((c) => c.type === "call" && c.outcome === "booked").length} booked
-        {" "}&nbsp;·&nbsp; {minutes} min in this month&apos;s call records</p>}
+        {" "}&nbsp;·&nbsp; {minutes} min this month</p>}
     </div></div>
     {open && <aside className="vx-pane" aria-label="Details">
       <Button type="button" variant="ghost" size="sm" className="vx-back" onClick={() => setOpenId(null)}><ArrowLeft /> All conversations</Button>
@@ -116,7 +119,7 @@ function Row({ item, name, current, now, onOpen }: { item: TimelineItem; name: s
     </button>;
   }
   const Icon = item.ownerMode ? UserRound : Phone;
-  const sub = item.ownerMode ? "you" : [item.callerName && item.caller, item.returning === true ? "returning" : item.returning === false ? "new caller" : null].filter(Boolean).join(" · ");
+  const sub = item.ownerMode ? "you" : [item.callerName && item.caller && usPhone(item.caller), item.returning === true ? "returning" : item.returning === false ? "new caller" : null].filter(Boolean).join(" · ");
   return <button type="button" className="vx-row" aria-current={current} onClick={onOpen}>
     <time>{time(item.at)}</time><Icon size={16} aria-label={item.ownerMode ? "You" : "Call"} />
     <span><span className="vx-who">{item.ownerMode ? `You and ${name}` : who(item)}{sub && !item.ownerMode && <small>{sub}</small>}</span>
@@ -150,7 +153,8 @@ function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClo
       <Button type="button" size="sm" variant="ghost" className="vx-close" onClick={onClose} aria-label="Close details">Close</Button>
     </div>
     <p style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><Tag outcome={call.outcome} />
-      <span>{callSummary(call)}</span></p>
+      {call.booking && <span className="vx-muted" style={{ fontSize: "var(--text-caption)" }}>{call.booking}</span>}</p>
+    <p className="vx-tx" style={{ marginTop: 8 }}>{callSummary(call)}</p>
     {!call.ownerMode && <div className="vx-actions"><ReachBack number={call.caller} /></div>}
     {!!call.steps?.length && <section><h3>What {name} did</h3>
       <ol className="vx-steps">{call.steps.map((s, n) => <li key={n}><time>{mmss(s.t)}</time><span>{s.text}

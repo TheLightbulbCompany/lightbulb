@@ -1,7 +1,7 @@
 """Teams BFF — Agents and Members.
 
 Every ``/agents`` route reads and writes ``agent_registry``; none calls Paperclip. The body schemas
-(``CreateAgentBody`` / ``PatchAgentBody``) forbid extra keys, so client-supplied
+(``PatchAgentBody``) forbids extra keys, so client-supplied
 ``adapterType`` / ``adapterConfig`` / ``url`` / ``headers`` return 422 at the FastAPI boundary.
 
 This module also defines the shared ``_ctx`` Depends helper (and the
@@ -29,7 +29,6 @@ from core.services.agent_provenance import _load_agent_sidecars, stamp_agent_pro
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.agent_lifecycle import (
     AgentLifecycleConflict,
-    delete_agent_everywhere,
     ensure_root_ceo_survives,
 )
 from core.services.person_label import NEW_MEMBER, is_relay_email
@@ -41,11 +40,7 @@ from core.services.user_provision import (
 
 from . import deps as deps_mod
 from .deps import TeamsContext
-from .schemas import (
-    CreateAgentBody,
-    PatchAgentBody,
-    ResetAgentSessionBody,
-)
+from .schemas import PatchAgentBody
 
 logger = logging.getLogger(__name__)
 
@@ -372,42 +367,6 @@ async def _roster(owner_id: str) -> list[dict]:
         raise HTTPException(status_code=503, detail="The agent roster is temporarily unavailable.") from exc
 
 
-@router.post("/agents")
-async def create_agent(body: CreateAgentBody, auth: AuthContext = Depends(get_current_user)):
-    """Create an agent in the registry and write its Hermes profile.
-
-    The S3 profile is what makes the agent runnable, so a failed profile write deletes the row
-    again and answers 502: an agent with no profile could never run a turn.
-    """
-    from core.services.hermes_provisioning import write_profile_for_agent
-
-    owner_id = resolve_owner_id(auth)
-    try:
-        agent = await agent_registry.create(
-            owner_id,
-            name=body.name,
-            role=body.role,
-            title=body.title,
-            persona=body.capabilities,
-            reports_to=body.reports_to,
-            budget_monthly_cents=body.budget_monthly_cents,
-        )
-    except agent_registry.RegistryUnavailable as exc:
-        raise HTTPException(status_code=503, detail="The agent roster is temporarily unavailable.") from exc
-    try:
-        await write_profile_for_agent(owner_id, agent)
-    except Exception as exc:  # noqa: BLE001 — every failure mode rolls back the same way.
-        logger.warning(
-            "teams.create_agent: profile write failed owner=%s agent=%s", owner_id, agent["id"], exc_info=True
-        )
-        await agent_registry.delete(owner_id, agent["id"])
-        raise HTTPException(
-            status_code=502,
-            detail="The agent's runtime profile could not be created, so the agent was not kept. Try again.",
-        ) from exc
-    return _mark_seeded(_web(agent), set())
-
-
 SafeId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 
 
@@ -510,35 +469,3 @@ async def get_voice_notes(agent: WorkspaceAgent, auth: AuthContext = Depends(get
 @router.put("/agents/{agent_id}/voice-notes")
 async def put_voice_notes(agent: WorkspaceAgent, body: VoiceNotesBody, auth: AuthContext = Depends(get_current_user)):
     return await _voice_notes_reply(agent, auth, body)
-
-
-@router.delete("/agents/{agent_id}")
-async def delete_agent(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
-    """Delete an agent; the last root CEO answers 409."""
-    try:
-        return await delete_agent_everywhere(owner_id=resolve_owner_id(auth), agent_id=agent["id"])
-    except AgentLifecycleConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.post("/agents/{agent_id}/pause")
-async def pause_agent(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
-    """Display state only: nothing at runtime reads an agent's status (rooms pause, agents don't)."""
-    return await _update(auth, agent["id"], {"status": "paused"})
-
-
-@router.post("/agents/{agent_id}/resume")
-async def resume_agent(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
-    return await _update(auth, agent["id"], {"status": "active"})
-
-
-@router.post("/agents/{agent_id}/reset-session")
-async def reset_agent_session(agent: WorkspaceAgent, body: ResetAgentSessionBody):
-    """No runtime session to reset since Paperclip runs went away; answers the agent row for old clients."""
-    return _web(agent)
-
-
-@router.post("/agents/{agent_id}/clear-error")
-async def clear_agent_error(agent: WorkspaceAgent):
-    """No agent error state since Paperclip runs went away; answers the agent row for old clients."""
-    return _web(agent)

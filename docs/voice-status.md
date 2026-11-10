@@ -153,7 +153,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
 | 4.13 | Mobile: four tabs, voice Home | yes | yes | no | | Product | Shipped by OTA |
 | 4.14 | Mobile: voice settings, billing and onboarding match the web; old purchase screens gone | no | no | no | | Product | |
-| 4.15 | Push: Needs-you cards, and the first three calls after Go live | no | no | no | | Product | |
+| 4.15 | Push: Needs-you cards, and the first three calls after Go live | yes | no | no | | Product | Card pushes already existed (one per card, retry-safe). #5188 trims their text to the kind and a first name (no caller number or question) and adds a push for the owner's first three answered calls. Not seen on a device. A tap opens the task, not the Needs-you list |
 | 4.16 | Ten-second undo on send or spend | no | no | no | | Product | Not in the code |
 | 4.17 | Design pass to a consumer bar; accessibility; empty and error states | part | part | no | | Product | A polish pass shipped (#5084). No final critique |
 

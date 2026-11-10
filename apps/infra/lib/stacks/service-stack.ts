@@ -84,12 +84,6 @@ export interface SecretNames {
    */
   paperclipServiceTokenKey: string;
   /**
-   * Bearer secret the isol8.notifications Paperclip plugin attaches to
-   * POST /webhooks/paperclip-events. Same CMK, so KmsDecryptForSecrets
-   * covers it.
-   */
-  paperclipEventsWebhookSecret: string;
-  /**
    * Shared password for the gog CLI file-keyring backend. The backend
    * materializes the owner's Google OAuth keyring on EFS by running gog with
    * this password; the same secret is injected into every per-user OpenClaw
@@ -880,29 +874,6 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // LEGACY per-agent Paperclip API keys. New keys live Fernet-encrypted on the
-    // owner's paperclip-companies row (paperclip_api_key.py); this prefix is only
-    // read as a fallback, swept by the wipes, and migrated + scheduled for deletion
-    // by scripts/migrate_agent_keys_to_rows.py (needs Get + Delete). Remove this
-    // statement, the fallback and the wipe sweeps once the prefix is empty.
-    secretsPolicy.addStatements(
-      new iam.PolicyStatement({
-        sid: "PaperclipAgentKeysRW",
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:PutSecretValue",
-          "secretsmanager:UpdateSecret",
-          "secretsmanager:DeleteSecret",
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip-agent-keys/*`,
-        ],
-      }),
-    );
-
     // Hermes-on-AgentCore boot secrets: provisioning/migration writes ONE JSON secret per
     // workspace (lightbulb/{env}/hermes/{owner}/boot = hook + gateway tokens + gate bearer)
     // and account wipe / rollback delete it; the runtime role only READS it (container-stack
@@ -946,8 +917,6 @@ export class ServiceStack extends cdk.Stack {
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/network/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
-          // App source archives (core/services/apps_source.py): apps/<owner>/<app>/src/*.tar.gz.
-          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/apps/*`,
         ],
       }),
     );
@@ -1724,8 +1693,6 @@ export class ServiceStack extends cdk.Stack {
       // existing receipts remain readable/cancellable in the backend.
       DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
       DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
-      // Founder ruling 2026-11-09: Sign in with ChatGPT is internal only. Comma-separated Clerk org ids; empty = nobody.
-      CHATGPT_PROVIDER_ORG_IDS: process.env[`CHATGPT_PROVIDER_ORG_IDS_${env.toUpperCase()}`] ?? "",
       // OpenAI's plugin-portal domain token (public by design). Unset = the path 404s.
       OPENAI_APPS_CHALLENGE_TOKEN: process.env[`OPENAI_APPS_CHALLENGE_TOKEN_${env.toUpperCase()}`] ?? "",
       // Platform admin (/admin, /ops, marketplace review, workspace wipe) is
@@ -1808,14 +1775,6 @@ export class ServiceStack extends cdk.Stack {
       // records provisioned by dns-stack.ts.
       PUBLIC_API_BASE:
         env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`,
-      // PAPERCLIP_PUBLIC_URL is gone with the Paperclip server (task 9 removed
-      // the backend read). PAPERCLIP_INTERNAL_URL stays until its readers go.
-      // Cloud Map A record published by PaperclipStack at:
-      //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
-      // Namespace name is `lightbulb-${env}.local` (ContainerStack). Reading
-      // it off the namespace handle keeps this string in lockstep with
-      // ContainerStack rather than hard-coding the env suffix here.
-      PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
       // Apple IAP (StoreKit 2). Product ids live in apple_iap.PRODUCT_PLANS.
       // SELLING is the one switch that makes the iOS app offer purchases; prod
       // stays off until the Paid Apps Agreement is active. ACCEPT_XCODE lets
@@ -1859,16 +1818,10 @@ export class ServiceStack extends cdk.Stack {
       // sandbox + prod (token decides env). Fast-gate table backs the
       // synchronous chat gate's balance projection.
       METRONOME_BASE_URL: "https://api.metronome.com/v1",
-      // Literal name (not a cross-stack tableName Ref) — same posture as
-      // BEDROCK_AIP_OWNERS_TABLE above: the table is covered by the
+      // Literal name (not a cross-stack tableName Ref): the table is covered by the
       // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
       // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
-      // owner_id -> Paperclip agent id that platform-failed, recovery-blocked issues
-      // escalate to (core/services/paperclip_escalation.py). Prod: founder org -> Forge.
-      PAPERCLIP_ESCALATION_AGENT_OVERRIDES: env === "prod"
-        ? JSON.stringify({ org_3H3viGAfq2SXc9dIdcatmGXg8Td: "f293693d-1ec4-4dc3-bd3c-e54109e324bf" })
-        : "{}",
       OPENROUTER_WORKSPACE_ID: env === "dev"
         ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
         : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
@@ -1918,11 +1871,8 @@ export class ServiceStack extends cdk.Stack {
           : env === "prod"
             ? "5cb6c7ce-501b-4760-b35d-8d4bb6cfa8ce"
             : "",
-      // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
-      // table is granted BY NAME above, so the env var is the literal name
-      // (not a cross-stack tableName ref). The boundary + base-policy ARNs
+      // Per-owner scoped-role enforcement. The boundary + base-policy ARNs
       // come from the container stack's live members.
-      BEDROCK_AIP_OWNERS_TABLE: tableName(env, "bedrock-aip-owners"),
       BEDROCK_OWNER_BOUNDARY_ARN:
         props.container.ownerBedrockBoundary.managedPolicyArn,
       BEDROCK_OWNER_BASE_POLICY_ARN:
@@ -2073,15 +2023,6 @@ export class ServiceStack extends cdk.Stack {
           this,
           "ImportPaperclipServiceTokenKey",
           props.secretNames.paperclipServiceTokenKey,
-        ),
-      ),
-      // Bearer secret validated by /webhooks/paperclip-events (inbound
-      // Paperclip plugin events). Same CMK, covered by KmsDecryptForSecrets.
-      PAPERCLIP_EVENTS_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(
-          this,
-          "ImportPaperclipEventsWebhookSecret",
-          props.secretNames.paperclipEventsWebhookSecret,
         ),
       ),
       // Shared password for the gog CLI file keyring. The backend's gog_cli

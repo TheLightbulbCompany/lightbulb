@@ -64,7 +64,6 @@ function buildStacks(environment: "dev" | "prod"): {
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
-      paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
@@ -265,7 +264,6 @@ describe("hermes runtime wiring", () => {
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/network/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/browser-state/*",
-      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/apps/*",
     ]);
   });
 

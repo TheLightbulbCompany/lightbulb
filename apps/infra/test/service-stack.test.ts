@@ -57,7 +57,6 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
       encryptionKey: `lightbulb/${environment}/encryption_key`,
       posthogProjectApiKey: `lightbulb/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `lightbulb/${environment}/paperclip_service_token_key`,
-      paperclipEventsWebhookSecret: `lightbulb/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `lightbulb/${environment}/metronome_api_key`,
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
@@ -507,27 +506,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("escalation overrides route the founder org to Forge in prod only", () => {
-    const envOf = (environment: "dev" | "prod") =>
-      Match.objectLike({
-        ContainerDefinitions: Match.arrayWith([
-          Match.objectLike({
-            Name: "backend",
-            Environment: Match.arrayWith([
-              Match.objectLike({
-                Name: "PAPERCLIP_ESCALATION_AGENT_OVERRIDES",
-                Value: environment === "prod"
-                  ? '{"org_3H3viGAfq2SXc9dIdcatmGXg8Td":"f293693d-1ec4-4dc3-bd3c-e54109e324bf"}'
-                  : "{}",
-              }),
-            ]),
-          }),
-        ]),
-      });
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", envOf("dev"));
-    buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", envOf("prod"));
-  });
-
   test("the Accounts v2 version pin defaults empty, and no Stripe rail flag reaches the task env", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
       ContainerDefinitions: Match.arrayWith([
@@ -728,8 +706,9 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       .flatMap((td: any) => td.Properties.ContainerDefinitions)
       .flatMap((c: any) => [...(c.Environment ?? []), ...(c.Secrets ?? [])].map((e: any) => e.Name));
     expect(env).not.toContain("PAPERCLIP_PUBLIC_URL");
-    for (const kept of ["PAPERCLIP_SERVICE_TOKEN_KEY", "PAPERCLIP_EVENTS_WEBHOOK_SECRET", "PAPERCLIP_INTERNAL_URL"]) {
-      expect(env).toContain(kept);
+    expect(env).toContain("PAPERCLIP_SERVICE_TOKEN_KEY");
+    for (const gone of ["PAPERCLIP_EVENTS_WEBHOOK_SECRET", "PAPERCLIP_INTERNAL_URL", "PAPERCLIP_ESCALATION_AGENT_OVERRIDES", "BEDROCK_AIP_OWNERS_TABLE"]) {
+      expect(env).not.toContain(gone);
     }
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>
       Object.values(SERVICE_TEMPLATE_DEV.findResources(type)).flatMap(

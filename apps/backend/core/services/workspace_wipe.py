@@ -124,9 +124,7 @@ from core.services.voice_calls import wipe_owner_voice
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
     _list_names_with_prefix,
-    delete_owner_agent_key_secrets,
     delete_owner_secrets,
-    list_owner_agent_key_secret_names,
     list_owner_secret_names,
 )
 
@@ -223,7 +221,6 @@ class WorkspaceSnapshot:
     members: list[dict]
     room_ids: list[str]
     secret_names: list[str]
-    agent_key_names: list[str]
     integration_rows: list[dict]
     email_rows: list[dict]
     slack_rows: list[dict]
@@ -306,7 +303,6 @@ async def _read_workspace_snapshot(
     members = await _read_members(org_id, workspace_repo, workspace.member_user_ids if workspace else set())
     room_ids = await messaging_repo.list_owner_room_ids(org_id)
     secret_names = await list_owner_secret_names(org_id)
-    agent_key_names = await list_owner_agent_key_secret_names(org_id)
     integration_rows = await integrations_repo.list_for_owner(org_id)
     email_rows = await agent_email_repo.query_by_owner(org_id)
     slack_rows = await slack_installs_repo.list_for_owner(org_id)
@@ -322,7 +318,6 @@ async def _read_workspace_snapshot(
         members=members,
         room_ids=room_ids,
         secret_names=secret_names,
-        agent_key_names=agent_key_names,
         integration_rows=integration_rows,
         email_rows=email_rows,
         slack_rows=slack_rows,
@@ -358,7 +353,6 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
         "members": sorted([m["user_id"], sorted(m["other_orgs"])] for m in snapshot.members),
         "room_ids": sorted(snapshot.room_ids),
         "secret_names": sorted(snapshot.secret_names),
-        "agent_key_names": sorted(snapshot.agent_key_names),
         "integrations": sorted(r.get("provider", "?") for r in snapshot.integration_rows),
         "agent_emails": sorted(r.get("address", "?") for r in snapshot.email_rows),
         "slack_teams": sorted(r.get("team_id", "?") for r in snapshot.slack_rows),
@@ -603,19 +597,6 @@ async def _user_rows_run(snap: WorkspaceSnapshot) -> str:
     return f"deleted {len(members)} users row(s)"
 
 
-def _agent_keys_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
-    if not snap.agent_key_names:
-        return False, "no per-agent Paperclip key secrets"
-    return True, f"{len(snap.agent_key_names)} per-agent Paperclip key secret(s)"
-
-
-async def _agent_keys_run(snap: WorkspaceSnapshot) -> str:
-    total = await delete_owner_agent_key_secrets(snap.org_id)
-    for uid in deletable_member_ids(snap):
-        total += await delete_owner_agent_key_secrets(uid)
-    return f"deleted {total} per-agent key secret(s)"
-
-
 async def _provisioning_run(snap: WorkspaceSnapshot) -> str:
     cancelled, open_count = await cancel_open_workflows(snap.org_id)
     return f"cancelled {cancelled} of {open_count} open provisioning workflow(s)"
@@ -798,9 +779,7 @@ async def _clerk_org_run(snap: WorkspaceSnapshot) -> str:
 
 # Steps whose targets include per-member keys; a failure in any of them must
 # hold back the Clerk org delete (see wipe_workspace).
-_MEMBER_KEYED_SYSTEMS = frozenset(
-    {"paperclip_agent_keys", "owner_secrets", "integrations", "oauth_tokens", "company_slug", "user_row"}
-)
+_MEMBER_KEYED_SYSTEMS = frozenset({"owner_secrets", "integrations", "oauth_tokens", "company_slug", "user_row"})
 
 
 # A failed money step (subscription/usage billing may still be live) holds
@@ -863,13 +842,6 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
             else (False, "no users rows for workspace")
         ),
         _user_rows_run,
-    ),
-    WorkspaceStepDef(
-        "paperclip_agent_keys",
-        "delete_owner_agent_key_secrets",
-        LAYER_PAPERCLIP,
-        _agent_keys_preview,
-        _agent_keys_run,
     ),
     WorkspaceStepDef(
         "provisioning",

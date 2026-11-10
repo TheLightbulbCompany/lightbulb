@@ -11,17 +11,23 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from core.services.marketplace_safety import _PATTERNS
-
 MARK = "[redacted]"
 PROJECT = "<project>"
 
-# The marketplace's bytes regexes, as str. Their flags are inline ((?ix)), so decoding keeps them.
-_REUSED = ("hardcoded-secret", "aws-secret-key", "provider-token")
+# Formerly marketplace_safety's scan patterns: a quoted key assignment, an AWS access key id, and a
+# bare provider-prefixed token (OpenAI/Anthropic sk-*, GitHub ghp_/gho_/ghs_/github_pat_, Slack xox*/xapp-).
+_PATTERNS = (
+    r"""(?ix)
+    (?:api[_-]?key|secret|access[_-]?token|password|bearer|auth[_-]?token)
+    \s*[:=]\s*['\"][a-z0-9_\-]{16,}['\"]
+    """,
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"\b(?:sk-[A-Za-z0-9_-]{20,}|(?:ghp|gho|ghs)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|x(?:oxb|oxp|app)-[A-Za-z0-9-]{10,})",
+)
 
 _RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S), MARK),
-    *[(re.compile(p.regex.pattern.decode("ascii")), MARK) for p in _PATTERNS if p.name in _REUSED],
+    *[(re.compile(p), MARK) for p in _PATTERNS],
     # .env-shaped lines: keep the name, drop the value.
     (
         re.compile(r"(?im)^(\s*(?:export\s+)?[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*\s*=\s*)\S.*$"),

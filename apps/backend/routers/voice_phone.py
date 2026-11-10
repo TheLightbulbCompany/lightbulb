@@ -10,17 +10,24 @@ comes from that record, never from the model. The assistant's settings are the A
 Rows in the messaging table:
     PHONE#<e164>    LINE                  the number's workspace (ownerId) and the member tasks run as (ownerUserId)
     OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM");
+                                          with an Agent-page `staff` list, the first person's; another person's is
+                                          VOICEBOOK#<local>#<name> (and its cells VOICECELL#<utc>#<name>): see _lanes
                                           with bookingsGo "google" it is the hold, eventId its Google event
                                           (core/services/voice_booking)
     OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
+    OWNER#<owner>   VOICELIVE#<line>#<i>  a live-call slot (LIVE_CALLS_PER_LINE), held by a call id until its end
+    OWNER#<owner>   VOICECALLS#<day>#<c>  calls from caller c today; VOICEBOOKS#<day>#<c> its bookings ("withheld": "")
+    OWNER#<owner>   VOICETURNS#<call>     the call's `/turn` numbers (TURNS_PER_CALL)
 """
 
 import asyncio
 import functools
 import hashlib
+import hmac
 import re
 import time
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
@@ -28,7 +35,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext
@@ -51,12 +58,57 @@ from core.services import (
     voice_preferences,
 )
 from routers.huddles import _Worker
-from routers.voice import _e164, month_seconds
+from routers.voice import _E164, _e164, month_seconds, us_number
 from routers.voice_meet import QuestionRef, agent_lines, answer_said_question, latest_seq
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
 logger = logging.getLogger(__name__)
-router = APIRouter(dependencies=[_Worker])
+
+# --- abuse caps (security review 9 Nov, M5). Over one, the call is still answered, but only takes a message. ---------
+LIVE_CALLS_PER_LINE = 5  # calls on one line at once
+CALLS_PER_CALLER_PER_DAY = 20  # calls from one number to one workspace per UTC day (withheld callers share one)
+BOOKINGS_PER_CALLER_PER_DAY = 5  # bookings from one number per UTC day (withheld callers share one)
+TURNS_PER_CALL = 60  # the caller's lines delegated to the Router (`/turn`) in one call
+LIVE_SLOT_S = 25 * 60  # a live-call slot frees itself after this (the worker's 20 min cap + grace) if no end came
+END_GRACE_S = 30  # billed durationSec may exceed the server-measured time since startedAt by this much
+#: What carriers present for a withheld number (Twilio: "anonymous", "restricted", "unknown", "private",
+#: "unavailable", and the keypad spellings ANONYMOUS, BLOCKED, RESTRICTED, UNAVAILABLE). Stored as caller "".
+WITHHELD = frozenset({"anonymous", "restricted", "unknown", "private", "unavailable", "blocked",
+                      "+266696687", "+2562533", "+7378742833", "+86282452253"})  # fmt: skip
+CALL_TOKEN_HEADER = "X-Lightbulb-Call-Token"
+
+
+async def _require_call_token(request: Request, x_lightbulb_call_token: Annotated[str, Header()] = "") -> None:
+    """Every per-call route needs the token `start_call` returned for that call, not just the worker secret (M4)."""
+    call_id = request.path_params.get("call_id")
+    if call_id is None:
+        return
+    expected = str((await messaging_repo.get_room(call_id) or {}).get("callToken") or "")
+    if not expected or not hmac.compare_digest(x_lightbulb_call_token.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail={"code": "invalid_call_token"})
+
+
+router = APIRouter(dependencies=[_Worker, Depends(_require_call_token)])
+
+
+def caller_id(raw: str) -> str:
+    """The caller as the record keeps it: E.164, or "" for a withheld or unreadable number (M1). "" has no caller
+    memory and no bookings to list, move or cancel; it can still book and leave a message."""
+    n = raw.strip()
+    return n if _E164.fullmatch(n) and n not in WITHHELD else ""
+
+
+def _day() -> str:
+    return datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+
+
+async def _limit(call_id: str, why: str) -> None:
+    """A cap was hit mid-call: from now on the call only takes messages."""
+    await _patch_call(
+        call_id,
+        lambda c: {} if c.get("limited") else {"limited": why, "steps": _step(c, f"Limited to a message: {why}")},
+    )
+
 
 _Str = Annotated[str, Field(min_length=1, max_length=500)]
 _Local = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")]
@@ -122,9 +174,14 @@ def _line_state(cfg: dict, caller: str) -> Literal["live", "message_only"]:
     return "live" if (cfg.get("live") and not cfg.get("paused")) or _e164(caller) in owner else "message_only"
 
 
+def call_mode(cfg: dict, call: dict) -> Literal["live", "message_only"]:
+    """The line's state for this call; a call over an abuse cap (`limited`) only takes messages."""
+    return "message_only" if call.get("limited") else _line_state(cfg, call.get("caller", ""))
+
+
 def _allowed(cfg: dict, call: dict, *caps: str) -> None:
     """Refuse (403) a capability the owner turned off, or everything but a message while the line is message-only."""
-    if _line_state(cfg, call.get("caller", "")) != "live" or not any(cfg["allow"].get(c) for c in caps):
+    if call_mode(cfg, call) != "live" or not any(cfg["allow"].get(c) for c in caps):
         raise _err(403, "not_allowed")
 
 
@@ -286,12 +343,29 @@ async def start_call(body: StartIn) -> dict:
     if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
-    seen = await _seen(owner_id, body.callerNumber)
+    caller = caller_id(body.callerNumber)
+    seen = await _seen(owner_id, caller)
+    call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
+    existing = await messaging_repo.get_room(call_id)  # a replayed start: its token and its caps, counted once
+    token = (existing or {}).get("callToken") or secrets.token_urlsafe(32)
+    slot = (existing or {}).get("liveSlot") or (
+        None if existing else await _live_slot(owner_id, body.calledNumber, call_id)
+    )
+    if existing:
+        limited = (existing.get("call") or {}).get("limited") or ""
+    elif not slot:
+        limited = "too many calls on the line at once"
+    elif not await messaging_repo.take_voice_unit(  # keyed by call id: overlapping starts of one call count once
+        owner_id, f"VOICECALLS#{_day()}#{caller or 'withheld'}", call_id, CALLS_PER_CALLER_PER_DAY
+    ):
+        limited = "too many calls from this number today"
+    else:
+        limited = ""
     # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.
     # Never to the line that forwards here (the kept business number) or the one called: that rings us again.
     forward_to = (
-        _e164(str(cfg["handoff"]["number"] or ""))
-        if cfg.get("runOut") == "forward" or cfg.get("_paymentBlocked")
+        us_number(str(cfg["handoff"]["number"] or ""))
+        if (cfg.get("runOut") == "forward" or cfg.get("_paymentBlocked")) and not limited
         else None
     )
     if forward_to in {_e164(str(cfg.get("forwardFrom") or "")), _e164(body.calledNumber)} or (
@@ -311,9 +385,8 @@ async def start_call(body: StartIn) -> dict:
         except Exception:  # metering never drops a live call: answer as normal
             logger.warning("run-out check failed for %s; answering", owner_id, exc_info=True)
             forward_to = None
-    call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     call = {
-        "caller": body.callerNumber,
+        "caller": caller,
         "callerName": real_name((seen or {}).get("name")),
         "returning": bool(seen),
         "startedAt": datetime.now(_TZ).isoformat(),
@@ -332,8 +405,9 @@ async def start_call(body: StartIn) -> dict:
         "messages": [],
         "work": [],
         "unknown": [],
+        **({"limited": limited} if limited else {}),
     }
-    name = f"Call · {call['callerName'] or body.callerNumber or 'unknown'}"[:60]
+    name = f"Call · {call['callerName'] or caller or 'unknown'}"[:60]
     members = [{"kind": "human", "id": line["ownerUserId"], "displayName": business, "mentionHandle": None,
                 "role": "owner", "listenMode": None}]  # fmt: skip
     front = None
@@ -344,7 +418,7 @@ async def start_call(body: StartIn) -> dict:
         except Exception:  # noqa: BLE001 -- no front agent yet: the call is still answered; the caller's lines wait
             logger.warning("call room without Lightbulb ws=%s", owner_id, exc_info=True)
     try:
-        await messaging_repo.create_room(
+        room = await messaging_repo.create_room(
             owner_id=owner_id,
             room_id=call_id,
             client_room_id=f"call:{body.livekitRoom}",
@@ -357,24 +431,30 @@ async def start_call(body: StartIn) -> dict:
                 "call": call,
                 "hidden": True,
                 "ownerUserId": line["ownerUserId"],
+                "callToken": token,  # beside the record, never in it: the Home reads META.call
+                **({"liveSlot": slot} if slot else {}),
                 **({"frontAgentId": front["id"]} if front else {}),
             },
         )
     except messaging_repo.MessagingRepoError:
-        if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
+        if (room := await messaging_repo.get_room(call_id)) is None:  # a replay keeps the room it made
             raise
     await run_in_thread(  # the stale-call sweep's index: removed by end_call (voice_calls.sweep_phone_calls)
         messaging_repo._table().put_item,
         Item={"pk": OPEN_CALLS_PK, "sk": call_id, "ownerId": owner_id, "startedAtEpoch": int(time.time())},
     )
+    # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes,
+    # so the answer is always the persisted META's, never this request's candidate.
+    token = str(room.get("callToken") or "")
     if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
         voice_calls.prewake_owner(owner_id, team=[front])
-    allow, mode = cfg["allow"], _line_state(cfg, body.callerNumber)
+    allow, mode = cfg["allow"], call_mode(cfg, call)
     paused = mode != "live"
     return {
         "after": await latest_seq(call_id),  # the first `/events` cursor: a replayed start says nothing twice
         "mode": mode,
         "callId": call_id,
+        "callToken": token,  # the worker sends it on every later route for this call (CALL_TOKEN_HEADER)
         "ownerId": owner_id,
         "businessName": business,
         "assistantName": assistant,
@@ -390,8 +470,17 @@ async def start_call(body: StartIn) -> dict:
         "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
         # the number is a member's saved mobile with a PIN: the voice may say a PIN can be typed. Never proof.
-        "ownerPin": bool(not forward_to and await phone_pin.holders(owner_id, body.callerNumber)),
+        "ownerPin": bool(not forward_to and caller and await phone_pin.holders(owner_id, caller)),
     }
+
+
+async def _live_slot(owner_id: str, line: str, call_id: str) -> str | None:
+    """One of the line's LIVE_CALLS_PER_LINE slots for this call (end_call frees it; an unended call's expires)."""
+    for i in range(LIVE_CALLS_PER_LINE):
+        sk = f"VOICELIVE#{line}#{i}"
+        if await messaging_repo.claim_voice_slot(owner_id, sk, call_id, LIVE_SLOT_S):
+            return sk
+    return None
 
 
 # --- the owner calls in (board row 3.29): caller ID plus the PIN, then the orb's owner path --------------------
@@ -538,33 +627,53 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         before["status"] = call.get("status")
         if call.get("status") == "ended":
             return {}  # retries reuse the immutable first terminal result below
+        # Billed time is never more than the server saw since start (M4): a worker cannot bill a 24-hour call.
+        try:
+            elapsed = int((datetime.now(_TZ) - datetime.fromisoformat(call["startedAt"])).total_seconds())
+        except (KeyError, ValueError):
+            elapsed = 0
+        seconds = min(body.durationSec, max(elapsed, 0) + END_GRACE_S)
         if forwarded_to:
-            return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
+            return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": seconds,
                     "outcome": "forwarded", "transferredTo": forwarded_to,
                     "steps": _step(call, "Minutes used up: forwarded to you")}  # fmt: skip
         return {
             "status": "ended",
             "endedAt": utc_now_iso(),
-            "durationSec": body.durationSec,
+            "durationSec": seconds,
             "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
             "summary": body.summary,
             "transcript": lines,
         }
 
     out = await _patch_call(call_id, change)
-    if before.get("status") != "ended":
-        try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
-            await voice_billing.add_month_seconds(
-                meta["ownerId"], int(out["durationSec"]), datetime.fromisoformat(out["startedAt"])
-            )
+    if meta.get("liveSlot"):
+        try:  # best-effort: the slot's lease expires on its own, and billing below must always run
+            await messaging_repo.release_voice_slot(meta["ownerId"], meta["liveSlot"], call_id)
         except Exception:
-            logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
+            logger.warning("live slot release failed for %s", call_id, exc_info=True)
+    # Every step below runs on a retried end too, each once: a first end that failed part-way finishes here.
+    if not out.get("monthCounted"):
+
+        def claim(c: dict) -> dict:  # at most once per call, whichever end claims it (counter failures are logged)
+            before["claimed"] = not c.get("monthCounted")
+            return {"monthCounted": True} if before["claimed"] else {}
+
+        out = await _patch_call(call_id, claim)
+        if before["claimed"]:
+            try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
+                await voice_billing.add_month_seconds(
+                    meta["ownerId"], int(out["durationSec"]), datetime.fromisoformat(out["startedAt"])
+                )
+            except Exception:
+                logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
     # This awaited write is the durable source + outbox admission. If it fails,
     # return an error so the worker retries; terminal retries keep the first
     # stored duration/start time rather than trusting a new request body.
     await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], int(out["durationSec"]), "phone")
-    if out.get("caller"):
-        seen = await _seen(meta["ownerId"], out["caller"]) or {}
+    seen = await _seen(meta["ownerId"], out["caller"]) if out.get("caller") else None
+    if out.get("caller") and (seen or {}).get("lastCallId") != call_id:  # a retried end counts the visit once
+        seen = seen or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
                 "visits": int(seen.get("visits", 0)) + (seen.get("lastCallId") != call_id)}  # a retried end counts once  # fmt: skip
         if seen.get("forgottenAt"):
@@ -699,7 +808,7 @@ class RememberIn(BaseModel):
 async def remember(call_id: str, body: RememberIn) -> dict:
     """A caller's own preference (kept on their row at the end of the call) or a fact about the business (cfg toAdd)."""
     meta, call = await _call(call_id)
-    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+    if call_mode(await agent_config(meta["ownerId"]), call) != "live":
         raise _err(403, "not_allowed")
     if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
         raise _err(400, "looks_like_a_card")
@@ -723,13 +832,49 @@ async def resolve_call(owner_id: str, call_id: str, by: str) -> None:
 # --- the assistant's own calendar (spec §4.1b: a hold in its calendar when the business has no API) --------
 
 
-def _minutes(cfg: dict, service: str) -> int:
+def _service(cfg: dict, service: str) -> dict:
     s = service.strip().lower()
     for x in cfg["services"]:
         n = str(x.get("name", "")).strip().lower()
         if n and (n in s or s in n):
-            return int(x.get("minutes") or 60)
-    return 60
+            return x
+    return {}
+
+
+def _minutes(cfg: dict, service: str) -> int:
+    return int(_service(cfg, service).get("minutes") or 60)
+
+
+def _staff(cfg: dict) -> list[tuple[str, str]]:
+    """The Agent page's people as (id, name), at most 20. The id is assigned when the person is added and kept on
+    rename, so a person's bookings never depend on their name or place in the list. A bare string is its own id."""
+    out: dict[str, str] = {}
+    for p in cfg.get("staff") if isinstance(cfg.get("staff"), list) else []:
+        pid, name = (p, p) if isinstance(p, str) else (p.get("id"), p.get("name")) if isinstance(p, dict) else ("", "")
+        if isinstance(pid, str) and isinstance(name, str) and pid.strip() and name.strip():
+            out.setdefault(pid.strip()[:40], name.strip()[:40])
+    return list(out.items())[:20]
+
+
+def _lanes(cfg: dict, service: str) -> list[tuple[str, str]]:
+    """(key suffix, name) for everyone who can do `service`, in list order; "" (no service) is the whole roster.
+    A person's keys carry their id (VOICEBOOK#<start>#<id>), so one person is never booked twice at once. The
+    unsuffixed keys mean only "no staff list": a config without one has the single lane "" (today's keys). How many
+    bookings a slot takes, across every lane, is `_capacity`'s. A service's `staff` ("a1, m1") lists who does it by
+    id (a name also matches); empty, or naming nobody on the list, is anyone. Per-person schedules and days off are
+    not modelled."""
+    staff = _staff(cfg)
+    if not staff:
+        return [("", "")]
+    svc = _service(cfg, service) if service.strip() else {}  # "" would match the first service
+    named = {n.strip().lower() for n in str(svc.get("staff") or "").split(",")}
+    eligible = [(i, n) for i, n in staff if i.lower() in named or n.lower() in named] or staff
+    return [(f"#{i}", n) for i, n in eligible]
+
+
+def _start(row: dict) -> str:
+    """A VOICEBOOK# row's local start (the 16 characters after the prefix; a person's suffix may follow)."""
+    return row["sk"][10:26]
 
 
 def _closed_on(cfg: dict, date: str) -> bool:
@@ -755,6 +900,43 @@ def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
             datetime.strptime(f"{date}T{h['close']}", "%Y-%m-%dT%H:%M"))  # fmt: skip
 
 
+def _capacity(cfg: dict) -> int:
+    """Bookings one slot can hold, across every lane: one per person on the roster, one with no roster. Bookings
+    that go to Google share the business's one calendar, which cannot hold two at once: always one there, so a
+    held booking (its Google write still pending) blocks the slot for everyone."""
+    return 1 if cfg.get("bookingsGo") == "google" else max(1, len(_staff(cfg)))
+
+
+def open_starts(
+    cfg: dict, date: str, taken: list[tuple], now: datetime, minutes: int, lanes: list[tuple[str, str]]
+) -> list[str]:
+    """`free_slots` where one of `lanes` (the people who can do it) is free and the slot, counting every booking in
+    every lane (old unsuffixed ones and people no longer on the roster too), is below `_capacity`: the rule
+    `_capacity_items` enforces when booking. `taken` holds (start, end, lane) bookings and (start, end) blocks, such
+    as a Google busy block, that every lane shares."""
+    shared = [(t[0], t[1]) for t in taken if len(t) == 2]
+    every = [(t[0], t[1]) for t in taken if len(t) == 3]
+    need, buf, cap = timedelta(minutes=minutes), timedelta(minutes=int(cfg.get("bufferMin") or 0)), _capacity(cfg)
+    out: set[str] = set()
+    for lane, _ in lanes:
+        own = shared + [(t[0], t[1]) for t in taken if len(t) == 3 and t[2] == lane]
+        for at in free_slots(cfg, date, own, now, minutes):
+            t = datetime.strptime(at, "%Y-%m-%dT%H:%M")
+            if _peak(t, need + buf, buf, every) < cap:
+                out.add(at)
+    return sorted(out)
+
+
+def _peak(at: datetime, span: timedelta, buf: timedelta, taken: list[tuple[datetime, datetime]]) -> int:
+    """Most bookings (each held with its buffer, as its cells are) at any 5 minutes of [at, at + span)."""
+    steps = range(int(span / timedelta(minutes=5)) or 1)
+    return max(sum(s <= at + timedelta(minutes=5 * i) < e + buf for s, e in taken) for i in steps)
+
+
+def _clear(at: datetime, need: timedelta, buf: timedelta, taken: list[tuple[datetime, datetime]]) -> bool:
+    return all(at + need + buf <= s or e + buf <= at for s, e in taken)
+
+
 def free_slots(cfg: dict, date: str, taken: list[tuple[datetime, datetime]], now: datetime, minutes: int) -> list[str]:
     """Every half-hour start on `date` (local "YYYY-MM-DD") where `minutes` fits inside opening hours, after now,
     with `bufferMin` clear of every booking in `taken`."""
@@ -765,7 +947,7 @@ def free_slots(cfg: dict, date: str, taken: list[tuple[datetime, datetime]], now
     need, buf = timedelta(minutes=minutes), timedelta(minutes=int(cfg.get("bufferMin") or 0))
     out = []
     while at + need <= close:
-        if at > now and all(at + need + buf <= s or e + buf <= at for s, e in taken):
+        if at > now and _clear(at, need, buf, taken):
             out.append(at.strftime("%Y-%m-%dT%H:%M"))
         at += _GRID
     return out
@@ -789,14 +971,15 @@ async def _bookings(owner_id: str, prefix: str) -> list[dict]:
     return await _booking_rows(owner_id, f"VOICEBOOK#{prefix}")
 
 
-async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime]]:
-    # Provisional move targets stay visible, including moves to a different date.
+async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime, str]]:
+    """(start, end, lane) for every booking on `date`. Provisional move targets stay visible, including moves to a
+    different date; a hold's lane is its `lane` (a hold written before lanes had none: the one lane)."""
     holds = await _booking_rows(owner_id, f"VOICEHOLD#{date}")
     out = []
     for b in [*(await _bookings(owner_id, date)), *holds]:
-        start = b.get("start") or b["sk"].removeprefix("VOICEBOOK#")
-        s = datetime.strptime(start, "%Y-%m-%dT%H:%M")
-        out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60))))
+        hold = b["sk"].startswith("VOICEHOLD#")
+        s = datetime.strptime(b["start"] if hold else _start(b), "%Y-%m-%dT%H:%M")
+        out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60)), b.get("lane", "") if hold else b["sk"][26:]))
     return out
 
 
@@ -817,11 +1000,11 @@ def _now(cfg: dict) -> datetime:
     return datetime.now(_tz(cfg)).replace(tzinfo=None)
 
 
-def _cells(cfg: dict, start: str, minutes: int) -> list[str]:
-    """The 5-minute UTC cells a booking holds: [start, start + minutes + bufferMin)."""
+def _cells(cfg: dict, start: str, minutes: int, lane: str = "") -> list[str]:
+    """The 5-minute UTC cells a booking holds in its lane: [start, start + minutes + bufferMin)."""
     t = datetime.strptime(start, "%Y-%m-%dT%H:%M").replace(tzinfo=_tz(cfg)).astimezone(ZoneInfo("UTC"))
     n = -(-(minutes + int(cfg.get("bufferMin") or 0)) // 5)
-    return [f"VOICECELL#{(t + timedelta(minutes=5 * i)):%Y-%m-%dT%H:%M}" for i in range(n)]
+    return [f"VOICECELL#{(t + timedelta(minutes=5 * i)):%Y-%m-%dT%H:%M}{lane}" for i in range(n)]
 
 
 class DateIn(BaseModel):
@@ -834,7 +1017,8 @@ async def availability(call_id: str, body: DateIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book", "move")
-    slots = await voice_booking.free(meta["ownerId"], cfg, call_id, body.date, _minutes(cfg, body.service))
+    minutes, lanes = _minutes(cfg, body.service), _lanes(cfg, body.service)
+    slots = await voice_booking.free(meta["ownerId"], cfg, call_id, body.date, minutes, lanes)
     return {"date": body.date, "slots": slots}
 
 
@@ -845,29 +1029,137 @@ class BookIn(BaseModel):
 
 
 async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,
-                old: dict | None = None) -> None:  # fmt: skip
+                old: dict | None = None) -> dict:  # fmt: skip
     """Write the booking and its cells in one TransactWriteItems with `attribute_not_exists` on every cell, so an
     overlap fails atomically (https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html,
     https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html). `old` is the booking
-    being moved: its row and cells go in the same transaction."""
+    being moved: its row and cells go in the same transaction. Returns the booking row written."""
     minutes, pk, table = (
         _minutes(cfg, service),
         messaging_repo.owner_pk(owner_id),
         messaging_repo.settings.MESSAGING_TABLE,
     )
-    cells = _cells(cfg, start, minutes)
+    if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and _start(old) == start):
+        raise _err(400, "slot_unavailable")
+    # A move keeps its person; a new booking takes the first eligible person whose keys are free. The slot's
+    # capacity (every lane counted) is checked once and guarded in the same transaction. A lost race on one
+    # person's keys (the transaction is cancelled) tries the next person.
+    lanes = [(old["sk"][26:], old.get("staff", ""))] if old else _lanes(cfg, service)
+    mine = set(old.get("cells", [])) if old else set()
+    # Another booking landing between the read and the write changes the guards' versions and cancels every lane's
+    # write with them: re-read the slot (which refuses 409 once it is truly full) and try the people again.
+    # A new booking also writes an idempotency row for (call, start, service, name), whoever it takes: two identical
+    # requests at once cannot both pass it, and the second returns the first's booking (marked `_repeat`).
+    key = (
+        None
+        if old
+        else f"VOICEBOOKKEY#{hashlib.sha256(f'{call_id}|{start}|{service}|{name}'.encode()).hexdigest()[:40]}"
+    )
+    for _ in range(3):
+        guards = await _capacity_items(owner_id, cfg, _cells(cfg, start, minutes), mine)
+        for lane, person in lanes:
+            items = _booking_items(table, pk, call_id, call, cfg, start, service, name, minutes, lane, person, old)
+            if key:
+                row = items[0]["Put"]["Item"]
+                items.append({"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
+                    "pk": pk, "sk": key, "booking": row["sk"], "bookingId": row["bookingId"],
+                    "expiresAt": _cell_expiry(row["cells"][-1])}}})  # fmt: skip
+            if len(items) + len(guards) > 100:
+                raise _err(400, "booking_too_long")
+            try:
+                await messaging_repo._transact(items + guards)
+                return items[0]["Put"]["Item"]
+            except ClientError as exc:
+                if not messaging_repo.is_cancelled(exc):
+                    raise
+                if key and (same := await _same_booking(owner_id, key)):
+                    return same
+    raise _err(409, "slot_taken")
+
+
+async def _same_booking(owner_id: str, key: str) -> dict | None:
+    """The booking an identical request already made, or None. A key whose booking is gone (cancelled or moved)
+    is removed, so the same booking can be made again."""
+    pk = messaging_repo.owner_pk(owner_id)
+    hit = await messaging_repo._get(pk, key)
+    if not hit:
+        return None
+    row = await messaging_repo._get(pk, hit["booking"])
+    if row and row.get("bookingId") == hit["bookingId"]:
+        return {**row, "_repeat": True}
+    try:
+        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": pk, "sk": key},
+                            ConditionExpression="bookingId = :bid", ExpressionAttributeValues={":bid": hit["bookingId"]})  # fmt: skip
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    return None
+
+
+async def _query_range(owner_id: str, first: str, last: str) -> list[dict]:
+    args = {
+        "KeyConditionExpression": Key("pk").eq(messaging_repo.owner_pk(owner_id))
+        & Key("sk").between(first, last + "\uffff"),
+        "ConsistentRead": True,
+    }
+    out: list[dict] = []
+    while True:
+        result = await run_in_thread(messaging_repo._table().query, **args)
+        out.extend(result.get("Items", []))
+        if not result.get("LastEvaluatedKey"):
+            return out
+        args["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+
+async def _capacity_items(owner_id: str, cfg: dict, adding: list[str], mine: set[str] = frozenset()) -> list[dict]:
+    """The capacity rule for a write that adds booking cells at `adding`'s times: at each of those 5 minutes, the
+    cells already there in ANY lane (unsuffixed, every person, people since removed), less `mine` (the booking
+    being moved, released in the same transaction), must be below `_capacity`; else 409 slot_taken. Returns one
+    guard item per time, `VOICECAP#<utc>`, whose version the transaction bumps on the condition that it is still the
+    one read. Every write that ADDS cells bumps the guards of their times, so two of them over one slot serialise
+    and the second, having counted without the first's cells, is cancelled. Releases only lower the count, so they
+    never touch a guard: a count that still includes a cell released since is merely cautious. The guards are read
+    BEFORE the cells, so a write that lands between the reads is either counted or changes the version.
+    ponytail: two items per cell, so the longest booking is about half the 99 cells it was (~4 h); a reservation
+    that needs more is refused as booking_too_long."""
+    if not adding:
+        return []
+    times = sorted({c[10:26] for c in adding})
+    seen = {
+        g["sk"].removeprefix("VOICECAP#"): g
+        for g in await _query_range(owner_id, f"VOICECAP#{times[0]}", f"VOICECAP#{times[-1]}")
+    }
+    cells = await _query_range(owner_id, f"VOICECELL#{times[0]}", f"VOICECELL#{times[-1]}")
+    count: dict[str, int] = {}
+    for c in cells:
+        if c["sk"] not in mine:
+            count[c["sk"][10:26]] = count.get(c["sk"][10:26], 0) + 1
+    if any(count.get(t, 0) >= _capacity(cfg) for t in times):
+        raise _err(409, "slot_taken")
+    table, pk = messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(owner_id)
+    out = []
+    for t in times:
+        v = int(seen[t]["v"]) if t in seen else 0
+        cond = {"ConditionExpression": "v = :v", "ExpressionAttributeValues": {":v": v}} if t in seen else {
+            "ConditionExpression": "attribute_not_exists(sk)"}  # fmt: skip
+        put = {"pk": pk, "sk": f"VOICECAP#{t}", "v": v + 1, "expiresAt": _cell_expiry(f"VOICECELL#{t}")}
+        out.append({"Put": {"TableName": table, "Item": put, **cond}})
+    return out
+
+
+def _booking_items(table: str, pk: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,
+                   minutes: int, lane: str, person: str, old: dict | None) -> list[dict]:  # fmt: skip
+    cells = _cells(cfg, start, minutes, lane)
     if len(cells) > 99:  # DynamoDB caps a transaction at 100 items (the booking row is one)
         raise _err(400, "booking_too_long")
-    if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and old["sk"] == f"VOICEBOOK#{start}"):
-        raise _err(400, "slot_unavailable")
-    sk, mine = f"VOICEBOOK#{start}", set(old.get("cells", [])) if old else set()
+    sk, mine = f"VOICEBOOK#{start}{lane}", set(old.get("cells", [])) if old else set()
     items = [{"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
         "pk": pk, "sk": sk, "bookingId": (old or {}).get("bookingId") or str(uuid.uuid4()),
         "generation": int((old or {}).get("generation", 0)) + 1,
         "bookingProvider": (old or {}).get("bookingProvider") or ("google" if cfg.get("bookingsGo") == "google" else "own"),
         "bookingState": "held" if cfg.get("bookingsGo") == "google" else "confirmed",
         "service": service, "minutes": minutes, "name": name, "phone": call.get("caller", ""),
-        "callId": call_id, "createdAt": utc_now_iso(), "cells": cells}}}]  # fmt: skip
+        "callId": call_id, "createdAt": utc_now_iso(), "cells": cells, **({"staff": person} if person else {})}}}]  # fmt: skip
     for c in cells:
         put = {
             "TableName": table,
@@ -890,16 +1182,11 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
         items += _release(table, pk, old, keep=set(cells))
     if len(items) > 100:
         raise _err(400, "booking_too_long")
-    try:
-        await messaging_repo._transact(items)
-    except ClientError as exc:
-        if messaging_repo.is_cancelled(exc):
-            raise _err(409, "slot_taken") from exc
-        raise
+    return items
 
 
 def _cell_expiry(cell: str) -> int:  # the table's TTL attribute: the cell's end + 1 day
-    t = datetime.strptime(cell.removeprefix("VOICECELL#"), "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("UTC"))
+    t = datetime.strptime(cell[10:26], "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("UTC"))  # after it: a lane
     return int(t.timestamp()) + 300 + 86400
 
 
@@ -937,21 +1224,50 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
+    counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
+    # One unit per reservation, keyed by its booking id. A retry that returns or reconciles a reservation already
+    # counted spends nothing (so the cap never locks a pending booking out of its reconciliation); anything else
+    # holds a placeholder unit while it books (the cap stays atomic), which becomes the new booking's id.
+    ws, slot_sk = meta["ownerId"], f"VOICEBOOK#{body.start}"
+    held = await messaging_repo._get(messaging_repo.owner_pk(ws), slot_sk) or {}
+    caller = call.get("caller")
+    ours = held.get("callId") == call_id or bool(caller and held.get("phone") == caller)
+    counted = bool(ours and held.get("bookingId")) and await messaging_repo.has_voice_unit(
+        ws, counter, held["bookingId"]
+    )
+    placeholder = None if counted else f"booking-in-progress:{uuid.uuid4().hex}"
+    if placeholder and not await messaging_repo.take_voice_unit(ws, counter, placeholder, BOOKINGS_PER_CALLER_PER_DAY):
+        await _limit(call_id, "too many bookings from this number today")
+        raise _err(403, "not_allowed")
+    try:
+        result = await voice_booking.book(ws, cfg, call_id, call, body.start, body.service, body.name)
+    except BaseException:
+        if placeholder:
+            await messaging_repo.give_back_voice_unit(ws, counter, placeholder)  # nothing was reserved
+        raise
+    if placeholder:
+        made = await messaging_repo._get(messaging_repo.owner_pk(ws), slot_sk) or {}
+        reserved = result["state"] in ("confirmed", "pending", "held") and made.get("bookingId")
+        await messaging_repo.give_back_voice_unit(
+            ws, counter, placeholder, keep=made["bookingId"] if reserved else None
+        )
     if result["state"] != "confirmed":
         await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
         return {"booked": False, **result}
     entry = {"start": body.start, "service": body.service, "name": body.name}
-    line = f"{body.service} · {_pretty(body.start)} for {body.name}"
-    await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
+    who = f" with {result['staff']}" if result.get("staff") else ""
+    line = f"{body.service} · {_pretty(body.start)} for {body.name}{who}"
+    if not result.get("repeat"):  # a retry already has its line on the record
+        await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
                                           "callerName": c.get("callerName") or body.name,
                                           "steps": _step(c, f"Booked {line}")})  # fmt: skip
-    return {"booked": True, **entry}
+    return {"booked": True, **entry, **({"staff": result["staff"]} if result.get("staff") else {})}
 
 
 class ChangeIn(BaseModel):
     start: _Local
     newStart: _Local | None = None  # None cancels
+    bookingId: str = Field(default="", max_length=200)  # from my-bookings: which one, when two share a start
 
 
 @router.post("/internal/voice/calls/{call_id}/change")
@@ -960,10 +1276,19 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "move")
-    owner_pk, sk = messaging_repo.owner_pk(meta["ownerId"]), f"VOICEBOOK#{body.start}"
-    row = await messaging_repo._get(owner_pk, sk)
-    if not row or not call.get("caller") or row.get("phone") != call["caller"]:
+    # Every person's booking at that start (VOICEBOOK#<start>[#<id>]), only those made from this caller's number.
+    # One caller can hold two at one start (two people): then `bookingId` says which, or the model is asked to.
+    rows = await _bookings(meta["ownerId"], body.start) if call.get("caller") else []
+    mine = [r for r in rows if r.get("phone") == call["caller"]]
+    if body.bookingId:
+        mine = [r for r in mine if body.bookingId == _booking_id(r)]
+    if not mine:
         raise _err(404, "booking_not_found")
+    if len(mine) > 1:
+        options = [{"bookingId": _booking_id(r), "service": r["service"], "name": r["name"],
+                    **({"staff": r["staff"]} if r.get("staff") else {})} for r in mine]  # fmt: skip
+        raise HTTPException(status_code=409, detail={"code": "ambiguous_booking", "options": options})
+    row = mine[0]
     if body.newStart:
         result = await voice_booking.move(meta["ownerId"], cfg, call_id, call, row, body.newStart)
     else:
@@ -982,6 +1307,11 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     return {"moved" if body.newStart else "cancelled": True, **entry}
 
 
+def _booking_id(row: dict) -> str:
+    """A booking's id for the caller's tools; a row from before booking ids had none and is named by its key."""
+    return row.get("bookingId") or row["sk"]
+
+
 @router.post("/internal/voice/calls/{call_id}/my-bookings")
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
@@ -990,7 +1320,9 @@ async def my_bookings(call_id: str) -> dict:
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
 
     def public_booking(b: dict) -> dict:
-        out = {"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b["service"]}
+        out = {"start": _start(b), "service": b["service"], "bookingId": _booking_id(b)}
+        if b.get("staff"):
+            out["staff"] = b["staff"]
         if b.get("pending") or b.get("bookingState") == "held":
             out |= {
                 "state": "pending" if b.get("pending") else "held",
@@ -1052,17 +1384,18 @@ async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     is `handoff_missed`. The worker does the SIP transfer."""
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    if _line_state(cfg, call.get("caller", "")) != "live":
+    if call_mode(cfg, call) != "live":
         raise _err(403, "not_allowed")
     h, now = cfg["handoff"], _now(cfg)
     window = _open_window(cfg, now.strftime("%Y-%m-%d"))
     is_open = bool(window) and window[0] <= now < window[1]
-    if (body and body.failed) or not h["number"] or (h["onlyOpenHours"] and not is_open):
+    to = us_number(str(h["number"] or ""))  # a number saved before the US/CA check is never dialed (M2)
+    if (body and body.failed) or not to or (h["onlyOpenHours"] and not is_open):
         why = "the transfer didn't connect" if body and body.failed else "nobody was available"
         await _patch_call(call_id, lambda c: {"handoffMissed": True, "steps": _step(c, f"Asked for a person; {why}")})
         return {"transferTo": None}
-    await _patch_call(call_id, lambda c: {"transferredTo": h["number"], "steps": _step(c, "Transferred to a person")})
-    return {"transferTo": h["number"]}
+    await _patch_call(call_id, lambda c: {"transferredTo": to, "steps": _step(c, "Transferred to a person")})
+    return {"transferTo": to}
 
 
 async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: str, ask: dict | None = None) -> dict:
@@ -1096,7 +1429,7 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     effect_check asks the owner before any outside action. The requester is the line's owner user, written by the
     backend; the same title in one call is the same task (a retried tool call)."""
     meta, call = await _call(call_id)
-    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+    if call_mode(await agent_config(meta["ownerId"]), call) != "live":
         raise _err(403, "not_allowed")
     out = await _start_task(call_id, meta, call, body.title, body.brief)
     await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
@@ -1136,8 +1469,11 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
     ws, requester = meta["ownerId"], meta.get("ownerUserId")
     if not requester:
         raise _err(403, "no_requester")
-    if _line_state(await agent_config(ws), call.get("caller", "")) != "live":
+    if call_mode(await agent_config(ws), call) != "live":
         raise _err(403, "not_allowed")  # a paused line only takes messages (/message)
+    if not await messaging_repo.take_voice_unit(ws, f"VOICETURNS#{call_id}", str(body.n), TURNS_PER_CALL):
+        await _limit(call_id, f"more than {TURNS_PER_CALL} lines to the team")
+        raise _err(403, "not_allowed")  # the worker takes it as a message instead
     who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()
     key = f"call-turn:{call_id}:{body.n}"
     msg, _ = await messaging_repo.create_message(

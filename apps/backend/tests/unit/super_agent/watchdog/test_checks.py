@@ -207,7 +207,7 @@ def scan_env(table, metrics, monkeypatch):
             return NOW
 
     with (
-        patch("core.services.super_agent_flags.list_on", AsyncMock(return_value=[WS])) as list_on,
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=[{"owner_id": WS}])) as list_on,
         patch("core.temporal.client.task_handle", handle),
         patch.object(wd.runtime_runs, "get_run", run),
         patch.object(wd, "datetime", Clock),
@@ -347,7 +347,7 @@ async def test_hint_person_stopped(scan_env):
 
 
 async def test_one_workspace_error_does_not_abort_the_tick(scan_env, monkeypatch):
-    scan_env.list_on.return_value = ["org_bad", WS]
+    scan_env.list_on.return_value = [{"owner_id": "org_bad"}, {"owner_id": WS}]
     tid = await _put_task(scan_env.table, "working", 10)
     scan_env.handles[tid] = FakeHandle(RPCError("gone", RPCStatusCode.NOT_FOUND, b""))
     real = tasks_repo.list_tasks_by_status

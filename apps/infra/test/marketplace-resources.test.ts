@@ -71,7 +71,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
-      paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,

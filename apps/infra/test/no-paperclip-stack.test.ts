@@ -22,7 +22,7 @@ function synth(environment: "dev" | "prod"): Record<string, any> {
 const ALLOWED = [
   /^PaperclipCompaniesTable/, // DynamoDB, still read (identity rows)
   /^PaperclipServiceTokenKeyLightbulb/, // generic HS256 key: service tokens, share links, digest
-  /^PaperclipEventsWebhookSecretLightbulb/, // still guards /api/v1/lifecycle/*
+  /^PaperclipEventsWebhookSecretLightbulb/, // secret kept, read by nothing; retire separately
 ];
 
 describe.each(["dev", "prod"] as const)("Paperclip exit (%s)", (env) => {

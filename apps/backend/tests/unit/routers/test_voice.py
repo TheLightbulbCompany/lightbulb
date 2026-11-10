@@ -159,11 +159,26 @@ async def test_handoff_number_must_be_e164(repos, async_client_org_admin):  # no
     for bad in ("555-1234", "+0123456789", "1-900-555-01", "+1555123456789012", 5125550142):
         r = await put(bad)
         assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_number_invalid", bad
-    for ok in ("+15125550142", "(512) 555-0142", "1 512 555 0142", "+44 20 7946 0958"):
+    for ok in ("+15125550142", "(512) 555-0142", "1 512 555 0142", "+1 416 555 0142"):
         r = await put(ok)
         assert r.status_code == 200, ok
-    assert r.json()["config"]["handoff"]["number"] == "+442079460958"  # stored as the worker dials it
+    assert r.json()["config"]["handoff"]["number"] == "+14165550142"  # stored as the worker dials it
     assert (await put("")).status_code == 200  # no handoff
+
+
+@pytest.mark.asyncio
+async def test_handoff_number_must_be_us_or_canada(repos, async_client_org_admin):  # noqa: F811
+    """M2: the hand-off (and the run-out forward, which dials it) is a +1 US/CA number: never another country, a
+    Caribbean NANP code billed as international, or a premium 900/976 line."""
+    put = lambda n: async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"handoff": {"number": n}}})  # noqa: E731
+    for bad in ("+44 20 7946 0958", "+1 876 555 0123", "(809) 555-0123", "+1 900 555 0123", "976-555-0123",
+                "+1 284 555 0123"):  # fmt: skip
+        r = await put(bad)
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_number_not_us", bad
+    from routers.voice import us_number
+
+    assert us_number("+1 340 555 0123") == "+13405550123"  # US territories are US
+    assert us_number("+1 155 555 0123") is None  # not a NANP area code
 
 
 async def _caller(owner: str):

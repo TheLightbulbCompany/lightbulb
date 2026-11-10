@@ -52,19 +52,19 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | # | Promise | Built | Prod | Machine | Owner | Note |
 |---|---|---|---|---|---|---|
 | 1.1 | Router and Workers on Temporal are the only agent path on prod | yes | yes | yes | Platform | |
-| 1.2 | Workspaces that had opted out (`super_agent=False`) are moved, not silently broken | yes | ? | no | Platform | No code branches on the field any more: every workspace is treated as on. Only an audit script reads it. Which prod rows still hold `False` is not checked |
-| 1.3 | The feature switch is retired | yes | yes | n/a | Platform | It is a constant (`flags_for` returns True). Left over: the helper file and its callers, which can be deleted |
+| 1.2 | Workspaces that had opted out (`super_agent=False`) are moved, not silently broken | yes | ? | no | Platform | No code branches on the field any more: every workspace is treated as on. The audit script was deleted in the Phase 1 gate PR. Which prod rows still hold `False` is not checked |
+| 1.3 | The feature switch is retired | yes | yes | n/a | Platform | `super_agent_flags.py` is deleted; its two workspace scans read the containers table directly |
 | 1.4 | Roster served from `agent_registry`; old mobile builds (TestFlight 0.4.8) still work against `/teams/agents` | yes | yes | no | Platform | Master plan review focus 2. Never exercised with an old build |
-| 1.5 | Paperclip code removed | part | yes | n/a | Platform | No module remains. Name residue in comments and one unused component (`AgentPaperclipFields.tsx`). **Three Paperclip-named things are live and stay:** the `paperclip-companies` table (the canonical workspace identity row), `PAPERCLIP_SERVICE_TOKEN_KEY` (signs session shares, digests and Needs-you links), and the bridge's run route. A name is not proof something is dead |
+| 1.5 | Paperclip code removed | part | yes | n/a | Platform | No module remains. The lifecycle API (the last user of the Paperclip events secret), the WS authorizer's unused service-token grant and the empty `paperclip-agent-keys` grant and sweeps are gone (Phase 1 gate PR). Name residue in comments and one unused component (`AgentPaperclipFields.tsx`). **Three Paperclip-named things are live and stay:** the `paperclip-companies` table (the canonical workspace identity row), `PAPERCLIP_SERVICE_TOKEN_KEY` (signs session shares, digests and Needs-you links), and the bridge's run route. A name is not proof something is dead |
 | 1.6 | Paperclip stack and Aurora removed | yes | yes | yes | Platform | Guard test `no-paperclip-stack.test.ts` |
 | 1.7 | Marketplace removed | part | part | n/a | Platform | Routers and services gone. Five tables and `marketplace_safety.py` remain |
 | 1.8 | Apps backend removed, with its secrets | yes | yes | n/a | Platform | Routes gone. No Apps-named secret remains under the dev or prod prefix (names read 9 Nov) |
 | 1.9 | Stripe Projects rail removed | part | part | n/a | Platform | Code gone. The `provisioning-workflows` table is still read by `owner_facts` and the wipes; it stays until that coupling is removed |
-| 1.10 | Comms features removed (channels, threads, reactions, pins, mentions) | part | part | n/a | Platform | `EmojiPicker`, `RoomMessageSearch`, `RoomLinkPreviews` remain |
-| 1.11 | Ideas, Feed, Daily, Brief UI removed | part | part | n/a | Platform | `components/creations` (9 files) and `components/activity` (6) remain |
+| 1.10 | Comms features removed (channels, threads, reactions, pins, mentions) | part | part | n/a | Platform | `EmojiPicker`, `RoomMessageSearch`, `RoomLinkPreviews` remain. The Sendblue text rail and the manual MCP-server CRUD are deleted (Phase 1 gate PR) |
+| 1.11 | Ideas, Feed, Daily, Brief UI removed | part | part | n/a | Platform | `components/creations` (9 files) and `components/activity` (6) remain. `RunNotifications`, `TrialRecapCard` and the trial/credit banners are deleted (Phase 1 gate PR) |
 | 1.12 | OpenSearch removed | part | no | no | Platform | Phase A (#5156, the search API and its consumers) merged 10 Nov. Phase B (#5158, the AWS resources) ships in the train right after; no workspace wipe runs between the two |
 | 1.13 | The five marketplace tables retired | part | no | n/a | Platform | Stage 1, the delete policy (#5175), merged 9 Nov. Stage 2 removes the tables; Codex's draft is saved on branch `finish/retire-leftover-table-wiring` and must not deploy before stage 1 is on prod |
-| 1.14 | Old chat UI deleted once the voice UI is live | no | no | n/a | Product | `components/workspace` (54 files), `teams` (73), `control` (37) are unrouted. `messaging` (174) is still used by `/voice/lightbulb` |
+| 1.14 | Old chat UI deleted once the voice UI is live | no | no | n/a | Product | The workspace shell (shell, sidebar, header, reconciler) and its unrouted dependants are deleted (Phase 1 gate PR). Left: `workspace` (22 files), `teams` (43), `control` (19), `messaging` (80), partly live through `RightPane` in `/voice/lightbulb` and `SettingsPlace` in `/voice/settings` |
 | 1.15 | Every existing integration kept as a live source; the CLI and A2A routes kept | yes | yes | no | Platform | Founder ruling. Never walked after the deletions |
 | 1.16 | Tasks export replaced before deletion | yes | ? | no | Platform | `GET /tasks/export` exists with a test |
 | 1.17 | The Lightbulb CLI's future is settled with GooseTown | no | no | n/a | Founder | Master plan open item |
@@ -108,8 +108,8 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.7 | Book, move, cancel in Google Calendar; a Google failure keeps the hold and raises a Line-problem card | yes | no | no | 1st | Platform | #5176 merged 10 Nov after four review rounds: safe through slow or lost Google writes, never stuck pending, older bookings read correctly, one Line-problem card per workspace, owner edits in Google no longer block a move. Next prod train. Then the founder reconnects Google for the real check |
 | 3.8 | Take a message | yes | yes | no | 1st | Product | |
 | 3.9 | Hand off to a person, only during opening hours; a missed hand-off becomes a card | yes | yes | no | 1st | Product | |
-| 3.10 | A caller cannot do what the owner unticked: refused by the server, and a message is taken | yes | yes | no | 1st | Product | Master plan review focus 3 |
-| 3.11 | A caller gets only the business profile and their own bookings; no owner data; cannot pose as the owner | yes | yes | no | 1st | Product | Unit tests exist |
+| 3.10 | A caller cannot do what the owner unticked: refused by the server, and a message is taken | yes | yes | no | 1st | Product | Master plan review focus 3. Security gate (PR "fix(phone): security gate fixes M1-M5", not yet in prod): every per-call route needs the call's own token from start, not just the worker secret; billed minutes are capped by the server's time since start; abuse caps (5 live calls per line, 20 calls and 5 bookings per caller per day, 60 Router turns per call) turn the call into message-only, never a hang-up. The worker and backend must ship in one train |
+| 3.11 | A caller gets only the business profile and their own bookings; no owner data; cannot pose as the owner | yes | yes | no | 1st | Product | Unit tests exist. Security gate PR: a withheld or unreadable caller ID ("anonymous", "restricted", "+266696687", ...) is stored as no caller, so withheld callers share no memory and cannot list, move or cancel bookings. Caller-ID spoofing (H1) is open: the founder decides it. The hand-off and the run-out forward dial only +1 US/CA numbers, not 900/976 or Caribbean codes |
 | 3.12 | Per-caller memory keyed by phone number; "what it remembers" with a working Forget | yes | yes | no | | Product | |
 | 3.13 | "Didn't know" becomes a card; the owner's answer goes into Knowledge and the next caller gets it | yes | yes | no | 1st | Product | |
 | 3.14 | "Next time…" note on a call reaches later calls | yes | yes | no | | Product | |
@@ -117,11 +117,11 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.16 | Each business gets its own number at Go live | yes | yes | no | 1st | Product | Buying is switched on in prod. No number has ever been bought |
 | 3.17 | Number buying is safe: no double purchase, no orphaned number, the line lookup works | part | part | no | 1st | Product | A lease stops two Go-lives buying at once, and a receipt lets a retry reuse a bought number. Gap: a number whose final row write fails is kept and paid for with no alert, and the 30-day release of unused numbers has no caller |
 | 3.18 | Keep-my-number or new-number choice, with the carrier's forward and stop codes | yes | yes | no | 1st | Product | |
-| 3.19 | Forwarding check from the Agent page | yes | yes | no | 1st | Product | The outbound trunk is set in prod. Never run against a real forward |
+| 3.19 | Forwarding check from the Agent page | yes | yes | no | 1st | Product | The outbound trunk is set in prod. Never run against a real forward. Security gate PR: dials only +1 US/CA numbers (the hand-off's validator), at most 5 checks per workspace per day, and two simultaneous clicks dial once (a conditional lock) |
 | 3.20 | Call record: transcript, outcome tag, steps, one-line "what it did", booking card | yes | yes | no | 1st | Product | Home polls every 20 s by design. A retried `end` counts one visit; stale live calls are finished by the sweeper. Not prod-verified |
 | 3.21 | Call recording stored and playable | no | no | no | | Product | Moved to Later by the founder (10 Nov): salons, spas and barbers are served by the transcript, which every call already keeps. Audio adds consent and retention weight for no clear gain. Build when a customer asks |
 | 3.22 | Front-desk specialist pre-warmed when a call connects | part | part | no | | Product | A Router prewarm exists. The per-call specialist is not proven |
-| 3.23 | Staff and holidays limit the slots offered | no | no | no | 1st | Product | Both fields are saved and ignored. A business that enters "closed 26 to 27 Nov" is still booked on those days |
+| 3.23 | Staff and holidays limit the slots offered | yes | no | no | 1st | Product | Holidays: closures from #5180 remove closed dates from the booking window, availability and booking. Staff: capacity built and machine-tested in #5189 (moto unit tests, not prod-verified): one booking per free person at a time; a service limited to named people books only their time; capacity counted per slot across every booking and guarded in the same write; staff keyed by a stable id kept on rename; a booking made before staff existed holds one person's capacity; an identical retry returns the same booking. Limits: longest single booking about 4 h (was ~8 h); no per-person schedules or days off; with Google Calendar one at a time; not exercised against real DynamoDB contention |
 | 3.24 | Waitlist: join and fill | no | no | no | | Product | The UX plan cut the tool; the spec promised it |
 | 3.25 | Texts from the assistant's number: confirmations, opt-in reminders, callbacks | no | no | no | | Product | Needs 10DLC. Founder ruling: missed-caller and waitlist texts stay off until a consent review |
 | 3.26 | 10DLC registration, per-business brand path | n/a | n/a | n/a | | Founder | Founder said start (9 Nov) |
@@ -147,7 +147,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.6 | Onboarding: website read, review what was learned, booking destination, number, name and try a booking | yes | yes | no | 1st | Product | Never run end to end on a fresh workspace |
 | 4.7 | Fresh business to first answered call in 15 minutes, at phone width | n/a | n/a | no | 1st | Product | |
 | 4.8 | Settings: Members, Connections, Approvals (Ask, Auto, Never ask), Notifications, Billing and minutes with the run-out choice | yes | yes | no | 1st | Product | |
-| 4.9 | Customers are always on managed credits; Sign in with ChatGPT is internal only for now | no | no | no | | Platform | Founder ruling 9 Nov. What is built (#5162, #5168, on dev) offers both to every workspace admin |
+| 4.9 | Provider choice: managed credits or Sign in with ChatGPT, open to every workspace | yes | no | no | | Platform | #5162 and #5168. Founder 10 Nov: keep ChatGPT open (the internal-only allowlist #5187 was reverted in #5194 before reaching prod). Ships with the next prod train |
 | 4.10 | The orb: connecting, listening, thinking, speaking, with a caption; each talk kept as a "Yours" row | yes | yes | part | | Product | |
 | 4.11 | The orb does the general agent work the old product did | yes | yes | no | | Product | Founder ruling: the orb is a full third use case |
 | 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
@@ -229,7 +229,7 @@ Required by the master plan before a phase reaches prod. Founder ruling: "Don't 
 
 | Phase | Code review against `docs/standards/aws-agentic-lens.md` | Security review | Over-engineering audit | Founder walk |
 |---|---|---|---|---|
-| 1 | no | no | no | no |
+| 1 | yes (findings fixed in the Phase 1 gate PR) | yes (findings fixed in the Phase 1 gate PR) | no | no |
 | 2 | no | no | n/a | no |
 | 3 | no | no | n/a | no |
 | 4 | no (design critique instead) | no | n/a | no |

@@ -105,7 +105,7 @@ async def scan_schedules() -> list[dict]:
     """Every automation row of every workspace (the daily reconcile; eventually consistent).
 
     ponytail: a filtered table scan, fine while the table is dev-sized; switch to `ws-meta` or
-    `super_agent_flags.list_on()` + `list_schedules` when either lands."""
+    a containers scan + `list_schedules` when either lands."""
     kwargs: dict[str, Any] = {
         "FilterExpression": "begins_with(sk, :p)",
         "ExpressionAttributeValues": {":p": ts.schedule_sk("")},

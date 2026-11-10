@@ -11,10 +11,7 @@ from routers.teams import agents, router
 
 FENCES = {agents._workspace_agent}
 
-ALLOWLIST = {
-    ("POST", "/teams/agents/{agent_id}/heartbeat"): "410 Gone, reads nothing",
-    ("POST", "/teams/agents/{agent_id}/wakeup"): "410 Gone, reads nothing",
-}
+ALLOWLIST: dict = {}
 
 
 def _calls(dependant):

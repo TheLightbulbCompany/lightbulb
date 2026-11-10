@@ -109,9 +109,7 @@ from core.services import clerk_admin, company_stripe, text_lines, voice_onboard
 from core.services.billing_service import delete_stripe_customer
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
-    delete_owner_agent_key_secrets,
     delete_owner_secrets,
-    list_owner_agent_key_secret_names,
     list_owner_secret_names,
 )
 
@@ -647,18 +645,6 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_absent="no users row",
     )
 
-    # Per-agent Paperclip key secrets — no per-agent index exists, so list
-    # them by SM name prefix (read-only) to show an accurate count.
-    agent_key_names = await list_owner_agent_key_secret_names(owner_id)
-    _preview_step(
-        steps,
-        system="paperclip_agent_keys",
-        action="delete_owner_agent_key_secrets",
-        exists=bool(agent_key_names),
-        detail_if_exists=f"{len(agent_key_names)} per-agent Paperclip key secret(s)",
-        detail_if_absent="no per-agent Paperclip key secrets",
-    )
-
     # Clerk is external; we don't spend a live GET here just for the
     # preview (preview_wipe touches only our own DDB rows + EFS). Always
     # shown as would_delete — the same convention as usage_counters above.
@@ -989,17 +975,6 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
         await _step(steps, system="user_row", action="user_repo.delete", fn=_s9d)
     else:
         _skip(steps, "user_row", "user_repo.delete", "no users row")
-
-    # --- Step 9e: per-agent Paperclip key secrets --------------------------
-    # These live in Secrets Manager with no per-agent index, so the sweep enumerates
-    # isol8/<env>/paperclip-agent-keys/<owner>/* by name prefix and deletes
-    # each. Added after the 2026-07-14 account-wipe dogfood found them
-    # orphaned post-wipe. Unconditional + idempotent (no-ops on an empty set).
-    async def _s9e() -> str:
-        count = await delete_owner_agent_key_secrets(owner_id)
-        return f"deleted {count} per-agent key secret(s)"
-
-    await _step(steps, system="paperclip_agent_keys", action="delete_owner_agent_key_secrets", fn=_s9e)
 
     # --- Credential + identity leftovers ----------------------------------
     # These were the module's documented KNOWN GAP: the owner's ChatGPT

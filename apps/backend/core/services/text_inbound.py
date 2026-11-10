@@ -1,4 +1,4 @@
-"""Provider-neutral pieces of the inbound text path, shared by the Sendblue and Photon routers."""
+"""Provider-neutral pieces of the inbound text path, used by the Photon router."""
 
 import hashlib
 

@@ -57,12 +57,12 @@ async def test_mail_admitted_once(env):
 
 
 async def test_text_admitted_with_text_trigger_id(env):
-    ref = {"provider": "sendblue", "address": "team@x", "fromNumber": "+1555", "toNumber": "+1666"}
+    ref = {"provider": "photon", "address": "team@x", "senderId": "u_line", "spaceId": "sp_1", "to": "+1666"}
     assert (
-        await _mail(idempotency_key="sendblue:h1", source="text", reply_ref=ref, message="do you open at 9?")
+        await _mail(idempotency_key="photon:h1", source="text", reply_ref=ref, message="do you open at 9?")
         == "delivered"
     )
-    row = await tasks_repo.get_trigger(WS, "text:sendblue:h1")
+    row = await tasks_repo.get_trigger(WS, "text:photon:h1")
     assert row["source"] == "text" and row["ref"]["reply"] == ref
 
 
@@ -78,7 +78,7 @@ async def test_outbox_failure_returns_error_and_the_retry_admits(env):
     assert await tasks_repo.get_trigger(WS, "mail:<m1@example.com>") is not None
 
 
-@pytest.mark.parametrize("router", ["ses_inbound", "sendblue_inbound", "photon_inbound"])
+@pytest.mark.parametrize("router", ["ses_inbound", "photon_inbound"])
 def test_stranger_caps_stay_in_the_callers_before_admission(router):
     """§14.6: today's stranger caps run in the routers; a capped message never reaches `deliver_to_agent`."""
     src = (Path(__file__).parents[4] / "routers" / f"{router}.py").read_text()
@@ -107,17 +107,10 @@ async def test_deliver_reply_mail_uses_thread():
     assert send.await_args.kwargs["body_text"] == "Paid: invoice 12 went out today."
 
 
-async def test_deliver_reply_text_sends_sms():
+async def test_deliver_reply_text_without_a_rail_raises():
     ref = {"provider": "sendblue", "address": "team@x", "fromNumber": "+1555", "toNumber": "+1666"}
-    with (
-        patch("core.services.sendblue.send_text", AsyncMock(return_value={})) as send,
-        patch("core.repositories.agent_mail_inbox_repo.put_sent", AsyncMock()) as put_sent,
-    ):
+    with pytest.raises(RuntimeError, match="no text rail"):
         await source_replies.deliver_reply(WS, _trigger("text", ref), "Yes, 9 to 5.")
-    send.assert_awaited_once_with(from_number="+1555", to_number="+1666", content="Yes, 9 to 5.")
-    kw = put_sent.await_args.kwargs
-    assert (kw["address"], kw["to"], kw["text"], kw["channel"]) == ("team@x", "+1666", "Yes, 9 to 5.", "text")
-    assert kw["owner_id"] == WS and kw["agent_id"] == AGENT
 
 
 async def test_deliver_reply_text_photon():
@@ -142,7 +135,7 @@ async def test_deliver_reply_text_photon():
 
 async def test_deliver_reply_is_idempotent_on_the_routers_event_id():
     """A Router Activity retry carries the same event id: one text goes out, not two; a failed send frees it."""
-    ref = {"provider": "sendblue", "address": "team@x", "fromNumber": "+1555", "toNumber": "+1666"}
+    ref = {"provider": "photon", "address": "team@x", "senderId": "u_line", "spaceId": "sp_1", "to": "+1666"}
     seen: set[str] = set()
 
     async def record(event_id, *, source, ttl_seconds=None):
@@ -156,11 +149,11 @@ async def test_deliver_reply_is_idempotent_on_the_routers_event_id():
     async def forget(event_id):
         seen.discard(event_id)
 
-    send = AsyncMock(side_effect=[RuntimeError("sendblue 503"), {}, {}])
+    send = AsyncMock(side_effect=[RuntimeError("photon 503"), {}, {}])
     with (
         patch("core.services.source_replies.record_event_or_skip", side_effect=record),
         patch("core.services.source_replies.delete_event", side_effect=forget),
-        patch("core.services.sendblue.send_text", send),
+        patch("core.services.photon.send_text", send),
         patch("core.repositories.agent_mail_inbox_repo.put_sent", AsyncMock()),
     ):
         with pytest.raises(RuntimeError):

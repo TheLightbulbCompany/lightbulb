@@ -113,8 +113,6 @@ def ws_mocks():
 
     secrets_list = AsyncMock(return_value=[f"lightbulb/dev/user-keys/{ORG_ID}/anthropic"])
     secrets_delete = AsyncMock(side_effect=lambda oid: [f"lightbulb/dev/user-keys/{oid}/anthropic"])
-    agent_keys_list = AsyncMock(return_value=[f"lightbulb/dev/paperclip-agent-keys/{ORG_ID}/ceo"])
-    agent_keys_delete = AsyncMock(return_value=1)
     integrations_list = AsyncMock(return_value=[{"owner_id": ORG_ID, "provider": "slack"}])
     integrations_delete = AsyncMock(side_effect=lambda oid: ["slack"] if oid == ORG_ID else [])
     oauth_revoke = AsyncMock(return_value=None)
@@ -162,8 +160,6 @@ def ws_mocks():
         ("core.services.workspace_wipe.voice_onboarding.release_number", phone_release),
         ("core.services.workspace_wipe.list_owner_secret_names", secrets_list),
         ("core.services.workspace_wipe.delete_owner_secrets", secrets_delete),
-        ("core.services.workspace_wipe.list_owner_agent_key_secret_names", agent_keys_list),
-        ("core.services.workspace_wipe.delete_owner_agent_key_secrets", agent_keys_delete),
         ("core.services.workspace_wipe.integrations_repo.list_for_owner", integrations_list),
         ("core.services.workspace_wipe.integrations_repo.delete_all_for_owner", integrations_delete),
         ("core.services.workspace_wipe.revoke_user_oauth", oauth_revoke),
@@ -210,7 +206,6 @@ def ws_mocks():
             messaging_delete_owner=messaging_delete_owner,
             phone_release=phone_release,
             secrets_delete=secrets_delete,
-            agent_keys_delete=agent_keys_delete,
             integrations_delete=integrations_delete,
             oauth_revoke=oauth_revoke,
             agent_email_delete=agent_email_delete,
@@ -276,7 +271,6 @@ async def test_preview_writes_nothing(ws_mocks):
     ws_mocks.messaging_delete_room.assert_not_awaited()
     ws_mocks.messaging_delete_owner.assert_not_awaited()
     ws_mocks.secrets_delete.assert_not_awaited()
-    ws_mocks.agent_keys_delete.assert_not_awaited()
     ws_mocks.integrations_delete.assert_not_awaited()
     ws_mocks.oauth_revoke.assert_not_awaited()
     ws_mocks.agent_email_delete.assert_not_awaited()
@@ -728,7 +722,6 @@ async def test_user_wipe_names_workspace_when_container_missing():
             _patch.object(_mod.provisioning_workflow_repo, "list_for_owner", new=_AsyncMock(return_value=[]))
         )
         stack.enter_context(_patch.object(_mod, "list_owner_secret_names", new=_AsyncMock(return_value=[])))
-        stack.enter_context(_patch.object(_mod, "list_owner_agent_key_secret_names", new=_AsyncMock(return_value=[])))
         stack.enter_context(_patch.object(_mod.integrations_repo, "list_for_owner", new=_AsyncMock(return_value=[])))
         stack.enter_context(_patch.object(_mod.agent_email_repo, "query_by_owner", new=_AsyncMock(return_value=[])))
         stack.enter_context(_patch.object(_mod.slack_installs_repo, "list_for_owner", new=_AsyncMock(return_value=[])))

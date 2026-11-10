@@ -10,16 +10,10 @@ vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn(), notifyError: vi.fn() }
 vi.mock("@/lib/externalAuth", () => ({ isTauri: () => false, openExternalUrl: vi.fn() }));
 
 import { LinkWalletSection } from "../LinkWalletSection";
-import { PurchasesSection } from "../PurchasesSection";
 
 const wrap = (ui: React.ReactElement) =>
   render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{ui}</SWRConfig>);
 
-const SUMMARY = {
-  limits: { perPurchaseCents: 5000, projectMonthlyCents: 20000, merchants: ["https://acme.com"] },
-  projects: [{ projectId: "p1", name: "Launch", spentCents: 5000 }],
-  recent: [],
-};
 
 describe("Link wallet UI is dark when the feature is off", () => {
   beforeEach(() => {
@@ -46,22 +40,5 @@ describe("Link wallet UI is dark when the feature is off", () => {
     expect(await screen.findByRole("button", { name: /connect link wallet/i })).toBeEnabled();
   });
 
-  it("hides Purchases when its route 404s", async () => {
-    get.mockRejectedValue(new Error("404"));
-    const { container } = wrap(<PurchasesSection canEdit />);
-    await waitFor(() => expect(get).toHaveBeenCalled());
-    expect(container).toBeEmptyDOMElement();
-  });
 
-  it("shows limits and the per-project purchase bar; editing is admin-only", async () => {
-    get.mockResolvedValue(SUMMARY);
-    const { unmount } = wrap(<PurchasesSection canEdit />);
-    expect(await screen.findByText("$50.00 of $200.00")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: /purchases for launch/i })).toHaveAttribute("aria-valuenow", "25");
-    expect(screen.getByRole("button", { name: /save limits/i })).toBeInTheDocument();
-    unmount();
-    wrap(<PurchasesSection canEdit={false} />);
-    await screen.findByText("$50.00 of $200.00");
-    expect(screen.queryByRole("button", { name: /save limits/i })).toBeNull();
-  });
 });

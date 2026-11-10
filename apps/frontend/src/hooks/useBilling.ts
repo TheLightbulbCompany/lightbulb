@@ -27,8 +27,6 @@ export interface BillingAccount {
   provider_choice: string | null;
   byo_provider: string | null;
   managed_inference_available?: boolean;
-  // Server allowlist: ChatGPT sign-in is offered only to internal workspaces.
-  chatgpt_provider_available?: boolean;
   // Pricing tier: "standard" (the single $50/mo tier) or "ultra_pro" (the
   // higher $150/mo tier that unlocks larger marketplace companies). Backend
   // defaults a plan-less PAID row to "standard" and reports null for a trial

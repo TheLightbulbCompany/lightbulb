@@ -210,12 +210,8 @@ export class LightbulbStage extends cdk.Stage {
       // the resource changes for some other reason. Dev is a Clerk dev instance
       // whose issuer is not on our domain, so it stays on the secret.
       clerkIssuerUrl: env === "prod" ? `https://clerk.${CLERK_DOMAIN}` : undefined,
-      // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
-      // for cross-stack secret refs to avoid KMS auto-grant cycles.
-      paperclipServiceTokenKeySecretName:
-        auth.paperclipServiceTokenKey.secretName,
       // Pass KMS key ARN (not Key object) so ApiStack can grant kms:Decrypt
-      // on the authorizer's role without triggering CDK's auto-grant cycle.
+      // on the WS Lambdas' roles without triggering CDK's auto-grant cycle.
       paperclipKmsKeyArn: auth.kmsKey.keyArn,
       wsInternalSecretSecretName: auth.wsInternalSecret.secretName,
       // Authorizer reads paired_devices[deviceId].publicKey for device-key auth.
@@ -251,7 +247,6 @@ export class LightbulbStage extends cdk.Stage {
         photonWebhookSecret: `lightbulb/${env}/photon_webhook_secret`,
         huddleWorkerSecret: `lightbulb/${env}/huddle_worker_secret`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
-        paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,

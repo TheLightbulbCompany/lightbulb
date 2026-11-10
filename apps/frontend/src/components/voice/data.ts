@@ -184,7 +184,7 @@ export function useUsage() {
   const api = useApi();
   const { isLoaded, orgId, userId } = useAuth();
   return useSWR<Usage>(isLoaded && userId ? ["/voice/usage", orgId ?? userId, userId] : null,
-    async () => { const u = (await api.get("/voice/usage")) as Usage; return { ...u, used: Math.ceil(u.used) }; }, // whole minutes: the server's 9.283 shows as 10
+    async () => { const u = (await api.get("/voice/usage")) as Usage; return { ...u, used: Math.round(u.used) }; }, // whole minutes: the server's 9.283 shows as 9, as the Home foot does
     { refreshInterval: 30_000 });
 }
 

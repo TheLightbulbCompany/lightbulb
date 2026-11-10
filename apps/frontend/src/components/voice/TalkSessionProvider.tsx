@@ -64,11 +64,15 @@ async function micGranted(): Promise<boolean> {
 /** Asks for the mic on the tap itself, so the browser's prompt shows now and a refusal is known before any join.
  *  No getUserMedia (the desktop webview, tests): nothing to ask, the join does its own. */
 const canAsk = () => !isTauri() && !!navigator.mediaDevices?.getUserMedia;
-async function askMic(): Promise<"ok" | "denied" | "none"> {
+async function askMic(): Promise<"ok" | "denied" | "none" | "busy"> {
   try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); return "ok"; }
-  catch (e) { return (e as { name?: string }).name === "NotFoundError" ? "none" : "denied"; }
+  catch (e) {
+    const n = (e as { name?: string }).name;
+    return n === "NotAllowedError" || n === "SecurityError" ? "denied" : n === "NotFoundError" ? "none" : "busy";
+  }
 }
 const MIC_ASK = "Allow microphone access to talk";
+const MIC_BUSY = "Couldn't use the microphone. Close other apps using it, then tap again.";
 const MIC_BLOCKED = "Microphone is blocked. Click the lock icon in the address bar, set Microphone to Allow, then tap again.";
 
 function useTalkController(name: string) {
@@ -116,11 +120,12 @@ function useTalkController(name: string) {
       if (!canAsk()) { void huddle.join(room.roomId, name); return; }
       const id = ++askId.current, roomId = room.roomId;
       setAsking(true);
+      down.current = null; // the prompt swallows the pointer-up and its wait is not a hold: this press is a tap
       void askMic().then((r) => {
         if (id !== askId.current || !mounted.current) return;
         setAsking(false);
         if (r === "ok") void huddle.join(roomId, name);
-        else { started.current = false; want.current = false; setTalk(false); setMicErr(r === "none" ? "No microphone found." : MIC_BLOCKED); }
+        else { started.current = false; want.current = false; setTalk(false); setMicErr(r === "none" ? "No microphone found." : r === "busy" ? MIC_BUSY : MIC_BLOCKED); }
       });
     }
     // else the pre-connect is in flight: it lands with `want` set and opens the mic
@@ -150,6 +155,7 @@ function useTalkController(name: string) {
     setMuted(true); void setMic(false); // tap toggles input, independently of playback or work
   };
   const cancel = () => { // undo the press: a talk it started ends, a mute it lifted comes back
+    if (talk && !live) { end(); return; } // a cancelled key-press while the prompt or join is pending
     const d = down.current;
     down.current = null;
     if (d && !d.was) { setTalk(false); setMuted(false); void setMic(false); }

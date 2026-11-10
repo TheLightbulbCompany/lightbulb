@@ -481,8 +481,32 @@ it("asks for the microphone on the tap, says so while the prompt is open, and jo
   tap();
   expect(huddle.join).not.toHaveBeenCalled();
   expect(status()).toHaveTextContent("Allow microphone access to talk");
-  await act(async () => allow({ getTracks: () => [] }));
+  const stop = vi.fn();
+  await act(async () => allow({ getTracks: () => [{ stop }] }));
+  expect(stop).toHaveBeenCalled(); // the probe stream is released; the join acquires its own mic
   expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+});
+
+it("a release after a slow allow is not a hold, and the next tap still works", async () => {
+  let allow!: (s: unknown) => void;
+  gum(() => new Promise((res) => { allow = res; }));
+  render(<TalkOrb name="Nova" />);
+  fireEvent.keyDown(orb(), { key: " " });
+  now += HOLD_MS + 5_000; // time on the browser prompt
+  await act(async () => allow({ getTracks: () => [] }));
+  fireEvent.keyUp(orb(), { key: " " });
+  expect(mic).not.toHaveBeenCalledWith(false);
+  expect(huddle.join).toHaveBeenCalledTimes(1);
+  tap(); // not ignored: no stale press
+  expect(huddle.leave).toHaveBeenCalled();
+});
+
+it("a busy microphone gets its own message, not the blocked one", async () => {
+  gum(() => Promise.reject(Object.assign(new Error("x"), { name: "NotReadableError" })));
+  render(<TalkOrb name="Nova" />);
+  tap();
+  await settle();
+  expect(screen.getByRole("alert")).toHaveTextContent(/Close other apps/);
 });
 
 it("a refused microphone shows how to fix it and never joins", async () => {

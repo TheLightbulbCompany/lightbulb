@@ -102,8 +102,9 @@ async def end_for_reversal(subscription_id: str) -> str | None:
     subscription = await run_in_thread(
         stripe.Subscription.retrieve, subscription_id, api_key=settings.STRIPE_SECRET_KEY
     )
-    owner_id = (subscription.get("metadata") or {}).get("workspace_id")
-    if not owner_id or not is_voice_subscription(subscription):
+    metadata = subscription.get("metadata") or {}
+    owner_id = metadata.get("workspace_id")
+    if not owner_id or metadata.get("purpose") != "voice_plan" or not is_voice_subscription(subscription):
         return None
     if subscription["status"] != "canceled":
         await run_in_thread(stripe.Subscription.cancel, subscription_id, api_key=settings.STRIPE_SECRET_KEY)

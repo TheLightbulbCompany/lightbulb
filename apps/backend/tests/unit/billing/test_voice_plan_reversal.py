@@ -24,14 +24,18 @@ def cfg(monkeypatch):
     monkeypatch.setattr(settings, "STRIPE_SECRET_KEY", "sk")
 
 
-def _run(sub_status="active", other_sub=False):
+def _run(sub_status="active", other_sub=False, clover=False):
     calls = []
+    kwargs = {}
 
     async def run(fn, *a, **k):
         name = fn.__qualname__
         calls.append(name)
         if name.endswith("Charge.retrieve"):
-            return {"id": "ch_1", "invoice": "in_1"}
+            return {"id": "ch_1", "payment_intent": "pi_1"} if clover else {"id": "ch_1", "invoice": "in_1"}
+        if name.endswith("InvoicePayment.list"):
+            kwargs.update(k)
+            return {"data": [{"invoice": "in_1"}]}
         if name.endswith("Invoice.retrieve"):
             return {"parent": {"subscription_details": {"subscription": "sub_1"}}}
         if name.endswith("Subscription.retrieve"):
@@ -39,6 +43,7 @@ def _run(sub_status="active", other_sub=False):
             return {**sub, "items": {"data": [{"price": {"id": "other"}}]}} if other_sub else sub
         return {}
 
+    run.kwargs = kwargs
     return run, calls
 
 
@@ -95,3 +100,36 @@ async def test_charge_for_another_plan_is_ignored():
 async def test_routed_for_both_events():
     assert h.STRIPE_WEBHOOK_HANDLERS["charge.refunded"] is h.handle_voice_plan_reversal
     assert h.STRIPE_WEBHOOK_HANDLERS["charge.dispute.created"] is h.handle_voice_plan_reversal
+
+
+async def test_clover_charge_without_invoice_resolves_through_invoice_payment():
+    run, calls = _run(clover=True)
+    synced, announce = await _fire(_refund(True), run)
+    assert run.kwargs["payment"] == {"type": "payment_intent", "payment_intent": "pi_1"}
+    assert calls[-1].endswith("Subscription.cancel")
+    announce.assert_awaited_once_with("org_1")
+
+
+async def test_subscription_without_voice_purpose_is_not_cancelled():
+    run, calls = _run()
+    base = run
+
+    async def run2(fn, *a, **k):
+        out = await base(fn, *a, **k)
+        if fn.__qualname__.endswith("Subscription.retrieve"):
+            return {**out, "metadata": {"workspace_id": "org_1"}}
+        return out
+
+    synced, announce = await _fire(_refund(True), run2)
+    assert not any(c.endswith("Subscription.cancel") for c in calls)
+    announce.assert_not_awaited()
+
+
+async def test_card_renders_with_support_copy():
+    from core.services import activity
+
+    row = {"kind": "reconnect", "provider": "voice_plan", "createdAt": "2026-11-10T10:00:00+00:00"}
+    (item,) = await activity._render_reconnect_rows("org_1", [row], None)
+    assert item.kind == "reconnect" and item.state == "open"
+    assert item.summary.title == "Your voice plan has ended"
+    assert "hello@thelightbulb.company" in item.summary.reason

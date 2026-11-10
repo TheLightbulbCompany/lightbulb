@@ -651,7 +651,7 @@ async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | No
     """An integration's grant went ``reconnect_required`` (``access_token._mark_reconnect``).
     Open while the integration row still says so; a reconnect flips it back and the item
     disappears. A provider that failed twice has two rows: only the newest renders."""
-    from core.repositories import billing_repo, integrations_repo
+    from core.repositories import integrations_repo
     from core.services.credentials import registry
 
     newest: dict[str, dict] = {}
@@ -662,10 +662,6 @@ async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | No
     items = []
     for provider, row in newest.items():
         if provider == "voice_plan":
-            from core.billing.voice_billing import has_voice_plan
-
-            if has_voice_plan(await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}):
-                continue  # they subscribed again
             created = _when(row["createdAt"])
             actor = ActivityActor(kind="system", id="", name="Lightbulb")
             items.append(
@@ -682,7 +678,7 @@ async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | No
                         requester=actor,
                         reason=(
                             "A payment for your voice plan was refunded or disputed, so the plan ended and "
-                            "calls are no longer answered. Open Settings, then Billing, to subscribe again."
+                            "calls are no longer answered. Contact support (hello@thelightbulb.company) to restart it."
                         ),
                     ),
                     actions=[],

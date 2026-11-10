@@ -186,6 +186,10 @@ async def reconcile(twilio, lk, *, apply: bool, config: dict | None = None) -> d
         await lk.sip.update_outbound_trunk_fields(
             OUTBOUND, auth_username=config["sip_auth_username"], auth_password=config["sip_auth_password"]
         )
+        # Hand-off to a person is a SIP REFER to a PSTN number; Twilio's default (disable-all) rejects it and
+        # sip-only refuses PSTN targets, so enable-all is the narrowest mode that works.
+        if trunk.get("transfer_mode") != "enable-all":
+            await twilio.request("POST", trunk_url, TransferMode="enable-all")
         mapped = (await twilio.request("GET", f"{trunk_url}/CredentialLists")).get("credential_lists", [])
         if not any(x.get("sid") == credential_list for x in mapped):
             await twilio.request("POST", f"{trunk_url}/CredentialLists", CredentialListSid=credential_list)

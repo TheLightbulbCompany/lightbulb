@@ -128,7 +128,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.27 | Square booking | part | no | no | | Platform | #5173, hidden adapter |
 | 3.28 | Booking sites with no API, by browser, with steps and screenshots in the call record | no | no | no | | Product | Generic browser tool exists; no product path |
 | 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | |
-| 3.30 | Spanish, and a voice choice with preview | part | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the train. Mobile controls are unmerged |
+| 3.30 | Spanish, and a voice choice with preview | yes | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the next prod train. Mobile controls are in #5183 (type-check and voice tests pass; not yet seen on a device) and reach phones by OTA when it merges |
 | 3.31 | Choose which agent is the receptionist | yes | no | no | | Platform | #5166 merged 9 Nov; on dev, next prod train |
 | 3.32 | `VoiceCallOutcome` metric and an alarm on worker and route errors | yes | yes | no | | Platform | The metric is emitted. The alarm is W85 (voice route errors), present in prod and dev. No alarm reads the outcome metric itself |
 | 3.33 | Mark as spam; call back and text back from a row; warm transfer; ring me | no | no | no | | Product | Deferred by the UX plan |

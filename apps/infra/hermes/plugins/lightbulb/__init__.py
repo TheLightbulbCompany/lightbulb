@@ -854,7 +854,9 @@ FRONT_DESK_SCHEMA = {
     "description": "Act for the caller this thread is for, at this business only. availability: open start times on "
                    "a date (date, optional service). book: book a start time (start, service, name). my_bookings: "
                    "this caller's own bookings. move: move one of them (start, new_start). cancel: cancel one "
-                   "(start). waitlist: when the time they want is full, put the caller on the waitlist for a day "
+                   "(start). If the caller has two bookings at that start, the answer is ambiguous_booking: ask "
+                   "which (my_bookings lists each with its bookingId), then repeat with that booking_id. "
+                   "waitlist: when the time they want is full, put the caller on the waitlist for a day "
                    "(date, optional service, window_from and window_to as HH:MM, name); the owner sees it, "
                    "nobody is texted yet, so never promise a call or text back. message: take a message for the "
                    "owner (text, optional name, callback_number). Times are the business's local time, "
@@ -869,6 +871,8 @@ FRONT_DESK_SCHEMA = {
             "service": {"type": "string"},
             "start": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
             "new_start": {"type": "string", "description": "YYYY-MM-DDTHH:MM (move)"},
+            "booking_id": {"type": "string", "description": "my_bookings' bookingId (move, cancel; only needed "
+                                                             "when two bookings share a start)"},
             "name": {"type": "string", "description": "the caller's name"},
             "text": {"type": "string", "description": "the message (message)"},
             "callback_number": {"type": "string"},

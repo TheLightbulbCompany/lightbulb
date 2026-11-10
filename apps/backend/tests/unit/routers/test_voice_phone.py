@@ -86,16 +86,19 @@ async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
 
     body = {"start": f"{day}T14:00", "service": "gel manicure", "name": "Priya"}
     assert client.post(f"{base}/book", json=body, headers=W).status_code == 200
-    assert client.post(f"{base}/book", json=body, headers=W).status_code == 409  # taken
+    assert client.post(f"{base}/book", json=body, headers=W).status_code == 200  # a retry returns the same booking
+    assert client.post(f"{base}/book", json=body | {"name": "Ana"}, headers=W).status_code == 409  # taken
     assert client.post(f"{base}/book", json=body | {"start": f"{day}T14:30"}, headers=W).status_code == 409  # overlaps
     assert (
         client.post(f"{base}/book", json=body | {"start": f"{day}T18:30"}, headers=W).status_code == 400
     )  # past close
     moved = client.post(f"{base}/change", json={"start": f"{day}T14:00", "newStart": f"{day}T14:30"}, headers=W)
     assert moved.status_code == 200 and moved.json()["moved"]  # its own old slot doesn't block the move
-    assert client.post(f"{base}/my-bookings", headers=W).json()["bookings"] == [
+    mine = client.post(f"{base}/my-bookings", headers=W).json()["bookings"]
+    assert [{k: b[k] for k in ("start", "service")} for b in mine] == [
         {"start": f"{day}T14:30", "service": "gel manicure"}
     ]
+    assert mine[0]["bookingId"]  # what /change takes when two bookings share a start
     tx = [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "Hello!"}, {"role": "system", "text": "x"}]
     end = client.post(f"{base}/end", json={"durationSec": 160, "summary": "Moved Priya.", "transcript": tx}, headers=W)
     rec = end.json()
@@ -211,7 +214,13 @@ async def test_unknown_creates_question_and_to_add(client):
     assert voice_phone.CONTACT_NOTE in args[1].brief and q in args[1].brief
     ask = kwargs["ask"]
     assert ask["kind"] == "question" and ask["subkind"] == "didnt_know" and ask["blocking"] is True
-    assert ask["preview"] == {"kind": "didnt_know", "roomId": call["callId"], "caller": "+14155550133", "question": q}
+    assert ask["preview"] == {
+        "kind": "didnt_know",
+        "roomId": call["callId"],
+        "caller": "+14155550133",
+        "question": q,
+        "firstName": "",
+    }
     assert [o["id"] for o in ask["options"]] == ["answer", "call_myself", "done"]
     run = await messaging_repo.get_voice_run("org_1", args[1].run_id)
     assert run["requesterUserId"] == "user_owner" and run["roomId"] == call["callId"]
@@ -431,6 +440,327 @@ def _utc(day: str, hm: str) -> str:  # New York wall time -> the UTC cell key
 
     t = datetime.strptime(f"{day}T{hm}", "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("America/New_York"))
     return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+
+
+# --- staff capacity: one booking per free person at a time (board 3.23) ------------------------------------------
+# Each person has a stable id (kept on rename); their keys are VOICEBOOK#<start>#<id> and VOICECELL#<utc>#<id>.
+
+ANA, MEI = {"id": "a1", "name": "Ana"}, {"id": "m1", "name": "Mei"}
+STAFFED = {
+    "staff": [ANA, MEI],
+    "services": [
+        {"name": "Gel manicure", "minutes": 60, "price": "$45", "staff": ""},  # anyone
+        {"name": "Pedicure", "minutes": 60, "price": "$40", "staff": "m1"},  # only Mei
+    ],
+}
+
+
+def _book_as(client, call, start, service="gel manicure", name="Priya"):
+    return client.post(
+        f"/api/v1/internal/voice/calls/{call['callId']}/book",
+        json={"start": start, "service": service, "name": name},
+        headers=W,
+    )
+
+
+async def _row(start: str, lane: str = "") -> dict | None:
+    return await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICEBOOK#{start}{lane}")
+
+
+def _slots(client, call, service: str) -> list[str]:
+    r = client.post(
+        f"/api/v1/internal/voice/calls/{call['callId']}/availability",
+        json={"date": _tomorrow(), "service": service},
+        headers=W,
+    )
+    return r.json()["slots"]
+
+
+async def _staff_now(staff: list[dict]) -> None:  # the owner edits the staff list on the Agent page
+    await messaging_repo.put_voice_agent("org_1", {**CONFIG, **STAFFED, "staff": staff}, "user_owner")
+
+
+async def test_two_staff_take_two_bookings_at_once_and_refuse_a_third(client):
+    calls = [await _start(client, caller=f"+1415555013{i}", room=f"phone-dev-_s{i}", **STAFFED) for i in range(3)]
+    at = f"{_tomorrow()}T11:00"
+    first, second = _book_as(client, calls[0], at), _book_as(client, calls[1], at)
+    assert first.status_code == second.status_code == 200
+    assert {first.json()["staff"], second.json()["staff"]} == {"Ana", "Mei"}
+    third = _book_as(client, calls[2], f"{_tomorrow()}T11:30")  # overlaps both
+    assert third.status_code == 409 and third.json()["detail"]["code"] == "slot_taken"
+    assert (await _row(at, "#a1"))["staff"] == "Ana" and (await _row(at, "#m1"))["staff"] == "Mei"
+    assert await _row(at) is None  # with staff, nothing takes the unsuffixed (no-staff) keys
+    slots = _slots(client, calls[2], "gel")
+    assert at not in slots and f"{_tomorrow()}T12:00" in slots
+
+
+async def test_a_service_one_person_does_books_only_that_persons_time(client):
+    a = await _start(client, caller="+14155550141", room="phone-dev-_r1", **STAFFED)
+    b = await _start(client, caller="+14155550142", room="phone-dev-_r2", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    took = _book_as(client, a, at, service="pedicure")
+    assert took.status_code == 200 and took.json()["staff"] == "Mei" and await _row(at, "#m1")
+    assert _book_as(client, b, at, service="pedicure").status_code == 409  # Ana is free but doesn't do pedicures
+    assert at not in _slots(client, b, "pedicure") and at in _slots(client, b, "gel")
+    r = _book_as(client, b, at)
+    assert r.json()["staff"] == "Ana"  # an anyone-service still gets Ana
+
+
+async def test_cancel_frees_the_person_it_took(client):
+    a = await _start(client, caller="+14155550151", room="phone-dev-_c1", **STAFFED)
+    b = await _start(client, caller="+14155550152", room="phone-dev-_c2", **STAFFED)
+    c = await _start(client, caller="+14155550153", room="phone-dev-_c3", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at).json()["staff"] == "Ana"
+    assert _book_as(client, b, at).json()["staff"] == "Mei"
+    assert _book_as(client, c, at, service="pedicure").status_code == 409
+    r = client.post(f"/api/v1/internal/voice/calls/{b['callId']}/change", json={"start": at}, headers=W)
+    assert r.status_code == 200 and r.json()["cancelled"] and await _row(at, "#m1") is None
+    assert await _row(at, "#a1")  # Ana's booking stands
+    assert _book_as(client, c, at, service="pedicure").json()["staff"] == "Mei"
+
+
+async def test_a_move_keeps_the_person(client):
+    a = await _start(client, caller="+14155550161", room="phone-dev-_m1", **STAFFED)
+    at, to = f"{_tomorrow()}T11:00", f"{_tomorrow()}T14:00"
+    assert _book_as(client, a, at, service="pedicure").json()["staff"] == "Mei"
+    r = client.post(f"/api/v1/internal/voice/calls/{a['callId']}/change", json={"start": at, "newStart": to}, headers=W)
+    assert r.status_code == 200 and await _row(at, "#m1") is None and (await _row(to, "#m1"))["staff"] == "Mei"
+    mine = client.post(f"/api/v1/internal/voice/calls/{a['callId']}/my-bookings", headers=W).json()["bookings"]
+    assert [{k: b[k] for k in ("start", "service", "staff")} for b in mine] == [
+        {"start": to, "service": "pedicure", "staff": "Mei"}
+    ]
+
+
+async def test_removing_someone_never_lets_another_person_be_double_booked(client):
+    """The reviewer's case: Mei booked, Ana removed; Mei's own keys still hold her time."""
+    a = await _start(client, caller="+14155550191", room="phone-dev-_x1", **STAFFED)
+    b = await _start(client, caller="+14155550192", room="phone-dev-_x2", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at, service="pedicure").json()["staff"] == "Mei"
+    await _staff_now([MEI])
+    assert at not in _slots(client, b, "pedicure") and at not in _slots(client, b, "gel")
+    assert _book_as(client, b, at, service="pedicure").status_code == 409
+    assert _book_as(client, b, f"{_tomorrow()}T11:30").status_code == 409
+
+
+async def test_reordering_the_list_keeps_who_is_booked(client):
+    a = await _start(client, caller="+14155550193", room="phone-dev-_x3", **STAFFED)
+    b = await _start(client, caller="+14155550194", room="phone-dev-_x4", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at, service="pedicure").json()["staff"] == "Mei"
+    await _staff_now([MEI, ANA])
+    assert _book_as(client, b, at, service="pedicure").status_code == 409
+    assert _book_as(client, b, at).json()["staff"] == "Ana"
+    assert _book_as(client, b, at, name="Bo").status_code == 409  # full (the same body again is a retry)
+
+
+async def test_a_rename_keeps_the_persons_bookings(client):
+    a = await _start(client, caller="+14155550195", room="phone-dev-_x5", **STAFFED)
+    b = await _start(client, caller="+14155550196", room="phone-dev-_x6", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at, service="pedicure").json()["staff"] == "Mei"
+    await _staff_now([ANA, {"id": "m1", "name": "May"}])
+    assert _book_as(client, b, at, service="pedicure").status_code == 409  # May is the same person
+    took = _book_as(client, b, f"{_tomorrow()}T14:00", service="pedicure")
+    assert took.json()["staff"] == "May" and await _row(f"{_tomorrow()}T14:00", "#m1")
+
+
+async def test_no_staff_list_keeps_todays_keys_and_one_at_a_time(client):
+    a = await _start(client, caller="+14155550171", room="phone-dev-_o1")
+    b = await _start(client, caller="+14155550172", room="phone-dev-_o2")
+    day, at = _tomorrow(), f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at).status_code == 200
+    row = await _row(at)
+    assert "staff" not in row and row["cells"][0] == "VOICECELL#" + _utc(day, "11:00")
+    assert _book_as(client, b, at).status_code == 409
+
+
+async def test_a_booking_from_before_staff_takes_one_persons_capacity(client):
+    """An unsuffixed booking is one person's time, nobody knows whose: with two people, one more fits, not two."""
+    calls = [await _start(client, caller=f"+1415555020{i}", room=f"phone-dev-_l{i}") for i in range(4)]
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, calls[0], at).status_code == 200  # no staff yet: the unsuffixed keys
+    await _staff_now([ANA, MEI])
+    assert at in _slots(client, calls[1], "gel")
+    assert _book_as(client, calls[1], at, service="pedicure").json()["staff"] == "Mei"
+    assert at not in _slots(client, calls[2], "gel")  # Ana is free, but the old booking holds someone
+    assert _book_as(client, calls[2], at).status_code == 409
+    assert _book_as(client, calls[3], f"{_tomorrow()}T11:30").status_code == 409
+    assert _book_as(client, calls[3], f"{_tomorrow()}T12:00").json()["staff"] in ("Ana", "Mei")
+
+
+async def test_a_concurrent_double_book_on_the_last_person_lets_exactly_one_win(client):
+    a = await _start(client, caller="+14155550181", room="phone-dev-_k1", **STAFFED)
+    b = await _start(client, caller="+14155550182", room="phone-dev-_k2", **STAFFED)
+    cfg = await voice_phone.agent_config("org_1")
+    at = f"{_tomorrow()}T11:00"
+    real, raced = messaging_repo._transact, []
+
+    async def interleaved(items):
+        # Both callers saw Mei free; the other caller's write lands between this one's choice and its write.
+        if not raced:
+            raced.append(True)
+            await voice_phone._book("org_1", b["callId"], {"caller": "+14155550182"}, cfg, at, "pedicure", "Bo")
+        return await real(items)
+
+    with patch.object(messaging_repo, "_transact", interleaved):
+        with pytest.raises(voice_phone.HTTPException) as lost:
+            await voice_phone._book("org_1", a["callId"], {"caller": "+14155550181"}, cfg, at, "pedicure", "Al")
+    assert lost.value.status_code == 409 and lost.value.detail["code"] == "slot_taken"
+    assert (await _row(at, "#m1"))["name"] == "Bo" and await _row(at) is None
+
+
+async def test_concurrent_bookings_beside_an_old_booking_never_exceed_capacity(client):
+    """Old booking + two people = room for one more. Two callers race for it: exactly one wins."""
+    calls = [await _start(client, caller=f"+1415555021{i}", room=f"phone-dev-_q{i}") for i in range(3)]
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, calls[0], at).status_code == 200
+    await _staff_now([ANA, MEI])
+    cfg = await voice_phone.agent_config("org_1")
+    real, raced = messaging_repo._transact, []
+
+    async def interleaved(items):
+        if not raced:
+            raced.append(True)
+            await voice_phone._book("org_1", calls[2]["callId"], {"caller": "+14155550212"}, cfg, at, "gel", "Bo")
+        return await real(items)
+
+    with patch.object(messaging_repo, "_transact", interleaved):
+        with pytest.raises(voice_phone.HTTPException) as lost:
+            await voice_phone._book("org_1", calls[1]["callId"], {"caller": "+14155550211"}, cfg, at, "gel", "Al")
+    assert lost.value.detail["code"] == "slot_taken"
+    held = [await _row(at, lane) for lane in ("#a1", "#m1")]
+    assert sum(r is not None for r in held) == 1
+
+
+async def test_clearing_the_roster_keeps_counting_the_staffs_bookings(client):
+    """Capacity is per slot across every lane: two staffed bookings, then no staff (capacity 1), is full."""
+    calls = [await _start(client, caller=f"+1415555022{i}", room=f"phone-dev-_z{i}", **STAFFED) for i in range(3)]
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, calls[0], at).status_code == _book_as(client, calls[1], at).status_code == 200
+    await _staff_now([])
+    assert at not in _slots(client, calls[2], "gel")
+    assert _book_as(client, calls[2], at).status_code == 409
+    for c in calls[:1]:  # one cancel frees one unit: still 1 booked, capacity 1, full
+        assert client.post(f"/api/v1/internal/voice/calls/{c['callId']}/change", json={"start": at}, headers=W).json()[
+            "cancelled"
+        ]
+    assert _book_as(client, calls[2], at).status_code == 409
+    client.post(f"/api/v1/internal/voice/calls/{calls[1]['callId']}/change", json={"start": at}, headers=W)
+    assert at in _slots(client, calls[2], "gel")
+    assert _book_as(client, calls[2], at).status_code == 200 and "staff" not in await _row(at)  # back to no-staff keys
+
+
+async def test_a_retry_returns_the_booking_instead_of_taking_another_person(client):
+    a = await _start(client, caller="+14155550231", room="phone-dev-_i1", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    first, again = _book_as(client, a, at), _book_as(client, a, at)
+    assert first.status_code == again.status_code == 200 and first.json()["staff"] == again.json()["staff"] == "Ana"
+    assert await _row(at, "#m1") is None  # Mei is still free
+
+
+def test_an_empty_service_is_the_whole_roster():
+    cfg = {"staff": [ANA, MEI], "services": [{"name": "Pedicure", "minutes": 60, "staff": "m1"}]}
+    assert voice_phone._lanes(cfg, "") == [("#a1", "Ana"), ("#m1", "Mei")]
+    assert voice_phone._lanes(cfg, "pedicure") == [("#m1", "Mei")]
+
+
+async def test_a_booking_that_lands_first_does_not_refuse_a_free_person(client):
+    """A Mei-only booking lands between an anyone booking's read and its write: the stale guards fail that write,
+    capacity is re-read, and Ana (still free) is booked rather than slot_taken."""
+    a = await _start(client, caller="+14155550271", room="phone-dev-_t1", **STAFFED)
+    b = await _start(client, caller="+14155550272", room="phone-dev-_t2", **STAFFED)
+    cfg = await voice_phone.agent_config("org_1")
+    at = f"{_tomorrow()}T11:00"
+    real, raced = messaging_repo._transact, []
+
+    async def interleaved(items):
+        if not raced:
+            raced.append(True)
+            await voice_phone._book("org_1", b["callId"], {"caller": "+14155550272"}, cfg, at, "pedicure", "Bo")
+        return await real(items)
+
+    with patch.object(messaging_repo, "_transact", interleaved):
+        row = await voice_phone._book("org_1", a["callId"], {"caller": "+14155550271"}, cfg, at, "gel", "Al")
+    assert row["staff"] == "Ana" and (await _row(at, "#m1"))["name"] == "Bo"
+
+
+async def test_two_identical_books_at_once_make_one_booking(client):
+    """The same call books the same thing twice at once: both pass the duplicate read, but the second's write meets
+    the first's idempotency row and returns that booking instead of taking Mei."""
+    a = await _start(client, caller="+14155550281", room="phone-dev-_u1", **STAFFED)
+    cfg = await voice_phone.agent_config("org_1")
+    at, real, raced, inner = f"{_tomorrow()}T11:00", messaging_repo._transact, [], []
+    args = ("org_1", a["callId"], {"caller": "+14155550281"}, cfg, at, "gel", "Priya")
+
+    async def interleaved(items):
+        if not raced:
+            raced.append(True)
+            inner.append(await voice_phone._book(*args))
+        return await real(items)
+
+    with patch.object(messaging_repo, "_transact", interleaved):
+        outer = await voice_phone._book(*args)
+    assert inner[0]["staff"] == outer["staff"] == "Ana" and outer["_repeat"]
+    assert outer["bookingId"] == inner[0]["bookingId"] and await _row(at, "#m1") is None
+    # Once that booking is cancelled, the same booking can be made again.
+    assert client.post(f"/api/v1/internal/voice/calls/{a['callId']}/change", json={"start": at}, headers=W).json()[
+        "cancelled"
+    ]
+    assert _book_as(client, a, at).json()["staff"] == "Ana"
+
+
+async def test_with_google_one_shared_calendar_holds_one_booking_at_a_time(client):
+    """Bookings that go to Google share one calendar: a held booking (its Google write still pending) blocks the
+    slot for every person."""
+    a = await _start(client, caller="+14155550251", room="phone-dev-_g1", **STAFFED, bookingsGo="google")
+    cfg = await voice_phone.agent_config("org_1")
+    at = f"{_tomorrow()}T11:00"
+    assert voice_phone._capacity(cfg) == 1 and voice_phone._capacity({**cfg, "bookingsGo": "own"}) == 2
+    held = await voice_phone._book("org_1", a["callId"], {"caller": "+14155550251"}, cfg, at, "gel", "Al")
+    assert held["bookingState"] == "held"
+    with pytest.raises(voice_phone.HTTPException) as refused:
+        await voice_phone._book("org_1", "other-call", {"caller": "+14155550252"}, cfg, at, "gel", "Bo")
+    assert refused.value.detail["code"] == "slot_taken"
+    assert at not in voice_phone.open_starts(
+        cfg,
+        at[:10],
+        await voice_phone._taken("org_1", at[:10]),
+        voice_phone._now(cfg),
+        60,
+        voice_phone._lanes(cfg, "gel"),
+    )
+
+
+async def test_two_bookings_at_one_start_are_changed_by_id(client):
+    a = await _start(client, caller="+14155550261", room="phone-dev-_d1", **STAFFED)
+    base, at = f"/api/v1/internal/voice/calls/{a['callId']}", f"{_tomorrow()}T11:00"
+    assert _book_as(client, a, at, name="Priya").status_code == _book_as(client, a, at, name="Sam").status_code == 200
+    r = client.post(f"{base}/change", json={"start": at}, headers=W)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "ambiguous_booking"
+    options = r.json()["detail"]["options"]
+    assert sorted(o["name"] for o in options) == ["Priya", "Sam"] and all(o["bookingId"] for o in options)
+    sam = next(o for o in options if o["name"] == "Sam")
+    gone = client.post(f"{base}/change", json={"start": at, "bookingId": sam["bookingId"]}, headers=W)
+    assert gone.status_code == 200 and gone.json()["cancelled"] and gone.json()["name"] == "Sam"
+    assert client.post(f"{base}/change", json={"start": at}, headers=W).json()["name"] == "Priya"  # unambiguous now
+    wrong = client.post(f"{base}/change", json={"start": at, "bookingId": "nope"}, headers=W)
+    assert wrong.status_code == 404
+
+
+async def test_a_move_keeps_the_slot_totals_right(client):
+    calls = [await _start(client, caller=f"+1415555024{i}", room=f"phone-dev-_v{i}", **STAFFED) for i in range(4)]
+    at, to = f"{_tomorrow()}T11:00", f"{_tomorrow()}T14:00"
+    assert _book_as(client, calls[0], at).json()["staff"] == "Ana"
+    assert _book_as(client, calls[1], at).json()["staff"] == "Mei"
+    moved = client.post(
+        f"/api/v1/internal/voice/calls/{calls[1]['callId']}/change", json={"start": at, "newStart": to}, headers=W
+    )
+    assert moved.status_code == 200
+    assert _book_as(client, calls[2], at).json()["staff"] == "Mei"  # 11:00 has one unit back
+    assert _book_as(client, calls[3], to).json()["staff"] == "Ana"  # 14:00: Mei moved there, Ana is free
+    assert _book_as(client, calls[3], to, name="Bo").status_code == 409
 
 
 async def test_end_emits_outcome_metric(client, monkeypatch):
@@ -817,3 +1147,38 @@ async def test_call_bootstrap_resolves_preferences_without_mutating_document(
     assert bootstrap["voice"] == expected_voice
     assert bootstrap["spanish"] is expected_spanish
     assert await messaging_repo.get_voice_agent("org_1") == {**CONFIG, **preferences}
+
+
+async def test_first_three_answered_calls_push_the_owner_and_the_fourth_does_not(client):
+    with patch.object(voice_phone.push_service, "send_push_to_user", AsyncMock()) as push:
+        for i in range(4):
+            call = await _start(client, room=f"phone-dev-_x_{i}")
+            url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+            client.post(url, json={"durationSec": 30}, headers=W)
+            client.post(url, json={"durationSec": 30}, headers=W)  # a retried end never pushes twice
+    assert push.await_count == 3
+    assert push.await_args.args[0] == "user_owner" and push.await_args.args[3]["source"] == "voice_call"
+
+
+async def test_a_call_that_needs_you_leaves_the_push_to_its_card(client):
+    with patch.object(voice_phone.push_service, "send_push_to_user", AsyncMock()) as push:
+        call = await _start(client)
+        base = f"/api/v1/internal/voice/calls/{call['callId']}"
+        client.post(f"{base}/unknown", json={"question": "Parking?"}, headers=W)
+        client.post(f"{base}/end", json={"durationSec": 30}, headers=W)
+    push.assert_not_awaited()
+
+
+def test_call_card_push_carries_the_kind_and_a_first_name_only():
+    from core.services import questions
+
+    q = {
+        "kind": "question",
+        "subkind": "handoff",
+        "title": "Maria wanted a person",
+        "text": "Caller: +14155550133",
+        "preview": {"firstName": "Maria"},
+    }
+    assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person: Maria"
+    q["preview"] = {}
+    assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person"

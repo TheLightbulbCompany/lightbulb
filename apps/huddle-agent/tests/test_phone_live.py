@@ -427,3 +427,80 @@ async def test_legacy_bootstrap_keeps_current_default_and_english_policy(monkeyp
     assert call.started["voice"] == "marin"
     assert "Speak only English" in call.started["prompt"]
     await call.on_shutdown[0]()
+
+
+def _keys(call, keys, who="sip_caller"):
+    for k in keys:
+        call.ctx.room.emit("sip_dtmf_received", SimpleNamespace(digit=k, participant=SimpleNamespace(identity=who)))
+
+
+async def test_the_owner_types_a_pin_and_the_backend_alone_decides(monkeypatch):
+    """Board row 3.29: keypad digits go to /owner-pin, never to the model or the log; a yes moves /events to the
+    member's DM cursor and tells GPT-Live it now talks to the owner; a no is said as a no, nothing more."""
+    call = await Call(monkeypatch, info={"ownerPin": True},
+                      replies={"owner-pin": [{"ok": False, "locked": False}, {"ok": True, "after": 41}]}).answer()  # fmt: skip
+    instructions = []
+    call.live.transport = SimpleNamespace(instructions=instructions.append)
+    assert "phone PIN on the keypad" in call.started["prompt"]
+    _keys(call, "12", who="someone_else")  # not the caller's keypad
+    _keys(call, "99*0000#")  # `*` starts over
+    await asyncio.sleep(0.01)
+    assert [b for p, b in call.backend.calls if p == "owner-pin"] == [{"pin": "0000"}]
+    assert call.live.sent[-1] == (None, phone.PIN_WRONG) and instructions == []
+    _keys(call, "4821#")
+    await asyncio.sleep(0.01)
+    assert call.live.sent[-1] == (None, phone.PIN_OK) and instructions == [phone.OWNER_NOW]
+    assert all("4821" not in t for _d, t in call.live.sent) and "4821" not in call.started["prompt"]
+    FakeBackend.replies["events"] = {"messages": [], "after": 41}
+    task = asyncio.ensure_future(anext(call.started["events"]()))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert [b for p, b in call.backend.calls if p == "events"][-1] == {"after": 41}  # the DM's cursor
+    await call.on_shutdown[0]()
+
+
+async def test_owner_mode_answers_the_question_just_said_and_ends_when_removed(monkeypatch):
+    """The Worker question the voice was given goes back with the next line (`answers`, as owner.py), once; when the
+    backend says owner mode ended, the cursor is the call room's again and the caller prompt is back."""
+    ref = {"taskId": "t-1", "qid": "q-1"}
+    call = await Call(monkeypatch, info={"ownerPin": True}, replies={
+        "events": [{"messages": [{"id": "q", "seq": 42, "text": "Which day?", "question": ref}], "after": 42},
+                   {"messages": [], "after": 3, "ownerModeEnded": True}, {"messages": [], "after": 3}],
+        "turn": {"messageId": "m"}}).answer()  # fmt: skip
+    instructions = []
+    call.live.transport = SimpleNamespace(instructions=instructions.append)
+    events = call.started["events"]()
+    assert (await anext(events))["question"] == ref
+    await call.started["post"]("Tuesday", [])
+    await call.started["post"]("And book a cut", [])
+    turns = [b for p, b in call.backend.calls if p == "turn"]
+    assert turns[0]["answers"] == ref and "answers" not in turns[1]
+    task = asyncio.ensure_future(anext(events))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert instructions == [call.started["prompt"]] and (None, phone.OWNER_ENDED) in call.live.sent
+    assert [b for p, b in call.backend.calls if p == "events"][-1] == {"after": 3}
+    await call.on_shutdown[0]()
+
+
+async def test_a_turn_that_ends_owner_mode_moves_the_cursor_back(monkeypatch):
+    call = await Call(monkeypatch, info={"ownerPin": True}, replies={
+        "turn": {"messageId": "m", "ownerModeEnded": True, "after": 6}, "events": {"messages": [], "after": 6}}).answer()  # fmt: skip
+    instructions = []
+    call.live.transport = SimpleNamespace(instructions=instructions.append)
+    await call.started["post"]("What's on today?", [])
+    assert instructions == [call.started["prompt"]] and (None, phone.OWNER_ENDED) in call.live.sent
+    task = asyncio.ensure_future(anext(call.started["events"]()))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert [b for p, b in call.backend.calls if p == "events"][-1] == {"after": 6}  # the call room's, not the DM's
+    await call.on_shutdown[0]()
+
+
+async def test_a_number_with_no_pin_ignores_the_keypad(monkeypatch):
+    call = await Call(monkeypatch).answer()
+    assert "keypad" not in call.started["prompt"]
+    _keys(call, "4821#")
+    await asyncio.sleep(0.01)
+    assert "owner-pin" not in call.paths()
+    await call.on_shutdown[0]()

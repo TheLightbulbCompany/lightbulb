@@ -77,7 +77,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 2.1 | One shared Hermes runtime pool per tier; a session per owner or per task | yes | yes | part | Platform | Tenant isolation not yet proven. #5170 fences every call to the pool |
 | 2.2 | Idle timeout 5 min; typing and new-room prewake deleted; the curator runs only when warm | yes | yes | no | Platform | |
 | 2.3 | The curator works without waking a business's session | yes | ? | no | Platform | When the session is cold it returns without an invoke. It then waits for the next turn; a phone-only business is curated only when it next has a turn |
-| 2.4 | Old per-business runtimes and roles retired | no | no | no | Platform | 25 old definitions remain. By exact allowlist |
+| 2.4 | Old per-business runtimes and roles retired | part | no | no | Platform | 27 old definitions remain (25 prod, 2 dev). The dry-run tool and workflow are built (`retire_legacy_runtimes.py`, `retire-legacy-runtimes.yml`). The allowlist is empty: every owner row still names its old runtime and every runtime was invoked in the last 7 days. Roles are kept. See `docs/ops/2026-11-10-legacy-runtime-inventory.md` |
 | 2.5 | Boot identity seeds replaced, then retired | no | no | no | Platform | 28 seeds are KEPT until network identity custody has a replacement |
 | 2.6 | Per-business secrets moved to encrypted DynamoDB envelopes | yes | yes | part | Platform | Unit tests and live provider use exist in earlier receipts. Still to do: classify it per connector |
 | 2.7 | Secrets Manager under 20 | no | no | no | Platform | About 130 today. 14 platform OAuth client secrets are required and stay |
@@ -88,7 +88,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 2.12 | No NAT for Lightbulb; CloudFront free plan in place of WAF | no | no | no | Platform | Two NAT instances remain |
 | 2.13 | Backend background loops reduced | no | no | no | Platform | Ten loops start at boot: scheduled worker, trial-idle, run-ledger, browser autosave, voice-call, session pick-up, memory, daily digest, needs-you email, running gauges |
 | 2.14 | Quiet 24 h: nothing runs for an idle business | n/a | n/a | no | Platform | After 2.2 to 2.4 |
-| 2.15 | Fixed cost at or under $250 a month; per-business cost about $25 to $30 | n/a | n/a | no | Platform | Needs a full bill |
+| 2.15 | Fixed cost at or under $250 a month; per-business cost about $25 to $30 | n/a | n/a | no | Platform | Needs a full bill. 11-10: S3 egress (~$240/mo, cdk.out per-asset slices) cut in #5196; messaging-table reads go by deleting chat-only callers; CloudWatch ~$85/mo is fixed alarms/metrics, decisions in docs/ops/2026-11-10-cost-cuts.md |
 | 2.16 | AgentCore cold start measured | no | no | no | Platform | Master plan open item |
 | 2.17 | Zero retention set at every speech and model vendor | part | part | no | Platform | Recall is set to zero retention in code. Nothing is set for OpenAI voice, LiveKit or Twilio in code; their account settings are not checked |
 | 2.18 | BAA requests filed with dates: Twilio, Google Cloud, LiveKit | n/a | n/a | n/a | Founder | Phase 2 gate. Paid plans |
@@ -121,13 +121,13 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.20 | Call record: transcript, outcome tag, steps, one-line "what it did", booking card | yes | yes | part | 1st | Product | Home polls every 20 s by design |
 | 3.21 | Call recording stored and playable | no | no | no | | Product | Moved to Later by the founder (10 Nov): salons, spas and barbers are served by the transcript, which every call already keeps. Audio adds consent and retention weight for no clear gain. Build when a customer asks |
 | 3.22 | Front-desk specialist pre-warmed when a call connects | part | part | no | | Product | A Router prewarm exists. The per-call specialist is not proven |
-| 3.23 | Staff and holidays limit the slots offered | no | no | no | 1st | Product | Both fields are saved and ignored. A business that enters "closed 26 to 27 Nov" is still booked on those days |
+| 3.23 | Staff and holidays limit the slots offered | yes | no | no | 1st | Product | Holidays: closures from #5180 remove closed dates from the booking window, availability and booking. Staff: capacity built and machine-tested in #5189 (moto unit tests, not prod-verified): one booking per free person at a time; a service limited to named people books only their time; capacity counted per slot across every booking and guarded in the same write; staff keyed by a stable id kept on rename; a booking made before staff existed holds one person's capacity; an identical retry returns the same booking. Limits: longest single booking about 4 h (was ~8 h); no per-person schedules or days off; with Google Calendar one at a time; not exercised against real DynamoDB contention |
 | 3.24 | Waitlist: join and fill | part | no | no | 1st | Product | Join half built (`front_desk` `waitlist`, `allow.waitlist`, Agent page list with remove, 3 per caller per day, TTL a day after the date); the plugin change reaches agents only after an image build, pin change and roll. Filling a freed slot by text is NOT built: it needs SMS registration (3.25/3.26) |
 | 3.25 | Texts from the assistant's number: confirmations, opt-in reminders, callbacks | no | no | no | | Product | Needs 10DLC. Founder ruling: missed-caller and waitlist texts stay off until a consent review |
 | 3.26 | 10DLC registration, per-business brand path | n/a | n/a | n/a | | Founder | Founder said start (9 Nov) |
 | 3.27 | Square booking | part | no | no | | Platform | #5173, hidden adapter |
 | 3.28 | Booking sites with no API, by browser, with steps and screenshots in the call record | no | no | no | | Product | Generic browser tool exists; no product path |
-| 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | |
+| 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | In review in #5190: Settings → Phone PIN (mobile and a hashed PIN); caller ID names whose PIN to check, keypad digits (DTMF) go to `/owner-pin`, 3 tries a call and 5 a day, each reserved atomically; a right PIN moves the call's lines to the member's DM with the assistant (the orb's owner path), rechecked on every turn. Needs a dev phone walk and a worker deploy |
 | 3.30 | Spanish, and a voice choice with preview | yes | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the next prod train. Mobile controls are in #5183 (type-check and voice tests pass; not yet seen on a device) and reach phones by OTA when it merges |
 | 3.31 | Choose which agent is the receptionist | yes | no | no | | Platform | #5166 merged 9 Nov; on dev, next prod train |
 | 3.32 | `VoiceCallOutcome` metric and an alarm on worker and route errors | yes | yes | no | | Platform | The metric is emitted. The alarm is W85 (voice route errors), present in prod and dev. No alarm reads the outcome metric itself |
@@ -147,13 +147,13 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.6 | Onboarding: website read, review what was learned, booking destination, number, name and try a booking | yes | yes | no | 1st | Product | Never run end to end on a fresh workspace |
 | 4.7 | Fresh business to first answered call in 15 minutes, at phone width | n/a | n/a | no | 1st | Product | |
 | 4.8 | Settings: Members, Connections, Approvals (Ask, Auto, Never ask), Notifications, Billing and minutes with the run-out choice | yes | yes | no | 1st | Product | |
-| 4.9 | Customers are always on managed credits; Sign in with ChatGPT is internal only for now | no | no | no | | Platform | Founder ruling 9 Nov. What is built (#5162, #5168, on dev) offers both to every workspace admin |
+| 4.9 | Provider choice: managed credits or Sign in with ChatGPT, open to every workspace | yes | no | no | | Platform | #5162 and #5168. Founder 10 Nov: keep ChatGPT open (the internal-only allowlist #5187 was reverted in #5194 before reaching prod). Ships with the next prod train |
 | 4.10 | The orb: connecting, listening, thinking, speaking, with a caption; each talk kept as a "Yours" row | yes | yes | part | | Product | |
 | 4.11 | The orb does the general agent work the old product did | yes | yes | no | | Product | Founder ruling: the orb is a full third use case |
 | 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
 | 4.13 | Mobile: four tabs, voice Home | yes | yes | no | | Product | Shipped by OTA |
 | 4.14 | Mobile: voice settings, billing and onboarding match the web; old purchase screens gone | no | no | no | | Product | |
-| 4.15 | Push: Needs-you cards, and the first three calls after Go live | no | no | no | | Product | |
+| 4.15 | Push: Needs-you cards, and the first three calls after Go live | yes | no | no | | Product | Card pushes already existed (one per card, retry-safe). #5188 trims their text to the kind and a first name (no caller number or question) and adds a push for the owner's first three answered calls. Not seen on a device. A tap opens the task, not the Needs-you list |
 | 4.16 | Ten-second undo on send or spend | no | no | no | | Product | Not in the code |
 | 4.17 | Design pass to a consumer bar; accessibility; empty and error states | part | part | no | | Product | A polish pass shipped (#5084). No final critique |
 
@@ -177,8 +177,8 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 5.14 | Starts follow-up work it was clearly given; records human commitments without acting | yes | no | no | Platform | #5163 merged, on dev |
 | 5.15 | Everyone acts with the inviter's authority; spend, send and publish need the inviter's card tap | yes | yes | no | Product | |
 | 5.16 | Notes in the app after the meeting; no email | yes | part | part | Product | Notes in the app are verified on screen on prod. The removal of the automatic email reaches prod with the queued train |
-| 5.17 | Structured decisions, recallable by voice ("what did we decide") | no | no | no | Product | #5018 parked |
-| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked |
+| 5.17 | Structured decisions, recallable by voice ("what did we decide") | yes | no | no | Product | #5186: the notes run also returns a Decisions section; stored on the meeting, shown in the pane, each written once to the workspace's team memory for recall. Not yet seen in a real meeting or recalled live |
+| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked. Built in #5185, unverified live: GPT-Live hands the request to the Router, whose `meeting_stop_transcribing` excludes only the recorded speaker; the worker adopts it from `/events`; the tile shows the count. Needs a real-meeting run. |
 | 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |
 | 5.20 | Meeting minutes counted | yes | part | part | Platform | #5155, verified on dev |
 | 5.21 | The scenario list (`tests/replay/scenarios/`) passes in a real Meet | n/a | n/a | no | Product | No simulator exists; the earlier one was removed |

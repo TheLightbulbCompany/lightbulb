@@ -11,6 +11,7 @@ import { SessionNotificationsCard } from "@/components/settings/SessionNotificat
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useAgentConfig, useUsage } from "./data";
 import { VoicePlanCard } from "./VoicePlanCard";
+import { PhonePinCard } from "./PhonePinCard";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { isDesktopApp } from "@/lib/desktopNotify";
 
@@ -62,6 +63,7 @@ export function VoiceSettings() {
     <Section name="Voice plan"><VoicePlanCard /></Section>
     <Section name="Billing & minutes"><BillingMinutes /></Section>
     <Section name="Workspace billing"><Billing /></Section>
+    <Section name="Phone PIN"><PhonePinCard /></Section>
     <Section name="Members"><Members /></Section>
     <Section name="Connections"><Connections /></Section>
     <Section name="Approvals"><Approvals /></Section>

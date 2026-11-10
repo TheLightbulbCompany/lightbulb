@@ -533,6 +533,7 @@ class FrontDeskBody(BaseModel):
     service: str = ""
     start: str = ""
     new_start: str | None = None
+    booking_id: str = ""  # my_bookings' bookingId: which booking, when the caller has two at one start
     name: str = ""
     text: str = ""
     callback_number: str = ""
@@ -584,7 +585,9 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
             if body.action == "book":
                 return await vp.book(call_id, vp.BookIn(start=body.start, service=body.service, name=body.name))
             new = body.new_start if body.action == "move" else None
-            return await vp.change_booking(call_id, vp.ChangeIn(start=body.start, newStart=new))
+            return await vp.change_booking(
+                call_id, vp.ChangeIn(start=body.start, newStart=new, bookingId=body.booking_id)
+            )
         finally:  # the caller's batch and thread see the change at once, not after the 60 s cache
             business_profile.forget(owner_id)
     except ValidationError as exc:
@@ -636,6 +639,24 @@ async def meeting_chat(owner_id: str, body: MeetingChatBody, request: Request) -
         raise HTTPException(status_code=503, detail="meeting_busy") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+
+
+class MeetingStopTranscribingBody(BaseModel):
+    trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
+    participant_id: str = Field(default="", alias="participantId", max_length=128)
+
+
+@router.post("/{owner_id}/meeting-stop-transcribing")
+async def meeting_stop_transcribing(owner_id: str, body: MeetingStopTranscribingBody, request: Request) -> dict:
+    from core.services import meeting_chat as delivery
+
+    await _gate(owner_id, request)
+    try:
+        return await delivery.stop_transcribing(owner_id, body.trigger_ids, body.participant_id)
+    except delivery.NotCurrentMeeting as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except delivery.meeting_invites.MeetingBusy as exc:
+        raise HTTPException(status_code=503, detail="meeting_busy") from exc
 
 
 class TransferCallBody(BaseModel):

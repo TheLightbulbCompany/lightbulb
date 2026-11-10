@@ -47,7 +47,7 @@ async def test_owner_end_creates_yours_item(m):
     assert call["transcript"] == [{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
                                   {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1}]  # fmt: skip
     assert call["summary"] == "“Anything I need to handle?”" and call["followUps"] == []
-    item = voice._item({"roomId": out["roomId"], "kind": "call", "createdAt": "2026-11-07T08:02:00Z", "call": call})
+    item = voice._items({"roomId": out["roomId"], "kind": "call", "createdAt": "2026-11-07T08:02:00Z", "call": call})[0]
     assert item["type"] == "call" and item["ownerMode"] is True  # the "Yours" chip's test
 
 

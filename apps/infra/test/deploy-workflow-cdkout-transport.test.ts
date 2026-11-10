@@ -46,8 +46,20 @@ describe("deploy.yml cdk.out transport", () => {
     // $223.81/mo of KMS plus $52 of S3 requests over 2026-08-08..09-07. A
     // single object makes that one Decrypt per job. Anyone reverting to
     // `--recursive` reintroduces ~$300/mo silently, so it fails here instead.
-    expect(yaml).not.toMatch(/aws s3 cp \S*gha-cdk-out\S*[\s\S]{0,200}?--recursive/);
+    // Synth uploads ~42 slice objects once per run (a recursive PUT is fine);
+    // what must never be recursive is the per-job DOWNLOAD.
+    expect(yaml).not.toMatch(/aws s3 cp s3:\/\/\S*gha-cdk-out\S*[\s\S]{0,200}?--recursive/);
     expect(yaml).toContain("tar -xzf cdk.out.tgz");
+  });
+
+  it("GUARD: an S3 download fetches the base and its own asset slice, never the whole tarball", () => {
+    // DEPLOY_RUNNER moved to GitHub-hosted runners on 2026-11-05, so the host
+    // cache never hits and every S3 GET is internet egress: 41 jobs x the full
+    // ~40 MB tarball was 75-98 GB/day, ~$260/mo (docs/ops/2026-11-10-cost-cuts.md).
+    const assetJobs = yaml.match(/^ {2}Assets-[A-Za-z0-9]+:$/gm) ?? [];
+    expect(yaml.match(/\/slices\/base\.tgz cdk\.out\.tgz/g) ?? []).toHaveLength(assetJobs.length);
+    expect(yaml.match(/\/slices\/\$id\.tgz" asset\.tgz/g) ?? []).toHaveLength(assetJobs.length);
+    expect(yaml).not.toMatch(/aws s3 cp s3:\/\/\S*\/cdk\.out\.tgz/);
   });
 
   it("gives every consumer a download", () => {

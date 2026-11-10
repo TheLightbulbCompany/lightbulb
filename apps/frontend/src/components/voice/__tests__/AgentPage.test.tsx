@@ -120,6 +120,33 @@ it("saves supported voice and Spanish settings without rewriting the saved legac
   vi.useRealTimers();
 });
 
+it("who does a service is a choice from the staff list, stored as names", async () => {
+  const { WhoDoesIt } = await import("../AgentPage");
+  const set = vi.fn();
+  const { rerender } = render(<WhoDoesIt staff={[]} value="Ana" set={set} />);
+  expect(screen.getByText("Anyone")).toBeInTheDocument(); // no staff list: one at a time, anyone
+  const staff = [{ id: "a1", name: "Ana" }, { id: "m1", name: "Mei" }, { id: "j1", name: "Jo" }];
+  rerender(<WhoDoesIt staff={staff} value="Ana" set={set} />); // a name typed before ids still ticks its person
+  expect((screen.getByLabelText("Ana") as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(screen.getByLabelText("Jo"));
+  expect(set).toHaveBeenLastCalledWith("a1, j1"); // stored by id, so a rename keeps it
+  fireEvent.click(screen.getByLabelText("Ana"));
+  expect(set).toHaveBeenLastCalledWith(""); // none ticked is anyone
+});
+
+it("the staff list adds and names people", async () => {
+  vi.useFakeTimers();
+  render(<AgentPage />);
+  fireEvent.click(screen.getByRole("button", { name: /Add a person/ }));
+  fireEvent.change(screen.getByLabelText("Staff name"), { target: { value: "Ana" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  const saved = cfg.save.mock.lastCall![0].staff;
+  expect(saved).toHaveLength(1);
+  expect(saved[0].name).toBe("Ana");
+  expect(saved[0].id).toMatch(/^[0-9a-f]{8}$/);
+  vi.useRealTimers();
+});
+
 it("a new closure starts on today's date in the business's time zone, not UTC's", async () => {
   const { Closures } = await import("../AgentPage");
   vi.useFakeTimers({ toFake: ["Date"] });

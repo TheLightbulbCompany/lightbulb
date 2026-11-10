@@ -131,7 +131,10 @@ def prompt(info: dict) -> str:
         business=info["businessName"],
         caller=f"The caller is {info['callerName']}, a returning client.\n"
         if info.get("callerName")
-        else "",
+        else ""
+        if info.get("callerVerified")
+        else "This caller's number is not verified: you cannot look up, move or cancel existing bookings; offer "
+        "to take a message for the team instead.\n",
         paused="This line is not taking bookings or questions right now: it only takes messages.\n"
         if paused
         else "",
@@ -236,7 +239,14 @@ async def entrypoint(ctx: JobContext) -> None:
     caller_number = e164(caller.attributes.get("sip.phoneNumber") or meta.get("callerNumber") or "")
     backend = Backend()
     info = await backend.post(
-        "/internal/voice/calls", {"calledNumber": called, "callerNumber": caller_number, "livekitRoom": ctx.room.name}
+        "/internal/voice/calls",
+        {
+            "calledNumber": called,
+            "callerNumber": caller_number,
+            "livekitRoom": ctx.room.name,
+            # Twilio's X-Twilio-VerStat, mapped by the inbound trunk (scripts/provision_phone_telephony.py)
+            "verstat": caller.attributes.get("sip.verstat") or "",
+        },
     )
     if info.get("error"):
         logger.error("phone: call refused (%s)", info["error"])

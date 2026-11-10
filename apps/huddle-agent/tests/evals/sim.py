@@ -314,7 +314,8 @@ async def run_scenario(sc: dict, lk: dict) -> dict:
     token = (
         api.AccessToken(lk["LIVEKIT_API_KEY"], lk["LIVEKIT_API_SECRET"])
         .with_identity(f"sip_{sc['caller']}")
-        .with_attributes({"sip.phoneNumber": sc["caller"], "sip.trunkPhoneNumber": line})
+        .with_attributes({"sip.phoneNumber": sc["caller"], "sip.trunkPhoneNumber": line,
+                          "sip.verstat": sc.get("verstat", "TN-Validation-Passed-A")})  # fmt: skip
         .with_grants(api.VideoGrants(room_join=True, room=room_name))
         .to_jwt()
     )

@@ -58,8 +58,9 @@ function Section({ name, children }: { name: string; children: React.ReactNode }
 
 /** Google Calendar is the one connection the booking tools use (NeedsYou links here as #connections). */
 function CalendarCard() {
-  const { connections, startOAuth } = useConnections();
+  const { connections, isLoading, startOAuth } = useConnections();
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const google = connections.find((x) => x.provider === "google");
   const ok = google?.status === "connected";
   return <section className="vx-card" id="connections" aria-labelledby="vx-calendar-h">
@@ -67,8 +68,14 @@ function CalendarCard() {
     <p className="vx-sub">{ok ? "Google Calendar is connected. Your assistant books into it during calls." : "Connect Google Calendar so your assistant books straight into it during calls."}</p>
     {ok ? <span className="vx-tag" data-tone="ok">Connected</span>
       : <Button type="button" size="sm" variant="outline" disabled={busy || !google}
-        onClick={async () => { setBusy(true); try { await startOAuth("google"); } finally { setBusy(false); } }}>
-        {busy ? "Opening Google…" : google?.status === "reconnect_required" ? "Reconnect Google" : "Connect Google Calendar"}</Button>}
+        onClick={async () => {
+          setBusy(true); setErr("");
+          try { await startOAuth("google"); }
+          catch (e) { setErr((e as { status?: number })?.status === 403 ? "Ask a workspace admin to connect the calendar." : "Couldn't open Google. Try again."); }
+          finally { setBusy(false); }
+        }}>
+        {isLoading ? "Loading…" : busy ? "Opening Google…" : google?.status === "reconnect_required" ? "Reconnect Google" : "Connect Google Calendar"}</Button>}
+    {err && <p className="vx-hint" role="alert">{err}</p>}
   </section>;
 }
 
@@ -83,7 +90,7 @@ export function VoiceSettings() {
     <Section name="Members"><div className="settings-panel" id="panel-members">
       <h2 className="settings-page-title">Members</h2>
       <p className="settings-page-desc">Who can sign in to this business, and the link that lets someone else in.</p>
-      <WorkspaceMembersSection />
+      <WorkspaceMembersSection blurb="Everyone here can sign in to this business and see its calls." />
     </div></Section>
     <Section name="Notifications"><div className="settings-panel" id="panel-notifications">
       <h2 className="settings-page-title">Notifications</h2>

@@ -108,8 +108,7 @@ export function AgentPage() {
 
     <Sec title="Hours" hint={`${name} answers 24/7; it only books inside these hours.`}>
       <HoursEditor c={c} set={set} />
-      <label className="vx-label">Holidays and closures
-        <input className="vx-field" value={c.holidays} placeholder="Closed 26–27 Nov" onChange={(e) => set({ holidays: e.target.value })} /></label>
+      <Closures c={c} set={set} />
     </Sec>
 
     <Sec title="Services & staff">
@@ -152,9 +151,9 @@ export function AgentPage() {
 
     <Sec title="Reminders & follow-ups">
       <div>
-        <Check label="Text clients the day before their appointment" on={c.reminders.dayBefore} set={(dayBefore) => set({ reminders: { ...c.reminders, dayBefore } })} />
-        <Check label="Text back missed callers who didn't leave a message" on={false} disabled note="Off until we finish a consent review" />
-        <Check label="Text the waitlist when a slot frees up" on={false} disabled note="Off until we finish a consent review" />
+        <Check label="Text clients the day before their appointment" on={false} disabled note="Not available yet" />
+        <Check label="Text back missed callers who didn't leave a message" on={false} disabled note="Not available yet" />
+        <Check label="Text the waitlist when a slot frees up" on={false} disabled note="Not available yet" />
       </div>
     </Sec>
   </div>;
@@ -162,6 +161,22 @@ export function AgentPage() {
 
 export function Sec({ title, hint, children }: { title: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return <section className="vx-sec"><h2>{title}</h2>{hint && <p className="vx-hint">{hint}</p>}<div className="vx-grid">{children}</div></section>;
+}
+
+/** Closed dates, stored as `holidays: [{from, to}]` (local ISO dates, inclusive); the old free-text value shows as none. */
+export function Closures({ c, set }: Edit) {
+  const list = Array.isArray(c.holidays) ? c.holidays : [];
+  const put = (n: number, patch: Partial<(typeof list)[number]>) => set({ holidays: list.map((r, i) => (i === n ? { ...r, ...patch } : r)) });
+  return <div>
+    <b className="vx-label">Holidays and closures</b>
+    {list.map((r, n) => <div key={n} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+      <input className="vx-field" type="date" aria-label="Closed from" value={r.from} onChange={(e) => put(n, { from: e.target.value, to: r.to < e.target.value ? e.target.value : r.to })} />
+      <span className="vx-muted">to</span>
+      <input className="vx-field" type="date" aria-label="Closed until" value={r.to} min={r.from} onChange={(e) => put(n, { to: e.target.value })} />
+      <Button size="icon-sm" variant="ghost" aria-label="Remove closure" onClick={() => set({ holidays: list.filter((_, i) => i !== n) })}><X /></Button>
+    </div>)}
+    <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => { const d = new Intl.DateTimeFormat("en-CA", { timeZone: c.timezone || undefined }).format(new Date()); set({ holidays: [...list, { from: d, to: d }] }); }}><Plus /> Add a closed date</Button></div>
+  </div>;
 }
 
 export function Check({ label, on, set, disabled, note }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean; note?: string }) {
@@ -213,7 +228,6 @@ export function ServicesEditor({ c, set }: Edit) {
         title={s.minutesGuessed ? "A guess: the site doesn't say how long this takes" : undefined}
         onChange={(e) => put({ minutes: Number(e.target.value), minutesGuessed: false })} />
       <input className="vx-field" aria-label="Price" value={s.price} placeholder="$55" onChange={(e) => put({ price: e.target.value })} />
-      <input className="vx-field" aria-label="Who does it" value={s.staff} placeholder="Ana, Mei" onChange={(e) => put({ staff: e.target.value })} />
       <Button size="icon-sm" variant="ghost" aria-label={`Remove ${s.name || "service"}`} onClick={() => set({ services: c.services.filter((_, i) => i !== n) })}><X /></Button>
     </div>;
   })}

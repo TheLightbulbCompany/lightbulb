@@ -71,9 +71,10 @@ DEFAULTS: dict = {
     "live": False,
     "paused": False,
     "instructions": "",
-    "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
+    "allow": {"book": True, "move": True, "greetByName": True, "answer": True},
     "knowledge": [],
     "hours": {d: {"open": "09:00", "close": "18:00", "closed": d == "Sun"} for d in _DAYS},
+    "holidays": [],  # closures: [{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}], local dates; an old free-text value means none
     "services": [],
     "bufferMin": 10,
     "timezone": "America/New_York",  # IANA; Onboarding saves the browser's
@@ -590,7 +591,22 @@ def _minutes(cfg: dict, service: str) -> int:
     return 60
 
 
+def _closed_on(cfg: dict, date: str) -> bool:
+    """True when `date` (local "YYYY-MM-DD") falls in a closure range. ISO dates compare as strings; anything that is
+    not a list of {from, to} ranges (the old free-text value) closes nothing."""
+    h = cfg.get("holidays")
+    return isinstance(h, list) and any(
+        isinstance(r, dict)
+        and isinstance(r.get("from"), str)
+        and r["from"]
+        and r["from"] <= date <= str(r.get("to") or r["from"])
+        for r in h
+    )
+
+
 def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
+    if _closed_on(cfg, date):
+        return None
     h = cfg["hours"].get(_DAYS[datetime.strptime(date, "%Y-%m-%d").weekday()]) or {}
     if not h or h.get("closed"):
         return None

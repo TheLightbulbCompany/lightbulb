@@ -153,6 +153,8 @@ async def _build(ws: str, caller: str | None) -> str:
     if isinstance(facts, BaseException):
         raise facts
     sections = [facts]
+    if not cfg["handoff"]["number"]:
+        sections.append("No person is available to transfer a call to; take a message instead.")
     for label, r in zip(("Open start times", "This caller's upcoming bookings"), rest):
         if isinstance(r, BaseException):
             logger.warning("business profile part unavailable ws=%s", ws, exc_info=r)

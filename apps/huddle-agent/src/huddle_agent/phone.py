@@ -134,9 +134,11 @@ def prompt(info: dict) -> str:
         else "",
         paused="This line is not taking bookings or questions right now: it only takes messages.\n"
         if paused
-        else "",
+        else "" if info.get("transfer") else "No person is available to transfer a call to; take a message instead.\n",
         owner=OWNER_PIN if info.get("ownerPin") else "",
-        delegation=live.delegation_policy(MESSAGE_ONLY_TOOLS if paused else TOOLS),
+        delegation=live.delegation_policy(
+            MESSAGE_ONLY_TOOLS if paused else TOOLS if info.get("transfer") else TOOLS[:-1]  # no number: no person tool
+        ),
     )
 
 

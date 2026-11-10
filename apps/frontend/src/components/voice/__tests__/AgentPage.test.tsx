@@ -51,8 +51,9 @@ it("hides what does nothing yet and shows the texts as off", () => {
     const box = screen.getByLabelText(t) as HTMLInputElement;
     expect(box.checked).toBe(false); expect(box.disabled).toBe(true);
   }
-  expect(screen.getAllByText("Off until we finish a consent review")).toHaveLength(2);
-  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).disabled).toBe(false);
+  expect(screen.getAllByText("Not available yet")).toHaveLength(3);
+  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).checked).toBe(false);
   expect(screen.getByRole("link", { name: "Test call" }).getAttribute("href")).toBe("tel:+14155550199");
 });
 

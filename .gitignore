@@ -99,3 +99,6 @@ benchmarks/beam/.venv
 benchmarks/beam/.cache
 __pycache__/
 .pytest_cache/
+
+# Browser-test dumps (contain real user data)
+.playwright-cli/

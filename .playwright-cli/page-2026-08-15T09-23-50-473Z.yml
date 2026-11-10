@@ -1,9 +1,0 @@
-- generic [active] [ref=f26e1]:
-  - alert [ref=f26e1753]
-  - generic [ref=f26e9443]:
-    - heading "Something went wrong" [level=2] [ref=f26e9444]
-    - paragraph [ref=f26e9445]: An unexpected error occurred. Please try refreshing the page.
-    - generic [ref=f26e9446]:
-      - button "Try Again" [ref=f26e9447]
-      - button "Refresh Page" [ref=f26e9448]
-      - button "Report this error" [ref=f26e9449]

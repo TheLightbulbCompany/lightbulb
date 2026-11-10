@@ -152,6 +152,11 @@ async def test_the_owners_greeting_is_used_as_written(client):
     assert (await _start(client, greeting=mine))["greeting"] == mine
 
 
+async def test_the_greeting_names_the_business_typed_at_setup_not_the_workspace(client):
+    started = await _start(client, business="Man Made Salon")
+    assert started["greeting"] == "Hi, I'm Nova, Man Made Salon's AI assistant. How can I help?"
+
+
 async def test_pending_voice_payment_cannot_use_owner_test_bypass_or_business_tools(client):
     with patch.object(
         voice_phone.billing_repo,

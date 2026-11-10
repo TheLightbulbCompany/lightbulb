@@ -8,7 +8,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
+import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig, type StaffMember } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
@@ -225,22 +225,25 @@ export function StaffEditor({ c, set, name }: Edit & { name: string }) {
   return <div>
     <b className="vx-label">Staff</b>
     <p className="vx-sub">{staff.length ? `${name} books up to ${staff.length} appointment${staff.length === 1 ? "" : "s"} at the same time, one per person.` : `With no one listed, ${name} books one appointment at a time.`}</p>
-    {staff.map((p, n) => <div key={n} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-      <input className="vx-field" aria-label="Staff name" value={p} maxLength={40} placeholder="Ana" onChange={(e) => set({ staff: staff.map((x, i) => (i === n ? e.target.value : x)) })} />
-      <Button size="icon-sm" variant="ghost" aria-label={`Remove ${p || "person"}`} onClick={() => set({ staff: staff.filter((_, i) => i !== n) })}><X /></Button>
+    {staff.map((p, n) => <div key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+      <input className="vx-field" aria-label="Staff name" value={p.name} maxLength={40} placeholder="Ana" onChange={(e) => set({ staff: staff.map((x, i) => (i === n ? { ...x, name: e.target.value } : x)) })} />
+      <Button size="icon-sm" variant="ghost" aria-label={`Remove ${p.name || "person"}`} onClick={() => set({ staff: staff.filter((_, i) => i !== n) })}><X /></Button>
     </div>)}
-    {staff.length < 20 && <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => set({ staff: [...staff, ""] })}><Plus /> Add a person</Button></div>}
+    {/* The id keys this person's bookings: made once here, kept on rename. */}
+    {staff.length < 20 && <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => set({ staff: [...staff, { id: crypto.randomUUID().slice(0, 8), name: "" }] })}><Plus /> Add a person</Button></div>}
   </div>;
 }
 
-/** Who can do a service, from the staff list; none ticked is anyone. Stored as "Ana, Mei" (the field's old shape). */
-export function WhoDoesIt({ staff, value, set }: { staff: string[]; value: string; set: (v: string) => void }) {
-  const people = staff.filter((p) => p.trim());
+/** Who can do a service, from the staff list; none ticked is anyone. Stored as ids, "a1, m1" (a name typed there
+ *  before staff had ids still ticks its person). */
+export function WhoDoesIt({ staff, value, set }: { staff: StaffMember[]; value: string; set: (v: string) => void }) {
+  const people = staff.filter((p) => p.name.trim());
   if (!people.length) return <span className="vx-muted" style={{ fontSize: "var(--text-ui)" }}>Anyone</span>;
   const on = new Set(value.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean));
+  const ticked = (p: StaffMember) => on.has(p.id.toLowerCase()) || on.has(p.name.trim().toLowerCase());
   return <div role="group" aria-label="Who does it" style={{ display: "flex", flexWrap: "wrap", gap: "0 12px" }}>
-    {people.map((p) => <Check key={p} label={p} on={on.has(p.trim().toLowerCase())}
-      set={(v) => set(people.filter((x) => (x === p ? v : on.has(x.trim().toLowerCase()))).join(", "))} />)}
+    {people.map((p) => <Check key={p.id} label={p.name} on={ticked(p)}
+      set={(v) => set(people.filter((x) => (x.id === p.id ? v : ticked(x))).map((x) => x.id).join(", "))} />)}
   </div>;
 }
 

@@ -40,6 +40,7 @@ export function useTimeline() {
 }
 
 export interface Knowledge { q: string; a: string; source?: string }
+export interface StaffMember { id: string; name: string }
 export type Day = { open: string; close: string; closed?: boolean };
 
 export interface AgentConfig {
@@ -51,9 +52,10 @@ export interface AgentConfig {
   hours: Record<string, Day>; holidays: { from: string; to: string }[];
   /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
   services: { name: string; minutes: number; price: string; staff: string; minutesGuessed?: boolean }[]; bufferMin: number;
-  /** The people who take bookings (names only): one booking per free person at a time. A service's `staff` is the
-   *  comma-separated names of who does it ("" = anyone). Empty list: one booking at a time, as before. */
-  staff: string[];
+  /** The people who take bookings: one booking per free person at a time. `id` is set when the person is added and
+   *  never changes (their bookings are keyed by it), so renaming, removing or reordering moves nobody's bookings.
+   *  A service's `staff` is the comma-separated ids of who does it ("" = anyone). Empty list: one at a time. */
+  staff: StaffMember[];
   /** IANA zone the hours are in; Onboarding saves the browser's. The server defaults to America/New_York. */
   timezone?: string;
   bookingsGo: "google" | "square" | "other" | "own"; otherSystem: string;

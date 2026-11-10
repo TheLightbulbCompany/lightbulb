@@ -597,24 +597,30 @@ def _minutes(cfg: dict, service: str) -> int:
     return int(_service(cfg, service).get("minutes") or 60)
 
 
-def _staff(cfg: dict) -> list[str]:
-    """The Agent page's people (names only), deduplicated, at most 20."""
-    raw = cfg.get("staff") if isinstance(cfg.get("staff"), list) else []
-    return list(dict.fromkeys(n.strip()[:40] for n in raw if isinstance(n, str) and n.strip()))[:20]
+def _staff(cfg: dict) -> list[tuple[str, str]]:
+    """The Agent page's people as (id, name), at most 20. The id is assigned when the person is added and kept on
+    rename, so a person's bookings never depend on their name or place in the list. A bare string is its own id."""
+    out: dict[str, str] = {}
+    for p in cfg.get("staff") if isinstance(cfg.get("staff"), list) else []:
+        pid, name = (p, p) if isinstance(p, str) else (p.get("id"), p.get("name")) if isinstance(p, dict) else ("", "")
+        if isinstance(pid, str) and isinstance(name, str) and pid.strip() and name.strip():
+            out.setdefault(pid.strip()[:40], name.strip()[:40])
+    return list(out.items())[:20]
 
 
 def _lanes(cfg: dict, service: str) -> list[tuple[str, str]]:
-    """(key suffix, person) for everyone who can do `service`, in staff-list order: a slot's capacity is one booking
-    per lane. The first person takes the unsuffixed keys, so a config with no staff list (one lane, "") and the
-    bookings made before it had one keep exactly today's keys. A service's `staff` ("Ana, Mei") names who does it;
-    empty, or naming nobody on the list, is anyone.
-    ponytail: keys follow names and list order, so renaming or reordering people does not move bookings they already
-    hold (a renamed person starts free). Per-person schedules and days off are not modelled."""
+    """(key suffix, name) for everyone who can do `service`, in list order: a slot's capacity is one booking per
+    person. A person's keys carry their id (VOICEBOOK#<start>#<id>). The unsuffixed keys mean only "no staff list":
+    a config without one has the single lane "" (today's keys), and the bookings made before staff existed keep
+    them and take one person's capacity (see `_old_booking_checks`). A service's `staff` ("a1, m1") lists who does
+    it by id (a name also matches); empty, or naming nobody on the list, is anyone. Per-person schedules and days
+    off are not modelled."""
     staff = _staff(cfg)
     if not staff:
         return [("", "")]
     named = {n.strip().lower() for n in str(_service(cfg, service).get("staff") or "").split(",")}
-    return [("" if p == staff[0] else f"#{p}", p) for p in [p for p in staff if p.lower() in named] or staff]
+    eligible = [(i, n) for i, n in staff if i.lower() in named or n.lower() in named] or staff
+    return [(f"#{i}", n) for i, n in eligible]
 
 
 def _start(row: dict) -> str:
@@ -649,11 +655,24 @@ def open_starts(
     cfg: dict, date: str, taken: list[tuple], now: datetime, minutes: int, lanes: list[tuple[str, str]]
 ) -> list[str]:
     """`free_slots` where at least one of `lanes` is free. `taken` holds (start, end, lane) bookings and
-    (start, end) blocks, such as a Google busy block, that every lane shares."""
+    (start, end) blocks, such as a Google busy block, that every lane shares. With a staff list, an unsuffixed
+    booking (made before staff existed) holds one person's time, unknown whose: a start that overlaps one needs
+    another person free as well (as `_old_booking_checks` requires when booking)."""
+    shared = [(t[0], t[1]) for t in taken if len(t) == 2]
+    mine = lambda lane: shared + [(t[0], t[1]) for t in taken if len(t) == 3 and t[2] == lane]  # noqa: E731
+    old = [(t[0], t[1]) for t in taken if len(t) == 3 and t[2] == ""] if lanes[0][0] else []
+    need, buf = timedelta(minutes=minutes), timedelta(minutes=int(cfg.get("bufferMin") or 0))
     out: set[str] = set()
     for lane, _ in lanes:
-        out.update(free_slots(cfg, date, [(t[0], t[1]) for t in taken if len(t) == 2 or t[2] == lane], now, minutes))
+        for at in free_slots(cfg, date, mine(lane), now, minutes):
+            t = datetime.strptime(at, "%Y-%m-%dT%H:%M")
+            if _clear(t, need, buf, old) or any(_clear(t, need, buf, mine(q)) for q, _ in _lanes(cfg, "") if q != lane):
+                out.add(at)
     return sorted(out)
+
+
+def _clear(at: datetime, need: timedelta, buf: timedelta, taken: list[tuple[datetime, datetime]]) -> bool:
+    return all(at + need + buf <= s or e + buf <= at for s, e in taken)
 
 
 def free_slots(cfg: dict, date: str, taken: list[tuple[datetime, datetime]], now: datetime, minutes: int) -> list[str]:
@@ -666,7 +685,7 @@ def free_slots(cfg: dict, date: str, taken: list[tuple[datetime, datetime]], now
     need, buf = timedelta(minutes=minutes), timedelta(minutes=int(cfg.get("bufferMin") or 0))
     out = []
     while at + need <= close:
-        if at > now and all(at + need + buf <= s or e + buf <= at for s, e in taken):
+        if at > now and _clear(at, need, buf, taken):
             out.append(at.strftime("%Y-%m-%dT%H:%M"))
         at += _GRID
     return out
@@ -760,20 +779,71 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
     )
     if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and _start(old) == start):
         raise _err(400, "slot_unavailable")
-    # A move keeps its person; a new booking takes the first eligible person whose keys are free. A lost race on
-    # one person's keys (the transaction is cancelled) tries the next, so capacity is never over-booked.
-    lanes = [(old["sk"][26:], old.get("staff", ""))] if old else _lanes(cfg, service)
-    for n, (lane, person) in enumerate(lanes):
+    # A move keeps its person (a booking from before staff existed gets one now); a new booking takes the first
+    # eligible person whose keys are free. A lost race on one person's keys (the transaction is cancelled) tries
+    # the next, so capacity is never over-booked.
+    staffed = bool(_staff(cfg))
+    lanes = (
+        [(old["sk"][26:], old.get("staff", ""))] if old and (old["sk"][26:] or not staffed) else _lanes(cfg, service)
+    )
+    base = _cells(cfg, start, minutes)
+    held = await _held_cells(owner_id, base[0], base[-1]) if staffed and base else set()
+    for lane, person in lanes:
         items = _booking_items(table, pk, call_id, call, cfg, start, service, name, minutes, lane, person, old)
+        checks = _old_booking_checks(cfg, table, pk, base, held, set(old.get("cells", [])) if old else set(), lane)
+        if checks is None:
+            continue
+        if len(items) + len(checks) > 100:
+            raise _err(400, "booking_too_long")
         try:
-            await messaging_repo._transact(items)
+            await messaging_repo._transact(items + checks)
             return items[0]["Put"]["Item"]
         except ClientError as exc:
             if not messaging_repo.is_cancelled(exc):
                 raise
-            if n == len(lanes) - 1:
-                raise _err(409, "slot_taken") from exc
-    raise AssertionError("unreachable: _lanes is never empty")
+    raise _err(409, "slot_taken")
+
+
+async def _held_cells(owner_id: str, first: str, last: str) -> set[str]:
+    """Every VOICECELL# key in [first, last], any person's (a person's id follows the time)."""
+    args = {
+        "KeyConditionExpression": Key("pk").eq(messaging_repo.owner_pk(owner_id))
+        & Key("sk").between(first, last + "\uffff"),
+        "ConsistentRead": True,
+        "ProjectionExpression": "sk",
+    }
+    out: set[str] = set()
+    while True:
+        result = await run_in_thread(messaging_repo._table().query, **args)
+        out.update(i["sk"] for i in result.get("Items", []))
+        if not result.get("LastEvaluatedKey"):
+            return out
+        args["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+
+def _old_booking_checks(cfg: dict, table: str, pk: str, base: list[str], held: set[str], mine: set[str],
+                        lane: str) -> list[dict] | None:  # fmt: skip
+    """A booking from before staff existed holds unsuffixed cells and one person's time, unknown whose. Booking
+    `lane` over such cells needs another person free there too: the transaction checks that person's cells are
+    still empty, so (serialised against every other booking's writes) the people booked at a cell stay at most
+    one fewer than the staff, and old + new never exceed capacity. [] when no old booking overlaps; None when
+    nobody else is free. `mine` (the booking being moved) does not count against itself."""
+    old = [c for c in base if c in held and c not in mine]
+    if not old:
+        return []
+    for q, _ in _lanes(cfg, ""):
+        if q != lane and not any(c + q in held for c in old):
+            return [
+                {
+                    "ConditionCheck": {
+                        "TableName": table,
+                        "Key": {"pk": pk, "sk": c + q},
+                        "ConditionExpression": "attribute_not_exists(sk)",
+                    }
+                }  # fmt: skip
+                for c in old
+            ]
+    return None
 
 
 def _booking_items(table: str, pk: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,

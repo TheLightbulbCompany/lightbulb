@@ -13,6 +13,9 @@ Rows in the messaging table:
                                           with bookingsGo "google" it is the hold, eventId its Google event
                                           (core/services/voice_booking)
     OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
+    OWNER#<owner>   VOICELIVE#<line>#<i>  a live-call slot (LIVE_CALLS_PER_LINE), held by a call id until its end
+    OWNER#<owner>   VOICECALLS#<day>#<c>  calls from caller c today; VOICEBOOKS#<day>#<c> its bookings ("withheld": "")
+    OWNER#<owner>   VOICETURNS#<call>     the call's `/turn` numbers (TURNS_PER_CALL)
 """
 
 import asyncio

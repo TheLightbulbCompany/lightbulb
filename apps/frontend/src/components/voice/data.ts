@@ -6,7 +6,7 @@
 import { useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
-import type { QuestionView } from "@lightbulb/shared";
+import { usPhone, type QuestionView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 
 export type Outcome = "booked" | "moved" | "cancelled" | "message" | "answered" | "needs_you" | "handoff_missed" | "spam" | "silent" | "forwarded";
@@ -147,11 +147,8 @@ export function useInviteAddress(): string | undefined {
 export const needsOnboarding = (c: AgentConfig | undefined, isNew: boolean | undefined) =>
   !!c && (!!isNew || (!c.live && !!c.onboardingStep));
 
-/** "+14842079294" as "(484) 207-9294"; anything else as it is. */
-export const usPhone = (e164: string) => {
-  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164);
-  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : e164;
-};
+/** Re-exported from @lightbulb/shared (web and phone share one formatter). */
+export { usPhone };
 
 /** Open Questions for the viewer. A workspace without the super-agent 404s: no Questions, not an error. */
 export function useQuestions() {
@@ -167,7 +164,7 @@ export const callNeedsYou = (i: TimelineItem): i is CallItem =>
   i.type === "call" && !i.resolvedAt && (i.outcome === "needs_you" || i.outcome === "handoff_missed");
 
 export const mmss = (sec?: number) => sec == null ? "" : `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
-export const who = (c: CallItem) => c.callerName || c.caller || "Unknown caller";
+export const who = (c: CallItem) => c.callerName || (c.caller ? usPhone(c.caller) : "Unknown caller");
 
 /** Whole minutes of calls this month (the Home foot and the Billing card's fallback). */
 export function monthMinutes(items: TimelineItem[], now = new Date()): number {
@@ -187,7 +184,8 @@ export function useUsage() {
   const api = useApi();
   const { isLoaded, orgId, userId } = useAuth();
   return useSWR<Usage>(isLoaded && userId ? ["/voice/usage", orgId ?? userId, userId] : null,
-    () => api.get("/voice/usage") as Promise<Usage>, { refreshInterval: 30_000 });
+    async () => { const u = (await api.get("/voice/usage")) as Usage; return { ...u, used: Math.ceil(u.used) }; }, // whole minutes: the server's 9.283 shows as 10
+    { refreshInterval: 30_000 });
 }
 
 /** A factual recorded step can fill a missing call summary; guessed steps never do. */

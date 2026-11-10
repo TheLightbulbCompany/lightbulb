@@ -61,6 +61,16 @@ async function micGranted(): Promise<boolean> {
   catch { return false; }
 }
 
+/** Asks for the mic on the tap itself, so the browser's prompt shows now and a refusal is known before any join.
+ *  No getUserMedia (the desktop webview, tests): nothing to ask, the join does its own. */
+const canAsk = () => !isTauri() && !!navigator.mediaDevices?.getUserMedia;
+async function askMic(): Promise<"ok" | "denied" | "none"> {
+  try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); return "ok"; }
+  catch (e) { return (e as { name?: string }).name === "NotFoundError" ? "none" : "denied"; }
+}
+const MIC_ASK = "Allow microphone access to talk";
+const MIC_BLOCKED = "Microphone is blocked. Click the lock icon in the address bar, set Microphone to Allow, then tap again.";
+
 function useTalkController(name: string) {
   const huddle = useHuddle();
   const room = useAssistantDm();
@@ -77,6 +87,9 @@ function useTalkController(name: string) {
   // A talk is on: the mic is open, or muted inside the talk. Mounted into an open mic (moving between places), it is.
   const [talk, setTalk] = useState(() => live && !!huddle.room?.localParticipant.isMicrophoneEnabled);
   const [muted, setMuted] = useState(false);
+  const [asking, setAsking] = useState(false); // the browser's mic prompt is open (or about to be)
+  const [micErr, setMicErr] = useState("");
+  const askId = useRef(0); // a newer tap, or a cancel, voids an older prompt's answer
   const want = useRef(talk); // the mic should be open: read when a join lands
   const down = useRef<{ at: number; was: boolean; muted: boolean } | null>(null);
   const connected = huddle.room;
@@ -95,14 +108,25 @@ function useTalkController(name: string) {
   }, [live, connected]);
   const open = () => {
     if (!room) return;
-    huddle.dismissError();
+    huddle.dismissError(); setMicErr("");
     setTalk(true); setMuted(false); setMine(true); want.current = true;
     if (live) void setMic(true);
-    else if (!started.current) { started.current = true; void huddle.join(room.roomId, name); }
+    else if (!started.current) {
+      started.current = true;
+      if (!canAsk()) { void huddle.join(room.roomId, name); return; }
+      const id = ++askId.current, roomId = room.roomId;
+      setAsking(true);
+      void askMic().then((r) => {
+        if (id !== askId.current || !mounted.current) return;
+        setAsking(false);
+        if (r === "ok") void huddle.join(roomId, name);
+        else { started.current = false; want.current = false; setTalk(false); setMicErr(r === "none" ? "No microphone found." : MIC_BLOCKED); }
+      });
+    }
     // else the pre-connect is in flight: it lands with `want` set and opens the mic
   };
   const end = useCallback(() => {
-    started.current = false;
+    started.current = false; askId.current++; setAsking(false); setMicErr("");
     setTalk(false); setMuted(false);
     void setMic(false).catch(() => {});
     huddle.leave(); // explicit End stops input and playback; backend work keeps running
@@ -111,6 +135,7 @@ function useTalkController(name: string) {
 
   const press = () => {
     if (!room || elsewhere || down.current) return;
+    if (talk && !live) { end(); return; } // a tap while it is still connecting (or asking for the mic) cancels
     down.current = { at: Date.now(), was: talk, muted };
     if (!talk) open(); // the mic opens on the press, so a push-to-talk keeps its first word
     else if (muted) { setMuted(false); void setMic(true); } // a new turn reopens only the input
@@ -208,16 +233,16 @@ function useTalkController(name: string) {
     idle_ended: `${name} left after a few minutes of quiet. Tap to talk again.`, connection_lost: "The connection dropped. Tap to talk again.",
   } as Record<string, string>)[error.code];
   const on = live && mine && talk;
-  const state: Orb = mine && talk && ((room && huddle.joining === room.roomId) || (live && !agent)) ? "connecting"
+  const state: Orb = mine && talk && (asking || (room && huddle.joining === room.roomId) || (live && !agent)) ? "connecting"
     : !on ? "idle"
     : agent?.status === "speaking" ? "speaking"
     : agent?.status === "working" ? (agent.task ? "working" : "thinking")
     : muted ? "muted" : needs > 0 ? "needs" : "listening";
   const caption = agent?.caption;
-  const alert = ended ? "" : err || (error ? `Couldn't reach ${name}. Try again.` : "");
+  const alert = micErr || (ended ? "" : err || (error ? `Couldn't reach ${name}. Try again.` : ""));
   const away = elsewhere ? `You're in a Live in ${huddle.roomName ?? "another room"}. End it to talk to ${name}.` : "";
   const label = {
-    idle: `Tap to talk to ${name}`, connecting: `Connecting to ${name}…`, listening: "Listening",
+    idle: `Tap to talk to ${name}`, connecting: asking ? MIC_ASK : `Connecting to ${name}…`, listening: "Listening",
     thinking: "Thinking…", working: agent?.task || "Working…", speaking: `${name} is speaking`,
     muted: "Muted", needs: `Listening · ${needs} need${needs === 1 ? "s" : ""} you on screen`,
   }[state];

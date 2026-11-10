@@ -235,3 +235,9 @@ export const meetVoiceLimitText = (reason: string): string =>
     : reason === "credits_low" ? "Voice is paused: the workspace's credits are low."
     : reason === "plan_inactive" ? "Voice is off: the workspace's plan is not active."
     : "The agents cannot speak right now.";
+
+/** "+14842079294" as "(484) 207-9294"; anything else as it is. */
+export const usPhone = (e164: string) => {
+  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164);
+  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : e164;
+};

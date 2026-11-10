@@ -43,6 +43,16 @@ it("unpaid Go live keeps the assistant off and offers the existing payment flow"
   vi.useRealTimers();
 });
 
+it("a hand-off number outside the US and Canada says why it was not saved", async () => {
+  vi.useFakeTimers();
+  cfg.save.mockRejectedValueOnce({ status: 422, body: { detail: { code: "handoff_number_not_us" } } });
+  render(<AgentPage />);
+  fireEvent.change(screen.getByPlaceholderText("Your cell"), { target: { value: "+1 876 555 0123" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(screen.getByText(/must be a US or Canadian number/)).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
 it("hides what does nothing yet and shows the texts as off", () => {
   render(<AgentPage />);
   for (const gone of [/Email me the notes/, /Add callers to the waitlist/]) expect(screen.queryByLabelText(gone)).toBeNull();
@@ -116,6 +126,33 @@ it("saves supported voice and Spanish settings without rewriting the saved legac
   await act(async () => { await vi.advanceTimersByTimeAsync(700); });
   expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ voice: "quartz", spanish: true, frontAgentId: "existing-worker" }));
   expect(screen.getByLabelText("Sample language")).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
+it("who does a service is a choice from the staff list, stored as names", async () => {
+  const { WhoDoesIt } = await import("../AgentPage");
+  const set = vi.fn();
+  const { rerender } = render(<WhoDoesIt staff={[]} value="Ana" set={set} />);
+  expect(screen.getByText("Anyone")).toBeInTheDocument(); // no staff list: one at a time, anyone
+  const staff = [{ id: "a1", name: "Ana" }, { id: "m1", name: "Mei" }, { id: "j1", name: "Jo" }];
+  rerender(<WhoDoesIt staff={staff} value="Ana" set={set} />); // a name typed before ids still ticks its person
+  expect((screen.getByLabelText("Ana") as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(screen.getByLabelText("Jo"));
+  expect(set).toHaveBeenLastCalledWith("a1, j1"); // stored by id, so a rename keeps it
+  fireEvent.click(screen.getByLabelText("Ana"));
+  expect(set).toHaveBeenLastCalledWith(""); // none ticked is anyone
+});
+
+it("the staff list adds and names people", async () => {
+  vi.useFakeTimers();
+  render(<AgentPage />);
+  fireEvent.click(screen.getByRole("button", { name: /Add a person/ }));
+  fireEvent.change(screen.getByLabelText("Staff name"), { target: { value: "Ana" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  const saved = cfg.save.mock.lastCall![0].staff;
+  expect(saved).toHaveLength(1);
+  expect(saved[0].name).toBe("Ana");
+  expect(saved[0].id).toMatch(/^[0-9a-f]{8}$/);
   vi.useRealTimers();
 });
 

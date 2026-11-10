@@ -45,7 +45,7 @@ async def test_100_faulty_ticks_task_count_unchanged(table, metrics, monkeypatch
     start = AsyncMock(side_effect=RuntimeError("refused"))
     cfg = WatchdogConfig(reconcile="act", fleet_actions_per_hour=3)
     with (
-        patch("core.services.super_agent_flags.list_on", AsyncMock(return_value=[WS])),
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=[{"owner_id": WS}])),
         patch("core.temporal.client.task_handle", lambda ws, t: Gone()),
         patch("core.temporal.client.start_task_workflow", start),
     ):

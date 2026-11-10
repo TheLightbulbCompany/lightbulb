@@ -4,7 +4,7 @@ Governance (`a2a_tasks`) decides who may ask what; once a request is allowed it 
 `admit_inbound_a2a` is that dispatch: one `TRIG#a2a:{a2aTaskId}` with a deterministic start pinned to the asked
 agent, in the requester's private lane, answered in the requester's DM with that agent. Idempotent per A2A task;
 a task a person stopped is never restarted by a late allow. The governance call site (`a2a_tasks._dispatch`) is the
-A2A session's: one line, `if await super_agent_flags.flags_for(org): return await a2a_admission.admit_inbound_a2a(org, row) is not None`.
+A2A session's: one line, `return await a2a_admission.admit_inbound_a2a(org, row) is not None`.
 
 Typed text never answers anything here (contracts §8): an A2A hold is governance's own card.
 """

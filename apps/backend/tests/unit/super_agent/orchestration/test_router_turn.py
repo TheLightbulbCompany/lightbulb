@@ -500,19 +500,6 @@ async def test_a_callers_task_is_the_call_rooms_never_a_persons(world):
 
 
 @pytest.mark.asyncio
-async def test_a_call_takes_at_most_five_tasks_then_offers_a_message(world, monkeypatch):
-    monkeypatch.setattr(acts, "_caller_profile", AsyncMock(return_value=None))
-    for i in range(acts.MAX_TASKS_PER_CALL):
-        await _open_task({"kind": "room", "roomId": ROOM}, title=f"Job {i}", origin="phone_contact")
-    ref = {"roomId": ROOM, "messageId": str(uuid.uuid4()), "origin": "phone_contact", "callId": ROOM}
-    t1 = await _trig("voice:c:turn-9", source="voice", ref=ref)
-    world["decisions"] = [_start([t1])]
-    await _run([t1])
-    assert world["starts"] == []
-    assert [p["text"] for p in world["posts"]] == [acts.CALL_TASK_CAP_LINE]
-
-
-@pytest.mark.asyncio
 async def test_meeting_flag_inherited_by_subtask(world):
     trig = {"triggerId": "voice:m1", "source": "voice", "ref": {"confirmAll": True}, "actorUserId": SAM}
     parent = await acts._ensure_task(WS, ts.new_task_id(), trig, "shared", "queued", title="p", visibility="room")

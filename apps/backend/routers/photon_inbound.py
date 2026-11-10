@@ -1,5 +1,5 @@
 """Photon inbound webhook: a customer iMessages a business's line; store it in the workspace's
-mail inbox as a text and wake the business's front-desk agent (the Photon twin of sendblue_inbound.py).
+mail inbox as a text and wake the business's front-desk agent.
 
 The request is a Standard Webhook: verified over the RAW body before anything is parsed. Transient
 failures (a delivery ``error``, any unexpected exception) roll the dedup row back and answer 503 so

@@ -75,20 +75,10 @@ export interface ApiStackProps extends cdk.StackProps {
   /** Literal issuer URL. When set it wins over the secret (see lightbulb-stage.ts). */
   clerkIssuerUrl?: string;
   /**
-   * Secrets Manager name (NOT ISecret) of the Paperclip service-token signing
-   * key. The WebSocket Lambda Authorizer fetches this at cold-start and uses
-   * it to verify HS256 service-token JWTs minted by the FastAPI backend
-   * (core/services/service_token.py). Passed as a plain string to avoid
-   * cross-stack KMS auto-grant cycles — see service-stack.ts comments.
-   */
-  paperclipServiceTokenKeySecretName: string;
-  /**
-   * AuthStack KMS key ARN (NOT a Key object) used to encrypt the Paperclip
-   * service-token secret. The authorizer Lambda needs `kms:Decrypt` on this
-   * key in order for `secretsmanager:GetSecretValue` to succeed at cold-start
-   * — `secret.grantRead()` only adds the SecretsManager action, not the
-   * underlying KMS one. Passed as a string for the same cross-stack reason
-   * as `paperclipServiceTokenKeySecretName`.
+   * AuthStack KMS key ARN (NOT a Key object) of the CMK that encrypts the WS
+   * internal shared secret. The WebSocket Lambdas need `kms:Decrypt` on it for
+   * `secretsmanager:GetSecretValue` to succeed at cold-start. Passed as a
+   * string to avoid cross-stack KMS auto-grant cycles (see service-stack.ts).
    */
   paperclipKmsKeyArn: string;
   /**
@@ -96,7 +86,7 @@ export interface ApiStackProps extends cdk.StackProps {
    * three WebSocket Lambdas fetch it at cold-start and attach it as the
    * `x-lightbulb-ws-internal` header so the backend `/ws/*` endpoints can tell them
    * apart from forged callers arriving via the public HTTP API Gateway. Passed
-   * as a plain string for the same cross-stack reason as the service-token key;
+   * as a plain string for the same cross-stack reason;
    * encrypted under the same CMK (`paperclipKmsKeyArn`).
    */
   wsInternalSecretSecretName: string;
@@ -371,18 +361,6 @@ export class ApiStack extends cdk.Stack {
     });
 
     // --- HTTP Integration → ALB via VPC Link ---
-    // We set X-Isol8-Public-Host = $context.domainName so the FastAPI backend
-    // can dispatch per public hostname (api.isol8.co vs company.isol8.co).
-    // API Gateway rewrites the upstream Host to the ALB DNS, so the original
-    // requesting host is otherwise lost.
-    //
-    // NOTE: We deliberately use a custom header name (`X-Isol8-Public-Host`)
-    // rather than `X-Forwarded-Host` — API Gateway HTTP API blocks parameter
-    // mapping on `x-forwarded-*` headers (they're managed by the gateway
-    // itself; AWS rejects with "Operations on header x-forwarded-host are
-    // restricted"). The backend's HostDispatcherMiddleware reads this custom
-    // header. The same integration (and so the same X-Isol8-Public-Host)
-    // serves all custom-domain mappings on this API.
     const httpIntegration = new apigatewayv2.CfnIntegration(
       this,
       "HttpAlbIntegration",
@@ -396,7 +374,6 @@ export class ApiStack extends cdk.Stack {
         payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
         requestParameters: {
-          "overwrite:header.X-Isol8-Public-Host": "$context.domainName",
           // The WAF per-IP rate rule (network-stack.ts) keys on this. `overwrite`
           // replaces anything the client sent, unlike X-Forwarded-For, which
           // API Gateway only appends to.
@@ -1492,34 +1469,6 @@ def handler(event, context):
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.containersTableName}`,
         ],
       }),
-    );
-
-    // --- Paperclip service-token signing key for the WS authorizer ---
-    // The Lambda fetches this secret value at cold-start (via boto3) and
-    // uses it to verify HS256 service-token JWTs minted by the FastAPI
-    // backend. We pass the secret ARN as an env var (rather than the
-    // value) so the secret never appears in CFN templates / deploy logs.
-    const paperclipServiceTokenSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      "PaperclipServiceTokenKeyForAuthorizer",
-      props.paperclipServiceTokenKeySecretName,
-    );
-    paperclipServiceTokenSecret.grantRead(authorizerFn);
-    // `grantRead` only adds `secretsmanager:GetSecretValue` — for KMS-encrypted
-    // secrets the caller also needs `kms:Decrypt` on the underlying CMK.
-    // Without this, cold-start get_secret_value returns AccessDeniedException
-    // and the service-token machine path fails closed.
-    authorizerFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: "KmsDecryptForServiceTokenSecret",
-        effect: iam.Effect.ALLOW,
-        actions: ["kms:Decrypt"],
-        resources: [props.paperclipKmsKeyArn],
-      }),
-    );
-    authorizerFn.addEnvironment(
-      "PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN",
-      paperclipServiceTokenSecret.secretArn,
     );
 
     // =========================================================================

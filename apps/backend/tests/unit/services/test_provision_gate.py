@@ -1,6 +1,5 @@
 """Tests for the provision-gate helper."""
 
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,26 +11,7 @@ from core.services.provision_gate import (
     is_paid_subscription,
     is_subscription_active,
     is_trial_blocked,
-    should_arm_nightly_ceo,
 )
-
-
-@pytest.mark.parametrize(
-    "account,expected",
-    [
-        ({"subscription_status": "active"}, True),
-        ({"subscription_status": "trialing"}, True),
-        ({"subscription_status": None, "stripe_subscription_id": "sub_1"}, True),  # legacy paid
-        ({"subscription_status": "trial_local", "trial_end": int(time.time()) + 86400}, True),  # active trial
-        ({"subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}, False),  # expired trial
-        ({"subscription_status": "trial_local"}, True),  # no trial_end -> not expired -> armed
-        ({"subscription_status": "canceled"}, False),
-        ({"subscription_status": "past_due"}, False),
-        (None, False),
-    ],
-)
-def test_should_arm_nightly_ceo(account, expected):
-    assert should_arm_nightly_ceo(account) is expected
 
 
 @pytest.mark.asyncio

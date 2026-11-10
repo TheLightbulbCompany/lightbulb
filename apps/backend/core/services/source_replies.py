@@ -3,7 +3,7 @@
 O's `router_turn` calls `deliver_reply` for a `reply` decision on a trigger that has no room. The trigger's
 `ref["reply"]` is what the inbound router recorded: for mail the sender, Message-ID, References and subject
 (`agent_mail_reply.send_reply` threads the answer); for text the provider and its line/customer ids
-(`sendblue.send_text` / `photon.send_text`, recorded in the agent inbox like the routers' own replies).
+(`photon.send_text`, recorded in the agent inbox like the routers' own replies).
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from core.repositories import agent_mail_inbox_repo
-from core.services import agent_mail_reply, photon, sendblue
+from core.services import agent_mail_reply, photon
 from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
 logger = logging.getLogger(__name__)
@@ -55,19 +55,16 @@ async def _send(
         if status != "sent":  # send_reply never raises; a reply that did not go out must free the key
             raise RuntimeError(f"mail reply {status}")
         return
-    if reply.get("provider") == "photon":
-        sent = await photon.send_text(
-            sender_id=reply["senderId"],
-            space_id=reply["spaceId"],
-            text=text,
-            idempotency_key=f"reply:{idempotency_key or trigger['triggerId']}",  # per reply, not per trigger
-        )
-        message_id = (sent or {}).get("id") or f"photon-reply:{trigger['triggerId']}"
-        to = reply.get("to") or ""
-    else:
-        await sendblue.send_text(from_number=reply["fromNumber"], to_number=reply["toNumber"], content=text)
-        message_id = f"sendblue-reply:{trigger['triggerId']}"
-        to = reply["toNumber"]
+    if reply.get("provider") != "photon":  # Photon is the only text rail
+        raise RuntimeError(f"no text rail for provider {reply.get('provider')!r}")
+    sent = await photon.send_text(
+        sender_id=reply["senderId"],
+        space_id=reply["spaceId"],
+        text=text,
+        idempotency_key=f"reply:{idempotency_key or trigger['triggerId']}",  # per reply, not per trigger
+    )
+    message_id = (sent or {}).get("id") or f"photon-reply:{trigger['triggerId']}"
+    to = reply.get("to") or ""
     await agent_mail_inbox_repo.put_sent(
         address=reply.get("address") or "",
         message_id=message_id,

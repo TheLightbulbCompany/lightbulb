@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from core import tasks_schema as ts
 from core.auth import AuthContext, get_current_user
 from core.repositories import messaging_repo, tasks_repo
-from core.services import super_agent_flags
 from routers import tasks as router_mod
 from tests.unit.super_agent.orchestration.test_tasks_repo import table  # noqa: F401
 
@@ -26,7 +25,6 @@ def _client(role: str) -> httpx.AsyncClient:
 
 @pytest.fixture
 def world(table, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(messaging_repo, "ensure_workspace_id", AsyncMock(return_value="wsc"))
 
     monkeypatch.setattr(router_mod, "_EXPORT_PAGE", 1)  # forces paging through the index

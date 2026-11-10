@@ -4,99 +4,12 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { DesktopPermissions, LocalSessions, ShareEverySessionLive, providerSetupLine } from "../LocalSessions";
-import { DesktopPermissionsGate } from "../DesktopPermissionsGate";
-import { DEFAULT_DESKTOP_PERMISSIONS, writeDesktopPermissionGrant } from "@/lib/desktopPermissions";
 vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
 
 const auth = vi.hoisted(()=>({userId:"alice",orgId:"org",getToken:vi.fn()}));
 const org = vi.hoisted(()=>({organization:{id:"org",name:"Acme"} as {id:string;name:string}|null}));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth, useOrganization: () => org }));
 const invoke = vi.fn();
-it("lets Basic only proceed even while initial sharing status is pending", async () => {
-  invoke.mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:"paused"});
-  render(<DesktopPermissionsGate />);
-  expect(screen.getByRole("button", {name:"Continue"})).toBeDisabled();
-  await userEvent.click(screen.getByRole("button", {name:"Basic only"}));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-});
-it("offers sharing with the other permissions once and sends nothing until Continue", async () => {
-  invoke.mockImplementation(async (command) => {
-    if (command === "local_sessions_set") return 1;
-    return { enrollment:null, pairedWorkspaceId:"org", status:"paused" };
-  });
-  render(<DesktopPermissionsGate />);
-  expect(await screen.findByRole("button", {name:/Share my sessions with my workspace/})).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("alertdialog", {name:"Connect this Mac"})).toBeInTheDocument();
-  expect(screen.getByRole("button", {name:/Browser/})).toBeInTheDocument();
-  // Reads only: the two status commands change nothing.
-  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status" || command === "shell_integration_status")).toBe(true);
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:true,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-});
-it("keeps an initial off choice off after reopening without requesting a token", async () => {
-  invoke.mockResolvedValue({ enrollment:null, pairedWorkspaceId:"org", status:"paused" });
-  const view = render(<DesktopPermissionsGate />);
-  await userEvent.click(await screen.findByRole("button", {name:/Share my sessions with my workspace/}));
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
-  expect(auth.getToken).not.toHaveBeenCalled();
-  expect(invoke.mock.calls.some(([command]) => command === "local_sessions_revoke")).toBe(false);
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  view.unmount();
-  await act(async () => { render(<DesktopPermissionsGate />); });
-  expect(screen.queryByRole("alertdialog")).toBeNull();
-});
-it("preserves an enrolled session when the Mac permission screen is shown again", async () => {
-  invoke.mockImplementation(async () =>
-    ({ enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected" }));
-  render(<DesktopPermissionsGate />);
-  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(invoke).toHaveBeenCalledWith("desktop_permissions_set", {permissions:DEFAULT_DESKTOP_PERMISSIONS});
-  // Consenting to Browser needs no setup call (the agent Chrome starts on first use); sessions are untouched.
-  expect(invoke.mock.calls.some(([command]) => String(command).startsWith("local_browser_"))).toBe(false);
-  expect(invoke.mock.calls.some(([command]) => String(command).startsWith("local_sessions_") && command !== "local_sessions_status")).toBe(false);
-});
-it("keeps failed remote-history disable visible instead of silently completing setup", async () => {
-  invoke.mockImplementation(async command => command === "local_sessions_set" ? 1 : {
-    enrollment:{ownerId:"other",humanUserId:"bob",enabled:false,paused:true,recoveryPending:true},pairedWorkspaceId:null,status:"paused",
-  });
-  render(<DesktopPermissionsGate />);
-  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
-  await userEvent.click(screen.getByRole("button", {name:"Basic only"}));
-  expect(await screen.findByRole("alert")).toBeInTheDocument();
-  expect(screen.getByRole("alertdialog")).toBeInTheDocument();
-  expect(screen.getByRole("button", {name:/Browser/})).toHaveAttribute("aria-pressed", "false");
-  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
-});
-it("stops sharing on retry even when failed enrollment status has not arrived", async () => {
-  invoke.mockImplementation(async (command, args) => {
-    if (command === "local_sessions_set" && args.enabled) throw new Error("Enrollment unavailable");
-    return {enrollment:null,pairedWorkspaceId:"org",status:"paused"};
-  });
-  render(<DesktopPermissionsGate />);
-  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Enrollment unavailable");
-  expect(screen.getByRole("button", {name:/Browser/})).toBeDisabled();
-  expect(screen.queryByRole("button", {name:"Basic only"})).toBeNull();
-  await userEvent.click(screen.getByRole("button", {name:"Continue without sharing"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
-});
-it.each([true, false])("does not re-prompt or change saved enrollment on relaunch (enabled=%s)", async (enabled) => {
-  invoke.mockResolvedValue({ enrollment:{ownerId:"org",humanUserId:"alice",enabled,paused:false}, pairedWorkspaceId:"org", status:"connected" });
-  await writeDesktopPermissionGrant(DEFAULT_DESKTOP_PERMISSIONS);
-  render(<DesktopPermissionsGate />);
-  await waitFor(() => expect(invoke).toHaveBeenCalled());
-  expect(screen.queryByRole("alertdialog")).toBeNull();
-  expect(screen.queryByRole("button", {name:"Continue"})).toBeNull();
-  expect(invoke.mock.calls.some(([command]) => String(command).startsWith("local_sessions_") && command !== "local_sessions_status")).toBe(false);
-});
 beforeEach(() => { invoke.mockReset();auth.getToken.mockReset().mockResolvedValue("jwt"); auth.userId="alice";auth.orgId="org";org.organization={id:"org",name:"Acme"};Object.assign(window,{__TAURI__:{core:{invoke}}}); });
 it("explains the full audience and requires an already connected Mac", async () => {
   invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:null,status:""});
@@ -274,18 +187,6 @@ it("a switch turned on and cancelled on the Mac stays off and says so calmly", a
   expect(screen.getByRole("switch", {name:"Files"})).not.toBeChecked();
   expect(localStorage.getItem("isol8.desktop.permissions.v1")).toBeNull();
 });
-it("pairing does not close over a consent the Mac refused to save", async () => {
-  invoke.mockImplementation(async (command) => {
-    if (command === "desktop_permissions_set") throw "write desktop_permissions.json: Permission denied";
-    if (command === "local_sessions_set") return 1;
-    return { enrollment:null, pairedWorkspaceId:"org", status:"paused" };
-  });
-  render(<DesktopPermissionsGate />);
-  await userEvent.click(await screen.findByRole("button", {name:"Basic only"}));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Permission denied");
-  expect(screen.getByRole("alertdialog")).toBeInTheDocument();
-  expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
-});
 it("shows per-provider setup read from disk and retries setup without re-enrolling", async () => {
   invoke.mockImplementation(async command => command === "local_sessions_repair" ? [] : {
     enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected",
@@ -308,41 +209,6 @@ it("turns Share every new session on and off through the desktop, off by default
   await userEvent.click(box);
   await waitFor(() => expect(box).toBeChecked());
   expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true});
-});
-const fresh = async (command: string) => command === "shell_integration_status" ? false : command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" };
-it("pairing asks one sharing question, and on shares every new session", async () => {
-  localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
-  invoke.mockImplementation(fresh);
-  render(<DesktopPermissionsGate />);
-  const share = await screen.findByRole("button", {name:/Share my sessions with my workspace/});
-  expect(share).toHaveAttribute("aria-pressed", "true");
-  expect(share).toHaveTextContent("~/.zshrc, ~/.bashrc and your bash login file");
-  expect(screen.queryByRole("button", {name:/Share every new session/})).toBeNull();
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:true,token:"jwt",humanUserId:"alice",workspaceId:"org"});
-  expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true});
-  // The once-per-Mac notice for Macs paired before the switch existed must not ask again.
-  expect(localStorage.getItem("lightbulb.desktop.liveSharingOffer")).toBe("1");
-});
-it("pairing with sharing off removes the shell block too", async () => {
-  invoke.mockImplementation(fresh);
-  render(<DesktopPermissionsGate />);
-  await userEvent.click(await screen.findByRole("button", {name:/Share my sessions with my workspace/}));
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(invoke).toHaveBeenCalledWith("local_sessions_set", {enabled:false,token:null,humanUserId:"alice",workspaceId:"org"});
-  expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:false});
-  expect(invoke).not.toHaveBeenCalledWith("shell_integration_set", {enabled:true});
-});
-it("pairing again on a Mac that already shares turns on the shell block without re-enrolling", async () => {
-  invoke.mockImplementation(async (command) => command === "shell_integration_status" ? false
-    : ({ enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected" }));
-  render(<DesktopPermissionsGate />);
-  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
-  await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true}));
-  expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
 });
 it("Settings has one sharing switch: on and off set the shell block with it", async () => {
   let enrolled = false;

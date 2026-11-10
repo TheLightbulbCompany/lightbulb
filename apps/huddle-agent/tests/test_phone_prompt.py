@@ -16,6 +16,29 @@ def test_dialed_numbers_become_e164():
     assert phone.e164("") == ""
 
 
+async def test_backend_sends_the_call_token_on_every_per_call_route():
+    """M4: start's callToken goes on every later route for the call; start itself carries only the worker secret."""
+    import httpx
+
+    seen = []
+
+    def answer(req: httpx.Request) -> httpx.Response:
+        seen.append((req.url.path, req.headers.get("X-Lightbulb-Call-Token")))
+        return httpx.Response(200, json={"callId": "c1", "callToken": "tok"})
+
+    b = phone.Backend()
+    b._http = httpx.AsyncClient(base_url="http://x/api/v1", transport=httpx.MockTransport(answer))
+    info = await b.post("/internal/voice/calls", {})
+    b.call_id, b.call_token = info["callId"], info["callToken"]
+    await b.post("turn", {"n": 0, "text": "hi"})
+    await b.post("end", {"durationSec": 1})
+    assert seen == [
+        ("/api/v1/internal/voice/calls", None),
+        ("/api/v1/internal/voice/calls/c1/turn", "tok"),
+        ("/api/v1/internal/voice/calls/c1/end", "tok"),
+    ]
+
+
 GREETING = "Thanks for calling Super Agent Test. This is Lightbulb, Super Agent Test's AI assistant. How can I help?"
 INFO = {
     "assistantName": "Lightbulb",

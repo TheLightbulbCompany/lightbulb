@@ -65,7 +65,10 @@ async def test_daily_reconcile_ensures_every_switched_on_workspace(table):
     with (
         patch("core.temporal.automations.sweep_allowed", return_value=True),
         patch("core.temporal.client.get_client", return_value=_Client()),
-        patch("core.services.super_agent_flags.list_on", AsyncMock(return_value=["org_bad", WS])),
+        patch(
+            "core.repositories.container_repo.scan_all",
+            AsyncMock(return_value=[{"owner_id": "org_bad"}, {"owner_id": WS}]),
+        ),
         patch("core.services.proactive.ensure", ensure),
     ):
         out = await automations.reconcile_schedules()

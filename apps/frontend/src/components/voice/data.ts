@@ -47,6 +47,7 @@ export function useTimeline() {
 }
 
 export interface Knowledge { q: string; a: string; source?: string }
+export interface StaffMember { id: string; name: string }
 export type Day = { open: string; close: string; closed?: boolean };
 
 export interface AgentConfig {
@@ -58,6 +59,10 @@ export interface AgentConfig {
   hours: Record<string, Day>; holidays: { from: string; to: string }[];
   /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
   services: { name: string; minutes: number; price: string; staff: string; minutesGuessed?: boolean }[]; bufferMin: number;
+  /** The people who take bookings: one booking per free person at a time. `id` is set when the person is added and
+   *  never changes (their bookings are keyed by it), so renaming, removing or reordering moves nobody's bookings.
+   *  A service's `staff` is the comma-separated ids of who does it ("" = anyone). Empty list: one at a time. */
+  staff: StaffMember[];
   /** IANA zone the hours are in; Onboarding saves the browser's. The server defaults to America/New_York. */
   timezone?: string;
   bookingsGo: "google" | "square" | "other" | "own"; otherSystem: string;
@@ -83,7 +88,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   knowledge: [], toAdd: [], instructions: "",
   hours: Object.fromEntries(DAYS.map((d) => [d, { open: "09:00", close: "18:00", closed: d === "Sun" }])),
   holidays: [],
-  services: [], bufferMin: 10,
+  services: [], bufferMin: 10, staff: [],
   bookingsGo: "own", otherSystem: "",
   number: "", forwardFrom: "",
   handoff: { number: "", onlyOpenHours: true },

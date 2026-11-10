@@ -133,34 +133,3 @@ async def list_owner_secret_names(owner_id: str) -> list[str]:
         return names
 
     return await run_in_thread(_list)
-
-
-def _agent_key_prefix(owner_id: str) -> str:
-    """Old per-agent Paperclip key secrets (no longer written). The wipes sweep them until the prefix is empty."""
-    return f"lightbulb/{settings.ENVIRONMENT or 'dev'}/paperclip-agent-keys/{owner_id}/"
-
-
-async def list_owner_agent_key_secret_names(owner_id: str) -> list[str]:
-    """READ-ONLY: this owner's old per-agent key secret names, for the wipe preview."""
-    return await run_in_thread(
-        lambda: _list_names_with_prefix(
-            boto3.client("secretsmanager", region_name=settings.AWS_REGION), _agent_key_prefix(owner_id)
-        )
-    )
-
-
-async def delete_owner_agent_key_secrets(owner_id: str) -> int:
-    """Force-delete this owner's old per-agent key secrets. Idempotent; returns the count."""
-    names = await list_owner_agent_key_secret_names(owner_id)
-
-    def _delete() -> None:
-        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        for name in names:
-            try:
-                sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-            except sm.exceptions.ResourceNotFoundException:
-                pass
-
-    if names:
-        await run_in_thread(_delete)
-    return len(names)

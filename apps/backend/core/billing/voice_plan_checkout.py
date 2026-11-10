@@ -41,7 +41,7 @@ async def start(owner_id: str, *, accepted_by: str) -> dict:
     subs = await run_in_thread(
         stripe.Subscription.list, customer=customer, price=settings.STRIPE_VOICE_PLAN_PRICE_ID, limit=10, api_key=key
     )
-    if subs["data"]:
+    if any((s.get("metadata") or {}).get("workspace_id") == owner_id for s in subs["data"]):
         return {"status": "processing", "planVersion": voice_plan.PLAN_VERSION}
     sessions = await run_in_thread(
         stripe.checkout.Session.list, customer=customer, status="open", limit=20, api_key=key

@@ -110,7 +110,9 @@ async def test_checkout_never_opens_a_second_payable_door():
     meta = {"purpose": "voice_plan", "workspace_id": OWNER}
     reused = await _start(_stripe(sessions=[{"url": "https://checkout/open", "metadata": meta}]))
     assert reused["checkoutUrl"] == "https://checkout/open"
-    paid = await _start(_stripe(subs=[{"id": "sub_1"}]))
+    other = await _start(_stripe(subs=[{"id": "sub_9", "metadata": {"workspace_id": "org_other"}}]))
+    assert other["checkoutUrl"] == "https://checkout/x"  # a shared Stripe customer doesn't block another workspace
+    paid = await _start(_stripe(subs=[{"id": "sub_1", "metadata": meta}]))
     assert paid["status"] == "processing" and "checkoutUrl" not in paid
 
 

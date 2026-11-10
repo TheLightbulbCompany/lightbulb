@@ -1348,6 +1348,18 @@ async def test_a_caller_write_never_undoes_an_owner_save_made_meanwhile(client):
     assert cfg["paused"] is True and cfg["toAdd"] == ["Parking?"]
 
 
+async def test_a_retry_of_a_booking_the_call_made_is_not_refused(client):
+    day = _tomorrow()
+    for hour in (10, 12, 14):
+        call = await _start(client, room=f"phone-dev-_x_{hour}")
+        body = {"start": f"{day}T{hour}:00", "service": "gel manicure", "name": "Priya"}
+        url = f"/api/v1/internal/voice/calls/{call['callId']}/book"
+        assert client.post(url, json=body, headers=W).status_code == 200
+    done = {"state": "confirmed", "provider": "own"}  # voice_booking's own idempotency returns the existing booking
+    with patch.object(voice_phone.voice_booking, "book", AsyncMock(return_value=done)):
+        assert client.post(url, json=body, headers=W).status_code == 200  # the lost reply, retried
+
+
 async def test_a_caller_number_holds_at_most_three_upcoming_bookings(client):
     day = _tomorrow()
     for hour in (10, 12, 14):

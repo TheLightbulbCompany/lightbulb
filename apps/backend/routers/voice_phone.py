@@ -1216,7 +1216,9 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    if (caller := call.get("caller")) and await _upcoming_count(meta["ownerId"], caller) >= MAX_UPCOMING_PER_CALLER:
+    if (caller := call.get("caller")) and await _upcoming_count(
+        meta["ownerId"], caller, call_id
+    ) >= MAX_UPCOMING_PER_CALLER:
         raise _err(409, "too_many_bookings")
     counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
     # One unit per reservation, keyed by its booking id. A retry that returns or reconciles a reservation already
@@ -1615,12 +1617,14 @@ def _plain(text: str) -> str:
     return text.replace("\u2019", "'")
 
 
-async def _upcoming_count(ws: str, caller: str) -> int:
+async def _upcoming_count(ws: str, caller: str, call_id: str) -> int:
+    """The caller's confirmed upcoming bookings, not this call's own (a retry of one it made must pass)."""
     from core.services import business_profile, voice_booking
 
     now = f"{_now(await agent_config(ws)):%Y-%m-%dT%H:%M}"
     return sum(
-        b.get("phone") == caller and voice_booking.confirmed(b) for b in await business_profile._upcoming(ws, now)
+        b.get("phone") == caller and b.get("callId") != call_id and voice_booking.confirmed(b)
+        for b in await business_profile._upcoming(ws, now)
     )
 
 

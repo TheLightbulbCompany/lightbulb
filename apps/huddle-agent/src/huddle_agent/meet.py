@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import time
 from collections import deque
 
@@ -49,7 +48,8 @@ ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
 SLEEP_S = 5 * 60  # the voice closes after this long with no delegation and no speech of its own
 HISTORY_S, HISTORY_LINES = 10 * 60, 60  # what of the meeting a reopened voice is told
-SPEAKER_S = 20.0  # an ask names the newest line's speaker when that line is this recent
+SPEAKER_WINDOW_S = 4.0  # an ask names a person who was heard (any transcript, interim included) this recently
+SPEAKER_WAIT_S = 3.0  # how long an ask waits for the per-person transcripts to say who: none or ambiguous = nobody
 MEETING_IDLE_S = 60 * 60  # spec §4.4b: leave after an hour of silence
 MEETING_MAX_S = float(os.environ.get("MEET_MAX_S", 90 * 60))  # cost cap: leave after 90 minutes whatever happens
 TRANSCRIPT_FLUSH_S = 10
@@ -92,6 +92,8 @@ Keep each reply to one or two short sentences. {ENGLISH}
 
 Backchannel policy: None. Do not produce any backchannel interjections. Stay silent until someone addresses you by name.
 
+Not being transcribed: if someone asks not to be transcribed, hand it to the Router like any request. Say only that you will pass it on.
+
 Interruption policy: Stop speaking when anyone speaks over you, and when someone says "{n}, stop". Listen to what they say.
 
 {live.delegation_policy(TOOLS)}
@@ -101,23 +103,9 @@ Do not generate <|SpawnThinking|> when:
 Anything that spends, sends or publishes waits for the inviting member's OK on a card in the chat. Never approve, confirm or promise one by voice."""
 
 
-_ME = r"(?:me|myself|my (?:voice|speech|words|audio))\b"
-_OPT_OUT = re.compile(
-    rf"\b(?:don'?t|do not|not|stop|quit|no longer|no more)\s+(?:transcrib\w*|record\w*)\s+{_ME}"
-    rf"|\b(?:turn off|switch off|stop|disable|pause)\s+(?:the\s+)?(?:transcription|transcript|transcribing|recording)"
-    rf"\s+(?:for|of)\s+{_ME}"
-    r"|\bopt me out\b|\bleave me out of the (?:transcript|transcription|recording)\b",
-    re.I,
-)
-
-
-def opts_out(name: str, text: str) -> bool:
-    """Only a request addressed to the assistant, about this speaker's own voice."""
-    tokens = _tokens(text)
-    while tokens and tokens[0] in {"hey", "hi", "hello", "please"}:
-        tokens = tokens[1:]
-    addressed = any(n and tuple(tokens[: len(n)]) == n for n in (tuple(_tokens(name)), *_LIGHTBULB))
-    return addressed and bool(_OPT_OUT.search(text))
+def exclusion_attrs(meeting: "Meeting") -> dict:
+    """The tile attribute that says how many people are not transcribed."""
+    return {"lightbulb.meet.not_transcribed": str(len(meeting.not_transcribed))}
 
 
 class Joiner:
@@ -255,7 +243,6 @@ class Meeting:
             poll_s,
         )
         self.not_transcribed = list(not_transcribed)
-        self._privacy_saves: set[asyncio.Task] = set()
         self.on_opt_out = on_opt_out
         self._open_voice, self.mix = (
             open_voice,
@@ -279,6 +266,8 @@ class Meeting:
         self._posting = 0
         self._early_answers: list[tuple[dict, str]] = []
         self.last: tuple[float, str] | None = None  # (when, who): the newest line
+        self._said: dict[str, list[tuple[float, str]]] = {}  # who -> (when, text) of everything the transcriber heard
+        self.speaker_wait_s = SPEAKER_WAIT_S
         self.question: dict | None = None  # {taskId, qid}: the Worker question last sent to the voice
         self.question_at = 0.0
         self.seen: set[str] = set()  # message ids and qids already handed to the voice
@@ -308,44 +297,51 @@ class Meeting:
             for e in self.not_transcribed
         )
 
-    async def _save_opt_out(self, body: dict) -> None:
-        for attempt in range(3):
-            try:
-                await self._b.meet("transcription", body)
-                return
-            except Exception:  # noqa: BLE001 -- local exclusion stands while persistence retries
-                if attempt == 2:
-                    logger.exception("meet: opt-out not saved")
-                else:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-
-    def heard(self, who: str, text: str, final: bool) -> None:
-        if not text.strip() or self.excluded(who):
-            return
-        combined = " ".join([*self.joiner._parts.get(who, []), text])
-        if final and opts_out(self.name, combined):
-            entry = {
-                "id": who.rsplit(":", 1)[-1],
-                "name": self.names.get(who, "")[:200],
-            }
-            self.not_transcribed.append(entry)
+    def adopt_exclusions(self, entries) -> None:
+        """The meeting record's exclusions that appeared after this worker started (the Router recorded a person's
+        request): stop hearing them, as at start. Persisted already, so nothing is saved again."""
+        for e in entries or []:
+            who = next((i for i in self.names if e.get("id") and i.rsplit(":", 1)[-1] == e["id"]), None)
+            if who is None or self.excluded(who):
+                continue
+            self.not_transcribed.append({"id": e["id"], "name": e.get("name", "")})
             self.joiner.discard(who)
             if self.mix is not None:
                 self.mix.exclude(who)
             if self.on_opt_out:
                 self.on_opt_out(who)
-            task = asyncio.create_task(
-                self._save_opt_out(
-                    {
-                        "participantId": entry["id"],
-                        "name": entry["name"],
-                        "optOut": True,
-                    }
-                )
-            )
-            self._privacy_saves.add(task)
-            task.add_done_callback(self._privacy_saves.discard)
+
+    def _say(self, who: str, text: str) -> None:
+        now = time.monotonic()
+        self._said[who] = [(t, x) for t, x in self._said.get(who, []) if now - t <= 30] + [(now, text)]
+
+    def _speaker(self, request: str) -> str | None:
+        """Who said this ask, from the per-person transcripts alone (never the model's say-so): the one person heard
+        within the window; with several, the one whose words overlap the request most, and none on a tie."""
+        now = time.monotonic()
+        near = {
+            who: " ".join(x for t, x in segs if now - t <= SPEAKER_WINDOW_S)
+            for who, segs in self._said.items()
+            if any(now - t <= SPEAKER_WINDOW_S for t, _ in segs) and not self.excluded(who)
+        }
+        if len(near) <= 1:
+            return next(iter(near), None)
+        want = {w for w in _tokens(request) if len(w) >= 3}
+        score = sorted(((len(want & set(_tokens(x))), who) for who, x in near.items()), reverse=True)
+        return score[0][1] if score[0][0] > score[1][0] else None
+
+    async def _who(self, request: str) -> str:
+        """Waits (bounded) for the transcribers to settle on one speaker; "" records no speaker, and the Router's
+        opt-out tool then refuses rather than guess."""
+        deadline = time.monotonic() + self.speaker_wait_s
+        while (who := self._speaker(request)) is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        return who or ""
+
+    def heard(self, who: str, text: str, final: bool) -> None:
+        if not text.strip() or self.excluded(who):
             return
+        self._say(who, text)
         if self.voice is None and self.opening is None and self._open_voice and names_it(self.name, text):
             self.opening = asyncio.create_task(self._wake())
         if final:
@@ -358,6 +354,7 @@ class Meeting:
         if self.excluded(who):
             return
         self.last = (time.monotonic(), who)
+        self._say(who, text)
         self.context.add(self.label(who), text)
         self.lines.append({"mark": len(self.lines), "kind": "person", "name": self.label(who)[:200],
                            "text": text[:4000], "at": time.time()})  # fmt: skip
@@ -445,11 +442,6 @@ class Meeting:
                 await self._close()
 
     async def close(self) -> None:
-        if self._privacy_saves:
-            _, pending = await asyncio.wait(tuple(self._privacy_saves), timeout=10)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
         if self.opening is not None:
             await asyncio.gather(self.opening, return_exceptions=True)
         if self.voice is not None:
@@ -500,9 +492,7 @@ class Meeting:
         said what: GPT-Live hears the meeting mixed) and the newest line's speaker. Returns the message id, or None
         when the backend did not post it."""
         self.activity()
-        pid = ""
-        if self.last and time.monotonic() - self.last[0] <= SPEAKER_S:
-            pid = self.last[1]
+        pid = await self._who(text)
         body = {"text": self.context.take(text, max_chars=4000, model_turns=turns), "participantId": pid.rsplit(":", 1)[-1],
                 "speakerName": self.label(pid) if pid else ""}  # fmt: skip
         if self.question and time.monotonic() - self.question_at <= ANSWER_WITHIN_S:
@@ -552,6 +542,7 @@ class Meeting:
                 yield {"kind": "agent", "id": m["id"], "text": text,
                        **{k: m[k] for k in ("question", "inReplyTo", "waiting", "taskIds", "voiceDelivery") if k in m}}  # fmt: skip
             self.after = max(self.after, int(out.get("after") or 0))
+            self.adopt_exclusions(out.get("notTranscribed"))
 
 
 async def run(ctx: JobContext, meta: dict) -> None:
@@ -616,6 +607,12 @@ async def run(ctx: JobContext, meta: dict) -> None:
     def stop_transcribing(who: str) -> None:
         if (task := readers.pop(who, None)) is not None:
             task.cancel()
+        show_excluded()
+
+    def show_excluded() -> None:  # the tile says it; a rejoining worker restores the count from the meeting record
+        asyncio.create_task(ctx.room.local_participant.set_attributes(
+            exclusion_attrs(meeting)
+        ))  # fmt: skip
 
     meeting.on_opt_out = stop_transcribing
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
@@ -717,6 +714,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         await backend.aclose()
 
     ctx.add_shutdown_callback(on_end)
+    show_excluded()
     await ctx.room.local_participant.set_attributes(
         {**tile, f"lightbulb.agent.{ASSISTANT_ID}.status": "listening"}
     )

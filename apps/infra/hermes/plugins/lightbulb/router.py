@@ -340,6 +340,31 @@ def _meeting_chat(args: dict, *, session_id: str = "", **_kw) -> str:
         return json.dumps({"status": "unknown", "error": type(exc).__name__})
 
 
+MEETING_STOP_TRANSCRIBING_SCHEMA = {
+    "name": "meeting_stop_transcribing",
+    "description": "Stop transcribing and hearing the person who spoke the trigger's line in the current Google Meet, "
+    "because they asked not to be transcribed. The backend takes the speaker from the meeting's record; it applies "
+    "to that person only. The meeting recording continues.",
+    "parameters": {"type": "object", "properties": {"trigger_ids": _TRIGGERS}, "required": ["trigger_ids"]},
+}
+
+
+def _meeting_stop_transcribing(args: dict, *, session_id: str = "", **_kw) -> str:
+    from . import _post
+
+    ctx = turn_context.read(session_id)
+    if not ctx or ctx.get("mode") != "router":
+        return NOT_ROUTER
+    tids = (args or {}).get("trigger_ids")
+    if not isinstance(tids, list) or not 1 <= len(tids) <= 10 or not all(isinstance(t, str) and t for t in tids):
+        return json.dumps({"error": "trigger_ids must list the batch's trigger ids"})
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/meeting-stop-transcribing"
+    try:
+        return json.dumps(_post(url, ctx["hookToken"], {"triggerIds": tids}))
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"error": _backend_code(exc)})
+
+
 def _problem(kind: str, args: dict) -> str | None:
     if (
         not isinstance(args.get("trigger_ids"), list)
@@ -391,6 +416,8 @@ def register(ctx) -> None:
                       description=MEETING_CONTEXT_SCHEMA["description"], emoji="📄")
     ctx.register_tool("meeting_chat", TOOLSET, MEETING_CHAT_SCHEMA, _meeting_chat,
                       description=MEETING_CHAT_SCHEMA["description"], emoji="💬")
+    ctx.register_tool("meeting_stop_transcribing", TOOLSET, MEETING_STOP_TRANSCRIBING_SCHEMA,
+                      _meeting_stop_transcribing, description=MEETING_STOP_TRANSCRIBING_SCHEMA["description"], emoji="🔇")
     for kind, schema in SCHEMAS.items():
         ctx.register_tool(kind, TOOLSET, schema, _handler(kind), description=schema["description"], emoji="🧭")
     ctx.register_tool(

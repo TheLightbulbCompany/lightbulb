@@ -22,7 +22,7 @@ it("greeting style is optional and never blocks save", async () => {
   render(<AgentPage />);
   const style = screen.getByLabelText(/Greeting style/);
   fireEvent.change(style, { target: { value: "Warm and brief, mention the sale" } });
-  expect(screen.getByText(/always says its name, that it.s an AI assistant and that the call is recorded/)).toBeTruthy();
+  expect(screen.getByText(/Some states require telling callers they are talking to an AI or that calls are recorded/)).toBeTruthy();
   expect(document.querySelector("[data-err='true']")).toBeNull();
   await act(async () => { await vi.advanceTimersByTimeAsync(700); });
   expect(cfg.save).toHaveBeenCalledWith(expect.objectContaining({ greeting: "Warm and brief, mention the sale" }));
@@ -51,8 +51,9 @@ it("hides what does nothing yet and shows the texts as off", () => {
     const box = screen.getByLabelText(t) as HTMLInputElement;
     expect(box.checked).toBe(false); expect(box.disabled).toBe(true);
   }
-  expect(screen.getAllByText("Off until we finish a consent review")).toHaveLength(2);
-  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).disabled).toBe(false);
+  expect(screen.getAllByText("Not available yet")).toHaveLength(3);
+  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText(/Text clients the day before/) as HTMLInputElement).checked).toBe(false);
   expect(screen.getByRole("link", { name: "Test call" }).getAttribute("href")).toBe("tel:+14155550199");
 });
 
@@ -115,5 +116,16 @@ it("saves supported voice and Spanish settings without rewriting the saved legac
   await act(async () => { await vi.advanceTimersByTimeAsync(700); });
   expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ voice: "quartz", spanish: true, frontAgentId: "existing-worker" }));
   expect(screen.getByLabelText("Sample language")).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
+it("a new closure starts on today's date in the business's time zone, not UTC's", async () => {
+  const { Closures } = await import("../AgentPage");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T01:00:00Z")); // 5 pm on 10 Nov in Los Angeles, already 11 Nov in UTC
+  const set = vi.fn();
+  render(<Closures c={{ ...DEFAULT_CONFIG, timezone: "America/Los_Angeles", holidays: [] }} set={set} />);
+  fireEvent.click(screen.getByRole("button", { name: /Add a closed date/ }));
+  expect(set).toHaveBeenCalledWith({ holidays: [{ from: "2026-11-10", to: "2026-11-10" }] });
   vi.useRealTimers();
 });

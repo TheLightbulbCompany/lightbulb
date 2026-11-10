@@ -77,6 +77,8 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
   const hero = speaker ?? raised;
   const maxRows = hero ? 2 : 3;
   const rowSize = hero ? { av: 52, name: 34, line: 34, gap: 12 } : { av: 80, name: 46, line: 38, gap: 20 };
+  const excluded = Number(attrs["lightbulb.meet.not_transcribed"]) || 0;
+  const hint = excluded ? `${HINT} · ${excluded} not transcribed` : HINT;
   const limitText = limit ? meetVoiceLimitText(limit) : "";
   // The page can be in the room before the worker is: until an agent shows up, nobody is listening yet.
   const shown = notice ?? (roster.length === 0 && !limit ? "Connecting…" : null);
@@ -85,10 +87,10 @@ export function MeetTile({ agents, attrs, notice }: { agents: Record<string, Til
   const heroCols = Math.ceil(heroCount / Math.ceil(heroCount / 6)) || 1;
   const idleCaption = limit
     ? <p className="max-w-[980px] text-balance text-center" role="status" style={{ fontSize: 40, lineHeight: 1.2, color: "var(--alert)" }}>{limitText}</p>
-    : <p className="text-center" style={{ fontSize: 36, lineHeight: 1.2, ...soft }}>{HINT}</p>;
+    : <p className="text-center" style={{ fontSize: 36, lineHeight: 1.2, ...soft }}>{hint}</p>;
   const stripHint = limit
     ? <p className="max-w-[980px] text-balance text-center" role="status" style={{ fontSize: 28, lineHeight: 1.2, color: "var(--alert)" }}>{limitText}</p>
-    : <p className="text-center" style={{ fontSize: 24, lineHeight: "32px", ...soft }}>{HINT}</p>;
+    : <p className="text-center" style={{ fontSize: 24, lineHeight: "32px", ...soft }}>{hint}</p>;
 
   return (
     <div className="relative overflow-hidden" style={{ width: 1280, height: 720, background: "var(--plane-pane)", color: "var(--fg)" }}>

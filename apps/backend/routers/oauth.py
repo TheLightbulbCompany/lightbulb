@@ -21,6 +21,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from core.config import settings
 from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo
 from core.services.container_auth import (
@@ -118,6 +119,14 @@ async def status(ctx: AuthContext = Depends(get_current_user)):
     ),
 )
 async def start(ctx: AuthContext = Depends(get_current_user)):
+    if not settings.chatgpt_provider_allowed(resolve_owner_id(ctx)):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "chatgpt_internal_only",
+                "message": "Sign in with ChatGPT is not available for this workspace.",
+            },
+        )
     if ctx.is_org_context:
         await _require_org_oauth_owner(ctx)
     # Starting a ChatGPT sign-in needs a paid plan: 402 plan_required unless is_paid_subscription(billing row), checked

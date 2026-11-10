@@ -36,6 +36,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from core.config import settings
 from core.billing import voice_billing
 from core.dynamodb import run_in_thread
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services import link_preview, livekit_huddles
 from livekit import api
@@ -420,10 +421,17 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
         "ownerUserId": pending.get("ownerUserId") or user_id,
         "sid": bought["sid"],
     }
-    await run_in_thread(
-        messaging_repo._table().put_item,
-        Item=item,
-        ConditionExpression="attribute_not_exists(pk) OR ownerId = :ws",
-        ExpressionAttributeValues={":ws": ws},
-    )
+    try:
+        await run_in_thread(
+            messaging_repo._table().put_item,
+            Item=item,
+            ConditionExpression="attribute_not_exists(pk) OR ownerId = :ws",
+            ExpressionAttributeValues={":ws": ws},
+        )
+    except Exception:
+        # Paid number, no LINE row: it bills ($1.15/mo) with nothing pointing at it. The VOICENUMBER receipt
+        # is kept, so a retry reconciles it at Twilio and writes this row without buying again.
+        put_metric("voice.number.orphaned")
+        logger.warning("voice number bought but line write failed for workspace %s", ws)
+        raise
     return number

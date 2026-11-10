@@ -479,6 +479,11 @@ def waiting_label(names: list[str]) -> str:
 
 
 _PUSH_MAX = 180
+_CALL_PUSH = {
+    "handoff": "Caller wanted a person",
+    "didnt_know": "Caller asked something we didn't know",
+    "line_problem": "A call hit a problem on the line",
+}
 
 
 def title_for(effect: dict) -> str:
@@ -535,6 +540,9 @@ def card_copy(q: dict, specialist_label: str) -> tuple[str, str]:
     body = title.replace("**", "")
     if q.get("text"):
         body = f"{body}. {q['text']}"
+    if q.get("subkind") in _CALL_PUSH:  # a call card: the kind and a first name, never the number or the question
+        who = (q.get("preview") or {}).get("firstName")
+        body = _CALL_PUSH[q["subkind"]] + (f": {who}" if who else "")
     if len(body) > _PUSH_MAX:
         body = body[: _PUSH_MAX - 1].rstrip() + "…"
     return title, body

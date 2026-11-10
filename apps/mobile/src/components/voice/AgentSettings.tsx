@@ -6,8 +6,11 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, Tex
 import { fonts, useChatPalette } from "../../config/theme";
 import { useTeamsConfig } from "../../lib/teamsData";
 
+import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
+
 interface AgentDocument {
   frontAgentId?: string | null;
+  voice?: string; spanish?: boolean;
   name?: string; greeting?: string; instructions?: string; live?: boolean; paused?: boolean;
   allow?: Record<string, boolean>; handoff?: { number: string; onlyOpenHours: boolean };
   [key: string]: unknown;
@@ -79,9 +82,10 @@ export function AgentSettings() {
         <Text style={[text, styles.status, { color: palette.fgSoft }]}>{draft.live ? draft.paused ? "Phone answering is paused" : "Phone answering is live" : "Phone answering is not live"}</Text>
         {field("Name callers hear", "name")}
         {field("Phone greeting", "greeting", true)}
+        <PhoneVoiceSettings config={draft} patch={(next) => patch({ ...next })} disabled={saving} />
         {field("Instructions", "instructions", true)}
         <Text accessibilityRole="header" style={[text, styles.label]}>Permissions</Text>
-        {([['book', 'Book appointments'], ['move', 'Move appointments'], ['waitlist', 'Offer the waitlist'], ['answer', 'Answer business questions'], ['greetByName', 'Greet returning callers by name']] as const).map(([key, label]) =>
+        {([['book', 'Book appointments'], ['move', 'Move appointments'], ['answer', 'Answer business questions'], ['greetByName', 'Greet returning callers by name']] as const).map(([key, label]) =>
           <View key={key} style={[styles.toggle, { borderColor: palette.edge }]}>
             <Text style={[text, styles.toggleLabel]}>{label}</Text>
             <Switch accessibilityLabel={label} disabled={saving} value={draft.allow?.[key] ?? true} onValueChange={(value) => patch({ allow: { ...draft.allow, [key]: value } })} />

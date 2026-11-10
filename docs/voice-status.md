@@ -119,7 +119,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.18 | Keep-my-number or new-number choice, with the carrier's forward and stop codes | yes | yes | no | 1st | Product | |
 | 3.19 | Forwarding check from the Agent page | yes | yes | no | 1st | Product | The outbound trunk is set in prod. Never run against a real forward |
 | 3.20 | Call record: transcript, outcome tag, steps, one-line "what it did", booking card | yes | yes | part | 1st | Product | Home polls every 20 s by design |
-| 3.21 | Call recording stored and playable | no | no | no | | Product | The call is flagged for recording and the web player waits for a `recordingUrl`, but nothing produces one. Every call tells the caller it is recorded; whether LiveKit keeps the audio is not confirmed. LiveKit's session-end report may give a recording path with no extra egress cost; verify against the installed SDK (1.8.11) |
+| 3.21 | Call recording stored and playable | no | no | no | | Product | Moved to Later by the founder (10 Nov): salons, spas and barbers are served by the transcript, which every call already keeps. Audio adds consent and retention weight for no clear gain. Build when a customer asks |
 | 3.22 | Front-desk specialist pre-warmed when a call connects | part | part | no | | Product | A Router prewarm exists. The per-call specialist is not proven |
 | 3.23 | Staff and holidays limit the slots offered | no | no | no | 1st | Product | Both fields are saved and ignored. A business that enters "closed 26 to 27 Nov" is still booked on those days |
 | 3.24 | Waitlist: join and fill | no | no | no | | Product | The UX plan cut the tool; the spec promised it |
@@ -128,7 +128,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.27 | Square booking | part | no | no | | Platform | #5173, hidden adapter |
 | 3.28 | Booking sites with no API, by browser, with steps and screenshots in the call record | no | no | no | | Product | Generic browser tool exists; no product path |
 | 3.29 | Owner calls in and proves who they are (PIN) | no | no | no | | Product | |
-| 3.30 | Spanish, and a voice choice with preview | part | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the train. Mobile controls are unmerged |
+| 3.30 | Spanish, and a voice choice with preview | yes | part | no | | Platform | The voice worker with Spanish and voice choice is on prod (version `QJcdFMeCBBJF`). Web and backend controls are on dev until the next prod train. Mobile controls are in #5183 (type-check and voice tests pass; not yet seen on a device) and reach phones by OTA when it merges |
 | 3.31 | Choose which agent is the receptionist | yes | no | no | | Platform | #5166 merged 9 Nov; on dev, next prod train |
 | 3.32 | `VoiceCallOutcome` metric and an alarm on worker and route errors | yes | yes | no | | Platform | The metric is emitted. The alarm is W85 (voice route errors), present in prod and dev. No alarm reads the outcome metric itself |
 | 3.33 | Mark as spam; call back and text back from a row; warm transfer; ring me | no | no | no | | Product | Deferred by the UX plan |
@@ -153,7 +153,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
 | 4.13 | Mobile: four tabs, voice Home | yes | yes | no | | Product | Shipped by OTA |
 | 4.14 | Mobile: voice settings, billing and onboarding match the web; old purchase screens gone | no | no | no | | Product | |
-| 4.15 | Push: Needs-you cards, and the first three calls after Go live | no | no | no | | Product | |
+| 4.15 | Push: Needs-you cards, and the first three calls after Go live | yes | no | no | | Product | Card pushes already existed (one per card, retry-safe). #5188 trims their text to the kind and a first name (no caller number or question) and adds a push for the owner's first three answered calls. Not seen on a device. A tap opens the task, not the Needs-you list |
 | 4.16 | Ten-second undo on send or spend | no | no | no | | Product | Not in the code |
 | 4.17 | Design pass to a consumer bar; accessibility; empty and error states | part | part | no | | Product | A polish pass shipped (#5084). No final critique |
 
@@ -178,7 +178,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 5.15 | Everyone acts with the inviter's authority; spend, send and publish need the inviter's card tap | yes | yes | no | Product | |
 | 5.16 | Notes in the app after the meeting; no email | yes | part | part | Product | Notes in the app are verified on screen on prod. The removal of the automatic email reaches prod with the queued train |
 | 5.17 | Structured decisions, recallable by voice ("what did we decide") | yes | no | no | Product | #5186: the notes run also returns a Decisions section; stored on the meeting, shown in the pane, each written once to the workspace's team memory for recall. Not yet seen in a real meeting or recalled live |
-| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked |
+| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked. Built in #5185, unverified live: GPT-Live hands the request to the Router, whose `meeting_stop_transcribing` excludes only the recorded speaker; the worker adopts it from `/events`; the tile shows the count. Needs a real-meeting run. |
 | 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |
 | 5.20 | Meeting minutes counted | yes | part | part | Platform | #5155, verified on dev |
 | 5.21 | The scenario list (`tests/replay/scenarios/`) passes in a real Meet | n/a | n/a | no | Product | No simulator exists; the earlier one was removed |

@@ -263,12 +263,6 @@ class LiveSession:
         ):  # several appends with one id continue the same work
             self.transport.commentary(chunk, delegation_id)
 
-    def send_instructions(self, text: str) -> None:
-        """Trusted session rules, e.g. a once-only disclosure correction; never a delegation answer."""
-        if not self._closed:
-            for chunk in _chunks(text.strip()):
-                self.transport.instructions(chunk)
-
     def send_context(self, text: str, delegation_id: str | None = None) -> None:
         """Silent context for a session already open: e.g. results fetched while a Meet voice was asleep. Thinking
         appends update GPT-Live without asking it to say old replies or answering a current delegation."""

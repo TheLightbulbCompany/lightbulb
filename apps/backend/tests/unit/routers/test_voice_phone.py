@@ -76,7 +76,7 @@ async def _start(client, caller="+14155550133", room="phone-dev-_x_1", **config)
 async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
     call = await _start(client)
     assert call["greeting"] == (
-        "Hi, I'm Nova, Maya's Nail Studio's AI assistant, and this call is recorded. How can I help?"
+        "Hi, I'm Nova, Maya's Nail Studio's AI assistant. How can I help?"
     )  # one short sentence and its question (8 Nov prod: a long opening buried the caller's first line)
     assert "Gel manicure $45 (60 min)" in call["facts"] and "Behind the building." in call["facts"]
     base = f"/api/v1/internal/voice/calls/{call['callId']}"
@@ -116,12 +116,9 @@ async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
     assert (await messaging_repo.get_room(again["callId"]))["call"]["returning"] is True
 
 
-async def test_a_custom_greeting_missing_the_disclosures_falls_back_to_ours(client):
-    ok = "Hi, Nova here, the AI assistant at Maya's. This call is recorded. What can I do?"
-    assert (await _start(client, greeting=ok))["greeting"] == ok
-    for bad in ("Hi, Nova here at Maya's. How can I help?", "Hi, the AI assistant here. This call is recorded."):
-        got = (await _start(client, room=f"phone-dev-_g{len(bad)}", greeting=bad))["greeting"]
-        assert got.startswith("Hi, I'm Nova, Maya's Nail Studio's AI assistant") and "recorded" in got
+async def test_the_owners_greeting_is_used_as_written(client):
+    mine = "Hey, Maya's, Nova speaking, what can I do?"  # no AI words, no name check: the business owns its opening
+    assert (await _start(client, greeting=mine))["greeting"] == mine
 
 
 async def test_pending_voice_payment_cannot_use_owner_test_bypass_or_business_tools(client):
@@ -139,7 +136,7 @@ async def test_pending_voice_payment_cannot_use_owner_test_bypass_or_business_to
         assert result.status_code == 403
 
 
-async def test_the_record_keeps_each_lines_time_and_the_disclosure_verdict(client):
+async def test_the_record_keeps_each_lines_time(client):
     call = await _start(client)
     url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
     tx = [
@@ -148,9 +145,7 @@ async def test_the_record_keeps_each_lines_time_and_the_disclosure_verdict(clien
         {"who": "assistant", "text": "Well, thanks!", "t": 9.25},
         {"who": "caller", "text": "no time", "t": "soon"},
     ]
-    bad = client.post(url, json={"durationSec": 12, "transcript": tx, "disclosure": "probably"}, headers=W)
-    assert bad.status_code == 400  # the app answers request validation errors with 400
-    body = {"durationSec": 12, "transcript": tx, "disclosure": "missing", "disclosureRepeated": True}
+    body = {"durationSec": 12, "transcript": tx}
     end = client.post(url, json=body, headers=W).json()
     assert end["transcript"] == [
         {"who": "assistant", "text": "Thanks for calling.", "t": 1.1},  # no `assumed`: the record adds nothing
@@ -158,7 +153,6 @@ async def test_the_record_keeps_each_lines_time_and_the_disclosure_verdict(clien
         {"who": "assistant", "text": "Well, thanks!", "t": 9.2},
         {"who": "caller", "text": "no time"},
     ]
-    assert end["disclosure"] == "missing" and end["disclosureRepeated"] is True
 
 
 async def test_the_agent_pages_checkboxes_gate_the_tools(client):
@@ -217,7 +211,13 @@ async def test_unknown_creates_question_and_to_add(client):
     assert voice_phone.CONTACT_NOTE in args[1].brief and q in args[1].brief
     ask = kwargs["ask"]
     assert ask["kind"] == "question" and ask["subkind"] == "didnt_know" and ask["blocking"] is True
-    assert ask["preview"] == {"kind": "didnt_know", "roomId": call["callId"], "caller": "+14155550133", "question": q}
+    assert ask["preview"] == {
+        "kind": "didnt_know",
+        "roomId": call["callId"],
+        "caller": "+14155550133",
+        "question": q,
+        "firstName": "",
+    }
     assert [o["id"] for o in ask["options"]] == ["answer", "call_myself", "done"]
     run = await messaging_repo.get_voice_run("org_1", args[1].run_id)
     assert run["requesterUserId"] == "user_owner" and run["roomId"] == call["callId"]
@@ -823,3 +823,38 @@ async def test_call_bootstrap_resolves_preferences_without_mutating_document(
     assert bootstrap["voice"] == expected_voice
     assert bootstrap["spanish"] is expected_spanish
     assert await messaging_repo.get_voice_agent("org_1") == {**CONFIG, **preferences}
+
+
+async def test_first_three_answered_calls_push_the_owner_and_the_fourth_does_not(client):
+    with patch.object(voice_phone.push_service, "send_push_to_user", AsyncMock()) as push:
+        for i in range(4):
+            call = await _start(client, room=f"phone-dev-_x_{i}")
+            url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+            client.post(url, json={"durationSec": 30}, headers=W)
+            client.post(url, json={"durationSec": 30}, headers=W)  # a retried end never pushes twice
+    assert push.await_count == 3
+    assert push.await_args.args[0] == "user_owner" and push.await_args.args[3]["source"] == "voice_call"
+
+
+async def test_a_call_that_needs_you_leaves_the_push_to_its_card(client):
+    with patch.object(voice_phone.push_service, "send_push_to_user", AsyncMock()) as push:
+        call = await _start(client)
+        base = f"/api/v1/internal/voice/calls/{call['callId']}"
+        client.post(f"{base}/unknown", json={"question": "Parking?"}, headers=W)
+        client.post(f"{base}/end", json={"durationSec": 30}, headers=W)
+    push.assert_not_awaited()
+
+
+def test_call_card_push_carries_the_kind_and_a_first_name_only():
+    from core.services import questions
+
+    q = {
+        "kind": "question",
+        "subkind": "handoff",
+        "title": "Maria wanted a person",
+        "text": "Caller: +14155550133",
+        "preview": {"firstName": "Maria"},
+    }
+    assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person: Maria"
+    q["preview"] = {}
+    assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person"

@@ -36,6 +36,7 @@ from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, tasks_repo, billing_repo
 from core import tasks_schema as ts
 from core.services import (
+    push_service,
     admission,
     clerk_admin,
     questions,
@@ -71,9 +72,10 @@ DEFAULTS: dict = {
     "live": False,
     "paused": False,
     "instructions": "",
-    "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
+    "allow": {"book": True, "move": True, "greetByName": True, "answer": True},
     "knowledge": [],
     "hours": {d: {"open": "09:00", "close": "18:00", "closed": d == "Sun"} for d in _DAYS},
+    "holidays": [],  # closures: [{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}], local dates; an old free-text value means none
     "services": [],
     "bufferMin": 10,
     "timezone": "America/New_York",  # IANA; Onboarding saves the browser's
@@ -185,6 +187,11 @@ _NO_NAMES = {"unknown", "unknown caller", "caller", "the caller", "anonymous", "
              "no name", "not given", "not provided", "unknown name", "name unknown", "customer", "-", "?"}  # fmt: skip
 
 
+def first_name(call: dict) -> str:
+    """The only caller detail a push may carry."""
+    return (real_name(call.get("callerName")).split() or [""])[0]
+
+
 def real_name(name: str | None) -> str:
     """The caller's name, or "" for a placeholder: never stored as who called."""
     n = " ".join(str(name or "").split())
@@ -262,7 +269,7 @@ async def start_call(body: StartIn) -> dict:
     owner_id = line["ownerId"]
     cfg = await agent_config(owner_id)
     if _is_probe(cfg, body):
-        # Our own forwarding check came back: no caller is on it, so no greeting (and no disclosure) is owed.
+        # Our own forwarding check came back: no caller is on it, so no greeting is owed.
         raw = await messaging_repo.get_voice_agent(owner_id) or {}
         raw.pop("forwardingCheck", None)
         await messaging_repo.put_voice_agent(
@@ -386,20 +393,14 @@ def _is_probe(cfg: dict, body: StartIn) -> bool:
 
 
 def greeting(custom: str, business: str, assistant: str) -> str:
-    """The owner's greeting only when it still discloses the AI, the recording and the assistant's name; else ours."""
-    g = custom.strip()
-    if all(w.lower() in g.lower() for w in ("AI assistant", "recorded", assistant)):
-        return g
-    return f"Hi, I'm {assistant}, {business}'s AI assistant, and this call is recorded. How can I help?"
+    """The owner's greeting as written; ours only when they have none. The business owns its opening."""
+    return custom.strip() or f"Hi, I'm {assistant}, {business}'s AI assistant. How can I help?"
 
 
 class EndIn(BaseModel):
     durationSec: int = Field(ge=0, le=86400)
     summary: str = Field(default="", max_length=4000)
     transcript: list[dict] = Field(default=[], max_length=2000)
-    #: Whether the transcribed first line carried the AI and recording disclosure (worker `disclosure_of`).
-    disclosure: Literal["ok", "missing", "unknown"] | None = None
-    disclosureRepeated: bool = False  # the worker said the disclosure sentence after a failed first line
     silent: bool = False  # the worker hung up a line nobody spoke on ("are you still there?", then goodbye)
     forwarded: bool = False  # the run-out forward (start's forwardTo) connected; the assistant never answered
 
@@ -445,11 +446,14 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
                     "outcome": "forwarded", "transferredTo": forwarded_to,
                     "steps": _step(call, "Minutes used up: forwarded to you")}  # fmt: skip
-        return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
-                "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
-                "summary": body.summary, "transcript": lines,
-                **({"disclosure": body.disclosure, "disclosureRepeated": body.disclosureRepeated}
-                   if body.disclosure else {})}  # fmt: skip
+        return {
+            "status": "ended",
+            "endedAt": utc_now_iso(),
+            "durationSec": body.durationSec,
+            "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
+            "summary": body.summary,
+            "transcript": lines,
+        }
 
     out = await _patch_call(call_id, change)
     if before.get("status") != "ended":
@@ -482,6 +486,8 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         put_metric("VoiceCallOutcome", dimensions={"outcome": out["outcome"]})
     except Exception:
         logger.warning("VoiceCallOutcome metric failed", exc_info=True)
+    if out["outcome"] not in NO_CALL_PUSH and meta.get("ownerUserId"):
+        await _first_calls_push(meta["ownerUserId"], meta["ownerId"], call_id, out)
     asks = [("didnt_know", q) for q in dict.fromkeys(out.get("unknown", []))]
     if out.get("handoffMissed"):
         asks.append(("handoff", ""))  # nobody free or the transfer failed: line_problem is for system issues
@@ -489,6 +495,36 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         ask = call_ask(call_id, out, kind, question)
         await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
     return out
+
+
+# After Go live the owner hears about the first answered calls, so they see it working; then no more.
+# Cards (needs_you, handoff_missed) push on their own, silent/forwarded calls were not answered.
+NO_CALL_PUSH = {"silent", "forwarded", "needs_you", "handoff_missed"}
+CALL_PUSHES = 3
+
+
+async def _first_calls_push(user_id: str, ws: str, call_id: str, call: dict) -> None:
+    """One conditional write both admits a call to the first three and dedupes a retried end (the id is in the set)."""
+    try:
+        await run_in_thread(
+            messaging_repo._table().update_item,
+            Key={"pk": messaging_repo.owner_pk(ws), "sk": "CALLPUSH"},
+            UpdateExpression="ADD calls :c",
+            ConditionExpression="attribute_not_exists(calls) OR (size(calls) < :n AND NOT contains(calls, :id))",
+            ExpressionAttributeValues={":c": {call_id}, ":n": CALL_PUSHES, ":id": call_id},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("call push claim failed for %s", call_id, exc_info=True)
+        return
+    who = first_name(call)
+    try:
+        await push_service.send_push_to_user(
+            user_id, "Your assistant answered a call", f"{who} called." if who else "Someone called.",
+            {"source": "voice_call", "callId": call_id},
+        )  # fmt: skip
+    except Exception:  # best-effort: send_push_to_user already swallows, this is belt and braces
+        logger.warning("call push failed for %s", call_id, exc_info=True)
 
 
 # --- Needs you: what a person must decide after a call (Questions on a per-call task) ------------------------
@@ -517,7 +553,13 @@ def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
         "blocking": True,
         "attempt": None,
         "run_id": None,
-        "preview": {"kind": kind, "roomId": call_id, "caller": call.get("caller", ""), "question": question},
+        "preview": {
+            "kind": kind,
+            "roomId": call_id,
+            "caller": call.get("caller", ""),
+            "question": question,
+            "firstName": first_name(call),
+        },
     }
 
 
@@ -593,7 +635,22 @@ def _minutes(cfg: dict, service: str) -> int:
     return 60
 
 
+def _closed_on(cfg: dict, date: str) -> bool:
+    """True when `date` (local "YYYY-MM-DD") falls in a closure range. ISO dates compare as strings; anything that is
+    not a list of {from, to} ranges (the old free-text value) closes nothing."""
+    h = cfg.get("holidays")
+    return isinstance(h, list) and any(
+        isinstance(r, dict)
+        and isinstance(r.get("from"), str)
+        and r["from"]
+        and r["from"] <= date <= str(r.get("to") or r["from"])
+        for r in h
+    )
+
+
 def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
+    if _closed_on(cfg, date):
+        return None
     h = cfg["hours"].get(_DAYS[datetime.strptime(date, "%Y-%m-%d").weekday()]) or {}
     if not h or h.get("closed"):
         return None

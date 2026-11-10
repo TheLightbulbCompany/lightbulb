@@ -435,13 +435,12 @@ describe("ProvisioningStepper blocked-state rendering", () => {
 
     // ProviderPicker headline + card titles confirm the picker rendered.
     expect(screen.getByRole("heading", { name: /One workspace plan/i })).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: /Sign in with ChatGPT/i }),
-    ).toBeInTheDocument();
+    // ChatGPT sign-in is internal-only: absent unless the server allows the workspace.
+    expect(screen.queryByRole("heading", { name: /Sign in with ChatGPT/i })).toBeNull();
     expect(
       screen.getByRole("heading", { name: /OpenRouter managed/i }),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(1);
   });
 
   it("bypasses the ProviderPicker while a container is provisioning even if billing lags the trial, and refreshes billing", () => {

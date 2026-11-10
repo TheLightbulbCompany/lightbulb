@@ -19,6 +19,14 @@ from core.services.oauth_service import (
 
 
 @pytest.fixture(autouse=True)
+def _chatgpt_allowed(monkeypatch):
+    """Existing tests exercise the allowed path; the refusal tests below narrow it."""
+    from core.config import Settings
+
+    monkeypatch.setattr(Settings, "chatgpt_provider_allowed", lambda self, owner_id: True)
+
+
+@pytest.fixture(autouse=True)
 def workspace_oauth_dependencies():
     """The shared client is an org admin; keep router tests off real billing."""
     with (
@@ -96,6 +104,19 @@ async def test_start_returns_user_code_and_verification_uri(async_client):
     assert body["verification_uri"] == "https://chatgpt.com/codex"
     assert body["interval"] == 5
     assert body["expires_in"] == 900
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_403_for_non_allowlisted_workspace(async_client, monkeypatch):
+    from core.config import settings
+
+    monkeypatch.undo()
+    monkeypatch.setattr(settings, "CHATGPT_PROVIDER_ORG_IDS", "org_internal")
+    with patch("routers.oauth.request_device_code", new=AsyncMock()) as m:
+        resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "chatgpt_internal_only"
+    m.assert_not_awaited()
 
 
 @pytest.mark.asyncio

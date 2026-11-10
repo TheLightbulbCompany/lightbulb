@@ -8,7 +8,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
+import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig, type StaffMember } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
@@ -112,6 +112,7 @@ export function AgentPage() {
     </Sec>
 
     <Sec title="Services & staff">
+      <StaffEditor c={c} set={set} name={name} />
       <ServicesEditor c={c} set={set} />
       <div style={{ display: "flex", gap: 16, alignItems: "end", flexWrap: "wrap" }}>
         <Button size="sm" variant="outline" onClick={() => set({ services: [...c.services, { name: "", minutes: 45, price: "", staff: "" }] })}><Plus /> Add a service</Button>
@@ -218,6 +219,34 @@ export function HoursEditor({ c, set }: Edit) {
   </>;
 }
 
+/** The people who take bookings: the assistant books one appointment per free person at a time. */
+export function StaffEditor({ c, set, name }: Edit & { name: string }) {
+  const staff = c.staff ?? [];
+  return <div>
+    <b className="vx-label">Staff</b>
+    <p className="vx-sub">{staff.length ? `${name} books up to ${staff.length} appointment${staff.length === 1 ? "" : "s"} at the same time, one per person.` : `With no one listed, ${name} books one appointment at a time.`}</p>
+    {staff.map((p, n) => <div key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+      <input className="vx-field" aria-label="Staff name" value={p.name} maxLength={40} placeholder="Ana" onChange={(e) => set({ staff: staff.map((x, i) => (i === n ? { ...x, name: e.target.value } : x)) })} />
+      <Button size="icon-sm" variant="ghost" aria-label={`Remove ${p.name || "person"}`} onClick={() => set({ staff: staff.filter((_, i) => i !== n) })}><X /></Button>
+    </div>)}
+    {/* The id keys this person's bookings: made once here, kept on rename. */}
+    {staff.length < 20 && <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => set({ staff: [...staff, { id: crypto.randomUUID().slice(0, 8), name: "" }] })}><Plus /> Add a person</Button></div>}
+  </div>;
+}
+
+/** Who can do a service, from the staff list; none ticked is anyone. Stored as ids, "a1, m1" (a name typed there
+ *  before staff had ids still ticks its person). */
+export function WhoDoesIt({ staff, value, set }: { staff: StaffMember[]; value: string; set: (v: string) => void }) {
+  const people = staff.filter((p) => p.name.trim());
+  if (!people.length) return <span className="vx-muted" style={{ fontSize: "var(--text-ui)" }}>Anyone</span>;
+  const on = new Set(value.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean));
+  const ticked = (p: StaffMember) => on.has(p.id.toLowerCase()) || on.has(p.name.trim().toLowerCase());
+  return <div role="group" aria-label="Who does it" style={{ display: "flex", flexWrap: "wrap", gap: "0 12px" }}>
+    {people.map((p) => <Check key={p.id} label={p.name} on={ticked(p)}
+      set={(v) => set(people.filter((x) => (x.id === p.id ? v : ticked(x))).map((x) => x.id).join(", "))} />)}
+  </div>;
+}
+
 export function ServicesEditor({ c, set }: Edit) {
   return <>
   {c.services.map((s, n) => {
@@ -228,6 +257,7 @@ export function ServicesEditor({ c, set }: Edit) {
         title={s.minutesGuessed ? "A guess: the site doesn't say how long this takes" : undefined}
         onChange={(e) => put({ minutes: Number(e.target.value), minutesGuessed: false })} />
       <input className="vx-field" aria-label="Price" value={s.price} placeholder="$55" onChange={(e) => put({ price: e.target.value })} />
+      <WhoDoesIt staff={c.staff ?? []} value={s.staff} set={(staff) => put({ staff })} />
       <Button size="icon-sm" variant="ghost" aria-label={`Remove ${s.name || "service"}`} onClick={() => set({ services: c.services.filter((_, i) => i !== n) })}><X /></Button>
     </div>;
   })}

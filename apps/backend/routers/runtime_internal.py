@@ -531,6 +531,7 @@ class FrontDeskBody(BaseModel):
     service: str = ""
     start: str = ""
     new_start: str | None = None
+    booking_id: str = ""  # my_bookings' bookingId: which booking, when the caller has two at one start
     name: str = ""
     text: str = ""
     callback_number: str = ""
@@ -571,7 +572,9 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
             if body.action == "book":
                 return await vp.book(call_id, vp.BookIn(start=body.start, service=body.service, name=body.name))
             new = body.new_start if body.action == "move" else None
-            return await vp.change_booking(call_id, vp.ChangeIn(start=body.start, newStart=new))
+            return await vp.change_booking(
+                call_id, vp.ChangeIn(start=body.start, newStart=new, bookingId=body.booking_id)
+            )
         finally:  # the caller's batch and thread see the change at once, not after the 60 s cache
             business_profile.forget(owner_id)
     except ValidationError as exc:

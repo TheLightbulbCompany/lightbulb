@@ -62,7 +62,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 1.9 | Stripe Projects rail removed | part | part | n/a | Platform | Code gone. The `provisioning-workflows` table is still read by `owner_facts` and the wipes; it stays until that coupling is removed |
 | 1.10 | Comms features removed (channels, threads, reactions, pins, mentions) | part | part | n/a | Platform | `EmojiPicker`, `RoomMessageSearch`, `RoomLinkPreviews` remain |
 | 1.11 | Ideas, Feed, Daily, Brief UI removed | part | part | n/a | Platform | `components/creations` (9 files) and `components/activity` (6) remain |
-| 1.12 | OpenSearch removed | no | no | no | Platform | Collection, endpoint, indexer Lambda and the search route still exist. #5156 then #5158 |
+| 1.12 | OpenSearch removed | part | no | no | Platform | Phase A (#5156, the search API and its consumers) merged 10 Nov. Phase B (#5158, the AWS resources) ships in the train right after; no workspace wipe runs between the two |
 | 1.13 | The five marketplace tables retired | part | no | n/a | Platform | Stage 1, the delete policy (#5175), merged 9 Nov. Stage 2 removes the tables; Codex's draft is saved on branch `finish/retire-leftover-table-wiring` and must not deploy before stage 1 is on prod |
 | 1.14 | Old chat UI deleted once the voice UI is live | no | no | n/a | Product | `components/workspace` (54 files), `teams` (73), `control` (37) are unrouted. `messaging` (174) is still used by `/voice/lightbulb` |
 | 1.15 | Every existing integration kept as a live source; the CLI and A2A routes kept | yes | yes | no | Platform | Founder ruling. Never walked after the deletions |
@@ -105,7 +105,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.4 | Latency: 1.4 s caller-to-reply on simple turns; a stated target for a useful answer | no | no | no | 1st | Product | No target for a useful answer exists yet |
 | 3.5 | Knowledge from the website scan answers callers, with where each fact came from | yes | yes | part | 1st | Product | The Router received the right facts in one recovered call |
 | 3.6 | Book, move, cancel on the assistant's own calendar; time zone saved at onboarding; overlaps conflict | yes | yes | part | 1st | Product | Passed on the older voice stack. Re-run on GPT-Live |
-| 3.7 | Book, move, cancel in Google Calendar; a Google failure keeps the hold and raises a Line-problem card | part | no | no | 1st | Platform | #5176 fixes the move, cancel, availability and late-write bugs; review finding fixed 9 Nov (own-calendar bookings saved before the change). Awaiting re-review. Then the founder reconnects Google |
+| 3.7 | Book, move, cancel in Google Calendar; a Google failure keeps the hold and raises a Line-problem card | yes | no | no | 1st | Platform | #5176 merged 10 Nov after four review rounds: safe through slow or lost Google writes, never stuck pending, older bookings read correctly, one Line-problem card per workspace, owner edits in Google no longer block a move. Next prod train. Then the founder reconnects Google for the real check |
 | 3.8 | Take a message | yes | yes | no | 1st | Product | |
 | 3.9 | Hand off to a person, only during opening hours; a missed hand-off becomes a card | yes | yes | no | 1st | Product | |
 | 3.10 | A caller cannot do what the owner unticked: refused by the server, and a message is taken | yes | yes | no | 1st | Product | Master plan review focus 3 |

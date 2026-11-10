@@ -11,7 +11,8 @@ import { useLive } from "../../providers/live";
 interface Preferences { voice?: string; spanish?: boolean }
 
 // Two known frontend origins only; neither config text nor a server document can supply HTML or an asset URL.
-const SAMPLE_ORIGIN = API_URL === "https://api-dev.thelightbulb.company/api/v1"
+// Compare the host prefix, not the full dev URL: mobile-ota.yml refuses any bundle containing the dev API host.
+const SAMPLE_ORIGIN = new URL(API_URL).hostname.startsWith("api-dev.")
   ? "https://dev.thelightbulb.company" : "https://thelightbulb.company";
 
 /** Existing WebView's native media controls; no new audio SDK or runtime provider request. */

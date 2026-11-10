@@ -48,7 +48,8 @@ ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
 SLEEP_S = 5 * 60  # the voice closes after this long with no delegation and no speech of its own
 HISTORY_S, HISTORY_LINES = 10 * 60, 60  # what of the meeting a reopened voice is told
-SPEAKER_S = 20.0  # an ask names the newest line's speaker when that line is this recent
+SPEAKER_WINDOW_S = 4.0  # an ask names a person who was heard (any transcript, interim included) this recently
+SPEAKER_WAIT_S = 3.0  # how long an ask waits for the per-person transcripts to say who: none or ambiguous = nobody
 MEETING_IDLE_S = 60 * 60  # spec §4.4b: leave after an hour of silence
 MEETING_MAX_S = float(os.environ.get("MEET_MAX_S", 90 * 60))  # cost cap: leave after 90 minutes whatever happens
 TRANSCRIPT_FLUSH_S = 10
@@ -265,6 +266,8 @@ class Meeting:
         self._posting = 0
         self._early_answers: list[tuple[dict, str]] = []
         self.last: tuple[float, str] | None = None  # (when, who): the newest line
+        self._said: dict[str, list[tuple[float, str]]] = {}  # who -> (when, text) of everything the transcriber heard
+        self.speaker_wait_s = SPEAKER_WAIT_S
         self.question: dict | None = None  # {taskId, qid}: the Worker question last sent to the voice
         self.question_at = 0.0
         self.seen: set[str] = set()  # message ids and qids already handed to the voice
@@ -308,9 +311,37 @@ class Meeting:
             if self.on_opt_out:
                 self.on_opt_out(who)
 
+    def _say(self, who: str, text: str) -> None:
+        now = time.monotonic()
+        self._said[who] = [(t, x) for t, x in self._said.get(who, []) if now - t <= 30] + [(now, text)]
+
+    def _speaker(self, request: str) -> str | None:
+        """Who said this ask, from the per-person transcripts alone (never the model's say-so): the one person heard
+        within the window; with several, the one whose words overlap the request most, and none on a tie."""
+        now = time.monotonic()
+        near = {
+            who: " ".join(x for t, x in segs if now - t <= SPEAKER_WINDOW_S)
+            for who, segs in self._said.items()
+            if any(now - t <= SPEAKER_WINDOW_S for t, _ in segs) and not self.excluded(who)
+        }
+        if len(near) <= 1:
+            return next(iter(near), None)
+        want = {w for w in _tokens(request) if len(w) >= 3}
+        score = sorted(((len(want & set(_tokens(x))), who) for who, x in near.items()), reverse=True)
+        return score[0][1] if score[0][0] > score[1][0] else None
+
+    async def _who(self, request: str) -> str:
+        """Waits (bounded) for the transcribers to settle on one speaker; "" records no speaker, and the Router's
+        opt-out tool then refuses rather than guess."""
+        deadline = time.monotonic() + self.speaker_wait_s
+        while (who := self._speaker(request)) is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        return who or ""
+
     def heard(self, who: str, text: str, final: bool) -> None:
         if not text.strip() or self.excluded(who):
             return
+        self._say(who, text)
         if self.voice is None and self.opening is None and self._open_voice and names_it(self.name, text):
             self.opening = asyncio.create_task(self._wake())
         if final:
@@ -323,6 +354,7 @@ class Meeting:
         if self.excluded(who):
             return
         self.last = (time.monotonic(), who)
+        self._say(who, text)
         self.context.add(self.label(who), text)
         self.lines.append({"mark": len(self.lines), "kind": "person", "name": self.label(who)[:200],
                            "text": text[:4000], "at": time.time()})  # fmt: skip
@@ -460,9 +492,7 @@ class Meeting:
         said what: GPT-Live hears the meeting mixed) and the newest line's speaker. Returns the message id, or None
         when the backend did not post it."""
         self.activity()
-        pid = ""
-        if self.last and time.monotonic() - self.last[0] <= SPEAKER_S:
-            pid = self.last[1]
+        pid = await self._who(text)
         body = {"text": self.context.take(text, max_chars=4000, model_turns=turns), "participantId": pid.rsplit(":", 1)[-1],
                 "speakerName": self.label(pid) if pid else ""}  # fmt: skip
         if self.question and time.monotonic() - self.question_at <= ANSWER_WITHIN_S:

@@ -68,6 +68,7 @@ class _Backend:
 
 def _meeting(backend=None, **kw):
     m = meet.Meeting(backend or _Backend(), "Nova", poll_s=0, **kw)
+    m.speaker_wait_s = 0.3
     m.person(MAYA, "Maya")
     m.person(SAM, "Sam")
     return m
@@ -104,9 +105,38 @@ async def test_meet_named_question_delegates_with_speaker():
     assert body["text"] == ("What shipped this week?\n\nSaid in the talk since the last ask:\n"
                             "> Maya: We shipped the calendar fix yesterday.\n> Sam: Nova, what shipped this week?")  # fmt: skip
     assert m.asked[-1]["who"] == "Sam" and m.asked[-1]["q"] == "What shipped this week?"
-    m.last = (m.last[0] - meet.SPEAKER_S - 1, SAM)  # an old line names nobody
+    m._said.clear()  # nobody heard lately names nobody
     await m.post("and the calendar?", [])
     assert (b.asks()[-1]["participantId"], b.asks()[-1]["speakerName"]) == ("", "")
+
+
+async def test_the_ask_names_the_person_still_speaking_not_the_last_flushed_line():
+    b = _Backend()
+    m = _meeting(b)
+    m.line(MAYA, "We shipped the calendar fix yesterday.")  # flushed
+    m.heard(SAM, "Nova, stop transcribing me", final=False)  # Sam's line has not flushed yet
+    await m.post("stop transcribing me", [])
+    assert b.asks()[-1]["participantId"] == "12"
+    m.joiner.close()
+
+
+async def test_people_talking_over_each_other_name_nobody():
+    b = _Backend()
+    m = _meeting(b)
+    m.heard(MAYA, "Nova, stop transcribing me", final=False)
+    m.heard(SAM, "Nova, stop transcribing me", final=False)
+    await m.post("stop transcribing me", [])
+    assert b.asks()[-1]["participantId"] == ""
+    m.joiner.close()
+
+
+async def test_a_single_speaker_with_no_earlier_line_is_named():
+    b = _Backend()
+    m = _meeting(b)
+    m.heard(SAM, "Nova, don't transcribe me", final=False)
+    await m.post("don't transcribe me", [])
+    assert b.asks()[-1]["participantId"] == "12"
+    m.joiner.close()
 
 
 async def test_a_refused_ask_returns_none():

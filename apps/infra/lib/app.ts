@@ -217,8 +217,6 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // Empty GitHub variables keep desktop submissions closed in both envs.
       DESKTOP_EXECUTION_OWNER_DEV: "${{ vars.DESKTOP_EXECUTION_OWNER_DEV }}",
       DESKTOP_EXECUTION_OWNER_PROD: "${{ vars.DESKTOP_EXECUTION_OWNER_PROD }}",
-      CHATGPT_PROVIDER_ORG_IDS_DEV: "${{ vars.CHATGPT_PROVIDER_ORG_IDS_DEV }}",
-      CHATGPT_PROVIDER_ORG_IDS_PROD: "${{ vars.CHATGPT_PROVIDER_ORG_IDS_PROD }}",
       // OpenAI plugin portal's domain token, served at /.well-known/openai-apps-challenge. Empty = 404.
       OPENAI_APPS_CHALLENGE_TOKEN_DEV: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_DEV }}",
       OPENAI_APPS_CHALLENGE_TOKEN_PROD: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_PROD }}",

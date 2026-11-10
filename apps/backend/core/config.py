@@ -73,8 +73,6 @@ class Settings(BaseSettings):
     # workspace wipe). Comma-separated, set per env by CDK (service-stack.ts).
     # Empty ⇒ nobody is admin. Never derived from an email claim.
     PLATFORM_ADMIN_USER_IDS: str = ""
-    # Clerk org ids (comma-separated) allowed to choose "Sign in with ChatGPT". Founder ruling 2026-11-09: internal only.
-    CHATGPT_PROVIDER_ORG_IDS: str = ""
 
     # DynamoDB
     DYNAMODB_TABLE_PREFIX: str = "lightbulb-dev-"
@@ -136,10 +134,6 @@ class Settings(BaseSettings):
     def platform_admin_user_ids(self) -> frozenset[str]:
         """Parse PLATFORM_ADMIN_USER_IDS as a comma-separated set."""
         return frozenset(u.strip() for u in self.PLATFORM_ADMIN_USER_IDS.split(",") if u.strip())
-
-    def chatgpt_provider_allowed(self, owner_id: str) -> bool:
-        """Whether this workspace may choose ChatGPT sign-in (internal Lightbulb workspaces only)."""
-        return owner_id in {o.strip() for o in self.CHATGPT_PROVIDER_ORG_IDS.split(",") if o.strip()}
 
     # --- Workspace runtime networking ---
     # The VPC placement an owner's AgentCore runtime is created with

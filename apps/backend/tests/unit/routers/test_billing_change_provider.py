@@ -5,14 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _chatgpt_allowed(monkeypatch):
-    """Existing tests exercise the allowed path; the refusal tests below narrow it."""
-    from core.config import Settings
-
-    monkeypatch.setattr(Settings, "chatgpt_provider_allowed", lambda self, owner_id: True)
-
-
 @pytest.fixture
 def active_personal_account():
     return {
@@ -667,28 +659,3 @@ async def test_phantom_connector_self_heals_on_switch_into_chatgpt(
         byo_provider=None,
         connector_user_id="user_test_123",
     )
-
-
-@pytest.mark.asyncio
-async def test_change_provider_chatgpt_refused_403_for_non_allowlisted_workspace(
-    async_client, active_personal_account, patch_dispatch_provision, monkeypatch
-):
-    from core.config import settings
-
-    monkeypatch.undo()  # drop the autouse "allowed" patch
-    monkeypatch.setattr(settings, "CHATGPT_PROVIDER_ORG_IDS", "org_internal")
-    with patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=active_personal_account)):
-        resp = await async_client.post("/api/v1/billing/provider", json={"provider_choice": "chatgpt_oauth"})
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "chatgpt_internal_only"
-
-
-def test_chatgpt_allowlist_matches_only_listed_org_ids(monkeypatch):
-    from core.config import Settings
-
-    monkeypatch.undo()
-
-    s = Settings(CHATGPT_PROVIDER_ORG_IDS=" org_a, org_b ")
-    assert s.chatgpt_provider_allowed("org_a") and s.chatgpt_provider_allowed("org_b")
-    assert not s.chatgpt_provider_allowed("org_c")
-    assert not Settings(CHATGPT_PROVIDER_ORG_IDS="").chatgpt_provider_allowed("org_a")

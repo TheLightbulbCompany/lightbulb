@@ -150,7 +150,7 @@ function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClo
       <Button type="button" size="sm" variant="ghost" className="vx-close" onClick={onClose} aria-label="Close details">Close</Button>
     </div>
     <p style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><Tag outcome={call.outcome} />
-      <span className="vx-muted" style={{ fontSize: "var(--text-caption)" }}>{call.booking || call.summary}</span></p>
+      <span>{callSummary(call)}</span></p>
     {!call.ownerMode && <div className="vx-actions"><ReachBack number={call.caller} /></div>}
     {!!call.steps?.length && <section><h3>What {name} did</h3>
       <ol className="vx-steps">{call.steps.map((s, n) => <li key={n}><time>{mmss(s.t)}</time><span>{s.text}

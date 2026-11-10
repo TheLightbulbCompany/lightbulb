@@ -566,10 +566,22 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
         if body.action == "my_bookings":
             return await vp.my_bookings(call_id)
         if body.action == "waitlist":
-            return await vp.join_waitlist(
-                call_id,
-                vp.WaitlistIn(date=body.date, service=body.service, name=body.name, note=body.note),
-            )
+            # The waitlist has no owner screen (founder 10 Nov: hidden), so the ask is also a message: the owner
+            # sees it in Needs you, and the caller is told what was recorded, never a spot nobody sees.
+            try:
+                await vp.join_waitlist(
+                    call_id, vp.WaitlistIn(date=body.date, service=body.service, name=body.name, note=body.note)
+                )
+            except (HTTPException, ValidationError):
+                pass  # off on the Agent page, a bad or past date, no caller number: the message below still goes
+            want = " ".join(x for x in (body.service, body.date, body.note) if x)
+            text = f"Wants a waitlist spot{': ' + want if want else ''}"[:500]
+            await vp.take_message(call_id, vp.MessageIn(name=body.name, text=text))
+            return {
+                "messageTaken": True,
+                "say": "A message was taken for the owner, who will call back about a "
+                "spot. Nobody is on a waitlist yet: do not promise one.",
+            }
         if body.action == "message":
             return await vp.take_message(
                 call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)

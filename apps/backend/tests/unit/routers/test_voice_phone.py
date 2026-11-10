@@ -213,7 +213,81 @@ async def test_an_answered_call_without_a_worker_summary_still_gets_one(client):
     base = f"/api/v1/internal/voice/calls/{call['callId']}"
     tx = [{"role": "user", "text": "Do you have anything open tomorrow at 3?"}, {"role": "assistant", "text": "Yes."}]
     rec = client.post(f"{base}/end", json={"durationSec": 70, "transcript": tx}, headers=W).json()
-    assert rec["summary"] == "Caller asked: Do you have anything open tomorrow at 3?"
+    assert rec["summary"] == '"Do you have anything open tomorrow at 3?" Answered on the call.'
+
+
+async def test_every_summary_says_what_the_caller_wanted_and_what_happened(client):
+    """10 Nov prod: rows read "Caller asked: Hi, this is Sam Tester. Can you cancel…" or "Open conversation". The
+    summary quotes the caller's request (not their hello) and then the record's own steps."""
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    day = _tomorrow()
+    client.post(f"{base}/book", json={"start": f"{day}T14:00", "service": "gel manicure", "name": "Sam"}, headers=W)
+    client.post(f"{base}/change", json={"start": f"{day}T14:00", "newStart": f"{day}T15:00"}, headers=W)
+    tx = [{"role": "user", "text": "Hi, this is Sam."}, {"role": "assistant", "text": "Hi Sam!"},
+          {"role": "user", "text": "Hello. Can you move my 2 PM to 3? Thanks."}]  # fmt: skip
+    rec = client.post(f"{base}/end", json={"durationSec": 70, "transcript": tx}, headers=W).json()
+    assert rec["summary"].startswith('"Can you move my 2 PM to 3?" Booked gel manicure')
+    assert "; Gel manicure moved from" in rec["summary"] and rec["summary"].endswith(".")
+
+    quiet = await _start(client, room="phone-dev-_q")
+    qend = client.post(f"/api/v1/internal/voice/calls/{quiet['callId']}/end", json={"durationSec": 5}, headers=W)
+    assert qend.json()["summary"] == "Answered the call; no request made."
+    assert voice_phone.call_summary({}, [], "Voice failed; callback needed") == "Voice failed; callback needed."
+
+
+async def test_a_booking_made_on_this_call_can_be_moved_and_cancelled_unverified(client):
+    """10 Nov prod: an unattested caller booked 2 PM, asked to move it, the move was refused (caller_not_verified)
+    and the Front desk booked 3 PM as a second booking; the cancel was refused too. The call that made a booking
+    is proof enough for that booking; anything else on the number stays out of reach."""
+    day = _tomorrow()
+    victim = await _start(client)
+    client.post(f"/api/v1/internal/voice/calls/{victim['callId']}/book",
+                json={"start": f"{day}T11:00", "service": "gel", "name": "Priya"}, headers=W)  # fmt: skip
+    call = await _start(client, room="phone-dev-_v", verstat="")  # the same number, unattested
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    assert client.post(f"{base}/book", json={"start": f"{day}T14:00", "service": "gel", "name": "Sam"},
+                       headers=W).status_code == 200  # fmt: skip
+    assert [b["start"] for b in client.post(f"{base}/my-bookings", headers=W).json()["bookings"]] == [f"{day}T14:00"]
+    moved = client.post(f"{base}/change", json={"start": f"{day}T14:00", "newStart": f"{day}T15:00"}, headers=W)
+    assert moved.status_code == 200 and moved.json()["moved"] is True, moved.text
+    assert await _row(f"{day}T14:00") is None and (await _row(f"{day}T15:00"))["name"] == "Sam"  # one booking
+    other = client.post(f"{base}/change", json={"start": f"{day}T11:00"}, headers=W)  # the earlier call's
+    assert other.status_code == 403 and other.json()["detail"]["code"] == "caller_not_verified"
+    gone = client.post(f"{base}/change", json={"start": f"{day}T15:00"}, headers=W)
+    assert gone.status_code == 200 and gone.json()["cancelled"] is True
+    assert await _row(f"{day}T15:00") is None and (await _row(f"{day}T11:00"))["name"] == "Priya"
+
+
+async def test_every_taken_message_is_a_needs_you_card_with_its_whole_text(client):
+    """10 Nov prod: a message raised no card, and its step stopped at "please call Sam at +" (cut at 160)."""
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    text = (
+        "Sam Tester would like to know whether the salon can fit a family of four this Saturday morning "
+        "before the wedding, ideally all together, and if not then back to back; please call Sam at +18565550123"
+    )
+    assert len(text) > 160
+    body = {"text": text, "name": "Sam", "callbackNumber": "+18565550123"}
+    assert client.post(f"{base}/message", json=body, headers=W).json() == {"taken": True}
+    rec = client.post(f"{base}/end", json={"durationSec": 30}, headers=W).json()
+    assert rec["outcome"] == "message" and rec["steps"][-1]["text"] == f"Took a message: {text}"
+    ask = client.start_work.await_args.kwargs["ask"]
+    assert ask["subkind"] == "message" and ask["title"] == "Message from Sam"
+    assert ask["text"].startswith(text) and "+18565550123" in ask["text"]
+    assert [o["id"] for o in ask["options"]] == ["call_myself", "done"]
+
+
+def test_a_reply_never_sends_the_caller_to_another_number():
+    """10 Nov prod: a refused cancel told the caller to call the salon's listed number. The caller's own number read
+    back, and the open hand-off number, may still be said."""
+    said = "I'm hitting a snag canceling. Please call the salon at 484-555-0104. Anything else?"
+    out = voice_phone.no_other_number(said, {"+18565550123"})
+    assert out == f"I'm hitting a snag canceling. {voice_phone.OTHER_NUMBER} Anything else?"
+    own = "I'll have them call you back at (856) 555-0123."
+    assert voice_phone.no_other_number(own, {"+18565550123"}) == own
+    assert voice_phone.no_other_number(said, {"+14845550104"}) == said  # the hand-off number while it is open
+    assert voice_phone.no_other_number("We open at 9.", set()) == "We open at 9."
 
 
 async def test_handoff_and_needs_you_outcomes(client):

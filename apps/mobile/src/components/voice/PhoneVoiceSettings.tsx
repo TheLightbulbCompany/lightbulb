@@ -73,7 +73,7 @@ function StockPlayer({ url }: { url: string }) {
   // Fixed HTML + event bridge only. Native audio controls require a user gesture; no autoplay or injected scripts.
   const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; media-src ${url}; script-src 'unsafe-inline'; style-src 'unsafe-inline'"><style>body{margin:0;padding:8px}audio{width:100%}</style></head><body><audio aria-label="Voice sample player" controls preload="metadata" src="${url}"></audio><script>const a=document.querySelector('audio');const report=(status)=>window.ReactNativeWebView.postMessage(status);a.addEventListener('loadedmetadata',()=>report('ready'));a.addEventListener('error',()=>report('error'));a.addEventListener('playing',()=>report('playing'));</script></body></html>`;
   return <View style={{ gap: 8 }}>
-    <WebView source={{ html }} style={{ height: 76, backgroundColor: "transparent" }} scrollEnabled={false}
+    <WebView source={{ html }} containerStyle={{ height: 76, flex: 0 }} style={{ height: 76, flex: 0, backgroundColor: "transparent" }} scrollEnabled={false}
       accessibilityLabel="Voice sample player" originWhitelist={['about:blank']} mediaPlaybackRequiresUserAction allowsInlineMediaPlayback
       allowsFullscreenVideo={false} setSupportMultipleWindows={false}
       onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}

@@ -40,7 +40,7 @@ from core.auth import AuthContext
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo, tasks_repo, billing_repo
+from core.repositories import agent_registry_repo, messaging_repo, tasks_repo, billing_repo
 from core import tasks_schema as ts
 from core.services import (
     push_service,
@@ -1645,6 +1645,8 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
         # removed mid-call: nothing from the DM; the worker goes back to the call room's cursor and the caller prompt
         return {"messages": [], "after": await latest_seq(call_id), "ownerModeEnded": True}
     out = await agent_lines(call_id, body.after)
+    if out["messages"]:
+        await _caller_words(meta["ownerId"], out["messages"])
     claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
     if (
         claimed
@@ -1656,6 +1658,51 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
                 NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])
             )
     return out
+
+
+#: What the caller hears instead of someone else's progress: the assistant, in the first person, holding.
+HOLD = "One moment while I check."
+
+#: A sentence that narrates work in progress ("They're still working on it", "Customer Operations is checking this
+#: for you", "They're finalizing the cancellation"). Said by the assistant itself ("I'm checking") it stays.
+PROGRESS = re.compile(r"\b(working on|checking(?! in)|looking into|finali[sz]ing|handling|processing|on it)\b", re.I)
+FIRST_PERSON = re.compile(r"^(i\b|i'm\b|i'll\b|let me\b)", re.I)
+
+
+async def _caller_words(ws: str, messages: list[dict]) -> None:
+    """The caller hears the business's assistant and outcomes, never the team behind it (10 Nov prod calls:
+    "Customer Operations is checking this for you", "They're finalizing the cancellation"). Every line a caller
+    hears comes through `/events`, so this is the one place. Per sentence: progress told about anyone but the
+    assistant itself becomes `HOLD`; any other specialist name or title becomes "the team". A name inside a longer
+    capitalised phrase ("Hair Growth Treatment", a service) is left alone, and so is the assistant's own name."""
+    from core.services.workspace_provisioning import STARTER_ROSTER
+
+    names = {r[1] for r in STARTER_ROSTER} | {r[3] for r in STARTER_ROSTER}
+    try:
+        names |= {n for a in await agent_registry_repo.list_agents(ws) for n in (a.get("name"), a.get("title")) if n}
+    except Exception:  # noqa: BLE001 -- registry unreadable: the starter names are still scrubbed
+        logger.warning("phone: roster unreadable for %s; scrubbing starter names only", ws, exc_info=True)
+    names -= {str((await agent_config(ws)).get("name") or "").strip(), ""}
+    alts = "|".join(map(re.escape, sorted(names, key=len, reverse=True)))
+    pattern = re.compile(r"\b(?:[Tt]he\s+)?(?:%s)\b" % alts)
+
+    def sub(text: str) -> str:
+        def one(m: re.Match) -> str:
+            before, after = text[: m.start()], text[m.end() :]
+            # ponytail: a capitalised neighbour means a longer proper name; "Ask Growth" mid-sentence is missed
+            if re.search(r"[A-Z][\w']*\s$", before) or re.match(r"\s[A-Z]", after):
+                return m.group(0)
+            return "The team" if not before.strip() or before.rstrip()[-1] in ".?!" else "the team"
+
+        return pattern.sub(one, text)
+
+    for m in messages:
+        said: list[str] = []
+        for s in re.split(r"(?<=[.?!])\s+", m["text"].strip()):
+            s = HOLD if PROGRESS.search(_plain(s)) and not FIRST_PERSON.match(_plain(s)) else sub(s)
+            if not (s == HOLD and said and said[-1] == HOLD):
+                said.append(s)
+        m["text"] = " ".join(said)
 
 
 #: A line that says a booking is being made right now. Only `/book` and `/change` (the Front desk's booking tools)
@@ -1682,4 +1729,4 @@ async def _has_upcoming(ws: str, caller: str) -> bool:
     )
 
 
-NOT_BOOKED = "The team is still working on that and hasn't made the booking yet."
+NOT_BOOKED = "That booking isn't made yet."

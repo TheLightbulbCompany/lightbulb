@@ -1125,6 +1125,27 @@ async def test_a_callers_upcoming_booking_keeps_the_line(client, router_seat):
     has.assert_awaited_once_with("org_1", "+14155550133")
 
 
+async def test_a_caller_never_hears_a_specialists_name(client, router_seat):
+    """10 Nov prod calls: "Customer Operations is checking this for you" and "They're finalizing the cancellation"
+    were said to callers. Someone else's progress becomes the assistant's own hold; any other specialist name (a
+    starter's, or one the owner renamed) becomes "the team"; a service name and the assistant's own name stay."""
+    call = await _start(client)
+    cid, base = call["callId"], f"/api/v1/internal/voice/calls/{call['callId']}"
+    lines = [
+        "Customer Operations is checking this for you.",
+        "Thanks! They’re still working on it. They're finalizing the cancellation.",
+        "Rosa moved you to 3 PM. I'm checking the CEO's notes.",
+        "Our Hair Growth Treatment is $40. Nova here, anything else?",
+    ]
+    for i, text in enumerate(lines):
+        await _agent_line(cid, text, f"n{i}")
+    roster = [{"name": "Rosa", "title": "Customer Operations"}, {"name": "Nova"}]
+    with patch.object(voice_phone.agent_registry_repo, "list_agents", AsyncMock(return_value=roster)):
+        said = [m["text"] for m in client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]]
+    hold = voice_phone.HOLD
+    assert said == [hold, f"Thanks! {hold}", "The team moved you to 3 PM. I'm checking the team's notes.", lines[3]]
+
+
 async def test_another_calls_caller_thread_is_never_picked(client, router_seat):
     _, enq = router_seat
     call = await _start(client)

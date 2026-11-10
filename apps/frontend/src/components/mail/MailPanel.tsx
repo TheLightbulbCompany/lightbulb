@@ -243,7 +243,8 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
     {line.data?.number && <span className="mail-panel__number">{line.data.number}</span>}
     {isAdmin && line.data === null && (line.pending || account?.front_desk
       ? <span role="status" className="mail-panel__number">Setting up your number…</span>
-      : typeof price === "number" && <>
+      // The Front desk add-on rides the old Team plan: only a workspace already on it is offered it (as #5205).
+      : typeof price === "number" && account?.is_subscribed && <>
       <Button type="button" variant="ghost" size="sm" disabled={buying} onClick={() => void buyNumber()}>
         {`Get a phone number · $${price}/month`}
       </Button>

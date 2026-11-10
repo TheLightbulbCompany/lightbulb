@@ -427,3 +427,42 @@ async def test_legacy_bootstrap_keeps_current_default_and_english_policy(monkeyp
     assert call.started["voice"] == "marin"
     assert "Speak only English" in call.started["prompt"]
     await call.on_shutdown[0]()
+
+
+def _keys(call, keys, who="sip_caller"):
+    for k in keys:
+        call.ctx.room.emit("sip_dtmf_received", SimpleNamespace(digit=k, participant=SimpleNamespace(identity=who)))
+
+
+async def test_the_owner_types_a_pin_and_the_backend_alone_decides(monkeypatch):
+    """Board row 3.29: keypad digits go to /owner-pin, never to the model or the log; a yes moves /events to the
+    member's DM cursor and tells GPT-Live it now talks to the owner; a no is said as a no, nothing more."""
+    call = await Call(monkeypatch, info={"ownerPin": True},
+                      replies={"owner-pin": [{"ok": False, "locked": False}, {"ok": True, "after": 41}]}).answer()  # fmt: skip
+    instructions = []
+    call.live.transport = SimpleNamespace(instructions=instructions.append)
+    assert "phone PIN on the keypad" in call.started["prompt"]
+    _keys(call, "12", who="someone_else")  # not the caller's keypad
+    _keys(call, "99*0000#")  # `*` starts over
+    await asyncio.sleep(0.01)
+    assert [b for p, b in call.backend.calls if p == "owner-pin"] == [{"pin": "0000"}]
+    assert call.live.sent[-1] == (None, phone.PIN_WRONG) and instructions == []
+    _keys(call, "4821#")
+    await asyncio.sleep(0.01)
+    assert call.live.sent[-1] == (None, phone.PIN_OK) and instructions == [phone.OWNER_NOW]
+    assert all("4821" not in t for _d, t in call.live.sent) and "4821" not in call.started["prompt"]
+    FakeBackend.replies["events"] = {"messages": [], "after": 41}
+    task = asyncio.ensure_future(anext(call.started["events"]()))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert [b for p, b in call.backend.calls if p == "events"][-1] == {"after": 41}  # the DM's cursor
+    await call.on_shutdown[0]()
+
+
+async def test_a_number_with_no_pin_ignores_the_keypad(monkeypatch):
+    call = await Call(monkeypatch).answer()
+    assert "keypad" not in call.started["prompt"]
+    _keys(call, "4821#")
+    await asyncio.sleep(0.01)
+    assert "owner-pin" not in call.paths()
+    await call.on_shutdown[0]()

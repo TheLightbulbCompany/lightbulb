@@ -31,7 +31,14 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
-from core.services import voice_onboarding, voice_outbound, voice_preferences, agent_registry, task_conversation
+from core.services import (
+    phone_pin,
+    voice_onboarding,
+    voice_outbound,
+    voice_preferences,
+    agent_registry,
+    task_conversation,
+)
 
 router = APIRouter()
 
@@ -189,6 +196,28 @@ async def forget_caller(e164: str, auth: AuthContext = Depends(get_current_user)
         ExpressionAttributeNames={"#n": "name"}, ExpressionAttributeValues={":f": [], ":t": utc_now_iso()},
     )  # fmt: skip
     return {"ok": True}
+
+
+class PhonePinIn(BaseModel):
+    mobile: str = Field(min_length=1, max_length=40)
+    pin: str = Field(pattern=r"^\d{4,8}$")
+
+
+@router.get("/voice/phone-pin")
+async def get_phone_pin(auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Whether the signed-in member has a phone PIN, and the mobile it works from. The PIN is never sent back."""
+    row = await phone_pin.get(resolve_owner_id(auth), auth.user_id)
+    return {"set": bool(row), "mobile": (row or {}).get("mobile", "")}
+
+
+@router.put("/voice/phone-pin")
+async def put_phone_pin(body: PhonePinIn, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Set or change the member's own phone PIN and mobile (core/services/phone_pin: stored hashed)."""
+    mobile = _e164(body.mobile)
+    if not mobile:
+        raise HTTPException(status_code=400, detail={"code": "bad_mobile"})
+    await phone_pin.save(resolve_owner_id(auth), auth.user_id, mobile, body.pin)
+    return {"set": True, "mobile": mobile}
 
 
 class AgentConfigIn(BaseModel):

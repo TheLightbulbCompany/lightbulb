@@ -270,6 +270,14 @@ async def entrypoint(ctx: JobContext) -> None:
         tasks.add(t)
         t.add_done_callback(tasks.discard)
 
+    def owner_ended(out: dict) -> None:
+        """The member was removed mid-call (`/events` or `/turn` says so once): a caller again, from the call room's
+        cursor, with the caller prompt."""
+        cursor[0] = int(out.get("after") or 0)
+        question[:] = [None, 0.0]
+        ls[0].transport.instructions(prompt(info))
+        ls[0].send_result(None, OWNER_ENDED)
+
     async def post(text: str, turns: list[str]) -> str | live.Posted | None:
         """One delegation: the caller's line in the call's room, numbered in the order asked (live.py posts one at a
         time, in order; a retry is the same message). Its message id, or None: not posted. A paused line refuses it
@@ -282,6 +290,8 @@ async def entrypoint(ctx: JobContext) -> None:
         out = await backend.post("turn", {"n": n, "text": body, **({"answers": answers} if answers else {})})
         if answers is not None and question[0] is q:
             question[:] = [None, 0.0]
+        if out.get("ownerModeEnded"):  # /turn found the member removed before any poll did
+            owner_ended(out)
         if out.get("error") == "not_allowed":
             did.append(f"Message: {text[:120]}")
             await backend.post("message", {"text": body, "name": info.get("callerName") or "", "callbackNumber": ""})
@@ -324,11 +334,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 continue
             if cursor[0] != after:
                 continue  # owner mode began while this was in flight: these were the call room's
-            if out.get("ownerModeEnded"):  # the member was removed mid-call: a caller again, from the call room
-                cursor[0] = int(out.get("after") or 0)
-                question[:] = [None, 0.0]
-                ls[0].transport.instructions(prompt(info))
-                ls[0].send_result(None, OWNER_ENDED)
+            if out.get("ownerModeEnded"):
+                owner_ended(out)
                 continue
             cursor[0] = max(after, int(out.get("after") or 0))
             for m in out.get("messages", []):

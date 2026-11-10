@@ -1117,8 +1117,13 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
     meta, call = await _call(call_id)
     body = body.model_copy(update={"text": redact_cards(body.text)})  # the room message and the Router's trigger
     # the PIN was right (owner_pin) and the member is still seated: the orb's owner path, not the caller's
-    if call.get("ownerMode") and await _owner_seated(call_id, meta["ownerId"], call):
-        return await _owner_turn(call_id, meta["ownerId"], call, body)
+    ended: dict = {}
+    if call.get("ownerMode"):
+        if await _owner_seated(call_id, meta["ownerId"], call):
+            return await _owner_turn(call_id, meta["ownerId"], call, body)
+        # removed mid-call, found here before any poll: this answer carries the transition `/events` would have
+        # (the worker's cursor goes back to the call room, just before this line)
+        ended = {"ownerModeEnded": True, "after": await latest_seq(call_id)}
     ws, requester = meta["ownerId"], meta.get("ownerUserId")
     if not requester:
         raise _err(403, "no_requester")
@@ -1187,7 +1192,8 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
             await admission._to_task(ws, task_id, trigger.trigger_id)
     else:
         await admission.enqueue_trigger(ws, trigger, room_id=call_id)
-    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id, **({"taskId": task_id} if task_id else {})}
+    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id, **({"taskId": task_id} if task_id else {}),
+            **ended}  # fmt: skip
 
 
 _CLOSED = ("resolved", "failed")

@@ -147,6 +147,19 @@ async def test_an_owner_mode_answer_to_a_workers_question_answers_it(client, rou
     assert sent.await_args.kwargs == {"via": "voice", "wake": False}
 
 
+async def test_a_turn_that_finds_the_member_removed_carries_the_end_of_owner_mode(client, router_seat, dm):
+    """Removed, and the next thing the worker sends is a line (no poll in between): `/turn` itself says owner mode
+    ended, with the call room's cursor just before this line, so the caller's replies are not skipped."""
+    call = await _owner_call(client)
+    meta = await messaging_repo.get_room(DM)
+    await messaging_repo.remove_member(meta=meta, kind="human", member_id="user_owner", new_delivery_key="k2",
+                                       live_events=[])  # fmt: skip
+    out = _turn(client, call, n=2).json()
+    msg = await messaging_repo.get_message_by_id(call["callId"], out["messageId"])
+    assert out["ownerModeEnded"] is True and out["after"] == int(msg["messageSeq"]) - 1
+    assert "ownerModeEnded" not in _turn(client, call, n=3).json()  # said once
+
+
 async def test_removing_the_member_mid_call_ends_owner_mode(client, router_seat, dm):
     call = await _owner_call(client)
     meta = await messaging_repo.get_room(DM)

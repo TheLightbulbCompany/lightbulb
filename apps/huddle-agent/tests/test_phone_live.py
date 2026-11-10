@@ -483,6 +483,20 @@ async def test_owner_mode_answers_the_question_just_said_and_ends_when_removed(m
     await call.on_shutdown[0]()
 
 
+async def test_a_turn_that_ends_owner_mode_moves_the_cursor_back(monkeypatch):
+    call = await Call(monkeypatch, info={"ownerPin": True}, replies={
+        "turn": {"messageId": "m", "ownerModeEnded": True, "after": 6}, "events": {"messages": [], "after": 6}}).answer()  # fmt: skip
+    instructions = []
+    call.live.transport = SimpleNamespace(instructions=instructions.append)
+    await call.started["post"]("What's on today?", [])
+    assert instructions == [call.started["prompt"]] and (None, phone.OWNER_ENDED) in call.live.sent
+    task = asyncio.ensure_future(anext(call.started["events"]()))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert [b for p, b in call.backend.calls if p == "events"][-1] == {"after": 6}  # the call room's, not the DM's
+    await call.on_shutdown[0]()
+
+
 async def test_a_number_with_no_pin_ignores_the_keypad(monkeypatch):
     call = await Call(monkeypatch).answer()
     assert "keypad" not in call.started["prompt"]

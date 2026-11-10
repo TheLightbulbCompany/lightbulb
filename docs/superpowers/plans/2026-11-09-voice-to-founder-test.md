@@ -86,7 +86,7 @@ Settled. Tasks build on these and do not reopen them. Source: the founder's own 
 | F30 | Start vendor administration now (Twilio and similar). | 9 Nov. | Waiting until code is ready. |
 | F31 | iMessage agents are a channel of the product: plain iMessage, not Apple business messaging. | 9 Nov. "The direction we wanted to go in." | Apple Messages for Business registration. |
 | F32 | One pool of credits covers voice and text. | 9 Nov. Replaces the minutes plan. | Separate meters the customer has to understand. |
-| F33 | Sign in with ChatGPT is internal only for now. Customers are on managed credits. | 9 Nov. We use it so we do not pay for inference while testing; customers pay. | Offering it to customers. |
+| F33 | Sign in with ChatGPT stays available to every workspace for now; customers default to managed credits. | 10 Nov, replacing the 9 Nov internal-only ruling: "leave chatgpt, it's not hurting anyone". | Building an allowlist for it. |
 | F34 | iMessage is an add-on, built out later. | 9 Nov. "Was just looking into it." | Putting iMessage ahead of phone and Meet work. |
 | F35 | Order: everything, as fast as possible. Quick implementation and iteration matter most. | 9 Nov. | Waiting on phase order. Phases run in parallel. |
 | F36 | Work is reviewed. A review that finds real issues gets them fixed. A review that finds an architecture issue is brought to the founder. | 9 Nov. | Quietly patching around an architecture problem; or capping review rounds. |
@@ -105,7 +105,7 @@ Settled. Tasks build on these and do not reopen them. Source: the founder's own 
 
 ### Answered on 9 Nov
 
-Test on prod (F26). Delete the leftovers that are truly dead (row 1.13). Orb minutes count (F28). One plan (F27). Payment in the dev sandbox (F29). Start vendor admin (F30). No change to the voice design before measuring (task 3-A). One pool of credits (F32). Sign in with ChatGPT internal only (F33). iMessage is an add-on, later (F34). Order and review (F35, F36).
+Test on prod (F26). Delete the leftovers that are truly dead (row 1.13). Orb minutes count (F28). One plan (F27). Payment in the dev sandbox (F29). Start vendor admin (F30). No change to the voice design before measuring (task 3-A). One pool of credits (F32). Sign in with ChatGPT stays open (F33, revised 10 Nov). iMessage is an add-on, later (F34). Order and review (F35, F36).
 
 ---
 

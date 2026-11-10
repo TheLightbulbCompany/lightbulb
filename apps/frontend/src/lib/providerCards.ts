@@ -95,7 +95,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
  * always shown; `managedAvailable` only selects the accurate post-entitlement
  * managed copy when a paid workspace can use prepaid credits.
  */
-export function providerComparisonCards(managedAvailable: boolean, chatgptAvailable = false): ProviderCard[] {
+export function providerComparisonCards(managedAvailable: boolean): ProviderCard[] {
   const chatgpt = PROVIDER_CARDS.find((card) => card.id === "chatgpt_oauth")!;
   const managed = managedAvailable
     ? {
@@ -108,6 +108,5 @@ export function providerComparisonCards(managedAvailable: boolean, chatgptAvaila
         href: "/chat?panel=llm",
       }
     : PROVIDER_CARDS.find((card) => card.id === "openrouter_managed")!;
-  // ChatGPT sign-in is internal-only: the server says per workspace whether to offer it.
-  return chatgptAvailable ? [managed, chatgpt] : [managed];
+  return [managed, chatgpt];
 }

@@ -147,7 +147,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.6 | Onboarding: website read, review what was learned, booking destination, number, name and try a booking | yes | yes | no | 1st | Product | Never run end to end on a fresh workspace |
 | 4.7 | Fresh business to first answered call in 15 minutes, at phone width | n/a | n/a | no | 1st | Product | |
 | 4.8 | Settings: Members, Connections, Approvals (Ask, Auto, Never ask), Notifications, Billing and minutes with the run-out choice | yes | yes | no | 1st | Product | |
-| 4.9 | Customers are always on managed credits; Sign in with ChatGPT is internal only for now | no | no | no | | Platform | Founder ruling 9 Nov. What is built (#5162, #5168, on dev) offers both to every workspace admin |
+| 4.9 | Provider choice: managed credits or Sign in with ChatGPT, open to every workspace | yes | no | no | | Platform | #5162 and #5168. Founder 10 Nov: keep ChatGPT open (the internal-only allowlist #5187 was reverted in #5194 before reaching prod). Ships with the next prod train |
 | 4.10 | The orb: connecting, listening, thinking, speaking, with a caption; each talk kept as a "Yours" row | yes | yes | part | | Product | |
 | 4.11 | The orb does the general agent work the old product did | yes | yes | no | | Product | Founder ruling: the orb is a full third use case |
 | 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |

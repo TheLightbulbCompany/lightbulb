@@ -1516,7 +1516,6 @@ export function ProviderPicker({
   const [currentProvider, setCurrentProvider] = useState<string | null>(null);
   const comparisonCards = providerComparisonCards(
     account?.is_subscribed === true && account?.managed_inference_available === true,
-    account?.chatgpt_provider_available === true,
   );
   const currentProviderLabel = currentProvider === "chatgpt_oauth"
     ? "Sign in with ChatGPT"
@@ -1527,13 +1526,13 @@ export function ProviderPicker({
         : account?.is_subscribed ? "OpenRouter managed (default)" : "Not selected yet";
   const requested = searchParams.get("provider");
   useEffect(() => {
-    if (requested === "openrouter_managed" || (requested === "chatgpt_oauth" && account?.chatgpt_provider_available)) {
+    if (requested === "chatgpt_oauth" || requested === "openrouter_managed") {
       setSelectedProvider(requested);
     } else if (account?.provider_choice === "chatgpt_oauth" || account?.provider_choice === "openrouter_managed") {
       setSelectedProvider(account.provider_choice);
     }
     setCurrentProvider(account?.provider_choice ?? null);
-  }, [account?.provider_choice, account?.chatgpt_provider_available, requested]);
+  }, [account?.provider_choice, requested]);
 
   const chooseProvider = useCallback(async (provider: ProviderChoice) => {
     setError(null);

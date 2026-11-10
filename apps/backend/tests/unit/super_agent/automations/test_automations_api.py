@@ -714,7 +714,7 @@ def _admission_world(monkeypatch, adm):
     async def foreign(room_id, owner):
         return False
 
-    async def front(ws):
+    async def front(ws, *, room_id=None):
         return adm.CEO
 
     async def signal_router(ref):

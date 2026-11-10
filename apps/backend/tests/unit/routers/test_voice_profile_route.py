@@ -44,6 +44,7 @@ def world(monkeypatch):
     members = {
         "user_1": {"kind": "human", "id": "user_1", "homeOwnerId": OWNER},
         "user_guest": {"kind": "human", "id": "user_guest", "homeOwnerId": "org_vendor"},
+        AGENT: {"kind": "agent", "id": AGENT, "role": "member", "displayName": "Ada"},
     }
     monkeypatch.setattr(messaging_repo, "get_member", AsyncMock(side_effect=lambda room, kind, uid: members.get(uid)))
     counts: dict[tuple, int] = {}

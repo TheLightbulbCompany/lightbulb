@@ -17,7 +17,7 @@ this PR moved that logic into the composer.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,6 +30,11 @@ def _account(**overrides) -> dict:
     base = {"subscription_status": "active", "provider_choice": "bedrock_claude"}
     base.update(overrides)
     return base
+
+
+from core.repositories.workspace_repo import WorkspaceRepo as _WorkspaceRepo  # noqa: E402
+
+_REAL_RESOLVE_OWNER_ROW = _WorkspaceRepo.resolve_owner_row  # captured at import, before the autouse stub
 
 
 async def _compute(
@@ -398,6 +403,8 @@ def _repo_from_get(get_mock_repo: MagicMock) -> MagicMock:
 
     real = WorkspaceRepo()
     real.get_workspace = get_mock_repo.get_workspace
+    # tests/unit/conftest.py stubs resolve_owner_row to None outside moto; this test drives the real one.
+    real.resolve_owner_row = MethodType(_REAL_RESOLVE_OWNER_ROW, real)
     real._has_pending_brief = AsyncMock(return_value=False)
     return real
 

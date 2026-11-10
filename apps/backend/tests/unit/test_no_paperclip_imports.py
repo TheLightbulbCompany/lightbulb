@@ -88,7 +88,6 @@ MENTIONS = {
     "core/services/service_token.py",
     "core/services/session_keys.py",
     "core/services/stripe_webhook_handlers.py",
-    "core/services/task_conversation.py",
     "core/services/trigger_fire_url.py",
     "core/services/update_service.py",
     "core/services/workspace_wipe.py",

@@ -13,6 +13,13 @@ from core.services import messaging
 from core.services import openclaw_work as work
 from core.services.openclaw_work import OpenClawWorkWorker, WorkRetry
 
+
+@pytest.fixture(autouse=True)
+def _no_front_seat(monkeypatch):
+    """`upsert_member` and member additions read the room's front seat (#5166); these tests have no table."""
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))
+
+
 OWNER = "org_1"
 USER = "user_owner"
 AGENT = str(uuid.UUID(int=1))

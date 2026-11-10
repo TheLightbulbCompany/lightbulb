@@ -99,7 +99,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 
 | # | Promise | Built | Prod | Machine | 1st | Owner | Note |
 |---|---|---|---|---|---|---|---|
-| 3.1 | Call answered through Twilio, SIP and LiveKit | yes | yes | no | 1st | Product | The worker retries `end` 3 times; the sweeper ends calls left live past 25 min; if the backend refuses the call, the model tells the caller to call back later, then hangs up. Not prod-verified |
+| 3.1 | Call answered through Twilio, SIP and LiveKit | yes | yes | yes | 1st | Product | Lifecycle (built, not prod-verified): the worker retries `end` 3 times; the sweeper ends calls left live past 25 min; if the backend refuses the call, the model tells the caller to call back later, then hangs up |
 | 3.2 | The business owns the opening. We ship an editable default (name, business, "AI assistant"). Nothing in code enforces its wording. The assistant never claims to be a person when a caller sincerely asks | no | no | no | 1st | Product | Founder ruling 9 Nov, replacing "every call says AI and recorded". To change: delete the worker's disclosure guard and the backend's greeting fallback; make the default greeting editable; keep one prompt rule about not claiming to be human. The medical tier defaults the AI notice on |
 | 3.3 | The voice hands every business question to the Router and speaks its answer | yes | yes | part | 1st | Product | One call invented facts with no hand-off; one later call handed off. Rate not measured |
 | 3.4 | Latency: 1.4 s caller-to-reply on simple turns; a stated target for a useful answer | no | no | no | 1st | Product | No target for a useful answer exists yet |

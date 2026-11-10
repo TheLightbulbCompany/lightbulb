@@ -34,8 +34,6 @@ record; S3 holds each agent's Hermes profile. Approvals are authenticated card t
   Do not reopen them in code.
 - **The board**, `docs/voice-status.md`: every promise, and whether it is Built, on Prod, Machine-tested and
   Founder-walked. Status lives there, not in this file. A PR that changes a capability edits its row.
-- Both files are on branch `docs/voice-board` until it merges: read them with
-  `git show origin/docs/voice-board:<path>` if they are not on your checkout.
 - The design spec and master plan: `docs/superpowers/specs/2026-11-07-voice-agents-design.md` and
   `docs/superpowers/plans/2026-11-07-voice-agents-master-plan.md`. Where they differ from Part 1, Part 1 wins.
 
@@ -530,6 +528,8 @@ fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client re
   minutes go to the voice plan's meter only; only the orb debits credits. The founder has ruled one plan (the
   receptionist, F27) and one pool of credits for voice and text (F32); both are open work on the board (6.1,
   6.3). Do not add a second meter while the design is pending.
+- **In flight:** the $250 voice plan (1,500 minutes, $0.35 after) is moving to a Stripe subscription, with
+  Metronome kept for overage minutes only. Read that PR before touching `voice_billing.py` or `voice_plan.py`.
 - **Payment is proven in the Stripe sandbox on dev** (F29), never by a real prod charge.
 - **Free tier `trial_local`:** a workspace with no billing row gets one, bounded by OpenRouter's per-key daily
   limit (`OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD`) **and** a 30-day window (`billing_repo._TRIAL_LOCAL_DURATION_SECONDS`;

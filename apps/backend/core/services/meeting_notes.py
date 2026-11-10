@@ -188,7 +188,9 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 owner_id,
                 target,
                 f"meeting:{room_id}:{occurrence}:notes",
-                f"Write the meeting notes for {title}: decisions, open questions, two paragraphs max, then a last "
+                f"Write the meeting notes for {title}: open questions, two paragraphs max, then a section headed "
+                '"Decisions:" with one line per decision the people made ("- <what was decided> (decided by <who>)", '
+                "leaving out the parenthesis when nobody said who; no section when nothing was decided), then a last "
                 'section headed "Action items:" with one line per item ("- <owner>: <what>"); do not create tasks '
                 "yourself. Action items are recorded commitments, not authorization to start work. Action items come only from what people "
                 f"said: never from a line marked{ASSISTANT_MARK}, which is the voice repeating the team. The "
@@ -283,15 +285,31 @@ async def _posted_notes(request: dict, trigger: str) -> str | None:
 
 
 _ACTIONS_HEAD = re.compile(r"^\W*action items\W*$", re.I)
+_DECISIONS_HEAD = re.compile(r"^\W*decisions\W*$", re.I)
 _BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+(.+)$")
+_DECIDED_BY = re.compile(r"^(.+?)\s*\(decided by ([^()]+)\)\W*$", re.I)
 
 
 def action_items(notes: str) -> list[str]:
     """The bullets under the notes' "Action items:" heading (the notes request asks for that section)."""
+    return _section(notes, _ACTIONS_HEAD)
+
+
+def decisions(notes: str) -> list[dict]:
+    """The notes' own "Decisions:" section as ``[{"text", "by"?}]``: the model's lines read back, never invented."""
+    out = []
+    for item in _section(notes, _DECISIONS_HEAD):
+        m = _DECIDED_BY.match(item)
+        out.append({"text": m.group(1).strip(), "by": m.group(2).strip()} if m else {"text": item})
+    return out
+
+
+def _section(notes: str, head: re.Pattern) -> list[str]:
+    """The bullets under the first line matching ``head``."""
     items: list[str] = []
     lines = iter(notes.splitlines())
     for line in lines:
-        if _ACTIONS_HEAD.match(line.strip()):
+        if head.match(line.strip()):
             for item in lines:
                 if not (m := _BULLET.match(item)):
                     if items or item.strip():
@@ -398,10 +416,13 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
     room_id, occurrence = request["roomId"], request.get("occurrence")
     text = (notes or "").strip()
 
+    # The decisions travel with the first notes kept: a later reply rewrites neither.
+    first = {"notes": text, "decisions": decisions(text)} if text else {}
+
     def lay(m: dict) -> dict:
         if m.get("startAt") == occurrence:
-            return {"notesMailedAt": int(time.time()), **({"notes": text} if text and not m.get("notes") else {})}
-        past = [{**h, "notes": text} if text and h.get("startAt") == occurrence and not h.get("notes") else h
+            return {"notesMailedAt": int(time.time()), **(first if not m.get("notes") else {})}
+        past = [{**h, **first} if first and h.get("startAt") == occurrence and not h.get("notes") else h
                 for h in m.get("history") or []]  # fmt: skip
         return {"history": past}
 
@@ -421,4 +442,42 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
         except Exception:  # noqa: BLE001 -- the notes stay in the app; the items are in the notes
             put_metric("meeting.notes.actions_failed")
             logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)
+        try:
+            await _remember_decisions(owner_id, request, entry)
+        except Exception:  # noqa: BLE001 -- the decisions stay on the meeting; only recall misses them
+            put_metric("meeting.notes.decisions_failed")
+            logger.warning("meeting room %s: decisions not remembered", room_id, exc_info=True)
     await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
+
+
+async def _remember_decisions(owner_id: str, request: dict, entry: dict) -> None:
+    """Each decision becomes one team ``decision`` in the workspace's memory, so "what did we decide about X" is
+    answered by the ordinary recall path. Once per occurrence: ``decisionsRememberedAt`` marks it done."""
+    found = entry.get("decisions") or []
+    if not found or entry.get("decisionsRememberedAt"):
+        return
+    from core.services import memory_api
+
+    room_id, occurrence = request["roomId"], request.get("occurrence")
+    title = (request.get("meeting") or {}).get("title") or "Meeting"
+    day = time.strftime("%Y-%m-%d", time.gmtime(int(occurrence or 0)))
+    # ponytail: a crash between these writes and the marker repeats them; per-decision markers if that bites.
+    for d in found:
+        by = f" (decided by {d['by']})" if d.get("by") else ""
+        try:
+            await memory_api.remember(
+                owner_id, subject=f"Decision: {title}", fact=f"Decided in the meeting {title} on {day}: {d['text']}{by}",
+                kind="decision", scope="team",
+            )  # fmt: skip
+        except memory_api.Refused:
+            put_metric("meeting.notes.decision_refused")  # secret-shaped: kept on the meeting only
+    now = int(time.time())
+
+    def mark(m: dict) -> dict:
+        if m.get("startAt") == occurrence:
+            return {"decisionsRememberedAt": now}
+        past = [{**h, "decisionsRememberedAt": now} if h.get("startAt") == occurrence else h
+                for h in m.get("history") or []]  # fmt: skip
+        return {"history": past}
+
+    await meeting_invites._patch_meeting(room_id, mark)

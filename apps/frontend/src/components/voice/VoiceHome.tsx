@@ -208,6 +208,9 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
     </div>
     <p className="vx-tx"><strong>{presentation.label}</strong> · {presentation.detail}</p>
     {notes && <section><h3>Notes</h3><div className="vx-tx"><MarkdownView skipHtml>{notes}</MarkdownView></div></section>}
+    {!!meeting.decisions?.length && <section><h3>Decisions</h3>
+      <ul className="vx-tx">{meeting.decisions.map((d, n) => <li key={n}><span>{d.text}</span>{d.by && <span className="vx-muted"> · {d.by}</span>}</li>)}</ul>
+    </section>}
     <section><h3>What {name} was asked and did</h3>
       {meeting.asked?.length
         ? <ol className="vx-steps">{meeting.asked.map((a, n) => <li key={n}><time>{mmss(a.t)}</time>

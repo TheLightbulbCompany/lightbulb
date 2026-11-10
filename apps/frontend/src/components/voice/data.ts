@@ -28,6 +28,8 @@ export interface MeetingItem {
   title?: string; startAt?: number; endAt?: number; status?: string; inCallAt?: number; endedAt?: number; lastBotStatus?: string; people?: string[]; summary?: string; notes?: string;
   asked?: { t?: number; who?: string; q: string; a?: string }[];
   followUps?: { id?: string; text: string; status?: string; taskId?: string }[];
+  /** From the notes run's "Decisions:" section; `by` only when someone said who decided. */
+  decisions?: { text: string; by?: string }[];
 }
 
 export type TimelineItem = CallItem | MeetingItem;

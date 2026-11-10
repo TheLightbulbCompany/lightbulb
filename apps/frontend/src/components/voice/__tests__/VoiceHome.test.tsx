@@ -180,6 +180,24 @@ it("meeting details show the completed notes instead of the short timeline summa
   expect(within(pane).queryByText("Quick timeline summary")).not.toBeInTheDocument();
 });
 
+it("meeting pane lists the decisions with who made them", () => {
+  items.list = [{ type: "meeting", roomId: "decided", at: Date.now(), title: "Holiday planning",
+    decisions: [{ text: "Closed on Dec 25", by: "Maya" }, { text: "Holiday hours are 10 to 4" }] }];
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Holiday planning/ }));
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).getByRole("heading", { name: "Decisions" })).toBeInTheDocument();
+  expect(within(pane).getByText("Closed on Dec 25").closest("li")).toHaveTextContent("Closed on Dec 25 · Maya");
+  expect(within(pane).getByText("Holiday hours are 10 to 4").closest("li")).toHaveTextContent(/^Holiday hours are 10 to 4$/);
+});
+
+it("meeting pane has no Decisions section when none were made", () => {
+  items.list = [{ type: "meeting", roomId: "undecided", at: Date.now(), title: "Chat", decisions: [] }];
+  render(<VoiceHome />);
+  fireEvent.click(screen.getByRole("button", { name: /Chat/ }));
+  expect(within(screen.getByRole("complementary", { name: "Details" })).queryByRole("heading", { name: "Decisions" })).not.toBeInTheDocument();
+});
+
 it("meeting details retain the summary while completed notes are unavailable", () => {
   items.list = [{ type: "meeting", roomId: "summarized", at: Date.now(), title: "Review",
     summary: "Waiting for the final notes.", notes: "  " }];

@@ -1437,7 +1437,17 @@ async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, 
         "transcriptId": "t1",
         "transcriptRoomId": "default-room",
         **{
-            k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
+            k: 1
+            for k in (
+                "endedAt",
+                "notesRunId",
+                "notesSkipped",
+                "notes",
+                "decisions",
+                "decisionsRememberedAt",
+                "unsaid",
+                "followUps",
+            )  # fmt: skip
         },  # _ended_series sets each to 1
     }
 
@@ -1542,7 +1552,17 @@ async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots
             "transcriptId": "t1",
             "transcriptRoomId": "default-room",
             **{
-                k: 1 for k in ("endedAt", "notesRunId", "notesSkipped", "notes", "decisions", "unsaid", "followUps")
+                k: 1
+                for k in (
+                    "endedAt",
+                    "notesRunId",
+                    "notesSkipped",
+                    "notes",
+                    "decisions",
+                    "decisionsRememberedAt",
+                    "unsaid",
+                    "followUps",
+                )  # fmt: skip
             },  # _ended_series sets each to 1
         }
     ]

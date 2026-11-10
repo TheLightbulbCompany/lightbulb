@@ -75,6 +75,7 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
       }
       setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
         : status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
+        : code === "handoff_number_not_us" ? "The hand-off number must be a US or Canadian number."
         : "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };

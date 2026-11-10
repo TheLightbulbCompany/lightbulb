@@ -12,7 +12,7 @@ import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig, type 
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
-type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment";
+type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment" | "handoff";
 
 export function AgentPage() {
   const { data: config, error, save, agents = [], frontAgentId, frontAgentIssue } = useAgentConfig();
@@ -40,7 +40,7 @@ export function AgentPage() {
             setDraft(pending);
             try { await save(pending); setSaveState("payment"); }
             catch { setSaveState("error"); }
-          } else setSaveState(e?.status === 403 ? "forbidden" : "error");
+          } else setSaveState(e?.status === 403 ? "forbidden" : e.body?.detail?.code === "handoff_number_not_us" ? "handoff" : "error");
         });
     }, 600);
   };
@@ -53,9 +53,10 @@ export function AgentPage() {
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
           {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
-        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden"} style={{ marginTop: 6 }}>
+        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "handoff"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
             : saveState === "forbidden" ? "Only an admin can change the assistant."
+            : saveState === "handoff" ? "The hand-off number must be a US or Canadian number. Change it to save."
             : saveState === "payment" ? "Your setup is saved. Activate your voice plan, then return and choose Go live to get your number."
             : "Changes save as you make them."}</p>
         {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
@@ -281,7 +282,8 @@ export function ToAdd({ c, set, name, why }: Edit & { name: string; why?: string
 const REFUSED: Record<string, string> = {
   outbound_not_configured: "Forwarding check isn't switched on yet",
   check_in_progress: "A check is already running",
-  us_only: "Forwarding checks work for US numbers for now",
+  us_only: "Forwarding checks work for US and Canadian numbers for now",
+  daily_limit: "That's five checks today. Try again tomorrow",
 };
 const POLL_MS = 3000, POLL_FOR_MS = 70_000;  // as long as the server counts a call as the probe (voice_outbound.WINDOW_S)
 

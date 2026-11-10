@@ -43,6 +43,16 @@ it("unpaid Go live keeps the assistant off and offers the existing payment flow"
   vi.useRealTimers();
 });
 
+it("a hand-off number outside the US and Canada says why it was not saved", async () => {
+  vi.useFakeTimers();
+  cfg.save.mockRejectedValueOnce({ status: 422, body: { detail: { code: "handoff_number_not_us" } } });
+  render(<AgentPage />);
+  fireEvent.change(screen.getByPlaceholderText("Your cell"), { target: { value: "+1 876 555 0123" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(screen.getByText(/must be a US or Canadian number/)).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
 it("hides what does nothing yet and shows the texts as off", () => {
   render(<AgentPage />);
   for (const gone of [/Email me the notes/, /Add callers to the waitlist/]) expect(screen.queryByLabelText(gone)).toBeNull();

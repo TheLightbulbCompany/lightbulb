@@ -412,7 +412,7 @@ async def start_call(body: StartIn) -> dict:
         except Exception:  # noqa: BLE001 -- no front agent yet: the call is still answered; the caller's lines wait
             logger.warning("call room without Lightbulb ws=%s", owner_id, exc_info=True)
     try:
-        await messaging_repo.create_room(
+        room = await messaging_repo.create_room(
             owner_id=owner_id,
             room_id=call_id,
             client_room_id=f"call:{body.livekitRoom}",
@@ -431,8 +431,10 @@ async def start_call(body: StartIn) -> dict:
             },
         )
     except messaging_repo.MessagingRepoError:
-        if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
+        if (room := await messaging_repo.get_room(call_id)) is None:  # a replay keeps the room it made
             raise
+    # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes.
+    token = (room or {}).get("callToken") or token
     if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
         voice_calls.prewake_owner(owner_id, team=[front])
     allow, mode = cfg["allow"], call_mode(cfg, call)
@@ -933,15 +935,21 @@ async def book(call_id: str, body: BookIn) -> dict:
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
     counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
-    if not await messaging_repo.take_voice_count(meta["ownerId"], counter, BOOKINGS_PER_CALLER_PER_DAY):
+    # Only a new reservation counts: a retry of this call's (or this caller's) booking at that time returns or
+    # reconciles the one already made, and the cap must never lock it out.
+    held = await messaging_repo._get(messaging_repo.owner_pk(meta["ownerId"]), f"VOICEBOOK#{body.start}") or {}
+    caller = call.get("caller")
+    retry = bool(held) and (held.get("callId") == call_id or bool(caller and held.get("phone") == caller))
+    if not retry and not await messaging_repo.take_voice_count(meta["ownerId"], counter, BOOKINGS_PER_CALLER_PER_DAY):
         await _limit(call_id, "too many bookings from this number today")
         raise _err(403, "not_allowed")
     try:
         result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
     except BaseException:
-        await messaging_repo.take_voice_count(meta["ownerId"], counter, 0, by=-1)  # only a booking made counts
+        if not retry:
+            await messaging_repo.take_voice_count(meta["ownerId"], counter, 0, by=-1)  # only a booking made counts
         raise
-    if result["state"] not in ("confirmed", "pending", "held"):  # nothing was reserved
+    if not retry and result["state"] not in ("confirmed", "pending", "held"):  # nothing was reserved
         await messaging_repo.take_voice_count(meta["ownerId"], counter, 0, by=-1)
     if result["state"] != "confirmed":
         await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})

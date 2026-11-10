@@ -1001,3 +1001,24 @@ def test_call_card_push_carries_the_kind_and_a_first_name_only():
     assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person: Maria"
     q["preview"] = {}
     assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person"
+
+
+async def test_overlapping_starts_for_one_room_return_the_stored_token(client):
+    """#5193 review: two starts race for one LiveKit room; the loser read no room, so it minted its own token. It
+    must return the token the room kept, or its worker gets 401 on every later route."""
+    first = await _start(client, room="phone-race", ago=0)
+    real, missed = messaging_repo.get_room, []
+
+    async def racing(room_id):
+        if room_id == first["callId"] and not missed:
+            missed.append(room_id)
+            return None  # the loser's replay check ran before the winner's create landed
+        return await real(room_id)
+
+    with patch.object(voice_phone.messaging_repo, "get_room", racing):
+        loser = client.post("/api/v1/internal/voice/calls", headers=W,
+                            json={"calledNumber": NUMBER, "callerNumber": "+14155550133", "livekitRoom": "phone-race"})  # fmt: skip
+    assert missed and loser.json()["callToken"] == first["callToken"]
+    headers = {**W, voice_phone.CALL_TOKEN_HEADER: loser.json()["callToken"]}
+    url = f"/api/v1/internal/voice/calls/{first['callId']}/events"
+    assert client.post(url, json={"after": 0}, headers=headers).status_code == 200

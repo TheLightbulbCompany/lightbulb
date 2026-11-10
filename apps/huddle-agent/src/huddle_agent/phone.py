@@ -201,8 +201,8 @@ class Backend:
 
 
 END_TRIES, END_BACKOFF_S = 3, 1.0
-SORRY = "Sorry, we can't take your call right now, please call back shortly."
-SORRY_S = 7.0  # the line's time to play before the hang-up
+CANT_TAKE = "We can't handle this call right now. Tell the caller briefly, in your own words, and suggest calling back later."
+SORRY_S = 7.0  # the model's time to say it before the hang-up
 
 
 async def post_end(backend, body: dict) -> dict:
@@ -224,7 +224,7 @@ async def post_end(backend, body: dict) -> dict:
 
 
 async def say_sorry_and_hang_up(ctx: JobContext, caller) -> None:
-    """The backend refused to start the call: tell the caller once, then hang up, instead of dead air."""
+    """The backend refused to start the call: the model tells the caller (we give it the fact, not the words), then we hang up, instead of dead air."""
 
     async def no_post(*_a):
         return None
@@ -235,11 +235,11 @@ async def say_sorry_and_hang_up(ctx: JobContext, caller) -> None:
 
     try:
         voice = await live.start(
-            ctx, prompt="You answer a phone. Say only what you are told to say, then stay silent.", surface="phone",
+            ctx, prompt="You answer the phone for a business. The call cannot be handled right now; the caller hears you say so.", surface="phone",
             post=no_post, events=no_events,
             room_options=room_io.RoomOptions(participant_identity=caller.identity, close_on_disconnect=True),
         )  # fmt: skip
-        voice.send_result(None, f"Say exactly this, nothing else: {SORRY}")
+        voice.send_result(None, CANT_TAKE)
         await asyncio.sleep(SORRY_S)
         await voice.close()
     except Exception:  # noqa: BLE001 -- the hang-up below is the point

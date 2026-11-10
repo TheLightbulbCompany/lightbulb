@@ -522,7 +522,7 @@ async def test_end_gives_up_after_three_tries(monkeypatch):
     assert call.paths().count("end") == 3 and call.shutdowns == ["caller hung up"]
 
 
-async def test_a_refused_call_says_sorry_then_hangs_up(monkeypatch):
+async def test_a_refused_call_is_told_to_the_model_then_hangs_up(monkeypatch):
     monkeypatch.setattr(phone, "SORRY_S", 0)
     call = Call(monkeypatch)
 
@@ -531,5 +531,5 @@ async def test_a_refused_call_says_sorry_then_hangs_up(monkeypatch):
 
     monkeypatch.setattr(FakeBackend, "post", refused)
     await call.answer()
-    assert phone.SORRY in call.live.sent[0][1]
+    assert call.live.sent == [(None, phone.CANT_TAKE)]  # the fact, never a script
     assert call.live.closed == 1 and call.deleted == 1 and call.shutdowns == ["call refused"]

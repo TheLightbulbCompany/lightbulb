@@ -302,6 +302,11 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # payment method matters to Metronome regardless of whether we can map
     # the subscription to a billing row.
     await _maybe_set_customer_default_payment_method(event_data)
+    from core.billing import voice_plan
+
+    if voice_plan.is_voice_subscription(event_data):  # the $250 voice plan is not a workspace subscription
+        await voice_plan.sync_subscription(event_data)
+        return None
     account = await resolve_owner_account(event_data)
     if not account:
         return None
@@ -588,7 +593,11 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
     """`customer.subscription.deleted`."""
     event_data = event["data"]["object"]
     put_metric("stripe.subscription", dimensions={"event": "deleted"})
+    from core.billing import voice_plan
 
+    if voice_plan.is_voice_subscription(event_data):
+        await voice_plan.sync_subscription(event_data)
+        return None
     account = await resolve_owner_account(event_data)
     if not account:
         return None
@@ -647,9 +656,6 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
 
 
 async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: BillingService) -> Response | None:
-    from core.billing.voice_plan_payments import on_invoice
-
-    await on_invoice(event)
     event_data = event["data"]["object"]
     put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
     logger.warning("Payment failed for customer %s", event_data.get("customer"))
@@ -683,9 +689,6 @@ async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingSer
     """`invoice.paid` (T23): ``invoice_paid {at_list}`` on every paid invoice, and
     ``trial_converted`` once per workspace, on its first invoice paid at list. Telemetry only;
     billing state stays with the subscription events. Never raises into the webhook."""
-    from core.billing.voice_plan_payments import on_invoice
-
-    await on_invoice(event)
     invoice = event["data"]["object"]
     put_metric("stripe.invoice", dimensions={"event": "paid"})
     sub_id, sub_metadata = _invoice_subscription(invoice)
@@ -737,10 +740,6 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     Customer credit purchases use Metronome payment-gated commits directly;
     there is no Stripe Checkout credit-settlement or bundled-credit branch.
     """
-    from core.billing.voice_plan_checkout import complete
-
-    if await complete(event):
-        return Response(status_code=200)
     session = event["data"]["object"]
     session_metadata = session.get("metadata") or {}
     # Launch competition: a settled session that carried the winner free-month

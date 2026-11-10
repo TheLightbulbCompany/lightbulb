@@ -175,13 +175,11 @@ class MetronomeClient:
             raise MetronomeError(f"create_contract: no data.id in Metronome response (got keys {sorted(body)})")
         return contract_id
 
-    async def create_voice_contract(
-        self, *, customer_id: str, rate_card_id: str, subscription_product_id: str, uniqueness_key: str
-    ) -> str:
-        """An explicitly enrolled voice plan; distinct from the owner's prepaid-credit contract.
+    async def create_voice_contract(self, *, customer_id: str, rate_card_id: str, uniqueness_key: str) -> str:
+        """An enrolled voice plan; distinct from the owner's prepaid-credit contract.
 
-        Official contracts API: subscriptions are qty-one MONTHLY ADVANCE; usage_filter's key must
-        be a group key on the voice metric. The dedicated card prices only voice_minutes.
+        Usage only: the flat fee is a Stripe subscription. usage_filter's key must be a group key
+        on the voice metric. The dedicated card prices only voice_minutes (1,500 free, then $0.35).
         """
         body = await self._post(
             "/contracts/create",
@@ -192,15 +190,6 @@ class MetronomeClient:
                 "uniqueness_key": uniqueness_key,
                 "billing_provider_configuration": {"billing_provider": "stripe", **_stripe_delivery()},
                 "usage_filter": {"group_key": "voice_plan", "group_values": [uniqueness_key]},
-                "subscriptions": [
-                    {
-                        "collection_schedule": "ADVANCE",
-                        "billing_cycle_config": {"invoice_placement": "ON_SCHEDULED_INVOICE"},
-                        "proration": {"invoice_behavior": "BILL_IMMEDIATELY", "is_prorated": True},
-                        "initial_quantity": 1,
-                        "subscription_rate": {"billing_frequency": "MONTHLY", "product_id": subscription_product_id},
-                    }
-                ],
             },
         )
         contract_id = (body.get("data") or {}).get("id")

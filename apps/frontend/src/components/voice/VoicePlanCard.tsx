@@ -17,7 +17,6 @@ interface VoicePlan {
   includedMinutes: number;
   overageUsdPerMinute: number;
   endsAt?: string | null;
-  paymentActionUrl?: string | null;
 }
 
 const label = {
@@ -55,12 +54,15 @@ export function VoicePlanCard() {
   const current = !!plan && plan.ownerId === scope;
   const enabled = admin && current && !busy && !error;
 
-  async function update(kind: "checkout" | "cancel") {
+  async function update(kind: "checkout" | "cancel" | "portal") {
     if (!plan || !enabled || (kind === "checkout" && !accepted)) return;
     setBusy(true);
     setProblem("");
     try {
-      if (kind === "cancel") {
+      if (kind === "portal") {
+        const { portal_url } = await api.post("/billing/portal", {}) as { portal_url: string };
+        await openAuthUrl(portal_url);
+      } else if (kind === "cancel") {
         await api.del(`/billing/voice-plan?expectedOwnerId=${encodeURIComponent(plan.ownerId)}`);
         setConfirmCancel(false);
       } else {
@@ -87,7 +89,7 @@ export function VoicePlanCard() {
     {error && <p role="alert">Couldn’t load your voice plan. <Button variant="ghost" onClick={() => void mutate()}>Retry</Button></p>}
     {current && <>
       <p className="vx-sub" role="status">{label[plan.status]}</p>
-      <p className="vx-sub">${plan.monthlyUsd}/month includes {plan.includedMinutes.toLocaleString()} voice minutes. Additional minutes cost ${plan.overageUsdPerMinute.toFixed(2)} each. The first period is prorated; billing renews at midnight UTC on the first of each month.</p>
+      <p className="vx-sub">${plan.monthlyUsd}/month includes {plan.includedMinutes.toLocaleString()} voice minutes. Additional minutes cost ${plan.overageUsdPerMinute.toFixed(2)} each. It renews monthly; you can enter a promotion code at checkout.</p>
       {plan.status === "not_enrolled" && !plan.available && <p className="vx-sub">Voice plan enrollment isn’t available yet.</p>}
       {plan.status === "not_enrolled" && plan.available && admin && <>
         <label className="vx-choice"><input type="checkbox" checked={accepted} onChange={(event) => setAcceptedFor(event.target.checked ? consentKey : null)} disabled={busy} />
@@ -96,8 +98,8 @@ export function VoicePlanCard() {
         <Button disabled={!enabled || !accepted} onClick={() => void update("checkout")}>{busy ? "Opening payment…" : "Continue to payment"}</Button>
       </>}
       {plan.status === "pending_payment" && <p className="vx-sub">Your plan becomes active after payment is confirmed.</p>}
-      {plan.paymentActionUrl && ["pending_payment", "past_due"].includes(plan.status) && admin &&
-        <Button disabled={!enabled} onClick={() => void openAuthUrl(plan.paymentActionUrl!).catch(() => setProblem("Couldn’t open payment. Try again."))}>Complete payment</Button>}
+      {plan.status !== "not_enrolled" && admin &&
+        <Button variant="outline" disabled={!enabled} onClick={() => void update("portal")}>Manage billing</Button>}
       {plan.endsAt && <p className="vx-sub">{plan.status === "canceled" ? "Ended" : ["active", "canceling"].includes(plan.status) ? "Access continues through" : "Renewal ends"} {new Date(plan.endsAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}.{!["active", "canceling", "canceled"].includes(plan.status) && " Access requires confirmed payment."}</p>}
       {plan.status === "canceled" && <p className="vx-sub">Contact support to start a new plan.</p>}
       {plan.status === "cancellation_pending" && admin && <Button variant="outline" disabled={!enabled} onClick={() => void update("cancel")}>Retry cancellation</Button>}

@@ -12,7 +12,7 @@ def _account():
         "subscription_status": "trial_local",
         "trial_end": 1,
         "metronome_voice_contract_id": "voice",
-        "voice_plan_paid_periods": {"fee": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}},
+        "voice_plan_stripe_status": "active",
     }
 
 
@@ -58,7 +58,7 @@ async def test_failed_runtime_dispatch_remains_repairable_after_invoice_already_
 
 async def test_payment_failure_refreshes_facts_and_deactivates_paid_autonomy_without_new_provision(env):
     account, _, facts, relimit, dispatch, ensure = env
-    account["voice_plan_unpaid_invoice_ids"] = {"debt"}
+    account["voice_plan_stripe_status"] = "past_due"
     await voice_plan_payments.refresh("org")
     facts.assert_awaited_once()
     relimit.assert_awaited_once()

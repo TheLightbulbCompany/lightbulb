@@ -19,7 +19,7 @@ from core.auth import (
     require_org_admin,
 )
 from core.config import settings
-from core.billing import voice_plan, voice_plan_payments, voice_plan_checkout
+from core.billing import voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.repositories.workspace_repo import customer_ops_agent_id
@@ -56,46 +56,15 @@ class VoicePlanEnrollment(BaseModel):
 @router.get("/voice-plan")
 async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
     account = await billing_repo.get_by_owner_id(resolve_owner_id(auth), consistent_read=True) or {}
-    if account.get("metronome_voice_contract_id") and voice_plan.status(account) in {"pending_payment", "past_due"}:
-        account = await voice_plan_payments.reconcile(resolve_owner_id(auth))
     status = voice_plan.status(account)
     available = voice_plan.available()
-    ready = (
-        bool(
-            available
-            and account.get("stripe_customer_id")
-            and await voice_plan_payments.default_card(account["stripe_customer_id"])
-        )
-        if status == "not_enrolled"
-        else False
-    )
-    action_url = next(
-        (
-            url
-            for invoice, url in (account.get("voice_plan_invoice_actions") or {}).items()
-            if (status == "pending_payment" or invoice in (account.get("voice_plan_unpaid_invoice_ids") or set()))
-            and url
-        ),
-        None,
-    )
     return {
         "ownerId": resolve_owner_id(auth),
         "status": status,
-        "state": ("configured_inactive" if not available else "ready_to_enroll" if ready else "needs_payment_method")
-        if status == "not_enrolled"
-        else status,
+        "state": ("ready_to_enroll" if available else "configured_inactive") if status == "not_enrolled" else status,
         "endsAt": account.get("voice_plan_ending_at"),
-        "cancelRequestedFor": account.get("voice_plan_cancel_target"),
         "available": available,
-        "paymentReady": ready,
-        "paymentActionUrl": action_url,
-        "action": "checkout"
-        if status == "not_enrolled" and available
-        else "pay_invoice"
-        if action_url and status in {"past_due", "pending_payment"}
-        else "retry_cancellation"
-        if status == "cancellation_pending"
-        else None,
+        "action": "checkout" if status == "not_enrolled" and available else None,
         "billingTimeZone": "UTC",
         "planVersion": voice_plan.PLAN_VERSION,
         "monthlyUsd": 250,
@@ -104,27 +73,9 @@ async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
     }
 
 
-@router.post("/voice-plan")
-async def enroll_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Depends(get_current_user)):
-    """Admin acceptance of $250/month plus $0.35/minute after 1,500; may create a real invoice."""
-    require_org_admin(auth)
-    if body.expectedOwnerId != resolve_owner_id(auth):
-        raise HTTPException(status_code=409, detail={"code": "workspace_changed"})
-    try:
-        return await voice_plan.enroll(resolve_owner_id(auth), accepted_by=auth.user_id)
-    except voice_plan.VoicePlanError as exc:
-        code = str(exc)
-        raise HTTPException(
-            status_code=503 if code == "voice_plan_unavailable" else 409, detail={"code": code}
-        ) from exc
-    except (httpx.HTTPError, stripe.error.StripeError) as exc:
-        logger.warning("voice enrollment provider failure", exc_info=True)
-        raise HTTPException(status_code=502, detail={"code": "voice_plan_provider_error"}) from exc
-
-
 @router.post("/voice-plan/checkout")
 async def checkout_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Depends(get_current_user)):
-    """Accept the plan and collect an invoice-default card on Stripe's hosted setup page when needed."""
+    """Accept the plan and open Stripe Checkout for the $250/month subscription (promotion codes allowed)."""
     require_org_admin(auth)
     if body.expectedOwnerId != resolve_owner_id(auth):
         raise HTTPException(status_code=409, detail={"code": "workspace_changed"})
@@ -150,7 +101,7 @@ async def cancel_voice_plan(
         return await voice_plan.cancel(resolve_owner_id(auth))
     except voice_plan.VoicePlanError as exc:
         raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, stripe.error.StripeError) as exc:
         logger.warning("voice cancellation provider failure", exc_info=True)
         raise HTTPException(status_code=502, detail={"code": "voice_plan_provider_error"}) from exc
 

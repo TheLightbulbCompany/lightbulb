@@ -251,9 +251,8 @@ async def test_usage_only_describes_an_allowance_when_payment_covers_now(
     account = (
         {
             "metronome_voice_contract_id": "contract",
-            "voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}}
-            if paid
-            else {},
+            "voice_plan_stripe_subscription_id": "sub_1",
+            "voice_plan_stripe_status": "active" if paid else "incomplete",
         }
         if contract
         else {}

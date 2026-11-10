@@ -227,7 +227,6 @@ class Settings(BaseSettings):
     """Bearer token. Sandbox token in dev, prod token in prod. From Secrets Manager."""
     METRONOME_VOICE_RATE_CARD_ID: str = ""
     METRONOME_VOICE_METRIC_ID: str = ""
-    METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID: str = ""
     METRONOME_VOICE_ENROLLMENT_ENABLED: bool = False
     OPENAI_API_KEY: str = ""
     """Platform key for GPT-Live voice sessions. From Secrets Manager. Not a real ``sk-`` key ⇒ calls 503 voice_unavailable."""
@@ -341,6 +340,8 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
     STRIPE_WORKSPACE_PRICE_ID: str = ""
+    #: The $250/month voice plan's flat fee (one licensed price); Metronome bills only its overage minutes.
+    STRIPE_VOICE_PLAN_PRICE_ID: str = ""
     STRIPE_BASE_PRICE_ID: str = ""
     # Stripe price for the Ultra runtime tier. Empty default so the app boots
     # without it; CDK-wired in dev/prod. This is the billing source of truth

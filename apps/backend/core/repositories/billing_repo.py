@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 import uuid
 
 from boto3.dynamodb.conditions import Attr, Key
@@ -637,7 +637,7 @@ async def set_metronome_ids(
 
 
 async def set_voice_plan(owner_id: str, *, customer_id: str, contract_id: str, usage_key: str, started_at: str) -> None:
-    """Record a contract awaiting collection; payment confirmation grants the voice entitlement."""
+    """Record the usage-only Metronome contract; the Stripe subscription status carries the entitlement."""
     await run_in_thread(
         _get_table().update_item,
         Key={"owner_id": owner_id},
@@ -648,7 +648,7 @@ async def set_voice_plan(owner_id: str, *, customer_id: str, contract_id: str, u
         ExpressionAttributeValues={
             ":m": customer_id,
             ":c": contract_id,
-            ":s": "pending_payment",
+            ":s": "active",
             ":k": usage_key,
             ":a": started_at,
             ":t": utc_now_iso(),
@@ -657,100 +657,37 @@ async def set_voice_plan(owner_id: str, *, customer_id: str, contract_id: str, u
     )
 
 
-async def record_voice_payment(
-    owner_id: str,
-    *,
-    contract_id: str,
-    invoice_id: str,
-    period_start: str,
-    paid_through: str | None,
-    state: str,
-    action_url: str | None,
-) -> bool:
-    """Track each debt independently; paid is absorbing per invoice, and paid-through only increases."""
-    try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=(
-                "SET voice_plan_invoice_states = if_not_exists(voice_plan_invoice_states, :empty), "
-                "voice_plan_invoice_actions = if_not_exists(voice_plan_invoice_actions, :empty), "
-                "voice_plan_paid_periods = if_not_exists(voice_plan_paid_periods, :empty)"
-            ),
-            ConditionExpression="metronome_voice_contract_id = :c",
-            ExpressionAttributeValues={":c": contract_id, ":empty": {}},
-        )
-        failed = state == "failed"
-        update = "SET #states.#invoice = :s, updated_at = :t"
-        if state in {"failed", "pending"}:
-            update += ", #actions.#invoice = :u"
-            if failed:
-                update += " ADD voice_plan_unpaid_invoice_ids :ids"
-        else:
-            update += " REMOVE #actions.#invoice DELETE voice_plan_unpaid_invoice_ids :ids"
-        values = {":c": contract_id, ":s": state, ":paid": "paid", ":t": utc_now_iso()}
-        if state != "pending":
-            values[":ids"] = {invoice_id}
-        if state in {"failed", "pending"}:
-            values[":u"] = action_url
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=update,
-            ConditionExpression=(
-                "metronome_voice_contract_id = :c AND (attribute_not_exists(#states.#invoice) "
-                "OR #states.#invoice <> :paid OR :s = :paid)"
-            ),
-            ExpressionAttributeNames={
-                "#states": "voice_plan_invoice_states",
-                "#invoice": invoice_id,
-                "#actions": "voice_plan_invoice_actions",
-            },
-            ExpressionAttributeValues=values,
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-    if state == "paid" and paid_through:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET voice_plan_paid_periods.#invoice = :period",
-            ExpressionAttributeNames={"#invoice": invoice_id},
-            ConditionExpression="metronome_voice_contract_id = :c",
-            ExpressionAttributeValues={":c": contract_id, ":period": {"start": period_start, "end": paid_through}},
-        )
-        try:
-            await run_in_thread(
-                _get_table().update_item,
-                Key={"owner_id": owner_id},
-                UpdateExpression="SET voice_plan_paid_through = :e, voice_plan_payment_period = :p",
-                ConditionExpression="metronome_voice_contract_id = :c AND (attribute_not_exists(voice_plan_paid_through) OR voice_plan_paid_through < :e)",
-                ExpressionAttributeValues={":c": contract_id, ":e": paid_through, ":p": period_start},
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
-    return True
-
-
-async def set_voice_checkout_intent(owner_id: str, *, intent: str, expires_at: int, accepted_by: str) -> None:
+async def set_voice_subscription(
+    owner_id: str, *, subscription_id: str, status: str, ending_at: str | None, accepted_by: str | None
+) -> None:
+    """Mirror the voice-plan Stripe subscription: its status is the entitlement, cancel_at its end."""
+    values = {":i": subscription_id, ":s": status, ":t": utc_now_iso(), ":v": "voice-agents-v1"}
+    update = "SET voice_plan_stripe_subscription_id = :i, voice_plan_stripe_status = :s, updated_at = :t"
+    update += ", voice_plan_accepted_version = :v"
+    if accepted_by:
+        update += ", voice_plan_accepted_by = :a"
+        values[":a"] = accepted_by
+    if ending_at:
+        update += ", voice_plan_ending_at = :e"
+        values[":e"] = ending_at
+    else:
+        update += " REMOVE voice_plan_ending_at"
     await run_in_thread(
         _get_table().update_item,
         Key={"owner_id": owner_id},
-        UpdateExpression=(
-            "SET voice_plan_checkout_intent = :i, voice_plan_checkout_expires_at = :e, "
-            "voice_plan_accepted_version = :v, voice_plan_accepted_by = :a, voice_plan_accepted_at = :t"
-        ),
+        UpdateExpression=update,
+        ExpressionAttributeValues=values,
         ConditionExpression="attribute_exists(owner_id)",
-        ExpressionAttributeValues={
-            ":i": intent,
-            ":e": expires_at,
-            ":v": "voice-agents-v1",
-            ":a": accepted_by,
-            ":t": utc_now_iso(),
-        },
+    )
+
+
+async def end_voice_plan(owner_id: str, *, ending_at: str) -> None:
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET voice_plan_status = :s, voice_plan_ending_at = :e, updated_at = :t",
+        ExpressionAttributeValues={":s": "canceled", ":e": ending_at, ":t": utc_now_iso()},
+        ConditionExpression="attribute_exists(metronome_voice_contract_id)",
     )
 
 
@@ -761,33 +698,6 @@ async def set_voice_runtime_sync_revision(owner_id: str, *, contract_id: str, re
         UpdateExpression="SET voice_plan_runtime_sync_revision = :r",
         ConditionExpression="metronome_voice_contract_id = :c",
         ExpressionAttributeValues={":c": contract_id, ":r": revision},
-    )
-
-
-async def begin_voice_plan_cancellation(owner_id: str) -> str:
-    """Freeze the next UTC billing-period boundary before HTTP; retries cannot extend the term."""
-    now = datetime.now(UTC)
-    ending_at = now.replace(
-        year=now.year + (now.month == 12), month=now.month % 12 + 1, day=1, hour=0, minute=0, second=0, microsecond=0
-    ).isoformat()
-    out = await run_in_thread(
-        _get_table().update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression="SET voice_plan_cancel_target = if_not_exists(voice_plan_cancel_target, :t)",
-        ExpressionAttributeValues={":t": ending_at},
-        ConditionExpression="attribute_exists(metronome_voice_contract_id)",
-        ReturnValues="ALL_NEW",
-    )
-    return out["Attributes"]["voice_plan_cancel_target"]
-
-
-async def finish_voice_plan_cancellation(owner_id: str) -> None:
-    await run_in_thread(
-        _get_table().update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression="SET voice_plan_status = :s, voice_plan_ending_at = voice_plan_cancel_target, updated_at = :t",
-        ExpressionAttributeValues={":s": "canceling", ":t": utc_now_iso()},
-        ConditionExpression="attribute_exists(metronome_voice_contract_id) AND attribute_exists(voice_plan_cancel_target)",
     )
 
 

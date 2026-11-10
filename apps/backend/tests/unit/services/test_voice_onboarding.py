@@ -178,9 +178,7 @@ def _buying(monkeypatch, on: bool) -> None:
             return_value={
                 "metronome_voice_contract_id": "contract",
                 "voice_plan_status": "active",
-                "voice_plan_paid_periods": {
-                    "invoice": {"start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
-                },
+                "voice_plan_stripe_status": "active",
             }
         ),
     )
@@ -380,12 +378,11 @@ async def test_confirmed_unavailable_choice_can_be_replaced_on_next_go_live(repo
         {"subscription_status": "active", "plan": "standard"},
         {
             "metronome_voice_contract_id": "contract",
-            "voice_plan_paid_periods": {"i": {"start": "2000-01-01T00:00:00Z", "end": "2000-02-01T00:00:00Z"}},
+            "voice_plan_stripe_status": "canceled",
         },
         {
             "metronome_voice_contract_id": "contract",
-            "voice_plan_unpaid_invoice_ids": ["unpaid"],
-            "voice_plan_paid_periods": {"i": {"start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}},
+            "voice_plan_stripe_status": "past_due",
         },
     ],
 )

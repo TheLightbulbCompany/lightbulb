@@ -1845,9 +1845,11 @@ export class ServiceStack extends cdk.Stack {
       METRONOME_VOICE_RATE_CARD_ID: env === "dev"
         ? "61facb7b-3412-431e-ae29-09eb7d9f0efa"
         : "fd293a47-6b1b-4aed-b473-41d45548af6e",
-      METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID: env === "dev"
-        ? "937dcae6-a3c8-40f6-9248-ef11baa7f9c6"
-        : "69381c3d-d65a-4fde-85d5-2ad812a131bc",
+      // The $250/month flat fee is a Stripe subscription (Metronome bills only voice overage).
+      STRIPE_VOICE_PLAN_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_VOICE_PLAN_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_VOICE_PLAN_PRICE_ID_DEV ?? ""),
       METRONOME_VOICE_METRIC_ID: env === "dev"
         ? "17a42d84-c10c-4c6a-907d-feb2ab02d080"
         : "8065419d-79f8-4b8e-ad1d-d933479521cc",

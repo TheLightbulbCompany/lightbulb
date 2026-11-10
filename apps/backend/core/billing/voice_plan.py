@@ -1,13 +1,12 @@
 """Explicit voice-plan enrollment. Never invoked by workspace provisioning or existing subscriptions."""
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-import time
-import uuid
-
+from datetime import UTC, datetime, timedelta
 import httpx
+import stripe
 
 from core.billing import metronome_client, metronome_provisioning, voice_billing, voice_plan_payments
+from core.dynamodb import run_in_thread
 from core.config import settings
 from core.repositories import billing_repo, container_repo
 
@@ -35,73 +34,65 @@ def available() -> bool:
         settings.METRONOME_VOICE_ENROLLMENT_ENABLED
         and settings.METRONOME_API_KEY
         and settings.STRIPE_SECRET_KEY
+        and settings.STRIPE_VOICE_PLAN_PRICE_ID
         and settings.METRONOME_VOICE_RATE_CARD_ID
-        and settings.METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID
         and settings.METRONOME_VOICE_METRIC_ID
     )
 
 
+def is_voice_subscription(subscription: dict) -> bool:
+    price_id = settings.STRIPE_VOICE_PLAN_PRICE_ID
+    return bool(price_id) and any(
+        ((item or {}).get("price") or {}).get("id") == price_id
+        for item in (subscription.get("items") or {}).get("data") or []
+    )
+
+
 def status(account: dict) -> str:
-    if not account.get("metronome_voice_contract_id"):
+    if not account.get("voice_plan_stripe_subscription_id"):
         return "not_enrolled"
-    if account.get("voice_plan_status") == "canceled":
-        return "canceled"
-    if account.get("voice_plan_cancel_target") and not account.get("voice_plan_ending_at"):
-        return "cancellation_pending"
-    if account.get("voice_plan_ending_at") and datetime.fromisoformat(account["voice_plan_ending_at"]) <= datetime.now(
-        UTC
+    if account.get("voice_plan_status") == "canceled" or account.get("voice_plan_stripe_status") in (
+        "canceled",
+        "incomplete_expired",
     ):
         return "canceled"
     if voice_billing.has_voice_plan(account):
         return "canceling" if account.get("voice_plan_ending_at") else "active"
-    return "past_due" if account.get("voice_plan_unpaid_invoice_ids") else "pending_payment"
+    return "past_due" if account.get("voice_plan_stripe_status") in ("past_due", "unpaid") else "pending_payment"
 
 
-async def enroll(owner_id: str, *, accepted_by: str | None = None, client=None) -> dict:
-    """Create/adopt exactly one voice contract after an admin accepts this plan's terms.
-
-    IDs persist last. A crash or concurrent enrollment reuses the deterministic provider key;
-    it cannot create a second subscription. No existing credit contract is changed.
-    """
+async def sync_subscription(subscription: dict) -> None:
+    """Mirror the voice-plan Stripe subscription (created/updated/deleted); enroll or end the usage contract."""
+    metadata = subscription.get("metadata") or {}
+    owner_id = metadata.get("workspace_id")
+    if not owner_id or metadata.get("purpose") != "voice_plan":
+        return
     async with _operation(owner_id):
-        if accepted_by:
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+        if not account or account.get("stripe_customer_id") != subscription.get("customer"):
+            return
+        cancel_at = subscription.get("cancel_at") or (
+            subscription.get("canceled_at") if subscription["status"] == "canceled" else None
+        )
+        ending_at = datetime.fromtimestamp(cancel_at, UTC).isoformat() if cancel_at else None
+        await billing_repo.set_voice_subscription(
+            owner_id,
+            subscription_id=subscription["id"],
+            status=subscription["status"],
+            ending_at=ending_at,
+            accepted_by=metadata.get("accepted_by"),
+        )
+        if subscription["status"] in ("active", "trialing") and not account.get("metronome_voice_contract_id"):
             if not available():
-                raise VoicePlanError("voice_plan_unavailable")
-            account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
-            if not account.get("stripe_customer_id"):
-                raise VoicePlanError("payment_setup_required")
-            if not account.get("metronome_voice_contract_id") and (
-                account.get("voice_plan_accepted_version") != PLAN_VERSION
-                or int(account.get("voice_plan_checkout_expires_at") or 0) <= time.time() + 60
-            ):
-                await billing_repo.set_voice_checkout_intent(
-                    owner_id, intent=str(uuid.uuid4()), expires_at=int(time.time()) + 3600, accepted_by=accepted_by
-                )
-        return await _enrollment(owner_id, client=client)
+                raise VoicePlanError("voice_plan_unavailable")  # 500s the webhook so Stripe redelivers
+            async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=10.0) as http:
+                await _enroll(owner_id, account, metronome_client.for_settings(http))
+        elif subscription["status"] == "canceled" and account.get("metronome_voice_contract_id"):
+            await _end(owner_id, account, ending_at or datetime.now(UTC).isoformat())
+        await voice_plan_payments.refresh(owner_id)
 
 
-async def _enrollment(owner_id: str, *, client=None) -> dict:
-    if not available():
-        raise VoicePlanError("voice_plan_unavailable")
-    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-    if not account or not account.get("stripe_customer_id"):
-        raise VoicePlanError("payment_setup_required")
-    if account.get("metronome_voice_contract_id"):
-        if status(account) == "canceled":
-            raise VoicePlanError("voice_plan_ended")
-        account = await voice_plan_payments.reconcile(owner_id, client=client)
-        return {"status": status(account), "planVersion": PLAN_VERSION}
-    if account.get("voice_plan_accepted_version") != PLAN_VERSION or not account.get("voice_plan_accepted_by"):
-        raise VoicePlanError("voice_plan_acceptance_required")
-    if not await voice_plan_payments.default_card(account["stripe_customer_id"]):
-        raise VoicePlanError("payment_setup_required")
-    if client is None:
-        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=10.0) as http:
-            return await _enroll(owner_id, account, metronome_client.for_settings(http))
-    return await _enroll(owner_id, account, client)
-
-
-async def _enroll(owner_id: str, account: dict, client) -> dict:
+async def _enroll(owner_id: str, account: dict, client) -> None:
     customer_id = account.get("metronome_customer_id") or await metronome_provisioning._create_or_adopt_customer(
         owner_id, client
     )
@@ -118,7 +109,6 @@ async def _enroll(owner_id: str, account: dict, client) -> dict:
             contract_id = await client.create_voice_contract(
                 customer_id=customer_id,
                 rate_card_id=settings.METRONOME_VOICE_RATE_CARD_ID,
-                subscription_product_id=settings.METRONOME_VOICE_SUBSCRIPTION_PRODUCT_ID,
                 uniqueness_key=key,
             )
         except httpx.HTTPStatusError as exc:
@@ -139,16 +129,12 @@ async def _enroll(owner_id: str, account: dict, client) -> dict:
     await billing_repo.set_voice_plan(
         owner_id, customer_id=customer_id, contract_id=contract_id, usage_key=key, started_at=started_at
     )
-    account = await voice_plan_payments.reconcile(owner_id, client=client)
-    return {"status": status(account), "planVersion": PLAN_VERSION}
 
 
 def period(account: dict, at: datetime | None = None) -> tuple[datetime, datetime]:
     now = (at or datetime.now(UTC)).astimezone(UTC)
     ending_at = datetime.fromisoformat(account["voice_plan_ending_at"]) if account.get("voice_plan_ending_at") else None
     if ending_at and ending_at <= now:
-        from datetime import timedelta
-
         now = ending_at - timedelta(microseconds=1)
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     end = start.replace(year=start.year + (start.month == 12), month=start.month % 12 + 1)
@@ -184,31 +170,34 @@ async def usage(account: dict, *, client=None, at: datetime | None = None) -> di
     }
 
 
-async def cancel(owner_id: str, *, client=None) -> dict:
-    """Cancellation remains available even while new enrollments are switched off."""
-    async with _operation(owner_id):
-        return await _cancellation(owner_id, client=client)
-
-
-async def _cancellation(owner_id: str, *, client=None) -> dict:
+async def cancel(owner_id: str) -> dict:
+    """Stop renewal at period end; the subscription webhook then records the end date."""
     account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
-    if not account.get("metronome_voice_contract_id") or account.get("voice_plan_status") == "canceled":
+    if not account.get("voice_plan_stripe_subscription_id") or status(account) == "canceled":
         return {"status": "canceled", "planVersion": PLAN_VERSION}
-    if account.get("voice_plan_status") == "canceling":
-        return {"status": "canceling", "planVersion": PLAN_VERSION, "endsAt": account["voice_plan_ending_at"]}
-    ending_at = await billing_repo.begin_voice_plan_cancellation(owner_id)
-    if client is None:
-        async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=10.0) as http:
-            return await _cancel(owner_id, account, ending_at, metronome_client.for_settings(http))
-    return await _cancel(owner_id, account, ending_at, client)
-
-
-async def _cancel(owner_id: str, account: dict, ending_at: str, client) -> dict:
-    await client.end_voice_contract(
-        customer_id=account["metronome_customer_id"],
-        contract_id=account["metronome_voice_contract_id"],
-        ending_before=ending_at,
+    sub = await run_in_thread(
+        stripe.Subscription.modify,
+        account["voice_plan_stripe_subscription_id"],
+        cancel_at_period_end=True,
+        api_key=settings.STRIPE_SECRET_KEY,
     )
-    await billing_repo.finish_voice_plan_cancellation(owner_id)
-    await voice_plan_payments.refresh(owner_id)
-    return {"status": "canceling", "planVersion": PLAN_VERSION, "endsAt": ending_at}
+    await sync_subscription(sub)
+    return {
+        "status": "canceling",
+        "planVersion": PLAN_VERSION,
+        "endsAt": (await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}).get(
+            "voice_plan_ending_at"
+        ),
+    }
+
+
+async def _end(owner_id: str, account: dict, ending_at: str) -> None:
+    # Metronome ends contracts on a day boundary: the next UTC midnight covers any usage up to now.
+    midnight = (datetime.now(UTC) + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL, timeout=10.0) as http:
+        await metronome_client.for_settings(http).end_voice_contract(
+            customer_id=account["metronome_customer_id"],
+            contract_id=account["metronome_voice_contract_id"],
+            ending_before=midnight.isoformat(),
+        )
+    await billing_repo.end_voice_plan(owner_id, ending_at=ending_at)

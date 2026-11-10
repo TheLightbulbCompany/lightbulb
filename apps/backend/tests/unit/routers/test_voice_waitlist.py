@@ -17,42 +17,25 @@ def _url(call) -> str:
 async def test_a_caller_joins_the_waitlist_keyed_to_their_number(client):  # noqa: F811
     call = await _start(client)
     day = _tomorrow()
-    body = {
-        "date": day,
-        "service": "Gel manicure",
-        "name": "Priya",
-        "windowFrom": "13:00",
-        "windowTo": "16:00",
-        "phone": "+19998887777",
-    }  # a phone the model supplies is ignored
-    r = client.post(_url(call), json=body, headers=W)
+    body = {"date": day, "service": "Gel manicure", "name": "Priya", "note": "after 1pm", "phone": "+19998887777"}
+    r = client.post(_url(call), json=body, headers=W)  # a phone the model supplies is ignored
     assert r.status_code == 200 and r.json()["waitlisted"] is True
     rows = await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")
-    assert len(rows) == 1 and rows[0]["phone"] == "+14155550133" and rows[0]["name"] == "Priya"
-    assert rows[0]["windowFrom"] == "13:00" and rows[0]["service"] == "Gel manicure"
-    # TTL: a day after the date, i.e. two days after its local midnight
+    assert len(rows) == 1 and rows[0]["sk"] == f"VOICEWAIT#{day}#{call['callId']}"
+    assert rows[0]["phone"] == "+14155550133" and rows[0]["name"] == "Priya"
+    assert rows[0]["note"] == "after 1pm" and rows[0]["service"] == "Gel manicure"
     midnight = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=voice_phone._TZ).timestamp()
-    assert int(rows[0]["expiresAt"]) == int(midnight) + 2 * 86400
+    assert int(rows[0]["expiresAt"]) == int(midnight) + 2 * 86400  # TTL: a day after the date
     assert (await messaging_repo.get_room(call["callId"]))["call"]["steps"][-1]["text"].startswith("Waitlisted")
 
 
-async def test_a_retry_after_a_failed_call_record_write_adds_no_second_entry(client):  # noqa: F811
-    from unittest.mock import AsyncMock, patch
-
+async def test_asking_again_on_the_same_call_is_one_entry(client):  # noqa: F811
     call = await _start(client)
     day = _tomorrow()
-    for i in range(2):  # two other entries, so a duplicate would also hit the cap
-        client.post(_url(call), json={"date": day, "service": f"s{i}"}, headers=W)
-    body = {"date": day, "service": "Gel", "windowFrom": "13:00"}
-    real = voice_phone._patch_call
-    with patch.object(voice_phone, "_patch_call", AsyncMock(side_effect=RuntimeError("boom"))):
-        with pytest.raises(RuntimeError):
-            client.post(_url(call), json=body, headers=W)
-    assert len(await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")) == 3
-    assert voice_phone._patch_call is real
-    retry = client.post(_url(call), json=body, headers=W)  # the model retries the same request
-    assert retry.status_code == 200 and retry.json()["waitlisted"] is True
-    assert len(await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")) == 3
+    for note in ("after 1pm", "after 2pm"):
+        assert client.post(_url(call), json={"date": day, "note": note}, headers=W).status_code == 200
+    rows = await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")
+    assert len(rows) == 1 and rows[0]["note"] == "after 2pm"
 
 
 async def test_a_withheld_caller_cannot_join_the_waitlist(client):  # noqa: F811
@@ -69,14 +52,8 @@ async def test_waitlist_off_refuses_server_side(client):  # noqa: F811
     assert await voice_phone._booking_rows("org_1", "VOICEWAIT#") == []
 
 
-async def test_waitlist_is_capped_at_three_per_caller_per_day(client):  # noqa: F811
+async def test_waitlist_refuses_a_past_date(client):  # noqa: F811
     call = await _start(client)
-    day = _tomorrow()
-    for i in range(3):  # different asks; an identical one is a retry, not another entry
-        assert client.post(_url(call), json={"date": day, "service": f"s{i}"}, headers=W).status_code == 200
-    assert client.post(_url(call), json={"date": day, "service": "s3"}, headers=W).status_code == 429
-    other_day = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
-    assert client.post(_url(call), json={"date": other_day}, headers=W).status_code == 200
     past = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     assert client.post(_url(call), json={"date": past}, headers=W).status_code == 400
 
@@ -91,16 +68,6 @@ async def test_owner_sees_and_removes_waitlist_entries(repos, async_client_org_a
         date, eid = sk.split("#")[1:]
         table.put_item(Item={"pk": pk, "sk": sk, "id": eid, "date": date, "name": name, "phone": "+14155550133"})
     table.put_item(Item={"pk": messaging_repo.owner_pk("org_other"), "sk": "VOICEWAIT#2026-11-19#z", "id": "z"})
-    table.put_item(
-        Item={
-            "pk": pk,
-            "sk": "VOICEWAIT#2026-01-01#old",
-            "id": "old",
-            "date": "2026-01-01",
-            "name": "Expired",
-            "expiresAt": 1,
-        }
-    )  # past its TTL but not yet swept by DynamoDB
     seen = (await async_client_org_admin.get("/api/v1/voice/waitlist")).json()["entries"]
     assert [e["name"] for e in seen] == ["Ana", "Priya"] and seen[0]["phone"] == "+14155550133"
     assert (await async_client_org_admin.delete("/api/v1/voice/waitlist/2026-11-19/b")).status_code == 200

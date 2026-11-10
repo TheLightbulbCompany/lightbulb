@@ -20,7 +20,6 @@ import asyncio
 import httpx
 import json
 import re
-import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import datetime
 from typing import Any, Literal
@@ -208,9 +207,8 @@ async def call_done(room_id: str, auth: AuthContext = Depends(get_current_user))
 async def waitlist(auth: AuthContext = Depends(get_current_user)) -> dict:
     """Callers waiting for a day (any member reads), soonest day first. Rows expire a day after their date."""
     rows = await messaging_repo._query(messaging_repo.owner_pk(resolve_owner_id(auth)), begins_with="VOICEWAIT#")
-    keep = ("id", "date", "name", "phone", "service", "windowFrom", "windowTo", "createdAt")
-    now = time.time()  # DynamoDB TTL deletes late; an expired row is gone as far as the owner is concerned
-    return {"entries": [{k: r.get(k, "") for k in keep} for r in rows if int(r.get("expiresAt") or now + 1) > now]}
+    keep = ("id", "date", "name", "phone", "service", "note", "createdAt")
+    return {"entries": [{k: r.get(k, "") for k in keep} for r in rows]}
 
 
 @router.delete("/voice/waitlist/{date}/{entry_id}")

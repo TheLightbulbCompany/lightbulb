@@ -54,7 +54,7 @@ export interface AgentConfig {
   /** Existing worker UUID that greets people; null uses the stable workspace default. */
   frontAgentId?: string | null;
   name: string; greeting: string; voice: string; spanish: boolean; live: boolean; paused: boolean;
-  allow: { book: boolean; move: boolean; waitlist: boolean; greetByName: boolean; answer: boolean };
+  allow: { book: boolean; move: boolean; waitlist?: boolean; greetByName: boolean; answer: boolean };
   knowledge: Knowledge[]; toAdd: string[]; instructions: string;
   hours: Record<string, Day>; holidays: { from: string; to: string }[];
   /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
@@ -102,11 +102,6 @@ export const LIGHTBULB = "Lightbulb";
 /** The name callers hear; "Lightbulb" until the owner picks one. */
 export const nameOf = (c?: Partial<AgentConfig> | null) => c?.name?.trim() || LIGHTBULB;
 
-/** A saved document over the defaults. `allow` merges key by key, as the backend's agent_config() does, so a switch
- *  added after the document was saved reads as the server enforces it. */
-export const withDefaults = (saved: Partial<AgentConfig> | null | undefined): AgentConfig =>
-  ({ ...DEFAULT_CONFIG, ...saved, allow: { ...DEFAULT_CONFIG.allow, ...saved?.allow } }) as AgentConfig;
-
 /** The Agent page document, defaults filled in. `isNew`: the workspace has no document yet (first run). */
 export function useAgentConfig() {
   const api = useApi();
@@ -114,7 +109,7 @@ export function useAgentConfig() {
     const { config, agents = [], frontAgentId, frontAgentIssue } = (await api.get("/voice/agent")) as {
       config: Partial<AgentConfig> | null; agents?: { id: string; name: string }[]; frontAgentId?: string | null; frontAgentIssue?: string | null;
     };
-    return { config: withDefaults(config), isNew: config == null, agents, frontAgentId, frontAgentIssue };
+    return { config: { ...DEFAULT_CONFIG, ...config } as AgentConfig, isNew: config == null, agents, frontAgentId, frontAgentIssue };
   });
   const { mutate } = swr;
   const save = useCallback(async (next: AgentConfig) => {
@@ -125,11 +120,7 @@ export function useAgentConfig() {
   return { agents: swr.data?.agents ?? [], frontAgentId: swr.data?.frontAgentId, frontAgentIssue: swr.data?.frontAgentIssue, data: swr.data?.config, isNew: swr.data?.isNew, error: swr.error, isLoading: swr.isLoading, save };
 }
 
-export interface WaitlistEntry { id: string; date: string; name: string; phone: string; service: string; windowFrom: string; windowTo: string }
-
-/** "14:00–16:00", "after 14:00", "before 12:00", or "" when the caller gave no window. */
-export const windowLabel = (from: string, to: string) =>
-  from && to ? `${from}–${to}` : from ? `after ${from}` : to ? `before ${to}` : "";
+export interface WaitlistEntry { id: string; date: string; name: string; phone: string; service: string; note: string }
 
 /** Callers waiting for a day (GET /voice/waitlist); `remove` deletes one entry. */
 export function useWaitlist() {

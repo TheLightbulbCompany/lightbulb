@@ -857,7 +857,7 @@ FRONT_DESK_SCHEMA = {
                    "(start). If the caller has two bookings at that start, the answer is ambiguous_booking: ask "
                    "which (my_bookings lists each with its bookingId), then repeat with that booking_id. "
                    "waitlist: when the time they want is full, put the caller on the waitlist for a day "
-                   "(date, optional service, window_from and window_to as HH:MM, name); the owner sees it, "
+                   "(date, optional service, name, and a note with the time they would take, in their words); the owner sees it, "
                    "nobody is texted yet, so never promise a call or text back. message: take a message for the "
                    "owner (text, optional name, callback_number). Times are the business's local time, "
                    "YYYY-MM-DDTHH:MM.",
@@ -866,8 +866,7 @@ FRONT_DESK_SCHEMA = {
         "properties": {
             "action": {"type": "string", "enum": ["availability", "book", "my_bookings", "move", "cancel", "message", "waitlist"]},
             "date": {"type": "string", "description": "YYYY-MM-DD (availability, waitlist)"},
-            "window_from": {"type": "string", "description": "HH:MM (waitlist)"},
-            "window_to": {"type": "string", "description": "HH:MM (waitlist)"},
+            "note": {"type": "string", "description": "the time they would take, e.g. 'after 1pm' (waitlist)"},
             "service": {"type": "string"},
             "start": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
             "new_start": {"type": "string", "description": "YYYY-MM-DDTHH:MM (move)"},

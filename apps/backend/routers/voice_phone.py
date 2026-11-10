@@ -1195,21 +1195,19 @@ async def my_bookings(call_id: str) -> dict:
 
 # --- waitlist (join half; texting a freed slot needs SMS registration and is not built) -------------------
 
-WAITLIST_PER_CALLER_DAY = 3
-_Hm = Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
-
 
 class WaitlistIn(BaseModel):
     date: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
     service: str = Field(default="", max_length=200)
     name: str = Field(default="", max_length=200)
-    windowFrom: _Hm | None = None
-    windowTo: _Hm | None = None
+    note: str = Field(default="", max_length=300)  # the time they would take ("after 1pm"), in the caller's words
 
 
 @router.post("/internal/voice/calls/{call_id}/waitlist")
 async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
-    """Put this call's caller on the waitlist for a day. Keyed to the call's caller number, never to the model."""
+    """Put this call's caller on the waitlist for a day. Keyed to the call's caller number, never to the model.
+    One entry per call per day (the key), so a retry rewrites it.
+    ponytail: no per-caller daily cap; add one if a caller is seen filling the list."""
     meta, call = await _call(call_id)
     owner_id = meta["ownerId"]
     cfg = await agent_config(owner_id)
@@ -1223,41 +1221,25 @@ async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
         raise _err(422, "invalid_date") from None
     if day < _now(cfg).date():
         raise _err(400, "date_in_past")
-    # The id comes from the request, so a retry of the same ask is the same entry (it neither doubles nor spends a slot).
-    ask = "|".join((call_id, body.date, body.service.strip(), body.windowFrom or "", body.windowTo or ""))
-    entry_id = hashlib.sha256(ask.encode()).hexdigest()[:32]
-    pk, sk = messaging_repo.owner_pk(owner_id), f"VOICEWAIT#{body.date}#{entry_id}"
-    done = {"waitlisted": True, "date": body.date, "service": body.service.strip()}
-    if await messaging_repo._get(pk, sk):
-        return done
-    mine = [r for r in await _booking_rows(owner_id, f"VOICEWAIT#{body.date}#") if r.get("phone") == phone]
-    if len(mine) >= WAITLIST_PER_CALLER_DAY:
-        raise _err(429, "waitlist_full")
     name = real_name(body.name) or call.get("callerName") or ""
-    midnight = datetime.combine(day, datetime.min.time(), tzinfo=_tz(cfg))
+    service = body.service.strip()
     row = {
-        "pk": pk,
-        "sk": sk,
-        "id": entry_id,
+        "pk": messaging_repo.owner_pk(owner_id),
+        "sk": f"VOICEWAIT#{body.date}#{call_id}",
+        "id": call_id,
         "date": body.date,
         "phone": phone,
         "name": name,
-        "service": body.service.strip(),
-        "windowFrom": body.windowFrom or "",
-        "windowTo": body.windowTo or "",
+        "service": service,
+        "note": body.note.strip(),
         "callId": call_id,
         "createdAt": utc_now_iso(),
-        "expiresAt": int(midnight.timestamp()) + 2 * 86400,
+        "expiresAt": int(datetime.combine(day, datetime.min.time(), tzinfo=_tz(cfg)).timestamp()) + 2 * 86400,
     }  # TTL: a day after the date
-    try:
-        await run_in_thread(messaging_repo._table().put_item, Item=row, ConditionExpression="attribute_not_exists(sk)")
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return done  # a concurrent retry wrote it first
-    line = f"Waitlisted for {body.date}" + (f" · {row['service']}" if row["service"] else "")
+    await run_in_thread(messaging_repo._table().put_item, Item=row)
+    line = f"Waitlisted for {body.date}" + (f" · {service}" if service else "")
     await _patch_call(call_id, lambda c: {"callerName": c.get("callerName") or name, "steps": _step(c, line)})
-    return {"waitlisted": True, "date": body.date, "service": row["service"]}
+    return {"waitlisted": True, "date": body.date, "service": service}
 
 
 # --- message, didn't know, transfer, start_work -----------------------------------------------------------

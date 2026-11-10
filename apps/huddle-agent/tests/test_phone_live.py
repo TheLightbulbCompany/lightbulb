@@ -459,6 +459,30 @@ async def test_the_owner_types_a_pin_and_the_backend_alone_decides(monkeypatch):
     await call.on_shutdown[0]()
 
 
+async def test_owner_mode_answers_the_question_just_said_and_ends_when_removed(monkeypatch):
+    """The Worker question the voice was given goes back with the next line (`answers`, as owner.py), once; when the
+    backend says owner mode ended, the cursor is the call room's again and the caller prompt is back."""
+    ref = {"taskId": "t-1", "qid": "q-1"}
+    call = await Call(monkeypatch, info={"ownerPin": True}, replies={
+        "events": [{"messages": [{"id": "q", "seq": 42, "text": "Which day?", "question": ref}], "after": 42},
+                   {"messages": [], "after": 3, "ownerModeEnded": True}, {"messages": [], "after": 3}],
+        "turn": {"messageId": "m"}}).answer()  # fmt: skip
+    instructions = []
+    call.live.transport = SimpleNamespace(instructions=instructions.append)
+    events = call.started["events"]()
+    assert (await anext(events))["question"] == ref
+    await call.started["post"]("Tuesday", [])
+    await call.started["post"]("And book a cut", [])
+    turns = [b for p, b in call.backend.calls if p == "turn"]
+    assert turns[0]["answers"] == ref and "answers" not in turns[1]
+    task = asyncio.ensure_future(anext(events))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert instructions == [call.started["prompt"]] and (None, phone.OWNER_ENDED) in call.live.sent
+    assert [b for p, b in call.backend.calls if p == "events"][-1] == {"after": 3}
+    await call.on_shutdown[0]()
+
+
 async def test_a_number_with_no_pin_ignores_the_keypad(monkeypatch):
     call = await Call(monkeypatch).answer()
     assert "keypad" not in call.started["prompt"]

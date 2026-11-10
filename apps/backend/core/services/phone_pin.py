@@ -3,12 +3,13 @@ types their PIN on the keypad talks as themselves (the orb's owner mode), not as
 
 Caller ID alone is never proof (it is spoofable): the number only says whose PIN to check. The PIN is stored as a
 salted scrypt hash and compared in constant time. Wrong tries lock out per call (the call record's `pinTries`,
-routers/voice_phone.py) and per member per UTC day (the counter row here). Nothing is ever said back about why a
-try failed.
+routers/voice_phone.py) and per member per UTC day. Each try is reserved atomically before the hash is checked.
+Nothing is ever said back about why a try failed.
 
 Rows in the messaging table:
     OWNER#<owner>   PHONEPIN#<user>                 mobile (E.164), salt, hash, updatedAt
-    OWNER#<owner>   PHONEPINFAIL#<user>#<YYYY-MM-DD> wrong tries that day (expiresAt: two days on)
+    OWNER#<owner>   PHONEPINFAIL#<user>#<YYYY-MM-DD> tries that day (expiresAt: two days on)
+    OWNER#<owner>   PHONEPINCALL#<call>             tries on one call
 """
 
 import hashlib
@@ -18,12 +19,13 @@ import time
 from datetime import UTC, datetime
 
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 
-CALL_TRIES = 3  # wrong PINs on one call before owner mode is off for it
-DAY_TRIES = 5  # wrong PINs for one member in a UTC day before their PIN stops working until tomorrow
+CALL_TRIES = 3  # PINs tried on one call before owner mode is off for it
+DAY_TRIES = 5  # PINs tried (right or wrong) for one member in a UTC day; then it stops working until tomorrow
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}
 
 
@@ -69,31 +71,44 @@ async def holders(owner_id: str, caller: str) -> list[dict]:
         args["ExclusiveStartKey"] = out["LastEvaluatedKey"]
 
 
-async def _fails_today(owner_id: str, user_id: str) -> int:
-    row = await messaging_repo._get(**_fail_key(owner_id, user_id))
-    return int((row or {}).get("tries", 0))
+async def _reserve(key: dict, limit: int) -> bool:
+    """Take one try, atomically: the counter goes up only while it is under `limit`, so attempts at the same moment
+    can never check more PINs than the limit. Every attempt counts, right or wrong."""
+    try:
+        await run_in_thread(
+            messaging_repo._table().update_item,
+            Key=key,
+            UpdateExpression="ADD tries :one SET expiresAt = :exp",
+            ConditionExpression="attribute_not_exists(tries) OR tries < :limit",
+            ExpressionAttributeValues={":one": 1, ":limit": limit, ":exp": int(time.time()) + 2 * 86400},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
 
 
-async def _count_fail(owner_id: str, user_id: str) -> None:
-    await run_in_thread(
-        messaging_repo._table().update_item,
-        Key=_fail_key(owner_id, user_id),
-        UpdateExpression="ADD tries :one SET expiresAt = :exp",
-        ExpressionAttributeValues={":one": 1, ":exp": int(time.time()) + 2 * 86400},
-    )
+def _call_key(owner_id: str, call_id: str) -> dict:
+    return {"pk": messaging_repo.owner_pk(owner_id), "sk": f"PHONEPINCALL#{call_id}"}
+
+
+async def reserve_call_try(owner_id: str, call_id: str) -> bool:
+    """One of the call's CALL_TRIES, taken before anything is checked."""
+    return await _reserve(_call_key(owner_id, call_id), CALL_TRIES)
+
+
+async def call_tries(owner_id: str, call_id: str) -> int:
+    return int(((await messaging_repo._get(**_call_key(owner_id, call_id))) or {}).get("tries", 0))
 
 
 async def check(owner_id: str, caller: str, pin: str) -> str | None:
-    """The member whose saved mobile is `caller` and whose PIN is `pin`, or None. A member locked for the day is
-    never checked; a wrong try counts against every member the number names."""
-    tried = []
+    """The member whose saved mobile is `caller` and whose PIN is `pin`, or None. Each member the number names gives
+    up one of the day's tries before their hash is checked; one with none left is never checked."""
     for row in await holders(owner_id, caller):
         user_id = row["sk"].removeprefix("PHONEPIN#")
-        if await _fails_today(owner_id, user_id) >= DAY_TRIES:
+        if not await _reserve(_fail_key(owner_id, user_id), DAY_TRIES):
             continue
         if hmac.compare_digest(_hash(pin, bytes.fromhex(row["salt"])), bytes.fromhex(row["hash"])):
             return user_id
-        tried.append(user_id)
-    for user_id in tried:
-        await _count_fail(owner_id, user_id)
     return None

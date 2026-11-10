@@ -107,6 +107,8 @@ PIN_OK = (
     "with the team's full help, as in the Lightbulb app."
 )
 PIN_WRONG = "The PIN typed on the keypad was not accepted."
+OWNER_ENDED = "Owner mode has ended: this person is no longer a member of the business. They are a caller again."
+ANSWER_WITHIN_S = 60.0  # owner.py's: a line this soon after a Worker's question answers it; later, a new ask
 PIN_LOCKED = "The PIN typed on the keypad was not accepted, and no more tries are allowed on this call."
 #: The prompt from then on (owner.py's, on the phone): the team's brain, not the front desk.
 OWNER_NOW = """The caller has proven they are the business's owner. They are no longer a caller.
@@ -260,6 +262,7 @@ async def entrypoint(ctx: JobContext) -> None:
     tasks: set[asyncio.Task] = set()
     turn_n = itertools.count()
     asked: dict[str, float] = {}  # each posted ask's message id -> when it was posted (monotonic)
+    question: list = [None, 0.0]  # the last Worker question {taskId, qid} the voice was given, and when
     ls: list[live.LiveSession] = []  # bound once started; post and events run only after
 
     def spawn(coro) -> None:
@@ -274,7 +277,11 @@ async def entrypoint(ctx: JobContext) -> None:
         said = "\n".join(f"> {t}" for t in turns)
         body = (text.strip() + (f"\n\nSaid on the call since the last ask:\n{said}" if said else ""))[:4000]
         n = next(turn_n)
-        out = await backend.post("turn", {"n": n, "text": body})
+        q, at = question  # owner mode: the Worker question just said is answered by this line (owner.py's rule)
+        answers = q if q and time.monotonic() - at <= ANSWER_WITHIN_S else None
+        out = await backend.post("turn", {"n": n, "text": body, **({"answers": answers} if answers else {})})
+        if answers is not None and question[0] is q:
+            question[:] = [None, 0.0]
         if out.get("error") == "not_allowed":
             did.append(f"Message: {text[:120]}")
             await backend.post("message", {"text": body, "name": info.get("callerName") or "", "callbackNumber": ""})
@@ -317,8 +324,16 @@ async def entrypoint(ctx: JobContext) -> None:
                 continue
             if cursor[0] != after:
                 continue  # owner mode began while this was in flight: these were the call room's
+            if out.get("ownerModeEnded"):  # the member was removed mid-call: a caller again, from the call room
+                cursor[0] = int(out.get("after") or 0)
+                question[:] = [None, 0.0]
+                ls[0].transport.instructions(prompt(info))
+                ls[0].send_result(None, OWNER_ENDED)
+                continue
             cursor[0] = max(after, int(out.get("after") or 0))
             for m in out.get("messages", []):
+                if m.get("question"):
+                    question[:] = [m["question"], time.monotonic()]
                 if m.get("action") == "transfer" and (mid := m.get("id")) and mid not in transferred:
                     transferred.add(mid)
                     spawn(hand_off())

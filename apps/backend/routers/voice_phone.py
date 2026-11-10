@@ -332,10 +332,14 @@ async def start_call(body: StartIn) -> dict:
     cfg = await agent_config(owner_id)
     if _is_probe(cfg, body):
         # Our own forwarding check came back: no caller is on it, so no greeting is owed.
-        raw = await messaging_repo.get_voice_agent(owner_id) or {}
-        raw.pop("forwardingCheck", None)
-        await messaging_repo.put_voice_agent(
-            owner_id, {**raw, "forwardingOk": True, "forwardingOkAt": utc_now_iso()}, "voice"
+        await messaging_repo.modify_voice_agent(
+            owner_id,
+            lambda raw: {
+                **{k: v for k, v in raw.items() if k != "forwardingCheck"},
+                "forwardingOk": True,
+                "forwardingOkAt": utc_now_iso(),
+            },
+            "voice",
         )
         await voice_outbound.end_probe(body.livekitRoom, cfg["forwardingCheck"]["callId"])
         raise _err(409, "forward_check")  # the worker leaves without speaking
@@ -774,24 +778,20 @@ def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
 
 async def remember_answer(owner_id: str, question: str, answer: str, by: str) -> None:
     """An answered "didn't know" goes into the Agent page's Knowledge and leaves `toAdd` (any answerer, no admin
-    save). Idempotent. ponytail: read-modify-write like PUT /voice/agent; an admin's save at the same moment can
-    drop it (a revision check on the document fixes both)."""
-    cfg = await messaging_repo.get_voice_agent(owner_id)
-    if cfg is None:
-        return  # no Agent page yet: writing one would skip onboarding
+    save). Idempotent. The write is conditional on the document it read, so it never undoes an owner's save."""
     item = {"q": question, "a": answer, "source": KNOWLEDGE_SOURCE}
-    knowledge, to_add = list(cfg.get("knowledge") or []), list(cfg.get("toAdd") or [])
-    if item in knowledge and question[:TO_ADD_CHARS] not in to_add:
-        return
-    await messaging_repo.put_voice_agent(
-        owner_id,
-        {
+
+    def change(cfg: dict) -> dict | None:  # no Agent page yet: modify_voice_agent writes nothing (skips onboarding)
+        knowledge, to_add = list(cfg.get("knowledge") or []), list(cfg.get("toAdd") or [])
+        if item in knowledge and question[:TO_ADD_CHARS] not in to_add:
+            return None
+        return {
             **cfg,
             "knowledge": knowledge if item in knowledge else [*knowledge, item],
             "toAdd": [t for t in to_add if t != question[:TO_ADD_CHARS]],
-        },
-        by,
-    )
+        }
+
+    await messaging_repo.modify_voice_agent(owner_id, change, by)
 
 
 MAX_FACTS = 10
@@ -818,8 +818,9 @@ async def remember(call_id: str, body: RememberIn) -> dict:
     if body.kind == "caller":
         _require_verified(call)
     if body.kind == "business":
-        cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
-        await messaging_repo.put_voice_agent(meta["ownerId"], {**cfg, "toAdd": _to_add(cfg, body.fact)}, "voice")
+        await messaging_repo.modify_voice_agent(
+            meta["ownerId"], lambda cfg: {**cfg, "toAdd": _to_add(cfg, body.fact)}, "voice"
+        )
     else:
         await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact][-MAX_FACTS:]})
     return {"remembered": True}
@@ -1397,11 +1398,15 @@ async def didnt_know(call_id: str, body: UnknownIn) -> dict:
     body = UnknownIn(question=redact_cards(body.question))  # it also lands in the Agent page's toAdd
     await _patch_call(call_id, lambda c: {"unknown": [*c.get("unknown", []), body.question],
                                           "steps": _step(c, f"Didn't know: {body.question[:160]}")})  # fmt: skip
-    cfg = await messaging_repo.get_voice_agent(meta["ownerId"])
-    if cfg is not None and body.question[:TO_ADD_CHARS] not in (cfg.get("toAdd") or []):
-        await messaging_repo.put_voice_agent(
-            meta["ownerId"], {**cfg, "toAdd": _to_add(cfg, body.question)}, meta.get("ownerUserId") or ""
-        )
+    await messaging_repo.modify_voice_agent(
+        meta["ownerId"],
+        lambda cfg: (
+            None
+            if body.question[:TO_ADD_CHARS] in (cfg.get("toAdd") or [])
+            else {**cfg, "toAdd": _to_add(cfg, body.question)}
+        ),
+        meta.get("ownerUserId") or "",
+    )
     return {"noted": True}
 
 

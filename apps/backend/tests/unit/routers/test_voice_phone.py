@@ -1335,6 +1335,27 @@ def test_call_card_push_carries_the_kind_and_a_first_name_only():
     assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person"
 
 
+async def test_a_caller_write_never_undoes_an_owner_save_made_meanwhile(client):
+    """The phone paths re-read on a clash: an owner's Pause between their read and write survives."""
+    call = await _start(client)
+    real_get, raced = messaging_repo._get, []
+
+    async def get_then_owner_saves(pk, sk):
+        row = await real_get(pk, sk)
+        if sk == "VOICEAGENT" and not raced:  # the owner saves after the caller read, before its write
+            raced.append(1)
+            await messaging_repo.put_voice_agent("org_1", {**CONFIG, "paused": True}, "user_owner")
+        return row
+
+    with patch.object(messaging_repo, "_get", get_then_owner_saves):
+        r = client.post(
+            f"/api/v1/internal/voice/calls/{call['callId']}/unknown", json={"question": "Parking?"}, headers=W
+        )
+    assert r.status_code == 200 and raced
+    cfg = await messaging_repo.get_voice_agent("org_1")
+    assert cfg["paused"] is True and cfg["toAdd"] == ["Parking?"]
+
+
 async def test_a_retried_end_counts_one_visit(client):
     call = await _start(client)
     url = f"/api/v1/internal/voice/calls/{call['callId']}/end"

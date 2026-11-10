@@ -31,7 +31,14 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
-from core.services import voice_onboarding, voice_outbound, voice_preferences, agent_registry, task_conversation
+from core.services import (
+    phone_pin,
+    voice_onboarding,
+    voice_outbound,
+    voice_preferences,
+    agent_registry,
+    task_conversation,
+)
 
 router = APIRouter()
 
@@ -51,6 +58,25 @@ def _e164(raw: str) -> str | None:
         digits = "1" + digits if len(digits) == 10 else digits if len(digits) == 11 and digits[0] == "1" else ""
     number = f"+{digits}"
     return number if _E164.fullmatch(number) else None
+
+
+#: NANP area codes that are not the US or Canada (Caribbean and Atlantic countries, billed as international), and the
+#: premium ones. The assistant only ever dials out (hand-off, run-out forward, forwarding check) to a +1 US/CA number.
+NON_US_CA_AREA_CODES = frozenset(
+    "242 246 264 268 284 345 441 473 649 658 664 721 758 767 784 809 829 849 868 869 876".split()
+)
+PREMIUM_AREA_CODES = frozenset({"900", "976"})
+_NANP = re.compile(r"\+1([2-9]\d{2})[2-9]\d{6}")
+
+
+def us_number(raw: str) -> str | None:
+    """`_e164`, kept only for a +1 US or Canadian number (not premium, not another NANP country): the one check for
+    every number we dial out to."""
+    number = _e164(raw)
+    m = _NANP.fullmatch(number or "")
+    if not m or m.group(1) in NON_US_CA_AREA_CODES | PREMIUM_AREA_CODES:
+        return None
+    return number
 
 
 #: Meeting fields the page shows. Never the ticket nonce or the Recall bot id.
@@ -81,28 +107,47 @@ def _epoch_ms(v: Any) -> int:
         return 0
 
 
-def _item(meta: dict) -> dict | None:
+def _items(meta: dict) -> list[dict]:
     if meta.get("deletedAt"):
-        return None
+        return []
     if meta.get("kind") == "call":
         call = meta.get("call") or {}
-        return {
-            **call,
-            "type": "call",
-            "roomId": meta["roomId"],
-            "at": _epoch_ms(call.get("startedAt") or meta["createdAt"]),
-        }
+        return [
+            {
+                **call,
+                "type": "call",
+                "roomId": meta["roomId"],
+                "at": _epoch_ms(call.get("startedAt") or meta["createdAt"]),
+            }
+        ]
     meeting = meta.get("meeting")
-    if meeting:
-        roster = meeting.get("roster") or {}
-        return {
-            **{k: meeting[k] for k in _MEETING_FIELDS if k in meeting},
+    if not meeting:
+        return []
+    roster = meeting.get("roster") or {}
+    current = {
+        **{k: meeting[k] for k in _MEETING_FIELDS if k in meeting},
+        "type": "meeting",
+        "roomId": meta["roomId"],
+        "people": [p["name"] for p in roster.values() if p.get("name")],
+        "at": _epoch_ms(meeting.get("startAt") or meta["createdAt"]),
+    }
+    # A recurring series has moved on by the time its notes land: each held occurrence (meeting_invites history)
+    # is its own past row, keyed by ``occurrence``, with what that occurrence kept.
+    held = [
+        {
+            **{k: h[k] for k in _MEETING_FIELDS if k in h},
+            "title": meeting.get("title"),
+            "status": "ended",
+            "hasTranscript": bool(h.get("transcriptId")),
             "type": "meeting",
             "roomId": meta["roomId"],
-            "people": [p["name"] for p in roster.values() if p.get("name")],
-            "at": _epoch_ms(meeting.get("startAt") or meta["createdAt"]),
+            "occurrence": h["startAt"],
+            "at": _epoch_ms(h["startAt"]),
         }
-    return None
+        for h in meeting.get("history") or []
+        if h.get("startAt")
+    ]
+    return [current, *held]
 
 
 @router.get("/voice/timeline")
@@ -111,7 +156,7 @@ async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
     rows = [r for r in await messaging_repo.list_owner_rooms(ws) if r.get("kind") in ("call", "channel")]
     rows = sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)[:TIMELINE_ROOMS]
     metas = await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows))
-    items = [i for m in metas if m and m.get("ownerId") == ws and (i := _item(m))]
+    items = [i for m in metas if m and m.get("ownerId") == ws for i in _items(m)]
     return {"items": sorted(items, key=lambda i: i["at"], reverse=True)}
 
 
@@ -191,6 +236,28 @@ async def forget_caller(e164: str, auth: AuthContext = Depends(get_current_user)
     return {"ok": True}
 
 
+class PhonePinIn(BaseModel):
+    mobile: str = Field(min_length=1, max_length=40)
+    pin: str = Field(pattern=r"^\d{4,8}$")
+
+
+@router.get("/voice/phone-pin")
+async def get_phone_pin(auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Whether the signed-in member has a phone PIN, and the mobile it works from. The PIN is never sent back."""
+    row = await phone_pin.get(resolve_owner_id(auth), auth.user_id)
+    return {"set": bool(row), "mobile": (row or {}).get("mobile", "")}
+
+
+@router.put("/voice/phone-pin")
+async def put_phone_pin(body: PhonePinIn, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Set or change the member's own phone PIN and mobile (core/services/phone_pin: stored hashed)."""
+    mobile = _e164(body.mobile)
+    if not mobile:
+        raise HTTPException(status_code=400, detail={"code": "bad_mobile"})
+    await phone_pin.save(resolve_owner_id(auth), auth.user_id, mobile, body.pin)
+    return {"set": True, "mobile": mobile}
+
+
 class AgentConfigIn(BaseModel):
     config: dict
 
@@ -238,6 +305,8 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
         number = _e164(handoff["number"]) if isinstance(handoff["number"], str) else None
         if number is None:  # the worker dials tel:{number} as stored
             raise HTTPException(status_code=422, detail={"code": "handoff_number_invalid"})
+        if us_number(number) is None:  # never a premium or international dial (toll fraud through the hand-off)
+            raise HTTPException(status_code=422, detail={"code": "handoff_number_not_us"})
         if number == _e164(str(body.config.get("forwardFrom") or "")):  # forwarding there would ring us again
             raise HTTPException(status_code=422, detail={"code": "handoff_is_forwarded_line"})
         body.config["handoff"] = {**handoff, "number": number}

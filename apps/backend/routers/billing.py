@@ -292,7 +292,6 @@ async def get_billing_account(
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
         managed_inference_available=True,
-        chatgpt_provider_available=settings.chatgpt_provider_allowed(owner_id),
         # A trial (or no row) has no plan: the "standard" default is only for PAID rows written
         # before the plan field existed. Reporting a trial as "standard" read as a paid Workspace.
         plan=(account.get("plan") or "standard") if account and subscription_status != "trial_local" else None,
@@ -618,15 +617,6 @@ async def change_provider(
 
     owner_id = resolve_owner_id(auth)
     owner_type = get_owner_type(auth)
-
-    if body.provider_choice == "chatgpt_oauth" and not settings.chatgpt_provider_allowed(owner_id):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "chatgpt_internal_only",
-                "message": "Sign in with ChatGPT is not available for this workspace.",
-            },
-        )
 
     try:
         return await change_provider_service(

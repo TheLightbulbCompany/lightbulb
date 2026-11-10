@@ -8,11 +8,11 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
+import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig, type StaffMember } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
-type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment";
+type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment" | "handoff";
 
 export function AgentPage() {
   const { data: config, error, save, agents = [], frontAgentId, frontAgentIssue } = useAgentConfig();
@@ -40,7 +40,7 @@ export function AgentPage() {
             setDraft(pending);
             try { await save(pending); setSaveState("payment"); }
             catch { setSaveState("error"); }
-          } else setSaveState(e?.status === 403 ? "forbidden" : "error");
+          } else setSaveState(e?.status === 403 ? "forbidden" : e.body?.detail?.code === "handoff_number_not_us" ? "handoff" : "error");
         });
     }, 600);
   };
@@ -53,9 +53,10 @@ export function AgentPage() {
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
           {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
-        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden"} style={{ marginTop: 6 }}>
+        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "handoff"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
             : saveState === "forbidden" ? "Only an admin can change the assistant."
+            : saveState === "handoff" ? "The hand-off number must be a US or Canadian number. Change it to save."
             : saveState === "payment" ? "Your setup is saved. Activate your voice plan, then return and choose Go live to get your number."
             : "Changes save as you make them."}</p>
         {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
@@ -112,6 +113,7 @@ export function AgentPage() {
     </Sec>
 
     <Sec title="Services & staff">
+      <StaffEditor c={c} set={set} name={name} />
       <ServicesEditor c={c} set={set} />
       <div style={{ display: "flex", gap: 16, alignItems: "end", flexWrap: "wrap" }}>
         <Button size="sm" variant="outline" onClick={() => set({ services: [...c.services, { name: "", minutes: 45, price: "", staff: "" }] })}><Plus /> Add a service</Button>
@@ -218,6 +220,34 @@ export function HoursEditor({ c, set }: Edit) {
   </>;
 }
 
+/** The people who take bookings: the assistant books one appointment per free person at a time. */
+export function StaffEditor({ c, set, name }: Edit & { name: string }) {
+  const staff = c.staff ?? [];
+  return <div>
+    <b className="vx-label">Staff</b>
+    <p className="vx-sub">{staff.length ? `${name} books up to ${staff.length} appointment${staff.length === 1 ? "" : "s"} at the same time, one per person.` : `With no one listed, ${name} books one appointment at a time.`}</p>
+    {staff.map((p, n) => <div key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+      <input className="vx-field" aria-label="Staff name" value={p.name} maxLength={40} placeholder="Ana" onChange={(e) => set({ staff: staff.map((x, i) => (i === n ? { ...x, name: e.target.value } : x)) })} />
+      <Button size="icon-sm" variant="ghost" aria-label={`Remove ${p.name || "person"}`} onClick={() => set({ staff: staff.filter((_, i) => i !== n) })}><X /></Button>
+    </div>)}
+    {/* The id keys this person's bookings: made once here, kept on rename. */}
+    {staff.length < 20 && <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => set({ staff: [...staff, { id: crypto.randomUUID().slice(0, 8), name: "" }] })}><Plus /> Add a person</Button></div>}
+  </div>;
+}
+
+/** Who can do a service, from the staff list; none ticked is anyone. Stored as ids, "a1, m1" (a name typed there
+ *  before staff had ids still ticks its person). */
+export function WhoDoesIt({ staff, value, set }: { staff: StaffMember[]; value: string; set: (v: string) => void }) {
+  const people = staff.filter((p) => p.name.trim());
+  if (!people.length) return <span className="vx-muted" style={{ fontSize: "var(--text-ui)" }}>Anyone</span>;
+  const on = new Set(value.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean));
+  const ticked = (p: StaffMember) => on.has(p.id.toLowerCase()) || on.has(p.name.trim().toLowerCase());
+  return <div role="group" aria-label="Who does it" style={{ display: "flex", flexWrap: "wrap", gap: "0 12px" }}>
+    {people.map((p) => <Check key={p.id} label={p.name} on={ticked(p)}
+      set={(v) => set(people.filter((x) => (x.id === p.id ? v : ticked(x))).map((x) => x.id).join(", "))} />)}
+  </div>;
+}
+
 export function ServicesEditor({ c, set }: Edit) {
   return <>
   {c.services.map((s, n) => {
@@ -228,6 +258,7 @@ export function ServicesEditor({ c, set }: Edit) {
         title={s.minutesGuessed ? "A guess: the site doesn't say how long this takes" : undefined}
         onChange={(e) => put({ minutes: Number(e.target.value), minutesGuessed: false })} />
       <input className="vx-field" aria-label="Price" value={s.price} placeholder="$55" onChange={(e) => put({ price: e.target.value })} />
+      <WhoDoesIt staff={c.staff ?? []} value={s.staff} set={(staff) => put({ staff })} />
       <Button size="icon-sm" variant="ghost" aria-label={`Remove ${s.name || "service"}`} onClick={() => set({ services: c.services.filter((_, i) => i !== n) })}><X /></Button>
     </div>;
   })}
@@ -251,7 +282,8 @@ export function ToAdd({ c, set, name, why }: Edit & { name: string; why?: string
 const REFUSED: Record<string, string> = {
   outbound_not_configured: "Forwarding check isn't switched on yet",
   check_in_progress: "A check is already running",
-  us_only: "Forwarding checks work for US numbers for now",
+  us_only: "Forwarding checks work for US and Canadian numbers for now",
+  daily_limit: "That's five checks today. Try again tomorrow",
 };
 const POLL_MS = 3000, POLL_FOR_MS = 70_000;  // as long as the server counts a call as the probe (voice_outbound.WINDOW_S)
 

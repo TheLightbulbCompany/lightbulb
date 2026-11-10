@@ -103,6 +103,24 @@ async def test_timeline_lists_calls_and_meetings_newest_first(repos, async_clien
 
 
 @pytest.mark.asyncio
+async def test_a_recurring_meetings_past_occurrences_are_their_own_rows(repos, async_client_org_admin):  # noqa: F811
+    """Codex P2 on #5186: the series advances before the notes land, so they sit in history; the pane never saw them."""
+    past = {"startAt": 1793466000, "transcriptId": "t1", "notes": "Hours set.", "decisions": [{"text": "Open 10 to 4"}]}
+    await _room(
+        "m1",
+        "channel",
+        "2026-11-01T00:00:00+00:00",
+        meeting={"title": "Weekly", "startAt": 1794070800, "status": "bot_created", "history": [past]},
+    )
+    items = (await async_client_org_admin.get("/api/v1/voice/timeline")).json()["items"]
+    assert [(i["roomId"], i.get("occurrence")) for i in items] == [("m1", None), ("m1", 1793466000)]
+    current, held = items
+    assert current["status"] == "bot_created" and "decisions" not in current and "history" not in current
+    assert held | {"title": "Weekly", "status": "ended", "hasTranscript": True, "notes": "Hours set."} == held
+    assert held["decisions"] == [{"text": "Open 10 to 4"}] and held["at"] == 1793466000 * 1000
+
+
+@pytest.mark.asyncio
 async def test_done_marks_the_call_resolved(repos, async_client_org_admin):  # noqa: F811
     await _room("c1", "call", "2026-11-07T10:00:00+00:00", call={"outcome": "needs_you"})
     assert (await async_client_org_admin.post("/api/v1/voice/calls/c1/done")).status_code == 200
@@ -141,11 +159,26 @@ async def test_handoff_number_must_be_e164(repos, async_client_org_admin):  # no
     for bad in ("555-1234", "+0123456789", "1-900-555-01", "+1555123456789012", 5125550142):
         r = await put(bad)
         assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_number_invalid", bad
-    for ok in ("+15125550142", "(512) 555-0142", "1 512 555 0142", "+44 20 7946 0958"):
+    for ok in ("+15125550142", "(512) 555-0142", "1 512 555 0142", "+1 416 555 0142"):
         r = await put(ok)
         assert r.status_code == 200, ok
-    assert r.json()["config"]["handoff"]["number"] == "+442079460958"  # stored as the worker dials it
+    assert r.json()["config"]["handoff"]["number"] == "+14165550142"  # stored as the worker dials it
     assert (await put("")).status_code == 200  # no handoff
+
+
+@pytest.mark.asyncio
+async def test_handoff_number_must_be_us_or_canada(repos, async_client_org_admin):  # noqa: F811
+    """M2: the hand-off (and the run-out forward, which dials it) is a +1 US/CA number: never another country, a
+    Caribbean NANP code billed as international, or a premium 900/976 line."""
+    put = lambda n: async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"handoff": {"number": n}}})  # noqa: E731
+    for bad in ("+44 20 7946 0958", "+1 876 555 0123", "(809) 555-0123", "+1 900 555 0123", "976-555-0123",
+                "+1 284 555 0123"):  # fmt: skip
+        r = await put(bad)
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_number_not_us", bad
+    from routers.voice import us_number
+
+    assert us_number("+1 340 555 0123") == "+13405550123"  # US territories are US
+    assert us_number("+1 155 555 0123") is None  # not a NANP area code
 
 
 async def _caller(owner: str):

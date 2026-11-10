@@ -134,7 +134,7 @@ async def test_on_ended_dispatches_exactly_one_notes_run(env):
     args, kwargs = env.line.await_args.args, env.line.await_args.kwargs
     assert args[1:3] == (DEFAULT, f"meeting:{ROOM}:1790972400:notes")
     env.members.assert_awaited_with(DEFAULT)
-    assert args[3].startswith("Write the meeting notes for Weekly sync: decisions, open questions")
+    assert args[3].startswith("Write the meeting notes for Weekly sync: open questions")
     assert args[3].endswith("The transcript is attached")
     assert kwargs["dispatch_targets"] == [{"agentId": CEO, "eventKind": "user_request"}]
     assert env.meta["meeting"]["notesRunId"] == mod.messaging_repo.run_id_for(CEO, "msg-1")
@@ -560,3 +560,98 @@ async def test_stored_notes_recover_admission_failure_before_consuming_completio
     await mod._keep_notes("org_1", "msg-1", request, "a later conflicting reply")
     assert env.meta["meeting"]["notes"] == NOTES and request["mailAttemptedAt"] == 1
     assert enqueue.await_count == 2
+
+
+DECIDED = (
+    "We went over the holidays.\n\nDecisions:\n- Closed on Dec 25 and Dec 26 (decided by Maya)\n"
+    "- Holiday hours are 10 to 4\n\nAction items:\n- Pat: post the holiday hours"
+)
+
+
+@pytest.fixture
+def remember(monkeypatch):
+    from core.services import memory_api
+
+    r = AsyncMock(return_value={"queued": False, "neighbours": []})
+    monkeypatch.setattr(memory_api, "remember", r)
+    return r
+
+
+async def test_the_notes_request_asks_for_a_decisions_section(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    text = env.line.await_args.args[3]
+    assert '"Decisions:"' in text and "decided by <who>" in text
+
+
+async def test_the_notes_runs_decisions_are_stored_on_the_meeting(env, remember):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await ended_and_noted(env, DECIDED)
+    assert env.meta["meeting"]["decisions"] == [
+        {"text": "Closed on Dec 25 and Dec 26", "by": "Maya"},
+        {"text": "Holiday hours are 10 to 4"},
+    ]
+
+
+async def test_decisions_go_into_team_memory_once_tagged_with_the_meeting_and_date(env, remember):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await ended_and_noted(env, DECIDED)
+    request = env.requests["msg-1"]
+    await mod._keep_notes("org_1", "msg-1", request, DECIDED)  # a retry
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    assert remember.await_count == 2
+    first = remember.await_args_list[0].kwargs
+    assert first["kind"] == "decision" and first["scope"] == "team" and first["subject"] == "Decision: Weekly sync"
+    assert (
+        first["fact"]
+        == "Decided in the meeting Weekly sync on 2026-10-02: Closed on Dec 25 and Dec 26 (decided by Maya)"
+    )
+    assert env.meta["meeting"]["decisionsRemembered"] == [0, 1]
+    assert env.requests["msg-1"]["mailAttemptedAt"]
+
+
+async def test_a_failed_memory_write_is_retried_by_the_run_end_without_rewriting_the_others(env, remember):
+    """Codex P2 on #5186: a transient remember error spent the completion claim, so the run end skipped it."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    remember.side_effect = [{"queued": False}, RuntimeError("member rpc"), {"queued": False}]
+    await ended_and_noted(env, DECIDED)
+    assert env.meta["meeting"]["decisionsRemembered"] == [0]
+    assert not env.requests["msg-1"].get("mailAttemptedAt")  # the run end still visits it
+    env.posted[:] = [{"author": {"id": CEO}, "replyToMessageId": "msg-1", "text": DECIDED}]
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    facts = [c.kwargs["fact"] for c in remember.await_args_list]
+    assert len(facts) == 3 and facts[1] == facts[2] and facts[0] != facts[2]  # the failed one, once more
+    assert env.meta["meeting"]["decisionsRemembered"] == [0, 1]
+    assert env.requests["msg-1"]["mailAttemptedAt"]
+
+
+async def test_a_secret_shaped_decision_is_not_retried(env, remember):
+    from core.services import memory_api
+
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    remember.side_effect = [memory_api.Refused("secret"), {"queued": False}]
+    await ended_and_noted(env, DECIDED)
+    assert env.meta["meeting"]["decisionsRemembered"] == [0, 1] and env.requests["msg-1"]["mailAttemptedAt"]
+    assert remember.await_count == 2
+
+
+async def test_a_meeting_with_no_decisions_writes_nothing_to_memory(env, remember):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await ended_and_noted(env, "Nothing was settled.\n\nAction items:\n- Pat: ask again")
+    assert env.meta["meeting"]["decisions"] == []
+    remember.assert_not_awaited()
+    assert "decisionsRemembered" not in env.meta["meeting"]
+
+
+async def test_late_decisions_land_on_the_original_occurrence(env, remember):
+    env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1")
+    await mod.on_ended(ROOM)
+    env.meta["meeting"] = {
+        "title": "Next week", "startAt": 1791577200, "status": "scheduled",
+        "history": [{"startAt": 1790972400, "transcriptId": "att-1"}],
+    }  # fmt: skip
+    await mod.on_agent_reply("org_1", CEO, "msg-1", DECIDED, False)
+    past = env.meta["meeting"]["history"][0]
+    assert len(past["decisions"]) == 2 and past["decisionsRemembered"] == [0, 1]
+    assert "decisions" not in env.meta["meeting"] and "decisionsRemembered" not in env.meta["meeting"]
+    assert remember.await_args_list[0].kwargs["subject"] == "Decision: Weekly sync"

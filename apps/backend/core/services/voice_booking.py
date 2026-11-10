@@ -140,9 +140,11 @@ def _event(cfg: dict, call: dict, start: str, service: str, name: str) -> dict:
     }
 
 
-async def free(ws: str, cfg: dict, call_id: str | None, date: str, minutes: int) -> list[str]:
-    """Open half-hour starts on `date`: opening hours minus Nova's own bookings, and with Google minus the primary
-    calendar's busy blocks (a failed freeBusy is unavailable)."""
+async def free(ws: str, cfg: dict, call_id: str | None, date: str, minutes: int,
+               lanes: list[tuple[str, str]] = (("", ""),)) -> list[str]:  # fmt: skip
+    """Open half-hour starts on `date` where one of `lanes` (the people who can do it) is free: opening hours minus
+    Nova's own bookings in that lane, and with Google minus the primary calendar's busy blocks, which every lane
+    shares (a failed freeBusy is unavailable)."""
     vp = _vp()
     taken = await vp._taken(ws, date)
     window = vp._open_window(cfg, date) if _google(cfg) else None
@@ -151,7 +153,7 @@ async def free(ws: str, cfg: dict, call_id: str | None, date: str, minutes: int)
         body = {"timeMin": window[0].replace(tzinfo=tz).isoformat(), "timeMax": window[1].replace(tzinfo=tz).isoformat(),
                 "timeZone": tz.key, "items": [{"id": "primary"}]}  # fmt: skip
         taken += _blocks(await _try(ws, cfg, call_id, "POST", f"{API}/freeBusy", body), tz)
-    return vp.free_slots(cfg, date, taken, vp._now(cfg), minutes)
+    return vp.open_starts(cfg, date, taken, vp._now(cfg), minutes, list(lanes))
 
 
 def _blocks(answer: dict | None, tz, calendar_id: str = "primary") -> list[tuple[datetime, datetime]]:
@@ -216,8 +218,9 @@ def _result(row: dict | None, state: str, code: str = "", *, action: str = "crea
         "action": action,
         "provider": (row or {}).get("bookingProvider", "google"),
         "operationId": ((row or {}).get("pending") or {}).get("id"),
-        "currentStart": (row or {}).get("sk", "").removeprefix("VOICEBOOK#") if row and confirmed(row) else None,
+        "currentStart": _vp()._start(row) if row and confirmed(row) else None,
         "requestedStart": ((row or {}).get("pending") or {}).get("newStart"),
+        "staff": (row or {}).get("staff", ""),
     }
 
 
@@ -337,7 +340,7 @@ async def _settle(row: dict, event: dict | None) -> dict:
     if action == "create":
         await _save(row, new)
     else:
-        new_sk, new_cells = f"VOICEBOOK#{pending['newStart']}", pending["targetCells"]
+        new_sk, new_cells = f"VOICEBOOK#{pending['newStart']}{row['sk'][26:]}", pending["targetCells"]  # same lane
         new |= {"sk": new_sk, "cells": new_cells, "generation": int(row["generation"]) + 1}
         # Delete old row/old-only cells; common cells get exactly one update.
         items = vp._release(table, pk, row, keep=set(new_cells))
@@ -464,13 +467,25 @@ async def _resume(ws: str, cfg: dict, call_id: str, row: dict, action: str, new_
 async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> dict:
     vp = _vp()
     # Only an attested number resumes a held booking made from it on another call (a spoofed one would claim it).
-    existing, caller = await _read(ws, f"VOICEBOOK#{start}"), call.get("caller") if vp._verified(call) else None
-    if not (
-        existing
-        and existing.get("bookingProvider") == "google"
-        and (existing.get("callId") == call_id or (caller and existing.get("phone") == caller))
-    ):
-        existing = None
+    caller = call.get("caller") if vp._verified(call) else None
+    rows = await vp._bookings(ws, start)  # every person's booking at that start
+    same = next(
+        (b for b in rows if (b.get("callId"), b.get("service"), b.get("name")) == (call_id, service, name)), None
+    )
+    if same and _own(same) and confirmed(same):  # a retry of this call's booking: that booking, no second person
+        return {"state": "confirmed", "provider": "own", "staff": same.get("staff", ""), "repeat": True}
+    # This call's (or number's) earlier Google hold at that start, with whichever person it took.
+    existing = next(
+        (
+            b
+            for b in rows
+            if b.get("bookingProvider") == "google"
+            and (b.get("callId") == call_id or (caller and b.get("phone") == caller))
+        ),
+        None,
+    )
+    if existing is None:
+        pass  # none: a new booking below
     elif (existing.get("service"), existing.get("name")) != (service, name):
         raise vp._err(409, "booking_changed")
     elif existing.get("pending"):
@@ -481,8 +496,13 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
         return _result(existing, "held", "operation_requires_review")
     # else: a local hold never prepared (no POST precedes the prepare save): prepare it now.
     if not _google(cfg):
-        await vp._book(ws, call_id, call, cfg, start, service, name)
-        return {"state": "confirmed", "provider": "own"}
+        row = await vp._book(ws, call_id, call, cfg, start, service, name)
+        return {
+            "state": "confirmed",
+            "provider": "own",
+            "staff": row.get("staff", ""),
+            "repeat": bool(row.get("_repeat")),
+        }
     try:
         calendar = await _request(ws, "GET", f"{API}/calendars/primary")
         calendar_id = calendar["id"]
@@ -496,8 +516,10 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
         await _problem(ws, cfg, call_id)
         return _result(None, "unavailable", "provider_availability_unknown")
     if not existing:
-        await vp._book(ws, call_id, call, cfg, start, service, name)
-    row = existing or await _read(ws, f"VOICEBOOK#{start}")
+        made = await vp._book(ws, call_id, call, cfg, start, service, name)
+        if made.get("_repeat"):  # an identical request made this hold a moment ago and is preparing it now
+            return _result(made, "pending", "operation_pending")
+    row = existing or await _read(ws, made["sk"])
     operation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-google:{row['bookingId']}:create").hex
     body = _event(cfg, call, start, service, name)
     body |= {
@@ -602,7 +624,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
         if getattr(exc, "status_code", None) == 409:
             raise
         return _result(row, "unavailable", "provider_read_unavailable", action="move")
-    if new_start == row["sk"].removeprefix("VOICEBOOK#"):
+    if new_start == vp._start(row):
         return _result(row, "confirmed", action="move")
     cfg = {**cfg, "timezone": row["timezone"]}
     minutes = int(row["minutes"])
@@ -628,10 +650,15 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
         return _result(row, "unavailable", "provider_availability_unknown", action="move")
     if not target_free:
         raise vp._err(409, "slot_taken")
-    cells, table = vp._cells(cfg, new_start, minutes), messaging_repo.settings.MESSAGING_TABLE
-    # Refuse upfront if either prepare or final transfer would exceed DDB's cap.
-    if len(set(row["cells"]) | set(cells)) + 3 > 100:
+    lane = row["sk"][26:]  # a move keeps its person
+    cells, table = vp._cells(cfg, new_start, minutes, lane), messaging_repo.settings.MESSAGING_TABLE
+    # Refuse upfront if either prepare (with its capacity guards) or final transfer would exceed DDB's cap.
+    if len(set(row["cells"]) | set(cells)) + len(cells) + 3 > 100:
         raise vp._err(400, "booking_too_long")
+    # The target's new cells count against the slot's capacity like a new booking's (the old ones are still held
+    # until the move settles). Only the prepare adds cells; settle re-puts the same target cells and fail/cancel
+    # only release, so the pending-operation conditions below are unchanged.
+    guards = await vp._capacity_items(ws, cfg, [c for c in cells if c not in row["cells"]])
     extra = [
         {
             "Put": {
@@ -660,6 +687,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
                     "sk": target_key,
                     "start": new_start,
                     "minutes": minutes,
+                    "lane": lane,
                     "bookingId": row["bookingId"],
                     "operationId": operation_id,
                 },
@@ -671,7 +699,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
         {
             "ConditionCheck": {
                 "TableName": table,
-                "Key": {"pk": row["pk"], "sk": f"VOICEBOOK#{new_start}"},
+                "Key": {"pk": row["pk"], "sk": f"VOICEBOOK#{new_start}{lane}"},
                 "ConditionExpression": "attribute_not_exists(sk)",
             }
         }
@@ -693,7 +721,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
                 "targetHold": target_key,
             },
         },
-        extra,
+        extra + guards,
     )
     return await _dispatch(ws, cfg, call_id, row)
 

@@ -27,7 +27,6 @@ def test_current_paid_voice_entitles_runtime_without_rewriting_legacy_subscripti
     assert gate.is_subscription_active(account)
     assert gate.is_paid_subscription(account)
     assert gate.has_always_on_entitlement(account)
-    assert gate.should_arm_nightly_ceo(account)
     assert gate.is_trial_blocked(account)  # no second Workspace checkout while voice already pays for runtime
     assert not trial_cap.is_trial_expired(account)
     assert account == original

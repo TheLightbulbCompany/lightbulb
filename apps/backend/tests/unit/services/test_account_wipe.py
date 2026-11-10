@@ -66,7 +66,6 @@ EXPECTED_ORDER = [
     "paperclip_row",
     "billing_row",
     "user_row",
-    "paperclip_agent_keys",
     # Spec §3.6: open provisioning workflows are CANCELLED, never
     # deprovisioned — and before the credential deletes, so a reader mid-step
     # cannot re-land a secret the wipe already removed.
@@ -212,8 +211,6 @@ def wipe_mocks():
     phone_release = AsyncMock(return_value=1)
     person_memory_delete = AsyncMock(return_value=None)
     clerk_delete = AsyncMock(return_value=None)
-    agent_keys_list = AsyncMock(return_value=["lightbulb/dev/paperclip-agent-keys/user_abc123/agent-1"])
-    agent_keys_delete = AsyncMock(return_value=1)
     # Credential leftovers. These reach Secrets Manager, DDB and OpenAI for
     # real, so all must be stubbed or the suite makes live AWS calls.
     owner_secrets_list = AsyncMock(return_value=["lightbulb/dev/user-keys/user_abc123/anthropic"])
@@ -273,8 +270,6 @@ def wipe_mocks():
         ("core.services.account_wipe.voice_onboarding.release_number", phone_release),
         ("core.services.workspace_memory.delete_person_memory", person_memory_delete),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
-        ("core.services.account_wipe.list_owner_agent_key_secret_names", agent_keys_list),
-        ("core.services.account_wipe.delete_owner_agent_key_secrets", agent_keys_delete),
         ("core.services.account_wipe.delete_gate_token_rows", gate_tokens_delete),
         ("core.services.account_wipe.list_owner_secret_names", owner_secrets_list),
         ("core.services.account_wipe.delete_owner_secrets", owner_secrets_delete),
@@ -329,8 +324,6 @@ def wipe_mocks():
             phone_release=phone_release,
             person_memory_delete=person_memory_delete,
             clerk_delete=clerk_delete,
-            agent_keys_list=agent_keys_list,
-            agent_keys_delete=agent_keys_delete,
             owner_secrets_delete=owner_secrets_delete,
             integrations_delete=integrations_delete,
             workflows_list=workflows_list,
@@ -399,7 +392,6 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.billing_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
-    wipe_mocks.agent_keys_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.oauth_revoke.assert_awaited_once_with(user_id=OWNER_ID)
 
@@ -451,35 +443,6 @@ async def test_messaging_wipe_refuses_cross_owner_catalog_entry(wipe_mocks):
     assert "owned elsewhere" in (step.error or "")
     wipe_mocks.messaging_delete_room.assert_awaited_once_with("room-1")
     wipe_mocks.messaging_delete_owner.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_sweeps_per_agent_paperclip_key_secrets_before_clerk(wipe_mocks):
-    """The per-agent Paperclip key-secret sweep runs (dogfood gap fix), records
-    the deleted count, and lands before the always-last Clerk delete."""
-    wipe_mocks.agent_keys_delete.return_value = 3
-    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    step = next(s for s in report.steps if s.system == "paperclip_agent_keys")
-    assert step.status == "ok"
-    assert "3" in step.detail
-    systems = [s.system for s in report.steps]
-    assert systems.index("paperclip_agent_keys") < systems.index("clerk_user")
-
-
-@pytest.mark.asyncio
-async def test_preview_lists_per_agent_paperclip_key_secrets(wipe_mocks):
-    """preview_wipe surfaces the per-agent key secrets by name-prefix count."""
-    wipe_mocks.agent_keys_list.return_value = [
-        "lightbulb/dev/paperclip-agent-keys/user_123/a1",
-        "lightbulb/dev/paperclip-agent-keys/user_123/a2",
-    ]
-    report = await preview_wipe(OWNER_ID)
-
-    wipe_mocks.agent_keys_list.assert_awaited_once_with(OWNER_ID)
-    step = next(s for s in report.steps if s.system == "paperclip_agent_keys")
-    assert step.status == "would_delete"
-    assert "2 per-agent" in step.detail
 
 
 @pytest.mark.asyncio
@@ -679,7 +642,6 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.paperclip_row_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.billing_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
-    wipe_mocks.agent_keys_delete.side_effect = RuntimeError("sm down")
     wipe_mocks.workflows_list.side_effect = RuntimeError("ddb down")
     wipe_mocks.owner_secrets_delete.side_effect = RuntimeError("sm down")
     wipe_mocks.integrations_delete.side_effect = RuntimeError("ddb down")

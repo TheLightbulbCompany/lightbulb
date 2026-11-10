@@ -12,7 +12,7 @@ Status booleans are read through the v1 shape (``details_submitted`` /
 ``charges_enabled`` / ``payouts_enabled``) for both doors — v1 endpoints
 accept v2 ids — so the webhook, repo and pages share one vocabulary.
 
-Blocking SDK calls run on a worker thread, as in ``payout_service``.
+Blocking SDK calls run on a worker thread.
 """
 
 from __future__ import annotations

@@ -18,9 +18,8 @@ import { ServiceStack } from "../lib/stacks/service-stack";
  * Pass-1 (this test file's original assertions) proved the export-pin +
  * import-removal split was safe. Pass-2 (2026-07-14) deleted the table and
  * its pinned exports outright — nothing imports them anymore. These tests
- * now lock in that the table and its exports are GONE, alongside the
- * still-live invariant that the service stack grants the Paperclip
- * agent-keys Secrets Manager path instead.
+ * now lock in that the table and its exports are GONE. The per-agent key
+ * prefix was emptied in both envs and its grant removed (2026-11-09).
  */
 
 function build(environment: "dev" | "prod"): {
@@ -67,7 +66,6 @@ function build(environment: "dev" | "prod"): {
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
-      paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
@@ -141,18 +139,10 @@ describe.each(["dev", "prod"] as const)(
       expect(Object.keys(resources)).toEqual([]);
     });
 
-    test("service task role grants paperclip-agent-keys secrets (the api-keys replacement)", () => {
-      service.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({ Sid: "PaperclipAgentKeysRW" }),
-          ]),
-        },
-      });
+    test("service task role no longer grants the empty paperclip-agent-keys prefix", () => {
       const json = JSON.stringify(service.toJSON());
-      expect(json).toContain(
-        `secret:lightbulb/${environment}/paperclip-agent-keys/*`,
-      );
+      expect(json).not.toContain("PaperclipAgentKeysRW");
+      expect(json).not.toContain("paperclip-agent-keys");
     });
 
     test("service stack no longer imports the api-keys table ARN", () => {

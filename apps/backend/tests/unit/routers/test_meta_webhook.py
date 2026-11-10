@@ -346,4 +346,3 @@ def _hook_row(monkeypatch):
     from core.repositories import automations_repo
 
     monkeypatch.setattr(automations_repo, "get_hook", AsyncMock(return_value={"publicId": "pub"}))
-    monkeypatch.setattr("routers.meta_webhook.flags_for", AsyncMock(return_value=True))

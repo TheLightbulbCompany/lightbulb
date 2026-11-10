@@ -97,7 +97,7 @@ async def _open_days(ws: str, cfg: dict, now: datetime, minutes: int) -> str:
         *(vp._taken(ws, d) for d in dates), voice_booking.busy_across(ws, cfg, dates, GOOGLE_S)
     )
     days = [
-        f"{datetime.strptime(d, '%Y-%m-%d'):%a %-d %b}: {_ranges(s) if (s := vp.free_slots(cfg, d, t + busy, now, minutes)) else 'none'}"  # fmt: skip
+        f"{datetime.strptime(d, '%Y-%m-%d'):%a %-d %b}: {_ranges(s) if (s := vp.open_starts(cfg, d, t + busy, now, minutes, vp._lanes(cfg, ''))) else 'none'}"  # fmt: skip
         for d, t in zip(dates, taken, strict=True)
     ]
     return _cap(f"Open start times for a {minutes}-minute appointment: " + "; ".join(days), _SLOTS_MAX)
@@ -109,7 +109,7 @@ async def _callers_bookings(ws: str, caller: str, now: datetime) -> str:
     mine = [b for b in await _upcoming(ws, f"{now:%Y-%m-%dT%H:%M}") if b.get("phone") == caller]
 
     def describe(b: dict) -> str:
-        text = f"{b['service']} {vp._pretty(b['sk'][10:])}"
+        text = f"{b['service']} {vp._pretty(vp._start(b))}" + (f" with {b['staff']}" if b.get("staff") else "")
         if b.get("pending"):
             pending = b["pending"]
             target = f"; requested {vp._pretty(pending['newStart'])}" if pending.get("newStart") else ""

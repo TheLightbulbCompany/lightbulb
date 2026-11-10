@@ -88,3 +88,34 @@ async def test_failed_dial_keeps_the_old_tick(repos, monkeypatch):  # noqa: F811
     out = await voice_outbound.forward_check(WS, await messaging_repo.get_voice_agent(WS))
     assert out == {"ok": False, "reason": "dial_failed"}
     assert (await messaging_repo.get_voice_agent(WS))["forwardingOk"] is True
+
+
+async def test_caribbean_and_premium_business_lines_refused(repos, monkeypatch):  # noqa: F811
+    """M3: the forwarding check dials only a +1 US/CA number (the hand-off's validator), never +1 876 or +1 900."""
+    for number in ("+18765550123", "+19005550123", "(976) 555-0123"):
+        lk = await _ready(monkeypatch, forwardFrom=number)
+        out = await voice_outbound.forward_check(WS, await messaging_repo.get_voice_agent(WS))
+        assert out == {"ok": False, "reason": "us_only"}, number
+        lk.sip.create_sip_participant.assert_not_called()
+
+
+async def test_two_simultaneous_checks_dial_once(repos, monkeypatch):  # noqa: F811
+    """M3: both POSTs read the same document (no check yet); the conditional lock lets one dial."""
+    import asyncio
+
+    lk = await _ready(monkeypatch)
+    cfg = await messaging_repo.get_voice_agent(WS)
+    outs = await asyncio.gather(
+        voice_outbound.forward_check(WS, dict(cfg)), voice_outbound.forward_check(WS, dict(cfg))
+    )
+    assert sorted(o["ok"] for o in outs) == [False, True]
+    assert lk.sip.create_sip_participant.await_count == 1
+
+
+async def test_five_checks_a_day(repos, monkeypatch):  # noqa: F811
+    """M3: CHECKS_PER_DAY dials per workspace per day, then `daily_limit` (each window had ended)."""
+    lk = await _ready(monkeypatch)
+    monkeypatch.setattr(voice_outbound, "WINDOW_S", -1)  # every check is outside the last one's window
+    outs = [await voice_outbound.forward_check(WS, await messaging_repo.get_voice_agent(WS)) for _ in range(6)]
+    assert outs[:5] == [{"ok": True}] * 5 and outs[5] == {"ok": False, "reason": "daily_limit"}
+    assert lk.sip.create_sip_participant.await_count == voice_outbound.CHECKS_PER_DAY == 5

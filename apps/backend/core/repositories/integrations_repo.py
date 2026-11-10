@@ -333,7 +333,7 @@ async def remove_provider_resource(owner_id: str, provider: str, resource_id: st
 #
 # On ECS these go straight into openclaw.json's mcp.servers and never touch
 # this table. An AgentCore owner has no openclaw.json to write into, so
-# routers/integrations.py stores them here instead -- one reserved sort key,
+# the retired manual-MCP CRUD stored them here (rows are still read) -- one reserved sort key,
 # same pattern as `projects_key`: the bare key belongs to no registry
 # provider, so it can never collide with a real one and the orphan-skip in
 # mcp_server.build_connected_integration_servers's provider loop never sees
@@ -346,19 +346,6 @@ MANUAL_MCP_KEY = "manual_mcp"
 async def get_manual_mcp_servers(owner_id: str) -> dict:
     row = await get(owner_id, MANUAL_MCP_KEY)
     return dict((row or {}).get("servers") or {})
-
-
-async def set_manual_mcp_servers(owner_id: str, servers: dict) -> None:
-    """Whole-dict replace, mirroring the PUT/PATCH/DELETE call sites in
-    routers/integrations.py, which each read-modify-write the full dict
-    themselves before calling this."""
-    now = int(time.time())
-    await run_in_thread(
-        _table().update_item,
-        Key={"owner_id": owner_id, "provider": MANUAL_MCP_KEY},
-        UpdateExpression="SET servers = :s, updated_at = :now, connected_at = if_not_exists(connected_at, :now)",
-        ExpressionAttributeValues={":s": servers, ":now": now},
-    )
 
 
 async def scan_all() -> list[dict]:

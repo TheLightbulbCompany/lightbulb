@@ -10,7 +10,7 @@ const billing = vi.hoisted(() => ({
   api: { get: vi.fn().mockResolvedValue({ connected: false }), post: vi.fn() },
   startCheckout: vi.fn().mockResolvedValue(undefined),
   changeProvider: vi.fn().mockResolvedValue({ status: "ok" }),
-  account: { workspace_price_usd: 75, ultra_price_usd: 150, is_subscribed: false, managed_inference_available: false, chatgpt_provider_available: true, provider_choice: null as string | null },
+  account: { workspace_price_usd: 75, ultra_price_usd: 150, is_subscribed: false, managed_inference_available: false, provider_choice: null as string | null },
 }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => billing }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: { role: billing.role } }) }));
@@ -30,7 +30,6 @@ describe("ProviderPicker", () => {
     billing.startCheckout.mockClear();
     billing.account.is_subscribed = false;
     billing.account.managed_inference_available = false;
-    billing.account.chatgpt_provider_available = true;
     billing.account.provider_choice = null;
   });
   it("shows the two selectable inference paths before checkout", () => {
@@ -92,12 +91,6 @@ describe("ProviderPicker", () => {
     expect(screen.getByRole("heading", { name: "OpenRouter managed" })).toBeInTheDocument();
     expect(screen.queryByText(/bring your own api key/i)).not.toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
-  });
-  it("hides Sign in with ChatGPT when the server does not allow it (internal only)", () => {
-    billing.account.chatgpt_provider_available = false;
-    render(<ProviderPicker isOrg={true} />);
-    expect(screen.queryByText("Sign in with ChatGPT")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "OpenRouter managed" })).toBeInTheDocument();
   });
   it("connects ChatGPT inline and saves only after successful authentication", async () => {
     billing.account.is_subscribed = true;

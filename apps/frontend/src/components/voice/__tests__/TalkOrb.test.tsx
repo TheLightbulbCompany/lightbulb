@@ -529,3 +529,17 @@ it("tapping again while the prompt is open cancels, and a late allow does not jo
   await act(async () => allow({ getTracks: () => [] }));
   expect(huddle.join).not.toHaveBeenCalled();
 });
+
+it("with the mic already allowed, a first press that is a hold still mutes on release", async () => {
+  gum(() => Promise.resolve({ getTracks: () => [] })); // no prompt: answers at once
+  const { rerender } = render(<TalkOrb name="Nova" />);
+  fireEvent.keyDown(orb(), { key: " " });
+  await settle();
+  expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+  listening(); connectedRoom.localParticipant.isMicrophoneEnabled = true;
+  rerender(<TalkOrb name="Nova" />);
+  mic.mockClear();
+  now += HOLD_MS + 50;
+  fireEvent.keyUp(orb(), { key: " " });
+  expect(mic).toHaveBeenCalledWith(false);
+});

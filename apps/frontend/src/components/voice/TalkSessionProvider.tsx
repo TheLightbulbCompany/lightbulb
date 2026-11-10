@@ -120,10 +120,12 @@ function useTalkController(name: string) {
       if (!canAsk()) { void huddle.join(room.roomId, name); return; }
       const id = ++askId.current, roomId = room.roomId;
       setAsking(true);
-      down.current = null; // the prompt swallows the pointer-up and its wait is not a hold: this press is a tap
       void askMic().then((r) => {
         if (id !== askId.current || !mounted.current) return;
         setAsking(false);
+        // Time on a browser prompt is not a hold, and the prompt may have swallowed the pointer-up: that press is a
+        // tap. An instant answer (mic already allowed) leaves a real hold-to-talk alone.
+        if (down.current && Date.now() - down.current.at >= HOLD_MS) down.current = null;
         if (r === "ok") void huddle.join(roomId, name);
         else { started.current = false; want.current = false; setTalk(false); setMicErr(r === "none" ? "No microphone found." : r === "busy" ? MIC_BUSY : MIC_BLOCKED); }
       });

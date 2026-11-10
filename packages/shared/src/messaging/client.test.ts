@@ -26,18 +26,6 @@ describe("messaging HTTP client", () => {
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/sess%201/chat", {});
   });
 
-  it("searches messages in a POST body and warms search", async () => {
-    const { client, methods } = setup();
-    await client.searchMessages("deploy fix", { roomId, limit: 20 });
-    expect(methods.post).toHaveBeenCalledWith("/messaging/search", { q: "deploy fix", roomId, limit: 20 });
-    await client.searchMessages("deploy");
-    expect(methods.post).toHaveBeenLastCalledWith("/messaging/search", { q: "deploy" });
-    await client.warmSearch();
-    expect(methods.post).toHaveBeenLastCalledWith("/messaging/search/warm", {});
-    await client.searchSessions("deploy", { limit: 50 });
-    expect(methods.post).toHaveBeenLastCalledWith("/messaging/sessions/search", { q: "deploy", limit: 50 });
-  });
-
   it("reads Activity with an opaque cursor, marks it seen and runs one escaped action door", async () => {
     const { client, methods } = setup();
     await client.listActivity();

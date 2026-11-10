@@ -278,8 +278,6 @@ export class LightbulbStage extends cdk.Stage {
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
       messagingTableName: api.messagingTableName,
-      messageSearchEndpoint: api.messageSearchEndpoint,
-      messageSearchCollectionArn: api.messageSearchCollectionArn,
       openClawWorkQueueUrl: api.openClawWorkQueueUrl,
       openClawWorkQueueArn: api.openClawWorkQueueArn,
       appsyncEventsHttpEndpoint: api.appsyncEventsHttpEndpoint,

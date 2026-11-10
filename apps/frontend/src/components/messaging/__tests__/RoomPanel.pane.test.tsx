@@ -18,7 +18,6 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     post: vi.fn(), mutate: vi.fn(),
   }),
 }));
-vi.mock("../useMessageSearch", () => ({ useMessageSearch: () => ({ hits: [], state: "idle" }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 vi.mock("@/lib/shellNav", async (importOriginal) => ({

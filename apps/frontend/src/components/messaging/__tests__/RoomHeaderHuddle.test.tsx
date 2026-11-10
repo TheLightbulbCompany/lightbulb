@@ -17,7 +17,7 @@ const who = (kind: "human" | "agent", id: string, displayName: string, listenMod
   kind, id, displayName, mentionHandle: null, role: "member", listenMode, joinedAt: "2026-09-01T00:00:00Z", joinedSeq: 0,
 });
 const people = [who("human", "h1", "Ana"), who("human", "h2", "Ben"), who("human", "h3", "Cy"), who("agent", "a1", "CEO", "active")];
-const base = { roomName: "general", participantCount: 4, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn(), counterparts: people };
+const base = { roomName: "general", participantCount: 4, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, onOpenDetails: vi.fn(), counterparts: people };
 
 beforeEach(() => { huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.room = null; huddle.ids = []; huddle.available = true; huddle.lightbulb = false; });
 

@@ -183,9 +183,6 @@ export interface ServiceStackProps extends cdk.StackProps {
   wsApiId: string;
   wsStage: string;
   messagingTableName: string;
-  /** Message search collection; empty/undefined while search is off for this env. */
-  messageSearchEndpoint?: string;
-  messageSearchCollectionArn?: string;
   openClawWorkQueueUrl: string;
   openClawWorkQueueArn: string;
   appsyncEventsHttpEndpoint: string;
@@ -366,15 +363,6 @@ export class ServiceStack extends cdk.Stack {
             `${props.appsyncEventsApiArn}/channelNamespace/pub`,
           ],
         }),
-        ...(props.messageSearchCollectionArn
-          ? [
-              new iam.PolicyStatement({
-                sid: "SearchMessages",
-                actions: ["aoss:APIAccessAll"],
-                resources: [props.messageSearchCollectionArn],
-              }),
-            ]
-          : []),
       ],
     });
 
@@ -1721,7 +1709,6 @@ export class ServiceStack extends cdk.Stack {
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
       MESSAGING_TABLE: props.messagingTableName,
-      SEARCH_ENDPOINT: props.messageSearchEndpoint ?? "",
       OPENCLAW_WORK_QUEUE_URL: props.openClawWorkQueueUrl,
       APPSYNC_EVENTS_HTTP_ENDPOINT: props.appsyncEventsHttpEndpoint,
       APPSYNC_EVENTS_REALTIME_ENDPOINT: props.appsyncEventsRealtimeEndpoint,

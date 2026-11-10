@@ -479,7 +479,6 @@ class Settings(BaseSettings):
     """Canonical room/message table (``lightbulb-{env}-messaging``). Empty is
     only legal outside a deployed task; ``_validate_deployed_security`` fails
     boot without it because every room command would 500 at first use."""
-    SEARCH_ENDPOINT: str = ""  # OpenSearch Serverless collection endpoint; empty disables message search
     OPENCLAW_WORK_QUEUE_URL: str = ""
     """FIFO wake queue (``lightbulb-{env}-openclaw-work.fifo``). Drained by the
     ``scripts/work_lambda.py`` Lambda (SQS event source), which deletes/re-times

@@ -7,7 +7,7 @@ vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
 // The Tasks and Files groups read the tasks client; these suites are about navigation and messages.
 vi.mock("@/components/teams/command-palette/useTaskSearch", async (importOriginal) => ({ ...(await importOriginal<object>()), useTaskSearch: () => ({ tasks: [], files: [] }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({
-  useLiveEvents: () => ({ messaging: { searchMessages: vi.fn().mockResolvedValue({ hits: [] }), warmSearch: vi.fn().mockResolvedValue(undefined) } }),
+  useLiveEvents: () => ({ messaging: {} }),
 }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: null }),

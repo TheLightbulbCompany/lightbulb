@@ -133,12 +133,6 @@ schema = (
     .exclude(
         path_regex="^/health$",
     )
-    # Message and session search answer a deliberate 503 SEARCH_UNAVAILABLE when no
-    # search cluster is configured (settings.SEARCH_ENDPOINT), and the harness has none.
-    # Same class as /slack/events. Covered by tests/unit/services/test_message_search.py.
-    .exclude(
-        path_regex="^/api/v1/messaging/(sessions/)?search$",
-    )
 )
 
 

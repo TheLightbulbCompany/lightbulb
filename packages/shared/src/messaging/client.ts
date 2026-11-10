@@ -14,8 +14,6 @@ import type {
   MemberKind,
   MemberPrefsRequest,
   MessagePage,
-  MessageSearchResponse,
-  SessionSearchResponse,
   PatchRoomRequest,
   ReadCursorRequest,
   ReadCursorResponse,
@@ -160,10 +158,7 @@ export interface MessagingClient {
   leaveRoom(roomId: string): Promise<void>;
   /** Owner-only channel delete (a tombstone; history is kept server-side). */
   deleteRoom(roomId: string): Promise<void>;
-  searchMessages(query: string, options?: { roomId?: string; limit?: number }): Promise<MessageSearchResponse>;
-  warmSearch(): Promise<void>;
   /** What was said in the coding sessions the caller may read. */
-  searchSessions(query: string, options?: { limit?: number }): Promise<SessionSearchResponse>;
   setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
   /** What Lightbulb noted in this room, newest first. */
   listRoomMemory(roomId: string): Promise<RoomMemoryResponse>;
@@ -297,19 +292,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     async deleteRoom(roomId) {
       await api.del(roomPath(roomId));
     },
-    // POST: the query must not ride in a URL (access logs).
-    searchMessages: (query, options) => api.post("/messaging/search", {
-      q: query,
-      ...(options?.roomId ? { roomId: options.roomId } : {}),
-      ...(options?.limit ? { limit: options.limit } : {}),
-    }) as Promise<MessageSearchResponse>,
-    async warmSearch() {
-      await api.post("/messaging/search/warm", {});
-    },
-    searchSessions: (query, options) => api.post("/messaging/sessions/search", {
-      q: query,
-      ...(options?.limit ? { limit: options.limit } : {}),
-    }) as Promise<SessionSearchResponse>,
     setPin: (roomId, messageId, pinned) => (pinned
       ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})
       : api.del(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`)) as Promise<RoomDetail>,

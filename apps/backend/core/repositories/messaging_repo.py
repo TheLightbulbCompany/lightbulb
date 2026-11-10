@@ -1116,9 +1116,8 @@ def _agent_unescape(match: re.Match[str]) -> str:
 
 def agent_text(text: str) -> str:
     """A message's text as an agent reads it: the web composer escapes what a person typed
-    (``3\\*4``, ``\\_\\_init\\_\\_``) so it shows literally; agents (and search) get it back
-    clean. Code is left as is. Copied in the search indexer
-    (apps/infra/lambda/messaging-search-indexer/index.py); test_agent_text keeps them identical."""
+    (``3\\*4``, ``\\_\\_init\\_\\_``) so it shows literally; agents get it back
+    clean. Code is left as is."""
     return _AGENT_ESCAPES.sub(_agent_unescape, text) if "\\" in text else text
 
 

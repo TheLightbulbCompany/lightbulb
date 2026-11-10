@@ -1034,6 +1034,10 @@ export class ApiStack extends cdk.Stack {
 
     this.messageSearchEndpoint = collection.attrCollectionEndpoint;
     this.messageSearchCollectionArn = collection.attrArn;
+    // Preserve the exact automatic exports during the API-first deployment that
+    // detaches ServiceStack. Remove these with the derived index in the next release.
+    this.exportValue(collection.attrCollectionEndpoint);
+    this.exportValue(collection.attrArn);
     this.messageSearchQueueUrl = indexQueue.queueUrl;
 
     const pipeRole = new iam.Role(this, "OpenClawWorkPipeRole", {

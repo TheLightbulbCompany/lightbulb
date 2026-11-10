@@ -1890,6 +1890,20 @@ describe("ServiceStack — the tier's shared Hermes runtime (shared runtime step
 });
 
 
+describe("ServiceStack — search consumer detached before API retirement", () => {
+  test.each(["dev", "prod"] as const)("%s has no derived search endpoint, permission or cross-stack import", (env) => {
+    const template = env === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack(env);
+    const rendered = JSON.stringify(template.toJSON());
+    expect(rendered).not.toContain("SEARCH_ENDPOINT");
+    expect(rendered).not.toContain("SearchMessages");
+    expect(rendered).not.toContain("aoss:APIAccessAll");
+    expect(rendered).not.toContain("MessageSearchCollection");
+    const tasks = Object.values(template.findResources("AWS::ECS::TaskDefinition"));
+    const backend = tasks.flatMap((r: any) => r.Properties.ContainerDefinitions).find((c: any) => c.Name === "backend");
+    expect(backend.Environment).toContainEqual({ Name: "MESSAGING_TABLE", Value: "lightbulb-" + env + "-messaging" });
+  });
+});
+
 describe("ServiceStack — coherent ARM64 backend image consumers", () => {
   test.each(["dev", "prod"] as const)("%s publishes ARM64 and runs all five consumers on that architecture", (env) => {
     let assetHash = "";

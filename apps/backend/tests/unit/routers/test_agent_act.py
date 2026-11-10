@@ -122,16 +122,6 @@ def test_each_action_reaches_its_service_call(client, monkeypatch, seated, actio
     assert call.await_args.args[0].user_id == "user_ana" and call.await_args.args[1:] == called_with
 
 
-def test_search_sessions_searches_the_requesters_sessions(client, monkeypatch, seated):
-    search = AsyncMock(return_value={"hits": []})
-    monkeypatch.setattr(router.message_search, "search_sessions", search)
-    body = {"action": "search_sessions", "args": {"q": "deploy"}}
-    response = client.post(URL, json=body, headers=_bearer("user_ana"))
-    assert response.status_code == 200 and response.json() == {"hits": []}
-    auth, request = search.await_args.args
-    assert auth.user_id == "user_ana" and (request.q, request.limit) == ("deploy", 30)
-
-
 def test_the_incident_an_agent_added_through_agent_act_gets_its_delivery_cursor(client, monkeypatch, table):
     """18 Oct: a hand-written member row skipped the cursor and silenced the agent's @mentions."""
     import asyncio
@@ -181,3 +171,9 @@ def test_a_service_validation_error_is_not_blamed_on_the_agents_args(client, mon
         client.post(
             URL, json={"action": "update_room", "room_id": ROOM, "args": {"name": "x"}}, headers=_bearer("user_ana")
         )
+
+
+@pytest.mark.parametrize("action", ["search_messages", "search_sessions"])
+def test_retired_search_actions_are_rejected(client, seated, action):
+    response = client.post(URL, json={"action": action, "args": {"q": "deploy"}}, headers=_bearer("user_ana"))
+    assert response.status_code == 422

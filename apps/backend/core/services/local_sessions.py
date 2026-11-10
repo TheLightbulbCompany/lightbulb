@@ -1508,37 +1508,10 @@ async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) 
     return WorkspaceSessions(sessions=sessions)
 
 
-async def searchable_sessions(auth: AuthContext) -> dict[str, LocalSession]:
-    """The sessions whose words this person may search: what the sessions list shows them
-    (their own in any sharing state, everyone else's while shared; not one continued by a fork),
-    without the list's 7-day window on ended ones."""
-    owner = resolve_owner_id(auth)
-    if not await still_in_workspace(owner, auth.user_id):
-        return {}
-    humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
-    # ponytail: every historical row, like the list; an owner-keyed index if history grows large.
-    found = await _live_public_sessions(owner, humans, include_offline=True, ended_since=0, viewer=auth.user_id)
-    return {
-        s.session_id: s
-        for s in _without_moved(
-            [s for s in found if s.kind == "interactive" and (s.shared or s.human_user_id == auth.user_id)]
-        )
-    }
-
-
 async def still_in_workspace(owner: str, user_id: str) -> bool:
     """The caller is still a member: a removal deactivates their stream (strong read), while
     their Clerk JWT may stay valid for minutes."""
     return bool(((await messaging_repo.get_user_stream(owner, user_id)) or {}).get("active"))
-
-
-def still_searchable(row: dict | None, user_id: str) -> bool:
-    """Re-check after the index answered: sharing paused or the session removed meanwhile."""
-    return (
-        row is not None
-        and row.get("removedAt") is None
-        and (not row.get("unshared") or row.get("humanUserId") == user_id)
-    )
 
 
 SESSION_SUMMARY_CAP = 24

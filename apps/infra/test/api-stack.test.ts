@@ -303,7 +303,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
     expect(retained.every((resource) => resource.DeletionPolicy === "Retain")).toBe(true);
   });
 
-  test("creates one application FIFO plus its FIFO DLQ, one standard Pipe DLQ and the message search index queue pair", () => {
+  test("creates one application FIFO plus its FIFO DLQ, one standard Pipe DLQ and retained derived search queues until import detachment", () => {
     const queues = Object.values(API_TEMPLATE.findResources("AWS::SQS::Queue")) as any[];
     const byName = Object.fromEntries(
       queues.map((queue) => [queue.Properties.QueueName, queue.Properties]),
@@ -793,7 +793,7 @@ describe("ApiStack — ws sessions workspace channel", () => {
 });
 
 describe("ApiStack — messaging projector permissions and alarms", () => {
-  test("projector is Python 3.13, bounded, partial-batch configured, and may only send to the search index queue", () => {
+  test("projector retains bounded canonical live delivery and temporary search queue authority", () => {
     API_TEMPLATE.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "lightbulb-dev-messaging-projector",
       Runtime: "python3.13",
@@ -805,8 +805,6 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
           USERS_TABLE: "lightbulb-dev-users",
           APPSYNC_EVENTS_HTTP_ENDPOINT: Match.anyValue(),
           APPSYNC_EVENTS_REGION: "us-east-1",
-          SEARCH_INDEX_QUEUE_URL: Match.anyValue(),
-          SEARCH_INDEX_BATCH_QUEUE_URL: Match.anyValue(),
         }),
       },
     });
@@ -1002,6 +1000,22 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
         expect.stringContaining(`lightbulb-dev-alerts-${tier}`),
       ]);
     }
+  });
+});
+
+describe("ApiStack — staged search retirement exports", () => {
+  test.each(["dev", "prod"] as const)("%s retains exact deployed export identities and values while consumers detach", (env) => {
+    const deployed = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/message-search-deployed-exports.json"), "utf8"))[env];
+    const stack = buildApiStack(env);
+    const template = Template.fromStack(stack).toJSON();
+    const outputs = Object.fromEntries(Object.entries(template.Outputs).filter(([key]) => key.includes("MessageSearch")));
+    for (const output of Object.values(outputs) as any[]) {
+      // The helper uses a throwaway stack name; deployed stages use lightbulb-{env}-api.
+      output.Export.Name = output.Export.Name.replace(`${stack.stackName}:`, `lightbulb-${env}-api:`);
+    }
+    expect(outputs).toEqual(deployed);
+    expect(Object.values(template.Resources).some((r: any) => r.Type === "AWS::OpenSearchServerless::Collection")).toBe(true);
+    expect(JSON.stringify(template.Resources)).toContain("message-search-indexer");
   });
 });
 

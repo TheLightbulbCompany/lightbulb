@@ -16,7 +16,7 @@ const agent: RoomParticipant = {
   kind: "agent", id: "x1", displayName: "Finance", mentionHandle: null, role: "member",
   listenMode: "active", joinedAt: "2026-09-01T00:00:00Z", joinedSeq: 0,
 };
-const base = { roomName: "Finance", participantCount: 2, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn() };
+const base = { roomName: "Finance", participantCount: 2, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, onOpenDetails: vi.fn() };
 
 it.each(["dm", "group-dm", "channel"] as const)("web has no Talk button, only Go live (%s)", (kind) => {
   render(<RoomHeader {...base} room={room(kind)} counterparts={[agent]} />);

@@ -162,28 +162,6 @@ def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
     return is_paid_subscription(account)
 
 
-def should_arm_nightly_ceo(account: Mapping[str, Any] | None) -> bool:
-    """Whether the nightly CEO routine should be ARMED for this owner.
-
-    Deliberately BROADER than ``has_always_on_entitlement`` (paid-only, for
-    webhooks / channels): the nightly CEO is a retention lever we also extend to
-    trials — but only while the trial is LIVE. Armed for paid (active/trialing)
-    OR an unexpired ``trial_local``. An EXPIRED trial is not armed; canceled /
-    past_due / no-row are not armed. Fail-closed on no account.
-
-    The nightly run for a trial is still cap-gated at the wake path and at the
-    bedrock-gate, so arming an unexpired-but-capped trial is harmless (the run
-    is refused that day and resumes at the UTC rollover)."""
-    if is_paid_subscription(account):
-        return True
-    if not account or account.get("subscription_status") != "trial_local":
-        return False
-    # Local import avoids a provision_gate <-> trial_cap import cycle.
-    from core.services.trial_cap import is_trial_expired
-
-    return not is_trial_expired(account)
-
-
 def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:
     """Whether this account has a subscription state that should block
     creating a fresh subscription checkout. See ``TRIAL_BLOCKED_STATUSES``.

@@ -110,7 +110,6 @@ export function buildApiStack(
     clerkIssuerSecretName: `lightbulb/${environment}/clerk_issuer`,
     // Pass secret name + KMS key ARN as plain strings — same cross-stack
     // pattern as lightbulb-stage.ts (avoids KMS auto-grant cycles).
-    paperclipServiceTokenKeySecretName: `isol8/${environment}/paperclip_service_token_key`,
     paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
     wsInternalSecretSecretName: `isol8/${environment}/ws_internal_secret`,
     containersTableName: containersTable.tableName,

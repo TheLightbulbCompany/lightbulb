@@ -263,10 +263,6 @@ class Settings(BaseSettings):
     PHOTON_API_KEY: str = ""  # Photon 2.0 project key, pho_sk_...
     PHOTON_PROJECT_ID: str = ""  # pho_prj_...
     PHOTON_WEBHOOK_SECRET: str = ""  # the Standard-Webhooks whsec_... secret
-    # removed with the Sendblue client in plan 4 Task 2
-    SENDBLUE_API_KEY_ID: str = ""
-    SENDBLUE_API_SECRET_KEY: str = ""
-    SENDBLUE_WEBHOOK_SECRET: str = ""
     MEET_BOT_PAGE_URL: str = ""
     """The bot's Output Media page. Empty = ``{FRONTEND_URL}/meet-bot``."""
     OPENROUTER_MARKUP: str = ""
@@ -515,14 +511,9 @@ class Settings(BaseSettings):
     # secret — must stay stable forever or existing keyrings become unreadable.
     GOG_KEYRING_PASSWORD: str = ""
 
-    # Legacy env names (data names; the values are still configured by infra).
-    # Read by nothing since the Meta webhook stopped firing Paperclip routine triggers.
-    PAPERCLIP_INTERNAL_URL: str = ""
     # HMAC key for service-token JWTs (``service_token.py``), the digest/Needs-you email links and
     # the session-share signature.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""
-    # Shared bearer secret for ``routers/lifecycle_operations.py``.
-    PAPERCLIP_EVENTS_WEBHOOK_SECRET: str = ""
     # The `hub.verify_token` Meta echoes back on the one-time subscribe
     # handshake for the APP-LEVEL webhook callback (routers/meta_webhook.py).
     # It is a shared string of our choosing, set identically here and in the

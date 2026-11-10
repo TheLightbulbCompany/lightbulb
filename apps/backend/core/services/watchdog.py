@@ -24,7 +24,8 @@ from core import tasks_schema as ts
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, tasks_repo, watchdog_repo
-from core.services import jev, runtime_runs, super_agent_flags
+from core.repositories import container_repo
+from core.services import jev, runtime_runs
 from core.temporal.watchdog_types import ActOut, Candidate, Proposal, ScanOut, WatchdogConfig
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,8 @@ _scope: tuple[float, list[str]] = (0.0, [])
 async def _workspaces() -> list[str]:
     global _scope
     if not _scope[0] or time.monotonic() - _scope[0] > SCOPE_TTL_S:
-        _scope = (time.monotonic(), await super_agent_flags.list_on())
+        # ponytail: full scan of containers, cached for SCOPE_TTL_S; add a sparse GSI when workspaces > ~1k.
+        _scope = (time.monotonic(), [row["owner_id"] for row in await container_repo.scan_all()])
     return _scope[1]
 
 

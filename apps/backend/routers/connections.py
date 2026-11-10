@@ -82,7 +82,7 @@ async def _connect_custody(owner_id: str, p: registry.Provider) -> str | None:
     Off in code until V11 rolls: the bridge does not yet fill a vended token into the CLI files,
     so a backend-custody connect would leave X/QuickBooks/Instagram with token-free files nothing
     fills (review of #4691). V11 restores:
-    ``return "backend" if p.custody_migratable and await flags_for(owner_id) else None``."""
+    ``return "backend" if p.custody_migratable else None``."""
     return None
 
 

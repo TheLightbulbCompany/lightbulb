@@ -31,16 +31,13 @@ def api(table, monkeypatch):
 
     with (
         patch("routers.internal_automations._require_hook_token", AsyncMock(return_value={})),
-        patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)) as flags,
         patch("core.repositories.messaging_repo.get_voice_run", side_effect=get_voice_run),
         patch("core.repositories.messaging_repo.get_room", side_effect=get_room),
         patch("core.repositories.messaging_repo.put_admit_trigger", AsyncMock()) as outbox,
     ):
         from main import app
 
-        yield type(
-            "Api", (), {"client": TestClient(app), "rows": rows, "meta": meta, "flags": flags, "outbox": outbox}
-        )()
+        yield type("Api", (), {"client": TestClient(app), "rows": rows, "meta": meta, "outbox": outbox})()
 
 
 def _post(api, body=BODY):

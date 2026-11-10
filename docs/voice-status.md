@@ -52,19 +52,19 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | # | Promise | Built | Prod | Machine | Owner | Note |
 |---|---|---|---|---|---|---|
 | 1.1 | Router and Workers on Temporal are the only agent path on prod | yes | yes | yes | Platform | |
-| 1.2 | Workspaces that had opted out (`super_agent=False`) are moved, not silently broken | yes | ? | no | Platform | No code branches on the field any more: every workspace is treated as on. Only an audit script reads it. Which prod rows still hold `False` is not checked |
-| 1.3 | The feature switch is retired | yes | yes | n/a | Platform | It is a constant (`flags_for` returns True). Left over: the helper file and its callers, which can be deleted |
+| 1.2 | Workspaces that had opted out (`super_agent=False`) are moved, not silently broken | yes | ? | no | Platform | No code branches on the field any more: every workspace is treated as on. The audit script was deleted in the Phase 1 gate PR. Which prod rows still hold `False` is not checked |
+| 1.3 | The feature switch is retired | yes | yes | n/a | Platform | `super_agent_flags.py` is deleted; its two workspace scans read the containers table directly |
 | 1.4 | Roster served from `agent_registry`; old mobile builds (TestFlight 0.4.8) still work against `/teams/agents` | yes | yes | no | Platform | Master plan review focus 2. Never exercised with an old build |
-| 1.5 | Paperclip code removed | part | yes | n/a | Platform | No module remains. Name residue in comments and one unused component (`AgentPaperclipFields.tsx`). **Three Paperclip-named things are live and stay:** the `paperclip-companies` table (the canonical workspace identity row), `PAPERCLIP_SERVICE_TOKEN_KEY` (signs session shares, digests and Needs-you links), and the bridge's run route. A name is not proof something is dead |
+| 1.5 | Paperclip code removed | part | yes | n/a | Platform | No module remains. The lifecycle API (the last user of the Paperclip events secret), the WS authorizer's unused service-token grant and the empty `paperclip-agent-keys` grant and sweeps are gone (Phase 1 gate PR). Name residue in comments and one unused component (`AgentPaperclipFields.tsx`). **Three Paperclip-named things are live and stay:** the `paperclip-companies` table (the canonical workspace identity row), `PAPERCLIP_SERVICE_TOKEN_KEY` (signs session shares, digests and Needs-you links), and the bridge's run route. A name is not proof something is dead |
 | 1.6 | Paperclip stack and Aurora removed | yes | yes | yes | Platform | Guard test `no-paperclip-stack.test.ts` |
 | 1.7 | Marketplace removed | part | part | n/a | Platform | Routers and services gone. Five tables and `marketplace_safety.py` remain |
 | 1.8 | Apps backend removed, with its secrets | yes | yes | n/a | Platform | Routes gone. No Apps-named secret remains under the dev or prod prefix (names read 9 Nov) |
 | 1.9 | Stripe Projects rail removed | part | part | n/a | Platform | Code gone. The `provisioning-workflows` table is still read by `owner_facts` and the wipes; it stays until that coupling is removed |
-| 1.10 | Comms features removed (channels, threads, reactions, pins, mentions) | part | part | n/a | Platform | `EmojiPicker`, `RoomMessageSearch`, `RoomLinkPreviews` remain |
-| 1.11 | Ideas, Feed, Daily, Brief UI removed | part | part | n/a | Platform | `components/creations` (9 files) and `components/activity` (6) remain |
+| 1.10 | Comms features removed (channels, threads, reactions, pins, mentions) | part | part | n/a | Platform | `EmojiPicker`, `RoomMessageSearch`, `RoomLinkPreviews` remain. The Sendblue text rail and the manual MCP-server CRUD are deleted (Phase 1 gate PR) |
+| 1.11 | Ideas, Feed, Daily, Brief UI removed | part | part | n/a | Platform | `components/creations` (9 files) and `components/activity` (6) remain. `RunNotifications`, `TrialRecapCard` and the trial/credit banners are deleted (Phase 1 gate PR) |
 | 1.12 | OpenSearch removed | part | no | no | Platform | Phase A (#5156, the search API and its consumers) merged 10 Nov. Phase B (#5158, the AWS resources) ships in the train right after; no workspace wipe runs between the two |
 | 1.13 | The five marketplace tables retired | part | no | n/a | Platform | Stage 1, the delete policy (#5175), merged 9 Nov. Stage 2 removes the tables; Codex's draft is saved on branch `finish/retire-leftover-table-wiring` and must not deploy before stage 1 is on prod |
-| 1.14 | Old chat UI deleted once the voice UI is live | no | no | n/a | Product | `components/workspace` (54 files), `teams` (73), `control` (37) are unrouted. `messaging` (174) is still used by `/voice/lightbulb` |
+| 1.14 | Old chat UI deleted once the voice UI is live | no | no | n/a | Product | The workspace shell (shell, sidebar, header, reconciler) and its unrouted dependants are deleted (Phase 1 gate PR). Left: `workspace` (22 files), `teams` (43), `control` (19), `messaging` (80), partly live through `RightPane` in `/voice/lightbulb` and `SettingsPlace` in `/voice/settings` |
 | 1.15 | Every existing integration kept as a live source; the CLI and A2A routes kept | yes | yes | no | Platform | Founder ruling. Never walked after the deletions |
 | 1.16 | Tasks export replaced before deletion | yes | ? | no | Platform | `GET /tasks/export` exists with a test |
 | 1.17 | The Lightbulb CLI's future is settled with GooseTown | no | no | n/a | Founder | Master plan open item |
@@ -229,7 +229,7 @@ Required by the master plan before a phase reaches prod. Founder ruling: "Don't 
 
 | Phase | Code review against `docs/standards/aws-agentic-lens.md` | Security review | Over-engineering audit | Founder walk |
 |---|---|---|---|---|
-| 1 | no | no | no | no |
+| 1 | yes (findings fixed in the Phase 1 gate PR) | yes (findings fixed in the Phase 1 gate PR) | no | no |
 | 2 | no | no | n/a | no |
 | 3 | no | no | n/a | no |
 | 4 | no (design critique instead) | no | n/a | no |

@@ -542,10 +542,3 @@ async def reset_agent_session(agent: WorkspaceAgent, body: ResetAgentSessionBody
 async def clear_agent_error(agent: WorkspaceAgent):
     """No agent error state since Paperclip runs went away; answers the agent row for old clients."""
     return _web(agent)
-
-
-@router.post("/agents/{agent_id}/heartbeat", status_code=410)
-@router.post("/agents/{agent_id}/wakeup", status_code=410)
-async def agent_heartbeat_gone(agent_id: str):
-    """Paperclip heartbeats and wakes are gone (super-agent roster, Phase 1 task 6)."""
-    raise HTTPException(status_code=410, detail="Agent heartbeats and wakes were removed")

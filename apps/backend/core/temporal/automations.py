@@ -121,10 +121,11 @@ async def reconcile_schedules() -> dict:
     if not deletes:
         return out
     # Retire old Ideas/Feed schedules through the existing daily reconcile.
-    from core.services import proactive, super_agent_flags
+    from core.repositories import container_repo
+    from core.services import proactive
 
     out["proactive"] = 0
-    for ws in await super_agent_flags.list_on():
+    for ws in [row["owner_id"] for row in await container_repo.scan_all()]:
         _beat(f"proactive {ws}")
         try:
             await proactive.ensure(ws)

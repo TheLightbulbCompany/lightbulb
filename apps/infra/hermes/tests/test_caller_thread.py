@@ -82,3 +82,19 @@ def test_the_caller_route_refuses_a_run_that_is_not_a_callers(quiet_turn, thread
     status, reply = server.handle_plugin(CALLER_CREATE, "POST", AUTH, {"identity": WORKER, "request": REQUEST})
     assert (status, reply) == (400, {"error": "invalid_run_request"})
     assert threads == []
+
+
+def test_an_unverified_caller_refusal_is_explained_not_a_snag(monkeypatch):
+    import io
+    import urllib.error
+
+    ctx = {"taskId": "t1", "runId": "r1", "attempt": 1, "runSecret": "s", "mode": "worker",
+           "apiUrl": "https://api", "ownerId": "org_test", "hookToken": "h"}
+    monkeypatch.setattr(lightbulb.turn_context, "read", lambda _s: ctx)
+
+    def refused(url, tok, body):
+        raise urllib.error.HTTPError(url, 403, "no", {}, io.BytesIO(b'{"detail": {"code": "caller_not_verified"}}'))
+
+    monkeypatch.setattr(lightbulb, "_post", refused)
+    out = lightbulb._front_desk({"action": "cancel", "start": "2026-11-11T10:00"})
+    assert "could not verify" in out and "message" in out and "not a fault" in out

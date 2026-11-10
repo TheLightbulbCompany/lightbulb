@@ -881,6 +881,14 @@ FRONT_DESK_SCHEMA = {
 }
 
 
+NOT_VERIFIED = (
+    "Not done, and this is not a fault: the phone network could not verify this caller's number, so bookings can "
+    "only be changed or listed for a verified number. Tell the caller that in plain words, do not call it a snag "
+    "or a problem, and do not give out the business's phone number. Offer to take a message for the team "
+    "(front_desk message)."
+)
+
+
 def _front_desk(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if not _task_run(ctx):
@@ -893,6 +901,8 @@ def _front_desk(args: dict, *, session_id: str = "", **_kw) -> str:
         return json.dumps(_post(url, ctx["hookToken"], body))
     except urllib.error.HTTPError as exc:
         detail = _detail(exc)
+        if detail == "caller_not_verified":
+            return NOT_VERIFIED
         return f"Not done: HTTP {exc.code}" + (f" ({detail})." if detail else ".")
     except Exception as exc:  # noqa: BLE001
         return f"Not done: {type(exc).__name__}."

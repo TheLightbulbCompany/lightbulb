@@ -298,7 +298,7 @@ function TrialStatusCard({
       <div className="settings-card-desc">
         {expired
           ? "Your team's record is all here, and people can still message. Agents start again when an admin picks the plan."
-          : `Your agents run on Lightbulb-managed DeepSeek within a daily allowance that resets at midnight UTC.${endLabel ? ` Trial ends ${endLabel}.` : ""}`}
+          : `Your agents run on Lightbulb within a daily allowance that resets at midnight UTC.${endLabel ? ` Trial ends ${endLabel}.` : ""}`}
       </div>
     </div>
   );

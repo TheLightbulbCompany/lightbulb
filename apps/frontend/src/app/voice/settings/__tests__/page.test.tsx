@@ -7,6 +7,7 @@ vi.mock("@/components/voice/data", () => hooks);
 vi.mock("swr", () => ({ default: hooks.usePlan }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({}) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => true }));
+vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: { is_subscribed: true } }) }));
 vi.mock("@/components/settings/SettingsPlace", () => ({
   PANELS: { billing: () => <p>workspace billing</p>, members: () => <p>members</p>, connections: () => <p>connections</p>, approvals: () => <p>approvals</p> },
 }));

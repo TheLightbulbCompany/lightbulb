@@ -109,7 +109,9 @@ export function useAgentConfig() {
     const { config, agents = [], frontAgentId, frontAgentIssue } = (await api.get("/voice/agent")) as {
       config: Partial<AgentConfig> | null; agents?: { id: string; name: string }[]; frontAgentId?: string | null; frontAgentIssue?: string | null;
     };
-    return { config: { ...DEFAULT_CONFIG, ...config } as AgentConfig, isNew: config == null, agents, frontAgentId, frontAgentIssue };
+    // The picker is gone, so a saved selection that no longer exists is dropped here or no edit could save.
+    const dead = !!config?.frontAgentId && !agents.some((a) => a.id === config.frontAgentId);
+    return { config: { ...DEFAULT_CONFIG, ...config, ...(dead && { frontAgentId: null }) } as AgentConfig, isNew: config == null, agents, frontAgentId, frontAgentIssue };
   });
   const { mutate } = swr;
   const save = useCallback(async (next: AgentConfig) => {

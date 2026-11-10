@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 const talk = vi.hoisted(() => ({ on: false }));
 vi.mock("../TalkSessionProvider", () => ({ useTalkSession: () => talk }));
@@ -37,4 +37,23 @@ it("surfaces audio errors and offers a user-initiated reload", () => {
   fireEvent.click(screen.getByRole("button", { name: "Reload voice sample" }));
   expect(load).toHaveBeenCalledOnce();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("a sample that is only suspended (preload none) stops saying Loading", () => {
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  render(<PhoneVoiceSettings c={{ voice: "marin", spanish: false }} set={vi.fn()} />);
+  fireEvent.loadStart(screen.getByLabelText("Voice sample player"));
+  expect(screen.getByRole("status")).toHaveTextContent("Loading voice sample");
+  fireEvent.suspend(screen.getByLabelText("Voice sample player"));
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("a load that never finishes falls back to the reload button", () => {
+  vi.useFakeTimers();
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  render(<PhoneVoiceSettings c={{ voice: "marin", spanish: false }} set={vi.fn()} />);
+  fireEvent.loadStart(screen.getByLabelText("Voice sample player"));
+  act(() => { vi.advanceTimersByTime(10_000); });
+  expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t load this voice sample.");
+  vi.useRealTimers();
 });

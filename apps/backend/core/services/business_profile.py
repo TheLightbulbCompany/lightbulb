@@ -153,6 +153,8 @@ async def _build(ws: str, caller: str | None) -> str:
     if isinstance(facts, BaseException):
         raise facts
     sections = [facts]
+    if not cfg["handoff"]["number"]:
+        sections.append("No person is available to transfer a call to; take a message instead.")
     for label, r in zip(("Open start times", "This caller's upcoming bookings"), rest):
         if isinstance(r, BaseException):
             logger.warning("business profile part unavailable ws=%s", ws, exc_info=r)
@@ -202,11 +204,14 @@ async def business_profile(ws: str, caller: str | None = None) -> str:
 
 
 async def caller_of(trigger: dict | None) -> str | None:
-    """The phone caller's number behind a `phone_contact` trigger (the call record start_call wrote), else None."""
+    """The phone caller's number behind a `phone_contact` trigger (the call record start_call wrote) when the carrier
+    attested it, else None."""
     ref = (trigger or {}).get("ref") or {}
     if ref.get("origin") != "phone_contact" or not ref.get("callId"):
         return None
     from core.repositories import messaging_repo
 
     meta = await messaging_repo.get_room(ref["callId"]) or {}
-    return ((meta.get("call") or {}).get("caller") or None) if meta.get("kind") == "call" else None
+    call = meta.get("call") or {}
+    # Only an A-attested number lists "This caller's upcoming bookings": a spoofed one would read the victim's.
+    return call.get("caller") or None if meta.get("kind") == "call" and call.get("callerVerified") is True else None

@@ -495,6 +495,43 @@ async def _publish_huddle_presence(room_id: str) -> None:
         logger.info("huddle presence publish failed room=%s", room_id, exc_info=True)
 
 
+PHONE_STALE_S = 25 * 60  # the worker's 20 min cap plus grace: a call still live past this lost its `end`
+
+
+async def sweep_phone_calls(now: int) -> int:
+    """Finish phone calls whose worker never got `end` through, by running the same end path with the capped length."""
+    from boto3.dynamodb.conditions import Key
+
+    from routers import voice_phone
+
+    table = messaging_repo._table()
+    rows, kw = [], {"KeyConditionExpression": Key("pk").eq(voice_phone.OPEN_CALLS_PK)}
+    while True:
+        page = await run_in_thread(table.query, **kw)
+        rows += page["Items"]
+        if not page.get("LastEvaluatedKey"):
+            break
+        kw["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    done = 0
+    for row in rows:
+        started = int(row.get("startedAtEpoch", now))
+        if now - started < PHONE_STALE_S:
+            continue
+        try:
+            # duration unknown (the worker died): bill 0 rather than guess
+            note = "Closed by cleanup: the call's worker never reported its end"
+            await voice_phone.end_call(row["sk"], voice_phone.EndIn(durationSec=0, summary=note))
+            done += 1
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                logger.warning("stale phone call end failed call=%s", row["sk"], exc_info=True)
+            else:  # no such call any more: drop the index row
+                await run_in_thread(table.delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
+        except Exception:  # noqa: BLE001 -- one bad row never blocks the rest; the next sweep retries
+            logger.warning("stale phone call end failed call=%s", row["sk"], exc_info=True)
+    return done
+
+
 async def sweep_calls_once(now: int | None = None) -> int:
     now = int(time.time()) if now is None else now
     open_rows = await container_repo.get_by_status(OPEN)
@@ -518,6 +555,7 @@ async def voice_call_sweeper(stop: asyncio.Event) -> None:
         try:
             if await admitted("voice_calls", interval_s=_SWEEP_SECONDS):
                 await sweep_calls_once()
+                await sweep_phone_calls(int(time.time()))
         except Exception:  # noqa: BLE001
             logger.warning("voice call sweep failed", exc_info=True)
         try:

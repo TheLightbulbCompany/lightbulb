@@ -278,3 +278,10 @@ async def test_bounded_router_excerpt_is_explicitly_partial_and_full_reader_stay
     assert len(profile) <= 2100
     assert "Partial profile" in profile and "business_facts" in profile
     assert "Policy 19" in await bp.facts_text("org_x")
+
+
+async def test_no_hand_off_number_tells_the_model_nobody_is_there_to_transfer_to(sources):
+    assert "No person is available to transfer" in await bp.business_profile("org_x")
+    bp._cache.clear()
+    sources.return_value = {**CFG, "handoff": {"number": "+14155550147"}}
+    assert "No person is available" not in await bp.business_profile("org_x")

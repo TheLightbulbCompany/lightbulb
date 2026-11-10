@@ -29,3 +29,9 @@ def test_every_voice_replies_in_english():
     )
     for text in texts:
         assert mouth.ENGLISH in text
+
+
+def test_no_hand_off_number_means_no_person_tool_and_a_plain_fact():
+    none, some = phone.prompt(INFO), phone.prompt({**INFO, "transfer": True})
+    assert "hand the call to a person" not in none and "No person is available" in none
+    assert "hand the call to a person" in some and "No person is available" not in some

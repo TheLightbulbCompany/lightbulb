@@ -159,6 +159,18 @@ async def test_phone_opening_follows_the_businesss_greeting(monkeypatch):
     assert first_id is None
 
 
+async def test_start_sends_the_carriers_stir_shaken_result(monkeypatch):
+    """The inbound trunk maps X-Twilio-VerStat to `sip.verstat`; the backend decides what an unattested number gets."""
+    call = Call(monkeypatch)
+    call.caller.attributes["sip.verstat"] = "TN-Validation-Passed-B"
+    await call.answer()
+    assert call.backend.calls[0] == ("/internal/voice/calls", {
+        "calledNumber": "+14842079294", "callerNumber": "+16105550100", "livekitRoom": "phone-dev-_+16105550100_ab",
+        "verstat": "TN-Validation-Passed-B"})  # fmt: skip
+    missing = await Call(monkeypatch).answer()  # no header (a LiveKit-number call, a carrier without STIR/SHAKEN)
+    assert missing.backend.calls[0][1]["verstat"] == ""
+
+
 async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlation(
     monkeypatch,
 ):
@@ -504,3 +516,32 @@ async def test_a_number_with_no_pin_ignores_the_keypad(monkeypatch):
     await asyncio.sleep(0.01)
     assert "owner-pin" not in call.paths()
     await call.on_shutdown[0]()
+
+
+async def test_end_is_retried_until_the_backend_takes_it(monkeypatch):
+    monkeypatch.setattr(phone, "END_BACKOFF_S", 0)
+    call = await Call(monkeypatch, replies={"end": [{"error": "http_503"}, {"error": "http_503"}, {"outcome": "answered"}]}).answer()
+    call.ctx.room.emit("participant_disconnected", call.caller)
+    await asyncio.sleep(0.05)
+    assert call.paths().count("end") == 3
+
+
+async def test_end_gives_up_after_three_tries(monkeypatch):
+    monkeypatch.setattr(phone, "END_BACKOFF_S", 0)
+    call = await Call(monkeypatch, replies={"end": [{"error": "http_503"}] * 5}).answer()
+    call.ctx.room.emit("participant_disconnected", call.caller)
+    await asyncio.sleep(0.05)
+    assert call.paths().count("end") == 3 and call.shutdowns == ["caller hung up"]
+
+
+async def test_a_refused_call_is_told_to_the_model_then_hangs_up(monkeypatch):
+    monkeypatch.setattr(phone, "SORRY_S", 0)
+    call = Call(monkeypatch)
+
+    async def refused(self, path, body=None):
+        return {"error": "http_500"}
+
+    monkeypatch.setattr(FakeBackend, "post", refused)
+    await call.answer()
+    assert call.live.sent == [(None, phone.CANT_TAKE)]  # the fact, never a script
+    assert call.live.closed == 1 and call.deleted == 1 and call.shutdowns == ["call refused"]

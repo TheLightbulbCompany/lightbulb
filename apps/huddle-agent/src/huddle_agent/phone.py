@@ -50,7 +50,7 @@ server = AgentServer(
 
 #: What the backend does for a caller (GPT-Live's `Backend tools`): the Router's Business profile and transfer_call,
 #: and the caller-scoped Front desk thread's actions (front_desk: availability, book, my_bookings, move, cancel,
-#: message), nothing more.
+#: waitlist, message), nothing more.
 TOOLS = [
     "Business profile: the business's actual description, what it does, services, prices, durations, hours and policies.",
     "Availability: find open times for a service on a day.",
@@ -131,12 +131,17 @@ def prompt(info: dict) -> str:
         business=info["businessName"],
         caller=f"The caller is {info['callerName']}, a returning client.\n"
         if info.get("callerName")
-        else "",
+        else ""
+        if info.get("callerVerified")
+        else "This caller's number is not verified: you cannot look up, move or cancel existing bookings; offer "
+        "to take a message for the team instead.\n",
         paused="This line is not taking bookings or questions right now: it only takes messages.\n"
         if paused
-        else "",
+        else "" if info.get("transfer") else "No person is available to transfer a call to; take a message instead.\n",
         owner=OWNER_PIN if info.get("ownerPin") else "",
-        delegation=live.delegation_policy(MESSAGE_ONLY_TOOLS if paused else TOOLS),
+        delegation=live.delegation_policy(
+            MESSAGE_ONLY_TOOLS if paused else TOOLS if info.get("transfer") else TOOLS[:-1]  # no number: no person tool
+        ),
     )
 
 
@@ -203,6 +208,54 @@ class Backend:
         }
 
 
+END_TRIES, END_BACKOFF_S = 3, 1.0
+CANT_TAKE = "We can't handle this call right now. Tell the caller briefly, in your own words, and suggest calling back later."
+SORRY_S = 7.0  # the model's time to say it before the hang-up
+
+
+async def post_end(backend, body: dict) -> dict:
+    """`end` writes the record, the minutes and the owner's card, and the backend repeats it safely: retry a refusal
+    or a dropped request a few times before giving up (a call left live is closed by the backend's sweep)."""
+    out: dict = {}
+    for n in range(END_TRIES):
+        try:
+            out = await backend.post("end", body)
+            if not out.get("error"):
+                return out
+        except Exception:  # noqa: BLE001 -- a network error is a failed try like any other
+            logger.warning("phone %s: end failed", backend.call_id, exc_info=True)
+            out = {"error": "unreachable"}
+        if n < END_TRIES - 1:
+            await asyncio.sleep(END_BACKOFF_S * (n + 1))
+    logger.error("phone %s: end not delivered (%s)", backend.call_id, out.get("error"))
+    return out
+
+
+async def say_sorry_and_hang_up(ctx: JobContext, caller) -> None:
+    """The backend refused to start the call: the model tells the caller (we give it the fact, not the words), then we hang up, instead of dead air."""
+
+    async def no_post(*_a):
+        return None
+
+    async def no_events():
+        return
+        yield
+
+    try:
+        voice = await live.start(
+            ctx, prompt="You answer the phone for a business. The call cannot be handled right now; the caller hears you say so.", surface="phone",
+            post=no_post, events=no_events,
+            room_options=room_io.RoomOptions(participant_identity=caller.identity, close_on_disconnect=True),
+        )  # fmt: skip
+        voice.send_result(None, CANT_TAKE)
+        await asyncio.sleep(SORRY_S)
+        await voice.close()
+    except Exception:  # noqa: BLE001 -- the hang-up below is the point
+        logger.warning("phone: could not say the refusal line", exc_info=True)
+    await ctx.delete_room()
+    ctx.shutdown("call refused")
+
+
 class Ending:
     """The call ends once, at the first of: the caller hanging up (their SIP participant left), our own hang-up,
     or the job's shutdown. LiveKit only shuts the job down ~22 s after the caller leaves (8 Nov prod logs), which
@@ -236,10 +289,18 @@ async def entrypoint(ctx: JobContext) -> None:
     caller_number = e164(caller.attributes.get("sip.phoneNumber") or meta.get("callerNumber") or "")
     backend = Backend()
     info = await backend.post(
-        "/internal/voice/calls", {"calledNumber": called, "callerNumber": caller_number, "livekitRoom": ctx.room.name}
+        "/internal/voice/calls",
+        {
+            "calledNumber": called,
+            "callerNumber": caller_number,
+            "livekitRoom": ctx.room.name,
+            # Twilio's X-Twilio-VerStat, mapped by the inbound trunk (scripts/provision_phone_telephony.py)
+            "verstat": caller.attributes.get("sip.verstat") or "",
+        },
     )
     if info.get("error"):
         logger.error("phone: call refused (%s)", info["error"])
+        await say_sorry_and_hang_up(ctx, caller)
         return
     backend.call_id, backend.call_token = info["callId"], info.get("callToken") or ""
     logger.debug("phone: call %s started", backend.call_id)
@@ -257,7 +318,7 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception:  # noqa: BLE001 -- a SIP refusal: answer rather than leave the caller in silence
             logger.warning("phone %s: run-out forward failed", backend.call_id, exc_info=True)
         else:  # only now does the record say forwarded; a failed forward is an ordinary answered call
-            await backend.post("end", {"durationSec": 0, "forwarded": True})
+            await post_end(backend, {"durationSec": 0, "forwarded": True})
             ctx.shutdown("minutes used up: forwarded")
             return
 
@@ -373,8 +434,8 @@ async def entrypoint(ctx: JobContext) -> None:
             await backend.post("unknown", {"question": "The assistant's voice failed during this call: call them back."})
         finally:
             try:
-                await backend.post("end", {"durationSec": int(time.monotonic() - answered),
-                                           "summary": "Voice failed; callback needed"})
+                await post_end(backend, {"durationSec": int(time.monotonic() - answered),
+                                         "summary": "Voice failed; callback needed"})
             finally:
                 await ctx.delete_room()
                 ctx.shutdown("voice failed")
@@ -464,8 +525,8 @@ async def entrypoint(ctx: JobContext) -> None:
             await live_session.close()  # GPT-Live bills every open second; a post in flight still reaches the room
         except Exception:  # noqa: BLE001 -- the record and the minutes are posted whatever the close did
             logger.warning("phone %s: voice session close failed", backend.call_id, exc_info=True)
-        out = await backend.post(
-            "end",
+        out = await post_end(
+            backend,
             {
                 "durationSec": duration,
                 "summary": "; ".join(did),

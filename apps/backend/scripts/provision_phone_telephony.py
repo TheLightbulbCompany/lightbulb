@@ -22,6 +22,11 @@ OUTBOUND = "ST_VNjjGfGcKdUm"
 DISPATCH = "SDR_D3AtyzHbPKkF"
 MANAGED = "lightbulb-phone-bootstrap-v1"
 CONFIG_SECRET = "lightbulb/prod/voice_telephony"
+# Twilio's STIR/SHAKEN result on inbound INVITEs (twilio.com/docs/voice/trusted-calling-with-shakenstir), passed to
+# the SIP participant as an attribute (LiveKit SIPInboundTrunkInfo.headers_to_attributes). The phone
+# worker sends it to start_call; only "...-Passed-A" makes the caller's number count (security review 9 Nov).
+VERSTAT_HEADER = "X-Twilio-VerStat"
+VERSTAT_ATTRIBUTE = "sip.verstat"
 
 
 class ProviderMismatch(RuntimeError):
@@ -101,6 +106,11 @@ async def reconcile(twilio, lk, *, apply: bool, config: dict | None = None) -> d
     )
     if not inbound or inbound.name != "twilio-inbound" or not inbound.allowed_addresses:
         raise ProviderMismatch("existing_inbound_trunk_mismatch")
+    map_verstat = inbound.headers_to_attributes.get(VERSTAT_HEADER) != VERSTAT_ATTRIBUTE
+    if map_verstat and inbound.auth_username:
+        # SIPInboundTrunkUpdate has no headers_to_attributes, so the mapping needs a full replace; a listed trunk's
+        # password comes back masked and would be written back as the mask.
+        raise ProviderMismatch("inbound_trunk_auth_would_be_replaced")
     if not outbound or outbound.name != "twilio-outbound" or outbound.address != DOMAIN:
         raise ProviderMismatch("existing_outbound_trunk_mismatch")
     if not outbound.auth_username:
@@ -145,6 +155,7 @@ async def reconcile(twilio, lk, *, apply: bool, config: dict | None = None) -> d
         "existingOutboundId": OUTBOUND,
         "existingDispatchId": DISPATCH,
         "createTwilioTrunk": not matches,
+        "mapVerstat": map_verstat,
         "numberPurchases": 0,
         "calls": 0,
     }
@@ -167,9 +178,18 @@ async def reconcile(twilio, lk, *, apply: bool, config: dict | None = None) -> d
             f"{twilio.account}/SIP/CredentialLists/{credential_list}/Credentials/{users[0]['sid']}.json",
             Password=config["sip_auth_password"],
         )
+        if map_verstat:  # the inbound trunk exactly as listed, plus the one header mapping
+            replaced = api.SIPInboundTrunkInfo()
+            replaced.CopyFrom(inbound)
+            replaced.headers_to_attributes[VERSTAT_HEADER] = VERSTAT_ATTRIBUTE
+            await lk.sip.update_inbound_trunk(INBOUND, replaced)
         await lk.sip.update_outbound_trunk_fields(
             OUTBOUND, auth_username=config["sip_auth_username"], auth_password=config["sip_auth_password"]
         )
+        # Hand-off to a person is a SIP REFER to a PSTN number; Twilio's default (disable-all) rejects it and
+        # sip-only refuses PSTN targets, so enable-all is the narrowest mode that works.
+        if trunk.get("transfer_mode") != "enable-all":
+            await twilio.request("POST", trunk_url, TransferMode="enable-all")
         mapped = (await twilio.request("GET", f"{trunk_url}/CredentialLists")).get("credential_lists", [])
         if not any(x.get("sid") == credential_list for x in mapped):
             await twilio.request("POST", f"{trunk_url}/CredentialLists", CredentialListSid=credential_list)

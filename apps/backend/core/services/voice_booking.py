@@ -466,7 +466,9 @@ async def _resume(ws: str, cfg: dict, call_id: str, row: dict, action: str, new_
 
 async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> dict:
     vp = _vp()
-    caller, rows = call.get("caller"), await vp._bookings(ws, start)  # every person's booking at that start
+    # Only an attested number resumes a held booking made from it on another call (a spoofed one would claim it).
+    caller = call.get("caller") if vp._verified(call) else None
+    rows = await vp._bookings(ws, start)  # every person's booking at that start
     same = next(
         (b for b in rows if (b.get("callId"), b.get("service"), b.get("name")) == (call_id, service, name)), None
     )

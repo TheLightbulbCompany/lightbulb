@@ -222,6 +222,24 @@ async def call_done(room_id: str, auth: AuthContext = Depends(get_current_user))
     return {"ok": True}
 
 
+@router.get("/voice/waitlist")
+async def waitlist(auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Callers waiting for a day (any member reads), soonest day first. Rows expire a day after their date."""
+    rows = await messaging_repo._query(messaging_repo.owner_pk(resolve_owner_id(auth)), begins_with="VOICEWAIT#")
+    keep = ("id", "date", "name", "phone", "service", "note", "createdAt")
+    return {"entries": [{k: r.get(k, "") for k in keep} for r in rows]}
+
+
+@router.delete("/voice/waitlist/{date}/{entry_id}")
+async def remove_waitlist(date: str, entry_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    require_org_admin(auth)
+    key = {"pk": messaging_repo.owner_pk(resolve_owner_id(auth)), "sk": f"VOICEWAIT#{date}#{entry_id}"}
+    if not await messaging_repo._get(**key):
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    await run_in_thread(messaging_repo._table().delete_item, Key=key)
+    return {"ok": True}
+
+
 @router.delete("/voice/callers/{e164}/memory")
 async def forget_caller(e164: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Forget: clear what the assistant remembers of one caller (facts and name)."""

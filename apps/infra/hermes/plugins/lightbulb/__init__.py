@@ -855,13 +855,18 @@ FRONT_DESK_SCHEMA = {
                    "a date (date, optional service). book: book a start time (start, service, name). my_bookings: "
                    "this caller's own bookings. move: move one of them (start, new_start). cancel: cancel one "
                    "(start). If the caller has two bookings at that start, the answer is ambiguous_booking: ask "
-                   "which (my_bookings lists each with its bookingId), then repeat with that booking_id. message: take a message for the owner (text, optional name, callback_number). Times "
-                   "are the business's local time, YYYY-MM-DDTHH:MM.",
+                   "which (my_bookings lists each with its bookingId), then repeat with that booking_id. "
+                   "waitlist: when the time they want is full, put the caller on the waitlist for a day "
+                   "(date, optional service, name, and a note with the time they would take, in their words); the owner sees it, "
+                   "nobody is texted yet, so never promise a call or text back. message: take a message for the "
+                   "owner (text, optional name, callback_number). Times are the business's local time, "
+                   "YYYY-MM-DDTHH:MM.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["availability", "book", "my_bookings", "move", "cancel", "message"]},
-            "date": {"type": "string", "description": "YYYY-MM-DD (availability)"},
+            "action": {"type": "string", "enum": ["availability", "book", "my_bookings", "move", "cancel", "message", "waitlist"]},
+            "date": {"type": "string", "description": "YYYY-MM-DD (availability, waitlist)"},
+            "note": {"type": "string", "description": "the time they would take, e.g. 'after 1pm' (waitlist)"},
             "service": {"type": "string"},
             "start": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
             "new_start": {"type": "string", "description": "YYYY-MM-DDTHH:MM (move)"},

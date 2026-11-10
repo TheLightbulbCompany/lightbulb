@@ -157,9 +157,9 @@ describe("Settings place (super-agent)", () => {
     unmount();
   });
 
-  it("/settings redirects into the shell with its section and every other param", () => {
+  it("/settings redirects to /voice/settings with its section and every other param", () => {
     nav.panel = "connections"; nav.extra = "connected=github";
     render(<SettingsPage />);
-    expect(nav.replace).toHaveBeenCalledWith("/chat?connected=github&panel=settings&section=connections");
+    expect(nav.replace).toHaveBeenCalledWith("/voice/settings?connected=github&panel=connections");
   });
 });

@@ -25,6 +25,7 @@ import functools
 import hashlib
 import hmac
 import re
+import time
 import logging
 import secrets
 import uuid
@@ -127,7 +128,7 @@ DEFAULTS: dict = {
     "live": False,
     "paused": False,
     "instructions": "",
-    "allow": {"book": True, "move": True, "greetByName": True, "answer": True},
+    "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
     "knowledge": [],
     "hours": {d: {"open": "09:00", "close": "18:00", "closed": d == "Sun"} for d in _DAYS},
     "holidays": [],  # closures: [{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}], local dates; an old free-text value means none
@@ -304,6 +305,20 @@ class StartIn(BaseModel):
     calledNumber: _Str
     callerNumber: str = Field(default="", max_length=40)
     livekitRoom: _Str
+    #: The carrier's STIR/SHAKEN result (Twilio's X-Twilio-VerStat, the SIP participant's `sip.verstat` attribute).
+    verstat: str = Field(default="", max_length=80)
+
+
+def _verified(call: dict) -> bool:
+    """The carrier attested at level A that the caller owns their number (founder 9 Nov, security review). Only then
+    does the number grant anything: name, caller memory, existing bookings, move and cancel. Anyone can still book
+    and leave a message. A record written before this field reads as unverified."""
+    return bool(call.get("caller")) and call.get("callerVerified") is True
+
+
+def _require_verified(call: dict) -> None:
+    if not _verified(call):
+        raise _err(403, "caller_not_verified")  # the voice offers a message for the team instead
 
 
 def _facts(cfg: dict) -> str:
@@ -347,7 +362,11 @@ async def start_call(body: StartIn) -> dict:
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
     caller = caller_id(body.callerNumber)
-    seen = await _seen(owner_id, caller)
+    verified = body.verstat.strip() in (
+        "TN-Validation-Passed-A",
+        "TN-Validation-Passed-A-Passthrough",
+    )  # B, C, none, failed: the number may be spoofed
+    seen = await _seen(owner_id, caller) if verified else None  # no name or memory by a spoofable number
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     existing = await messaging_repo.get_room(call_id)  # a replayed start: its token and its caps, counted once
     token = (existing or {}).get("callToken") or secrets.token_urlsafe(32)
@@ -403,6 +422,7 @@ async def start_call(body: StartIn) -> dict:
         "ownerMode": False,
         "resolvedAt": None,
         "calledNumber": body.calledNumber,
+        "callerVerified": verified,  # _verified(): what the caller's number may unlock on every later route
         "status": "live",
         "bookings": [],
         "messages": [],
@@ -442,6 +462,10 @@ async def start_call(body: StartIn) -> dict:
     except messaging_repo.MessagingRepoError:
         if (room := await messaging_repo.get_room(call_id)) is None:  # a replay keeps the room it made
             raise
+    await run_in_thread(  # the stale-call sweep's index: removed by end_call (voice_calls.sweep_phone_calls)
+        messaging_repo._table().put_item,
+        Item={"pk": OPEN_CALLS_PK, "sk": call_id, "ownerId": owner_id, "startedAtEpoch": int(time.time())},
+    )
     # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes,
     # so the answer is always the persisted META's, never this request's candidate.
     token = str(room.get("callToken") or "")
@@ -464,6 +488,7 @@ async def start_call(body: StartIn) -> dict:
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
         "callerMemory": call["callerMemory"],
+        "callerVerified": verified,  # the worker's prompt: unverified means no existing bookings, offer a message
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
         "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
@@ -612,6 +637,9 @@ def transcript_lines(transcript: list[dict]) -> list[dict]:
     return lines
 
 
+OPEN_CALLS_PK = "VOICEOPENCALLS"
+
+
 @router.post("/internal/voice/calls/{call_id}/end")
 async def end_call(call_id: str, body: EndIn) -> dict:
     lines = transcript_lines(body.transcript)
@@ -667,11 +695,12 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     # return an error so the worker retries; terminal retries keep the first
     # stored duration/start time rather than trusting a new request body.
     await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], int(out["durationSec"]), "phone")
-    seen = await _seen(meta["ownerId"], out["caller"]) if out.get("caller") else None
-    if out.get("caller") and (seen or {}).get("lastCallId") != call_id:  # a retried end counts the visit once
+    # An unattested call never writes a name, facts or a visit onto that number's row.
+    seen = await _seen(meta["ownerId"], out["caller"]) if _verified(out) else None
+    if _verified(out) and (seen or {}).get("lastCallId") != call_id:  # a retried end counts the visit once
         seen = seen or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
-                "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
+                "visits": int(seen.get("visits", 0)) + (seen.get("lastCallId") != call_id)}  # a retried end counts once  # fmt: skip
         if seen.get("forgottenAt"):
             item["forgottenAt"] = seen["forgottenAt"]
         if seen.get("forgottenAt") and datetime.fromisoformat(seen["forgottenAt"]) >= datetime.fromisoformat(
@@ -695,6 +724,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     for kind, question in asks if meta.get("ownerUserId") else ():
         ask = call_ask(call_id, out, kind, question)
         await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
+    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": OPEN_CALLS_PK, "sk": call_id})
     return out
 
 
@@ -803,6 +833,8 @@ async def remember(call_id: str, body: RememberIn) -> dict:
         raise _err(403, "not_allowed")
     if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
         raise _err(400, "looks_like_a_card")
+    if body.kind == "caller":
+        _require_verified(call)
     if body.kind == "business":
         await messaging_repo.modify_voice_agent(
             meta["ownerId"], lambda cfg: {**cfg, "toAdd": _to_add(cfg, body.fact)}, "voice"
@@ -1216,17 +1248,13 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    if (caller := call.get("caller")) and await _upcoming_count(
-        meta["ownerId"], caller, call_id
-    ) >= MAX_UPCOMING_PER_CALLER:
-        raise _err(409, "too_many_bookings")
     counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
     # One unit per reservation, keyed by its booking id. A retry that returns or reconciles a reservation already
     # counted spends nothing (so the cap never locks a pending booking out of its reconciliation); anything else
     # holds a placeholder unit while it books (the cap stays atomic), which becomes the new booking's id.
     ws, slot_sk = meta["ownerId"], f"VOICEBOOK#{body.start}"
     held = await messaging_repo._get(messaging_repo.owner_pk(ws), slot_sk) or {}
-    caller = call.get("caller")
+    caller = call.get("caller") if _verified(call) else None  # as voice_booking.book: only A claims a number's hold
     ours = held.get("callId") == call_id or bool(caller and held.get("phone") == caller)
     counted = bool(ours and held.get("bookingId")) and await messaging_repo.has_voice_unit(
         ws, counter, held["bookingId"]
@@ -1272,6 +1300,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "move")
+    _require_verified(call)
     # Every person's booking at that start (VOICEBOOK#<start>[#<id>]), only those made from this caller's number.
     # One caller can hold two at one start (two people): then `bookingId` says which, or the model is asked to.
     rows = await _bookings(meta["ownerId"], body.start) if call.get("caller") else []
@@ -1312,6 +1341,7 @@ def _booking_id(row: dict) -> str:
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
     _allowed(await agent_config(meta["ownerId"]), call, "move")
+    _require_verified(call)
     caller = call.get("caller")
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
 
@@ -1329,6 +1359,55 @@ async def my_bookings(call_id: str) -> dict:
         return out
 
     return {"bookings": [public_booking(b) for b in rows]}
+
+
+# --- waitlist (join half; texting a freed slot needs SMS registration and is not built) -------------------
+
+
+class WaitlistIn(BaseModel):
+    date: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+    service: str = Field(default="", max_length=200)
+    name: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=300)  # the time they would take ("after 1pm"), in the caller's words
+
+
+@router.post("/internal/voice/calls/{call_id}/waitlist")
+async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
+    """Put this call's caller on the waitlist for a day. Keyed to the call's caller number, never to the model.
+    One entry per call per day (the key), so a retry rewrites it.
+    ponytail: no per-caller daily cap; add one if a caller is seen filling the list."""
+    meta, call = await _call(call_id)
+    owner_id = meta["ownerId"]
+    cfg = await agent_config(owner_id)
+    _allowed(cfg, call, "waitlist")
+    phone = _e164(call.get("caller") or "")
+    if not phone:  # a withheld number cannot be called back, so it cannot wait
+        raise _err(400, "caller_number_required")
+    try:
+        day = datetime.strptime(body.date, "%Y-%m-%d").date()
+    except ValueError:
+        raise _err(422, "invalid_date") from None
+    if day < _now(cfg).date():
+        raise _err(400, "date_in_past")
+    name = real_name(body.name) or call.get("callerName") or ""
+    service = body.service.strip()
+    row = {
+        "pk": messaging_repo.owner_pk(owner_id),
+        "sk": f"VOICEWAIT#{body.date}#{call_id}",
+        "id": call_id,
+        "date": body.date,
+        "phone": phone,
+        "name": name,
+        "service": service,
+        "note": body.note.strip(),
+        "callId": call_id,
+        "createdAt": utc_now_iso(),
+        "expiresAt": int(datetime.combine(day, datetime.min.time(), tzinfo=_tz(cfg)).timestamp()) + 2 * 86400,
+    }  # TTL: a day after the date
+    await run_in_thread(messaging_repo._table().put_item, Item=row)
+    line = f"Waitlisted for {body.date}" + (f" · {service}" if service else "")
+    await _patch_call(call_id, lambda c: {"callerName": c.get("callerName") or name, "steps": _step(c, line)})
+    return {"waitlisted": True, "date": body.date, "service": service}
 
 
 # --- message, didn't know, transfer, start_work -----------------------------------------------------------
@@ -1416,9 +1495,6 @@ async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: s
         origin="phone_contact",
         **({"ask": ask} if ask else {}),
     )
-
-
-MAX_UPCOMING_PER_CALLER = 3
 
 
 class WorkIn(BaseModel):
@@ -1597,7 +1673,11 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
         return {"messages": [], "after": await latest_seq(call_id), "ownerModeEnded": True}
     out = await agent_lines(call_id, body.after)
     claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
-    if claimed and not call.get("bookings") and not await _has_upcoming(meta["ownerId"], call.get("caller") or ""):
+    if (
+        claimed
+        and not call.get("bookings")
+        and not await _has_upcoming(meta["ownerId"], call["caller"] if _verified(call) else "")
+    ):
         for m in claimed:
             m["text"] = " ".join(
                 NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])
@@ -1615,17 +1695,6 @@ BOOKING_NOW = re.compile(r"\b(is booking|are booking|will book|i'?ll book|i'?ve 
 
 def _plain(text: str) -> str:
     return text.replace("\u2019", "'")
-
-
-async def _upcoming_count(ws: str, caller: str, call_id: str) -> int:
-    """The caller's confirmed upcoming bookings, not this call's own (a retry of one it made must pass)."""
-    from core.services import business_profile, voice_booking
-
-    now = f"{_now(await agent_config(ws)):%Y-%m-%dT%H:%M}"
-    return sum(
-        b.get("phone") == caller and b.get("callId") != call_id and voice_booking.confirmed(b)
-        for b in await business_profile._upcoming(ws, now)
-    )
 
 
 async def _has_upcoming(ws: str, caller: str) -> bool:

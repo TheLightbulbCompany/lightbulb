@@ -78,13 +78,16 @@ def _tomorrow() -> str:
     return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-async def _start(client, caller="+14155550133", room="phone-dev-_x_1", ago=3600, **config):
+A = "TN-Validation-Passed-A"  # the carrier attests the caller owns the number (STIR/SHAKEN level A)
+
+
+async def _start(client, caller="+14155550133", room="phone-dev-_x_1", ago=3600, verstat=A, **config):
     """A started call, begun `ago` seconds back (the billed duration is capped by the time since start, M4)."""
     await voice_phone.put_line(NUMBER, LINE)
     await messaging_repo.put_voice_agent("org_1", {**CONFIG, **config}, "user_owner")
     r = client.post(
         "/api/v1/internal/voice/calls",
-        json={"calledNumber": NUMBER, "callerNumber": caller, "livekitRoom": room},
+        json={"calledNumber": NUMBER, "callerNumber": caller, "livekitRoom": room, "verstat": verstat},
         headers=W,
     )
     assert r.status_code == 200, r.text
@@ -299,6 +302,49 @@ async def test_a_caller_cannot_touch_another_callers_booking(client):
     other = await _start(client, caller="+19998887777", room="phone-dev-_y_2")
     r = client.post(f"/api/v1/internal/voice/calls/{other['callId']}/change", json={"start": f"{day}T11:00"}, headers=W)
     assert r.status_code == 404
+
+
+async def test_a_passthrough_a_attestation_is_verified(client):
+    call = await _start(client, verstat="TN-Validation-Passed-A-Passthrough")  # Twilio's documented A passthrough
+    assert call["callerVerified"] is True
+
+
+@pytest.mark.parametrize("verstat", ["TN-Validation-Passed-B", "TN-Validation-Passed-C", "No-TN-Validation",
+                                     "TN-Validation-Failed-A", "", "TN-Validation-Passed-A-x"])  # fmt: skip
+async def test_an_unattested_caller_books_and_leaves_messages_but_gets_nothing_by_number(client, verstat):
+    """Founder 9 Nov (option a): only an A-attested number is the caller's own. A spoofed number without A gets no
+    name, no memory and none of the victim's bookings, and cannot move or cancel them; booking and messages stay."""
+    from core.services import business_profile
+
+    victim = await _start(client)  # A: the real owner of the number
+    day = _tomorrow()
+    base = f"/api/v1/internal/voice/calls/{victim['callId']}"
+    client.post(f"{base}/book", json={"start": f"{day}T11:00", "service": "gel", "name": "Priya"}, headers=W)
+    assert (await _remember(client, victim, "Prefers Saturdays")).status_code == 200
+    client.post(f"{base}/end", json={"durationSec": 20}, headers=W)
+
+    spoof = await _start(client, room="phone-dev-_s_1", verstat=verstat)  # the same number, not attested
+    assert spoof["callerName"] == "" and spoof["callerMemory"] == [] and spoof["callerVerified"] is False
+    meta = await messaging_repo.get_room(spoof["callId"])
+    assert meta["call"]["callerName"] == "" and meta["call"]["returning"] is False
+    assert meta["call"]["callerVerified"] is False and meta["call"]["caller"] == "+14155550133"  # kept for callback
+    s = f"/api/v1/internal/voice/calls/{spoof['callId']}"
+    for path, body in (("my-bookings", None), ("change", {"start": f"{day}T11:00"}),
+                       ("change", {"start": f"{day}T11:00", "newStart": f"{day}T12:00"})):  # fmt: skip
+        r = client.post(f"{s}/{path}", json=body, headers=W)
+        assert r.status_code == 403 and r.json()["detail"]["code"] == "caller_not_verified", (path, r.text)
+    assert (await _remember(client, spoof, "Call me Bob")).status_code == 403  # never onto the victim's row
+    assert (await _remember(client, spoof, "Parking is tight", kind="business")).status_code == 200
+    booked = client.post(f"{s}/book", json={"start": f"{day}T15:00", "service": "gel", "name": "Bob"}, headers=W)
+    assert booked.status_code == 200, booked.text
+    assert client.post(f"{s}/message", json={"text": "call me back"}, headers=W).status_code == 200
+    client.post(f"{s}/end", json={"durationSec": 20}, headers=W)
+    row = await voice_phone._seen("org_1", "+14155550133")
+    assert row["facts"] == ["Prefers Saturdays"] and row["name"] == "Priya" and row["visits"] == 1
+    trigger = {"ref": {"origin": "phone_contact", "callId": spoof["callId"]}}
+    assert await business_profile.caller_of(trigger) is None  # no "This caller's upcoming bookings"
+    assert await business_profile.caller_of({"ref": {**trigger["ref"], "callId": victim["callId"]}}) == "+14155550133"
+    assert (await _start(client, room="phone-dev-_s_2"))["callerName"] == "Priya"  # A keeps every capability
 
 
 async def test_worker_secret_required_and_unknown_number_404(client):
@@ -1196,8 +1242,9 @@ async def test_withheld_callers_share_no_identity(client, withheld):
     other = await _start(client, caller="anonymous", room="phone-w-2")  # a different withheld caller
     assert other["callerName"] == "" and other["callerMemory"] == []
     obase = f"/api/v1/internal/voice/calls/{other['callId']}"
-    assert client.post(f"{obase}/my-bookings", headers=W).json() == {"bookings": []}
-    assert client.post(f"{obase}/change", json={"start": f"{day}T11:00"}, headers=W).status_code == 404
+    for path, body in (("my-bookings", None), ("change", {"start": f"{day}T11:00"})):  # no caller: never verified
+        r = client.post(f"{obase}/{path}", json=body, headers=W)
+        assert r.status_code == 403 and r.json()["detail"]["code"] == "caller_not_verified"
 
 
 async def test_run_out_forward_and_transfer_never_dial_a_non_us_number(client):
@@ -1348,30 +1395,28 @@ async def test_a_caller_write_never_undoes_an_owner_save_made_meanwhile(client):
     assert cfg["paused"] is True and cfg["toAdd"] == ["Parking?"]
 
 
-async def test_a_retry_of_a_booking_the_call_made_is_not_refused(client):
-    day = _tomorrow()
-    for hour in (10, 12, 14):
-        call = await _start(client, room=f"phone-dev-_x_{hour}")
-        body = {"start": f"{day}T{hour}:00", "service": "gel manicure", "name": "Priya"}
-        url = f"/api/v1/internal/voice/calls/{call['callId']}/book"
-        assert client.post(url, json=body, headers=W).status_code == 200
-    done = {"state": "confirmed", "provider": "own"}  # voice_booking's own idempotency returns the existing booking
-    with patch.object(voice_phone.voice_booking, "book", AsyncMock(return_value=done)):
-        assert client.post(url, json=body, headers=W).status_code == 200  # the lost reply, retried
+async def test_a_retried_end_counts_one_visit(client):
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    for _ in range(2):
+        assert client.post(url, json={"durationSec": 60}, headers=W).status_code == 200
+    seen = await voice_phone._seen("org_1", "+14155550133")
+    assert seen["visits"] == 1
 
 
-async def test_a_caller_number_holds_at_most_three_upcoming_bookings(client):
-    day = _tomorrow()
-    for hour in (10, 12, 14):
-        call = await _start(client, room=f"phone-dev-_x_{hour}")
-        body = {"start": f"{day}T{hour}:00", "service": "gel manicure", "name": "Priya"}
-        assert (
-            client.post(f"/api/v1/internal/voice/calls/{call['callId']}/book", json=body, headers=W).status_code == 200
-        )
-    call = await _start(client, room="phone-dev-_x_16")
-    body = {"start": f"{day}T16:00", "service": "gel manicure", "name": "Priya"}
-    over = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/book", json=body, headers=W)
-    assert over.status_code == 409 and over.json()["detail"] == {"code": "too_many_bookings"}
+async def test_the_sweep_ends_a_call_left_live_past_the_cap(client):
+    import time
+
+    from core.services import voice_calls
+
+    call = await _start(client)
+    await voice_calls.sweep_phone_calls(int(time.time()))  # fresh: left alone
+    assert (await voice_phone._call(call["callId"]))[1]["status"] == "live"
+    await voice_calls.sweep_phone_calls(int(time.time()) + voice_calls.PHONE_STALE_S + 1)
+    ended = (await voice_phone._call(call["callId"]))[1]
+    assert ended["status"] == "ended" and ended["durationSec"] == 0  # duration unknown: bills nothing
+    assert "Closed by cleanup" in ended["summary"]
+    await voice_calls.sweep_phone_calls(int(time.time()) + 10_000)  # index row gone: nothing to repeat
 
 
 async def test_overlapping_starts_for_one_room_return_the_stored_token(client):

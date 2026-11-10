@@ -167,6 +167,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "gateway.running.count": [[]],
   // core/services/voice_calls.py sweep_calls_once; W84 binds the rollup.
   "voice.calls.open": [[]],
+  // core/services/voice_onboarding.py _provision_number (LINE write failed after a purchase), no dims; W86 binds the rollup.
+  "voice.number.orphaned": [[]],
   // core/services/watchdog.py (spec 11): tick_metric {Mode}; every repo write; cap refusals {Kind};
   // the judge's Jev cost via jev.decide(metric_prefix="watchdog.judge"), no dims. P48-P51 bind the rollup.
   "watchdog.tick": [["Mode"]],

@@ -357,7 +357,10 @@ async def start_call(body: StartIn) -> dict:
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
     caller = caller_id(body.callerNumber)
-    verified = body.verstat.strip().endswith("Passed-A")  # B, C, none, failed: the number may be spoofed
+    verified = body.verstat.strip() in (
+        "TN-Validation-Passed-A",
+        "TN-Validation-Passed-A-Passthrough",
+    )  # B, C, none, failed: the number may be spoofed
     seen = await _seen(owner_id, caller) if verified else None  # no name or memory by a spoofable number
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     existing = await messaging_repo.get_room(call_id)  # a replayed start: its token and its caps, counted once

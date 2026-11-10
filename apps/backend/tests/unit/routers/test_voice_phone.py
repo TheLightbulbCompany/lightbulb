@@ -304,6 +304,11 @@ async def test_a_caller_cannot_touch_another_callers_booking(client):
     assert r.status_code == 404
 
 
+async def test_a_passthrough_a_attestation_is_verified(client):
+    call = await _start(client, verstat="TN-Validation-Passed-A-Passthrough")  # Twilio's documented A passthrough
+    assert call["callerVerified"] is True
+
+
 @pytest.mark.parametrize("verstat", ["TN-Validation-Passed-B", "TN-Validation-Passed-C", "No-TN-Validation",
                                      "TN-Validation-Failed-A", "", "TN-Validation-Passed-A-x"])  # fmt: skip
 async def test_an_unattested_caller_books_and_leaves_messages_but_gets_nothing_by_number(client, verstat):

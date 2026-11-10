@@ -81,3 +81,35 @@ async def send(owner_id: str, trigger_ids: list[str], text: str) -> dict:
                     owner_id, trig["triggerId"], {**(trig.get("routedTo") or {}), "meetingChat": message_id}
                 )
         return {"status": status, "replayed": fresh is webhook_dedup.WebhookDedupResult.ALREADY_SEEN}
+
+
+async def stop_transcribing(owner_id: str, trigger_ids: list[str], participant_id: str = "") -> dict:
+    """The Router's meeting_stop_transcribing: exclude the person who SPOKE the delegated line. The speaker comes
+    from the meeting's own record (`askSpeakers`, written by /ask from the worker's participant id); `participant_id`
+    from the model is only checked against it, so nobody can opt out someone else."""
+    triggers = [await tasks_repo.get_trigger(owner_id, tid) for tid in trigger_ids]
+    refs = [(t or {}).get("ref") or {} for t in triggers]
+    rooms = {r.get("roomId") for r in refs}
+    room_id = next(iter(rooms)) if len(rooms) == 1 else None
+    if not room_id or any(r.get("origin") != "meeting" for r in refs):
+        raise NotCurrentMeeting("not_a_meeting")
+    async with meeting_invites.meeting_lease(room_id):
+        meta = await messaging_repo.get_room(room_id) or {}
+        meeting = meta.get("meeting") or {}
+        bot_id, occurrence = meeting.get("recallBotId"), meeting.get("inCallAt")
+        if (
+            meta.get("ownerId") != owner_id
+            or meeting.get("status") != "in_call"
+            or not bot_id
+            or not occurrence
+            or any(r.get("meetingBotId") != bot_id or r.get("meetingInCallAt") != occurrence for r in refs)
+        ):  # the same occurrence fence send() uses: a previous occurrence's turn never writes into this one
+            raise NotCurrentMeeting("not_current_meeting")
+        rows = [await messaging_repo.get_message_by_id(room_id, r.get("messageId")) or {} for r in refs]
+        speakers = {(meeting.get("askSpeakers") or {}).get(row.get("clientMessageId")) for row in rows}
+        if len(speakers) != 1 or not (pid := next(iter(speakers))) or participant_id not in ("", pid):
+            raise NotCurrentMeeting("not_the_speaker")
+        from routers.voice_meet import record_transcription
+
+        name = ((meeting.get("roster") or {}).get(pid) or {}).get("name") or ""
+        return await record_transcription(room_id, meeting, pid, name)

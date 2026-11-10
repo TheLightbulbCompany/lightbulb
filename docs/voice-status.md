@@ -178,7 +178,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 5.15 | Everyone acts with the inviter's authority; spend, send and publish need the inviter's card tap | yes | yes | no | Product | |
 | 5.16 | Notes in the app after the meeting; no email | yes | part | part | Product | Notes in the app are verified on screen on prod. The removal of the automatic email reaches prod with the queued train |
 | 5.17 | Structured decisions, recallable by voice ("what did we decide") | no | no | no | Product | #5018 parked |
-| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked |
+| 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked. Built in #5185, unverified live: GPT-Live hands the request to the Router, whose `meeting_stop_transcribing` excludes only the recorded speaker; the worker adopts it from `/events`; the tile shows the count. Needs a real-meeting run. |
 | 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |
 | 5.20 | Meeting minutes counted | yes | part | part | Platform | #5155, verified on dev |
 | 5.21 | The scenario list (`tests/replay/scenarios/`) passes in a real Meet | n/a | n/a | no | Product | No simulator exists; the earlier one was removed |

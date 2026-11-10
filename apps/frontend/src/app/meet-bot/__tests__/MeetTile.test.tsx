@@ -113,3 +113,8 @@ it("MeetTile shows Drafting and Page ready", () => {
   tile(phase("page_ready"));
   expect(screen.getByText("Page ready")).toBeInTheDocument();
 });
+
+it("says how many people are not transcribed", () => {
+  tile({ ...A("f", "idle"), "lightbulb.meet.not_transcribed": "2" });
+  expect(screen.getByText(/2 not transcribed/)).toBeInTheDocument();
+});

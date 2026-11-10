@@ -862,6 +862,7 @@ _CALL_KEYS = (
     "followUps",
     "summary",
     "linksSaid",
+    "askSpeakers",
 )
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
 _HISTORY_MAX = 30

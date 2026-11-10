@@ -625,6 +625,24 @@ async def meeting_chat(owner_id: str, body: MeetingChatBody, request: Request) -
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
 
 
+class MeetingStopTranscribingBody(BaseModel):
+    trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
+    participant_id: str = Field(default="", alias="participantId", max_length=128)
+
+
+@router.post("/{owner_id}/meeting-stop-transcribing")
+async def meeting_stop_transcribing(owner_id: str, body: MeetingStopTranscribingBody, request: Request) -> dict:
+    from core.services import meeting_chat as delivery
+
+    await _gate(owner_id, request)
+    try:
+        return await delivery.stop_transcribing(owner_id, body.trigger_ids, body.participant_id)
+    except delivery.NotCurrentMeeting as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except delivery.meeting_invites.MeetingBusy as exc:
+        raise HTTPException(status_code=503, detail="meeting_busy") from exc
+
+
 class TransferCallBody(BaseModel):
     trigger_ids: list[str] = Field(alias="triggerIds", min_length=1, max_length=10)
     text: str = Field(min_length=1, max_length=500)

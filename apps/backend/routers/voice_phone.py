@@ -929,7 +929,10 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    if (caller := call.get("caller", "")) and await _upcoming_count(meta["ownerId"], caller) >= MAX_UPCOMING_PER_CALLER:
+    caller = call.get("caller", "")
+    prior = await voice_booking._read(meta["ownerId"], f"VOICEBOOK#{body.start}")  # a retry or a pending create
+    retry = prior and (prior.get("callId") == call_id or (caller and prior.get("phone") == caller))
+    if not retry and caller and await _upcoming_count(meta["ownerId"], caller) >= MAX_UPCOMING_PER_CALLER:
         raise _err(409, "too_many_bookings")
     result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
     if result["state"] != "confirmed":
@@ -1083,7 +1086,7 @@ async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: s
     )
 
 
-MAX_TASKS_PER_CALL, MAX_UPCOMING_PER_CALLER = 5, 3
+MAX_UPCOMING_PER_CALLER = 3
 
 
 class WorkIn(BaseModel):
@@ -1099,9 +1102,6 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     meta, call = await _call(call_id)
     if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
         raise _err(403, "not_allowed")
-    titles = {str(w.get("title", "")).strip().lower() for w in call.get("work", [])}
-    if len(titles) >= MAX_TASKS_PER_CALL and body.title.strip().lower() not in titles:  # a retried title is no new task
-        raise _err(409, "too_many_tasks")  # the worker takes a message instead
     out = await _start_task(call_id, meta, call, body.title, body.brief)
     await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
                                           "steps": _step(c, f"Handed to the team: {body.title}")})  # fmt: skip

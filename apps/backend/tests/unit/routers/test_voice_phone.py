@@ -881,18 +881,6 @@ async def test_a_caller_write_never_undoes_an_owner_save_made_meanwhile(client):
     assert cfg["paused"] is True and cfg["toAdd"] == ["Parking?"]
 
 
-async def test_a_call_takes_at_most_five_worker_tasks(client):
-    call = await _start(client)
-    base = f"/api/v1/internal/voice/calls/{call['callId']}"
-    for i in range(5):
-        assert client.post(f"{base}/start-work", json={"title": f"Job {i}", "brief": "x"}, headers=W).status_code == 202
-    assert (
-        client.post(f"{base}/start-work", json={"title": "Job 0", "brief": "x"}, headers=W).status_code == 202
-    )  # retry
-    over = client.post(f"{base}/start-work", json={"title": "Job 5", "brief": "x"}, headers=W)
-    assert over.status_code == 409 and over.json()["detail"] == {"code": "too_many_tasks"}
-
-
 async def test_a_caller_number_holds_at_most_three_upcoming_bookings(client):
     day = _tomorrow()
     for hour in (10, 12, 14):
@@ -905,3 +893,19 @@ async def test_a_caller_number_holds_at_most_three_upcoming_bookings(client):
     body = {"start": f"{day}T16:00", "service": "gel manicure", "name": "Priya"}
     over = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/book", json=body, headers=W)
     assert over.status_code == 409 and over.json()["detail"] == {"code": "too_many_bookings"}
+
+
+async def test_the_cap_never_refuses_a_retry_of_a_booking_already_made(client):
+    day = _tomorrow()
+    for hour in (10, 12, 14):
+        call = await _start(client, room=f"phone-dev-_x_{hour}")
+        body = {"start": f"{day}T{hour}:00", "service": "gel manicure", "name": "Priya"}
+        assert (
+            client.post(f"/api/v1/internal/voice/calls/{call['callId']}/book", json=body, headers=W).status_code == 200
+        )
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/book"
+    done = {"state": "confirmed", "provider": "google"}  # a Google line: book() itself recognizes a retry
+    with patch.object(voice_phone.voice_booking, "book", AsyncMock(return_value=done)):
+        assert client.post(url, json=body, headers=W).status_code == 200  # the lost reply, retried
+        new = client.post(url, json=body | {"start": f"{day}T16:00"}, headers=W)  # a fourth, different time
+    assert new.status_code == 409 and new.json()["detail"] == {"code": "too_many_bookings"}

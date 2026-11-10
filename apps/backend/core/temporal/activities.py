@@ -1128,6 +1128,24 @@ async def _work_origin(ws: str, task_id: str, trig: dict, parent_id: str | None)
     return "phone_contact" if "phone_contact" in origins else next((o for o in origins if o), None)
 
 
+MAX_TASKS_PER_CALL = 5
+CALL_TASK_CAP_LINE = "That's a lot for one call. Can I take a message for the team instead?"
+
+
+async def _call_task_cap_hit(ws: str, task_id: str, trig: dict, lane: str) -> bool:
+    """A phone call already holds MAX_TASKS_PER_CALL tasks (open, or closed in the last day) and this start is a new
+    one: the Router says "take a message" instead (a retried start of an existing task is never refused)."""
+    ref = trig.get("ref") or {}
+    room = ts.trigger_room(trig)
+    if ref.get("origin") != "phone_contact" or not room or await tasks_repo.get_task(ws, task_id):
+        return False
+    user_id = trig.get("actorUserId")
+    mine = _caller_tasks(
+        await _open_tasks(ws, lane, user_id, {room}) + await _closed_tasks(ws, lane, user_id, {room}), {room}
+    )
+    return len({t["taskId"] for t in mine}) >= MAX_TASKS_PER_CALL
+
+
 async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str, **fields) -> dict:
     """The task a decision names, created once (deterministic id) with its room and memory card."""
     ref = trig.get("ref") or {}
@@ -1281,6 +1299,9 @@ async def _apply(
             )
             if gate.get("blocked"):  # §14.10: today's failure copy, no task
                 sl["lines"].append(gate.get("message") or router_prompt.FALLBACK)
+                continue
+            if await _call_task_cap_hit(ws, task_id, trig, inp.lane):  # phone: a call's tasks are capped
+                sl["lines"].append(CALL_TASK_CAP_LINE)
                 continue
             try:
                 await _ensure_task(

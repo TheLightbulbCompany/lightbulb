@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 PAGE_CHARS = 12_000
 MAX_PAGES = 4
+STRUCTURED_CHARS = 3_000
 _USEFUL = re.compile(r"service|menu|price|pricing|hour|about|team|staff|stylist|faq|contact|book", re.I)
 _FIRST = re.compile(r"contact|hour|about", re.I)  # where the hours live; fetched before the rest
 _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -82,7 +83,8 @@ def _page(html: str) -> tuple[str, list[tuple[str, str]]]:
     ld = [t.string.strip() for t in soup.find_all("script", type="application/ld+json") if t.string]
     for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()
-    return " ".join(soup.get_text(" ").split())[:PAGE_CHARS] + "".join(f"\n[structured data] {j}" for j in ld), links
+    structured = "".join(f"\n[structured data] {j}" for j in ld)[:STRUCTURED_CHARS]  # bounded: big schema graphs
+    return " ".join(soup.get_text(" ").split())[:PAGE_CHARS] + structured, links
 
 
 async def _fetch(url: str) -> tuple[str, str, list[tuple[str, str]]]:

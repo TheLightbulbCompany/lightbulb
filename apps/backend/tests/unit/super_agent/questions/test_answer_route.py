@@ -285,10 +285,11 @@ async def test_answer_writes_knowledge_as_member(world, monkeypatch):
     docs = {WS: {"name": "Nova", "knowledge": [], "toAdd": [q, "Parking?"]}}
     monkeypatch.setattr(messaging_repo, "get_voice_agent", AsyncMock(side_effect=lambda ws: docs.get(ws)))
 
-    async def put(ws, config, by):
-        docs[ws] = config
+    async def modify(ws, change, by):
+        if (new := change(docs[ws])) is not None:
+            docs[ws] = new
 
-    monkeypatch.setattr(messaging_repo, "put_voice_agent", put)
+    monkeypatch.setattr(messaging_repo, "modify_voice_agent", modify)
     room = {"roomId": "call-1", "ownerId": WS, "kind": "call", "revision": 3, "call": {"resolvedAt": None}}
     monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: room if r == "call-1" else None))
 

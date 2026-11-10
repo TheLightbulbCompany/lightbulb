@@ -1129,7 +1129,11 @@ async def _work_origin(ws: str, task_id: str, trig: dict, parent_id: str | None)
 
 
 MAX_TASKS_PER_CALL = 5
-CALL_TASK_CAP_LINE = "That's a lot for one call. Can I take a message for the team instead?"
+# A fact for the model to put in its own words (like phone.py's NOBODY/PAUSED), not a line spoken as written.
+CALL_TASK_CAP_LINE = (
+    f"Fact: this call has reached its limit of {MAX_TASKS_PER_CALL} tasks, so nothing new was started. "
+    "The team can take a message for the rest."
+)
 
 
 async def _call_task_cap_hit(ws: str, task_id: str, trig: dict, lane: str) -> bool:

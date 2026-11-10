@@ -159,6 +159,18 @@ async def test_phone_opening_follows_the_businesss_greeting(monkeypatch):
     assert first_id is None
 
 
+async def test_start_sends_the_carriers_stir_shaken_result(monkeypatch):
+    """The inbound trunk maps X-Twilio-VerStat to `sip.verstat`; the backend decides what an unattested number gets."""
+    call = Call(monkeypatch)
+    call.caller.attributes["sip.verstat"] = "TN-Validation-Passed-B"
+    await call.answer()
+    assert call.backend.calls[0] == ("/internal/voice/calls", {
+        "calledNumber": "+14842079294", "callerNumber": "+16105550100", "livekitRoom": "phone-dev-_+16105550100_ab",
+        "verstat": "TN-Validation-Passed-B"})  # fmt: skip
+    missing = await Call(monkeypatch).answer()  # no header (a LiveKit-number call, a carrier without STIR/SHAKEN)
+    assert missing.backend.calls[0][1]["verstat"] == ""
+
+
 async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlation(
     monkeypatch,
 ):

@@ -109,8 +109,8 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.8 | Take a message | yes | yes | no | 1st | Product | |
 | 3.9 | Hand off to a person, only during opening hours; a missed hand-off becomes a card | yes | yes | no | 1st | Product | |
 | 3.10 | A caller cannot do what the owner unticked: refused by the server, and a message is taken | yes | yes | no | 1st | Product | Master plan review focus 3 |
-| 3.11 | A caller gets only the business profile and their own bookings; no owner data; cannot pose as the owner | yes | yes | no | 1st | Product | Unit tests exist |
-| 3.12 | Per-caller memory keyed by phone number; "what it remembers" with a working Forget | yes | yes | no | | Product | |
+| 3.11 | A caller gets only the business profile and their own bookings; no owner data; cannot pose as the owner | yes | yes | no | 1st | Product | Unit tests exist. Caller ID (H1, founder 9 Nov, option a): the number counts only when the carrier attests it at STIR/SHAKEN level A (Twilio X-Twilio-VerStat, mapped to `sip.verstat` on the inbound trunk). Any other caller (B, C, none, failed, withheld) can book and leave a message, but gets no name, no memory, no existing bookings, and the server refuses move and cancel (`caller_not_verified`); the voice offers a message instead. Not in prod: the trunk mapping is applied by phone-telephony.yml with apply, and the worker and backend ship in one train. Bought numbers are Twilio, on that trunk; a LiveKit-managed number is not, carries no VerStat, and all its callers are unverified |
+| 3.12 | Per-caller memory keyed by phone number; "what it remembers" with a working Forget | yes | yes | no | | Product | Only for an A-attested caller: an unattested call neither reads nor writes the number's memory (see 3.11) |
 | 3.13 | "Didn't know" becomes a card; the owner's answer goes into Knowledge and the next caller gets it | yes | yes | no | 1st | Product | |
 | 3.14 | "Next time…" note on a call reaches later calls | yes | yes | no | | Product | |
 | 3.15 | Pause and not-live take messages only; the owner's test call still works before Go live | yes | yes | no | 1st | Product | |

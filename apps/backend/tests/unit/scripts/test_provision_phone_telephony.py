@@ -84,8 +84,33 @@ def livekit():
             list_sip_outbound_trunk=AsyncMock(return_value=SimpleNamespace(items=[outbound])),
             list_sip_dispatch_rule=AsyncMock(return_value=SimpleNamespace(items=[dispatch])),
             update_outbound_trunk_fields=AsyncMock(),
+            update_inbound_trunk=AsyncMock(),
         )
     )
+
+
+async def test_inbound_trunk_maps_the_stir_shaken_header_once_keeping_its_route():
+    """Security review 9 Nov: the worker reads Twilio's X-Twilio-VerStat as the `sip.verstat` attribute."""
+    lk = livekit()
+    report = await p.reconcile(Twilio(), lk, apply=False)
+    assert report["mapVerstat"] is True and not lk.sip.update_inbound_trunk.await_count  # a plan writes nothing
+    await p.reconcile(Twilio(), lk, apply=True, config=CONFIG)
+    trunk_id, info = lk.sip.update_inbound_trunk.await_args.args
+    assert trunk_id == p.INBOUND and dict(info.headers_to_attributes) == {"X-Twilio-VerStat": "sip.verstat"}
+    assert info.name == "twilio-inbound" and list(info.allowed_addresses) == ["54.172.60.0/30"]
+    lk.sip.list_sip_inbound_trunk.return_value.items[0] = info  # already mapped: nothing to do
+    lk.sip.update_inbound_trunk.reset_mock()
+    assert (await p.reconcile(Twilio(), lk, apply=True, config=CONFIG))["mapVerstat"] is False
+    assert not lk.sip.update_inbound_trunk.await_count
+
+
+async def test_inbound_trunk_with_auth_is_never_replaced():
+    """Replace sends the whole trunk, and a listed trunk's password is masked: never overwrite it with the mask."""
+    lk = livekit()
+    lk.sip.list_sip_inbound_trunk.return_value.items[0].auth_username = "someone"
+    with pytest.raises(p.ProviderMismatch, match="inbound_trunk_auth"):
+        await p.reconcile(Twilio(), lk, apply=True, config=CONFIG)
+    assert not lk.sip.update_inbound_trunk.await_count
 
 
 async def test_dry_run_certifies_existing_route_without_writes():

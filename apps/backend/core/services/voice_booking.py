@@ -463,7 +463,8 @@ async def _resume(ws: str, cfg: dict, call_id: str, row: dict, action: str, new_
 
 async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> dict:
     vp = _vp()
-    existing, caller = await _read(ws, f"VOICEBOOK#{start}"), call.get("caller")
+    # Only an attested number resumes a held booking made from it on another call (a spoofed one would claim it).
+    existing, caller = await _read(ws, f"VOICEBOOK#{start}"), call.get("caller") if vp._verified(call) else None
     if not (
         existing
         and existing.get("bookingProvider") == "google"

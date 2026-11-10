@@ -202,11 +202,16 @@ async def business_profile(ws: str, caller: str | None = None) -> str:
 
 
 async def caller_of(trigger: dict | None) -> str | None:
-    """The phone caller's number behind a `phone_contact` trigger (the call record start_call wrote), else None."""
+    """The phone caller's number behind a `phone_contact` trigger (the call record start_call wrote) when the carrier
+    attested it, else None."""
     ref = (trigger or {}).get("ref") or {}
     if ref.get("origin") != "phone_contact" or not ref.get("callId"):
         return None
     from core.repositories import messaging_repo
 
+    from routers import voice_phone as vp
+
     meta = await messaging_repo.get_room(ref["callId"]) or {}
-    return ((meta.get("call") or {}).get("caller") or None) if meta.get("kind") == "call" else None
+    call = meta.get("call") or {}
+    # Only an A-attested number lists "This caller's upcoming bookings": a spoofed one would read the victim's.
+    return call["caller"] if meta.get("kind") == "call" and vp._verified(call) else None

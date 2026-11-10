@@ -244,6 +244,20 @@ class StartIn(BaseModel):
     calledNumber: _Str
     callerNumber: str = Field(default="", max_length=40)
     livekitRoom: _Str
+    #: The carrier's STIR/SHAKEN result (Twilio's X-Twilio-VerStat, the SIP participant's `sip.verstat` attribute).
+    verstat: str = Field(default="", max_length=80)
+
+
+def _verified(call: dict) -> bool:
+    """The carrier attested at level A that the caller owns their number (founder 9 Nov, security review). Only then
+    does the number grant anything: name, caller memory, existing bookings, move and cancel. Anyone can still book
+    and leave a message. A record written before this field reads as unverified."""
+    return bool(call.get("caller")) and call.get("callerVerified") is True
+
+
+def _require_verified(call: dict) -> None:
+    if not _verified(call):
+        raise _err(403, "caller_not_verified")  # the voice offers a message for the team instead
 
 
 def _facts(cfg: dict) -> str:
@@ -282,7 +296,8 @@ async def start_call(body: StartIn) -> dict:
     if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
-    seen = await _seen(owner_id, body.callerNumber)
+    verified = body.verstat.strip().endswith("Passed-A")  # B, C, none, failed: the number may be spoofed
+    seen = await _seen(owner_id, body.callerNumber) if verified else None  # no name or memory by a spoofable number
     # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.
     # Never to the line that forwards here (the kept business number) or the one called: that rings us again.
     forward_to = (
@@ -323,6 +338,7 @@ async def start_call(body: StartIn) -> dict:
         "ownerMode": False,
         "resolvedAt": None,
         "calledNumber": body.calledNumber,
+        "callerVerified": verified,  # _verified(): what the caller's number may unlock on every later route
         "status": "live",
         "bookings": [],
         "messages": [],
@@ -377,7 +393,8 @@ async def start_call(body: StartIn) -> dict:
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
         "callerMemory": call["callerMemory"],
-        "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
+        "callerVerified": verified,  # the worker's prompt: unverified means no existing bookings, offer a message
+        "can": {k: bool(allow[k]) and not paused and (k != "move" or verified) for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
         "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
@@ -467,7 +484,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     # return an error so the worker retries; terminal retries keep the first
     # stored duration/start time rather than trusting a new request body.
     await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], int(out["durationSec"]), "phone")
-    if out.get("caller"):
+    if _verified(out):  # an unattested call never writes a name, facts or a visit onto that number's row
         seen = await _seen(meta["ownerId"], out["caller"]) or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
                 "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
@@ -606,6 +623,8 @@ async def remember(call_id: str, body: RememberIn) -> dict:
         raise _err(403, "not_allowed")
     if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
         raise _err(400, "looks_like_a_card")
+    if body.kind == "caller":
+        _require_verified(call)
     if body.kind == "business":
         cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
         await messaging_repo.put_voice_agent(meta["ownerId"], {**cfg, "toAdd": _to_add(cfg, body.fact)}, "voice")
@@ -863,6 +882,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "move")
+    _require_verified(call)
     owner_pk, sk = messaging_repo.owner_pk(meta["ownerId"]), f"VOICEBOOK#{body.start}"
     row = await messaging_repo._get(owner_pk, sk)
     if not row or not call.get("caller") or row.get("phone") != call["caller"]:
@@ -889,6 +909,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
     _allowed(await agent_config(meta["ownerId"]), call, "move")
+    _require_verified(call)
     caller = call.get("caller")
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
 
@@ -1146,7 +1167,11 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
     meta, call = await _call(call_id)
     out = await agent_lines(call_id, body.after)
     claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
-    if claimed and not call.get("bookings") and not await _has_upcoming(meta["ownerId"], call.get("caller") or ""):
+    if (
+        claimed
+        and not call.get("bookings")
+        and not await _has_upcoming(meta["ownerId"], call["caller"] if _verified(call) else "")
+    ):
         for m in claimed:
             m["text"] = " ".join(
                 NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])

@@ -36,6 +36,7 @@ from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, tasks_repo, billing_repo
 from core import tasks_schema as ts
 from core.services import (
+    push_service,
     admission,
     clerk_admin,
     questions,
@@ -184,6 +185,11 @@ def _scrub(value):
 #: What a model writes when it has no name (8 Nov prod: "Unknown" was kept as the caller's name).
 _NO_NAMES = {"unknown", "unknown caller", "caller", "the caller", "anonymous", "anon", "n/a", "na", "none", "null",
              "no name", "not given", "not provided", "unknown name", "name unknown", "customer", "-", "?"}  # fmt: skip
+
+
+def first_name(call: dict) -> str:
+    """The only caller detail a push may carry."""
+    return (real_name(call.get("callerName")).split() or [""])[0]
 
 
 def real_name(name: str | None) -> str:
@@ -480,6 +486,8 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         put_metric("VoiceCallOutcome", dimensions={"outcome": out["outcome"]})
     except Exception:
         logger.warning("VoiceCallOutcome metric failed", exc_info=True)
+    if out["outcome"] not in NO_CALL_PUSH and meta.get("ownerUserId"):
+        await _first_calls_push(meta["ownerUserId"], meta["ownerId"], call_id, out)
     asks = [("didnt_know", q) for q in dict.fromkeys(out.get("unknown", []))]
     if out.get("handoffMissed"):
         asks.append(("handoff", ""))  # nobody free or the transfer failed: line_problem is for system issues
@@ -487,6 +495,36 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         ask = call_ask(call_id, out, kind, question)
         await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
     return out
+
+
+# After Go live the owner hears about the first answered calls, so they see it working; then no more.
+# Cards (needs_you, handoff_missed) push on their own, silent/forwarded calls were not answered.
+NO_CALL_PUSH = {"silent", "forwarded", "needs_you", "handoff_missed"}
+CALL_PUSHES = 3
+
+
+async def _first_calls_push(user_id: str, ws: str, call_id: str, call: dict) -> None:
+    """One conditional write both admits a call to the first three and dedupes a retried end (the id is in the set)."""
+    try:
+        await run_in_thread(
+            messaging_repo._table().update_item,
+            Key={"pk": messaging_repo.owner_pk(ws), "sk": "CALLPUSH"},
+            UpdateExpression="ADD calls :c",
+            ConditionExpression="attribute_not_exists(calls) OR (size(calls) < :n AND NOT contains(calls, :id))",
+            ExpressionAttributeValues={":c": {call_id}, ":n": CALL_PUSHES, ":id": call_id},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("call push claim failed for %s", call_id, exc_info=True)
+        return
+    who = first_name(call)
+    try:
+        await push_service.send_push_to_user(
+            user_id, "Your assistant answered a call", f"{who} called." if who else "Someone called.",
+            {"source": "voice_call", "callId": call_id},
+        )  # fmt: skip
+    except Exception:  # best-effort: send_push_to_user already swallows, this is belt and braces
+        logger.warning("call push failed for %s", call_id, exc_info=True)
 
 
 # --- Needs you: what a person must decide after a call (Questions on a per-call task) ------------------------
@@ -515,7 +553,13 @@ def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
         "blocking": True,
         "attempt": None,
         "run_id": None,
-        "preview": {"kind": kind, "roomId": call_id, "caller": call.get("caller", ""), "question": question},
+        "preview": {
+            "kind": kind,
+            "roomId": call_id,
+            "caller": call.get("caller", ""),
+            "question": question,
+            "firstName": first_name(call),
+        },
     }
 
 

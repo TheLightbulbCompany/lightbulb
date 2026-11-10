@@ -273,9 +273,23 @@ async def test_every_taken_message_is_a_needs_you_card_with_its_whole_text(clien
     rec = client.post(f"{base}/end", json={"durationSec": 30}, headers=W).json()
     assert rec["outcome"] == "message" and rec["steps"][-1]["text"] == f"Took a message: {text}"
     ask = client.start_work.await_args.kwargs["ask"]
-    assert ask["subkind"] == "message" and ask["title"] == "Message from Sam"
-    assert ask["text"].startswith(text) and "+18565550123" in ask["text"]
+    assert ask["subkind"] == "message" and ask["title"].startswith("Message from Sam: Sam Tester would like")
+    assert len(ask["title"]) <= 200 and ask["text"].startswith(text) and "+18565550123" in ask["text"]
     assert [o["id"] for o in ask["options"]] == ["call_myself", "done"]
+
+
+async def test_two_messages_on_one_call_are_two_cards(client):
+    """The card's title is its call task's id (_start_task): two messages must not share one."""
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    for text in ("Please call me about Saturday.", "Also, do you sell gift cards?"):
+        client.post(f"{base}/message", json={"text": text, "name": "Sam"}, headers=W)
+    client.start_work.reset_mock()
+    client.post(f"{base}/end", json={"durationSec": 30}, headers=W)
+    runs = {c.args[1].run_id for c in client.start_work.await_args_list}
+    titles = [c.kwargs["ask"]["title"] for c in client.start_work.await_args_list]
+    assert len(runs) == 2 and titles == ["Message from Sam: Please call me about Saturday.",
+                                         "Message from Sam: Also, do you sell gift cards?"]  # fmt: skip
 
 
 def test_a_reply_never_sends_the_caller_to_another_number():

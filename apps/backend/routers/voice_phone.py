@@ -753,8 +753,8 @@ async def end_call(call_id: str, body: EndIn) -> dict:
 
 
 # After Go live the owner hears about the first answered calls, so they see it working; then no more.
-# Cards (needs_you, handoff_missed) push on their own, silent/forwarded calls were not answered.
-NO_CALL_PUSH = {"silent", "forwarded", "needs_you", "handoff_missed"}
+# Cards (needs_you, handoff_missed, message) push on their own, silent/forwarded calls were not answered.
+NO_CALL_PUSH = {"silent", "forwarded", "needs_you", "handoff_missed", "message"}
 CALL_PUSHES = 3
 
 
@@ -799,7 +799,8 @@ def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
     who = call.get("callerName") or call.get("caller") or "a caller"
     title = {"didnt_know": f"Answer {who}: {question}", "handoff": f"{who} wanted a person",
              "line_problem": f"{who}'s call hit a problem on the line",
-             "message": f"Message from {who}"}[kind]  # fmt: skip
+             # the message is in the title: the title is the call's task id (_start_task), one per message
+             "message": f"Message from {who}: {question}"}[kind]  # fmt: skip
     return {
         "qid": questions.qid_for(f"{call_id}:{kind}:{question}"),
         "kind": "question",

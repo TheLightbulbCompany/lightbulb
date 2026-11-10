@@ -170,3 +170,13 @@ describe("has_news wording", () => {
     expect(agentHand({}, "a")).toBe("");
   });
 });
+
+import { usPhone } from "./words";
+
+describe("usPhone", () => {
+  it("formats +1 numbers and leaves anything else alone", () => {
+    expect(usPhone("+18566995838")).toBe("(856) 699-5838");
+    expect(usPhone("+442071234567")).toBe("+442071234567");
+    expect(usPhone("(856) 699-5838")).toBe("(856) 699-5838");
+  });
+});

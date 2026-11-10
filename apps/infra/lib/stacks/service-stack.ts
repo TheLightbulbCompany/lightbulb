@@ -1724,6 +1724,8 @@ export class ServiceStack extends cdk.Stack {
       // existing receipts remain readable/cancellable in the backend.
       DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
       DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
+      // Founder ruling 2026-11-09: Sign in with ChatGPT is internal only. Comma-separated Clerk org ids; empty = nobody.
+      CHATGPT_PROVIDER_ORG_IDS: process.env[`CHATGPT_PROVIDER_ORG_IDS_${env.toUpperCase()}`] ?? "",
       // OpenAI's plugin-portal domain token (public by design). Unset = the path 404s.
       OPENAI_APPS_CHALLENGE_TOKEN: process.env[`OPENAI_APPS_CHALLENGE_TOKEN_${env.toUpperCase()}`] ?? "",
       // Platform admin (/admin, /ops, marketplace review, workspace wipe) is

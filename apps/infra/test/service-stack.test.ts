@@ -1825,6 +1825,9 @@ describe("ServiceStack — the tier's shared Hermes runtime (shared runtime step
         expect(envKeys).not.toContain(perOwner);
       }
       expect(p.EnvironmentVariables.S3_BUCKET).toBe(`lightbulb-${environment}-openclaw-replicas`);
+      // The bridge compares the gate URL EXACTLY to the profile's ".../v1" base_url.
+      const gate = p.EnvironmentVariables.LIGHTBULB_MANAGED_GATE_URL;
+      if (gate) expect(JSON.stringify(gate)).toMatch(/"v1"\]\]\}$/);
     });
 
     test(`${environment}: callers may invoke only the canonical pool and its endpoints`, () => {

@@ -1614,10 +1614,15 @@ export class ServiceStack extends cdk.Stack {
             AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
             ...(managedModelId
               ? {
-                  LIGHTBULB_MANAGED_GATE_URL: ssm.StringParameter.valueForStringParameter(
+                  // The bridge compares this EXACTLY to the profile's base_url, which the backend writes
+                  // as openrouter_gate_url() (".../v1"). The SSM value is a Lambda function URL, which
+                  // always ends in "/", so appending "v1" gives the same string. Without it every
+                  // managed turn on the pool fails "managed gate route is missing or changed".
+                  // ponytail: assumes the trailing "/"; read openrouter_gate_url's rule if the URL source changes.
+                  LIGHTBULB_MANAGED_GATE_URL: `${ssm.StringParameter.valueForStringParameter(
                     this,
                     `/lightbulb/${env}/openrouter-gate-url`,
-                  ),
+                  )}v1`,
                   LIGHTBULB_MANAGED_MODEL_ID: managedModelId,
                 }
               : {}),

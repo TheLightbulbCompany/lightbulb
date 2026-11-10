@@ -371,6 +371,29 @@ async def test_messages_use_20_digit_seq_and_page_in_order(table):
         await repo.list_messages(room_id, 0, 101)
 
 
+async def test_message_lookups_read_newest_pages_and_stop_at_the_first_hit(table, monkeypatch):
+    # Cost guard: these lookups used to drain the whole room partition per call.
+    room_id, _ = await _room()
+    first = await _post(room_id, text="old human", client_id="f-0")
+    agent = {"kind": "agent", "id": FRIDAY, "displayName": "Friday"}
+    msgs = [await _post(room_id, text=f"a{i}", client_id=f"f-{i + 1}", author=agent) for i in range(4)]
+    monkeypatch.setattr(repo, "_FIND_PAGE", 2)
+    pages = []
+    real_query = repo._table().query
+    monkeypatch.setattr(
+        repo, "_table", lambda: SimpleNamespace(query=lambda **kw: pages.append(kw) or real_query(**kw))
+    )
+
+    assert (await repo.get_message_by_id(room_id, msgs[-1]["messageId"]))["text"] == "a3"
+    assert len(pages) == 1 and pages[0]["ScanIndexForward"] is False and pages[0]["Limit"] == 2
+    pages.clear()
+    assert (await repo.latest_human_message(room_id))["messageId"] == first["messageId"]
+    assert len(pages) == 3  # walks older pages until a human is found
+    pages.clear()
+    assert await repo.get_message_by_id(room_id, str(uuid.uuid4())) is None
+    assert await repo.get_message_by_id(room_id, "") is None and len(pages) == 3
+
+
 async def test_get_messages_by_keys_returns_rows_and_omits_missing(table):
     room_id, _ = await _room()
     await _post(room_id, text="t0", client_id="m-0")

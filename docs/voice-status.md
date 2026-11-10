@@ -88,7 +88,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 2.12 | No NAT for Lightbulb; CloudFront free plan in place of WAF | no | no | no | Platform | Two NAT instances remain |
 | 2.13 | Backend background loops reduced | no | no | no | Platform | Ten loops start at boot: scheduled worker, trial-idle, run-ledger, browser autosave, voice-call, session pick-up, memory, daily digest, needs-you email, running gauges |
 | 2.14 | Quiet 24 h: nothing runs for an idle business | n/a | n/a | no | Platform | After 2.2 to 2.4 |
-| 2.15 | Fixed cost at or under $250 a month; per-business cost about $25 to $30 | n/a | n/a | no | Platform | Needs a full bill |
+| 2.15 | Fixed cost at or under $250 a month; per-business cost about $25 to $30 | n/a | n/a | no | Platform | Needs a full bill. 11-10: S3 egress (~$240/mo, cdk.out per-asset slices) and messaging-table reads (~$80-100/mo, paged message lookups) cut in the cost/s3-dynamo-cloudwatch PR; CloudWatch ~$85/mo is fixed alarms/metrics, decisions in docs/ops/2026-11-10-cost-cuts.md |
 | 2.16 | AgentCore cold start measured | no | no | no | Platform | Master plan open item |
 | 2.17 | Zero retention set at every speech and model vendor | part | part | no | Platform | Recall is set to zero retention in code. Nothing is set for OpenAI voice, LiveKit or Twilio in code; their account settings are not checked |
 | 2.18 | BAA requests filed with dates: Twilio, Google Cloud, LiveKit | n/a | n/a | n/a | Founder | Phase 2 gate. Paid plans |

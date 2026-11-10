@@ -132,8 +132,14 @@ class NoExternalIdCredentials extends AwsCredentialsProvider {
 
 const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
 const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
-// One tarball, not 6,376 loose objects. See the "cdk.out transport" block below.
-const CDKOUT_TARBALL = `${CDKOUT_S3_URI}/cdk.out.tgz`;
+// Per-asset slices, not the whole tarball and never 6,376 loose objects. See the
+// "cdk.out transport" block below. Each asset job GETs two objects: base.tgz
+// (~0.5 MB: manifests, templates, publish scripts) and <assetId>.tgz (its own
+// asset only). With DEPLOY_RUNNER on GitHub-hosted runners (since 2026-11-05)
+// there is no host cache, and every job pulling the full ~40 MB tarball was
+// ~1.6 GB of S3 internet egress per run, ~75-98 GB/day, ~$260/mo
+// (docs/ops/2026-11-10-cost-cuts.md). Slices cut that to ~60 MB per run.
+const CDKOUT_SLICES = `${CDKOUT_S3_URI}/slices`;
 // Host-local copy of the same tarball, shared by every runner on the box.
 // All DEPLOY_RUNNER instances run on one self-hosted machine outside AWS, so
 // each S3 GET of the tarball is billed as internet egress: 43 asset jobs x
@@ -603,9 +609,11 @@ const cdkoutPatches: JsonPatch[] = [
   // (pipeline.js:502,511 hardcode actions/upload-artifact).
   JsonPatch.replace("/jobs/Build-Synth/steps/3", {
     name: "Upload cdk.out to S3",
-    // Also seeds the host cache, and prunes entries older than a day.
+    // Uploads per-asset slices (see CDKOUT_SLICES), seeds the host cache with
+    // the whole tarball, and prunes host-cache entries older than a day.
     run: [
-      `tar -czf cdk.out.tgz -C apps/infra cdk.out && aws s3 cp cdk.out.tgz ${CDKOUT_TARBALL} --only-show-errors`,
+      "rm -rf cdkout-slices",
+      `tar -czf cdk.out.tgz -C apps/infra cdk.out && node apps/infra/scripts/slice-cdkout.mjs apps/infra/cdk.out cdkout-slices && aws s3 cp cdkout-slices ${CDKOUT_SLICES} --recursive --only-show-errors`,
       CDKOUT_HOST_PUT,
       `find "${CDKOUT_HOST_ROOT}" -mindepth 1 -maxdepth 1 -mmin +1440 -exec rm -rf {} + 2>/dev/null || true`,
     ].join("\n"),
@@ -625,11 +633,13 @@ for (const job of assetJobNames()) {
       run: [
         `if [ -s "${CDKOUT_HOST_TARBALL}" ]; then`,
         `  echo "cdk.out: host cache hit" && cp "${CDKOUT_HOST_TARBALL}" cdk.out.tgz`,
+        "  rm -rf cdk.out && tar -xzf cdk.out.tgz",
         "else",
-        `  aws s3 cp ${CDKOUT_TARBALL} cdk.out.tgz --only-show-errors || exit 1`,
-        `  ${CDKOUT_HOST_PUT}`,
+        `  aws s3 cp ${CDKOUT_SLICES}/base.tgz cdk.out.tgz --only-show-errors || exit 1`,
+        "  rm -rf cdk.out && tar -xzf cdk.out.tgz",
+        `  id=$(sed -n 's/.*publish "\\([0-9a-f]*\\):.*/\\1/p' cdk.out/assembly-*/publish-${job}-step.sh)`,
+        `  [ -n "$id" ] && aws s3 cp "${CDKOUT_SLICES}/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1`,
         "fi",
-        "rm -rf cdk.out && tar -xzf cdk.out.tgz",
       ].join("\n"),
     }),
   );

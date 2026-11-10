@@ -63,6 +63,7 @@ import re
 import time
 import uuid
 import weakref
+from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -648,16 +649,44 @@ async def get_message(room_id: str, seq: int) -> dict | None:
     return await _get(room_pk(room_id), msg_sk(seq))
 
 
-async def get_message_by_id(room_id: str, message_id: str) -> dict | None:
-    """Strongly find a message by canonical ID inside one room.
+_FIND_PAGE = 50
 
-    ponytail: founder rooms are small; add a message-id index only after a
-    measured room makes this partition scan material.
+
+async def _find_newest_message(room_id: str, match: Callable[[dict], bool]) -> dict | None:
+    """The newest ``MSG`` row in the room that ``match`` accepts, read one page at a time.
+
+    Callers almost always want a recent message (a run's trigger, the message being
+    replied to), so stopping at the first hit reads a page instead of the room's whole
+    history. Draining the partition for every lookup was most of the messaging table's
+    read bill (docs/ops/2026-11-10-cost-cuts.md).
+
+    ponytail: a miss or an old message still walks the partition; add a message-id
+    lookup row if a measured room makes that material.
     """
-    for row in await _query(room_pk(room_id), begins_with="MSG#"):
-        if row.get("messageId") == message_id:
-            return row
-    return None
+    from boto3.dynamodb.conditions import Key
+
+    kwargs: dict = {
+        "KeyConditionExpression": Key("pk").eq(room_pk(room_id)) & Key("sk").begins_with("MSG#"),
+        "ConsistentRead": True,
+        "ScanIndexForward": False,
+        "Limit": _FIND_PAGE,
+    }
+    while True:
+        response = await run_in_thread(_table().query, **kwargs)
+        for row in _plain(response.get("Items", [])):
+            if match(row):
+                return row
+        last = response.get("LastEvaluatedKey")
+        if not last:
+            return None
+        kwargs["ExclusiveStartKey"] = last
+
+
+async def get_message_by_id(room_id: str, message_id: str) -> dict | None:
+    """Strongly find a message by canonical ID inside one room."""
+    if not message_id:  # several callers pass ``run.get("triggerMessageId", "")``; never walk a room for it
+        return None
+    return await _find_newest_message(room_id, lambda row: row.get("messageId") == message_id)
 
 
 async def get_agent_delivery(room_id: str, agent_id: str) -> dict | None:
@@ -3121,12 +3150,8 @@ async def get_follow_up(room_id: str, follow_up_id: str) -> dict | None:
 
 
 async def latest_human_message(room_id: str) -> dict | None:
-    """The newest human-authored ``MSG`` in the room, or None.
-
-    ponytail: reads the whole room partition (like ``get_message_by_id``); add an index once a measured room needs it.
-    """
-    rows = await _query(room_pk(room_id), begins_with="MSG#", ascending=False)
-    return next((r for r in rows if r.get("author", {}).get("kind") == "human"), None)
+    """The newest human-authored ``MSG`` in the room, or None."""
+    return await _find_newest_message(room_id, lambda row: row.get("author", {}).get("kind") == "human")
 
 
 async def count_follow_ups_since(room_id: str, agent_id: str, since_iso: str | None) -> int:

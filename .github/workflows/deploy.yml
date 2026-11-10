@@ -64,9 +64,13 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
       - name: Upload cdk.out to S3
         run: >-
-          tar -czf cdk.out.tgz -C apps/infra cdk.out && aws s3 cp cdk.out.tgz
+          rm -rf cdkout-slices
+
+          tar -czf cdk.out.tgz -C apps/infra cdk.out && node
+          apps/infra/scripts/slice-cdkout.mjs apps/infra/cdk.out cdkout-slices
+          && aws s3 cp cdkout-slices
           s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
-          github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz
+          github.run_id }}-${{ github.run_attempt }}/slices --recursive
           --only-show-errors
 
           { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id
@@ -109,12 +113,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-DockerAsset1-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - name: Enable ARM64 image builds
         uses: docker/setup-qemu-action@v3
         with:
@@ -151,12 +156,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset1-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset1
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset1-step.sh
@@ -189,12 +195,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset10-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset10
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset10-step.sh
@@ -227,12 +234,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset11-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset11
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset11-step.sh
@@ -265,12 +273,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset12-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset12
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset12-step.sh
@@ -303,12 +312,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset13-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset13
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset13-step.sh
@@ -341,12 +351,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset14-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset14
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset14-step.sh
@@ -379,12 +390,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset15-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset15
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset15-step.sh
@@ -417,12 +429,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset16-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset16
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset16-step.sh
@@ -455,12 +468,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset17-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset17
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset17-step.sh
@@ -493,12 +507,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset18-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset18
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset18-step.sh
@@ -531,12 +546,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset19-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset19
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset19-step.sh
@@ -569,12 +585,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset2-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset2
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset2-step.sh
@@ -607,12 +624,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset20-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset20
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset20-step.sh
@@ -645,12 +663,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset21-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset21
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset21-step.sh
@@ -683,12 +702,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset22-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset22
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset22-step.sh
@@ -721,12 +741,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset23-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset23
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset23-step.sh
@@ -759,12 +780,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset24-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset24
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset24-step.sh
@@ -797,12 +819,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset25-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset25
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset25-step.sh
@@ -835,12 +858,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset26-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset26
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset26-step.sh
@@ -873,12 +897,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset27-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset27
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset27-step.sh
@@ -911,12 +936,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset28-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset28
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset28-step.sh
@@ -949,12 +975,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset29-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset29
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset29-step.sh
@@ -987,12 +1014,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset3-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset3
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset3-step.sh
@@ -1025,12 +1053,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset30-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset30
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset30-step.sh
@@ -1063,12 +1092,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset31-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset31
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset31-step.sh
@@ -1101,12 +1131,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset32-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset32
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset32-step.sh
@@ -1139,12 +1170,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset33-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset33
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset33-step.sh
@@ -1177,12 +1209,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset34-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset34
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset34-step.sh
@@ -1215,12 +1248,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset35-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset35
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset35-step.sh
@@ -1253,12 +1287,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset36-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset36
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset36-step.sh
@@ -1291,12 +1326,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset37-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset37
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset37-step.sh
@@ -1329,12 +1365,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset38-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset38
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset38-step.sh
@@ -1367,12 +1404,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset39-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset39
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset39-step.sh
@@ -1405,12 +1443,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset4-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset4
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset4-step.sh
@@ -1443,12 +1482,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset40-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset40
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset40-step.sh
@@ -1481,12 +1521,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset5-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset5
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset5-step.sh
@@ -1519,12 +1560,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset6-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset6
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset6-step.sh
@@ -1557,12 +1599,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset7-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset7
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset7-step.sh
@@ -1595,12 +1638,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset8-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset8
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset8-step.sh
@@ -1633,12 +1677,13 @@ jobs:
           if [ -s "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{
           github.run_attempt }}/cdk.out.tgz" ]; then
             echo "cdk.out: host cache hit" && cp "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz" cdk.out.tgz
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
           else
-            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz --only-show-errors || exit 1
-            { mkdir -p "$(dirname "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz")" && cp cdk.out.tgz "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" && mv "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz.$$" "$HOME/.cache/lightbulb-cdkout/${{ github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz"; } || true
+            aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/base.tgz cdk.out.tgz --only-show-errors || exit 1
+            rm -rf cdk.out && tar -xzf cdk.out.tgz
+            id=$(sed -n 's/.*publish "\([0-9a-f]*\):.*/\1/p' cdk.out/assembly-*/publish-Assets-FileAsset9-step.sh)
+            [ -n "$id" ] && aws s3 cp "s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{ github.run_id }}-${{ github.run_attempt }}/slices/$id.tgz" asset.tgz --only-show-errors && tar -xzf asset.tgz || exit 1
           fi
-
-          rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset9
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset9-step.sh

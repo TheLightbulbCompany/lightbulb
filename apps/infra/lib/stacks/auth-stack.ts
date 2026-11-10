@@ -145,6 +145,10 @@ export class AuthStack extends cdk.Stack {
       { passwordLength: 64, excludePunctuation: true },
       "Bearer secret the isol8.notifications Paperclip plugin sends to the backend paperclip-events webhook.",
     );
+    // ponytail: one-deploy pin. b5aa6af32 stopped the service stack importing this, but auth deploys
+    // first and CloudFormation refuses to drop an export still in use. Delete this line (and the
+    // secret, if unused) after one successful dev+prod deploy.
+    this.exportValue(this.paperclipEventsWebhookSecret.secretArn);
 
     // Shared secret that authenticates the CALLER of the backend /api/v1/ws/*
     // endpoints. The WebSocket Lambdas (ws-connect/disconnect/message) attach it

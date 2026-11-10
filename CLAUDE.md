@@ -83,7 +83,7 @@ From plan Part 1. Each one constrains code. The reason is after the dash.
   asks. — Matches the market and removes a guard.
 - **F32 One pool of credits covers voice and text.** — Replaces the separate minutes plan. **The design is
   pending** (plan Part 2, Q2): do not build a second meter in the meantime.
-- **F33 Sign in with ChatGPT is internal only.** Customers are on managed credits. — We use it to avoid paying
+- **F33 Sign in with ChatGPT stays available to every workspace for now** (founder, 10 Nov: "leave chatgpt, it's not hurting anyone"), replacing the 9 Nov internal-only ruling. Customers default to managed credits.
   for inference while testing.
 - **No migrations (global constraint).** No migration code, backfills or compatibility layers: fix forward. — There
   are no real customers.

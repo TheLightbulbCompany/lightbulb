@@ -516,3 +516,32 @@ async def test_a_number_with_no_pin_ignores_the_keypad(monkeypatch):
     await asyncio.sleep(0.01)
     assert "owner-pin" not in call.paths()
     await call.on_shutdown[0]()
+
+
+async def test_end_is_retried_until_the_backend_takes_it(monkeypatch):
+    monkeypatch.setattr(phone, "END_BACKOFF_S", 0)
+    call = await Call(monkeypatch, replies={"end": [{"error": "http_503"}, {"error": "http_503"}, {"outcome": "answered"}]}).answer()
+    call.ctx.room.emit("participant_disconnected", call.caller)
+    await asyncio.sleep(0.05)
+    assert call.paths().count("end") == 3
+
+
+async def test_end_gives_up_after_three_tries(monkeypatch):
+    monkeypatch.setattr(phone, "END_BACKOFF_S", 0)
+    call = await Call(monkeypatch, replies={"end": [{"error": "http_503"}] * 5}).answer()
+    call.ctx.room.emit("participant_disconnected", call.caller)
+    await asyncio.sleep(0.05)
+    assert call.paths().count("end") == 3 and call.shutdowns == ["caller hung up"]
+
+
+async def test_a_refused_call_is_told_to_the_model_then_hangs_up(monkeypatch):
+    monkeypatch.setattr(phone, "SORRY_S", 0)
+    call = Call(monkeypatch)
+
+    async def refused(self, path, body=None):
+        return {"error": "http_500"}
+
+    monkeypatch.setattr(FakeBackend, "post", refused)
+    await call.answer()
+    assert call.live.sent == [(None, phone.CANT_TAKE)]  # the fact, never a script
+    assert call.live.closed == 1 and call.deleted == 1 and call.shutdowns == ["call refused"]

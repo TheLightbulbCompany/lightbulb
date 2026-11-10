@@ -128,7 +128,7 @@ async def test_agent_config_member_cannot_write(repos, async_client_org_member):
 
 @pytest.mark.asyncio
 async def test_a_greeting_style_without_the_disclosure_words_saves(repos, async_client_org_admin, monkeypatch):  # noqa: F811
-    # The worker's DisclosureGuard guarantees the name, "AI assistant" and the recording; the field is only style.
+    # The business owns its opening; the field is only style.
     monkeypatch.setattr("core.config.settings.VOICE_LINE_NUMBER", "+14842079294")  # Go live needs a number
     put = lambda cfg: async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})  # noqa: E731
     assert (await put({"live": True, "greeting": "Hi, warm and brief."})).status_code == 200

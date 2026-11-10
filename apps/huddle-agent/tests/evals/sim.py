@@ -512,9 +512,9 @@ def norm(text: str) -> str:
 
 
 def opening_ok(text: str) -> bool:
-    """Founder, 8 Nov: the opening names the assistant, says AI assistant and recorded (any wording)."""
+    """The default opening names the assistant and says AI assistant (any wording). The business owns the rest (9 Nov)."""
     t = f" {norm(text)} "
-    return all(f" {w} " in t for w in ("nova", "ai assistant", "recorded"))
+    return all(f" {w} " in t for w in ("nova", "ai assistant"))
 
 
 def score(sc: dict, run: dict) -> dict:
@@ -533,17 +533,14 @@ def score(sc: dict, run: dict) -> dict:
                 "usage": run["usage"], "room": run["room"], "hung_up_by": run["hung_up_by"]}  # fmt: skip
     checks = {
         "record_ended": rec.get("status") == "ended",
-        "opening has name + AI assistant + recorded, no guard": bool(said) and opening_ok(said[0])
-            and not rec.get("disclosureRepeated"),
-        "no second greeting": not any("thanks for calling" in norm(x) or opening_ok(x) for x in said[1:]
-                                      if not rec.get("disclosureRepeated")),
+        "opening has name + AI assistant": bool(said) and opening_ok(said[0]),
+        "no second greeting": not any("thanks for calling" in norm(x) or opening_ok(x) for x in said[1:]),
         "outcome": rec.get("outcome") in exp["outcome"],
-        "disclosure": bool(first) and not first.get("assumed") and all(
-            w in first.get("text", "").lower() for w in ("ai assistant", "recorded")),
+        "disclosure": bool(first) and not first.get("assumed") and "ai assistant" in first.get("text", "").lower(),
     }  # fmt: skip
     if run["heard"]:  # the caller's own transcription of what it heard first
-        checks["disclosure_heard"] = "ai" in greet_heard and "record" in greet_heard
-        checks["opening heard with all three (caller STT)"] = opening_ok(" ".join(h["text"] for h in run["heard"][:2]))
+        checks["disclosure_heard"] = "ai" in greet_heard
+        checks["opening heard with name + AI assistant (caller STT)"] = opening_ok(" ".join(h["text"] for h in run["heard"][:2]))
     for pat in exp.get("steps", []):
         checks[f"step /{pat}/"] = any(re.search(pat, s, re.I) for s in steps)
     for pat in exp.get("not", []):

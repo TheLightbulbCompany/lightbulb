@@ -84,7 +84,7 @@ export function AgentPage() {
       <label className="vx-label">Greeting style
         <textarea className="vx-field" rows={3} maxLength={400} value={c.greeting} placeholder={`How ${name} should open: tone, what to mention`} onChange={(e) => set({ greeting: e.target.value })} /></label>
       <p className="vx-hint" style={{ color: "var(--fg-mute)", fontSize: "var(--text-caption)" }}>
-        {name} always says its name, that it&apos;s an AI assistant and that the call is recorded.</p>
+        The greeting is yours to write; leave it blank for a short default. Some states require telling callers they are talking to an AI or that calls are recorded: that is your business&apos;s responsibility.</p>
     </Sec>
 
     <Sec title="Voice & language"><PhoneVoiceSettings c={c} set={set} /></Sec>

@@ -115,6 +115,10 @@ export function useAgentConfig() {
 
 export interface WaitlistEntry { id: string; date: string; name: string; phone: string; service: string; windowFrom: string; windowTo: string }
 
+/** "14:00–16:00", "after 14:00", "before 12:00", or "" when the caller gave no window. */
+export const windowLabel = (from: string, to: string) =>
+  from && to ? `${from}–${to}` : from ? `after ${from}` : to ? `before ${to}` : "";
+
 /** Callers waiting for a day (GET /voice/waitlist); `remove` deletes one entry. */
 export function useWaitlist() {
   const api = useApi();

@@ -8,7 +8,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig } from "./data";
+import { DAYS, nameOf, useAgentConfig, useInviteAddress, useWaitlist, usPhone, windowLabel, type AgentConfig } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
@@ -194,7 +194,7 @@ function WaitlistList() {
   if (!entries.length) return <p className="vx-muted">No one is waiting.</p>;
   return <div>{entries.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
     <span style={{ flex: 1 }}><b>{e.name || "Caller"}</b> · <a className="vx-link" href={`tel:${e.phone}`}>{usPhone(e.phone)}</a> · {e.date}
-      {e.windowFrom && <> · {e.windowFrom}{e.windowTo && `–${e.windowTo}`}</>}{e.service && <> · {e.service}</>}</span>
+      {windowLabel(e.windowFrom, e.windowTo) && <> · {windowLabel(e.windowFrom, e.windowTo)}</>}{e.service && <> · {e.service}</>}</span>
     <Button size="sm" variant="outline" aria-label={`Remove ${e.name || e.phone} from the waitlist`} onClick={() => void remove(e)}><X /></Button>
   </div>)}</div>;
 }

@@ -3037,14 +3037,21 @@ async def take_voice_unit(owner_id: str, sk: str, unit: str, limit: int) -> Lite
     return "had" if unit in ((row or {}).get("units") or set()) else None
 
 
-async def give_back_voice_unit(owner_id: str, sk: str, unit: str) -> None:
-    """Undo a "new" `take_voice_unit` whose action never happened."""
+async def give_back_voice_unit(owner_id: str, sk: str, unit: str, keep: str | None = None) -> None:
+    """Undo a "new" `take_voice_unit`; with ``keep``, first count ``keep`` instead (a placeholder becomes the
+    identity it turned out to be). Two writes: DynamoDB refuses ADD and DELETE on one attribute in one update."""
+    key = {"pk": owner_pk(owner_id), "sk": sk}
+    if keep:
+        await run_in_thread(
+            _table().update_item, Key=key, UpdateExpression="ADD units :u", ExpressionAttributeValues={":u": {keep}}
+        )
     await run_in_thread(
-        _table().update_item,
-        Key={"pk": owner_pk(owner_id), "sk": sk},
-        UpdateExpression="DELETE units :u",
-        ExpressionAttributeValues={":u": {unit}},
+        _table().update_item, Key=key, UpdateExpression="DELETE units :u", ExpressionAttributeValues={":u": {unit}}
     )
+
+
+async def has_voice_unit(owner_id: str, sk: str, unit: str) -> bool:
+    return unit in ((await _get(owner_pk(owner_id), sk) or {}).get("units") or set())
 
 
 async def claim_voice_slot(owner_id: str, sk: str, holder: str, hold_s: int) -> bool:

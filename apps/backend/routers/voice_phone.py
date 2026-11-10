@@ -1036,20 +1036,32 @@ async def book(call_id: str, body: BookIn) -> dict:
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
     counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
-    # One unit per reservation, keyed by its start: a retry that returns or reconciles that booking ("had") is never
-    # a second unit, so the cap cannot lock a pending booking out of its own reconciliation.
-    unit = await messaging_repo.take_voice_unit(meta["ownerId"], counter, body.start, BOOKINGS_PER_CALLER_PER_DAY)
-    if unit is None:
+    # One unit per reservation, keyed by its booking id. A retry that returns or reconciles a reservation already
+    # counted spends nothing (so the cap never locks a pending booking out of its reconciliation); anything else
+    # holds a placeholder unit while it books (the cap stays atomic), which becomes the new booking's id.
+    ws, slot_sk = meta["ownerId"], f"VOICEBOOK#{body.start}"
+    held = await messaging_repo._get(messaging_repo.owner_pk(ws), slot_sk) or {}
+    caller = call.get("caller")
+    ours = held.get("callId") == call_id or bool(caller and held.get("phone") == caller)
+    counted = bool(ours and held.get("bookingId")) and await messaging_repo.has_voice_unit(
+        ws, counter, held["bookingId"]
+    )
+    placeholder = None if counted else f"booking-in-progress:{uuid.uuid4().hex}"
+    if placeholder and not await messaging_repo.take_voice_unit(ws, counter, placeholder, BOOKINGS_PER_CALLER_PER_DAY):
         await _limit(call_id, "too many bookings from this number today")
         raise _err(403, "not_allowed")
     try:
-        result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
+        result = await voice_booking.book(ws, cfg, call_id, call, body.start, body.service, body.name)
     except BaseException:
-        if unit == "new":
-            await messaging_repo.give_back_voice_unit(meta["ownerId"], counter, body.start)  # nothing was reserved
+        if placeholder:
+            await messaging_repo.give_back_voice_unit(ws, counter, placeholder)  # nothing was reserved
         raise
-    if unit == "new" and result["state"] not in ("confirmed", "pending", "held"):  # nothing was reserved
-        await messaging_repo.give_back_voice_unit(meta["ownerId"], counter, body.start)
+    if placeholder:
+        made = await messaging_repo._get(messaging_repo.owner_pk(ws), slot_sk) or {}
+        reserved = result["state"] in ("confirmed", "pending", "held") and made.get("bookingId")
+        await messaging_repo.give_back_voice_unit(
+            ws, counter, placeholder, keep=made["bookingId"] if reserved else None
+        )
     if result["state"] != "confirmed":
         await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
         return {"booked": False, **result}

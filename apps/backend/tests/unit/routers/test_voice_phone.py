@@ -1055,19 +1055,19 @@ async def test_two_interleaved_starts_for_one_room_both_return_the_stored_token(
     assert row["units"] == {a["callId"]}
 
 
-async def test_a_booking_returned_again_is_one_unit_of_the_daily_cap(client, monkeypatch):
-    """#5193 review: the allowance is keyed by the reservation; a retry that gets the same booking back (or
-    reconciles it) spends nothing, so the next new booking still fits."""
+async def test_a_new_booking_at_a_start_already_used_counts_again(client, monkeypatch):
+    """#5193 review (Codex :1041): the allowance is keyed by booking id, not start. Book 10:00, move it away, book
+    10:00 again: two reservations, two units, so a third new booking is over a cap of 2."""
     monkeypatch.setattr(voice_phone, "BOOKINGS_PER_CALLER_PER_DAY", 2)
     call = await _start(client)
     base, day = f"/api/v1/internal/voice/calls/{call['callId']}", _tomorrow()
-    body = {"service": "gel", "name": "A"}
-    with patch.object(voice_phone.voice_booking, "book", AsyncMock(return_value={"state": "pending", "code": "x"})):
-        for _ in range(4):  # a pending Google create, retried while it reconciles
-            assert client.post(f"{base}/book", json={**body, "start": f"{day}T11:00"}, headers=W).status_code == 200
-    assert client.post(f"{base}/book", json={**body, "start": f"{day}T15:00"}, headers=W).json()["booked"] is True
-    r = client.post(f"{base}/book", json={**body, "start": f"{day}T16:00"}, headers=W)
-    assert r.status_code == 403  # the third distinct reservation is over the cap
+    book = lambda t: client.post(f"{base}/book", json={"start": f"{day}T{t}", "service": "gel", "name": "A"}, headers=W)  # noqa: E731
+    assert book("10:00").json()["booked"] is True
+    moved = client.post(f"{base}/change", json={"start": f"{day}T10:00", "newStart": f"{day}T12:00"}, headers=W)
+    assert moved.json()["moved"] is True  # a move is the same reservation: no unit
+    assert book("10:00").json()["booked"] is True  # a new reservation at the freed start: the second unit
+    r = book("15:00")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
 
 
 async def test_a_failed_slot_release_still_bills_and_a_retried_end_finishes_once(client):

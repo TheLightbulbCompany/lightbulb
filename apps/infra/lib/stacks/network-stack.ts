@@ -76,6 +76,9 @@ export class NetworkStack extends cdk.Stack {
       ],
       restrictDefaultSecurityGroup: true,
     });
+    // ponytail: one-deploy pin. #5158 removed api-stack's import of the VPC CIDR, but network deploys
+    // first and CloudFormation refuses to drop an export still in use. Delete after one green dev+prod deploy.
+    this.exportValue(this.vpc.vpcCidrBlock);
 
     // User data runs only on an instance's first boot, and CDK's NAT Instance does not replace on a
     // user-data or type change, so bump this id to force a fresh instance when either changes.

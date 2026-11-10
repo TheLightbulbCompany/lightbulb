@@ -800,10 +800,22 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
     mine = set(old.get("cells", [])) if old else set()
     # Another booking landing between the read and the write changes the guards' versions and cancels every lane's
     # write with them: re-read the slot (which refuses 409 once it is truly full) and try the people again.
+    # A new booking also writes an idempotency row for (call, start, service, name), whoever it takes: two identical
+    # requests at once cannot both pass it, and the second returns the first's booking (marked `_repeat`).
+    key = (
+        None
+        if old
+        else f"VOICEBOOKKEY#{hashlib.sha256(f'{call_id}|{start}|{service}|{name}'.encode()).hexdigest()[:40]}"
+    )
     for _ in range(3):
         guards = await _capacity_items(owner_id, cfg, _cells(cfg, start, minutes), mine)
         for lane, person in lanes:
             items = _booking_items(table, pk, call_id, call, cfg, start, service, name, minutes, lane, person, old)
+            if key:
+                row = items[0]["Put"]["Item"]
+                items.append({"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
+                    "pk": pk, "sk": key, "booking": row["sk"], "bookingId": row["bookingId"],
+                    "expiresAt": _cell_expiry(row["cells"][-1])}}})  # fmt: skip
             if len(items) + len(guards) > 100:
                 raise _err(400, "booking_too_long")
             try:
@@ -812,7 +824,28 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
             except ClientError as exc:
                 if not messaging_repo.is_cancelled(exc):
                     raise
+                if key and (same := await _same_booking(owner_id, key)):
+                    return same
     raise _err(409, "slot_taken")
+
+
+async def _same_booking(owner_id: str, key: str) -> dict | None:
+    """The booking an identical request already made, or None. A key whose booking is gone (cancelled or moved)
+    is removed, so the same booking can be made again."""
+    pk = messaging_repo.owner_pk(owner_id)
+    hit = await messaging_repo._get(pk, key)
+    if not hit:
+        return None
+    row = await messaging_repo._get(pk, hit["booking"])
+    if row and row.get("bookingId") == hit["bookingId"]:
+        return {**row, "_repeat": True}
+    try:
+        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": pk, "sk": key},
+                            ConditionExpression="bookingId = :bid", ExpressionAttributeValues={":bid": hit["bookingId"]})  # fmt: skip
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    return None
 
 
 async def _query_range(owner_id: str, first: str, last: str) -> list[dict]:

@@ -680,6 +680,31 @@ async def test_a_booking_that_lands_first_does_not_refuse_a_free_person(client):
     assert row["staff"] == "Ana" and (await _row(at, "#m1"))["name"] == "Bo"
 
 
+async def test_two_identical_books_at_once_make_one_booking(client):
+    """The same call books the same thing twice at once: both pass the duplicate read, but the second's write meets
+    the first's idempotency row and returns that booking instead of taking Mei."""
+    a = await _start(client, caller="+14155550281", room="phone-dev-_u1", **STAFFED)
+    cfg = await voice_phone.agent_config("org_1")
+    at, real, raced, inner = f"{_tomorrow()}T11:00", messaging_repo._transact, [], []
+    args = ("org_1", a["callId"], {"caller": "+14155550281"}, cfg, at, "gel", "Priya")
+
+    async def interleaved(items):
+        if not raced:
+            raced.append(True)
+            inner.append(await voice_phone._book(*args))
+        return await real(items)
+
+    with patch.object(messaging_repo, "_transact", interleaved):
+        outer = await voice_phone._book(*args)
+    assert inner[0]["staff"] == outer["staff"] == "Ana" and outer["_repeat"]
+    assert outer["bookingId"] == inner[0]["bookingId"] and await _row(at, "#m1") is None
+    # Once that booking is cancelled, the same booking can be made again.
+    assert client.post(f"/api/v1/internal/voice/calls/{a['callId']}/change", json={"start": at}, headers=W).json()[
+        "cancelled"
+    ]
+    assert _book_as(client, a, at).json()["staff"] == "Ana"
+
+
 async def test_with_google_one_shared_calendar_holds_one_booking_at_a_time(client):
     """Bookings that go to Google share one calendar: a held booking (its Google write still pending) blocks the
     slot for every person."""

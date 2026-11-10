@@ -495,7 +495,12 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
     # else: a local hold never prepared (no POST precedes the prepare save): prepare it now.
     if not _google(cfg):
         row = await vp._book(ws, call_id, call, cfg, start, service, name)
-        return {"state": "confirmed", "provider": "own", "staff": row.get("staff", "")}
+        return {
+            "state": "confirmed",
+            "provider": "own",
+            "staff": row.get("staff", ""),
+            "repeat": bool(row.get("_repeat")),
+        }
     try:
         calendar = await _request(ws, "GET", f"{API}/calendars/primary")
         calendar_id = calendar["id"]
@@ -508,7 +513,11 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
             raise
         await _problem(ws, cfg, call_id)
         return _result(None, "unavailable", "provider_availability_unknown")
-    row = existing or await _read(ws, (await vp._book(ws, call_id, call, cfg, start, service, name))["sk"])
+    if not existing:
+        made = await vp._book(ws, call_id, call, cfg, start, service, name)
+        if made.get("_repeat"):  # an identical request made this hold a moment ago and is preparing it now
+            return _result(made, "pending", "operation_pending")
+    row = existing or await _read(ws, made["sk"])
     operation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-google:{row['bookingId']}:create").hex
     body = _event(cfg, call, start, service, name)
     body |= {

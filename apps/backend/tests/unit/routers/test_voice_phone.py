@@ -86,7 +86,8 @@ async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
 
     body = {"start": f"{day}T14:00", "service": "gel manicure", "name": "Priya"}
     assert client.post(f"{base}/book", json=body, headers=W).status_code == 200
-    assert client.post(f"{base}/book", json=body, headers=W).status_code == 409  # taken
+    assert client.post(f"{base}/book", json=body, headers=W).status_code == 200  # a retry returns the same booking
+    assert client.post(f"{base}/book", json=body | {"name": "Ana"}, headers=W).status_code == 409  # taken
     assert client.post(f"{base}/book", json=body | {"start": f"{day}T14:30"}, headers=W).status_code == 409  # overlaps
     assert (
         client.post(f"{base}/book", json=body | {"start": f"{day}T18:30"}, headers=W).status_code == 400
@@ -493,7 +494,8 @@ async def test_a_service_one_person_does_books_only_that_persons_time(client):
     assert took.status_code == 200 and took.json()["staff"] == "Mei" and await _row(at, "#m1")
     assert _book_as(client, b, at, service="pedicure").status_code == 409  # Ana is free but doesn't do pedicures
     assert at not in _slots(client, b, "pedicure") and at in _slots(client, b, "gel")
-    assert _book_as(client, b, at).json()["staff"] == "Ana"  # an anyone-service still gets Ana
+    r = _book_as(client, b, at)
+    assert r.json()["staff"] == "Ana"  # an anyone-service still gets Ana
 
 
 async def test_cancel_frees_the_person_it_took(client):
@@ -541,7 +543,7 @@ async def test_reordering_the_list_keeps_who_is_booked(client):
     await _staff_now([MEI, ANA])
     assert _book_as(client, b, at, service="pedicure").status_code == 409
     assert _book_as(client, b, at).json()["staff"] == "Ana"
-    assert _book_as(client, b, at).status_code == 409
+    assert _book_as(client, b, at, name="Bo").status_code == 409  # full (the same body again is a retry)
 
 
 async def test_a_rename_keeps_the_persons_bookings(client):
@@ -621,6 +623,52 @@ async def test_concurrent_bookings_beside_an_old_booking_never_exceed_capacity(c
     assert lost.value.detail["code"] == "slot_taken"
     held = [await _row(at, lane) for lane in ("#a1", "#m1")]
     assert sum(r is not None for r in held) == 1
+
+
+async def test_clearing_the_roster_keeps_counting_the_staffs_bookings(client):
+    """Capacity is per slot across every lane: two staffed bookings, then no staff (capacity 1), is full."""
+    calls = [await _start(client, caller=f"+1415555022{i}", room=f"phone-dev-_z{i}", **STAFFED) for i in range(3)]
+    at = f"{_tomorrow()}T11:00"
+    assert _book_as(client, calls[0], at).status_code == _book_as(client, calls[1], at).status_code == 200
+    await _staff_now([])
+    assert at not in _slots(client, calls[2], "gel")
+    assert _book_as(client, calls[2], at).status_code == 409
+    for c in calls[:1]:  # one cancel frees one unit: still 1 booked, capacity 1, full
+        assert client.post(f"/api/v1/internal/voice/calls/{c['callId']}/change", json={"start": at}, headers=W).json()[
+            "cancelled"
+        ]
+    assert _book_as(client, calls[2], at).status_code == 409
+    client.post(f"/api/v1/internal/voice/calls/{calls[1]['callId']}/change", json={"start": at}, headers=W)
+    assert at in _slots(client, calls[2], "gel")
+    assert _book_as(client, calls[2], at).status_code == 200 and "staff" not in await _row(at)  # back to no-staff keys
+
+
+async def test_a_retry_returns_the_booking_instead_of_taking_another_person(client):
+    a = await _start(client, caller="+14155550231", room="phone-dev-_i1", **STAFFED)
+    at = f"{_tomorrow()}T11:00"
+    first, again = _book_as(client, a, at), _book_as(client, a, at)
+    assert first.status_code == again.status_code == 200 and first.json()["staff"] == again.json()["staff"] == "Ana"
+    assert await _row(at, "#m1") is None  # Mei is still free
+
+
+def test_an_empty_service_is_the_whole_roster():
+    cfg = {"staff": [ANA, MEI], "services": [{"name": "Pedicure", "minutes": 60, "staff": "m1"}]}
+    assert voice_phone._lanes(cfg, "") == [("#a1", "Ana"), ("#m1", "Mei")]
+    assert voice_phone._lanes(cfg, "pedicure") == [("#m1", "Mei")]
+
+
+async def test_a_move_keeps_the_slot_totals_right(client):
+    calls = [await _start(client, caller=f"+1415555024{i}", room=f"phone-dev-_v{i}", **STAFFED) for i in range(4)]
+    at, to = f"{_tomorrow()}T11:00", f"{_tomorrow()}T14:00"
+    assert _book_as(client, calls[0], at).json()["staff"] == "Ana"
+    assert _book_as(client, calls[1], at).json()["staff"] == "Mei"
+    moved = client.post(
+        f"/api/v1/internal/voice/calls/{calls[1]['callId']}/change", json={"start": at, "newStart": to}, headers=W
+    )
+    assert moved.status_code == 200
+    assert _book_as(client, calls[2], at).json()["staff"] == "Mei"  # 11:00 has one unit back
+    assert _book_as(client, calls[3], to).json()["staff"] == "Ana"  # 14:00: Mei moved there, Ana is free
+    assert _book_as(client, calls[3], to, name="Bo").status_code == 409
 
 
 async def test_end_emits_outcome_metric(client, monkeypatch):

@@ -609,16 +609,17 @@ def _staff(cfg: dict) -> list[tuple[str, str]]:
 
 
 def _lanes(cfg: dict, service: str) -> list[tuple[str, str]]:
-    """(key suffix, name) for everyone who can do `service`, in list order: a slot's capacity is one booking per
-    person. A person's keys carry their id (VOICEBOOK#<start>#<id>). The unsuffixed keys mean only "no staff list":
-    a config without one has the single lane "" (today's keys), and the bookings made before staff existed keep
-    them and take one person's capacity (see `_old_booking_checks`). A service's `staff` ("a1, m1") lists who does
-    it by id (a name also matches); empty, or naming nobody on the list, is anyone. Per-person schedules and days
-    off are not modelled."""
+    """(key suffix, name) for everyone who can do `service`, in list order; "" (no service) is the whole roster.
+    A person's keys carry their id (VOICEBOOK#<start>#<id>), so one person is never booked twice at once. The
+    unsuffixed keys mean only "no staff list": a config without one has the single lane "" (today's keys). How many
+    bookings a slot takes, across every lane, is `_capacity`'s. A service's `staff` ("a1, m1") lists who does it by
+    id (a name also matches); empty, or naming nobody on the list, is anyone. Per-person schedules and days off are
+    not modelled."""
     staff = _staff(cfg)
     if not staff:
         return [("", "")]
-    named = {n.strip().lower() for n in str(_service(cfg, service).get("staff") or "").split(",")}
+    svc = _service(cfg, service) if service.strip() else {}  # "" would match the first service
+    named = {n.strip().lower() for n in str(svc.get("staff") or "").split(",")}
     eligible = [(i, n) for i, n in staff if i.lower() in named or n.lower() in named] or staff
     return [(f"#{i}", n) for i, n in eligible]
 
@@ -651,24 +652,35 @@ def _open_window(cfg: dict, date: str) -> tuple[datetime, datetime] | None:
             datetime.strptime(f"{date}T{h['close']}", "%Y-%m-%dT%H:%M"))  # fmt: skip
 
 
+def _capacity(cfg: dict) -> int:
+    """Bookings one slot can hold, across every lane: one per person on the roster, one with no roster."""
+    return max(1, len(_staff(cfg)))
+
+
 def open_starts(
     cfg: dict, date: str, taken: list[tuple], now: datetime, minutes: int, lanes: list[tuple[str, str]]
 ) -> list[str]:
-    """`free_slots` where at least one of `lanes` is free. `taken` holds (start, end, lane) bookings and
-    (start, end) blocks, such as a Google busy block, that every lane shares. With a staff list, an unsuffixed
-    booking (made before staff existed) holds one person's time, unknown whose: a start that overlaps one needs
-    another person free as well (as `_old_booking_checks` requires when booking)."""
+    """`free_slots` where one of `lanes` (the people who can do it) is free and the slot, counting every booking in
+    every lane (old unsuffixed ones and people no longer on the roster too), is below `_capacity`: the rule
+    `_capacity_items` enforces when booking. `taken` holds (start, end, lane) bookings and (start, end) blocks, such
+    as a Google busy block, that every lane shares."""
     shared = [(t[0], t[1]) for t in taken if len(t) == 2]
-    mine = lambda lane: shared + [(t[0], t[1]) for t in taken if len(t) == 3 and t[2] == lane]  # noqa: E731
-    old = [(t[0], t[1]) for t in taken if len(t) == 3 and t[2] == ""] if lanes[0][0] else []
-    need, buf = timedelta(minutes=minutes), timedelta(minutes=int(cfg.get("bufferMin") or 0))
+    every = [(t[0], t[1]) for t in taken if len(t) == 3]
+    need, buf, cap = timedelta(minutes=minutes), timedelta(minutes=int(cfg.get("bufferMin") or 0)), _capacity(cfg)
     out: set[str] = set()
     for lane, _ in lanes:
-        for at in free_slots(cfg, date, mine(lane), now, minutes):
+        own = shared + [(t[0], t[1]) for t in taken if len(t) == 3 and t[2] == lane]
+        for at in free_slots(cfg, date, own, now, minutes):
             t = datetime.strptime(at, "%Y-%m-%dT%H:%M")
-            if _clear(t, need, buf, old) or any(_clear(t, need, buf, mine(q)) for q, _ in _lanes(cfg, "") if q != lane):
+            if _peak(t, need + buf, buf, every) < cap:
                 out.add(at)
     return sorted(out)
+
+
+def _peak(at: datetime, span: timedelta, buf: timedelta, taken: list[tuple[datetime, datetime]]) -> int:
+    """Most bookings (each held with its buffer, as its cells are) at any 5 minutes of [at, at + span)."""
+    steps = range(int(span / timedelta(minutes=5)) or 1)
+    return max(sum(s <= at + timedelta(minutes=5 * i) < e + buf for s, e in taken) for i in steps)
 
 
 def _clear(at: datetime, need: timedelta, buf: timedelta, taken: list[tuple[datetime, datetime]]) -> bool:
@@ -779,24 +791,18 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
     )
     if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and _start(old) == start):
         raise _err(400, "slot_unavailable")
-    # A move keeps its person (a booking from before staff existed gets one now); a new booking takes the first
-    # eligible person whose keys are free. A lost race on one person's keys (the transaction is cancelled) tries
-    # the next, so capacity is never over-booked.
-    staffed = bool(_staff(cfg))
-    lanes = (
-        [(old["sk"][26:], old.get("staff", ""))] if old and (old["sk"][26:] or not staffed) else _lanes(cfg, service)
-    )
-    base = _cells(cfg, start, minutes)
-    held = await _held_cells(owner_id, base[0], base[-1]) if staffed and base else set()
+    # A move keeps its person; a new booking takes the first eligible person whose keys are free. The slot's
+    # capacity (every lane counted) is checked once and guarded in the same transaction. A lost race on one
+    # person's keys (the transaction is cancelled) tries the next person.
+    lanes = [(old["sk"][26:], old.get("staff", ""))] if old else _lanes(cfg, service)
+    mine = set(old.get("cells", [])) if old else set()
+    guards = await _capacity_items(owner_id, cfg, _cells(cfg, start, minutes), mine)
     for lane, person in lanes:
         items = _booking_items(table, pk, call_id, call, cfg, start, service, name, minutes, lane, person, old)
-        checks = _old_booking_checks(cfg, table, pk, base, held, set(old.get("cells", [])) if old else set(), lane)
-        if checks is None:
-            continue
-        if len(items) + len(checks) > 100:
+        if len(items) + len(guards) > 100:
             raise _err(400, "booking_too_long")
         try:
-            await messaging_repo._transact(items + checks)
+            await messaging_repo._transact(items + guards)
             return items[0]["Put"]["Item"]
         except ClientError as exc:
             if not messaging_repo.is_cancelled(exc):
@@ -804,46 +810,55 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
     raise _err(409, "slot_taken")
 
 
-async def _held_cells(owner_id: str, first: str, last: str) -> set[str]:
-    """Every VOICECELL# key in [first, last], any person's (a person's id follows the time)."""
+async def _query_range(owner_id: str, first: str, last: str) -> list[dict]:
     args = {
         "KeyConditionExpression": Key("pk").eq(messaging_repo.owner_pk(owner_id))
         & Key("sk").between(first, last + "\uffff"),
         "ConsistentRead": True,
-        "ProjectionExpression": "sk",
     }
-    out: set[str] = set()
+    out: list[dict] = []
     while True:
         result = await run_in_thread(messaging_repo._table().query, **args)
-        out.update(i["sk"] for i in result.get("Items", []))
+        out.extend(result.get("Items", []))
         if not result.get("LastEvaluatedKey"):
             return out
         args["ExclusiveStartKey"] = result["LastEvaluatedKey"]
 
 
-def _old_booking_checks(cfg: dict, table: str, pk: str, base: list[str], held: set[str], mine: set[str],
-                        lane: str) -> list[dict] | None:  # fmt: skip
-    """A booking from before staff existed holds unsuffixed cells and one person's time, unknown whose. Booking
-    `lane` over such cells needs another person free there too: the transaction checks that person's cells are
-    still empty, so (serialised against every other booking's writes) the people booked at a cell stay at most
-    one fewer than the staff, and old + new never exceed capacity. [] when no old booking overlaps; None when
-    nobody else is free. `mine` (the booking being moved) does not count against itself."""
-    old = [c for c in base if c in held and c not in mine]
-    if not old:
+async def _capacity_items(owner_id: str, cfg: dict, adding: list[str], mine: set[str] = frozenset()) -> list[dict]:
+    """The capacity rule for a write that adds booking cells at `adding`'s times: at each of those 5 minutes, the
+    cells already there in ANY lane (unsuffixed, every person, people since removed), less `mine` (the booking
+    being moved, released in the same transaction), must be below `_capacity`; else 409 slot_taken. Returns one
+    guard item per time, `VOICECAP#<utc>`, whose version the transaction bumps on the condition that it is still the
+    one read. Every write that ADDS cells bumps the guards of their times, so two of them over one slot serialise
+    and the second, having counted without the first's cells, is cancelled. Releases only lower the count, so they
+    never touch a guard: a count that still includes a cell released since is merely cautious. The guards are read
+    BEFORE the cells, so a write that lands between the reads is either counted or changes the version.
+    ponytail: two items per cell, so the longest booking is about half the 99 cells it was (~4 h); a reservation
+    that needs more is refused as booking_too_long."""
+    if not adding:
         return []
-    for q, _ in _lanes(cfg, ""):
-        if q != lane and not any(c + q in held for c in old):
-            return [
-                {
-                    "ConditionCheck": {
-                        "TableName": table,
-                        "Key": {"pk": pk, "sk": c + q},
-                        "ConditionExpression": "attribute_not_exists(sk)",
-                    }
-                }  # fmt: skip
-                for c in old
-            ]
-    return None
+    times = sorted({c[10:26] for c in adding})
+    seen = {
+        g["sk"].removeprefix("VOICECAP#"): g
+        for g in await _query_range(owner_id, f"VOICECAP#{times[0]}", f"VOICECAP#{times[-1]}")
+    }
+    cells = await _query_range(owner_id, f"VOICECELL#{times[0]}", f"VOICECELL#{times[-1]}")
+    count: dict[str, int] = {}
+    for c in cells:
+        if c["sk"] not in mine:
+            count[c["sk"][10:26]] = count.get(c["sk"][10:26], 0) + 1
+    if any(count.get(t, 0) >= _capacity(cfg) for t in times):
+        raise _err(409, "slot_taken")
+    table, pk = messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(owner_id)
+    out = []
+    for t in times:
+        v = int(seen[t]["v"]) if t in seen else 0
+        cond = {"ConditionExpression": "v = :v", "ExpressionAttributeValues": {":v": v}} if t in seen else {
+            "ConditionExpression": "attribute_not_exists(sk)"}  # fmt: skip
+        put = {"pk": pk, "sk": f"VOICECAP#{t}", "v": v + 1, "expiresAt": _cell_expiry(f"VOICECELL#{t}")}
+        out.append({"Put": {"TableName": table, "Item": put, **cond}})
+    return out
 
 
 def _booking_items(table: str, pk: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,
@@ -930,7 +945,8 @@ async def book(call_id: str, body: BookIn) -> dict:
     entry = {"start": body.start, "service": body.service, "name": body.name}
     who = f" with {result['staff']}" if result.get("staff") else ""
     line = f"{body.service} · {_pretty(body.start)} for {body.name}{who}"
-    await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
+    if not result.get("repeat"):  # a retry already has its line on the record
+        await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
                                           "callerName": c.get("callerName") or body.name,
                                           "steps": _step(c, f"Booked {line}")})  # fmt: skip
     return {"booked": True, **entry, **({"staff": result["staff"]} if result.get("staff") else {})}

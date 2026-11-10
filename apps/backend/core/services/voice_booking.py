@@ -466,12 +466,17 @@ async def _resume(ws: str, cfg: dict, call_id: str, row: dict, action: str, new_
 
 async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> dict:
     vp = _vp()
-    caller = call.get("caller")
+    caller, rows = call.get("caller"), await vp._bookings(ws, start)  # every person's booking at that start
+    same = next(
+        (b for b in rows if (b.get("callId"), b.get("service"), b.get("name")) == (call_id, service, name)), None
+    )
+    if same and _own(same) and confirmed(same):  # a retry of this call's booking: that booking, no second person
+        return {"state": "confirmed", "provider": "own", "staff": same.get("staff", ""), "repeat": True}
     # This call's (or number's) earlier Google hold at that start, with whichever person it took.
     existing = next(
         (
             b
-            for b in await vp._bookings(ws, start)
+            for b in rows
             if b.get("bookingProvider") == "google"
             and (b.get("callId") == call_id or (caller and b.get("phone") == caller))
         ),
@@ -636,9 +641,13 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
         raise vp._err(409, "slot_taken")
     lane = row["sk"][26:]  # a move keeps its person
     cells, table = vp._cells(cfg, new_start, minutes, lane), messaging_repo.settings.MESSAGING_TABLE
-    # Refuse upfront if either prepare or final transfer would exceed DDB's cap.
-    if len(set(row["cells"]) | set(cells)) + 3 > 100:
+    # Refuse upfront if either prepare (with its capacity guards) or final transfer would exceed DDB's cap.
+    if len(set(row["cells"]) | set(cells)) + len(cells) + 3 > 100:
         raise vp._err(400, "booking_too_long")
+    # The target's new cells count against the slot's capacity like a new booking's (the old ones are still held
+    # until the move settles). Only the prepare adds cells; settle re-puts the same target cells and fail/cancel
+    # only release, so the pending-operation conditions below are unchanged.
+    guards = await vp._capacity_items(ws, cfg, [c for c in cells if c not in row["cells"]])
     extra = [
         {
             "Put": {
@@ -701,7 +710,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
                 "targetHold": target_key,
             },
         },
-        extra,
+        extra + guards,
     )
     return await _dispatch(ws, cfg, call_id, row)
 

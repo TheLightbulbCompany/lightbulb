@@ -733,6 +733,46 @@ async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingSer
     return None
 
 
+async def handle_voice_plan_reversal(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    """`charge.refunded` (full refunds only) and `charge.dispute.created`: a voice-plan payment taken
+    back ends the plan and raises a Needs-you card. Charges of anything else are ignored."""
+    from core.billing import voice_plan
+    from core.dynamodb import run_in_thread
+
+    obj = event["data"]["object"]
+    if event["type"] == "charge.refunded":
+        if not obj.get("refunded"):  # partial refund: the plan stands
+            return None
+        charge_id = obj["id"]
+    else:
+        charge_id = obj.get("charge")
+    if not charge_id or not settings.STRIPE_VOICE_PLAN_PRICE_ID:
+        return None
+    key = settings.STRIPE_SECRET_KEY
+    charge = await run_in_thread(stripe.Charge.retrieve, charge_id, api_key=key)
+    invoice = charge.get("invoice")
+    if not invoice and charge.get("payment_intent"):  # newer API versions dropped Charge.invoice
+        payments = await run_in_thread(
+            stripe.InvoicePayment.list,
+            payment={"type": "payment_intent", "payment_intent": charge["payment_intent"]},
+            api_key=key,
+        )
+        invoice = next((p.get("invoice") for p in payments.get("data") or []), None)
+    if isinstance(invoice, str):
+        invoice = await run_in_thread(stripe.Invoice.retrieve, invoice, api_key=key)
+    subscription_id, _ = _invoice_subscription(invoice or {})
+    if not subscription_id:
+        return None
+    owner_id = await voice_plan.end_for_reversal(subscription_id)
+    if owner_id:
+        put_metric("stripe.voice_plan", dimensions={"event": "reversed"})
+        try:
+            await voice_plan.announce_reversal(owner_id)
+        except Exception:  # noqa: BLE001  the plan already ended; a missing card costs visibility only
+            logger.warning("voice plan reversal card failed owner=%s", owner_id, exc_info=True)
+    return None
+
+
 async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """Handle the Checkout events still owned outside subscription lifecycle.
 
@@ -777,6 +817,8 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "invoice.payment_failed": handle_invoice_payment_failed,
     "invoice.payment_action_required": handle_invoice_payment_failed,
     "invoice.paid": handle_invoice_paid,
+    "charge.refunded": handle_voice_plan_reversal,
+    "charge.dispute.created": handle_voice_plan_reversal,
     "checkout.session.completed": handle_checkout_session,
     "checkout.session.async_payment_succeeded": handle_checkout_session,
 }

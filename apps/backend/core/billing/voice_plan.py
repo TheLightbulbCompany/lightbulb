@@ -96,6 +96,47 @@ async def sync_subscription(subscription: dict) -> None:
         await voice_plan_payments.refresh(owner_id)
 
 
+async def end_for_reversal(subscription_id: str) -> str | None:
+    """A refunded or disputed voice-plan payment ends the plan now: cancel (once) and mirror it, which
+    ends the usage contract. Returns the workspace id, or None when the subscription is not a voice plan."""
+    subscription = await run_in_thread(
+        stripe.Subscription.retrieve, subscription_id, api_key=settings.STRIPE_SECRET_KEY
+    )
+    owner_id = (subscription.get("metadata") or {}).get("workspace_id")
+    if not owner_id or not is_voice_subscription(subscription):
+        return None
+    if subscription["status"] != "canceled":
+        await run_in_thread(stripe.Subscription.cancel, subscription_id, api_key=settings.STRIPE_SECRET_KEY)
+    await sync_subscription(subscription)
+    return owner_id
+
+
+async def announce_reversal(owner_id: str) -> None:
+    """One Needs-you card per workspace human (rendered as a reconnect-kind item; see activity). Best-effort."""
+    import time
+
+    from core.dynamodb import utc_now_iso
+    from core.repositories import messaging_repo
+    from core.services import website_logins
+    from core.services.activity import reconnect_item_id
+    from core.services.live_events import publish_owner_users
+    from core.services.messaging import make_live_event
+
+    created = utc_now_iso()
+    for user_id in await website_logins._humans_to_ask(owner_id, None):
+        await messaging_repo.put_activity_row(
+            {
+                "pk": messaging_repo.activity_pk(owner_id, user_id),
+                "sk": messaging_repo.activity_sk(created, reconnect_item_id("voice_plan")),
+                "kind": "reconnect",
+                "provider": "voice_plan",
+                "createdAt": created,
+                "expiresAt": int(time.time()) + website_logins.ACTIVITY_TTL_S,
+            }
+        )
+    await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"}))
+
+
 async def _enroll(owner_id: str, account: dict, client) -> None:
     customer_id = account.get("metronome_customer_id") or await metronome_provisioning._create_or_adopt_customer(
         owner_id, client

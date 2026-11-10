@@ -210,3 +210,20 @@ def test_allowed_ask_session_reaches_app_send_and_completes_delivered(client, en
     assert row["delivered"] is True and row["artifact"]["parts"] == [{"text": "delivered"}]
     recs = [claims(x["jws"]) for x in asyncio.run(a2a_repo.list_records(ORG, out["taskId"]))]
     assert [(x["decision"], x["rule"]) for x in recs] == [("allow", "s1"), ("completed", "s1")]
+
+
+def test_a_meeting_line_never_asks_the_inviters_session(client, env, monkeypatch):
+    """A Meet's lines are posted as the inviter whoever spoke them: as an origin, a guest's line would
+    be the inviter's own ask of their own session, auto-allowed as its holder. Refused, nothing sent."""
+    monkeypatch.setattr(
+        "core.repositories.messaging_repo.get_room",
+        AsyncMock(return_value={"roomId": ROOM, "ownerId": ORG, "meeting": {"provider": "meet"}}),
+    )
+    monkeypatch.setattr(
+        "core.repositories.messaging_repo.get_message_by_id",
+        AsyncMock(return_value={"messageId": ORIGIN_MSG, "author": {"kind": "human", "id": OWNER}}),
+    )
+    r = client.post(URL, json=body(originMessageId=ORIGIN_MSG), headers=H)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "bad_origin"
+    env.put_task.assert_not_awaited()
+    env.through.assert_not_awaited()

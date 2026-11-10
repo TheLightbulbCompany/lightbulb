@@ -854,13 +854,18 @@ FRONT_DESK_SCHEMA = {
     "description": "Act for the caller this thread is for, at this business only. availability: open start times on "
                    "a date (date, optional service). book: book a start time (start, service, name). my_bookings: "
                    "this caller's own bookings. move: move one of them (start, new_start). cancel: cancel one "
-                   "(start). message: take a message for the owner (text, optional name, callback_number). Times "
-                   "are the business's local time, YYYY-MM-DDTHH:MM.",
+                   "(start). waitlist: when the time they want is full, put the caller on the waitlist for a day "
+                   "(date, optional service, window_from and window_to as HH:MM, name); the owner sees it, "
+                   "nobody is texted yet, so never promise a call or text back. message: take a message for the "
+                   "owner (text, optional name, callback_number). Times are the business's local time, "
+                   "YYYY-MM-DDTHH:MM.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["availability", "book", "my_bookings", "move", "cancel", "message"]},
-            "date": {"type": "string", "description": "YYYY-MM-DD (availability)"},
+            "action": {"type": "string", "enum": ["availability", "book", "my_bookings", "move", "cancel", "message", "waitlist"]},
+            "date": {"type": "string", "description": "YYYY-MM-DD (availability, waitlist)"},
+            "window_from": {"type": "string", "description": "HH:MM (waitlist)"},
+            "window_to": {"type": "string", "description": "HH:MM (waitlist)"},
             "service": {"type": "string"},
             "start": {"type": "string", "description": "YYYY-MM-DDTHH:MM"},
             "new_start": {"type": "string", "description": "YYYY-MM-DDTHH:MM (move)"},

@@ -122,7 +122,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.21 | Call recording stored and playable | no | no | no | | Product | Moved to Later by the founder (10 Nov): salons, spas and barbers are served by the transcript, which every call already keeps. Audio adds consent and retention weight for no clear gain. Build when a customer asks |
 | 3.22 | Front-desk specialist pre-warmed when a call connects | part | part | no | | Product | A Router prewarm exists. The per-call specialist is not proven |
 | 3.23 | Staff and holidays limit the slots offered | no | no | no | 1st | Product | Both fields are saved and ignored. A business that enters "closed 26 to 27 Nov" is still booked on those days |
-| 3.24 | Waitlist: join and fill | no | no | no | | Product | The UX plan cut the tool; the spec promised it |
+| 3.24 | Waitlist: join and fill | part | no | no | 1st | Product | Join half built (`front_desk` `waitlist`, `allow.waitlist`, Agent page list with remove, 3 per caller per day, TTL a day after the date); the plugin change reaches agents only after an image build, pin change and roll. Filling a freed slot by text is NOT built: it needs SMS registration (3.25/3.26) |
 | 3.25 | Texts from the assistant's number: confirmations, opt-in reminders, callbacks | no | no | no | | Product | Needs 10DLC. Founder ruling: missed-caller and waitlist texts stay off until a consent review |
 | 3.26 | 10DLC registration, per-business brand path | n/a | n/a | n/a | | Founder | Founder said start (9 Nov) |
 | 3.27 | Square booking | part | no | no | | Platform | #5173, hidden adapter |

@@ -8,7 +8,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, useAgentConfig, useInviteAddress, type AgentConfig } from "./data";
+import { DAYS, nameOf, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
@@ -93,10 +93,15 @@ export function AgentPage() {
       <div>
         <Check label="Book appointments" on={c.allow.book} set={(book) => set({ allow: { ...c.allow, book } })} />
         <Check label="Move and cancel appointments" on={c.allow.move} set={(move) => set({ allow: { ...c.allow, move } })} />
+        <Check label="Add callers to the waitlist" on={c.allow.waitlist} set={(waitlist) => set({ allow: { ...c.allow, waitlist } })} />
         <Check label="Greet returning clients by name" on={c.allow.greetByName} set={(greetByName) => set({ allow: { ...c.allow, greetByName } })} />
         <Check label="Answer prices, hours, services and directions" on={c.allow.answer} set={(answer) => set({ allow: { ...c.allow, answer } })} />
         <Check label="Take deposits or payments (not available yet)" on={false} disabled />
       </div>
+    </Sec>
+
+    <Sec title="Waitlist" hint={`Callers ${name} put on the waitlist when the time they wanted was full. Nobody is texted yet: call them when a slot opens.`}>
+      <WaitlistList />
     </Sec>
 
     <Sec title={`Knowledge: what ${name} knows about ${business}`}>
@@ -182,6 +187,16 @@ export function Closures({ c, set }: Edit) {
 export function Check({ label, on, set, disabled, note }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean; note?: string }) {
   return <label className="vx-check" data-off={disabled}>
     <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set?.(e.target.checked)} />{label}{note && <small className="vx-muted">{note}</small>}</label>;
+}
+
+function WaitlistList() {
+  const { entries, remove } = useWaitlist();
+  if (!entries.length) return <p className="vx-muted">No one is waiting.</p>;
+  return <div>{entries.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+    <span style={{ flex: 1 }}><b>{e.name || "Caller"}</b> · <a className="vx-link" href={`tel:${e.phone}`}>{usPhone(e.phone)}</a> · {e.date}
+      {e.windowFrom && <> · {e.windowFrom}{e.windowTo && `–${e.windowTo}`}</>}{e.service && <> · {e.service}</>}</span>
+    <Button size="sm" variant="outline" aria-label={`Remove ${e.name || e.phone} from the waitlist`} onClick={() => void remove(e)}><X /></Button>
+  </div>)}</div>;
 }
 
 export function KnowledgeList({ c, set }: { c: AgentConfig; set: (p: Partial<AgentConfig>) => void }) {

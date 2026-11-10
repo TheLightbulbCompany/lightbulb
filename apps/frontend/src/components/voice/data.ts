@@ -46,7 +46,7 @@ export interface AgentConfig {
   /** Existing worker UUID that greets people; null uses the stable workspace default. */
   frontAgentId?: string | null;
   name: string; greeting: string; voice: string; spanish: boolean; live: boolean; paused: boolean;
-  allow: { book: boolean; move: boolean; greetByName: boolean; answer: boolean };
+  allow: { book: boolean; move: boolean; waitlist: boolean; greetByName: boolean; answer: boolean };
   knowledge: Knowledge[]; toAdd: string[]; instructions: string;
   hours: Record<string, Day>; holidays: { from: string; to: string }[];
   /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
@@ -72,7 +72,7 @@ export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
 export const DEFAULT_CONFIG: AgentConfig = {
   name: "", greeting: "", voice: "marin", spanish: false, live: false, paused: false,
-  allow: { book: true, move: true, greetByName: true, answer: true },
+  allow: { book: true, move: true, waitlist: true, greetByName: true, answer: true },
   knowledge: [], toAdd: [], instructions: "",
   hours: Object.fromEntries(DAYS.map((d) => [d, { open: "09:00", close: "18:00", closed: d === "Sun" }])),
   holidays: [],
@@ -106,6 +106,20 @@ export function useAgentConfig() {
       frontAgentId: next.frontAgentId ?? current?.frontAgentId, frontAgentIssue: undefined }), { revalidate: true });
   }, [api, mutate]);
   return { agents: swr.data?.agents ?? [], frontAgentId: swr.data?.frontAgentId, frontAgentIssue: swr.data?.frontAgentIssue, data: swr.data?.config, isNew: swr.data?.isNew, error: swr.error, isLoading: swr.isLoading, save };
+}
+
+export interface WaitlistEntry { id: string; date: string; name: string; phone: string; service: string; windowFrom: string; windowTo: string }
+
+/** Callers waiting for a day (GET /voice/waitlist); `remove` deletes one entry. */
+export function useWaitlist() {
+  const api = useApi();
+  const swr = useSWR("/voice/waitlist", async () => ((await api.get("/voice/waitlist")) as { entries?: WaitlistEntry[] } | undefined)?.entries ?? []);
+  const { mutate } = swr;
+  const remove = useCallback(async (e: WaitlistEntry) => {
+    await api.del(`/voice/waitlist/${e.date}/${e.id}`);
+    await mutate();
+  }, [api, mutate]);
+  return { entries: swr.data ?? [], remove };
 }
 
 /** The workspace's own team address, the one a Meet invite reaches (GET /agent-mail/address `invite_address`). */

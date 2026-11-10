@@ -526,8 +526,10 @@ class FrontDeskBody(BaseModel):
     run_id: str = Field(alias="runId")
     attempt: int = Field(ge=1)
     run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
-    action: Literal["availability", "book", "my_bookings", "move", "cancel", "message"]
+    action: Literal["availability", "book", "my_bookings", "move", "cancel", "message", "waitlist"]
     date: str = ""
+    window_from: str | None = None
+    window_to: str | None = None
     service: str = ""
     start: str = ""
     new_start: str | None = None
@@ -563,6 +565,17 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
             return await vp.availability(call_id, vp.DateIn(date=body.date, service=body.service))
         if body.action == "my_bookings":
             return await vp.my_bookings(call_id)
+        if body.action == "waitlist":
+            return await vp.join_waitlist(
+                call_id,
+                vp.WaitlistIn(
+                    date=body.date,
+                    service=body.service,
+                    name=body.name,
+                    windowFrom=body.window_from,
+                    windowTo=body.window_to,
+                ),
+            )
         if body.action == "message":
             return await vp.take_message(
                 call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)

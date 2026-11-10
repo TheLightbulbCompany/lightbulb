@@ -45,7 +45,8 @@ it("unpaid Go live keeps the assistant off and offers the existing payment flow"
 
 it("hides what does nothing yet and shows the texts as off", () => {
   render(<AgentPage />);
-  for (const gone of [/Email me the notes/, /Add callers to the waitlist/]) expect(screen.queryByLabelText(gone)).toBeNull();
+  expect((screen.getByLabelText("Add callers to the waitlist") as HTMLInputElement).checked).toBe(true); // it acts now
+  expect(screen.queryByLabelText(/Email me the notes/)).toBeNull();
   expect(screen.queryByText("Square")).toBeNull();
   for (const t of [/Text back missed callers/, /Text the waitlist/]) {
     const box = screen.getByLabelText(t) as HTMLInputElement;

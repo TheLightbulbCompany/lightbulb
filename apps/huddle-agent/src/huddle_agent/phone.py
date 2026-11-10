@@ -50,7 +50,7 @@ server = AgentServer(
 
 #: What the backend does for a caller (GPT-Live's `Backend tools`): the Router's Business profile and transfer_call,
 #: and the caller-scoped Front desk thread's actions (front_desk: availability, book, my_bookings, move, cancel,
-#: message), nothing more.
+#: waitlist, message), nothing more.
 TOOLS = [
     "Business profile: the business's actual description, what it does, services, prices, durations, hours and policies.",
     "Availability: find open times for a service on a day.",

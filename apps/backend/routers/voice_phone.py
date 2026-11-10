@@ -128,7 +128,7 @@ DEFAULTS: dict = {
     "live": False,
     "paused": False,
     "instructions": "",
-    "allow": {"book": True, "move": True, "greetByName": True, "answer": True},
+    "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
     "knowledge": [],
     "hours": {d: {"open": "09:00", "close": "18:00", "closed": d == "Sun"} for d in _DAYS},
     "holidays": [],  # closures: [{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}], local dates; an old free-text value means none
@@ -1358,6 +1358,55 @@ async def my_bookings(call_id: str) -> dict:
         return out
 
     return {"bookings": [public_booking(b) for b in rows]}
+
+
+# --- waitlist (join half; texting a freed slot needs SMS registration and is not built) -------------------
+
+
+class WaitlistIn(BaseModel):
+    date: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+    service: str = Field(default="", max_length=200)
+    name: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=300)  # the time they would take ("after 1pm"), in the caller's words
+
+
+@router.post("/internal/voice/calls/{call_id}/waitlist")
+async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
+    """Put this call's caller on the waitlist for a day. Keyed to the call's caller number, never to the model.
+    One entry per call per day (the key), so a retry rewrites it.
+    ponytail: no per-caller daily cap; add one if a caller is seen filling the list."""
+    meta, call = await _call(call_id)
+    owner_id = meta["ownerId"]
+    cfg = await agent_config(owner_id)
+    _allowed(cfg, call, "waitlist")
+    phone = _e164(call.get("caller") or "")
+    if not phone:  # a withheld number cannot be called back, so it cannot wait
+        raise _err(400, "caller_number_required")
+    try:
+        day = datetime.strptime(body.date, "%Y-%m-%d").date()
+    except ValueError:
+        raise _err(422, "invalid_date") from None
+    if day < _now(cfg).date():
+        raise _err(400, "date_in_past")
+    name = real_name(body.name) or call.get("callerName") or ""
+    service = body.service.strip()
+    row = {
+        "pk": messaging_repo.owner_pk(owner_id),
+        "sk": f"VOICEWAIT#{body.date}#{call_id}",
+        "id": call_id,
+        "date": body.date,
+        "phone": phone,
+        "name": name,
+        "service": service,
+        "note": body.note.strip(),
+        "callId": call_id,
+        "createdAt": utc_now_iso(),
+        "expiresAt": int(datetime.combine(day, datetime.min.time(), tzinfo=_tz(cfg)).timestamp()) + 2 * 86400,
+    }  # TTL: a day after the date
+    await run_in_thread(messaging_repo._table().put_item, Item=row)
+    line = f"Waitlisted for {body.date}" + (f" · {service}" if service else "")
+    await _patch_call(call_id, lambda c: {"callerName": c.get("callerName") or name, "steps": _step(c, line)})
+    return {"waitlisted": True, "date": body.date, "service": service}
 
 
 # --- message, didn't know, transfer, start_work -----------------------------------------------------------

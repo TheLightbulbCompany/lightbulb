@@ -84,12 +84,6 @@ export interface SecretNames {
    */
   paperclipServiceTokenKey: string;
   /**
-   * Bearer secret the isol8.notifications Paperclip plugin attaches to
-   * POST /webhooks/paperclip-events. Same CMK, so KmsDecryptForSecrets
-   * covers it.
-   */
-  paperclipEventsWebhookSecret: string;
-  /**
    * Shared password for the gog CLI file-keyring backend. The backend
    * materializes the owner's Google OAuth keyring on EFS by running gog with
    * this password; the same secret is injected into every per-user OpenClaw
@@ -880,29 +874,6 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // LEGACY per-agent Paperclip API keys. New keys live Fernet-encrypted on the
-    // owner's paperclip-companies row (paperclip_api_key.py); this prefix is only
-    // read as a fallback, swept by the wipes, and migrated + scheduled for deletion
-    // by scripts/migrate_agent_keys_to_rows.py (needs Get + Delete). Remove this
-    // statement, the fallback and the wipe sweeps once the prefix is empty.
-    secretsPolicy.addStatements(
-      new iam.PolicyStatement({
-        sid: "PaperclipAgentKeysRW",
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:PutSecretValue",
-          "secretsmanager:UpdateSecret",
-          "secretsmanager:DeleteSecret",
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/paperclip-agent-keys/*`,
-        ],
-      }),
-    );
-
     // Hermes-on-AgentCore boot secrets: provisioning/migration writes ONE JSON secret per
     // workspace (lightbulb/{env}/hermes/{owner}/boot = hook + gateway tokens + gate bearer)
     // and account wipe / rollback delete it; the runtime role only READS it (container-stack
@@ -946,8 +917,6 @@ export class ServiceStack extends cdk.Stack {
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/network/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
-          // App source archives (core/services/apps_source.py): apps/<owner>/<app>/src/*.tar.gz.
-          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/apps/*`,
         ],
       }),
     );
@@ -2073,15 +2042,6 @@ export class ServiceStack extends cdk.Stack {
           this,
           "ImportPaperclipServiceTokenKey",
           props.secretNames.paperclipServiceTokenKey,
-        ),
-      ),
-      // Bearer secret validated by /webhooks/paperclip-events (inbound
-      // Paperclip plugin events). Same CMK, covered by KmsDecryptForSecrets.
-      PAPERCLIP_EVENTS_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(
-          this,
-          "ImportPaperclipEventsWebhookSecret",
-          props.secretNames.paperclipEventsWebhookSecret,
         ),
       ),
       // Shared password for the gog CLI file keyring. The backend's gog_cli

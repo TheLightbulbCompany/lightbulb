@@ -527,8 +527,6 @@ class Settings(BaseSettings):
     # HMAC key for service-token JWTs (``service_token.py``), the digest/Needs-you email links and
     # the session-share signature.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""
-    # Shared bearer secret for ``routers/lifecycle_operations.py``.
-    PAPERCLIP_EVENTS_WEBHOOK_SECRET: str = ""
     # The `hub.verify_token` Meta echoes back on the one-time subscribe
     # handshake for the APP-LEVEL webhook callback (routers/meta_webhook.py).
     # It is a shared string of our choosing, set identically here and in the

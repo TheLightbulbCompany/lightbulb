@@ -57,7 +57,6 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
       encryptionKey: `lightbulb/${environment}/encryption_key`,
       posthogProjectApiKey: `lightbulb/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `lightbulb/${environment}/paperclip_service_token_key`,
-      paperclipEventsWebhookSecret: `lightbulb/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `lightbulb/${environment}/metronome_api_key`,
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
@@ -728,9 +727,10 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       .flatMap((td: any) => td.Properties.ContainerDefinitions)
       .flatMap((c: any) => [...(c.Environment ?? []), ...(c.Secrets ?? [])].map((e: any) => e.Name));
     expect(env).not.toContain("PAPERCLIP_PUBLIC_URL");
-    for (const kept of ["PAPERCLIP_SERVICE_TOKEN_KEY", "PAPERCLIP_EVENTS_WEBHOOK_SECRET", "PAPERCLIP_INTERNAL_URL"]) {
+    for (const kept of ["PAPERCLIP_SERVICE_TOKEN_KEY", "PAPERCLIP_INTERNAL_URL"]) {
       expect(env).toContain(kept);
     }
+    expect(env).not.toContain("PAPERCLIP_EVENTS_WEBHOOK_SECRET");
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>
       Object.values(SERVICE_TEMPLATE_DEV.findResources(type)).flatMap(
         (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],

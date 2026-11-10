@@ -27,6 +27,8 @@ class BillingAccountResponse(BaseModel):
     provider_choice: str | None = None
     byo_provider: str | None = None
     managed_inference_available: bool = False
+    # Server allowlist (CHATGPT_PROVIDER_ORG_IDS): clients show the ChatGPT option only when true.
+    chatgpt_provider_available: bool = False
     # Pricing tier: "base", "standard" (Workspace) or "ultra_pro" (Ultra). A paid
     # row created before the plan field existed reads "standard"; a trial_local
     # row or no row at all has no plan and reads null.

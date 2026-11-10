@@ -8,14 +8,18 @@ import {
 } from "@/lib/domain";
 import { shellUrlFromPaperclipPath } from "@/lib/shellNav";
 
-const isProtectedRoute = createRouteMatcher([
+// `/voice` and its pages only: `/voice(.*)` also matched the public stock samples
+// under `/voice-samples/`, which the iPhone app plays without a web session.
+export const PROTECTED_ROUTES = [
   "/auth/connect-machine(.*)",
   "/chat(.*)",
-  "/voice(.*)",
+  "/voice",
+  "/voice/(.*)",
   "/onboarding",
   "/settings(.*)",
   "/welcome(.*)",
-]);
+];
+const isProtectedRoute = createRouteMatcher(PROTECTED_ROUTES);
 
 // NEXT_PUBLIC_ADMIN_HOSTS is set in no deployed environment, so the derived
 // default below is what actually runs everywhere — there is no hot-fix lever, a

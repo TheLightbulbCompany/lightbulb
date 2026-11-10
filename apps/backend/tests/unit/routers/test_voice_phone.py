@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from moto import mock_aws
 
+from core.dynamodb import run_in_thread
 from core.repositories import messaging_repo
 from routers import voice_phone
 
@@ -879,5 +880,25 @@ async def test_the_sweep_ends_a_call_left_live_past_the_cap(client):
     assert (await voice_phone._call(call["callId"]))[1]["status"] == "live"
     await voice_calls.sweep_phone_calls(int(time.time()) + voice_calls.PHONE_STALE_S + 1)
     ended = (await voice_phone._call(call["callId"]))[1]
-    assert ended["status"] == "ended" and ended["durationSec"] == voice_calls.PHONE_MAX_S
+    assert ended["status"] == "ended" and ended["durationSec"] == 0  # nothing was said: bills nothing
+    assert "Closed by cleanup" in ended["summary"] and "nothing was said" in ended["summary"]
     await voice_calls.sweep_phone_calls(int(time.time()) + 10_000)  # index row gone: nothing to repeat
+
+
+async def test_the_sweep_bills_to_the_last_message_not_the_cap(client):
+    import time
+
+    from core.services import voice_calls
+
+    call = await _start(client)
+    meta, rec = await voice_phone._call(call["callId"])
+    start = datetime.fromisoformat(rec["startedAt"])
+    await run_in_thread(
+        messaging_repo._table().update_item,
+        Key={"pk": meta["pk"], "sk": meta["sk"]},
+        UpdateExpression="SET lastMessageAt = :t",
+        ExpressionAttributeValues={":t": (start + timedelta(seconds=90)).isoformat()},
+    )
+    await voice_calls.sweep_phone_calls(int(time.time()) + voice_calls.PHONE_STALE_S + 1)
+    ended = (await voice_phone._call(call["callId"]))[1]
+    assert ended["durationSec"] == 90 and "nothing was said" not in ended["summary"]

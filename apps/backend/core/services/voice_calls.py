@@ -499,6 +499,24 @@ PHONE_STALE_S = 25 * 60  # the worker's 20 min cap plus grace: a call still live
 PHONE_MAX_S = 20 * 60
 
 
+def _last_activity_seconds(meta: dict, call: dict) -> int:
+    """Start to the room's last message (every caller line and agent reply stamps it): what the call provably used.
+    No message: 0, so a dead worker's call bills nothing."""
+    from datetime import datetime
+
+    try:
+        return max(
+            0,
+            int(
+                (
+                    datetime.fromisoformat(meta["lastMessageAt"]) - datetime.fromisoformat(call["startedAt"])
+                ).total_seconds()
+            ),
+        )
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
 async def sweep_phone_calls(now: int) -> int:
     """Finish phone calls whose worker never got `end` through, by running the same end path with the capped length."""
     from boto3.dynamodb.conditions import Key
@@ -513,7 +531,14 @@ async def sweep_phone_calls(now: int) -> int:
         if now - started < PHONE_STALE_S:
             continue
         try:
-            await voice_phone.end_call(row["sk"], voice_phone.EndIn(durationSec=PHONE_MAX_S))
+            meta, call = await voice_phone._call(row["sk"])
+            seconds = _last_activity_seconds(meta, call)
+            note = "Closed by cleanup: the call's worker never reported its end" + (
+                "" if seconds else " and nothing was said on the line"
+            )
+            await voice_phone.end_call(
+                row["sk"], voice_phone.EndIn(durationSec=min(seconds, PHONE_MAX_S), summary=note)
+            )
             done += 1
         except HTTPException as exc:
             if exc.status_code != 404:

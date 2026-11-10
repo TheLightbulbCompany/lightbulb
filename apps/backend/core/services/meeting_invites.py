@@ -850,7 +850,7 @@ _CALL_KEYS = (
     "notesRunId",
     "notes",
     "decisions",
-    "decisionsRememberedAt",
+    "decisionsRemembered",
     "notesMailedAt",
     "notesMailAttemptedAt",
     "roster",
@@ -908,7 +908,7 @@ def _kept_transcript(meeting: dict) -> dict:
             "notesSkipped",
             "notes",
             "decisions",
-            "decisionsRememberedAt",
+            "decisionsRemembered",
             "unsaid",
             "followUps",
         )

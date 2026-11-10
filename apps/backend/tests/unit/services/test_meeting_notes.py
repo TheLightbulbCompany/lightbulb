@@ -606,7 +606,33 @@ async def test_decisions_go_into_team_memory_once_tagged_with_the_meeting_and_da
         first["fact"]
         == "Decided in the meeting Weekly sync on 2026-10-02: Closed on Dec 25 and Dec 26 (decided by Maya)"
     )
-    assert env.meta["meeting"]["decisionsRememberedAt"]
+    assert env.meta["meeting"]["decisionsRemembered"] == [0, 1]
+    assert env.requests["msg-1"]["mailAttemptedAt"]
+
+
+async def test_a_failed_memory_write_is_retried_by_the_run_end_without_rewriting_the_others(env, remember):
+    """Codex P2 on #5186: a transient remember error spent the completion claim, so the run end skipped it."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    remember.side_effect = [{"queued": False}, RuntimeError("member rpc"), {"queued": False}]
+    await ended_and_noted(env, DECIDED)
+    assert env.meta["meeting"]["decisionsRemembered"] == [0]
+    assert not env.requests["msg-1"].get("mailAttemptedAt")  # the run end still visits it
+    env.posted[:] = [{"author": {"id": CEO}, "replyToMessageId": "msg-1", "text": DECIDED}]
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    facts = [c.kwargs["fact"] for c in remember.await_args_list]
+    assert len(facts) == 3 and facts[1] == facts[2] and facts[0] != facts[2]  # the failed one, once more
+    assert env.meta["meeting"]["decisionsRemembered"] == [0, 1]
+    assert env.requests["msg-1"]["mailAttemptedAt"]
+
+
+async def test_a_secret_shaped_decision_is_not_retried(env, remember):
+    from core.services import memory_api
+
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    remember.side_effect = [memory_api.Refused("secret"), {"queued": False}]
+    await ended_and_noted(env, DECIDED)
+    assert env.meta["meeting"]["decisionsRemembered"] == [0, 1] and env.requests["msg-1"]["mailAttemptedAt"]
+    assert remember.await_count == 2
 
 
 async def test_a_meeting_with_no_decisions_writes_nothing_to_memory(env, remember):
@@ -614,7 +640,7 @@ async def test_a_meeting_with_no_decisions_writes_nothing_to_memory(env, remembe
     await ended_and_noted(env, "Nothing was settled.\n\nAction items:\n- Pat: ask again")
     assert env.meta["meeting"]["decisions"] == []
     remember.assert_not_awaited()
-    assert "decisionsRememberedAt" not in env.meta["meeting"]
+    assert "decisionsRemembered" not in env.meta["meeting"]
 
 
 async def test_late_decisions_land_on_the_original_occurrence(env, remember):
@@ -626,6 +652,6 @@ async def test_late_decisions_land_on_the_original_occurrence(env, remember):
     }  # fmt: skip
     await mod.on_agent_reply("org_1", CEO, "msg-1", DECIDED, False)
     past = env.meta["meeting"]["history"][0]
-    assert len(past["decisions"]) == 2 and past["decisionsRememberedAt"]
-    assert "decisions" not in env.meta["meeting"] and "decisionsRememberedAt" not in env.meta["meeting"]
+    assert len(past["decisions"]) == 2 and past["decisionsRemembered"] == [0, 1]
+    assert "decisions" not in env.meta["meeting"] and "decisionsRemembered" not in env.meta["meeting"]
     assert remember.await_args_list[0].kwargs["subject"] == "Decision: Weekly sync"

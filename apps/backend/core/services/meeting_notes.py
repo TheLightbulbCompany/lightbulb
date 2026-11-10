@@ -442,27 +442,27 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
         except Exception:  # noqa: BLE001 -- the notes stay in the app; the items are in the notes
             put_metric("meeting.notes.actions_failed")
             logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)
-        try:
-            await _remember_decisions(owner_id, request, entry)
-        except Exception:  # noqa: BLE001 -- the decisions stay on the meeting; only recall misses them
-            put_metric("meeting.notes.decisions_failed")
-            logger.warning("meeting room %s: decisions not remembered", room_id, exc_info=True)
+        if not await _remember_decisions(owner_id, request, entry):
+            return  # the completion claim stays unspent: the run end (on_notes_run_ended) writes the rest
     await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
 
 
-async def _remember_decisions(owner_id: str, request: dict, entry: dict) -> None:
+async def _remember_decisions(owner_id: str, request: dict, entry: dict) -> bool:
     """Each decision becomes one team ``decision`` in the workspace's memory, so "what did we decide about X" is
-    answered by the ordinary recall path. Once per occurrence: ``decisionsRememberedAt`` marks it done."""
+    answered by the ordinary recall path. ``decisionsRemembered`` holds the indexes written, so a retry writes only
+    the rest. False when a write failed (left for the retry); a secret-shaped refusal is final, not a failure."""
     found = entry.get("decisions") or []
-    if not found or entry.get("decisionsRememberedAt"):
-        return
+    done = set(entry.get("decisionsRemembered") or [])
     from core.services import memory_api
 
     room_id, occurrence = request["roomId"], request.get("occurrence")
     title = (request.get("meeting") or {}).get("title") or "Meeting"
     day = time.strftime("%Y-%m-%d", time.gmtime(int(occurrence or 0)))
-    # ponytail: a crash between these writes and the marker repeats them; per-decision markers if that bites.
-    for d in found:
+    ok = True
+    # ponytail: a crash between one write and its mark repeats that one write; memory-side keys if that bites.
+    for n, d in enumerate(found):
+        if n in done:
+            continue
         by = f" (decided by {d['by']})" if d.get("by") else ""
         try:
             await memory_api.remember(
@@ -471,13 +471,18 @@ async def _remember_decisions(owner_id: str, request: dict, entry: dict) -> None
             )  # fmt: skip
         except memory_api.Refused:
             put_metric("meeting.notes.decision_refused")  # secret-shaped: kept on the meeting only
-    now = int(time.time())
+        except Exception:  # noqa: BLE001 -- a transient RPC failure: left for the retry
+            ok = False
+            put_metric("meeting.notes.decisions_failed")
+            logger.warning("meeting room %s: decision %d not remembered", room_id, n, exc_info=True)
+            continue
+        done.add(n)
+        mark = {"decisionsRemembered": sorted(done)}
 
-    def mark(m: dict) -> dict:
-        if m.get("startAt") == occurrence:
-            return {"decisionsRememberedAt": now}
-        past = [{**h, "decisionsRememberedAt": now} if h.get("startAt") == occurrence else h
-                for h in m.get("history") or []]  # fmt: skip
-        return {"history": past}
+        def lay(m: dict, mark: dict = mark) -> dict:
+            if m.get("startAt") == occurrence:
+                return mark
+            return {"history": [{**h, **mark} if h.get("startAt") == occurrence else h for h in m.get("history") or []]}
 
-    await meeting_invites._patch_meeting(room_id, mark)
+        await meeting_invites._patch_meeting(room_id, lay)
+    return ok

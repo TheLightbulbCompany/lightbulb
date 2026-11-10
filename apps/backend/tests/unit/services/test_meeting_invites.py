@@ -1444,7 +1444,7 @@ async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, 
                 "notesSkipped",
                 "notes",
                 "decisions",
-                "decisionsRememberedAt",
+                "decisionsRemembered",
                 "unsaid",
                 "followUps",
             )  # fmt: skip
@@ -1559,7 +1559,7 @@ async def test_a_series_made_a_single_event_keeps_the_last_transcript(room, bots
                     "notesSkipped",
                     "notes",
                     "decisions",
-                    "decisionsRememberedAt",
+                    "decisionsRemembered",
                     "unsaid",
                     "followUps",
                 )  # fmt: skip

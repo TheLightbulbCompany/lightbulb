@@ -109,7 +109,6 @@ PIN_OK = (
 PIN_WRONG = "The PIN typed on the keypad was not accepted."
 OWNER_ENDED = "Owner mode has ended: this person is no longer a member of the business. They are a caller again."
 ANSWER_WITHIN_S = 60.0  # owner.py's: a line this soon after a Worker's question answers it; later, a new ask
-PIN_LOCKED = "The PIN typed on the keypad was not accepted, and no more tries are allowed on this call."
 #: The prompt from then on (owner.py's, on the phone): the team's brain, not the front desk.
 OWNER_NOW = """The caller has proven they are the business's owner. They are no longer a caller.
 Backend tools now: the team's brain, which knows the team's work across email, calendar and docs, remembers what
@@ -502,7 +501,7 @@ async def entrypoint(ctx: JobContext) -> None:
             live_session.send_result(None, PIN_OK)
             did.append("The owner proved it was them with the PIN")
         else:
-            live_session.send_result(None, PIN_LOCKED if out.get("locked") else PIN_WRONG)
+            live_session.send_result(None, PIN_WRONG)
 
     @ctx.room.on("sip_dtmf_received")
     def _dtmf(ev) -> None:

@@ -438,7 +438,7 @@ async def test_the_owner_types_a_pin_and_the_backend_alone_decides(monkeypatch):
     """Board row 3.29: keypad digits go to /owner-pin, never to the model or the log; a yes moves /events to the
     member's DM cursor and tells GPT-Live it now talks to the owner; a no is said as a no, nothing more."""
     call = await Call(monkeypatch, info={"ownerPin": True},
-                      replies={"owner-pin": [{"ok": False, "locked": False}, {"ok": True, "after": 41}]}).answer()  # fmt: skip
+                      replies={"owner-pin": [{"ok": False}, {"ok": True, "after": 41}]}).answer()  # fmt: skip
     instructions = []
     call.live.transport = SimpleNamespace(instructions=instructions.append)
     assert "phone PIN on the keypad" in call.started["prompt"]

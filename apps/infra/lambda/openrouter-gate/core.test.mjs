@@ -32,9 +32,7 @@ function fixture({ token = 'good', status = 'active', balance = 1000000, provide
   return { calls, deps, responder, event };
 }
 
-const collectedVoice = { metronome_voice_contract_id: AV('voice'), voice_plan_paid_periods: { M: {
-  paid: { M: { start: AV('2000-01-01T00:00:00Z'), end: AV('2099-01-01T00:00:00Z') } },
-} } };
+const collectedVoice = { metronome_voice_contract_id: AV('voice'), voice_plan_stripe_status: AV('active') };
 test('fresh collected voice works after local trial expiry on included key budget without a credits ledger', async () => {
   const f = fixture({ status: 'trial_local', trialEnd: 1, provider: null, balance: null, metronome: false, voice: collectedVoice });
   await handleRequest(f.event(), f.responder, f.deps);
@@ -44,7 +42,7 @@ test('fresh collected voice works after local trial expiry on included key budge
   assert.equal(f.calls.puts[0].Item.reservation_microcents.N, '0');
 });
 test('failed or ended voice cannot revive an expired local trial at the money fence', async () => {
-  for (const extra of [{ voice_plan_unpaid_invoice_ids: { SS: ['in_debt'] } }, { voice_plan_ending_at: AV('2000-01-01T00:00:00Z') }]) {
+  for (const extra of [{ voice_plan_stripe_status: AV('past_due') }, { voice_plan_ending_at: AV('2000-01-01T00:00:00Z') }]) {
     const f = fixture({ status: 'trial_local', trialEnd: 1, provider: null, voice: { ...collectedVoice, ...extra } });
     await handleRequest(f.event(), f.responder, f.deps);
     assert.equal(f.calls.errors[0].status, 403);

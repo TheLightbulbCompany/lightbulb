@@ -45,14 +45,10 @@ def _containers():
 def has_voice_plan(account: dict | None) -> bool:
     if not account or not account.get("metronome_voice_contract_id") or account.get("voice_plan_status") == "canceled":
         return False
-    if account.get("voice_plan_unpaid_invoice_ids"):
+    # The $250 flat fee is a Stripe subscription: active/trialing (a 100%-off coupon is active) is the entitlement.
+    if account.get("voice_plan_stripe_status") not in ("active", "trialing"):
         return False
     now = datetime.now(UTC)
-    if not any(
-        datetime.fromisoformat(period["start"]) <= now < datetime.fromisoformat(period["end"])
-        for period in (account.get("voice_plan_paid_periods") or {}).values()
-    ):
-        return False
     ending_at = account.get("voice_plan_ending_at")
     return not ending_at or datetime.fromisoformat(ending_at) > now
 

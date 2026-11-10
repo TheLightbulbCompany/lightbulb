@@ -116,9 +116,8 @@ def build_owner_facts(
             {
                 "voice_plan": {
                     "collected_coverage_active": voice_paid,
-                    "latest_collected_period_end": account.get("voice_plan_paid_through"),
                     "ends_at": account.get("voice_plan_ending_at"),
-                    "payment_required": bool(account.get("voice_plan_unpaid_invoice_ids")),
+                    "payment_required": account.get("voice_plan_stripe_status") in ("past_due", "unpaid"),
                     "managed_daily_allowance_usd": settings.OPENROUTER_BASE_KEY_DAILY_LIMIT_USD
                     if included_voice_model
                     else None,

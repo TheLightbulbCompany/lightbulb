@@ -30,7 +30,7 @@ def _client_with(response: MagicMock) -> tuple[MetronomeClient, MagicMock]:
     return MetronomeClient(api_key="tok_sandbox", base_url="https://api.metronome.com/v1", http_client=fake), fake
 
 
-async def test_voice_contract_is_monthly_advance_and_scopes_usage_to_one_enrollment(monkeypatch):
+async def test_voice_contract_is_usage_only_and_scopes_usage_to_one_enrollment(monkeypatch):
     from core.config import settings
 
     monkeypatch.setattr(settings, "METRONOME_STRIPE_DELIVERY_METHOD_ID", "delivery-1")
@@ -39,7 +39,6 @@ async def test_voice_contract_is_monthly_advance_and_scopes_usage_to_one_enrollm
         await client.create_voice_contract(
             customer_id="customer-1",
             rate_card_id="voice-card",
-            subscription_product_id="voice-sub",
             uniqueness_key="enrollment-1",
         )
         == "voice-contract"
@@ -51,15 +50,7 @@ async def test_voice_contract_is_monthly_advance_and_scopes_usage_to_one_enrollm
         "billing_provider": "stripe",
         "delivery_method_id": "delivery-1",
     }
-    assert payload["subscriptions"] == [
-        {
-            "collection_schedule": "ADVANCE",
-            "billing_cycle_config": {"invoice_placement": "ON_SCHEDULED_INVOICE"},
-            "initial_quantity": 1,
-            "proration": {"invoice_behavior": "BILL_IMMEDIATELY", "is_prorated": True},
-            "subscription_rate": {"billing_frequency": "MONTHLY", "product_id": "voice-sub"},
-        }
-    ]
+    assert "subscriptions" not in payload  # the flat fee is a Stripe subscription
 
 
 async def test_voice_contract_cancellation_normalizes_python_microseconds_for_provider():

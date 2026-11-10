@@ -22,12 +22,7 @@ def _account():
         "voice_plan_usage_key": "voice-usage-a",
         "voice_plan_status": "active",
         "voice_plan_started_at": start.isoformat(),
-        "voice_plan_paid_periods": {
-            "invoice-current": {
-                "start": (now - timedelta(days=1)).isoformat(),
-                "end": (now + timedelta(days=30)).isoformat(),
-            }
-        },
+        "voice_plan_stripe_status": "active",
     }
 
 

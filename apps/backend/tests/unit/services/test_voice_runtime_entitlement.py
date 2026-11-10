@@ -15,7 +15,7 @@ def _voice(**extra):
         "trial_end": 1,
         "metronome_voice_contract_id": "voice-contract",
         "voice_plan_status": "pending_payment",
-        "voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}},
+        "voice_plan_stripe_status": "active",
         **extra,
     }
 
@@ -35,10 +35,10 @@ def test_current_paid_voice_entitles_runtime_without_rewriting_legacy_subscripti
 @pytest.mark.parametrize(
     "changes",
     [
-        {"voice_plan_paid_periods": {}},
-        {"voice_plan_paid_periods": {"invoice": {"start": "2098-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}}},
-        {"voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2001-01-01T00:00:00Z"}}},
-        {"voice_plan_unpaid_invoice_ids": {"unpaid"}},
+        {"voice_plan_stripe_status": "past_due"},
+        {"voice_plan_stripe_status": "incomplete"},
+        {"voice_plan_stripe_status": "canceled"},
+        {"voice_plan_stripe_status": "unpaid"},
         {"voice_plan_ending_at": "2001-01-01T00:00:00Z"},
     ],
 )
@@ -82,7 +82,7 @@ async def test_explicit_byo_choice_keeps_its_provider_requirement_for_paid_voice
 
 
 async def test_failed_voice_coverage_does_not_rescue_an_expired_trial():
-    account = _voice(voice_plan_unpaid_invoice_ids={"unpaid"})
+    account = _voice(voice_plan_stripe_status="past_due")
     with patch.object(gate.billing_repo, "get_by_owner_id", AsyncMock(return_value=account)):
         result = await gate.evaluate_provision_gate(owner_id="org_voice")
     assert result.code == "trial_expired"
@@ -90,7 +90,7 @@ async def test_failed_voice_coverage_does_not_rescue_an_expired_trial():
 
 
 def test_pending_voice_invoice_does_not_allow_a_second_workspace_subscription():
-    account = _voice(voice_plan_paid_periods={})
+    account = _voice(voice_plan_stripe_status="incomplete")
     assert gate.is_trial_blocked(account)
     assert not gate.is_paid_subscription(account)
 

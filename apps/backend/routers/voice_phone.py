@@ -798,17 +798,20 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
     # person's keys (the transaction is cancelled) tries the next person.
     lanes = [(old["sk"][26:], old.get("staff", ""))] if old else _lanes(cfg, service)
     mine = set(old.get("cells", [])) if old else set()
-    guards = await _capacity_items(owner_id, cfg, _cells(cfg, start, minutes), mine)
-    for lane, person in lanes:
-        items = _booking_items(table, pk, call_id, call, cfg, start, service, name, minutes, lane, person, old)
-        if len(items) + len(guards) > 100:
-            raise _err(400, "booking_too_long")
-        try:
-            await messaging_repo._transact(items + guards)
-            return items[0]["Put"]["Item"]
-        except ClientError as exc:
-            if not messaging_repo.is_cancelled(exc):
-                raise
+    # Another booking landing between the read and the write changes the guards' versions and cancels every lane's
+    # write with them: re-read the slot (which refuses 409 once it is truly full) and try the people again.
+    for _ in range(3):
+        guards = await _capacity_items(owner_id, cfg, _cells(cfg, start, minutes), mine)
+        for lane, person in lanes:
+            items = _booking_items(table, pk, call_id, call, cfg, start, service, name, minutes, lane, person, old)
+            if len(items) + len(guards) > 100:
+                raise _err(400, "booking_too_long")
+            try:
+                await messaging_repo._transact(items + guards)
+                return items[0]["Put"]["Item"]
+            except ClientError as exc:
+                if not messaging_repo.is_cancelled(exc):
+                    raise
     raise _err(409, "slot_taken")
 
 

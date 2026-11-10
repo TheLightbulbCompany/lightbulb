@@ -660,6 +660,26 @@ def test_an_empty_service_is_the_whole_roster():
     assert voice_phone._lanes(cfg, "pedicure") == [("#m1", "Mei")]
 
 
+async def test_a_booking_that_lands_first_does_not_refuse_a_free_person(client):
+    """A Mei-only booking lands between an anyone booking's read and its write: the stale guards fail that write,
+    capacity is re-read, and Ana (still free) is booked rather than slot_taken."""
+    a = await _start(client, caller="+14155550271", room="phone-dev-_t1", **STAFFED)
+    b = await _start(client, caller="+14155550272", room="phone-dev-_t2", **STAFFED)
+    cfg = await voice_phone.agent_config("org_1")
+    at = f"{_tomorrow()}T11:00"
+    real, raced = messaging_repo._transact, []
+
+    async def interleaved(items):
+        if not raced:
+            raced.append(True)
+            await voice_phone._book("org_1", b["callId"], {"caller": "+14155550272"}, cfg, at, "pedicure", "Bo")
+        return await real(items)
+
+    with patch.object(messaging_repo, "_transact", interleaved):
+        row = await voice_phone._book("org_1", a["callId"], {"caller": "+14155550271"}, cfg, at, "gel", "Al")
+    assert row["staff"] == "Ana" and (await _row(at, "#m1"))["name"] == "Bo"
+
+
 async def test_with_google_one_shared_calendar_holds_one_booking_at_a_time(client):
     """Bookings that go to Google share one calendar: a held booking (its Google write still pending) blocks the
     slot for every person."""

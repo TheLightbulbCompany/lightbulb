@@ -53,6 +53,8 @@ class Twilio:
                     raise RuntimeError("origination failed")
                 self.urls.append({"sip_url": fields["SipUrl"], "enabled": True})
             return {"origination_urls": self.urls}
+        if method == "POST" and url.endswith("/Trunks/TKtest"):
+            self.trunks[0]["transfer_mode"] = fields["TransferMode"]
         if method == "DELETE":
             self.trunks.clear()
         return {}
@@ -290,3 +292,11 @@ async def test_provider_failure_reports_code_but_redacts_credentials_and_request
         assert "21220" in text and "password-private-test" not in text and "api-private-test" not in text
     finally:
         await twilio.http.aclose()
+
+
+async def test_apply_enables_trunk_transfer_once_for_handoff():
+    twilio = Twilio()
+    await p.reconcile(twilio, livekit(), apply=True, config=CONFIG)
+    await p.reconcile(twilio, livekit(), apply=True, config=CONFIG)
+    sets = [f for m, u, f in twilio.writes if u.endswith("/Trunks/TKtest") and m == "POST"]
+    assert sets == [{"TransferMode": "enable-all"}]

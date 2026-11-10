@@ -205,12 +205,13 @@ async def test_failed_preflight_never_inserts_or_claims_a_booking(client, google
     assert await row(start) is None and not google.events
 
 
-async def test_provider_version_race_keeps_old_booking(client, google):
+async def test_owner_moving_the_event_in_google_keeps_old_booking(client, google):
     _, base = await begin(client)
     old, new = f"{_tomorrow()}T14:00", f"{_tomorrow()}T16:00"
     assert create(client, base, old).json()["booked"]
     original = await row(old)
-    google.events[original["eventId"]]["etag"] = "human-edit"
+    event = google.events[original["eventId"]]
+    event |= {"etag": "human-edit", "start": {**event["start"], "dateTime": f"{_tomorrow()}T15:00:00"}}
     result = change(client, base, old, new)
     assert result.status_code == 409 and result.json()["detail"]["code"] == "provider_booking_changed"
     assert await row(old) and await row(new) is None
@@ -356,14 +357,14 @@ async def test_unknown_create_is_reported_as_pending_to_caller_lookup_and_profil
     assert record["call"]["bookings"] == []
 
 
-async def test_a_crash_before_provider_binding_never_turns_a_local_hold_into_success(client, google):
+async def test_a_crash_before_provider_binding_is_prepared_on_the_same_callers_retry(client, google):
     call, base = await begin(client)
     start = f"{_tomorrow()}T14:00"
     cfg = await vp.agent_config("org_1")
     await vp._book("org_1", call["callId"], {"caller": "+14155550133"}, cfg, start, "gel", "Priya")
-    result = create(client, base, start).json()
-    assert result["booked"] is False and result["state"] == "held"
-    assert not google.events
+    held = await row(start)
+    assert create(client, base, start).json()["booked"] is True
+    assert (await row(start))["bookingId"] == held["bookingId"] and len(google.events) == 1
 
 
 async def test_a_different_mutation_cannot_bypass_unknown_move(client, google):
@@ -483,3 +484,171 @@ async def test_interrupted_or_malformed_create_remains_unknown_with_its_original
     assert held["pending"]["state"] == "unknown" and held["eventId"] == held["pending"]["body"]["id"]
     assert create(client, base, start).json()["booked"] is False
     assert (await row(start))["bookingId"] == held["bookingId"]
+
+
+def posts(google):
+    return [r for r in google.calls if r.method == "POST" and r.url.path.endswith("/events")]
+
+
+async def test_create_that_never_reached_google_is_resent_after_the_in_flight_window(client, google, monkeypatch):
+    _, base = await begin(client)
+    start = f"{_tomorrow()}T14:00"
+    google.failures[("POST", f"/calendars/{CALENDAR}/events")] = (500, {})
+    assert create(client, base, start).json()["state"] == "pending"
+    google.failures.clear()
+    # Inside the window the first POST may still be in flight at Google: nothing is resent.
+    assert create(client, base, start).json()["state"] == "pending" and len(posts(google)) == 1
+    monkeypatch.setattr(booking, "SETTLE_S", 0)
+    assert create(client, base, start).json()["booked"] is True
+    assert len(posts(google)) == 2 and (await row(start))["eventId"] in google.events
+
+
+async def test_resent_create_that_google_already_has_is_read_and_settled(client, google, monkeypatch):
+    _, base = await begin(client)
+    start = f"{_tomorrow()}T14:00"
+    google.commit_then_fail = True
+    assert create(client, base, start).json()["state"] == "pending"
+    held = await row(start)
+    real = booking._request
+    gets = iter([httpx.Response(404, request=httpx.Request("GET", "https://x"))])
+
+    async def first_get_lost(ws, method, url, body=None, **kw):  # the event is there; one read says 404
+        if method == "GET" and url.endswith(held["eventId"]) and (r := next(gets, None)):
+            raise httpx.HTTPStatusError("lost", request=r.request, response=r)
+        return await real(ws, method, url, body, **kw)
+
+    monkeypatch.setattr(booking, "_request", first_get_lost)
+    monkeypatch.setattr(booking, "SETTLE_S", 0)
+    assert create(client, base, start).json()["booked"] is True  # resent POST answers 409, then GET matches
+    assert len(google.events) == 1 and len(posts(google)) == 2
+
+
+@pytest.mark.parametrize("target", ["T16:00", None])
+async def test_move_or_cancel_google_never_applied_releases_after_the_window(client, google, monkeypatch, target):
+    _, base = await begin(client)
+    old, new = f"{_tomorrow()}T14:00", target and f"{_tomorrow()}{target}"
+    assert create(client, base, old).json()["booked"]
+    o = await row(old)
+    method = "PATCH" if new else "DELETE"
+    google.failures[(method, f"/calendars/{CALENDAR}/events/{o['eventId']}")] = (500, {})
+    assert change(client, base, old, new).json()["state"] == "pending"
+    google.failures.clear()
+    assert change(client, base, old, new).json()["state"] == "pending"  # still inside the in-flight window
+    monkeypatch.setattr(booking, "SETTLE_S", 0)
+    result = change(client, base, old, new).json()
+    assert result["state"] == "rejected"
+    kept = await row(old)
+    assert "pending" not in kept and kept["eventId"] in google.events
+    assert await vp._booking_rows("org_1", "VOICEHOLD#") == []
+    if new:
+        other = await _start(client, caller="+14155550144", room="phone-other", bookingsGo="google")
+        assert create(client, f"/api/v1/internal/voice/calls/{other['callId']}", new).json()["booked"] is True
+    again = new and f"{_tomorrow()}T17:00"  # the original stands and still changes
+    assert change(client, base, old, again).json()["moved" if new else "cancelled"] is True
+
+
+async def test_same_caller_reconciles_a_pending_create_from_a_later_call(client, google):
+    _, base = await begin(client)
+    start = f"{_tomorrow()}T14:00"
+    google.commit_then_fail = True
+    assert create(client, base, start).json()["state"] == "pending"
+    later = await _start(client, room="phone-later", bookingsGo="google")
+    assert create(client, f"/api/v1/internal/voice/calls/{later['callId']}", start).json()["booked"] is True
+    assert len(posts(google)) == 1
+    other = await _start(client, caller="+14155550144", room="phone-other", bookingsGo="google")
+    assert create(client, f"/api/v1/internal/voice/calls/{other['callId']}", start).status_code == 409
+
+
+async def test_change_on_a_pending_create_finishes_the_create_first(client, google):
+    _, base = await begin(client)
+    start = f"{_tomorrow()}T14:00"
+    google.commit_then_fail = True
+    assert create(client, base, start).json()["state"] == "pending"
+    assert change(client, base, start).json()["cancelled"] is True
+    assert await row(start) is None and not google.events and len(posts(google)) == 1
+
+
+async def test_prepared_operation_is_dispatched_on_resume(client, google, monkeypatch):
+    _, base = await begin(client)
+    old, new = f"{_tomorrow()}T14:00", f"{_tomorrow()}T16:00"
+    assert create(client, base, old).json()["booked"]
+    real = booking._dispatch
+
+    async def crashed(ws, cfg, call_id, row_):  # the process died after the prepare save
+        return booking._result(row_, "pending", "crashed", action="move")
+
+    monkeypatch.setattr(booking, "_dispatch", crashed)
+    assert change(client, base, old, new).json()["moved"] is False
+    assert (await row(old))["pending"]["state"] == "prepared"
+    monkeypatch.setattr(booking, "_dispatch", real)
+    assert change(client, base, old, new).json()["moved"] is True
+
+
+async def test_google_hold_without_a_prepared_operation_can_be_cancelled(client, google):
+    call, base = await begin(client)
+    start = f"{_tomorrow()}T14:00"
+    cfg = await vp.agent_config("org_1")
+    await vp._book("org_1", call["callId"], {"caller": "+14155550133"}, cfg, start, "gel", "Priya")
+    cells = (await row(start))["cells"]
+    assert change(client, base, start).json()["cancelled"] is True
+    assert await row(start) is None and not google.calls
+    for cell in cells:
+        assert await messaging_repo._get(messaging_repo.owner_pk("org_1"), cell) is None
+
+
+async def test_line_problem_counts_a_pending_move_as_unconfirmed(client, google, monkeypatch):
+    _, base = await begin(client)
+    old, new = f"{_tomorrow()}T14:00", f"{_tomorrow()}T16:00"
+    assert create(client, base, old).json()["booked"]
+    o = await row(old)
+    titles, real = [], vp.start_work
+
+    async def spy(call_id, body):
+        titles.append(body.title)
+        return await real(call_id, body)
+
+    monkeypatch.setattr(vp, "start_work", spy)
+    google.failures[("PATCH", f"/calendars/{CALENDAR}/events/{o['eventId']}")] = (500, {})
+    change(client, base, old, new)
+    assert titles and "1 booking(s)" in titles[0]
+
+
+async def test_concurrent_failures_raise_one_line_problem(client, google, monkeypatch):
+    call, _ = await begin(client)
+    titles, real = [], vp.start_work
+
+    async def spy(call_id, body):
+        titles.append(body.title)
+        await asyncio.sleep(0)
+        return await real(call_id, body)
+
+    monkeypatch.setattr(vp, "start_work", spy)
+    cfg = await vp.agent_config("org_1")
+    await asyncio.gather(*(booking._line_problem("org_1", cfg, call["callId"]) for _ in range(3)))
+    assert len(titles) == 1
+
+
+async def test_owner_edit_in_google_that_keeps_the_time_does_not_block_a_move(client, google):
+    _, base = await begin(client)
+    old, new = f"{_tomorrow()}T14:00", f"{_tomorrow()}T16:00"
+    assert create(client, base, old).json()["booked"]
+    o = await row(old)
+    google.events[o["eventId"]] |= {"etag": "owner-colour", "colorId": "5"}
+    assert change(client, base, old, new).json()["moved"] is True
+
+
+async def test_lost_move_response_settles_after_shared_cells_aged_out(client, google):
+    from core.dynamodb import run_in_thread
+
+    _, base = await begin(client)
+    old, new = f"{_tomorrow()}T14:00", f"{_tomorrow()}T14:30"
+    assert create(client, base, old).json()["booked"]
+    o = await row(old)
+    google.commit_then_fail = True
+    assert change(client, base, old, new).json()["state"] == "pending"
+    for cell in o["cells"]:  # the table's TTL removed the original cells, shared ones included
+        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": o["pk"], "sk": cell})
+    assert change(client, base, old, new).json()["moved"] is True
+    moved = await row(new)
+    for cell in moved["cells"]:
+        assert (await messaging_repo._get(o["pk"], cell))["booking"] == f"VOICEBOOK#{new}"

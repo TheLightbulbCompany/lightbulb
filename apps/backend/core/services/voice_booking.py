@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from urllib.parse import quote, urlencode
 
@@ -30,6 +31,9 @@ from core.services.credentials import access_token
 logger = logging.getLogger(__name__)
 
 GOOGLE_S = 2.0  # token + request, per Google call (the speed rule's integration bound)
+# A write sent this long ago (5 x its own bound) has finished at Google, so "not applied" evidence is final.
+# Before it the request may still be in flight and an absent or unchanged event proves nothing.
+SETTLE_S = 5 * GOOGLE_S
 API = "https://www.googleapis.com/calendar/v3"
 _PROBLEM_SK = "VOICELINEPROBLEM#google"  # -> the open Line-problem's task, so a workspace has at most one
 _OPEN = ("queued", "working", "waiting")  # tasks_schema.TaskStatus; idle (Done), resolved, failed are closed
@@ -92,19 +96,36 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
     """One existing question per workspace for external booking failures/uncertainty.
     ponytail: it rides the existing phone Questions path (start_work -> a Worker task that asks the owner, kind
     `question`); Task 6 adds the `line_problem` kind and renames it."""
-    vp, pk = _vp(), messaging_repo.owner_pk(ws)
+    vp, pk, table, now_s = _vp(), messaging_repo.owner_pk(ws), messaging_repo._table(), int(time.time())
     pointer = await messaging_repo._get(pk, _PROBLEM_SK)
-    if pointer and (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:  # fmt: skip
-        return
+    if pointer and pointer.get("taskId"):
+        if (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:
+            return
+    elif pointer and int(pointer.get("claimUntil", 0)) > now_s:
+        return  # another failure is raising it now
+    # Claim the pointer against what was read, so concurrent failures raise one card; a claim whose card never
+    # got raised expires after a minute.
+    claim = {"pk": pk, "sk": _PROBLEM_SK, "claim": uuid.uuid4().hex, "claimUntil": now_s + 60}
+    condition = (
+        {"ConditionExpression": "taskId = :seen OR claim = :seen",
+         "ExpressionAttributeValues": {":seen": pointer.get("taskId") or pointer.get("claim")}}
+        if pointer else {"ConditionExpression": "attribute_not_exists(sk)"}
+    )  # fmt: skip
+    try:
+        await run_in_thread(table.put_item, Item=claim, **condition)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
     now = vp._now(cfg).strftime("%Y-%m-%dT%H:%M")
-    held = sum(1 for b in await vp._bookings(ws, "") if not confirmed(b) and b["sk"][10:] >= now)
+    held = sum(1 for b in await vp._bookings(ws, "") if (not confirmed(b) or b.get("pending")) and b["sk"][10:] >= now)
     title = f"Google Calendar needs checking; {held} booking(s) unconfirmed"
     brief = (
         f"{title}. External booking outcomes may be unknown; preserve holds and verify the provider before changing them. Ask the owner "
         "to check Google in Settings and reconcile the recorded booking operation. Do not assume sign-in expired."
     )
     out = await vp.start_work(call_id, vp.WorkIn(title=title, brief=brief))
-    await run_in_thread(messaging_repo._table().put_item, Item={"pk": pk, "sk": _PROBLEM_SK, "taskId": out["taskId"]})
+    await run_in_thread(table.put_item, Item={"pk": pk, "sk": _PROBLEM_SK, "taskId": out["taskId"]})
 
 
 def _event(cfg: dict, call: dict, start: str, service: str, name: str) -> dict:
@@ -289,6 +310,10 @@ def _instant(value: dict | None) -> datetime | None:
         return None
 
 
+# A reservation cell the table's TTL already removed; one that exists must still be this booking's.
+_OURS = "attribute_not_exists(sk) OR (bookingId = :bid AND booking = :old)"
+
+
 def _drop_target(row: dict) -> dict:
     return {
         "Delete": {
@@ -321,12 +346,17 @@ async def _settle(row: dict, event: dict | None) -> dict:
         for cell in new_cells:
             items.append(
                 {
-                    "Update": {
+                    "Put": {
                         "TableName": table,
-                        "Key": {"pk": pk, "sk": cell},
-                        "UpdateExpression": "SET booking = :new",
-                        "ConditionExpression": "bookingId = :bid AND booking = :old",
-                        "ExpressionAttributeValues": {":new": new_sk, ":bid": row["bookingId"], ":old": row["sk"]},
+                        "Item": {
+                            "pk": pk,
+                            "sk": cell,
+                            "booking": new_sk,
+                            "bookingId": row["bookingId"],
+                            "expiresAt": vp._cell_expiry(cell),
+                        },
+                        "ConditionExpression": _OURS,
+                        "ExpressionAttributeValues": {":bid": row["bookingId"], ":old": row["sk"]},
                     }
                 }
             )
@@ -347,7 +377,7 @@ async def _fail(row: dict, cfg: dict, call_id: str, *, rejected: bool) -> dict:
                     "Delete": {
                         "TableName": table,
                         "Key": {"pk": pk, "sk": cell},
-                        "ConditionExpression": "bookingId = :bid AND booking = :old",
+                        "ConditionExpression": _OURS,
                         "ExpressionAttributeValues": {":bid": row["bookingId"], ":old": row["sk"]},
                     }
                 }
@@ -366,14 +396,17 @@ async def _fail(row: dict, cfg: dict, call_id: str, *, rejected: bool) -> dict:
 
 async def _dispatch(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
     pending = row["pending"]
-    row = await _save(row, {**row, "pending": {**pending, "state": "sending"}})
+    row = await _save(row, {**row, "pending": {**pending, "state": "sending", "sentAt": int(time.time())}})
     pending = row["pending"]
     try:
         event = await _request(ws, pending["method"], pending["url"], pending.get("body"), etag=pending.get("etag"))
     except (Exception, asyncio.CancelledError) as exc:
-        # A documented precondition/authorization rejection proves THIS first
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        if status == 409 and pending["action"] == "create":
+            return await _resume(ws, cfg, call_id, row, "create")  # the deterministic id exists: an earlier send landed
+        # A documented precondition/authorization rejection proves THIS
         # dispatch did not apply. Lost/5xx/interrupted responses are ambiguous.
-        rejected = isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (
+        rejected = status in (
             400,
             401,
             403,
@@ -390,51 +423,62 @@ async def _dispatch(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
     return await _fail(row, cfg, call_id, rejected=False)
 
 
+async def _calendar_readable(ws: str, row: dict) -> bool:
+    # An inaccessible calendar also answers 404 for its events; only a readable bound calendar makes one absent.
+    try:
+        calendar = await _request(ws, "GET", f"{API}/calendars/{quote(row['calendarId'], safe='')}")
+    except Exception:  # noqa: BLE001 -- unreadable is not evidence
+        return False
+    return calendar.get("id") == row["calendarId"]
+
+
 async def _resume(ws: str, cfg: dict, call_id: str, row: dict, action: str, new_start: str | None = None) -> dict:
-    """Read-only reconciliation; an ambiguous write is never repeated with fresh identity."""
+    """Reconcile from what Google shows; a write is repeated only with its frozen identity, once it cannot still
+    be in flight."""
     pending = row["pending"]
     if (pending["action"], pending.get("newStart")) != (action, new_start):
         return _result(row, "pending", "operation_pending", action=action)
     if pending["state"] == "prepared":
-        # No HTTP has been sent. A lost process before dispatch may safely resume
-        # the same frozen operation, after verifying target availability again.
-        return _result(row, "held", "operation_requires_review", action=action)
+        return await _dispatch(ws, cfg, call_id, row)  # no HTTP was sent before the `sending` save
+    # A row sent before `sentAt` existed was sent long ago.
+    settled = int(time.time()) - int(pending.get("sentAt", 0)) >= SETTLE_S
+    event, absent = None, False
     try:
         event = await _request(ws, "GET", f"{_events(row)}/{quote(row['eventId'], safe='')}")
-        if action == "cancel" and event.get("status") == "cancelled":
-            return await _settle(row, None)
-        if action != "cancel" and _matches(row, event, pending["body"]):
-            return await _settle(row, event)
     except httpx.HTTPStatusError as exc:
-        if action == "cancel" and exc.response.status_code in (404, 410):
-            # An inaccessible calendar also returns 404. Only a readable bound
-            # calendar plus missing event establishes that capacity is now free.
-            try:
-                calendar = await _request(ws, "GET", f"{API}/calendars/{quote(row['calendarId'], safe='')}")
-                if calendar.get("id") == row["calendarId"]:
-                    return await _settle(row, None)
-            except Exception:
-                pass
-    except Exception:
+        absent = exc.response.status_code in (404, 410) and await _calendar_readable(ws, row)
+    except Exception:  # noqa: BLE001 -- unreadable: still unknown
         pass
+    if action == "cancel" and (absent or (event or {}).get("status") == "cancelled"):
+        return await _settle(row, None)
+    if event and action != "cancel" and _matches(row, event, pending["body"]):
+        return await _settle(row, event)
+    if settled and event and action != "create" and event.get("status") == "confirmed" and event.get("etag") == pending["etag"]:  # fmt: skip
+        # Google still serves the version the conditional write was sent against: it did not apply.
+        return await _fail(row, cfg, call_id, rejected=True)
+    if settled and absent and action == "create":
+        return await _dispatch(ws, cfg, call_id, row)  # same event id: a duplicate answers 409
     return _result(row, "pending", "provider_outcome_unknown", action=action)
 
 
 async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> dict:
     vp = _vp()
-    existing = await _read(ws, f"VOICEBOOK#{start}")
-    if existing and existing.get("bookingProvider") == "google" and existing.get("callId") == call_id:
-        if (existing.get("service"), existing.get("name")) != (service, name):
-            raise vp._err(409, "booking_changed")
-        return (
-            await _resume(ws, cfg, call_id, existing, "create")
-            if existing.get("pending")
-            else _result(
-                existing,
-                "confirmed" if existing.get("bookingState") == "confirmed" else "held",
-                "" if existing.get("bookingState") == "confirmed" else "operation_requires_review",
-            )
-        )
+    existing, caller = await _read(ws, f"VOICEBOOK#{start}"), call.get("caller")
+    if not (
+        existing
+        and existing.get("bookingProvider") == "google"
+        and (existing.get("callId") == call_id or (caller and existing.get("phone") == caller))
+    ):
+        existing = None
+    elif (existing.get("service"), existing.get("name")) != (service, name):
+        raise vp._err(409, "booking_changed")
+    elif existing.get("pending"):
+        return await _resume(ws, cfg, call_id, existing, "create")
+    elif confirmed(existing):
+        return _result(existing, "confirmed")
+    elif existing.get("eventId"):
+        return _result(existing, "held", "operation_requires_review")
+    # else: a local hold never prepared (no POST precedes the prepare save): prepare it now.
     if not _google(cfg):
         await vp._book(ws, call_id, call, cfg, start, service, name)
         return {"state": "confirmed", "provider": "own"}
@@ -450,8 +494,9 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
             raise
         await _problem(ws, cfg, call_id)
         return _result(None, "unavailable", "provider_availability_unknown")
-    await vp._book(ws, call_id, call, cfg, start, service, name)
-    row = await _read(ws, f"VOICEBOOK#{start}")
+    if not existing:
+        await vp._book(ws, call_id, call, cfg, start, service, name)
+    row = existing or await _read(ws, f"VOICEBOOK#{start}")
     operation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-google:{row['bookingId']}:create").hex
     body = _event(cfg, call, start, service, name)
     body |= {
@@ -488,7 +533,6 @@ async def _observe(ws: str, row: dict) -> dict:
     if (
         event.get("id") != row["eventId"]
         or event.get("status") != "confirmed"
-        or event.get("etag") != observed.get("etag")
         or any(_instant(event.get(k)) != _instant(observed.get(k)) for k in ("start", "end"))
     ):
         raise _vp()._err(409, "provider_booking_changed")
@@ -534,8 +578,18 @@ def _own(row: dict) -> bool:
     return row.get("bookingProvider") == "own" or not (row.get("bookingProvider") or row.get("eventId"))
 
 
+async def _created(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
+    """The booking row once its pending create settled, else that create's result (it carries `state`)."""
+    if (row.get("pending") or {}).get("action") != "create":
+        return row
+    result = await _resume(ws, cfg, call_id, row, "create")
+    return await _read(ws, row["sk"]) if result["state"] == "confirmed" else result
+
+
 async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_start: str) -> dict:
     vp = _vp()
+    if (row := await _created(ws, cfg, call_id, row)).get("state"):
+        return row
     if row.get("pending"):
         return await _resume(ws, cfg, call_id, row, "move", new_start)
     if _own(row):
@@ -644,9 +698,11 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
 
 
 async def cancel(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
+    if (row := await _created(ws, cfg, call_id, row)).get("state"):
+        return row
     if row.get("pending"):
         return await _resume(ws, cfg, call_id, row, "cancel")
-    if _own(row):
+    if _own(row) or not row.get("eventId"):  # a Google hold never prepared has no event: no POST precedes that save
         await _transaction(_vp()._release(messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(ws), row))
         return {"state": "confirmed", "provider": "own"}
     try:

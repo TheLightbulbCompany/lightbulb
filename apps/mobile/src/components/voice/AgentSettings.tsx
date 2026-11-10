@@ -1,8 +1,10 @@
 import { createApiClient } from "@lightbulb/shared";
 import { useCallback, useMemo, useRef, useState } from "react";
+import { useOrganization } from "@clerk/expo";
 import { useFocusEffect } from "expo-router";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 
+import { WEB_ORIGIN } from "../../config/domain";
 import { fonts, useChatPalette } from "../../config/theme";
 import { useTeamsConfig } from "../../lib/teamsData";
 
@@ -11,7 +13,7 @@ import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 interface AgentDocument {
   frontAgentId?: string | null;
   voice?: string; spanish?: boolean;
-  name?: string; greeting?: string; instructions?: string; live?: boolean; paused?: boolean;
+  business?: string; name?: string; greeting?: string; instructions?: string; live?: boolean; paused?: boolean;
   allow?: Record<string, boolean>; handoff?: { number: string; onlyOpenHours: boolean };
   [key: string]: unknown;
 }
@@ -19,6 +21,7 @@ interface AgentDocument {
 /** Edit the existing server document whole, retaining settings owned by other surfaces. */
 export function AgentSettings() {
   const palette = useChatPalette();
+  const { organization } = useOrganization();
   const adapter = useTeamsConfig();
   const api = useMemo(() => createApiClient(adapter), [adapter]);
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
@@ -66,7 +69,7 @@ export function AgentSettings() {
   const phoneConfigured = !!draft && Object.keys(draft).some((key) => key !== "frontAgentId" && key !== "onboardingStep");
   return <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
     style={{ backgroundColor: palette.ground }} contentContainerStyle={styles.page}>
-    <Text style={[text, styles.title]}>Your assistant, your way</Text>
+    <Text accessibilityRole="header" style={[text, styles.title]}>{draft?.business || organization?.name || "Your assistant"}</Text>
     <Text style={[text, styles.description, { color: palette.fgSoft }]}>Lightbulb in the app. Choose what callers hear and what your assistant can do.</Text>
     {loading ? <ActivityIndicator accessibilityLabel="Loading agent settings" color={palette.fg} /> : loaded ? <>
       <Text accessibilityRole="header" style={[text, styles.label]}>Front-door agent</Text>
@@ -95,6 +98,8 @@ export function AgentSettings() {
           <Switch accessibilityLabel="Pause phone answering" disabled={saving} value={!!draft.paused} onValueChange={(paused) => patch({ paused })} />
         </View> : null}
       </> : <Text style={[text, { color: palette.fgSoft }]}>Set up your phone assistant on the web to configure its number, hours, and services. You can still talk and type to Lightbulb from Home.</Text>}
+      <Pressable accessibilityRole="link" accessibilityLabel="Open on the web" onPress={() => void Linking.openURL(`${WEB_ORIGIN}/voice/agent`)}
+        style={styles.save}><Text style={[text, { color: palette.link }]}>Open on the web</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Save agent settings" disabled={!dirty || saving}
         accessibilityState={{ disabled: !dirty || saving, busy: saving }} onPress={() => void save()}
         style={({ pressed }) => [styles.save, { backgroundColor: palette.fg, opacity: !dirty || saving ? 0.45 : pressed ? 0.7 : 1 }]}>

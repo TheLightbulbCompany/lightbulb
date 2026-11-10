@@ -542,9 +542,6 @@ export default function Settings() {
         <Section title="Plan">
           <Text modifiers={m.PLACEHOLDER}>Current plan and status</Text>
         </Section>
-        <Section title="Model provider">
-          <Text modifiers={m.PLACEHOLDER}>Provider name</Text>
-        </Section>
       </>
     );
   } else if (state.kind === "error") {
@@ -571,7 +568,6 @@ export default function Settings() {
     const showCredits =
       account.provider_choice === "openrouter_managed" ||
       credits?.balance_dollars != null;
-    const provider = providerLabel(account, chatgpt);
     const planName = isTrialLocal ? "Lightbulb Free plan" : "Lightbulb";
     const planNote = isTrialLocalEnded
       ? "This workspace is reading-only. Agents start again when an admin picks the plan."
@@ -645,13 +641,6 @@ export default function Settings() {
             <NavigationRow title="Plans" icon="creditcard" onPress={() => router.push("/plans")} />
           </Section>
         ) : null}
-
-        <Section title="Model provider">
-          <VStack alignment="leading" spacing={2}>
-            <Text modifiers={m.BODY}>{provider.title}</Text>
-            {provider.detail != null ? <Text modifiers={m.CAPTION}>{provider.detail}</Text> : null}
-          </VStack>
-        </Section>
       </>
     );
   }
@@ -680,7 +669,12 @@ export default function Settings() {
       <Section title="Workspace">
         {/* Everyone sees it: a member gets "ask an admin" there, not a missing door. */}
         <NavigationRow title="Invite people" icon="person.badge.plus" onPress={() => router.push("/invite")} />
-        <NavigationRow title="Control" icon="slider.horizontal.3" onPress={() => router.push("/(app)/control")} />
+        <NavigationRow
+          title="Billing and phone settings"
+          icon="globe"
+          link
+          onPress={() => void Linking.openURL(`${WEB_ORIGIN}/voice/settings`)}
+        />
       </Section>
 
       <SessionNotificationsSection api={api} menu={m.MENU} />

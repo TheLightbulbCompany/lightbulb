@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { Linking } from "react-native";
 
 // Per-test billing fixture the mocked api client serves (factory is lazy —
 // the closure reads this at request time, after each test assigns it). An
@@ -65,10 +66,8 @@ describe("Settings plan card", () => {
     await render(<Settings />);
     expect(await screen.findByText("Lightbulb Free plan")).toBeTruthy();
     expect(screen.getByText(/daily free usage allowance/i)).toBeTruthy();
-    // Provider card: free tier runs Lightbulb-managed DeepSeek — not "No
-    // provider selected" and not the retired Claude/Bedrock line.
-    expect(screen.getByText("Lightbulb-managed models")).toBeTruthy();
-    expect(screen.getByText("DeepSeek within a daily allowance")).toBeTruthy();
+    // The chat product's model-provider card is gone from the voice app.
+    expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
     expect(screen.queryByText(/trial_local/i)).toBeNull();
     expect(screen.queryByText(/No provider selected/)).toBeNull();
     expect(screen.queryByText(/Claude Sonnet/)).toBeNull();
@@ -109,8 +108,8 @@ describe("Settings plan card", () => {
       plan: "standard",
     };
     await render(<Settings />);
-    expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
-    expect(screen.getByText("DeepSeek within a daily allowance")).toBeTruthy();
+    expect(await screen.findByText("Lightbulb")).toBeTruthy();
+    expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
     expect(screen.queryByText(/No provider selected/)).toBeNull();
   });
 
@@ -200,8 +199,8 @@ describe("Settings plan card", () => {
       byo_provider: null,
     };
     await render(<Settings />);
-    expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
-    expect(screen.getByText("Workspace credits")).toBeTruthy();
+    expect(await screen.findByText("Workspace credits")).toBeTruthy();
+    expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
     expect(screen.queryByText(/OpenRouter|API key/i)).toBeNull();
   });
 
@@ -542,15 +541,15 @@ describe("Settings absorbs More", () => {
 
   it("has no switch for a pinned strip that is gone", async () => {
     await render(<Settings />);
-    expect(await screen.findByText("Control")).toBeTruthy();
+    expect(await screen.findByText("Billing and phone settings")).toBeTruthy();
     expect(screen.queryByLabelText("Show running sessions in pinned")).toBeNull();
   });
 
-  it.each([
-    ["Control", "/(app)/control"],
-  ])("links %s", async (label, route) => {
+  it("opens billing and phone settings on the web", async () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
     await render(<Settings />);
-    await fireEvent.press(await screen.findByLabelText(label));
-    expect(mockPush).toHaveBeenCalledWith(route);
+    await fireEvent.press(await screen.findByLabelText("Billing and phone settings"));
+    expect(open).toHaveBeenCalledWith("https://thelightbulb.company/voice/settings");
   });
+
 });

@@ -9,6 +9,7 @@ jest.mock("@lightbulb/shared", () => ({ ...jest.requireActual("../../../../../..
 jest.mock("../../../providers/live", () => ({ useLive: () => ({ roomId: null, joining: null }) }));
 jest.mock("react-native-webview", () => ({ WebView: "WebView" }));
 jest.mock("../../../lib/teamsData", () => ({ useTeamsConfig: () => null }));
+jest.mock("@clerk/expo", () => ({ useOrganization: () => ({ organization: { name: "Org Salon" } }) }));
 jest.mock("expo-router", () => ({ useFocusEffect: (fn: () => void) => jest.requireActual("react").useEffect(fn, [fn]) }));
 
 const config = { name: "Nova", greeting: "Hello", instructions: "Be helpful", live: true, paused: false, services: [{ name: "Haircut", minutes: 30 }], allow: { book: true, answer: true, futurePermission: false }, handoff: { number: "+15555555555", onlyOpenHours: true } };
@@ -92,4 +93,15 @@ it("retains Warm on unrelated edits and saves chosen phone voice and Spanish", a
   await fireEvent.press(screen.getByRole("button", { name: "Save agent settings" }));
   await screen.findByText("Saved");
   expect(mockPut).toHaveBeenLastCalledWith("/voice/agent", { config: { ...config, instructions: "Brief replies", voice: "quartz", spanish: true } });
+});
+
+it("titles the page with the business name, falling back to the org name, and links to the web", async () => {
+  mockGet.mockResolvedValue({ config: { ...config, business: "Maya's Nails" }, agents: [] });
+  const { unmount } = await render(<AgentSettings />);
+  expect(await screen.findByText("Maya's Nails")).toBeTruthy();
+  expect(screen.getByLabelText("Open on the web")).toBeTruthy();
+  await unmount();
+  mockGet.mockResolvedValue({ config, agents: [] });
+  await render(<AgentSettings />);
+  expect(await screen.findByText("Org Salon")).toBeTruthy();
 });

@@ -1663,43 +1663,58 @@ async def call_events(call_id: str, body: CallEventsIn) -> dict:
 #: What the caller hears instead of someone else's progress: the assistant, in the first person, holding.
 HOLD = "One moment while I check."
 
-#: A sentence that narrates work in progress ("They're still working on it", "Customer Operations is checking this
-#: for you", "They're finalizing the cancellation"). Said by the assistant itself ("I'm checking") it stays.
-PROGRESS = re.compile(r"\b(working on|checking(?! in)|looking into|finali[sz]ing|handling|processing|on it)\b", re.I)
-FIRST_PERSON = re.compile(r"^(i\b|i'm\b|i'll\b|let me\b)", re.I)
+#: A hold sentence that narrates someone else's work in progress ("They're still working on it", "The team is
+#: checking this for you", "They're finalizing the cancellation", a bare "On it!"). Anchored on a third-party
+#: subject, so "There's a $5 processing fee", "Maria is working on Saturdays" or "We're checking you in" never match.
+THIRD_PARTY_PROGRESS = re.compile(
+    r"^(?:on it\b|(?:they|he|she|someone|the team)\b[^.?!]*?(?:\b(?:is|are)|'re|'s)\s+(?:still\s+)?"
+    r"(?:working on|checking|looking into|finali[sz]ing|handling|processing)\b)",
+    re.I,
+)
 
 
 async def _caller_words(ws: str, messages: list[dict]) -> None:
     """The caller hears the business's assistant and outcomes, never the team behind it (10 Nov prod calls:
     "Customer Operations is checking this for you", "They're finalizing the cancellation"). Every line a caller
-    hears comes through `/events`, so this is the one place. Per sentence: progress told about anyone but the
-    assistant itself becomes `HOLD`; any other specialist name or title becomes "the team". A name inside a longer
-    capitalised phrase ("Hair Growth Treatment", a service) is left alone, and so is the assistant's own name."""
+    hears comes through `/events`, so this is the one place.
+
+    Every line: a specialist's name or title becomes "the team" ("the Finance team" too). A name followed by a
+    capitalised word ("Hair Growth Treatment") or after "our"/"your"/"a" ("our Growth package") names a thing and is
+    left alone, and so is the assistant's own name. A specialist the owner named after a real staff member is scrubbed
+    as well ("Maria has an opening" -> "The team has an opening"): tolerable, never a leak.
+    Hold lines only (`waiting`, an ack while a task runs): a sentence narrating a third party's progress becomes
+    `HOLD`. An answer (`waiting` false) is never rewritten beyond the names, so its outcome always reaches the caller."""
     from core.services.workspace_provisioning import STARTER_ROSTER
 
     names = {r[1] for r in STARTER_ROSTER} | {r[3] for r in STARTER_ROSTER}
     try:
         names |= {n for a in await agent_registry_repo.list_agents(ws) for n in (a.get("name"), a.get("title")) if n}
-    except Exception:  # noqa: BLE001 -- registry unreadable: the starter names are still scrubbed
+        names -= {str((await agent_config(ws)).get("name") or "").strip()}
+    except Exception:  # noqa: BLE001 -- unreadable: the starter names are still scrubbed, and the poll still answers
         logger.warning("phone: roster unreadable for %s; scrubbing starter names only", ws, exc_info=True)
-    names -= {str((await agent_config(ws)).get("name") or "").strip(), ""}
+    names.discard("")
     alts = "|".join(map(re.escape, sorted(names, key=len, reverse=True)))
-    pattern = re.compile(r"\b(?:[Tt]he\s+)?(?:%s)\b" % alts)
+    pattern = re.compile(r"\b(?:(?P<det>(?i:the|our|your|my|an?))\s+)?(?:%s)(?P<team>\s+team)?\b" % alts)
+    # ponytail: names re-read on every non-empty poll (1/s at most while lines arrive); cache if it ever shows
 
     def sub(text: str) -> str:
         def one(m: re.Match) -> str:
-            before, after = text[: m.start()], text[m.end() :]
-            # ponytail: a capitalised neighbour means a longer proper name; "Ask Growth" mid-sentence is missed
-            if re.search(r"[A-Z][\w']*\s$", before) or re.match(r"\s[A-Z]", after):
-                return m.group(0)
+            det, before, after = m.group("det"), text[: m.start()], text[m.end() :]
+            if re.match(r"\s[A-Z]", after):
+                return m.group(0)  # part of a longer proper name
+            if det and det.lower() != "the":
+                return f"{det} team" if m.group("team") else m.group(0)  # "our Growth package" names a thing
             return "The team" if not before.strip() or before.rstrip()[-1] in ".?!" else "the team"
 
         return pattern.sub(one, text)
 
     for m in messages:
+        m["text"] = sub(m["text"])
+        if not m.get("waiting"):
+            continue
         said: list[str] = []
-        for s in re.split(r"(?<=[.?!])\s+", m["text"].strip()):
-            s = HOLD if PROGRESS.search(_plain(s)) and not FIRST_PERSON.match(_plain(s)) else sub(s)
+        for s in re.split(r"(?<=[.?!])\s+(?=[A-Z])", m["text"].strip()):  # "3:30 p.m. tomorrow" stays whole
+            s = HOLD if THIRD_PARTY_PROGRESS.match(_plain(s)) else s
             if not (s == HOLD and said and said[-1] == HOLD):
                 said.append(s)
         m["text"] = " ".join(said)

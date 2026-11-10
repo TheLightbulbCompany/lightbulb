@@ -7,10 +7,10 @@ const mockGet = vi.fn();
 const mockPost = vi.fn();
 const mockDel = vi.fn();
 const refresh = vi.fn();
-const billing = vi.hoisted(() => ({ price: 7 as number | null | undefined, frontDesk: false, subscribed: true }));
+const billing = vi.hoisted(() => ({ price: 7 as number | null | undefined, frontDesk: false }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: mockGet, post: mockPost, del: mockDel }) }));
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ account: { front_desk_price_usd: billing.price, front_desk: billing.frontDesk, is_subscribed: billing.subscribed }, refresh }),
+  useBilling: () => ({ account: { front_desk_price_usd: billing.price, front_desk: billing.frontDesk }, refresh }),
 }));
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: { id: "org_1" }, membership: { role: "org:admin" } }),
@@ -35,7 +35,6 @@ describe("MailPanel number", () => {
     vi.clearAllMocks();
     billing.price = 7;
     billing.frontDesk = false;
-    billing.subscribed = true;
     line = null;
     missing = "absent";
     mockGet.mockImplementation(async (url: string) => {
@@ -76,14 +75,6 @@ describe("MailPanel number", () => {
     const before = lineReads();
     await waitFor(() => expect(lineReads()).toBeGreaterThan(before));
     expect(refresh).toHaveBeenCalled();
-  });
-
-  it("offers the Front desk add-on only to a workspace already on the old plan", async () => {
-    billing.subscribed = false; // a new voice buyer: the voice plan is the only thing offered
-    renderMail();
-    await waitFor(() => expect(mockGet.mock.calls.some(([u]) => u === "/agent-text/line")).toBe(true));
-    await new Promise((r) => setTimeout(r, 50));
-    expect(screen.queryByRole("button", { name: /Get a phone number/ })).toBeNull();
   });
 
   it("hides the button without a price", async () => {

@@ -90,6 +90,11 @@ export const LIGHTBULB = "Lightbulb";
 /** The name callers hear; "Lightbulb" until the owner picks one. */
 export const nameOf = (c?: Partial<AgentConfig> | null) => c?.name?.trim() || LIGHTBULB;
 
+/** A saved document over the defaults. `allow` merges key by key, as the backend's agent_config() does, so a switch
+ *  added after the document was saved reads as the server enforces it. */
+export const withDefaults = (saved: Partial<AgentConfig> | null | undefined): AgentConfig =>
+  ({ ...DEFAULT_CONFIG, ...saved, allow: { ...DEFAULT_CONFIG.allow, ...saved?.allow } }) as AgentConfig;
+
 /** The Agent page document, defaults filled in. `isNew`: the workspace has no document yet (first run). */
 export function useAgentConfig() {
   const api = useApi();
@@ -97,7 +102,7 @@ export function useAgentConfig() {
     const { config, agents = [], frontAgentId, frontAgentIssue } = (await api.get("/voice/agent")) as {
       config: Partial<AgentConfig> | null; agents?: { id: string; name: string }[]; frontAgentId?: string | null; frontAgentIssue?: string | null;
     };
-    return { config: { ...DEFAULT_CONFIG, ...config } as AgentConfig, isNew: config == null, agents, frontAgentId, frontAgentIssue };
+    return { config: withDefaults(config), isNew: config == null, agents, frontAgentId, frontAgentIssue };
   });
   const { mutate } = swr;
   const save = useCallback(async (next: AgentConfig) => {

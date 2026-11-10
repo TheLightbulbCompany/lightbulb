@@ -72,6 +72,16 @@ async def test_owner_sees_and_removes_waitlist_entries(repos, async_client_org_a
         date, eid = sk.split("#")[1:]
         table.put_item(Item={"pk": pk, "sk": sk, "id": eid, "date": date, "name": name, "phone": "+14155550133"})
     table.put_item(Item={"pk": messaging_repo.owner_pk("org_other"), "sk": "VOICEWAIT#2026-11-19#z", "id": "z"})
+    table.put_item(
+        Item={
+            "pk": pk,
+            "sk": "VOICEWAIT#2026-01-01#old",
+            "id": "old",
+            "date": "2026-01-01",
+            "name": "Expired",
+            "expiresAt": 1,
+        }
+    )  # past its TTL but not yet swept by DynamoDB
     seen = (await async_client_org_admin.get("/api/v1/voice/waitlist")).json()["entries"]
     assert [e["name"] for e in seen] == ["Ana", "Priya"] and seen[0]["phone"] == "+14155550133"
     assert (await async_client_org_admin.delete("/api/v1/voice/waitlist/2026-11-19/b")).status_code == 200

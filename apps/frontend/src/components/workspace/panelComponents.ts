@@ -1,18 +1,12 @@
-// What each panel kind renders in the main view or the pane. Panels read their
-// params from props and change them through updatePanelParams / closePane.
+// What each panel kind renders in the right pane. Panels read their params from props and change them through
+// updatePanelParams / closePane. Only the pane kinds: no page attaches the shell any more (voice pivot), so a place
+// (chat, home, activity, settings, team) never renders through here, and nothing opens the mail or control pane.
 import type { ComponentType } from "react";
 import type { PanelKind } from "./panelRegistry";
-import { ChatPanel } from "./panels/ChatPanel";
-import { TeamsDockPanel } from "./panels/TeamsDockPanel";
-import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-import { ActivityDockPanel } from "./panels/ActivityDockPanel";
-import { HomeProjects } from "@/components/home/HomeProjects";
-import { MailDockPanel } from "./panels/MailDockPanel";
 import { ArtifactDockPanel } from "./panels/ArtifactDockPanel";
 import { TaskDockPanel } from "./panels/TaskDockPanel";
 import { AutomationDockPanel } from "./panels/AutomationDockPanel";
-import { SettingsPlace } from "@/components/settings/SettingsPlace";
 
 export interface PanelProps {
   /** The slot's panel id (updatePanelParams' key). */
@@ -20,16 +14,9 @@ export interface PanelProps {
   params: Record<string, string>;
 }
 
-export const PANEL_COMPONENTS: Record<PanelKind, ComponentType<PanelProps>> = {
-  chat: ChatPanel,
-  teams: TeamsDockPanel,
-  control: ControlDockPanel,
+export const PANEL_COMPONENTS: Partial<Record<PanelKind, ComponentType<PanelProps>>> = {
   "file-viewer": FileViewerDockPanel,
-  activity: ActivityDockPanel,
-  home: HomeProjects,
-  mail: MailDockPanel,
   artifact: ArtifactDockPanel,
   task: TaskDockPanel,
   automation: AutomationDockPanel,
-  settings: SettingsPlace,
 };

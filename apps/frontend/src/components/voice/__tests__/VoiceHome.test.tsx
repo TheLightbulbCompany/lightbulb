@@ -222,3 +222,13 @@ it("meeting details retain the summary while completed notes are unavailable", (
   expect(within(screen.getByRole("complementary", { name: "Details" }))
     .getByText("Waiting for the final notes.")).toBeInTheDocument();
 });
+
+it("shows a US caller as (415) 555-0100 and the call's summary at the top of its pane", () => {
+  items.list = [{ type: "call", roomId: "c1", at: Date.now(), caller: "+14155550100", summary: "Booked a manicure for Friday", booking: "Fri 2:00 PM" }];
+  render(<VoiceHome />);
+  expect(screen.queryByText("+14155550100")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /\(415\) 555-0100/ }));
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).getByText("Booked a manicure for Friday")).toBeInTheDocument();
+  expect(within(pane).getByText("Fri 2:00 PM")).toBeInTheDocument();
+});

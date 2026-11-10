@@ -33,26 +33,12 @@ class _Strict(BaseModel):
     )
 
 
-class CreateAgentBody(_Strict):
-    name: str = Field(min_length=1, max_length=80)
-    role: str = Field(min_length=1, max_length=40)
-    title: Optional[str] = Field(default=None, max_length=80)
-    capabilities: Optional[str] = Field(default=None, max_length=4000)
-    reports_to: Optional[str] = Field(default=None, max_length=80)
-    budget_monthly_cents: int = Field(default=0, ge=0)
-
-
 class PatchAgentBody(_Strict):
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     title: Optional[str] = Field(default=None, max_length=80)
     capabilities: Optional[str] = Field(default=None, max_length=4000)
     reports_to: Optional[str] = Field(default=None, max_length=80)
     budget_monthly_cents: Optional[int] = Field(default=None, ge=0)
-
-
-class ResetAgentSessionBody(_Strict):
-    # Old clients still send the optional ``taskKey``; the route is a no-op now.
-    task_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
 
 class PatchCompanySettingsBody(_Strict):

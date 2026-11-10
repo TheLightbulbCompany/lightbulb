@@ -710,6 +710,8 @@ async def authorize_run(
         if not isinstance(member_id, str) or not _ID.fullmatch(member_id):
             raise DesktopError("run_member_authority_unavailable", 403)
     else:
+        if room.get("meeting"):  # a Meet's lines are posted as the inviter whoever said them: no Mac
+            raise DesktopError("run_member_authority_unavailable", 403)
         message = await messaging_repo.get_message_by_id(room_id, run.get("triggerMessageId", ""))
         author = (message or {}).get("author", {})
         member_id = author.get("id")
@@ -769,8 +771,12 @@ async def _authorize_task(owner_id, run_id, agent_id, task_id, run_secret, *, ac
     # inbound mail/text, idea or watch names the owner as actor with nobody behind it: no Mac.
     member_id = task.get("ownerUserId")
     trigger = await tasks_repo.get_trigger(owner_id, task.get("triggerId") or "") or {}
-    asked = trigger.get("source") in {"chat", "manual", "a2a"} or (
-        trigger.get("source") == "voice" and (trigger.get("ref") or {}).get("origin") == "owner_voice"
+    # A meeting's task (and its sub-tasks: `confirmAll`): anyone in the Meet speaks as the inviter, so its "chat"
+    # trigger is nobody's verified ask. Pairing consent covers the member's own asks only: no Mac.
+    meeting = task.get("confirmAll") or (trigger.get("ref") or {}).get("origin") == "meeting"
+    asked = not meeting and (
+        trigger.get("source") in {"chat", "manual", "a2a"}
+        or (trigger.get("source") == "voice" and (trigger.get("ref") or {}).get("origin") == "owner_voice")
     )
     if (
         not asked

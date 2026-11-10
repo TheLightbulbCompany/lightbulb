@@ -661,6 +661,30 @@ async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | No
                 newest[row["provider"]] = row
     items = []
     for provider, row in newest.items():
+        if provider == "voice_plan":
+            created = _when(row["createdAt"])
+            actor = ActivityActor(kind="system", id="", name="Lightbulb")
+            items.append(
+                ActivityItem(
+                    id=reconnect_item_id(provider),
+                    kind="reconnect",
+                    subtype="reconnect",
+                    actor=actor,
+                    created_at=created,
+                    state="open",
+                    read=not _newer_than(created, seen),
+                    summary=ActivitySummary(
+                        title="Your voice plan has ended",
+                        requester=actor,
+                        reason=(
+                            "A payment for your voice plan was refunded or disputed, so the plan ended and "
+                            "calls are no longer answered. Contact support (hello@thelightbulb.company) to restart it."
+                        ),
+                    ),
+                    actions=[],
+                )
+            )
+            continue
         if provider == "openai-codex":
             # ChatGPT login (spec 13): the grant lives on the oauth-tokens row, not an integrations
             # row, and the backend broker marks it reconnect_required when OpenAI refuses a refresh.

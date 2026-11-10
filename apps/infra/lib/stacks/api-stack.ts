@@ -23,7 +23,6 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as aoss from "aws-cdk-lib/aws-opensearchserverless";
 import * as pipes from "aws-cdk-lib/aws-pipes";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
@@ -287,10 +286,6 @@ export class ApiStack extends cdk.Stack {
    * fixed dev URL on the no-cert/no-zone synth path (unit tests, unknown envs)
    * so this is never `undefined` in service-stack's ECS env map. */
   public readonly gatewayRelayUrl: string;
-  /** Message search (OpenSearch Serverless). Empty strings while search is off for this env. */
-  public readonly messageSearchEndpoint: string;
-  public readonly messageSearchCollectionArn: string;
-  public readonly messageSearchQueueUrl: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -860,163 +855,6 @@ export class ApiStack extends cdk.Stack {
       );
     }
 
-    // ---- Message search: OpenSearch Serverless NextGen ----
-    // The projector only ENQUEUES a row pointer; a VPC indexer re-reads the row
-    // and writes the index, so an indexing cold start (10-30 s) can never stall
-    // live delivery on this stream shard. DynamoDB stays the truth:
-    // scripts/reindex_messages.py rebuilds an index.
-    // The collection's endpoint and ARN cross to ServiceStack as CloudFormation
-    // exports, and Name/Tags/EncryptionConfig/CollectionGroupName force
-    // REPLACEMENT: a new stage-wide tag (lightbulb-stage.ts applies cdk.Tags)
-    // replaces the collection, blocks on the export, and empties the index.
-    // Plan such a change as: drop the import, deploy, change, re-import, reindex.
-    // Owner-chosen: the indexing OCU sleeps between drains; new messages are searchable within
-    // this many minutes; edits/deletes stay immediate.
-    const MESSAGE_SEARCH_BATCH_MINUTES = 39;
-    const collectionName = `lightbulb-${env}-messages`;
-    const group = new aoss.CfnCollectionGroup(this, "MessageSearchGroup", {
-      name: `lightbulb-${env}-search`,
-      generation: "NEXTGEN",
-      // NEXTGEN rejects DISABLED ("StandbyReplicas cannot be set to DISABLED for
-      // NEXTGEN collection groups"); compute still scales to zero when idle.
-      standbyReplicas: "ENABLED",
-      capacityLimits: {
-        minIndexingCapacityInOcu: 0,
-        minSearchCapacityInOcu: 0,
-        maxIndexingCapacityInOcu: 2,
-        maxSearchCapacityInOcu: 2,
-      },
-    });
-    const endpointSg = new ec2.SecurityGroup(this, "MessageSearchEndpointSg", {
-      vpc: props.vpc,
-      description: "OpenSearch Serverless VPC endpoint (message search)",
-      allowAllOutbound: false,
-    });
-    endpointSg.addIngressRule(ec2.Peer.ipv4(props.vpc.vpcCidrBlock), ec2.Port.tcp(443), "VPC to message search");
-    // NextGen (`on.aws`) collections need a standard PrivateLink endpoint (`aoss-data`, private
-    // DNS). The aoss-managed (Classic) endpoint's DNS covers only `*.aoss.amazonaws.com`, so
-    // traffic went public and the VPC-only network policy answered 401.
-    const vpce = new ec2.InterfaceVpcEndpoint(this, "MessageSearchVpce", {
-      vpc: props.vpc,
-      service: new ec2.InterfaceVpcEndpointService(`com.amazonaws.${this.region}.aoss-data`, 443),
-      privateDnsEnabled: true,
-      // Dev: one AZ ($7.30/mo an AZ; cross-AZ callers still resolve it). Prod keeps every AZ.
-      subnets: {
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
-        ...(env === "prod" ? {} : { availabilityZones: [props.vpc.availabilityZones[0]] }),
-      },
-      securityGroups: [endpointSg],
-      open: false,
-    });
-    const network = new aoss.CfnSecurityPolicy(this, "MessageSearchNetwork", {
-      name: `lightbulb-${env}-msg-net`,
-      type: "network",
-      policy: cdk.Stack.of(this).toJsonString([{
-        Rules: [{ ResourceType: "collection", Resource: [`collection/${collectionName}`] }],
-        AllowFromPublic: false,
-        SourceVPCEs: [vpce.vpcEndpointId],
-      }]),
-    });
-    const collection = new aoss.CfnCollection(this, "MessageSearchCollection", {
-      name: collectionName,
-      type: "SEARCH",
-      collectionGroupName: group.name, // standby replicas follow the group
-      // Same key as the messaging table: search holds the same data.
-      encryptionConfig: { awsOwnedKey: false, kmsKeyArn: props.paperclipKmsKeyArn },
-    });
-    collection.addDependency(group);
-    collection.addDependency(network);
-
-    const indexDlq = new sqs.Queue(this, "MessageSearchIndexDlq", {
-      queueName: `${resourcePrefix(env)}message-search-index-dlq`,
-      retentionPeriod: cdk.Duration.days(14),
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-    });
-    // Immediate queue: edits and deletes, so removed or pre-edit text never lingers.
-    const indexQueue = new sqs.Queue(this, "MessageSearchIndexQueue", {
-      queueName: `${resourcePrefix(env)}message-search-index`,
-      // AWS guidance: visibility >= 6x the consumer's timeout (300 s).
-      visibilityTimeout: cdk.Duration.minutes(30),
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-      deadLetterQueue: { queue: indexDlq, maxReceiveCount: 5 },
-    });
-    // Batch queue: new messages. No event source; MessageSearchBatchDrain empties it.
-    const batchQueue = new sqs.Queue(this, "MessageSearchBatchQueue", {
-      queueName: `${resourcePrefix(env)}message-search-index-batch`,
-      // No consumer receives from it until a drain runs, so a dead drain would otherwise
-      // let messages expire silently; the stale alarm below pages first.
-      retentionPeriod: cdk.Duration.days(14),
-      visibilityTimeout: cdk.Duration.minutes(30),
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-      deadLetterQueue: { queue: indexDlq, maxReceiveCount: 5 },
-    });
-
-    const indexer = new lambda.Function(this, "MessageSearchIndexer", {
-      functionName: `${resourcePrefix(env)}message-search-indexer`,
-      runtime: lambda.Runtime.PYTHON_3_13,
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "lambda", "messaging-search-indexer")),
-      // An immediate job (cold start <=30 s plus a write/verify loop) fits; a drain can run longer.
-      timeout: cdk.Duration.seconds(300),
-      memorySize: 256,
-      vpc: props.vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-      environment: {
-        MESSAGING_TABLE: messagingTable.tableName,
-        SEARCH_ENDPOINT: collection.attrCollectionEndpoint,
-        SEARCH_INDEX_BATCH_QUEUE_URL: batchQueue.queueUrl,
-      },
-      logGroup: new logs.LogGroup(this, "MessageSearchIndexerLogs", {
-        logGroupName: logGroupPath(env, "message-search-indexer"),
-        retention: logs.RetentionDays.ONE_MONTH,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    });
-    messagingTable.grantReadData(indexer);
-    indexer.addToRolePolicy(new iam.PolicyStatement({ actions: ["aoss:APIAccessAll"], resources: [collection.attrArn] }));
-    indexer.addEventSource(new lambdaEventSources.SqsEventSource(indexQueue, {
-      batchSize: 1,
-      reportBatchItemFailures: true,
-      maxConcurrency: 5, // a backfill must not fan out past the OCU cap
-    }));
-    batchQueue.grantConsumeMessages(indexer);
-    new events.Rule(this, "MessageSearchBatchDrain", {
-      schedule: events.Schedule.rate(cdk.Duration.minutes(MESSAGE_SEARCH_BATCH_MINUTES)),
-      targets: [new eventTargets.LambdaFunction(indexer, { event: events.RuleTargetInput.fromObject({ drain: true }) })],
-    });
-    indexQueue.grantSendMessages(projectorFn);
-    batchQueue.grantSendMessages(projectorFn);
-    projectorFn.addEnvironment("SEARCH_INDEX_QUEUE_URL", indexQueue.queueUrl);
-    projectorFn.addEnvironment("SEARCH_INDEX_BATCH_QUEUE_URL", batchQueue.queueUrl);
-
-    // MUST match service-stack's `roleName: lightbulb-${env}-backend-task`. The
-    // provisioner Lambda runs as this role too, so wipes reach DeleteIndex.
-    const backendRoleArn = `arn:aws:iam::${this.account}:role/lightbulb-${env}-backend-task`;
-    const indexes = [`index/${collectionName}/messages-*`];
-    new aoss.CfnAccessPolicy(this, "MessageSearchAccess", {
-      name: `lightbulb-${env}-msg-access`,
-      type: "data",
-      policy: cdk.Stack.of(this).toJsonString([
-        {
-          // UpdateIndex: session search adds its fields to an existing index (PUT _mapping).
-          Rules: [{ ResourceType: "index", Resource: indexes, Permission: ["aoss:CreateIndex", "aoss:DescribeIndex", "aoss:UpdateIndex", "aoss:WriteDocument"] }],
-          Principal: [indexer.role!.roleArn],
-        },
-        {
-          Rules: [{ ResourceType: "index", Resource: indexes, Permission: ["aoss:ReadDocument", "aoss:DescribeIndex", "aoss:DeleteIndex"] }],
-          Principal: [backendRoleArn],
-        },
-      ]),
-    });
-
-    this.messageSearchEndpoint = collection.attrCollectionEndpoint;
-    this.messageSearchCollectionArn = collection.attrArn;
-    // Preserve the exact automatic exports during the API-first deployment that
-    // detaches ServiceStack. Remove these with the derived index in the next release.
-    this.exportValue(collection.attrCollectionEndpoint);
-    this.exportValue(collection.attrArn);
-    this.messageSearchQueueUrl = indexQueue.queueUrl;
-
     const pipeRole = new iam.Role(this, "OpenClawWorkPipeRole", {
       roleName: `${resourcePrefix(env)}openclaw-work-pipe`,
       assumedBy: new iam.ServicePrincipal("pipes.amazonaws.com"),
@@ -1200,22 +1038,6 @@ def handler(event, context):
         period: cdk.Duration.minutes(1),
         statistic: "Maximum",
       }),
-      threshold: 1,
-      evaluationPeriods: 1,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    pageAlarm("MessageSearchBatchStaleAlarm", {
-      alarmName: `${resourcePrefix(env)}message-search-batch-stale`,
-      alarmDescription: "PAGE: message search batch drain is not running; new messages are not becoming searchable.",
-      metric: batchQueue.metricApproximateAgeOfOldestMessage({ period: cdk.Duration.minutes(5), statistic: "Maximum" }),
-      threshold: 5400, // 90 minutes, about 2 x the 39-minute drain
-      evaluationPeriods: 1,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    pageAlarm("MessageSearchIndexDlqVisibleAlarm", {
-      alarmName: `${resourcePrefix(env)}message-search-index-dlq-visible`,
-      alarmDescription: "PAGE: message search index jobs exhausted retries; search may show stale or deleted text until replayed.",
-      metric: indexDlq.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(1), statistic: "Maximum" }),
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,

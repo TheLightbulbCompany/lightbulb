@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-11-09.
+> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-11-10.
 > `CLAUDE.md` is the maintained original — if the two disagree, `CLAUDE.md` wins;
 > regenerate this file from it rather than editing here.
 
@@ -43,55 +43,37 @@ Stripe and Metronome. Infrastructure is AWS CDK in `apps/infra/` (the single sou
 
 ## Standing decisions
 
-From plan Part 1. Each one constrains code. The reason is after the dash.
+From plan Part 1 (F-numbers). Each constrains code; do not reopen them.
 
-- **F38 One architecture for every use case.** Phone, Meet, the orb and typed messages all go voice or text,
-  then the Router, then a Worker. A new use case adds tools and permissions, never a new shape. — "The
-  architecture doesn't change as the use cases change."
-- **F2/F3 The Router decides only.** Facts it cannot see go to a Worker thread. — Accuracy first; the Router
-  does not get the full tool set.
-- **F4 GPT-Live is the voice on all three surfaces, with no business data and no tools.** — Hand-built
-  speaking logic kept producing bugs ("Let me check" twice).
-- **F5 The model owns conversation:** when to speak, when to hand off, what to ask. Code enforces permissions,
-  settings, effect safety, identity and duplicate prevention. — No keyword rules, canned lines, mute gates or
-  one-question prompt patches.
-- **F6 Phone uses the same Router and Workers, under a caller principal.** — Measure latency; do not build a
-  fast path for callers.
-- **F7 Approvals are card taps only.** — A voice can be anyone's.
-- **F8 In a meeting everyone acts with the inviting member's authority;** spend, send and publish need that
-  member's tap. — Google Meet has no guest and member split.
-- **Caller boundary (global constraint).** A caller or texter gets the business profile and their own bookings
-  and messages, never owner credentials or team memory. — The caller is a stranger to the workspace.
-- **F9 One workspace per business:** the agent, phone, billing and permission boundary. — Not a workspace per
-  worker or per call.
-- **F10 Keep the six-agent starter roster** (CEO, Engineering, Finance, Growth, Analytics, Customer
-  Operations); one agent is the receptionist, stored as `frontAgentId` in the voice-agent settings. Every agent is
-  a worker. Names are editable, so policy follows role-keyed UUIDs, never display names. — Existing names and
-  data are kept; no reseeding.
-- **F11 One shared Hermes pool per tier; a session per owner or per task.** No per-business compute, secret or
-  process while nothing is happening. — Cost must follow use.
-- **F12/F13 Paperclip, Aurora, the marketplace, Apps, the Stripe Projects rail and OpenSearch are deleted.** Do
-  not rebuild on them. — They belonged to the old product and held the fixed cost. But a name is not proof
-  something is dead: see "Looks dead, is live".
-- **F14 The OpenRouter gate stays** as the inference and billing gate. — All text inference and its billing go
-  through it.
-- **F17 A Meet session may sleep after five idle minutes and wake on its name.** — Bounds the cost of long
-  meetings.
-- **F20 Booking conflicts are the model's and the booking tool's.** The booking tool still reserves a slot
-  atomically. — No scheduling rules engine.
-- **F22 Missed-caller and waitlist texts stay off until a consent review.** — Not because the code is ready.
-- **F37 The business owns its opening** (greeting, AI notice, recording notice). We ship an editable default and
-  enforce nothing in code. The one rule: the assistant never claims to be a person when a caller sincerely
-  asks. — Matches the market and removes a guard.
-- **F32 One pool of credits covers voice and text.** — Replaces the separate minutes plan. **The design is
-  pending** (plan Part 2, Q2): do not build a second meter in the meantime.
-- **F33 Sign in with ChatGPT stays available to every workspace for now** (founder, 10 Nov: "leave chatgpt, it's not hurting anyone"), replacing the 9 Nov internal-only ruling. Customers default to managed credits.
-  for inference while testing.
-- **No migrations (global constraint).** No migration code, backfills or compatibility layers: fix forward. — There
-  are no real customers.
+- **F38 One architecture for every use case.** Phone, Meet, the orb and typed messages all go voice or text, then
+  the Router, then a Worker. A new use case adds tools and permissions, never a new shape.
+- **F2/F3 The Router decides only;** facts it cannot see go to a Worker thread.
+- **F4/F5 GPT-Live is the voice on all three surfaces, with no business data and no tools, and the model owns the
+  conversation.** Code enforces permissions, settings, effect safety, identity and duplicate prevention. No keyword
+  rules, canned lines, mute gates or one-question prompt patches.
+- **F6 Phone uses the same Router and Workers under a caller principal.** No fast path for callers.
+- **F7/F8 Approvals are card taps only** (a voice can be anyone's). In a meeting everyone acts with the inviting
+  member's authority; spend, send and publish need that member's tap.
+- **Caller boundary.** A caller or texter gets the business profile and their own bookings and messages, never owner
+  credentials or team memory.
+- **F9/F10 One workspace per business** (agent, phone, billing, permission boundary). The six-agent starter roster
+  (CEO, Engineering, Finance, Growth, Analytics, Customer Operations) is kept; one agent is the receptionist
+  (`frontAgentId` in the voice-agent settings). Names are editable, so policy follows role-keyed UUIDs.
+- **F11 One shared Hermes pool per tier; a session per owner or per task.** Cost must follow use.
+- **F12/F13 Paperclip, Aurora, the marketplace, Apps, the Stripe Projects rail and OpenSearch are deleted.** Do not
+  rebuild on them, but see "Looks dead, is live".
+- **F14 The OpenRouter gate stays** as the inference and billing gate for all text inference.
+- **F17 A Meet session may sleep after five idle minutes and wake on its name.**
+- **F20 Booking conflicts are the model's and the booking tool's;** the tool still reserves a slot atomically.
+- **F22 Missed-caller and waitlist texts stay off** until a consent review.
+- **F37 The business owns its opening** (greeting, AI notice, recording notice): an editable default, nothing
+  enforced in code, except that the assistant never claims to be a person when a caller sincerely asks.
+- **F32 One pool of credits covers voice and text.** Design pending (plan Part 2, Q2): build no second meter.
+- **F33 Sign in with ChatGPT stays available to every workspace for now** (founder, 10 Nov). Customers default to
+  managed credits.
+- **No migrations.** No migration code, backfills or compatibility layers: fix forward. There are no real customers.
 - **Merge rule (founder, 9 Nov).** Merge when CI is green and Codex's GitHub review is clean on the exact head.
-  Prod goes only through the deploy workflows. F24: review and security are not skimped; F36: a review that
-  finds an architecture issue goes to the founder.
+  Prod goes only through the deploy workflows. F36: a review that finds an architecture issue goes to the founder.
 
 ## Product domain
 
@@ -128,8 +110,7 @@ The `isol8` brand is retired. A naive `s/isol8/lightbulb/` sweep breaks each of 
 
 The legal entity is **"Isol8 Inc., doing business as Lightbulb AI"**. Do not write any other legal name.
 
-Data-bearing AWS names are already `lightbulb-{env}-*` (DynamoDB), `lightbulb/{env}/*` (Secrets Manager),
-`/lightbulb/{env}/*` (SSM). Do not trust a doc that says they are `isol8-*`.
+AWS names are `lightbulb-{env}-*` (DynamoDB), `lightbulb/{env}/*` (Secrets Manager), `/lightbulb/{env}/*` (SSM).
 
 GitHub OIDC subs are id-qualified since the 2026-08-30 org rename
 (`repo:TheLightbulbCompany@253404738/lightbulb@1182791203:…`). Plain `repo:ORG/REPO:*` patterns no longer
@@ -177,6 +158,9 @@ variables is version controlled and deployed by a pipeline: AWS CDK, GitHub secr
 
 **Never store customer data on this Mac, and never print a secret.**
 
+**This repo is PUBLIC, by the founder's choice.** No secrets, customer names or data, or phone numbers in a commit,
+PR, doc or test fixture. `secret-scan.yml` runs on every PR.
+
 **Planning docs are disposable.** Plans and specs under `docs/superpowers/` are working documents. When the
 feature ships or is abandoned, delete the doc; git history and the PR keep it. The plans that stay are the ones
 this file or living code names: `2026-09-07-audit-report.md` (its §6 names load-bearing scar tissue that must
@@ -209,23 +193,11 @@ Twilio $5, Recall 3 hours, OpenAI voice $5.
 
 For a local frontend against dev endpoints, see `docs/runbooks/local-dev-browser-verification.md`.
 
-**Signing Chrome in as an existing test account without its password:** mint a Clerk sign-in token with the
-admin API and redeem it with the ticket strategy. Password prompts and OTP entry are off-limits; this is the
-sanctioned path. The dev Clerk secret is `lightbulb/dev/clerk_secret_key`; find the user id with
-`GET https://api.clerk.com/v1/users` (dev test accounts are `+clerk_test` addresses).
-
-```bash
-curl -sX POST https://api.clerk.com/v1/sign_in_tokens \
-  -H "Authorization: Bearer $CLERK_SECRET_KEY" -H 'Content-Type: application/json' \
-  -d '{"user_id":"user_XXX"}'   # -> {token, status:"pending"}, one-time, minutes TTL
-```
-```js
-// on a dev.thelightbulb.company page with Clerk loaded
-const si = await window.Clerk.client.signIn.create({strategy:'ticket', ticket:'<token>'});
-await window.Clerk.setActive({session: si.createdSessionId});
-```
-
-Dev Clerk is shared with prod previews, so a dev test account is a real account: never use a production email.
+**Signing Chrome in as an existing dev test account:** mint a Clerk sign-in token (`POST
+https://api.clerk.com/v1/sign_in_tokens`, secret `lightbulb/dev/clerk_secret_key`, `+clerk_test` users) and redeem it
+on a `dev.thelightbulb.company` page with `Clerk.client.signIn.create({strategy:'ticket', ticket})` then
+`Clerk.setActive`. Password prompts and OTP entry are off-limits. Dev Clerk is shared with prod previews: never use
+a production email.
 
 `/api/v1/debug/provision` (`PATCH` rewrites every roster profile and stops the warm session; `DELETE` then
 `POST` reprovisions) still exists and returns 403 in prod. The `dev-clean-slate-reset` and `prod-org-reprovision`
@@ -280,22 +252,18 @@ because it merged. Three things deploy separately: backend and web (`deploy.yml`
 part it needs is. Read the running versions from AWS (`aws ecs describe-task-definition`,
 `aws bedrock-agentcore-control get-agent-runtime`), LiveKit and Vercel.
 
-**Concurrency: one group, `lightbulb-deploy`, with `queue: max`.** `cancel-in-progress: false` protects only a
-run already in progress; without `queue: max` a pending run (a promotion waiting for a runner) was evicted by the
-next merge, and three promotions died that way on 2026-09-07. With `queue: max` runs queue FIFO, so a merge
-cannot kill a pending promotion and re-dispatching only adds a run behind it. The single group is deliberate:
-a per-event group would let a promotion and a push deploy the same dev stacks at once. `queue: max` is a
-validation error alongside `cancel-in-progress: true`. Before you dispatch, this should read 0:
+**Concurrency:** one group, `lightbulb-deploy`, with `queue: max`: runs queue FIFO, so a merge cannot evict a pending
+promotion and re-dispatching only adds a run behind it. (Without it, three promotions died that way on
+2026-09-07.) Before you dispatch, this should read 0:
 
 ```bash
 gh run list --repo TheLightbulbCompany/lightbulb --workflow deploy.yml --limit 10 \
   --json status --jq '[.[]|select(.status!="completed")]|length'
 ```
 
-A run's `status` field lags its jobs badly (a run read `queued` with 16 jobs complete). For liveness, count jobs:
-`gh run view <id> --json jobs --jq '[.jobs[]|select(.status!="queued")]|length'`. A cancelled run with 0 jobs is
-not self-evidently an eviction: eviction can only fire when a run completes in that second. `rerun --failed` on
-a deploy does not work; re-dispatch.
+A run's `status` lags its jobs: for liveness count jobs
+(`gh run view <id> --json jobs --jq '[.jobs[]|select(.status!="queued")]|length'`). A cancelled run with 0 jobs is
+not self-evidently an eviction. `rerun --failed` on a deploy does not work; re-dispatch.
 
 **`deploy.yml` is GENERATED** from `apps/infra/lib/app.ts` by `cdk-pipelines-github`. Its drift guard only throws
 inside the deploy run, post-merge; locally `cdk synth` silently rewrites the file. So any change under
@@ -304,9 +272,9 @@ PR. No PR check catches this now that `infra-ci.yml` is deleted: drift blocks ev
 `cdk synth` does not need Docker when node/npm and python3/pip3 are on the machine (the bundled Lambdas use
 `local.tryBundle`).
 
-GitHub Environments cannot gate prod: required reviewers are Enterprise-only for private repos and this org is on
-Team (`PUT …/environments/prod` with reviewers returns 422). `workflow_dispatch` needs only write access, so the
-promotion gate stops accidents, not a determined agent.
+The prod gate is the `workflow_dispatch` `if:`, not a GitHub Environment: reviewers on `prod` returned 422 when the
+repo was private (Team plan); the repo is public now, so re-test before relying on either claim.
+`workflow_dispatch` needs only write access, so the gate stops accidents, not a determined agent.
 
 **Rate limits.** Every session shares one GitHub identity: 5,000 REST requests an hour plus secondary limits.
 Always pass `--interval 60` to `gh run watch`, poll no faster than once a minute, and on a 403 or 429 back off
@@ -338,7 +306,7 @@ gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status --inter
 
 ```
 Caller → Twilio number → LiveKit SIP (dispatch rule, room "phone-*")
-  → voice worker (apps/huddle-agent, phone.py + live.py; GPT-Live with client delegation, no tools)
+  → voice worker (apps/huddle-agent/src/huddle_agent, phone.py + live.py; GPT-Live with client delegation, no tools)
   → POST /api/v1/internal/voice/calls            (routers/voice_phone.py, worker secret): the call record
   → each delegated caller line: POST …/calls/{id}/turn
        → a message in the call's room, authored by the caller (not a member), plus a phone_contact trigger
@@ -396,18 +364,12 @@ Client --HTTP (Clerk)--> routers/messaging.py --> lightbulb-{env}-messaging (Dyn
 - The browser never supplies an owner id, author id, runtime address, fanout list or publish credential: the
   backend derives all of them. The durable `IDEMP` row, not DynamoDB's short-lived token, is the retry receipt.
 
-**Messaging invariants that still hold:**
-
-- **No second event bus.** SQS is the durable wake-up and nothing else; AppSync is the fanout; DynamoDB is the
-  truth. No Kafka, Redis, per-tenant queue or room-fanout queue.
-- **Revocation rotates the `deliveryKey`.** An AppSync `onSubscribe` decision cannot close an open subscription,
-  so every human membership removal rotates the room's `deliveryKey` in the same transaction and writes durable
-  `LIVE` notices. The old channel goes permanently silent. This is a security boundary.
-- AppSync stores no history and can duplicate or drop, so clients reconcile from HTTP
-  (`GET …/messages?afterSeq=`). Clients are subscribe-only (OIDC, Clerk JWT template `lightbulb-appsync`).
-- The projector sends mobile push **last**: a raising publish replays the whole stream record and Expo has no
-  dedupe. That push is the one place mute is enforced server-side.
-- Execution is at-least-once, not exactly-once.
+**Messaging invariants:** no second event bus (SQS is the durable wake-up only, AppSync is fanout, DynamoDB is truth;
+no Kafka, Redis or per-tenant queues). Every human membership removal rotates the room's `deliveryKey` in the same
+transaction, because an AppSync `onSubscribe` decision cannot close an open subscription: this is a security
+boundary. Clients are subscribe-only (Clerk JWT template `lightbulb-appsync`) and reconcile from HTTP
+(`GET …/messages?afterSeq=`), since AppSync can drop or duplicate. The projector sends mobile push last (a raising
+publish replays the whole record; Expo has no dedupe). Execution is at-least-once.
 
 ### Runtime transport (backend → Hermes)
 
@@ -463,11 +425,10 @@ overlay (`managed/`, which wins at the leaf), the generated skills tree and the 
   Writing it bumps `.revision`, and the bridge re-pulls before the next turn even in a warm microVM. A profile is
   a complete `$HERMES_HOME` merged over Hermes defaults alone; secrets never land in `config.yaml` (it holds
   `${VAR}` references; `.env` is the store).
-- **Skills:** the source is `apps/infra/hermes/skills-src/` (only the `lightbulb` skill now). `build-skills.sh`
-  derives `/opt/hermes-skills` from it; `apps/infra/hermes/skills/` is generated and gitignored, never commit
-  it. Each skill is a thin `SKILL.md` plus `references/*.md` read on demand: every agent pays for `SKILL.md` on
-  every load, so new detail goes in a reference. Its sibling `MAINTENANCE.md` lists the anchors to update when
-  user-facing surfaces change. `scripts/reapply_hermes_skills_dirs.py` re-projects skills into existing profiles.
+- **Skills:** source is `apps/infra/hermes/skills-src/` (the `lightbulb` skill); `build-skills.sh` derives
+  `/opt/hermes-skills`; `apps/infra/hermes/skills/` is generated and gitignored, never commit it. Keep `SKILL.md`
+  thin (every agent pays for it on every load) and put detail in `references/*.md`; `MAINTENANCE.md` lists the
+  anchors to update. `scripts/reapply_hermes_skills_dirs.py` re-projects skills into existing profiles.
 - Per-owner dynamic state (plan, provider) is not in the skill: it is `$HERMES_HOME/lightbulb-facts.json`,
   written by `core/services/owner_facts.py`.
 
@@ -488,8 +449,7 @@ it talks (F5). Time caps are cost caps: `PHONE_MAX_S` (20 min) and `MEET_MAX_S` 
 - The `LIVEKIT_AGENT_NAME` in the Dockerfile and `agent_name=` in `agent.py` must stay equal: the backend
   dispatches by that name. The worker authenticates to the backend with `X-Lightbulb-Huddle-Secret`
   (`lightbulb/{env}/huddle_worker_secret`). Its secrets live in LiveKit (`lk agent secrets`), not in CDK.
-- Phone evals: `tests/evals/sim.py` (simulated callers; works on dev with the worker on a Mac). Meet scenarios:
-  `tests/replay/scenarios/`.
+- Phone evals: `tests/evals/sim.py` (simulated callers). Meet scenarios: `tests/replay/scenarios/`.
 
 ## Backend (FastAPI + DynamoDB)
 
@@ -523,18 +483,17 @@ distribution.
 The public contract is server-owned: `GET /billing/prices` and `GET /billing/account`. Client copy reads those
 fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client release.
 
-- **What is in code today:** the Team plan (`WORKSPACE_PRICE_USD` 50, five members included, `SEAT_PRICE_USD` 20
-  per member from the sixth), and a separate opt-in Metronome voice contract (`METRONOME_VOICE_*`). Phone and Meet
-  minutes go to the voice plan's meter only; only the orb debits credits. The founder has ruled one plan (the
-  receptionist, F27) and one pool of credits for voice and text (F32); both are open work on the board (6.1,
-  6.3). Do not add a second meter while the design is pending.
-- **In flight:** the $250 voice plan (1,500 minutes, $0.35 after) is moving to a Stripe subscription, with
-  Metronome kept for overage minutes only. Read that PR before touching `voice_billing.py` or `voice_plan.py`.
+- **The voice plan** (`core/billing/voice_plan*.py`, `voice_billing.py`): $250 a month, 1,500 minutes, $0.35 a minute
+  after. It is a normal Stripe subscription (`STRIPE_VOICE_PLAN_PRICE_ID`, Checkout with promotion codes, #5208);
+  Stripe's status is the access. Metronome (`METRONOME_VOICE_*`) bills only minutes past 1,500. The old Team plan
+  ($50, five members, $20 a seat) is still in code and offered at sign-up; the founder ruled one plan (F27) and one
+  credit pool (F32), both open on the board (6.1, 6.3, 6.7). Today only the orb debits credits; phone and Meet send
+  minutes to the plan meter only. Build no second meter.
 - **Payment is proven in the Stripe sandbox on dev** (F29), never by a real prod charge.
 - **Free tier `trial_local`:** a workspace with no billing row gets one, bounded by OpenRouter's per-key daily
   limit (`OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD`) **and** a 30-day window (`billing_repo._TRIAL_LOCAL_DURATION_SECONDS`;
   a missing `trial_end` is unarmed, not expired). **There is no cap-only check primitive** — a cap-only check once
-  woke expired trials — so every door calls the full predicate (`trial_cap.trial_block_reason`, cap AND expiry).
+  woke expired trials — so every door calls the full predicate (`services/trial_cap.py` `trial_block_reason`, cap AND expiry).
 - **The openrouter-gate** (`apps/infra/lambda/openrouter-gate/`, `openrouter-gate-stack.ts`) is the fence for all
   managed text inference (F14). The runtime authenticates with a per-owner gate bearer; the owner's own OpenRouter
   key is read by the gate alone. Capped owners (`trial_cap.is_managed_capped`, in lockstep with the gate's `capped`
@@ -567,10 +526,8 @@ protects `/voice` and the other app routes and runs the admin-host gate (`/admin
   platform specifics injected through a `PlatformAdapter`. No `next/*`, React Native or DOM globals in it.
 - Clients do not derive a socket URL: `GET /messaging/live-config` returns the AppSync endpoints and the caller's
   opaque user-channel key.
-- **Colour:** the app is neutral white and grey under `data-chat-theme`; `src/app/globals.css` defines the token
-  ladder (`--plane-*`, `--fg*`, `--link`, `--alert`, `--live`, `--brand`). Read it before describing a colour. No
-  colour literal outside the scanner's exemptions; `src/__tests__/brandTokens.test.ts` enforces it. Fonts: Satoshi
-  for UI, Inter for prose, mono for code only.
+- **Colour:** read `src/app/globals.css` (token ladder `--plane-*`, `--fg*`) before describing a colour; no colour
+  literals outside the scanner's exemptions (`src/__tests__/brandTokens.test.ts`). Satoshi for UI, Inter for prose.
 - **Vercel:** web deploys run inside `deploy.yml`. On 10 Nov 2026 the Vercel team had fallen back to Hobby and was
   paused for overage, so web deploys failed until renewal. Check the team's state before you trust a web deploy.
 
@@ -613,40 +570,22 @@ mail), `HERMES_SHARED_RUNTIME_ARN`, `VOICE_BUY_NUMBERS`, `VOICE_INBOUND_TRUNK_ID
 
 ## Desktop app (Tauri)
 
-Tauri 2 at `apps/desktop/`. Bundle id `company.thelightbulb.desktop`, product name Lightbulb. It opens voice Home
-with the mic and Fn hold-to-talk (F18: the Mac app stays).
-
-- **Flavors:** prod is the default (`tauri.conf.json`, `capabilities/default.json`, `lib.rs` compile-time defaults),
-  so a plain build never lands on dev. Dev is opt-in (`pnpm dev` / `pnpm build:dev`, `tauri.dev.conf.json`,
-  `capabilities/dev.json`). A capability's `remote.urls` is which sites may call every local command, so each
-  flavor grants only its own origin; `flavor_origin_tests` and a `desktop-build.yml` step enforce it.
-- `LIGHTBULB_WS_URL` is compile-time only and points at the `bv[-env]` machine relay.
-- Sidecars ship as bundle **resources** in `Contents/Resources/bin/`, never `externalBin`: a script in
-  `Contents/MacOS` is signed through xattrs, which the updater tarball drops, breaking every auto-updated install's
-  seal. `scripts/vendor-sidecars.sh` populates them at build.
-- Native notifications use `UNUserNotificationCenter` (`notify.rs`), not `tauri-plugin-notification`.
-- **Consent is given once, at pairing, never per operation** (owner ruling 2026-09-26): the pairing switches persist
-  in `desktop_permissions.json` and `desktop_permissions.rs` answers approvals from them. A missing or corrupt store
-  allows nothing.
-- Selected-Mac execution (`lightbulb_desktop`) is gated by `DESKTOP_EXECUTION_ENABLED` and an owner allowlist from
-  GitHub variables; see `docs/runbooks/desktop-execution-staged-acceptance.md`. Mac browsing uses the agent's own
-  Chrome profile, never the person's; cookie and storage values never enter a receipt, row, frame or log.
+Tauri 2 at `apps/desktop/`, bundle id `company.thelightbulb.desktop`. It opens voice Home with the mic and Fn
+hold-to-talk (F18). Prod is the default flavor (`tauri.conf.json`, `capabilities/default.json`); dev is opt-in
+(`pnpm build:dev`, `tauri.dev.conf.json`), and each flavor grants only its own origin to local commands.
+Sidecars ship as bundle **resources**, never `externalBin` (xattr-signed scripts in `Contents/MacOS` break the
+updater's seal). Consent is given once, at pairing, never per operation; a missing permissions store allows
+nothing. Selected-Mac execution is gated by `DESKTOP_EXECUTION_ENABLED`
+(`docs/runbooks/desktop-execution-staged-acceptance.md`).
 
 ## Mobile app (Expo)
 
-Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`), expo-router. Four tabs: Home (`chats.tsx`), Agent
-(`teams.tsx`), Needs you (`activity.tsx`), Settings. It reuses the web protocol through `@lightbulb/shared` with
-specifics in `src/lib/adapter.ts`. Scheme `flickmeon`; bundle id `co.isol8.mobile` and slug `isol8-mobile` stay
-(see the rebrand table).
-
-- `runtimeVersion.policy: "fingerprint"` means an OTA whose native fingerprint does not match the installed binary
-  is never delivered.
-- Metro inlines `EXPO_PUBLIC_*` at bundle time and `eas update` does not read `eas.json` build env: a no-env export
-  once shipped an OTA with an empty Clerk key (see `mobile-ota.yml`).
-- The Apple paywall uses one `useIAP` through `IapProvider`: expo-iap ends the global StoreKit connection when a
-  `useIAP` user unmounts. The paywall's "Or pay $X/month on the web" link is allowed only because the app is sold
-  on the US App Store alone. Nothing in `apps/mobile/src` gates it on the storefront today, so add that gate before
-  widening availability.
+Expo iOS app at `apps/mobile/`, expo-router, four tabs: Home (`chats.tsx`), Agent (`teams.tsx`), Needs you
+(`activity.tsx`), Settings. It shares the web protocol through `@lightbulb/shared`. Bundle id `co.isol8.mobile` and
+slug `isol8-mobile` stay. `runtimeVersion.policy: "fingerprint"` blocks an OTA whose native fingerprint does not
+match the binary. Metro inlines `EXPO_PUBLIC_*` at bundle time and `eas update` does not read `eas.json` env (a
+no-env export once shipped an empty Clerk key). The paywall's web-pay link is allowed only because the app is sold
+on the US App Store alone; nothing gates it on the storefront yet, so add that before widening availability.
 
 ## Knowledge graph (graphify)
 

@@ -2,14 +2,14 @@
 
 // Settings, the fourth place (spec 2026-11-07 §5). The chat shell's Settings panels, rendered here beside the rail
 // (SettingsPlace itself needs the chat shell's panel router), with Billing & minutes first.
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import "@/app/settings/settings.css";
 import "@/components/settings/settings-place.css";
-import { PANELS } from "@/components/settings/SettingsPlace";
+import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
-import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
+import { Button } from "@/components/ui/button";
+import { useConnections } from "@/hooks/useConnections";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { useBilling } from "@/hooks/useBilling";
 import { useAgentConfig, useUsage } from "./data";
 import { VoicePlanCard } from "./VoicePlanCard";
 import { PhonePinCard } from "./PhonePinCard";
@@ -25,7 +25,7 @@ export function BillingMinutes() {
   if (!u) return null;
   if (!u.paidAllowance) return <section className="vx-card vx-billing" aria-labelledby="vx-billing-h">
     <h2 className="vx-h" id="vx-billing-h">Billing &amp; minutes</h2>
-    <p className="vx-minutes"><span className="vx-number">{u.used.toLocaleString()}</span> voice min used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
+    <p className="vx-minutes"><span className="vx-number">{Math.round(u.used).toLocaleString()}</span> voice min used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
     <p className="vx-sub">Included minutes apply while your voice plan has confirmed paid access. Check your plan status above.</p>
   </section>;
   const pct = Math.min(100, Math.round((u.used / u.included) * 100));
@@ -37,7 +37,7 @@ export function BillingMinutes() {
   </label>;
   return <section className="vx-card vx-billing" aria-labelledby="vx-billing-h">
     <h2 className="vx-h" id="vx-billing-h">Billing &amp; minutes</h2>
-    <p className="vx-minutes"><span className="vx-number">{u.used.toLocaleString()}</span> of {u.included.toLocaleString()} min used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
+    <p className="vx-minutes"><span className="vx-number">{Math.round(u.used).toLocaleString()}</span> of {u.included.toLocaleString()} min used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
     {u.periodStart && u.periodEnd && <p className="vx-sub">Billing period: {new Date(u.periodStart).toLocaleDateString(undefined, { timeZone: "UTC" })} – {new Date(u.periodEnd).toLocaleDateString(undefined, { timeZone: "UTC" })} (UTC).</p>}
     <div className="vx-meter" role="meter" aria-label="Minutes used" aria-valuemin={0} aria-valuemax={u.included} aria-valuenow={Math.min(u.used, u.included)}>
       <span style={{ width: `${pct}%` }} /></div>
@@ -56,27 +56,45 @@ function Section({ name, children }: { name: string; children: React.ReactNode }
     <p className="vx-sub">This section couldn&apos;t load. The rest of Settings still works.</p></section>}>{children}</ErrorBoundary>;
 }
 
-/** The old $50 Team plan stays manageable for workspaces already on it; nobody new is offered it here. */
-function WorkspaceBilling({ Billing }: { Billing: () => React.ReactElement }) {
-  const { account } = useBilling();
-  return account?.is_subscribed ? <Billing /> : null;
+/** Google Calendar is the one connection the booking tools use (NeedsYou links here as #connections). */
+function CalendarCard() {
+  const { connections, isLoading, startOAuth } = useConnections();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const google = connections.find((x) => x.provider === "google");
+  const ok = google?.status === "connected";
+  return <section className="vx-card" id="connections" aria-labelledby="vx-calendar-h">
+    <h2 className="vx-h" id="vx-calendar-h">Booking calendar</h2>
+    <p className="vx-sub">{ok ? "Google Calendar is connected. Your assistant books into it during calls." : "Connect Google Calendar so your assistant books straight into it during calls."}</p>
+    {ok ? <span className="vx-tag" data-tone="ok">Connected</span>
+      : <Button type="button" size="sm" variant="outline" disabled={busy || !google}
+        onClick={async () => {
+          setBusy(true); setErr("");
+          try { await startOAuth("google"); }
+          catch (e) { setErr((e as { status?: number })?.status === 403 ? "Ask a workspace admin to connect the calendar." : "Couldn't open Google. Try again."); }
+          finally { setBusy(false); }
+        }}>
+        {isLoading ? "Loading…" : busy ? "Opening Google…" : google?.status === "reconnect_required" ? "Reconnect Google" : "Connect Google Calendar"}</Button>}
+    {err && <p className="vx-hint" role="alert">{err}</p>}
+  </section>;
 }
 
 export function VoiceSettings() {
   const desktop = useSyncExternalStore(noSubscribe, isDesktopApp, () => false);
-  const { billing: Billing, members: Members, approvals: Approvals, connections: Connections } = PANELS;
   return <div className="vx-page vx-settings">
     <h1 className="vx-title">Settings</h1>
     <Section name="Voice plan"><VoicePlanCard /></Section>
     <Section name="Billing & minutes"><BillingMinutes /></Section>
-    <Section name="Workspace billing"><WorkspaceBilling Billing={Billing} /></Section>
     <Section name="Phone PIN"><PhonePinCard /></Section>
-    <Section name="Members"><Members /></Section>
-    <Section name="Connections"><Connections /></Section>
-    <Section name="Approvals"><Approvals /></Section>
+    <Section name="Booking calendar"><CalendarCard /></Section>
+    <Section name="Members"><div className="settings-panel" id="panel-members">
+      <h2 className="settings-page-title">Members</h2>
+      <p className="settings-page-desc">Who can sign in to this business, and the link that lets someone else in.</p>
+      <WorkspaceMembersSection blurb="Everyone here can sign in to this business and see its calls." />
+    </div></Section>
     <Section name="Notifications"><div className="settings-panel" id="panel-notifications">
       <h2 className="settings-page-title">Notifications</h2>
-      <div className="settings-rows"><DailySummaryCard rows /><SessionNotificationsCard rows /></div>
+      <div className="settings-rows"><DailySummaryCard rows /></div>
     </div></Section>
     {desktop && <Section name="Desktop updates"><section className="vx-card" aria-labelledby="vx-desktop-updates-h">
       <h2 className="vx-h" id="vx-desktop-updates-h">Desktop updates</h2>

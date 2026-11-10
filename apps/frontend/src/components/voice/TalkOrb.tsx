@@ -55,7 +55,7 @@ function TalkOrbView({ compact }: { compact: boolean }) {
       {/* one persistent line: an alert, else a polite region with the caption, the ending, or the suggestions */}
       <p id={lineId} role={alert ? "alert" : undefined} aria-live={alert ? undefined : "polite"} className={!alert && on && caption ? "vx-caption" : undefined}>
         {alert || (on && caption) || (ended && err) || away || (room === null ? `${name} isn't set up in this workspace yet.`
-          : <>“What happened today?”<span className="vx-more"> · “Move Priya’s 11 to 11:30 and text her” · “Draft the holiday-hours post”</span></>)}</p>
+          : <>“What happened today?”<span className="vx-more"> · “Who called this morning?” · “Move Priya’s 11 to 11:30”</span></>)}</p>
       {compact && controls}
     </div>
     {!compact && controls}

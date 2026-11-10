@@ -90,7 +90,7 @@ function initialsOf(member: CompanyMember): string {
   return labelFor(member).trim().charAt(0).toUpperCase() || "?";
 }
 
-export function WorkspaceMembersSection() {
+export function WorkspaceMembersSection({ blurb = "Everyone here shares the same agents, rooms, and subscription." }: { blurb?: string } = {}) {
   // `isLoaded` is load-bearing: Clerk resolves the active org independently of
   // the session, so an unset `organization` during that window is "not known
   // yet", not "personal". Reading it as personal would flash the create-a-
@@ -228,7 +228,7 @@ export function WorkspaceMembersSection() {
       <div className="settings-card" data-testid="members-roster">
         <div className="settings-card-title">In this workspace</div>
         <div className="settings-card-desc">
-          Everyone here shares the same agents, rooms, and subscription. To make someone an
+          {blurb} To make someone an
           admin or remove them, use Manage members.
         </div>
 

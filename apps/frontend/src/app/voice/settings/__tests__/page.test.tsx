@@ -7,12 +7,9 @@ vi.mock("@/components/voice/data", () => hooks);
 vi.mock("swr", () => ({ default: hooks.usePlan }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({}) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => true }));
-vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: { is_subscribed: true } }) }));
-vi.mock("@/components/settings/SettingsPlace", () => ({
-  PANELS: { billing: () => <p>workspace billing</p>, members: () => <p>members</p>, connections: () => <p>connections</p>, approvals: () => <p>approvals</p> },
-}));
+vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: [{ provider: "google", status: "disconnected" }], startOAuth: vi.fn() }) }));
+vi.mock("@/components/settings/WorkspaceMembersSection", () => ({ WorkspaceMembersSection: () => <p>members</p> }));
 vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => <p>daily</p> }));
-vi.mock("@/components/settings/SessionNotificationsCard", () => ({ SessionNotificationsCard: () => <p>session</p> }));
 
 import Page from "../page";
 
@@ -37,9 +34,11 @@ it("Billing card shows 38 of 1,500 min", () => {
   expect(screen.getByRole("meter")).toHaveAttribute("aria-valuemax", "1500");
 });
 
-it("shows the existing workspace Billing, Members, Connections, Approvals and Notifications sections", () => {
+it("shows only the salon-owner sections, none of the old chat-product ones", () => {
   render(<Page />);
-  for (const t of ["workspace billing", "members", "connections", "approvals", "daily", "session"]) expect(screen.getByText(t)).toBeInTheDocument();
+  for (const t of ["members", "daily"]) expect(screen.getByText(t)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Connect Google Calendar" })).toBeInTheDocument();
+  for (const t of [/workspace billing/, /Approvals/, /Inference provider/, /Session notifications/]) expect(screen.queryByText(t)).not.toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 

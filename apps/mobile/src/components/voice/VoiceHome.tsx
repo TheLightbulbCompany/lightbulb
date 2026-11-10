@@ -1,4 +1,4 @@
-import { createApiClient, type RoomSummary } from "@lightbulb/shared";
+import { createApiClient, usPhone, type RoomSummary } from "@lightbulb/shared";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
@@ -75,7 +75,7 @@ export function VoiceHome({ rooms, agentId }: { rooms: readonly RoomSummary[]; a
     {!loading && !failed && items.length === 0 ? <Text style={[text, { color: palette.fgSoft }]}>Calls and meetings will appear here.</Text> : null}
     {items.slice(0, 5).map((item) => <Pressable key={`${item.type}:${item.roomId}`} accessibilityRole="button"
       onPress={() => router.push(`/(app)/room/${item.roomId}`)} style={[styles.row, { borderColor: palette.edge }]}>
-      <Text style={text}>{item.type === "meeting" ? item.title || "Meeting" : item.callerName || item.caller || "Unknown caller"}</Text>
+      <Text style={text}>{item.type === "meeting" ? item.title || "Meeting" : item.callerName || (item.caller ? usPhone(item.caller) : "Unknown caller")}</Text>
       <Text style={[text, styles.subtitle, { color: palette.fgSoft }]} numberOfLines={2}>{timelineSummary(item)}</Text>
       <Text style={[text, styles.date, { color: palette.fgMute }]}>{new Date(item.at).toLocaleString()}</Text>
     </Pressable>)}

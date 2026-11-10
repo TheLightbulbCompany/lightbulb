@@ -118,7 +118,7 @@ export interface WaitlistEntry { id: string; date: string; name: string; phone: 
 /** Callers waiting for a day (GET /voice/waitlist); `remove` deletes one entry. */
 export function useWaitlist() {
   const api = useApi();
-  const swr = useSWR("/voice/waitlist", async () => ((await api.get("/voice/waitlist")) as { entries?: WaitlistEntry[] } | undefined)?.entries ?? []);
+  const swr = useSWR("/voice/waitlist", async () => ((await api.get("/voice/waitlist")) as { entries?: WaitlistEntry[] } | undefined)?.entries ?? [], { refreshInterval: 30000 }); // focus revalidation is off app-wide: poll so new callers appear
   const { mutate } = swr;
   const remove = useCallback(async (e: WaitlistEntry) => {
     await api.del(`/voice/waitlist/${e.date}/${e.id}`);

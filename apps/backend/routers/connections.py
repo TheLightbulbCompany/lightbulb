@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import logging
@@ -418,7 +419,9 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
     if p.validation.token_prefix and not token.startswith(p.validation.token_prefix):
         return False
     scheme = p.validation.auth_scheme
-    value = f"{scheme} {token}".strip() if scheme else token
+    # HTTP Basic carries base64("user:secret"); the paste is the plain "user:secret" (Acuity).
+    secret = base64.b64encode(token.encode()).decode() if scheme == "Basic" else token
+    value = f"{scheme} {secret}".strip() if scheme else token
     # Static spec headers first, then the auth header — the auth header wins on a
     # name collision so a misconfigured static header can't clobber the credential.
     headers = {**p.validation.headers, p.validation.auth_header: value}

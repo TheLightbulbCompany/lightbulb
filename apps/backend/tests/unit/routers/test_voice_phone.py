@@ -1022,3 +1022,50 @@ async def test_overlapping_starts_for_one_room_return_the_stored_token(client):
     headers = {**W, voice_phone.CALL_TOKEN_HEADER: loser.json()["callToken"]}
     url = f"/api/v1/internal/voice/calls/{first['callId']}/events"
     assert client.post(url, json={"after": 0}, headers=headers).status_code == 200
+
+
+async def test_start_answers_with_the_token_the_persisted_room_holds(client):
+    """#5193 review: the token returned is the stored META's (create_room's answer), never this request's own."""
+    real = messaging_repo.create_room
+
+    async def persisted(**kw):
+        await real(**kw)
+        return {**await messaging_repo.get_room(kw["room_id"]), "callToken": "stored-by-the-winner"}
+
+    await voice_phone.put_line(NUMBER, LINE)
+    await messaging_repo.put_voice_agent("org_1", CONFIG, "user_owner")
+    with patch.object(voice_phone.messaging_repo, "create_room", persisted):
+        r = client.post("/api/v1/internal/voice/calls", headers=W,
+                        json={"calledNumber": NUMBER, "callerNumber": "+14155550133", "livekitRoom": "phone-p"})  # fmt: skip
+    assert r.status_code == 200 and r.json()["callToken"] == "stored-by-the-winner"
+
+
+async def test_a_booking_returned_again_is_one_unit_of_the_daily_cap(client, monkeypatch):
+    """#5193 review: the allowance is keyed by the reservation; a retry that gets the same booking back (or
+    reconciles it) spends nothing, so the next new booking still fits."""
+    monkeypatch.setattr(voice_phone, "BOOKINGS_PER_CALLER_PER_DAY", 2)
+    call = await _start(client)
+    base, day = f"/api/v1/internal/voice/calls/{call['callId']}", _tomorrow()
+    body = {"service": "gel", "name": "A"}
+    with patch.object(voice_phone.voice_booking, "book", AsyncMock(return_value={"state": "pending", "code": "x"})):
+        for _ in range(4):  # a pending Google create, retried while it reconciles
+            assert client.post(f"{base}/book", json={**body, "start": f"{day}T11:00"}, headers=W).status_code == 200
+    assert client.post(f"{base}/book", json={**body, "start": f"{day}T15:00"}, headers=W).json()["booked"] is True
+    r = client.post(f"{base}/book", json={**body, "start": f"{day}T16:00"}, headers=W)
+    assert r.status_code == 403  # the third distinct reservation is over the cap
+
+
+async def test_a_failed_slot_release_still_bills_and_a_retried_end_finishes_once(client):
+    """#5193 review: releasing the live slot is best-effort (it expires); minutes, usage and caller memory always
+    run, and a retried end does each once."""
+    from core.billing import voice_billing
+
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    with patch.object(voice_phone.messaging_repo, "release_voice_slot", AsyncMock(side_effect=RuntimeError("ddb"))):
+        assert client.post(url, json={"durationSec": 60}, headers=W).status_code == 200
+    assert client.post(url, json={"durationSec": 60}, headers=W).status_code == 200
+    assert await voice_billing.counted_seconds("org_1", None) == 60
+    seen = await messaging_repo._get(messaging_repo.owner_pk("org_1"), "VOICECALLER#+14155550133")
+    assert seen["visits"] == 1
+    assert await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICEUSAGE#{call['callId']}")

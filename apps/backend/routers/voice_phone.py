@@ -436,8 +436,9 @@ async def start_call(body: StartIn) -> dict:
     except messaging_repo.MessagingRepoError:
         if (room := await messaging_repo.get_room(call_id)) is None:  # a replay keeps the room it made
             raise
-    # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes.
-    token = (room or {}).get("callToken") or token
+    # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes,
+    # so the answer is always the persisted META's, never this request's candidate.
+    token = str(room.get("callToken") or "")
     if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
         voice_calls.prewake_owner(owner_id, team=[front])
     allow, mode = cfg["allow"], call_mode(cfg, call)
@@ -637,20 +638,32 @@ async def end_call(call_id: str, body: EndIn) -> dict:
 
     out = await _patch_call(call_id, change)
     if meta.get("liveSlot"):
-        await messaging_repo.release_voice_slot(meta["ownerId"], meta["liveSlot"], call_id)
-    if before.get("status") != "ended":
-        try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
-            await voice_billing.add_month_seconds(
-                meta["ownerId"], int(out["durationSec"]), datetime.fromisoformat(out["startedAt"])
-            )
+        try:  # best-effort: the slot's lease expires on its own, and billing below must always run
+            await messaging_repo.release_voice_slot(meta["ownerId"], meta["liveSlot"], call_id)
         except Exception:
-            logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
+            logger.warning("live slot release failed for %s", call_id, exc_info=True)
+    # Every step below runs on a retried end too, each once: a first end that failed part-way finishes here.
+    if not out.get("monthCounted"):
+
+        def claim(c: dict) -> dict:  # at most once per call, whichever end claims it (counter failures are logged)
+            before["claimed"] = not c.get("monthCounted")
+            return {"monthCounted": True} if before["claimed"] else {}
+
+        out = await _patch_call(call_id, claim)
+        if before["claimed"]:
+            try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
+                await voice_billing.add_month_seconds(
+                    meta["ownerId"], int(out["durationSec"]), datetime.fromisoformat(out["startedAt"])
+                )
+            except Exception:
+                logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
     # This awaited write is the durable source + outbox admission. If it fails,
     # return an error so the worker retries; terminal retries keep the first
     # stored duration/start time rather than trusting a new request body.
     await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], int(out["durationSec"]), "phone")
-    if out.get("caller"):
-        seen = await _seen(meta["ownerId"], out["caller"]) or {}
+    seen = await _seen(meta["ownerId"], out["caller"]) if out.get("caller") else None
+    if out.get("caller") and (seen or {}).get("lastCallId") != call_id:  # a retried end counts the visit once
+        seen = seen or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
                 "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
         if seen.get("forgottenAt"):
@@ -1023,22 +1036,20 @@ async def book(call_id: str, body: BookIn) -> dict:
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
     counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
-    # Only a new reservation counts: a retry of this call's (or this caller's) booking at that time returns or
-    # reconciles the one already made, and the cap must never lock it out.
-    held = await messaging_repo._get(messaging_repo.owner_pk(meta["ownerId"]), f"VOICEBOOK#{body.start}") or {}
-    caller = call.get("caller")
-    retry = bool(held) and (held.get("callId") == call_id or bool(caller and held.get("phone") == caller))
-    if not retry and not await messaging_repo.take_voice_count(meta["ownerId"], counter, BOOKINGS_PER_CALLER_PER_DAY):
+    # One unit per reservation, keyed by its start: a retry that returns or reconciles that booking ("had") is never
+    # a second unit, so the cap cannot lock a pending booking out of its own reconciliation.
+    unit = await messaging_repo.take_voice_unit(meta["ownerId"], counter, body.start, BOOKINGS_PER_CALLER_PER_DAY)
+    if unit is None:
         await _limit(call_id, "too many bookings from this number today")
         raise _err(403, "not_allowed")
     try:
         result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
     except BaseException:
-        if not retry:
-            await messaging_repo.take_voice_count(meta["ownerId"], counter, 0, by=-1)  # only a booking made counts
+        if unit == "new":
+            await messaging_repo.give_back_voice_unit(meta["ownerId"], counter, body.start)  # nothing was reserved
         raise
-    if not retry and result["state"] not in ("confirmed", "pending", "held"):  # nothing was reserved
-        await messaging_repo.take_voice_count(meta["ownerId"], counter, 0, by=-1)
+    if unit == "new" and result["state"] not in ("confirmed", "pending", "held"):  # nothing was reserved
+        await messaging_repo.give_back_voice_unit(meta["ownerId"], counter, body.start)
     if result["state"] != "confirmed":
         await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
         return {"booked": False, **result}
@@ -1240,7 +1251,7 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
         raise _err(403, "no_requester")
     if call_mode(await agent_config(ws), call) != "live":
         raise _err(403, "not_allowed")  # a paused line only takes messages (/message)
-    if not await messaging_repo.take_voice_turn(ws, call_id, body.n, TURNS_PER_CALL):
+    if not await messaging_repo.take_voice_unit(ws, f"VOICETURNS#{call_id}", str(body.n), TURNS_PER_CALL):
         await _limit(call_id, f"more than {TURNS_PER_CALL} lines to the team")
         raise _err(403, "not_allowed")  # the worker takes it as a message instead
     who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()

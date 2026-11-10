@@ -65,7 +65,7 @@ import uuid
 import weakref
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from botocore.exceptions import ClientError
 
@@ -2995,20 +2995,16 @@ async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) 
         raise
 
 
-async def take_voice_count(owner_id: str, sk: str, limit: int, ttl_s: int = 2 * 86400, by: int = 1) -> bool:
-    """One unit of the counter row ``sk`` (a VOICE…# cap: forwarding checks, calls, bookings); False once ``limit``
-    are used. ``by=-1`` gives one back. The pattern of ``count_voice_edit``."""
+async def take_voice_count(owner_id: str, sk: str, limit: int, ttl_s: int = 2 * 86400) -> bool:
+    """One unit of the counter row ``sk`` (a VOICE…# cap: forwarding checks, calls per caller); False once ``limit``
+    are used. The pattern of ``count_voice_edit``."""
     try:
         await run_in_thread(
             _table().update_item,
             Key={"pk": owner_pk(owner_id), "sk": sk},
-            UpdateExpression="ADD n :by SET expiresAt = if_not_exists(expiresAt, :exp)",
-            **({"ConditionExpression": "attribute_not_exists(n) OR n < :limit"} if by > 0 else {}),
-            ExpressionAttributeValues={
-                ":by": by,
-                ":exp": int(time.time()) + ttl_s,
-                **({":limit": limit} if by > 0 else {}),
-            },
+            UpdateExpression="ADD n :one SET expiresAt = if_not_exists(expiresAt, :exp)",
+            ConditionExpression="attribute_not_exists(n) OR n < :limit",
+            ExpressionAttributeValues={":one": 1, ":limit": limit, ":exp": int(time.time()) + ttl_s},
         )
         return True
     except ClientError as exc:
@@ -3017,21 +3013,38 @@ async def take_voice_count(owner_id: str, sk: str, limit: int, ttl_s: int = 2 * 
         raise
 
 
-async def take_voice_turn(owner_id: str, call_id: str, n: int, limit: int) -> bool:
-    """Turn ``n`` of a call counted once (a retried turn is the same); False once ``limit`` distinct turns are used."""
+async def take_voice_unit(owner_id: str, sk: str, unit: str, limit: int) -> Literal["new", "had"] | None:
+    """Count ``unit`` (a turn number, a booking's start) once in the set row ``sk``: "new" when this call added it,
+    "had" when it was already counted (a retry: never a second unit), None once ``limit`` distinct units are used."""
     try:
         await run_in_thread(
             _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": f"VOICETURNS#{call_id}"},
-            UpdateExpression="ADD turns :n SET expiresAt = if_not_exists(expiresAt, :exp)",
-            ConditionExpression="attribute_not_exists(turns) OR size(turns) < :limit OR contains(turns, :one)",
-            ExpressionAttributeValues={":n": {n}, ":one": n, ":limit": limit, ":exp": int(time.time()) + 2 * 86400},
+            Key={"pk": owner_pk(owner_id), "sk": sk},
+            UpdateExpression="ADD units :u SET expiresAt = if_not_exists(expiresAt, :exp)",
+            ConditionExpression="attribute_not_exists(units) OR (size(units) < :limit AND NOT contains(units, :one))",
+            ExpressionAttributeValues={
+                ":u": {unit},
+                ":one": unit,
+                ":limit": limit,
+                ":exp": int(time.time()) + 2 * 86400,
+            },
         )
-        return True
+        return "new"
     except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    row = await _get(owner_pk(owner_id), sk)
+    return "had" if unit in ((row or {}).get("units") or set()) else None
+
+
+async def give_back_voice_unit(owner_id: str, sk: str, unit: str) -> None:
+    """Undo a "new" `take_voice_unit` whose action never happened."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"pk": owner_pk(owner_id), "sk": sk},
+        UpdateExpression="DELETE units :u",
+        ExpressionAttributeValues={":u": {unit}},
+    )
 
 
 async def claim_voice_slot(owner_id: str, sk: str, holder: str, hold_s: int) -> bool:

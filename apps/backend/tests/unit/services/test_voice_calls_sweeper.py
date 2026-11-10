@@ -62,3 +62,21 @@ async def test_sweep_reports_open_windows():
     ):
         assert await vc.sweep_calls_once(now=1000) == 0
     metric.assert_called_once_with("voice.calls.open", value=3)
+
+
+@pytest.mark.asyncio
+async def test_phone_sweep_reads_every_page_of_the_open_call_index():
+    from unittest.mock import MagicMock
+
+    pages = [{"Items": [{"pk": "p", "sk": "a", "startedAtEpoch": 0}], "LastEvaluatedKey": {"k": 1}},
+             {"Items": [{"pk": "p", "sk": "b", "startedAtEpoch": 0}]}]  # fmt: skip
+    table = MagicMock()
+    table.query.side_effect = pages
+    from routers import voice_phone
+
+    with (
+        patch.object(vc.messaging_repo, "_table", return_value=table),
+        patch.object(voice_phone, "end_call", AsyncMock()) as end,
+    ):
+        assert await vc.sweep_phone_calls(10**9) == 2
+    assert [c.args[0] for c in end.await_args_list] == ["a", "b"]

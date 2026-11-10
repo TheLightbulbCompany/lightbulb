@@ -22,7 +22,7 @@ it("greeting style is optional and never blocks save", async () => {
   render(<AgentPage />);
   const style = screen.getByLabelText(/Greeting style/);
   fireEvent.change(style, { target: { value: "Warm and brief, mention the sale" } });
-  expect(screen.getByText(/always says its name, that it.s an AI assistant and that the call is recorded/)).toBeTruthy();
+  expect(screen.getByText(/Some states require telling callers they are talking to an AI or that calls are recorded/)).toBeTruthy();
   expect(document.querySelector("[data-err='true']")).toBeNull();
   await act(async () => { await vi.advanceTimersByTimeAsync(700); });
   expect(cfg.save).toHaveBeenCalledWith(expect.objectContaining({ greeting: "Warm and brief, mention the sale" }));

@@ -266,7 +266,7 @@ function NameStep({ c, set, go, busy, back }: StepProps) {
       <p className="vx-sub" style={{ marginTop: -6 }}>Not a real staff member&apos;s name: callers should know it&apos;s an assistant.</p>
       <label className="vx-label">Greeting style (optional)
         <textarea className="vx-field" rows={3} maxLength={400} value={c.greeting} placeholder={`How ${name} should open: tone, what to mention`} onChange={(e) => set({ greeting: e.target.value })} /></label>
-      <p className="vx-sub" style={{ marginTop: -6 }}>{name} always says its name, that it&apos;s an AI assistant and that the call is recorded.</p>
+      <p className="vx-sub" style={{ marginTop: -6 }}>The greeting is yours to write; leave it blank for a short default. Some states require telling callers they are talking to an AI or that calls are recorded: that is your business&apos;s responsibility.</p>
       <PhoneVoiceSettings c={c} set={set} />
       {c.number && <div className="vx-card">
         <p className="vx-h">Try a booking</p>

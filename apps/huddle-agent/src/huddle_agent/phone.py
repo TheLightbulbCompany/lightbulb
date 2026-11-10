@@ -4,7 +4,7 @@ takes turns and decides when a caller's line needs the backend (client delegatio
 is the caller's line in the call's room (`/turn`, the caller principal: the call's open thread first, else the
 Router with the Business profile, whose Front desk threads book, move and cancel as the caller). The room's agent
 messages come back through `/events` as results. Our code says nothing of its own: it runs the call (SIP, the
-disclosure check, the record, billing at hang-up, the run-out forward) and the two routes only the worker can do:
+record, billing at hang-up, the run-out forward) and the two routes only the worker can do:
 the SIP transfer (the Router's transfer_call line, an events item with `action: "transfer"`) and a paused line's
 message (`/turn` refuses: `/message`).
 
@@ -20,9 +20,7 @@ import itertools
 import json
 import logging
 import os
-import re
 import time
-import unicodedata
 
 import httpx
 from livekit import api
@@ -37,7 +35,6 @@ AWAY_S = float(os.environ.get("PHONE_AWAY_S", "15"))  # caller silence before GP
 CALL_MAX_S = float(os.environ.get("PHONE_MAX_S", 20 * 60))  # cost cap: a call ends after 20 minutes
 BYE_S = 8.0  # the goodbye's time to play at the cost cap
 CONNECT_S = 3.0  # the transfer line's time to play before the SIP transfer
-OPENING_GAP_S = 1.5  # the voice quiet this long after speaking: its opening turn is over
 WAIT_S = 90.0  # a pending delegation keeps a quiet line open this long (a Front desk thread: 69-95 s on dev, 8 Nov)
 POLL_S = 1.0  # how often the call asks what Lightbulb posted in its room
 # One warm process is plenty for a line; a busy host gets a longer start and its own load ceiling.
@@ -62,9 +59,8 @@ MESSAGE_ONLY_TOOLS = ["Messages: take a message for the team; the owner will cal
 #: Said once after start, as the docs greet: the same instructions as the prompt's opening, as commentary with
 #: delegation_id null (developers.openai.com/api/docs/guides/live-prompting, "Language and pronunciation").
 OPENING = (
-    "The call has just been answered. Speak first in English, in one short sentence: say your name, {assistant}; that you are "
-    'an AI assistant; and that this call is recorded. Then ask how you can help, and listen. Take your tone from the '
-    'owner\'s greeting, a guide, not a script: "{greeting}"'
+    "The call has just been answered. Speak first in English, in one short sentence, and then listen. You are "
+    '{assistant}. Open the way the business\'s own greeting does, a guide, not a script: "{greeting}"'
 )
 
 PROMPT = """You are {assistant}, the calm, friendly AI receptionist on the phone for {business}.
@@ -72,13 +68,12 @@ Speak warmly and naturally, at an unhurried pace, one or two short sentences at 
 clear and direct, not overly cheerful. {language}
 If the caller is frustrated, acknowledge it briefly and focus on the next helpful step.
 {caller}{paused}
-Opening: your very first words on the call say your name, {assistant}; that you are an AI assistant; and that this
-call is recorded. Then ask how you can help, and listen.
+Opening: your very first words follow the business's greeting, then you listen.
+If a caller sincerely asks whether they are speaking to a person, answer truthfully that this is an AI assistant.
 
 Backchannel policy: Use light backchannels. Acknowledge naturally without competing with the main response.
 
-Interruption policy: Stop speaking when the caller interrupts. Listen to what they say. The one exception is the
-opening: finish saying your name, that you are an AI assistant and that this call is recorded, then listen.
+Interruption policy: Stop speaking when the caller interrupts. Listen to what they say.
 
 {delegation}
 
@@ -88,8 +83,8 @@ Do not guess the missing value.
 
 Wait for the backend's result before describing this business or its services, stating a price or a time, confirming a booking, or saying that a message was
 taken or a transfer is under way. Never share anything about other customers.
-If the caller objects to recording, do not claim it can be switched off: this call is being recorded. Explain that
-they may end the call or ask the backend for a person; respect their choice without continuing routine questions."""
+If the caller objects to being recorded, answer honestly that the business may keep a transcript of the call, and
+offer a person or a message."""
 
 #: Facts the call tells GPT-Live (commentary with delegation_id null): GPT-Live chooses what to say.
 QUIET = "The line has been quiet for a while. If the caller stays silent, the call will end."
@@ -102,7 +97,7 @@ def prompt(info: dict) -> str:
     return PROMPT.format(
         language=(
             "Open in English. Speak English or Spanish, following the caller's choice. Switch naturally when the "
-            "caller speaks or asks for Spanish or English; keep all permissions and disclosure rules in either language."
+            "caller speaks or asks for Spanish or English; keep all permissions rules in either language."
             if info.get("spanish") is True
             else "Speak only English, whatever language a line seems to be in."
         ),
@@ -137,93 +132,6 @@ def clean_transcript(items: list[dict]) -> list[dict]:
             continue
         out.append(line)
     return out
-
-
-def _norm(text: str, *, keep_accents: bool = False) -> str:
-    text = unicodedata.normalize("NFC" if keep_accents else "NFKD", text.lower())
-    if not keep_accents:
-        text = "".join(c for c in text if not unicodedata.combining(c))
-    return " ".join(re.sub(r"[^\w\s]", " ", text).split())
-
-
-def _recording_disclosed(text: str, spanish: bool) -> bool:
-    """Require a present recording assertion. Commas keep qualifiers in the same sentence.
-
-    Keep Spanish accents here: affirmative “sí” is different from conditional “si”. Unsupported or uncertain
-    wording leaves the existing guard to request its factual correction; this never controls caller turns.
-    """
-    for sentence in re.split(r"(?<=[.!?;])\s*", text):
-        s = f" {_norm(sentence, keep_accents=True)} "
-        if re.search(
-            r" (?:if|unless|might|may|maybe|perhaps|possibly|could|would|whether|not sure|don t know|do not know) ", s
-        ):
-            continue
-        if spanish and re.search(
-            r" (?:si|quiz[aá]s?|tal vez|puede que|podr[ií]a|posiblemente|no s[eé]|es posible) ", s
-        ):
-            continue
-        if re.search(
-            r" this (?:call )?(?:is|s) (?:being )?recorded "
-            r"| the call (?:is|s) (?:being )?recorded "
-            r"| we (?:are|re) recording (?:this|the) call ", s,
-        ):
-            return True
-        if spanish and re.search(
-            r" (?:esta |la )?llamada (?:sí )?(?:(?:est[aá] (?:siendo )?|es )grabada|se est[aá] grabando|se graba) "
-            r"| (?:estamos grabando|grabamos) (?:esta |la )llamada ", s,
-        ):
-            return True
-    return False
-
-
-def discloses(text: str, assistant: str, spanish: bool = False) -> bool:
-    """Check the spoken name, AI identity and recording truth, never a denied assertion.
-
-    Spanish phrases are accepted only for an enabled bilingual line. This verifies disclosure, not turn-taking.
-    """
-    t = f" {_norm(text)} "
-    if re.search(
-        r" (not|never|no|nothing|t)( \w+){0,3} recorded |\bno part of\b.*\brecorded\b"
-        r"| (not|never|no|t)( \w+){0,3} ai assistant ",
-        t,
-    ):
-        return False
-    named = bool(_norm(assistant)) and f" {_norm(assistant)} " in t
-    ai = " ai assistant " in t
-    recorded = _recording_disclosed(text, spanish)
-    if spanish:
-        clauses = (f" {_norm(part)} " for part in re.split(r"[.!?;,:]", text))
-        if any(
-            re.search(
-                r" (no|nunca|jamas|sin)( \w+){0,4} (grabada|grabado|grabando|grabamos|grabacion) "
-                r"| (no|nunca)( \w+){0,4} (asistente|inteligencia artificial|ia) ",
-                clause,
-            )
-            for clause in clauses
-        ):
-            return False
-        ai = ai or bool(
-            re.search(
-                r" asistente(?: virtual)? (?:de )?(?:inteligencia artificial|ia) ", t
-            )
-        )
-    return named and ai and recorded
-
-
-def disclosure_of(items: list[dict], assistant: str, spanish: bool = False) -> str:
-    """Judge the opening's assistant bursts before the caller's first line; `unknown` when none was transcribed.
-    Interrupted items contain only what played, so an opening cut after its disclosure is still ok."""
-    opening = []
-    for i in sorted(items, key=lambda i: i["t"]):
-        if i["role"] == "user":
-            break
-        if i["role"] == "assistant":
-            opening.append(i["text"])
-    return (
-        ("ok" if discloses(" ".join(opening), assistant, spanish) else "missing")
-        if opening
-        else "unknown"
-    )
 
 
 class Backend:
@@ -279,84 +187,6 @@ class Ending:
         if self._task is None:
             self._task = asyncio.create_task(self._end(int(time.monotonic() - self.answered)))
         return self._task
-
-
-class DisclosureGuard:
-    """Judges the opening once its turn is over: the voice spoke, then stayed quiet for `gap_s`, or the caller
-    spoke. Every assistant line of that turn counts (an interrupted one holds only what played), so an opening said
-    in several bursts is judged whole. No line that discloses makes `say` have the disclosure sentence said once; a
-    caller talking over the opening before its disclosure is such a miss (Review Focus 4). PHONE_TEST_FAIL_DISCLOSURE=1
-    fails it (scripted runs)."""
-
-    def __init__(
-        self, assistant: str, say, gap_s: float | None = None, *, spanish: bool = False
-    ) -> None:
-        self.assistant, self._say, self.spanish = assistant, say, spanish
-        self._gap = OPENING_GAP_S if gap_s is None else gap_s
-        self.line = f"I'm {assistant}, an AI assistant, and this call is recorded."
-        self.corrected = self._done = self._spoke = self._over = False
-        self._items: list[dict] = []
-        self._timer: asyncio.TimerHandle | None = None
-        self._verdict: str | None = (
-            None  # the original opening, never reclassified by the correction
-        )
-
-    @property
-    def disclosure(self) -> str:
-        return self._verdict or disclosure_of(self._items, self.assistant, self.spanish)
-
-    def state(self, old: str, new: str) -> None:
-        if self._done:
-            return
-        if new == "speaking":
-            self._spoke = True
-            if self._timer:
-                self._timer.cancel()
-        elif self._spoke and old == "speaking":
-            self._timer = asyncio.get_running_loop().call_later(self._gap, self._end)
-
-    def seen(self, items: list[dict]) -> None:
-        self._items = items
-        if self._done:
-            return
-        if self._fail():
-            pass
-        elif disclosure_of(items, self.assistant, self.spanish) == "ok":
-            self._verdict = "ok"
-            self._done = True  # disclosed: nothing to judge
-            return
-        if self._spoke and any(i["role"] == "user" for i in items):
-            self._over = True  # the caller's turn: the opening's is over
-        self._judge()
-
-    def _end(self) -> None:
-        self._over = True
-        self._judge()
-
-    @staticmethod
-    def _fail() -> bool:
-        return os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1"
-
-    def _judge(self) -> None:
-        if self._done or not self._over or not self._items:
-            return  # the opening's line may still be on its way
-        self._done = True
-        self._verdict = (
-            "missing"
-            if self._fail()
-            else disclosure_of(self._items, self.assistant, self.spanish)
-        )
-        if self._verdict != "ok":
-            logger.info("phone: the opening lacked the disclosure; saying it once")
-            self.corrected = True
-            self._say(self.line)
-
-
-def say_exactly(line: str) -> str:
-    return (
-        f'The opening disclosure was missed. Immediately say this once, exactly and in full, before responding '
-        f'to the caller: "{line}" Then continue normally. This is a one-time correction; do not repeat it on later turns.'
-    )
 
 
 # Standalone (`python -m huddle_agent.phone dev`, a dev line): its own dispatch name; this kwarg wins over
@@ -473,7 +303,7 @@ async def entrypoint(ctx: JobContext) -> None:
             voice=info.get("voice") if info.get("voice") in ("marin", "quartz", "willow") else "marin",
             opening=OPENING.format(assistant=info["assistantName"], greeting=info["greeting"]),
             user_away_timeout=AWAY_S,  # caller silence only: the voice's own words never reset it
-            record=True,  # the opening says the call is recorded
+            record=True,
             room_options=room_io.RoomOptions(
                 participant_identity=caller.identity,
                 close_on_disconnect=True,
@@ -490,7 +320,7 @@ async def entrypoint(ctx: JobContext) -> None:
         finally:
             try:
                 await backend.post("end", {"durationSec": int(time.monotonic() - answered),
-                                           "summary": "Voice failed; callback needed", "disclosure": "unknown"})
+                                           "summary": "Voice failed; callback needed"})
             finally:
                 await ctx.delete_room()
                 ctx.shutdown("voice failed")
@@ -499,23 +329,11 @@ async def entrypoint(ctx: JobContext) -> None:
     session = live_session.session
     items: list[dict] = []
     t0 = time.time()
-    guard = DisclosureGuard(
-        info["assistantName"],
-        lambda line: live_session.send_instructions(say_exactly(line)),
-        spanish=info.get("spanish") is True,
-    )
-
     @session.on("conversation_item_added")
     def _item(ev) -> None:
         if text := getattr(ev.item, "text_content", None):
             at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
             items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
-            guard.seen(items)
-
-    @session.on("agent_state_changed")
-    def _state(ev) -> None:
-        guard.state(ev.old_state, ev.new_state)
-        guard.seen(items)
 
     failed: list[str] = []
 
@@ -598,8 +416,6 @@ async def entrypoint(ctx: JobContext) -> None:
                 "durationSec": duration,
                 "summary": "; ".join(did),
                 "transcript": clean_transcript(items),
-                "disclosure": guard.disclosure,
-                "disclosureRepeated": guard.corrected,
                 "silent": bool(silent_end),
             },
         )

@@ -834,13 +834,3 @@ async def test_phone_voice_and_opening_are_startup_configuration(monkeypatch):
     await s.close()
 
 
-async def test_disclosure_instructions_do_not_answer_a_delegation_or_append_after_close(monkeypatch):
-    s = await _start(monkeypatch, Router())
-    s.pending["item_waiting"] = "message_waiting"
-    s.send_instructions("Say the missed disclosure once, then continue normally.")
-    assert s.agent.duplex_session.instructions == [("Say the missed disclosure once, then continue normally.", None)]
-    assert s.agent.duplex_session.appends == []
-    assert s.pending == {"item_waiting": "message_waiting"}
-    await s.close()
-    s.send_instructions("Never sent")
-    assert len(s.agent.duplex_session.instructions) == 1

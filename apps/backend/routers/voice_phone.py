@@ -343,8 +343,12 @@ async def start_call(body: StartIn) -> dict:
         )
         await voice_outbound.end_probe(body.livekitRoom, cfg["forwardingCheck"]["callId"])
         raise _err(409, "forward_check")  # the worker leaves without speaking
-    org = await clerk_admin.get_organization(owner_id) if owner_id.startswith("org_") else None
-    business, assistant = (org or {}).get("name") or "the business", cfg["name"].strip() or "Lightbulb"
+    # The name the owner typed at setup is what callers know; the workspace name is only a fallback.
+    business = (cfg.get("business") or "").strip()
+    if not business:
+        org = await clerk_admin.get_organization(owner_id) if owner_id.startswith("org_") else None
+        business = (org or {}).get("name") or "the business"
+    assistant = cfg["name"].strip() or "Lightbulb"
     if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)

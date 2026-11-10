@@ -119,7 +119,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 3.18 | Keep-my-number or new-number choice, with the carrier's forward and stop codes | yes | yes | no | 1st | Product | |
 | 3.19 | Forwarding check from the Agent page | yes | yes | no | 1st | Product | The outbound trunk is set in prod. Never run against a real forward |
 | 3.20 | Call record: transcript, outcome tag, steps, one-line "what it did", booking card | yes | yes | part | 1st | Product | Home polls every 20 s by design |
-| 3.21 | Call recording stored and playable | no | no | no | | Product | The call is flagged for recording and the web player waits for a `recordingUrl`, but nothing produces one. Every call tells the caller it is recorded; whether LiveKit keeps the audio is not confirmed. LiveKit's session-end report may give a recording path with no extra egress cost; verify against the installed SDK (1.8.11) |
+| 3.21 | Call recording stored and playable | no | no | no | | Product | Moved to Later by the founder (10 Nov): salons, spas and barbers are served by the transcript, which every call already keeps. Audio adds consent and retention weight for no clear gain. Build when a customer asks |
 | 3.22 | Front-desk specialist pre-warmed when a call connects | part | part | no | | Product | A Router prewarm exists. The per-call specialist is not proven |
 | 3.23 | Staff and holidays limit the slots offered | no | no | no | 1st | Product | Both fields are saved and ignored. A business that enters "closed 26 to 27 Nov" is still booked on those days |
 | 3.24 | Waitlist: join and fill | no | no | no | | Product | The UX plan cut the tool; the spec promised it |

@@ -46,9 +46,9 @@ export interface AgentConfig {
   /** Existing worker UUID that greets people; null uses the stable workspace default. */
   frontAgentId?: string | null;
   name: string; greeting: string; voice: string; spanish: boolean; live: boolean; paused: boolean;
-  allow: { book: boolean; move: boolean; waitlist: boolean; greetByName: boolean; answer: boolean };
+  allow: { book: boolean; move: boolean; greetByName: boolean; answer: boolean };
   knowledge: Knowledge[]; toAdd: string[]; instructions: string;
-  hours: Record<string, Day>; holidays: string;
+  hours: Record<string, Day>; holidays: { from: string; to: string }[];
   /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
   services: { name: string; minutes: number; price: string; staff: string; minutesGuessed?: boolean }[]; bufferMin: number;
   /** IANA zone the hours are in; Onboarding saves the browser's. The server defaults to America/New_York. */
@@ -72,16 +72,16 @@ export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
 export const DEFAULT_CONFIG: AgentConfig = {
   name: "", greeting: "", voice: "marin", spanish: false, live: false, paused: false,
-  allow: { book: true, move: true, waitlist: true, greetByName: true, answer: true },
+  allow: { book: true, move: true, greetByName: true, answer: true },
   knowledge: [], toAdd: [], instructions: "",
   hours: Object.fromEntries(DAYS.map((d) => [d, { open: "09:00", close: "18:00", closed: d === "Sun" }])),
-  holidays: "",
+  holidays: [],
   services: [], bufferMin: 10,
   bookingsGo: "own", otherSystem: "",
   number: "", forwardFrom: "",
   handoff: { number: "", onlyOpenHours: true },
   meetings: { followUps: true },
-  reminders: { dayBefore: true, missedCallers: false, waitlist: false },
+  reminders: { dayBefore: false, missedCallers: false, waitlist: false },
 };
 
 /** In the app the assistant is always Lightbulb (founder, 8 Nov 2026); the Agent-page name is only what callers hear. */

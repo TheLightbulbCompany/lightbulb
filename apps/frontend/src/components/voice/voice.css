@@ -197,7 +197,7 @@ textarea.vx-field { resize: vertical; }
 .vx-qa small { color: var(--fg-mute); font-size: var(--text-2xs); }
 .vx-hours { display: grid; grid-template-columns: 48px 1fr 1fr auto; gap: 8px 12px; align-items: center; margin-top: 14px; font-size: var(--text-ui); }
 .vx-hours input[type="time"] { min-height: 32px; }
-.vx-svc { display: grid; grid-template-columns: minmax(0, 2fr) 72px 80px minmax(0, 1.5fr) 32px; gap: 8px; align-items: center; }
+.vx-svc { display: grid; grid-template-columns: minmax(0, 2fr) 72px 80px 32px; gap: 8px; align-items: center; }
 @media (max-width: 640px) {
   .vx-svc { grid-template-columns: 1fr 1fr; }
   .vx-hours { grid-template-columns: 40px 1fr 1fr; }

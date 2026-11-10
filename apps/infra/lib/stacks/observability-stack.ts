@@ -2359,6 +2359,25 @@ def handler(event, context):
         "3+ ERROR log lines from the voice routers in 5 min - check the backend log group for routers.voice / routers.voice_phone.",
     });
 
+    // W86: a Twilio number was bought but its PHONE#/LINE row failed to write
+    // (voice_onboarding._provision_number). It bills monthly with nothing routing
+    // to it; a Go-live retry completes the row from the receipt.
+    this.createAlarm({
+      id: "W86",
+      name: "voice-number-orphaned",
+      metricName: "voice.number.orphaned",
+      statistic: "Sum",
+      threshold: 1,
+      evaluationPeriods: 1,
+      periodMinutes: 60,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
+      description:
+        "A voice number was bought but its line row failed to write - the workspace's Go-live retry completes it; check the backend log for the workspace id.",
+    });
+
     // P34: OpenRouter refusing keys that still have daily allowance. The gate
     // (lambda/openrouter-gate/core.mjs) emits this when "Key limit exceeded" arrives
     // for a key with money left: the shared OpenRouter ACCOUNT is out of credits, and

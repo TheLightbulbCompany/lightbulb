@@ -268,6 +268,31 @@ async def test_retry_after_config_save_failure_recovers_same_provider_number(rep
     assert line["ownerUserId"] == "user_a"
 
 
+async def test_line_write_failure_alerts_and_retry_completes_without_second_purchase(repos, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    twilio = _fake_twilio(monkeypatch)
+    metric = MagicMock()
+    monkeypatch.setattr(vo, "put_metric", metric)
+    real = vo.run_in_thread
+    calls = {"line": 0}
+
+    async def flaky(fn, *a, **kw):
+        if (kw.get("Item") or {}).get("sk") == "LINE":
+            calls["line"] += 1
+            if calls["line"] == 1:
+                raise RuntimeError("ddb down")
+        return await real(fn, *a, **kw)
+
+    monkeypatch.setattr(vo, "run_in_thread", flaky)
+    with pytest.raises(RuntimeError):
+        await vo.provision_at_go_live(WS, {}, "user_a")
+    metric.assert_called_once_with("voice.number.orphaned")
+    assert await messaging_repo._get(f"PHONE#{NEW}", "LINE") is None
+    assert await vo.provision_at_go_live(WS, {}, "user_a") == NEW
+    assert sum(c.args[0] == "POST" for c in twilio.await_args_list) == 1
+    assert (await messaging_repo._get(f"PHONE#{NEW}", "LINE"))["ownerId"] == WS
+
+
 async def test_route_failure_compensates_new_purchase(repos, monkeypatch):  # noqa: F811
     _buying(monkeypatch, True)
     twilio = _fake_twilio(monkeypatch)

@@ -77,7 +77,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 2.1 | One shared Hermes runtime pool per tier; a session per owner or per task | yes | yes | part | Platform | Tenant isolation not yet proven. #5170 fences every call to the pool |
 | 2.2 | Idle timeout 5 min; typing and new-room prewake deleted; the curator runs only when warm | yes | yes | no | Platform | |
 | 2.3 | The curator works without waking a business's session | yes | ? | no | Platform | When the session is cold it returns without an invoke. It then waits for the next turn; a phone-only business is curated only when it next has a turn |
-| 2.4 | Old per-business runtimes and roles retired | no | no | no | Platform | 25 old definitions remain. By exact allowlist |
+| 2.4 | Old per-business runtimes and roles retired | part | no | no | Platform | 27 old definitions remain (25 prod, 2 dev). The dry-run tool and workflow are built (`retire_legacy_runtimes.py`, `retire-legacy-runtimes.yml`). The allowlist is empty: every owner row still names its old runtime and every runtime was invoked in the last 7 days. Roles are kept. See `docs/ops/2026-11-10-legacy-runtime-inventory.md` |
 | 2.5 | Boot identity seeds replaced, then retired | no | no | no | Platform | 28 seeds are KEPT until network identity custody has a replacement |
 | 2.6 | Per-business secrets moved to encrypted DynamoDB envelopes | yes | yes | part | Platform | Unit tests and live provider use exist in earlier receipts. Still to do: classify it per connector |
 | 2.7 | Secrets Manager under 20 | no | no | no | Platform | About 130 today. 14 platform OAuth client secrets are required and stay |

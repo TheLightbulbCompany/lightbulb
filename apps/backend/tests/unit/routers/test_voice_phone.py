@@ -858,3 +858,26 @@ def test_call_card_push_carries_the_kind_and_a_first_name_only():
     assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person: Maria"
     q["preview"] = {}
     assert questions.card_copy(q, "Lightbulb")[1] == "Caller wanted a person"
+
+
+async def test_a_retried_end_counts_one_visit(client):
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
+    for _ in range(2):
+        assert client.post(url, json={"durationSec": 60}, headers=W).status_code == 200
+    seen = await voice_phone._seen("org_1", "+14155550133")
+    assert seen["visits"] == 1
+
+
+async def test_the_sweep_ends_a_call_left_live_past_the_cap(client):
+    import time
+
+    from core.services import voice_calls
+
+    call = await _start(client)
+    await voice_calls.sweep_phone_calls(int(time.time()))  # fresh: left alone
+    assert (await voice_phone._call(call["callId"]))[1]["status"] == "live"
+    await voice_calls.sweep_phone_calls(int(time.time()) + voice_calls.PHONE_STALE_S + 1)
+    ended = (await voice_phone._call(call["callId"]))[1]
+    assert ended["status"] == "ended" and ended["durationSec"] == voice_calls.PHONE_MAX_S
+    await voice_calls.sweep_phone_calls(int(time.time()) + 10_000)  # index row gone: nothing to repeat

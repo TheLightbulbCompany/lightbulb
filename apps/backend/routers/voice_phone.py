@@ -19,6 +19,7 @@ import asyncio
 import functools
 import hashlib
 import re
+import time
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -362,6 +363,10 @@ async def start_call(body: StartIn) -> dict:
     except messaging_repo.MessagingRepoError:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
             raise
+    await run_in_thread(  # the stale-call sweep's index: removed by end_call (voice_calls.sweep_phone_calls)
+        messaging_repo._table().put_item,
+        Item={"pk": OPEN_CALLS_PK, "sk": call_id, "ownerId": owner_id, "startedAtEpoch": int(time.time())},
+    )
     if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
         voice_calls.prewake_owner(owner_id, team=[front])
     allow, mode = cfg["allow"], _line_state(cfg, body.callerNumber)
@@ -519,6 +524,9 @@ def transcript_lines(transcript: list[dict]) -> list[dict]:
     return lines
 
 
+OPEN_CALLS_PK = "VOICEOPENCALLS"
+
+
 @router.post("/internal/voice/calls/{call_id}/end")
 async def end_call(call_id: str, body: EndIn) -> dict:
     lines = transcript_lines(body.transcript)
@@ -558,7 +566,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     if out.get("caller"):
         seen = await _seen(meta["ownerId"], out["caller"]) or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
-                "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
+                "visits": int(seen.get("visits", 0)) + (seen.get("lastCallId") != call_id)}  # a retried end counts once  # fmt: skip
         if seen.get("forgottenAt"):
             item["forgottenAt"] = seen["forgottenAt"]
         if seen.get("forgottenAt") and datetime.fromisoformat(seen["forgottenAt"]) >= datetime.fromisoformat(
@@ -582,6 +590,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     for kind, question in asks if meta.get("ownerUserId") else ():
         ask = call_ask(call_id, out, kind, question)
         await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
+    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": OPEN_CALLS_PK, "sk": call_id})
     return out
 
 

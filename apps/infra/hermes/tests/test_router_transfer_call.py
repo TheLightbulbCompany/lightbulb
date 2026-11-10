@@ -1,5 +1,6 @@
 """`transfer_call`: a Router tool for a phone caller's batch only. It asks the backend to post the call room's
 transfer line (`action: "transfer"`); the phone worker does the SIP transfer."""
+import io
 import json
 import urllib.error
 
@@ -50,3 +51,14 @@ def test_only_a_callers_batch_gets_the_tool(quiet_turn, threads, monkeypatch, ca
     threads[0].run_now()
     want = ["lightbulb_router", "lightbulb_router_call"] if call else ["lightbulb_router"]
     assert built["enabled_toolsets"] == want
+
+
+def test_transfer_call_nobody_available_tells_the_model_what_to_say(monkeypatch):
+    monkeypatch.setattr(rt.turn_context, "read", lambda sid: dict(CTX))
+
+    def closed(url, token, body):
+        raise urllib.error.HTTPError(url, 403, "no", {}, io.BytesIO(b'{"detail": {"code": "nobody_available"}}'))
+
+    monkeypatch.setattr(pkg, "_post", closed)
+    out = json.loads(_call(trigger_ids=["t"], text="x"))
+    assert "not transferred" in out["instruction"] and "message" in out["instruction"]

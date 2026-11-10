@@ -208,6 +208,14 @@ async def test_the_agent_pages_checkboxes_gate_the_tools(client):
     assert end["outcome"] == "message"
 
 
+async def test_an_answered_call_without_a_worker_summary_still_gets_one(client):
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    tx = [{"role": "user", "text": "Do you have anything open tomorrow at 3?"}, {"role": "assistant", "text": "Yes."}]
+    rec = client.post(f"{base}/end", json={"durationSec": 70, "transcript": tx}, headers=W).json()
+    assert rec["summary"] == "Caller asked: Do you have anything open tomorrow at 3?"
+
+
 async def test_handoff_and_needs_you_outcomes(client):
     call = await _start(client)
     base = f"/api/v1/internal/voice/calls/{call['callId']}"

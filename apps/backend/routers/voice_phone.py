@@ -626,6 +626,15 @@ def transcript_lines(transcript: list[dict]) -> list[dict]:
 OPEN_CALLS_PK = "VOICEOPENCALLS"
 
 
+def _fallback_summary(call: dict, lines: list[dict]) -> str:
+    """The worker's summary lists only what it did itself (messages, transfers), so a call that just answered
+    questions arrives with none: say what the caller asked, factually."""
+    ask = next((x["text"] for x in lines if x["who"] == "caller" and x["text"].strip()), "")
+    if ask:
+        return f"Caller asked: {ask.strip()[:140]}"
+    return (call.get("steps") or [{}])[-1].get("text") or "Answered the call; no request made"
+
+
 @router.post("/internal/voice/calls/{call_id}/end")
 async def end_call(call_id: str, body: EndIn) -> dict:
     lines = transcript_lines(body.transcript)
@@ -652,7 +661,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             "endedAt": utc_now_iso(),
             "durationSec": seconds,
             "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
-            "summary": body.summary,
+            "summary": body.summary or _fallback_summary(call, lines),
             "transcript": lines,
         }
 
@@ -1414,6 +1423,15 @@ async def didnt_know(call_id: str, body: UnknownIn) -> dict:
     return {"noted": True}
 
 
+def handoff_to(cfg: dict) -> str | None:
+    """The number a person-request may be handed to right now, or None: unset, or closed with onlyOpenHours."""
+    h, now = cfg["handoff"], _now(cfg)
+    window = _open_window(cfg, now.strftime("%Y-%m-%d"))
+    is_open = bool(window) and window[0] <= now < window[1]
+    to = us_number(str(h["number"] or ""))  # a number saved before the US/CA check is never dialed (M2)
+    return to if to and (is_open or not h["onlyOpenHours"]) else None
+
+
 class TransferIn(BaseModel):
     failed: bool = False  # the worker's SIP transfer didn't connect
 
@@ -1426,11 +1444,8 @@ async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     cfg = await agent_config(meta["ownerId"])
     if call_mode(cfg, call) != "live":
         raise _err(403, "not_allowed")
-    h, now = cfg["handoff"], _now(cfg)
-    window = _open_window(cfg, now.strftime("%Y-%m-%d"))
-    is_open = bool(window) and window[0] <= now < window[1]
-    to = us_number(str(h["number"] or ""))  # a number saved before the US/CA check is never dialed (M2)
-    if (body and body.failed) or not to or (h["onlyOpenHours"] and not is_open):
+    to = handoff_to(cfg)
+    if (body and body.failed) or not to:
         why = "the transfer didn't connect" if body and body.failed else "nobody was available"
         await _patch_call(call_id, lambda c: {"handoffMissed": True, "steps": _step(c, f"Asked for a person; {why}")})
         return {"transferTo": None}

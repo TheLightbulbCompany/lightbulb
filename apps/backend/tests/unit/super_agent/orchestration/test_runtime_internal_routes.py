@@ -414,6 +414,9 @@ async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch
     state = {"line": "live"}
     monkeypatch.setattr(vp, "agent_config", AsyncMock(return_value={}))
     monkeypatch.setattr(vp, "_line_state", lambda cfg, caller: state["line"])
+    patched = AsyncMock()
+    monkeypatch.setattr(vp, "_patch_call", patched)
+    monkeypatch.setattr(vp, "handoff_to", lambda cfg: state.get("to", "+14155550199"))
     trig = {"voice:c1:turn-0": {"triggerId": "voice:c1:turn-0", "ref": {"origin": "phone_contact", "callId": call,
                                                                                 "roomId": call}},
             "voice:wrong-room": {"triggerId": "voice:wrong-room", "ref": {"origin": "phone_contact", "callId": call,
@@ -440,6 +443,10 @@ async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch
     r = await api.post(url, json={"triggerIds": ["voice:c1:turn-0"], "text": "x"}, headers=H)
     assert r.status_code == 403 and r.json()["detail"] == "not_allowed"
     assert posted.await_count == 1
+    state.update(line="live", to=None)  # closed with onlyOpenHours, or no number: refused before any line is posted
+    r = await api.post(url, json={"triggerIds": ["voice:c1:turn-0"], "text": "x"}, headers=H)
+    assert r.status_code == 403 and r.json()["detail"] == {"code": "nobody_available"}
+    assert posted.await_count == 1 and patched.await_count == 1  # the missed hand-off is still recorded
     assert (await api.post(url, json={"triggerIds": ["voice:c1:turn-0"], "text": "x"})).status_code in (401, 403)
 
 

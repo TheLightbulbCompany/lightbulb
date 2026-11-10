@@ -18,8 +18,10 @@ Rows in the messaging table:
 import asyncio
 import functools
 import hashlib
+import hmac
 import re
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
@@ -27,7 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -46,12 +48,57 @@ from core.services import (
     voice_preferences,
 )
 from routers.huddles import _Worker
-from routers.voice import _e164, month_seconds
+from routers.voice import _E164, _e164, month_seconds, us_number
 from routers.voice_meet import agent_lines, latest_seq
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
 logger = logging.getLogger(__name__)
-router = APIRouter(dependencies=[_Worker])
+
+# --- abuse caps (security review 9 Nov, M5). Over one, the call is still answered, but only takes a message. ---------
+LIVE_CALLS_PER_LINE = 5  # calls on one line at once
+CALLS_PER_CALLER_PER_DAY = 20  # calls from one number to one workspace per UTC day (withheld callers share one)
+BOOKINGS_PER_CALLER_PER_DAY = 5  # bookings from one number per UTC day (withheld callers share one)
+TURNS_PER_CALL = 60  # the caller's lines delegated to the Router (`/turn`) in one call
+LIVE_SLOT_S = 25 * 60  # a live-call slot frees itself after this (the worker's 20 min cap + grace) if no end came
+END_GRACE_S = 30  # billed durationSec may exceed the server-measured time since startedAt by this much
+#: What carriers present for a withheld number (Twilio: "anonymous", "restricted", "unknown", "private",
+#: "unavailable", and the keypad spellings ANONYMOUS, BLOCKED, RESTRICTED, UNAVAILABLE). Stored as caller "".
+WITHHELD = frozenset({"anonymous", "restricted", "unknown", "private", "unavailable", "blocked",
+                      "+266696687", "+2562533", "+7378742833", "+86282452253"})  # fmt: skip
+CALL_TOKEN_HEADER = "X-Lightbulb-Call-Token"
+
+
+async def _require_call_token(request: Request, x_lightbulb_call_token: Annotated[str, Header()] = "") -> None:
+    """Every per-call route needs the token `start_call` returned for that call, not just the worker secret (M4)."""
+    call_id = request.path_params.get("call_id")
+    if call_id is None:
+        return
+    expected = str((await messaging_repo.get_room(call_id) or {}).get("callToken") or "")
+    if not expected or not hmac.compare_digest(x_lightbulb_call_token.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail={"code": "invalid_call_token"})
+
+
+router = APIRouter(dependencies=[_Worker, Depends(_require_call_token)])
+
+
+def caller_id(raw: str) -> str:
+    """The caller as the record keeps it: E.164, or "" for a withheld or unreadable number (M1). "" has no caller
+    memory and no bookings to list, move or cancel; it can still book and leave a message."""
+    n = raw.strip()
+    return n if _E164.fullmatch(n) and n not in WITHHELD else ""
+
+
+def _day() -> str:
+    return datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+
+
+async def _limit(call_id: str, why: str) -> None:
+    """A cap was hit mid-call: from now on the call only takes messages."""
+    await _patch_call(
+        call_id,
+        lambda c: {} if c.get("limited") else {"limited": why, "steps": _step(c, f"Limited to a message: {why}")},
+    )
+
 
 _Str = Annotated[str, Field(min_length=1, max_length=500)]
 _Local = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")]
@@ -117,9 +164,14 @@ def _line_state(cfg: dict, caller: str) -> Literal["live", "message_only"]:
     return "live" if (cfg.get("live") and not cfg.get("paused")) or _e164(caller) in owner else "message_only"
 
 
+def call_mode(cfg: dict, call: dict) -> Literal["live", "message_only"]:
+    """The line's state for this call; a call over an abuse cap (`limited`) only takes messages."""
+    return "message_only" if call.get("limited") else _line_state(cfg, call.get("caller", ""))
+
+
 def _allowed(cfg: dict, call: dict, *caps: str) -> None:
     """Refuse (403) a capability the owner turned off, or everything but a message while the line is message-only."""
-    if _line_state(cfg, call.get("caller", "")) != "live" or not any(cfg["allow"].get(c) for c in caps):
+    if call_mode(cfg, call) != "live" or not any(cfg["allow"].get(c) for c in caps):
         raise _err(403, "not_allowed")
 
 
@@ -276,12 +328,29 @@ async def start_call(body: StartIn) -> dict:
     if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
         t.add_done_callback(_warming.discard)
-    seen = await _seen(owner_id, body.callerNumber)
+    caller = caller_id(body.callerNumber)
+    seen = await _seen(owner_id, caller)
+    call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
+    existing = await messaging_repo.get_room(call_id)  # a replayed start: its token and its caps, counted once
+    token = (existing or {}).get("callToken") or secrets.token_urlsafe(32)
+    slot = (existing or {}).get("liveSlot") or (
+        None if existing else await _live_slot(owner_id, body.calledNumber, call_id)
+    )
+    if existing:
+        limited = (existing.get("call") or {}).get("limited") or ""
+    elif not slot:
+        limited = "too many calls on the line at once"
+    elif not await messaging_repo.take_voice_count(
+        owner_id, f"VOICECALLS#{_day()}#{caller or 'withheld'}", CALLS_PER_CALLER_PER_DAY
+    ):
+        limited = "too many calls from this number today"
+    else:
+        limited = ""
     # Minutes used up and the owner chose "forward": the caller goes to the hand-off number instead of the assistant.
     # Never to the line that forwards here (the kept business number) or the one called: that rings us again.
     forward_to = (
-        _e164(str(cfg["handoff"]["number"] or ""))
-        if cfg.get("runOut") == "forward" or cfg.get("_paymentBlocked")
+        us_number(str(cfg["handoff"]["number"] or ""))
+        if (cfg.get("runOut") == "forward" or cfg.get("_paymentBlocked")) and not limited
         else None
     )
     if forward_to in {_e164(str(cfg.get("forwardFrom") or "")), _e164(body.calledNumber)} or (
@@ -301,9 +370,8 @@ async def start_call(body: StartIn) -> dict:
         except Exception:  # metering never drops a live call: answer as normal
             logger.warning("run-out check failed for %s; answering", owner_id, exc_info=True)
             forward_to = None
-    call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
     call = {
-        "caller": body.callerNumber,
+        "caller": caller,
         "callerName": real_name((seen or {}).get("name")),
         "returning": bool(seen),
         "startedAt": datetime.now(_TZ).isoformat(),
@@ -322,8 +390,9 @@ async def start_call(body: StartIn) -> dict:
         "messages": [],
         "work": [],
         "unknown": [],
+        **({"limited": limited} if limited else {}),
     }
-    name = f"Call · {call['callerName'] or body.callerNumber or 'unknown'}"[:60]
+    name = f"Call · {call['callerName'] or caller or 'unknown'}"[:60]
     members = [{"kind": "human", "id": line["ownerUserId"], "displayName": business, "mentionHandle": None,
                 "role": "owner", "listenMode": None}]  # fmt: skip
     front = None
@@ -347,6 +416,8 @@ async def start_call(body: StartIn) -> dict:
                 "call": call,
                 "hidden": True,
                 "ownerUserId": line["ownerUserId"],
+                "callToken": token,  # beside the record, never in it: the Home reads META.call
+                **({"liveSlot": slot} if slot else {}),
                 **({"frontAgentId": front["id"]} if front else {}),
             },
         )
@@ -355,12 +426,13 @@ async def start_call(body: StartIn) -> dict:
             raise
     if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
         voice_calls.prewake_owner(owner_id, team=[front])
-    allow, mode = cfg["allow"], _line_state(cfg, body.callerNumber)
+    allow, mode = cfg["allow"], call_mode(cfg, call)
     paused = mode != "live"
     return {
         "after": await latest_seq(call_id),  # the first `/events` cursor: a replayed start says nothing twice
         "mode": mode,
         "callId": call_id,
+        "callToken": token,  # the worker sends it on every later route for this call (CALL_TOKEN_HEADER)
         "ownerId": owner_id,
         "businessName": business,
         "assistantName": assistant,
@@ -376,6 +448,15 @@ async def start_call(body: StartIn) -> dict:
         "forwardTo": forward_to,  # the worker transfers the caller there, then ends with forwarded: true
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
     }
+
+
+async def _live_slot(owner_id: str, line: str, call_id: str) -> str | None:
+    """One of the line's LIVE_CALLS_PER_LINE slots for this call (end_call frees it; an unended call's expires)."""
+    for i in range(LIVE_CALLS_PER_LINE):
+        sk = f"VOICELIVE#{line}#{i}"
+        if await messaging_repo.claim_voice_slot(owner_id, sk, call_id, LIVE_SLOT_S):
+            return sk
+    return None
 
 
 def _is_probe(cfg: dict, body: StartIn) -> bool:
@@ -436,20 +517,28 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         before["status"] = call.get("status")
         if call.get("status") == "ended":
             return {}  # retries reuse the immutable first terminal result below
+        # Billed time is never more than the server saw since start (M4): a worker cannot bill a 24-hour call.
+        try:
+            elapsed = int((datetime.now(_TZ) - datetime.fromisoformat(call["startedAt"])).total_seconds())
+        except (KeyError, ValueError):
+            elapsed = 0
+        seconds = min(body.durationSec, max(elapsed, 0) + END_GRACE_S)
         if forwarded_to:
-            return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
+            return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": seconds,
                     "outcome": "forwarded", "transferredTo": forwarded_to,
                     "steps": _step(call, "Minutes used up: forwarded to you")}  # fmt: skip
         return {
             "status": "ended",
             "endedAt": utc_now_iso(),
-            "durationSec": body.durationSec,
+            "durationSec": seconds,
             "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
             "summary": body.summary,
             "transcript": lines,
         }
 
     out = await _patch_call(call_id, change)
+    if meta.get("liveSlot"):
+        await messaging_repo.release_voice_slot(meta["ownerId"], meta["liveSlot"], call_id)
     if before.get("status") != "ended":
         try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
             await voice_billing.add_month_seconds(
@@ -558,7 +647,7 @@ class RememberIn(BaseModel):
 async def remember(call_id: str, body: RememberIn) -> dict:
     """A caller's own preference (kept on their row at the end of the call) or a fact about the business (cfg toAdd)."""
     meta, call = await _call(call_id)
-    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+    if call_mode(await agent_config(meta["ownerId"]), call) != "live":
         raise _err(403, "not_allowed")
     if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
         raise _err(400, "looks_like_a_card")
@@ -796,7 +885,17 @@ async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book")
-    result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
+    counter = f"VOICEBOOKS#{_day()}#{call.get('caller') or 'withheld'}"
+    if not await messaging_repo.take_voice_count(meta["ownerId"], counter, BOOKINGS_PER_CALLER_PER_DAY):
+        await _limit(call_id, "too many bookings from this number today")
+        raise _err(403, "not_allowed")
+    try:
+        result = await voice_booking.book(meta["ownerId"], cfg, call_id, call, body.start, body.service, body.name)
+    except BaseException:
+        await messaging_repo.take_voice_count(meta["ownerId"], counter, 0, by=-1)  # only a booking made counts
+        raise
+    if result["state"] not in ("confirmed", "pending", "held"):  # nothing was reserved
+        await messaging_repo.take_voice_count(meta["ownerId"], counter, 0, by=-1)
     if result["state"] != "confirmed":
         await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
         return {"booked": False, **result}
@@ -911,17 +1010,18 @@ async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     is `handoff_missed`. The worker does the SIP transfer."""
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    if _line_state(cfg, call.get("caller", "")) != "live":
+    if call_mode(cfg, call) != "live":
         raise _err(403, "not_allowed")
     h, now = cfg["handoff"], _now(cfg)
     window = _open_window(cfg, now.strftime("%Y-%m-%d"))
     is_open = bool(window) and window[0] <= now < window[1]
-    if (body and body.failed) or not h["number"] or (h["onlyOpenHours"] and not is_open):
+    to = us_number(str(h["number"] or ""))  # a number saved before the US/CA check is never dialed (M2)
+    if (body and body.failed) or not to or (h["onlyOpenHours"] and not is_open):
         why = "the transfer didn't connect" if body and body.failed else "nobody was available"
         await _patch_call(call_id, lambda c: {"handoffMissed": True, "steps": _step(c, f"Asked for a person; {why}")})
         return {"transferTo": None}
-    await _patch_call(call_id, lambda c: {"transferredTo": h["number"], "steps": _step(c, "Transferred to a person")})
-    return {"transferTo": h["number"]}
+    await _patch_call(call_id, lambda c: {"transferredTo": to, "steps": _step(c, "Transferred to a person")})
+    return {"transferTo": to}
 
 
 async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: str, ask: dict | None = None) -> dict:
@@ -955,7 +1055,7 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     effect_check asks the owner before any outside action. The requester is the line's owner user, written by the
     backend; the same title in one call is the same task (a retried tool call)."""
     meta, call = await _call(call_id)
-    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+    if call_mode(await agent_config(meta["ownerId"]), call) != "live":
         raise _err(403, "not_allowed")
     out = await _start_task(call_id, meta, call, body.title, body.brief)
     await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
@@ -986,8 +1086,11 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
     ws, requester = meta["ownerId"], meta.get("ownerUserId")
     if not requester:
         raise _err(403, "no_requester")
-    if _line_state(await agent_config(ws), call.get("caller", "")) != "live":
+    if call_mode(await agent_config(ws), call) != "live":
         raise _err(403, "not_allowed")  # a paused line only takes messages (/message)
+    if not await messaging_repo.take_voice_turn(ws, call_id, body.n, TURNS_PER_CALL):
+        await _limit(call_id, f"more than {TURNS_PER_CALL} lines to the team")
+        raise _err(403, "not_allowed")  # the worker takes it as a message instead
     who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()
     key = f"call-turn:{call_id}:{body.n}"
     msg, _ = await messaging_repo.create_message(

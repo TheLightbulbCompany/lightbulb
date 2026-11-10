@@ -26,26 +26,34 @@ logger = logging.getLogger(__name__)
 
 PROBE_S = 60  # the outbound leg rings and lives at most this long ("missed" forwarding waits ~20-30 s; LiveKit max 80)
 WINDOW_S = 70  # how long after the dial an arriving call counts as the probe
+CHECKS_PER_DAY = 5  # forwarding checks per workspace per UTC day: each one dials out on our trunk
 
 
 async def forward_check(ws: str, cfg: dict) -> dict:
-    from routers.voice import _e164  # the page's number parser; routers.voice imports this module
+    from routers.voice import _e164, us_number  # the page's number parsers; routers.voice imports this module
 
     if not (settings.VOICE_OUTBOUND_TRUNK_ID and livekit_huddles.configured()):
         return {"ok": False, "reason": "outbound_not_configured"}
-    to = _e164(str(cfg.get("forwardFrom") or ""))
+    raw = str(cfg.get("forwardFrom") or "")
+    to = us_number(raw)
     line = str(cfg.get("number") or "") or settings.VOICE_LINE_NUMBER
-    if not to:
+    if not _e164(raw):
         return {"ok": False, "reason": "no_business_line"}
-    if not to.startswith("+1"):
-        return {"ok": False, "reason": "us_only"}  # US-only product: never dial abroad or premium international
+    if not to:
+        return {"ok": False, "reason": "us_only"}  # US/CA only: never dial abroad, the Caribbean or a premium line
     if not line or ((await messaging_repo._get(f"PHONE#{line}", "LINE")) or {}).get("ownerId") != ws:
         return {"ok": False, "reason": "no_line"}  # the call coming back must reach this workspace's line
-    if age_s(cfg.get("forwardingCheck")) <= WINDOW_S:
-        return {"ok": False, "reason": "check_in_progress"}  # one dial per window per workspace, server-side
     call_id = uuid.uuid4().hex
-    # Written before the dial so the call coming back always finds it. A failed dial leaves it, so a retry waits out
-    # the window too. ponytail: two POSTs in the same instant can both dial; a conditional write if that matters.
+    # One dial per window per workspace: the lock is a conditional write, so two POSTs in the same instant dial once.
+    if age_s(cfg.get("forwardingCheck")) <= WINDOW_S or not await messaging_repo.claim_voice_slot(
+        ws, "VOICEFWDCHECK#lock", call_id, WINDOW_S
+    ):
+        return {"ok": False, "reason": "check_in_progress"}
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if not await messaging_repo.take_voice_count(ws, f"VOICEFWDCHECK#{day}", CHECKS_PER_DAY):
+        return {"ok": False, "reason": "daily_limit"}
+    # Written before the dial so the call coming back always finds it. A failed dial leaves it (and the lock), so a
+    # retry waits out the window too.
     await messaging_repo.put_voice_agent(
         ws, {**cfg, "forwardingCheck": {"startedAt": utc_now_iso(), "callId": call_id}}, "voice"
     )

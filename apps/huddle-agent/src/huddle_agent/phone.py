@@ -148,15 +148,18 @@ class Backend:
             timeout=10,
         )
         self.call_id = ""
+        self.call_token = ""  # start's callToken: every later route for this call needs it, not just the secret
 
     async def post(self, path: str, body: dict | None = None) -> dict:
         sent = time.monotonic()
-        r = await self._http.post(
-            path
-            if path.startswith("/")
-            else f"/internal/voice/calls/{self.call_id}/{path}",
-            json=body or {},
-        )
+        if path.startswith("/"):
+            r = await self._http.post(path, json=body or {})
+        else:
+            r = await self._http.post(
+                f"/internal/voice/calls/{self.call_id}/{path}",
+                json=body or {},
+                headers={"X-Lightbulb-Call-Token": self.call_token},
+            )
         ms = int((time.monotonic() - sent) * 1000)  # a tool turn's backend share (no call content logged)
         if r.is_success:
             logger.info("phone %s: %s -> %s in %d ms", self.call_id, path, r.status_code, ms)
@@ -211,7 +214,7 @@ async def entrypoint(ctx: JobContext) -> None:
     if info.get("error"):
         logger.error("phone: call refused (%s)", info["error"])
         return
-    backend.call_id = info["callId"]
+    backend.call_id, backend.call_token = info["callId"], info.get("callToken") or ""
     logger.debug("phone: call %s started", backend.call_id)
 
     async def transfer(to: str) -> None:

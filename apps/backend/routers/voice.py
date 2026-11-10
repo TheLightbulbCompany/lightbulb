@@ -53,6 +53,25 @@ def _e164(raw: str) -> str | None:
     return number if _E164.fullmatch(number) else None
 
 
+#: NANP area codes that are not the US or Canada (Caribbean and Atlantic countries, billed as international), and the
+#: premium ones. The assistant only ever dials out (hand-off, run-out forward, forwarding check) to a +1 US/CA number.
+NON_US_CA_AREA_CODES = frozenset(
+    "242 246 264 268 284 345 441 473 649 658 664 721 758 767 784 809 829 849 868 869 876".split()
+)
+PREMIUM_AREA_CODES = frozenset({"900", "976"})
+_NANP = re.compile(r"\+1([2-9]\d{2})[2-9]\d{6}")
+
+
+def us_number(raw: str) -> str | None:
+    """`_e164`, kept only for a +1 US or Canadian number (not premium, not another NANP country): the one check for
+    every number we dial out to."""
+    number = _e164(raw)
+    m = _NANP.fullmatch(number or "")
+    if not m or m.group(1) in NON_US_CA_AREA_CODES | PREMIUM_AREA_CODES:
+        return None
+    return number
+
+
 #: Meeting fields the page shows. Never the ticket nonce or the Recall bot id.
 _MEETING_FIELDS = (
     "title",
@@ -238,6 +257,8 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
         number = _e164(handoff["number"]) if isinstance(handoff["number"], str) else None
         if number is None:  # the worker dials tel:{number} as stored
             raise HTTPException(status_code=422, detail={"code": "handoff_number_invalid"})
+        if us_number(number) is None:  # never a premium or international dial (toll fraud through the hand-off)
+            raise HTTPException(status_code=422, detail={"code": "handoff_number_not_us"})
         if number == _e164(str(body.config.get("forwardFrom") or "")):  # forwarding there would ring us again
             raise HTTPException(status_code=422, detail={"code": "handoff_is_forwarded_line"})
         body.config["handoff"] = {**handoff, "number": number}

@@ -2995,6 +2995,76 @@ async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) 
         raise
 
 
+async def take_voice_count(owner_id: str, sk: str, limit: int, ttl_s: int = 2 * 86400, by: int = 1) -> bool:
+    """One unit of the counter row ``sk`` (a VOICE…# cap: forwarding checks, calls, bookings); False once ``limit``
+    are used. ``by=-1`` gives one back. The pattern of ``count_voice_edit``."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": sk},
+            UpdateExpression="ADD n :by SET expiresAt = if_not_exists(expiresAt, :exp)",
+            **({"ConditionExpression": "attribute_not_exists(n) OR n < :limit"} if by > 0 else {}),
+            ExpressionAttributeValues={
+                ":by": by,
+                ":exp": int(time.time()) + ttl_s,
+                **({":limit": limit} if by > 0 else {}),
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def take_voice_turn(owner_id: str, call_id: str, n: int, limit: int) -> bool:
+    """Turn ``n`` of a call counted once (a retried turn is the same); False once ``limit`` distinct turns are used."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": f"VOICETURNS#{call_id}"},
+            UpdateExpression="ADD turns :n SET expiresAt = if_not_exists(expiresAt, :exp)",
+            ConditionExpression="attribute_not_exists(turns) OR size(turns) < :limit OR contains(turns, :one)",
+            ExpressionAttributeValues={":n": {n}, ":one": n, ":limit": limit, ":exp": int(time.time()) + 2 * 86400},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def claim_voice_slot(owner_id: str, sk: str, holder: str, hold_s: int) -> bool:
+    """Hold the row ``sk`` for ``holder`` for ``hold_s`` seconds: free, expired, or already this holder's (a replay).
+    A live-call slot or the forwarding check's in-progress lock; ``expiresAt`` is the lease and the TTL alike."""
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": owner_pk(owner_id), "sk": sk, "holder": holder, "expiresAt": now + hold_s},
+            ConditionExpression="attribute_not_exists(sk) OR expiresAt < :now OR holder = :h",
+            ExpressionAttributeValues={":now": now, ":h": holder},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def release_voice_slot(owner_id: str, sk: str, holder: str) -> None:
+    try:
+        await run_in_thread(
+            _table().delete_item,
+            Key={"pk": owner_pk(owner_id), "sk": sk},
+            ConditionExpression="holder = :h",
+            ExpressionAttributeValues={":h": holder},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def set_agent_names(room_id: str, agent_id: str, display_name: str, mention_handle: str | None) -> bool:
     """SET-only label refresh of one agent member row; False when it is no longer a member."""
     try:

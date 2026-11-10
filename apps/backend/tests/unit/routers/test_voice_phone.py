@@ -28,6 +28,22 @@ CONFIG = {  # the Agent page document
 }
 
 
+class _WorkerClient(TestClient):
+    """Posts as the phone worker does: a per-call route carries the callToken its start returned (M4)."""
+
+    tokens: dict
+
+    def post(self, url, *args, headers=None, **kwargs):
+        parts = url.split("/")  # /api/v1/internal/voice/calls/<id>/<route>
+        call_id = parts[6] if len(parts) > 7 and url.startswith("/api/v1/internal/voice/calls/") else None
+        if headers is not None and call_id in self.tokens and voice_phone.CALL_TOKEN_HEADER not in headers:
+            headers = {**headers, voice_phone.CALL_TOKEN_HEADER: self.tokens[call_id]}
+        r = super().post(url, *args, headers=headers, **kwargs)
+        if url == "/api/v1/internal/voice/calls" and r.status_code == 200:
+            self.tokens[r.json()["callId"]] = r.json()["callToken"]
+        return r
+
+
 @pytest.fixture
 def client():
     with mock_aws():
@@ -52,7 +68,8 @@ def client():
         ):
             from main import app
 
-            c = TestClient(app)
+            c = _WorkerClient(app)
+            c.tokens = {}
             c.start_work = sw
             yield c
 
@@ -61,7 +78,8 @@ def _tomorrow() -> str:
     return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-async def _start(client, caller="+14155550133", room="phone-dev-_x_1", **config):
+async def _start(client, caller="+14155550133", room="phone-dev-_x_1", ago=3600, **config):
+    """A started call, begun `ago` seconds back (the billed duration is capped by the time since start, M4)."""
     await voice_phone.put_line(NUMBER, LINE)
     await messaging_repo.put_voice_agent("org_1", {**CONFIG, **config}, "user_owner")
     r = client.post(
@@ -70,6 +88,13 @@ async def _start(client, caller="+14155550133", room="phone-dev-_x_1", **config)
         headers=W,
     )
     assert r.status_code == 200, r.text
+    if ago:
+        meta = await messaging_repo.get_room(r.json()["callId"])
+        began = datetime.fromisoformat(meta["call"]["startedAt"]) - timedelta(seconds=ago)
+        await messaging_repo.patch_room_meta(
+            meta["roomId"], {"call": {**meta["call"], "startedAt": began.isoformat()}},
+            expected_revision=int(meta.get("revision", 0)),
+        )  # fmt: skip
     return r.json()
 
 
@@ -817,3 +842,121 @@ async def test_call_bootstrap_resolves_preferences_without_mutating_document(
     assert bootstrap["voice"] == expected_voice
     assert bootstrap["spanish"] is expected_spanish
     assert await messaging_repo.get_voice_agent("org_1") == {**CONFIG, **preferences}
+
+
+# --- security gate (Phase 3 review, 9 Nov): M1, M2, M4, M5 ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("withheld", ["anonymous", "restricted", "unknown", "+266696687", "+2562533", "", "12345"])
+async def test_withheld_callers_share_no_identity(client, withheld):
+    """M1: a withheld number is caller "": no memory from another withheld caller, no bookings to list, move or
+    cancel; booking and messages still work, and the end writes no caller row."""
+    first = await _start(client, caller=withheld, room="phone-w-1")
+    assert (await messaging_repo.get_room(first["callId"]))["call"]["caller"] == ""
+    base = f"/api/v1/internal/voice/calls/{first['callId']}"
+    day = _tomorrow()
+    booked = client.post(f"{base}/book", json={"start": f"{day}T11:00", "service": "gel", "name": "Ana"}, headers=W)
+    assert booked.status_code == 200 and booked.json()["booked"] is True
+    client.post(f"{base}/remember", json={"fact": "likes the window seat"}, headers=W)
+    assert client.post(f"{base}/message", json={"text": "call me"}, headers=W).status_code == 200
+    client.post(f"{base}/end", json={"durationSec": 20}, headers=W)
+    assert await messaging_repo._get(messaging_repo.owner_pk("org_1"), "VOICECALLER#") is None
+    assert await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICECALLER#{withheld}") is None
+
+    other = await _start(client, caller="anonymous", room="phone-w-2")  # a different withheld caller
+    assert other["callerName"] == "" and other["callerMemory"] == []
+    obase = f"/api/v1/internal/voice/calls/{other['callId']}"
+    assert client.post(f"{obase}/my-bookings", headers=W).json() == {"bookings": []}
+    assert client.post(f"{obase}/change", json={"start": f"{day}T11:00"}, headers=W).status_code == 404
+
+
+async def test_run_out_forward_and_transfer_never_dial_a_non_us_number(client):
+    """M2: a hand-off saved before the US/CA check (or written around it) is neither forwarded to nor transferred."""
+    with patch.object(voice_phone, "month_seconds", AsyncMock(return_value=1500 * 60)):
+        call = await _start(client, runOut="forward", handoff={"number": "+18765550123", "onlyOpenHours": False})
+    assert call["forwardTo"] is None
+    out = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/transfer", headers=W).json()
+    assert out == {"transferTo": None}
+
+
+async def test_every_per_call_route_needs_that_calls_token(client):
+    """M4: the worker secret alone opens nothing but start; one call's token never opens another call."""
+    a = await _start(client, room="phone-t-1")
+    b = await _start(client, room="phone-t-2")
+    assert a["callToken"] and a["callToken"] != b["callToken"]
+    base = f"/api/v1/internal/voice/calls/{a['callId']}"
+    routes = {"turn": {"n": 0, "text": "hi"}, "book": {"start": f"{_tomorrow()}T11:00", "service": "g", "name": "A"},
+              "change": {"start": f"{_tomorrow()}T11:00"}, "my-bookings": {}, "message": {"text": "x"},
+              "transfer": {}, "events": {"after": 0}, "end": {"durationSec": 1}, "remember": {"fact": "x"},
+              "availability": {"date": _tomorrow()}, "unknown": {"question": "x"},
+              "start-work": {"title": "t", "brief": "b"}}  # fmt: skip
+    for route, body in routes.items():
+        for token in ("", "wrong", b["callToken"]):
+            headers = {**W, voice_phone.CALL_TOKEN_HEADER: token}
+            r = client.post(f"{base}/{route}", json=body, headers=headers)
+            assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_call_token", (route, token)
+    assert (await messaging_repo.get_room(a["callId"]))["call"]["status"] == "live"  # nothing was done
+    replay = client.post("/api/v1/internal/voice/calls", headers=W,
+                         json={"calledNumber": NUMBER, "callerNumber": "+14155550133", "livekitRoom": "phone-t-1"})  # fmt: skip
+    assert replay.json()["callToken"] == a["callToken"]  # a replayed start is the same call
+
+
+async def test_billed_duration_is_capped_by_the_time_since_start(client):
+    """M4: a just-started call cannot bill a day; the cap is the server's time since startedAt plus END_GRACE_S."""
+    call = await _start(client, ago=0)
+    rec = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 86400}, headers=W)
+    assert rec.json()["durationSec"] <= voice_phone.END_GRACE_S + 2
+    later = await _start(client, room="phone-d-2", ago=100)
+    rec = client.post(f"/api/v1/internal/voice/calls/{later['callId']}/end", json={"durationSec": 90}, headers=W)
+    assert rec.json()["durationSec"] == 90  # an honest duration is kept
+
+
+async def test_a_full_line_answers_with_messages_only(client, router_seat, monkeypatch):
+    """M5: over LIVE_CALLS_PER_LINE at once, a call is answered but only takes messages; an end frees its slot."""
+    monkeypatch.setattr(voice_phone, "LIVE_CALLS_PER_LINE", 2)
+    calls = [await _start(client, caller=f"+1415555014{i}", room=f"phone-c-{i}") for i in range(3)]
+    assert [c["mode"] for c in calls] == ["live", "live", "message_only"] and not any(calls[2]["can"].values())
+    base = f"/api/v1/internal/voice/calls/{calls[2]['callId']}"
+    assert client.post(f"{base}/turn", json={"n": 0, "text": "hi"}, headers=W).status_code == 403
+    assert client.post(f"{base}/message", json={"text": "call me"}, headers=W).status_code == 200
+    client.post(f"/api/v1/internal/voice/calls/{calls[0]['callId']}/end", json={"durationSec": 5}, headers=W)
+    assert (await _start(client, caller="+14155550149", room="phone-c-9"))["mode"] == "live"
+
+
+async def test_one_number_calling_all_day_is_limited_to_messages(client, router_seat, monkeypatch):
+    """M5: CALLS_PER_CALLER_PER_DAY per number per workspace per day; withheld callers count as one number."""
+    monkeypatch.setattr(voice_phone, "CALLS_PER_CALLER_PER_DAY", 2)
+    modes = []
+    for i in range(3):
+        call = await _start(client, room=f"phone-n-{i}")
+        modes.append(call["mode"])
+        client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 5}, headers=W)
+    assert modes == ["live", "live", "message_only"]
+    withheld = [(await _start(client, caller=c, room=f"phone-a-{c}"))["mode"] for c in ("anonymous", "", "unknown")]
+    assert withheld == ["live", "live", "message_only"]
+
+
+async def test_bookings_per_caller_per_day_are_capped(client, monkeypatch):
+    """M5: BOOKINGS_PER_CALLER_PER_DAY; a refused or failed booking does not count; over it, messages only."""
+    monkeypatch.setattr(voice_phone, "BOOKINGS_PER_CALLER_PER_DAY", 1)
+    call = await _start(client)
+    base, day = f"/api/v1/internal/voice/calls/{call['callId']}", _tomorrow()
+    book = lambda t: client.post(f"{base}/book", json={"start": f"{day}T{t}", "service": "gel", "name": "A"}, headers=W)  # noqa: E731
+    assert book("23:30").status_code == 400  # past close: nothing booked, nothing counted
+    assert book("11:00").status_code == 200
+    r = book("15:00")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
+    assert (await messaging_repo.get_room(call["callId"]))["call"]["limited"]
+    assert client.post(f"{base}/message", json={"text": "call me"}, headers=W).status_code == 200
+
+
+async def test_router_turns_per_call_are_capped(client, router_seat, monkeypatch):
+    """M5: TURNS_PER_CALL distinct lines (a retried line is the same); then the worker takes a message."""
+    monkeypatch.setattr(voice_phone, "TURNS_PER_CALL", 2)
+    call = await _start(client)
+    url = f"/api/v1/internal/voice/calls/{call['callId']}/turn"
+    assert [client.post(url, json={"n": n, "text": f"line {n}"}, headers=W).status_code for n in (0, 1, 1)] == [200] * 3
+    r = client.post(url, json={"n": 2, "text": "line 2"}, headers=W)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
+    assert client.post(url, json={"n": 0, "text": "line 0"}, headers=W).status_code == 403  # the call is limited now
+    assert (await messaging_repo.get_room(call["callId"]))["call"]["limited"]

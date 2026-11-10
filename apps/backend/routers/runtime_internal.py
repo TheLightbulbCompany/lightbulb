@@ -648,8 +648,7 @@ async def transfer_call(owner_id: str, body: TransferCallBody, request: Request)
     meta = await vp.messaging_repo.get_room(call_id) if call_id else None
     if not meta or meta.get("kind") != "call" or meta.get("ownerId") != owner_id:
         raise HTTPException(status_code=403, detail="not_a_caller")
-    caller = (meta.get("call") or {}).get("caller", "")
-    if vp._line_state(await vp.agent_config(owner_id), caller) != "live":
+    if vp.call_mode(await vp.agent_config(owner_id), meta.get("call") or {}) != "live":
         raise HTTPException(status_code=403, detail="not_allowed")  # a paused line only takes messages
     message_id = await task_conversation.post_as_lightbulb(
         owner_id,

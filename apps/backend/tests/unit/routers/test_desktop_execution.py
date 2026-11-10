@@ -199,6 +199,12 @@ async def test_real_room_authority_comes_from_human_trigger_and_current_membersh
         with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
             await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
         run["eventKind"] = "user_request"
+        # A Meet's room: its lines are the inviter's in name only (anyone in the meeting said them).
+        with patch.object(
+            messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "user_1", "meeting": {"status": "in_call"}})
+        ):
+            with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
+                await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
         run["status"] = "ended"
         assert await service.authorize_run("user_1", "run_1", "agent_1", "room", active=False) == AUTH
         with pytest.raises(service.DesktopError, match="run_not_active"):
@@ -409,6 +415,10 @@ async def test_the_backend_rechecks_a_task_auth_without_its_secret(task_rows):
         ({"task": {"ownerUserId": "org_1"}, "trigger": {"actorUserId": "org_1"}}, "run_member_authority_unavailable"),
         ({"task": {"ownerUserId": "user_2"}, "trigger": {"actorUserId": "user_2"}}, "run_forbidden"),  # not a member
         ({"trigger": {"ref": {"origin": "phone_contact"}}}, "run_member_authority_unavailable"),
+        # A Meet line: whoever said it, it is posted as the inviter (voice_meet /ask, meetings._chat), so the
+        # trigger looks like the inviter's own chat. A guest's request must never reach the inviter's Mac.
+        ({"trigger": {"ref": {"origin": "meeting"}}}, "run_member_authority_unavailable"),
+        ({"task": {"confirmAll": True}}, "run_member_authority_unavailable"),  # a meeting's sub-task or steered task
     ],
 )
 async def test_a_task_run_without_a_live_attempt_or_acting_member_gets_no_mac(task_rows, change, code):

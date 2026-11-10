@@ -73,6 +73,7 @@ it("names the business typed at setup, not the workspace", () => {
   cfg.value = { ...cfg.value, business: "" };
   render(<AgentPage />);
   expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Nova · Salon"); // the workspace, as a fallback
+  expect(screen.getAllByText(/\(415\) 555-0199/).length).toBeGreaterThan(0); // the number, formatted
 });
 
 it("a stored square or other shows as the assistant's own calendar", () => {

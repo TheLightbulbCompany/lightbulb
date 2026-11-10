@@ -53,7 +53,7 @@ export function AgentPage() {
       <div>
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
-          {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
+          {c.number ? <> · answering {usPhone(c.number)}</> : <> · no number yet</>}</p>
         <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "handoff"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
             : saveState === "forbidden" ? "Only an admin can change the assistant."
@@ -122,7 +122,7 @@ export function AgentPage() {
     </Sec>
 
     <Sec title="Number & forwarding">
-      <p style={{ fontSize: "var(--text-ui)" }}>{name}&apos;s number: {c.number ? <b>{c.number}</b> : <span className="vx-muted">not set up yet</span>}</p>
+      <p style={{ fontSize: "var(--text-ui)" }}>{name}&apos;s number: {c.number ? <b>{usPhone(c.number)}</b> : <span className="vx-muted">not set up yet</span>}</p>
       <label className="vx-label">Your business line
         <input className="vx-field" type="tel" value={c.forwardFrom} placeholder="(415) 555-0199" onChange={(e) => set({ forwardFrom: e.target.value })} /></label>
       <p className="vx-hint" style={{ fontSize: "var(--text-caption)", color: "var(--fg-mute)" }}>

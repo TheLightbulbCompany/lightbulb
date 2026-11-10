@@ -13,7 +13,7 @@ import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, useAgentConfig, useTimeline, who,
+  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, rowId, useAgentConfig, useTimeline, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -56,7 +56,7 @@ export function VoiceHome() {
   const [openId, setOpenId] = useState<string | null>(null);
   const all = useMemo(() => items ?? [], [items]);
   const shown = all.filter(FILTERS.find((f) => f[0] === filter)![2]);
-  const open = all.find((i) => i.roomId === openId) ?? null;
+  const open = all.find((i) => rowId(i) === openId) ?? null;
   const groups = useMemo(() => {
     const g: [string, TimelineItem[]][] = [];
     for (const i of shown) { const d = dayLabel(i.at); if (g.at(-1)?.[0] === d) g.at(-1)![1].push(i); else g.push([d, [i]]); }
@@ -88,7 +88,7 @@ export function VoiceHome() {
         : "Nothing here yet."}</p>}
       {groups.map(([day, rows]) => <section key={day} aria-label={day}>
         <h2 className="vx-day">{day}</h2>
-        {rows.map((i) => <Row key={i.roomId} item={i} name={name} now={now} current={i.roomId === openId} onOpen={() => setOpenId(i.roomId)} />)}
+        {rows.map((i) => <Row key={rowId(i)} item={i} name={name} now={now} current={rowId(i) === openId} onOpen={() => setOpenId(rowId(i))} />)}
       </section>)}
       {all.length > 0 && <p className="vx-foot">
         Today {today.length} answered · {today.filter((c) => c.type === "call" && c.outcome === "booked").length} booked

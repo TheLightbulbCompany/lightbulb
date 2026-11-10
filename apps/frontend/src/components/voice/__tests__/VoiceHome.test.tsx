@@ -191,6 +191,22 @@ it("meeting pane lists the decisions with who made them", () => {
   expect(within(pane).getByText("Holiday hours are 10 to 4").closest("li")).toHaveTextContent(/^Holiday hours are 10 to 4$/);
 });
 
+it("a recurring meeting's past occurrence opens its own decisions; the current one is unchanged", () => {
+  const start = Math.floor(Date.now() / 1000);
+  items.list = [
+    { type: "meeting", roomId: "series", at: (start + 86400) * 1000, startAt: start + 86400, status: "bot_created", title: "Weekly" },
+    { type: "meeting", roomId: "series", occurrence: start - 7 * 86400, at: (start - 7 * 86400) * 1000, startAt: start - 7 * 86400,
+      status: "ended", hasTranscript: true, title: "Weekly", decisions: [{ text: "Open 10 to 4" }] }];
+  render(<VoiceHome />);
+  const [next, held] = screen.getAllByRole("button", { name: /Weekly/ });
+  fireEvent.click(held);
+  expect(within(screen.getByRole("complementary", { name: "Details" })).getByText("Open 10 to 4")).toBeInTheDocument();
+  fireEvent.click(next);
+  const pane = screen.getByRole("complementary", { name: "Details" });
+  expect(within(pane).queryByRole("heading", { name: "Decisions" })).not.toBeInTheDocument();
+  expect(within(pane).getByText("Scheduled")).toBeInTheDocument();
+});
+
 it("meeting pane has no Decisions section when none were made", () => {
   items.list = [{ type: "meeting", roomId: "undecided", at: Date.now(), title: "Chat", decisions: [] }];
   render(<VoiceHome />);

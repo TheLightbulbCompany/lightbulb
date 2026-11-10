@@ -81,28 +81,47 @@ def _epoch_ms(v: Any) -> int:
         return 0
 
 
-def _item(meta: dict) -> dict | None:
+def _items(meta: dict) -> list[dict]:
     if meta.get("deletedAt"):
-        return None
+        return []
     if meta.get("kind") == "call":
         call = meta.get("call") or {}
-        return {
-            **call,
-            "type": "call",
-            "roomId": meta["roomId"],
-            "at": _epoch_ms(call.get("startedAt") or meta["createdAt"]),
-        }
+        return [
+            {
+                **call,
+                "type": "call",
+                "roomId": meta["roomId"],
+                "at": _epoch_ms(call.get("startedAt") or meta["createdAt"]),
+            }
+        ]
     meeting = meta.get("meeting")
-    if meeting:
-        roster = meeting.get("roster") or {}
-        return {
-            **{k: meeting[k] for k in _MEETING_FIELDS if k in meeting},
+    if not meeting:
+        return []
+    roster = meeting.get("roster") or {}
+    current = {
+        **{k: meeting[k] for k in _MEETING_FIELDS if k in meeting},
+        "type": "meeting",
+        "roomId": meta["roomId"],
+        "people": [p["name"] for p in roster.values() if p.get("name")],
+        "at": _epoch_ms(meeting.get("startAt") or meta["createdAt"]),
+    }
+    # A recurring series has moved on by the time its notes land: each held occurrence (meeting_invites history)
+    # is its own past row, keyed by ``occurrence``, with what that occurrence kept.
+    held = [
+        {
+            **{k: h[k] for k in _MEETING_FIELDS if k in h},
+            "title": meeting.get("title"),
+            "status": "ended",
+            "hasTranscript": bool(h.get("transcriptId")),
             "type": "meeting",
             "roomId": meta["roomId"],
-            "people": [p["name"] for p in roster.values() if p.get("name")],
-            "at": _epoch_ms(meeting.get("startAt") or meta["createdAt"]),
+            "occurrence": h["startAt"],
+            "at": _epoch_ms(h["startAt"]),
         }
-    return None
+        for h in meeting.get("history") or []
+        if h.get("startAt")
+    ]
+    return [current, *held]
 
 
 @router.get("/voice/timeline")
@@ -111,7 +130,7 @@ async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
     rows = [r for r in await messaging_repo.list_owner_rooms(ws) if r.get("kind") in ("call", "channel")]
     rows = sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)[:TIMELINE_ROOMS]
     metas = await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows))
-    items = [i for m in metas if m and m.get("ownerId") == ws and (i := _item(m))]
+    items = [i for m in metas if m and m.get("ownerId") == ws for i in _items(m)]
     return {"items": sorted(items, key=lambda i: i["at"], reverse=True)}
 
 

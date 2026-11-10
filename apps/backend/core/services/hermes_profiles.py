@@ -52,7 +52,6 @@ import yaml
 
 from core.config import settings
 from core.dynamodb import run_in_thread
-from core.services.heartbeat_checklist import HEARTBEAT_FILE, default_checklist
 
 
 def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
@@ -750,9 +749,6 @@ class ProfileFiles:
     config_yaml: str
     dotenv: str
     soul_md: str
-    #: The agent's heartbeat checklist seed. ``upload_profile`` creates ``HEARTBEAT.md`` only
-    #: when absent, so an edited checklist is never overwritten.
-    heartbeat_md: str | None = None
 
 
 def write_agent_profile(
@@ -806,7 +802,7 @@ def write_agent_profile(
         gate_bearer=gate_bearer,
     )
     # The lightbulb-*.sh scripts' default sender. PAPERCLIP_AGENT_ID (same value) stays: skills-src
-    # surfaces.md and heartbeat_checklist.py still tell agents to send $PAPERCLIP_AGENT_ID.
+    # surfaces.md still tells agents to send $PAPERCLIP_AGENT_ID.
     env["LIGHTBULB_AGENT_ID"] = env["PAPERCLIP_AGENT_ID"] = agent["id"]
     return ProfileFiles(
         config_yaml=yaml.safe_dump(config, sort_keys=False),
@@ -816,7 +812,6 @@ def write_agent_profile(
             if soul_md_override is not None
             else build_soul_md(agent, front_desk_number=front_desk_number)
         ),
-        heartbeat_md=default_checklist(agent.get("role")),
     )
 
 
@@ -856,18 +851,6 @@ async def upload_profile(owner_id: str, agent_id: str, files: ProfileFiles) -> N
     # harmless write nobody ever reads.
     for name, body in (("config.yaml", files.config_yaml), (".env", files.dotenv), ("SOUL.md", files.soul_md)):
         await run_in_thread(client.put_object, Bucket=bucket, Key=f"{prefix}{name}", Body=body.encode())
-    if files.heartbeat_md is not None:
-        try:
-            await run_in_thread(
-                client.put_object,
-                Bucket=bucket,
-                Key=f"{prefix}{HEARTBEAT_FILE}",
-                Body=files.heartbeat_md.encode(),
-                IfNoneMatch="*",
-            )
-        except Exception as exc:
-            if not _is_precondition_failure(exc):
-                raise
     # LAST, always: the bridge re-pulls a profile when this object's value changes (Task 13, this
     # lane's continuation). Writing it before the files it describes would advertise a config that
     # is not there yet. A uuid4 hex, not a timestamp (C4, fix round 1) — two uploads racing within

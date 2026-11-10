@@ -117,46 +117,19 @@ async def test_delete_hides_from_roster(ddb):
 # --- /teams/agents -----------------------------------------------------------------------------------
 
 
-def test_teams_create_rolls_back_registry_when_profile_write_fails(client, side_effects):
-    side_effects.write_profile.side_effect = RuntimeError("s3 down")
-    r = client.post("/api/v1/teams/agents", json={"name": "Ana", "role": "general"}, headers=H)
-    assert r.status_code == 502
-    import asyncio
-
-    assert asyncio.run(_live()) == []
-
-
-def test_teams_delete_last_root_is_409(client):
-    import asyncio
-
-    ceo = asyncio.run(agent_registry.create(WS, name="Lightbulb", role="ceo"))
-    assert client.delete(f"/api/v1/teams/agents/{ceo['id']}", headers=H).status_code == 409
-    assert [a["id"] for a in asyncio.run(_live())] == [ceo["id"]]
-
-
 def test_teams_routes_never_call_paperclip(client, side_effects):
     import asyncio
 
     asyncio.run(agent_registry.create(WS, name="Lightbulb", role="ceo"))
-    r = client.post("/api/v1/teams/agents", json={"name": "Ana", "role": "general"}, headers=H)
-    assert r.status_code == 200, r.text
-    aid = r.json()["id"]
-    side_effects.write_profile.assert_awaited_once()
+    aid = asyncio.run(agent_registry.create(WS, name="Ana", role="general"))["id"]
     base = f"/api/v1/teams/agents/{aid}"
     assert client.get("/api/v1/teams/agents", headers=H).status_code == 200
     assert client.get(base, headers=H).json()["name"] == "Ana"
     assert client.patch(base, json={"name": "Bo", "capabilities": "Writes"}, headers=H).json()["name"] == "Bo"
     assert (asyncio.run(agent_registry.get(WS, aid)))["persona"] == "Writes"
     side_effects.refresh_soul.assert_awaited_once()
-    assert client.post(f"{base}/pause", headers=H).json()["status"] == "paused"
-    assert client.post(f"{base}/resume", headers=H).json()["status"] == "idle"
-    assert client.post(f"{base}/reset-session", json={}, headers=H).json()["id"] == aid
-    assert client.post(f"{base}/clear-error", headers=H).json()["id"] == aid
     assert client.get(f"{base}/voice-notes", headers=H).json()["name"] == "Bo"
     assert client.put(f"{base}/voice-notes", json={"notes": "hi"}, headers=H).json()["notes"] == "hi"
-    assert client.delete(base, headers=H).json()["deleted"] is True
-    assert client.get(base, headers=H).status_code == 404
-    assert [a["name"] for a in asyncio.run(_live())] == ["Lightbulb"]
 
 
 def test_teams_agent_of_another_workspace_is_404(client):

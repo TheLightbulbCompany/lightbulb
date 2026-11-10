@@ -185,31 +185,6 @@ class TestAgentCoreProfileBranch:
             assert exc.value.status_code == 422
             assert exc.value.detail["code"] == "unsupported_on_agentcore"
 
-    @pytest.mark.asyncio
-    async def test_heartbeat_checklist_is_an_admin_only_profile_file(self, s3):
-        """The agent's heartbeat checklist lands at the profile root (the skill reads
-        $HERMES_HOME/HEARTBEAT.md), bumps .revision, and only an org admin may save it."""
-        from routers.workspace_files import WriteFileRequest, read_config_file, write_workspace_file
-
-        self._put(s3, ".revision", b"before")
-        await write_workspace_file(
-            agent_id=AGENT_ID,
-            body=WriteFileRequest(path="HEARTBEAT.md", content="# Check\n", tab="config"),
-            auth=_auth(),
-        )
-        assert self._get(s3, "HEARTBEAT.md") == b"# Check\n"
-        assert self._get(s3, ".revision") != b"before"
-        assert (await read_config_file(agent_id=AGENT_ID, path="HEARTBEAT.md", auth=_auth()))["content"] == "# Check\n"
-
-        member = AuthContext(user_id="human_member", org_id=USER_ID, org_role="org:member")
-        for path, tab in (("HEARTBEAT.md", "config"), ("./HEARTBEAT.md", "workspace")):
-            with pytest.raises(HTTPException) as exc:
-                await write_workspace_file(
-                    agent_id=AGENT_ID, body=WriteFileRequest(path=path, content="x", tab=tab), auth=member
-                )
-            assert exc.value.status_code == 403
-        assert self._get(s3, "HEARTBEAT.md") == b"# Check\n"
-
     # -- Files panel ------------------------------------------------------
 
     @pytest.mark.asyncio

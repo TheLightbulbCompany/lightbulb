@@ -180,6 +180,54 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openrouter_managed", "chatgpt_oauth"])
+@pytest.mark.parametrize("legacy_status", ["trial_local", None])
+async def test_paid_voice_can_select_provider_without_legacy_subscription(
+    monkeypatch, dynamodb_billing_table, provider, legacy_status
+):
+    """A collected voice invoice pays for access even on the original trial row."""
+    account = {
+        "owner_id": "org_voice",
+        "owner_type": "org",
+        "subscription_status": legacy_status,
+        "trial_end": 1,
+        "metronome_voice_contract_id": "voice-contract",
+        "voice_plan_status": "active",
+        "voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}},
+    }
+    dynamodb_billing_table.put_item(Item=account)
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr("core.billing.openrouter_gate_url.gate_url", lambda: "https://gate.example/v1")
+    key = AsyncMock()
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", key)
+    tokens = AsyncMock(return_value={"access_token": "fixture-token"})
+    monkeypatch.setattr("core.services.oauth_service.get_decrypted_tokens", tokens)
+    monkeypatch.setattr(billing_service.billing_repo, "publish_status_changed", MagicMock())
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    reconcile = AsyncMock()
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", reconcile)
+
+    result = await billing_service.change_provider(
+        owner_id="org_voice", clerk_user_id="user_voice", owner_type="org", provider_choice=provider
+    )
+
+    assert result["status"] == "ok"
+    saved = dynamodb_billing_table.get_item(Key={"owner_id": "org_voice"})["Item"]
+    assert saved.pop("provider_choice") == provider
+    saved.pop("updated_at")
+    if provider == "chatgpt_oauth":
+        assert saved.pop("oauth_connector_user_id") == "user_voice"
+        tokens.assert_awaited_once_with(user_id="user_voice", bound_to="org_voice")
+        key.assert_not_awaited()
+    else:
+        key.assert_awaited_once_with("org_voice")
+        tokens.assert_not_awaited()
+    # Provider selection must not invent a Workspace subscription, credits or payment state.
+    assert saved == account
+    reconcile.assert_awaited_once_with("org_voice")
+
+
+@pytest.mark.asyncio
 async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")

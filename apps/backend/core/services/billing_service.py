@@ -1023,7 +1023,7 @@ async def change_provider(
     # switch endpoint is NOT a substitute for /billing/trial-checkout —
     # if there's no subscription we route the caller back through the
     # signup picker rather than mutating provider state on a dead row.
-    from core.services.provision_gate import is_subscription_active
+    from core.services.provision_gate import is_paid_subscription, is_subscription_active
 
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account:
@@ -1032,12 +1032,10 @@ async def change_provider(
             "No billing account. Subscribe via /onboarding first.",
             status_code=404,
         )
-    # A no-card local-trial row converts to a paid plan through
-    # /billing/trial-checkout, where the provider is chosen at checkout — NOT
-    # through this post-onboarding switch. trial_local counts as "active" for
-    # is_subscription_active, so guard it explicitly here (before any Stripe /
-    # reprovision work) rather than let it fall through onto the meta box.
-    if account.get("subscription_status") == "trial_local":
+    # An unpaid local trial must choose a plan before switching providers.
+    # Paid voice coverage preserves trial_local on the legacy subscription
+    # fields, so use the canonical paid predicate before rejecting that row.
+    if account.get("subscription_status") == "trial_local" and not is_paid_subscription(account):
         raise ChangeProviderError(
             "use_trial_checkout",
             "Pick a plan first — provider selection happens at checkout for free-tier accounts.",

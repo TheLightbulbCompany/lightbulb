@@ -28,6 +28,128 @@ def _managed_route_available(monkeypatch):
 
 
 @pytest.fixture
+def paid_voice_account():
+    return {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "subscription_status": "trial_local",
+        "trial_end": 1,
+        "metronome_voice_contract_id": "voice-contract",
+        "voice_plan_status": "active",
+        "voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}},
+    }
+
+
+@pytest.fixture
+def voice_oauth_table(monkeypatch):
+    from core.encryption import get_fernet
+
+    table = MagicMock()
+    table.get_item.return_value = {
+        "Item": {
+            "user_id": "user_test_123",
+            "bound_owner_id": "org_test_456",
+            "state": "active",
+            "encrypted_tokens": get_fernet().encrypt(b'{"access_token":"fixture-token"}'),
+        }
+    }
+    monkeypatch.setattr("core.services.oauth_service._table", lambda: table)
+    return table
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openrouter_managed", "chatgpt_oauth"])
+async def test_paid_voice_trial_row_can_select_provider(
+    async_client_org_admin, paid_voice_account, voice_oauth_table, patch_dispatch_provision, monkeypatch, provider
+):
+    from core.services import oauth_service
+
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=paid_voice_account))
+    commit = AsyncMock()
+    monkeypatch.setattr("core.repositories.billing_repo.set_provider_choice", commit)
+    tokens = AsyncMock(wraps=oauth_service.get_decrypted_tokens)
+    monkeypatch.setattr("core.services.oauth_service.get_decrypted_tokens", tokens)
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+
+    resp = await async_client_org_admin.post("/api/v1/billing/provider", json={"provider_choice": provider})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["provider_choice"] == provider
+    commit.assert_awaited_once_with(
+        "org_test_456",
+        provider_choice=provider,
+        byo_provider=None,
+        connector_user_id="user_test_123" if provider == "chatgpt_oauth" else None,
+    )
+    if provider == "chatgpt_oauth":
+        tokens.assert_awaited_once_with(user_id="user_test_123", bound_to="org_test_456")
+    patch_dispatch_provision.assert_awaited_once_with("org_test_456")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing", "other_workspace", "other_connector"])
+async def test_paid_voice_chatgpt_selection_retains_credential_ownership_guards(
+    async_client_org_admin, paid_voice_account, voice_oauth_table, patch_dispatch_provision, monkeypatch, failure
+):
+    if failure == "missing":
+        voice_oauth_table.get_item.return_value = {}
+    elif failure == "other_workspace":
+        voice_oauth_table.get_item.return_value["Item"]["bound_owner_id"] = "org_other"
+    else:
+        paid_voice_account["oauth_connector_user_id"] = "user_other"
+        monkeypatch.setattr("core.services.oauth_service.maybe_clear_phantom_connector", AsyncMock(return_value=False))
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=paid_voice_account))
+    commit = AsyncMock()
+    monkeypatch.setattr("core.repositories.billing_repo.set_provider_choice", commit)
+
+    resp = await async_client_org_admin.post("/api/v1/billing/provider", json={"provider_choice": "chatgpt_oauth"})
+
+    assert resp.status_code == (403 if failure == "other_connector" else 409)
+    assert resp.json()["detail"]["code"] == (
+        "not_workspace_owner" if failure == "other_connector" else "oauth_required"
+    )
+    commit.assert_not_awaited()
+    patch_dispatch_provision.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openrouter_managed", "chatgpt_oauth"])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"metronome_voice_contract_id": None},
+        {"voice_plan_status": "pending_payment", "voice_plan_paid_periods": {}},
+        {"voice_plan_unpaid_invoice_ids": {"unpaid"}},
+        {"voice_plan_paid_periods": {"invoice": {"start": "2098-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}}},
+        {"voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2001-01-01T00:00:00Z"}}},
+        {"voice_plan_status": "canceled"},
+        {"voice_plan_ending_at": "2001-01-01T00:00:00Z"},
+    ],
+    ids=["unpaid-trial", "pending", "unpaid-invoice", "future", "expired", "canceled", "ended"],
+)
+async def test_voice_without_current_paid_coverage_cannot_select_provider(
+    async_client_org_admin, paid_voice_account, patch_dispatch_provision, monkeypatch, provider, changes
+):
+    account = {**paid_voice_account, **changes}
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=account))
+    commit = AsyncMock()
+    tokens = AsyncMock()
+    key = AsyncMock()
+    monkeypatch.setattr("core.repositories.billing_repo.set_provider_choice", commit)
+    monkeypatch.setattr("core.services.oauth_service.get_decrypted_tokens", tokens)
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", key)
+
+    resp = await async_client_org_admin.post("/api/v1/billing/provider", json={"provider_choice": provider})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "use_trial_checkout"
+    commit.assert_not_awaited()
+    tokens.assert_not_awaited()
+    key.assert_not_awaited()
+    patch_dispatch_provision.assert_not_awaited()
+
+
+@pytest.fixture
 def patch_dispatch_provision():
     """Stub the durable reconcile change_provider dispatches so no test reaches AWS.
 

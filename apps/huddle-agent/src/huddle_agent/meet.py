@@ -102,6 +102,11 @@ Do not generate <|SpawnThinking|> when:
 Anything that spends, sends or publishes waits for the inviting member's OK on a card in the chat. Never approve, confirm or promise one by voice."""
 
 
+def exclusion_attrs(meeting: "Meeting") -> dict:
+    """The tile attribute that says how many people are not transcribed."""
+    return {"lightbulb.meet.not_transcribed": str(len(meeting.not_transcribed))}
+
+
 class Joiner:
     """One person's consecutive final transcripts as one line: each final waits JOIN_S for the next, and an interim
     (`speaking`: they are talking again) holds it until that next final lands. `on_line(who, text)` gets the whole
@@ -576,7 +581,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     def show_excluded() -> None:  # the tile says it; a rejoining worker restores the count from the meeting record
         asyncio.create_task(ctx.room.local_participant.set_attributes(
-            {"lightbulb.meet.not_transcribed": str(len(meeting.not_transcribed))}
+            exclusion_attrs(meeting)
         ))  # fmt: skip
 
     meeting.on_opt_out = stop_transcribing

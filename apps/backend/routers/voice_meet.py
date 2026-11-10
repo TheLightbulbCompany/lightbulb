@@ -180,11 +180,18 @@ async def ask(room_id: str, body: AskIn) -> dict:
     text = f"{who} said in the meeting: {body.text}"
     # an answer to the question just said is still the chat's line, but wakes nobody: the answer is the input
     answered = await answer_said_question(body.ownerId, room_id, member, body.answers, text, key)
+    client_id = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+    if body.participantId:  # the meeting's own record of who spoke each line (by client id), written BEFORE the
+        pid = body.participantId  # message exists so the Router can never run first; it reads it, never the model
+        await meeting_invites._patch_meeting(
+            room_id,
+            lambda m: {"askSpeakers": {**dict(list((m.get("askSpeakers") or {}).items())[-49:]), client_id: pid}},
+        )
     msg = await messaging.create_human_message(
         AuthContext(user_id=member, org_id=body.ownerId),
         room_id,
         messaging.CreateMessageRequest(
-            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+            client_message_id=uuid.UUID(client_id),
             text=text,
             reply_to_message_id=None,
             thread_root_message_id=None,
@@ -192,11 +199,6 @@ async def ask(room_id: str, body: AskIn) -> dict:
         via="voice",
         **({"wake": False} if answered else {}),
     )
-    if body.participantId:  # the meeting's own record of who spoke each line: the Router reads it, never the model
-        mid, pid = str(msg.message_id), body.participantId
-        await meeting_invites._patch_meeting(
-            room_id, lambda m: {"askSpeakers": {**dict(list((m.get("askSpeakers") or {}).items())[-49:]), mid: pid}}
-        )
     out = {"posted": True, "messageId": str(msg.message_id)}
     return {**out, "answered": body.answers.qid} if answered else out
 

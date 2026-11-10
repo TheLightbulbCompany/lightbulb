@@ -108,8 +108,9 @@ async def test_revoked_inviter_and_oversized_url_cannot_send(world, monkeypatch)
 @pytest.fixture
 def optout(world, monkeypatch):
     """The meeting's record knows who spoke trigger line `m`; the shared writer is the one #5134 built."""
-    world["meta"]["meeting"]["askSpeakers"] = {"m": "12"}
+    world["meta"]["meeting"]["askSpeakers"] = {"cm": "12"}  # keyed by the message's client id
     world["meta"]["meeting"]["roster"] = {"12": {"name": "Sam"}, "11": {"name": "Maya"}}
+    monkeypatch.setattr(mod.messaging_repo, "get_message_by_id", AsyncMock(return_value={"clientMessageId": "cm"}))
     rec = AsyncMock(return_value={"notTranscribed": [{"id": "12", "name": "Sam"}]})
     monkeypatch.setattr("routers.voice_meet.record_transcription", rec)
     return rec

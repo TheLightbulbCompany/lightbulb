@@ -98,7 +98,8 @@ async def stop_transcribing(owner_id: str, trigger_ids: list[str], participant_i
         meeting = meta.get("meeting") or {}
         if meta.get("ownerId") != owner_id or meeting.get("status") != "in_call":
             raise NotCurrentMeeting("not_current_meeting")
-        speakers = {(meeting.get("askSpeakers") or {}).get(r.get("messageId")) for r in refs}
+        rows = [await messaging_repo.get_message_by_id(room_id, r.get("messageId")) or {} for r in refs]
+        speakers = {(meeting.get("askSpeakers") or {}).get(row.get("clientMessageId")) for row in rows}
         if len(speakers) != 1 or not (pid := next(iter(speakers))) or participant_id not in ("", pid):
             raise NotCurrentMeeting("not_the_speaker")
         from routers.voice_meet import record_transcription

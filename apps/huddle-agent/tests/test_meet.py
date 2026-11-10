@@ -710,6 +710,14 @@ async def test_an_exclusion_that_appears_after_start_is_applied_live():
     m.joiner.close()
 
 
+def test_the_tile_count_follows_the_exclusions():
+    m = _meeting()
+    assert meet.exclusion_attrs(m) == {"lightbulb.meet.not_transcribed": "0"}
+    m.adopt_exclusions([{"id": "12", "name": "Sam"}])
+    assert meet.exclusion_attrs(m) == {"lightbulb.meet.not_transcribed": "1"}
+    m.joiner.close()
+
+
 async def test_events_poll_applies_the_exclusion():
     stopped = []
     m = _meeting(_Backend([{"messages": [], "after": 0, "notTranscribed": [{"id": "12", "name": "Sam"}]}]), on_opt_out=stopped.append)

@@ -192,6 +192,11 @@ async def ask(room_id: str, body: AskIn) -> dict:
         via="voice",
         **({"wake": False} if answered else {}),
     )
+    if body.participantId:  # the meeting's own record of who spoke each line: the Router reads it, never the model
+        mid, pid = str(msg.message_id), body.participantId
+        await meeting_invites._patch_meeting(
+            room_id, lambda m: {"askSpeakers": {**dict(list((m.get("askSpeakers") or {}).items())[-49:]), mid: pid}}
+        )
     out = {"posted": True, "messageId": str(msg.message_id)}
     return {**out, "answered": body.answers.qid} if answered else out
 
@@ -203,8 +208,8 @@ class EventsIn(RoomBody):
 @router.post("/internal/voice/meet/{room_id}/events")
 async def events(room_id: str, body: EventsIn) -> dict:
     """The agent messages the meeting's room got after `after`: the voice says each one in the meeting."""
-    room_id, _meta, _meeting_map = await _meeting(room_id, body)
-    return await agent_lines(room_id, body.after)
+    room_id, _meta, meeting = await _meeting(room_id, body)
+    return {**await agent_lines(room_id, body.after), "notTranscribed": meeting.get("notTranscribed") or []}
 
 
 class EndIn(RoomBody):
@@ -394,26 +399,32 @@ def _same(entry: dict, pid: str, name: str) -> bool:
     return bool((pid and entry.get("id") == pid) or (name and entry.get("name", "").lower() == name.lower()))
 
 
-@router.post("/internal/voice/meet/{room_id}/transcription")
-async def transcription(room_id: str, body: TranscriptionIn) -> dict:
-    """A person asked (by voice, addressing the assistant) not to be transcribed, or to be again. Kept on the
-    meeting so a worker restart or a rejoin keeps it; the Meet chat gets one line saying so (best-effort)."""
-    room_id, _meta, meeting = await _meeting(room_id, body)
-    pid, name = body.participantId, body.name.strip()
-    if not (pid or name):
-        raise _problem(400, "no_participant")
+async def record_transcription(room_id: str, meeting: dict, pid: str, name: str, opt_out: bool = True) -> dict:
+    """Keep (or lift) one person's exclusion on the meeting; the Meet chat gets one line saying so (best-effort).
+    The one writer: the worker route below and the Router's `meeting_stop_transcribing` both come here."""
 
     def change(m: dict) -> dict:
         rest = [e for e in m.get("notTranscribed") or [] if not _same(e, pid, name)]
-        return {"notTranscribed": [*rest, {"id": pid, "name": name}] if body.optOut else rest}
+        return {"notTranscribed": [*rest, {"id": pid, "name": name}] if opt_out else rest}
 
     meeting = await meeting_invites._patch_meeting(room_id, change) or meeting
     if bot := meeting.get("recallBotId"):
         who = name or "you"
-        line = (f"OK {who}: your voice is excluded from the assistant and its transcript. The meeting recording continues." if body.optOut
+        line = (f"OK {who}: your voice is excluded from the assistant and its transcript. The meeting recording continues." if opt_out
                 else f"OK {who}: you are transcribed again.")  # fmt: skip
         try:
             await meeting_bots.say(bot, line)
         except Exception as e:  # noqa: BLE001 -- the opt-out stands without the chat line
             logger.warning("meet room %s: opt-out chat failed %s", room_id, getattr(e, "code", type(e).__name__))
     return {"notTranscribed": meeting.get("notTranscribed") or []}
+
+
+@router.post("/internal/voice/meet/{room_id}/transcription")
+async def transcription(room_id: str, body: TranscriptionIn) -> dict:
+    """A person asked (by voice, addressing the assistant) not to be transcribed, or to be again. Kept on the
+    meeting so a worker restart or a rejoin keeps it."""
+    room_id, _meta, meeting = await _meeting(room_id, body)
+    pid, name = body.participantId, body.name.strip()
+    if not (pid or name):
+        raise _problem(400, "no_participant")
+    return await record_transcription(room_id, meeting, pid, name, body.optOut)

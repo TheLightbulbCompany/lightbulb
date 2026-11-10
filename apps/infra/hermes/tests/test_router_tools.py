@@ -58,7 +58,7 @@ def test_registered_under_router_toolset():
 
     rt.register(Ctx())
     assert seen == [(k, "lightbulb_router") for k in (
-        "meeting_context", "meeting_chat", "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")] + [
+        "meeting_context", "meeting_chat", "meeting_stop_transcribing", "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")] + [
         ("transfer_call", "lightbulb_router_call")]  # a phone caller's batch only
 
 

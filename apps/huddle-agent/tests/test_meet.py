@@ -694,89 +694,38 @@ async def test_a_voice_that_closed_itself_is_reopened_by_the_name():
     assert len(opened) == 2 and m.voice is opened[1]
 
 
-@pytest.fixture
-def model_opts_out(monkeypatch):
-    """The model's tool call, stubbed: it fires only for a request about the speaker's own voice."""
-    async def decide(_name, text):
-        return "transcrib" in text
-
-    monkeypatch.setattr(meet, "asks_opt_out", decide)
-
-
-async def _settle(m):
-    await asyncio.gather(*m._privacy_saves)
-
-
-async def test_unnamed_talk_never_reaches_the_model(monkeypatch):
-    async def boom(*_):
-        raise AssertionError("asked the model")
-
-    monkeypatch.setattr(meet, "asks_opt_out", boom)
-    m = _meeting()
-    m.heard(SAM, "Don't transcribe me", final=True)
-    assert not m._privacy_saves and not m.excluded(SAM)
-    m.joiner.close()
-
-
-async def test_a_no_tool_call_excludes_nobody(model_opts_out):
-    m = _meeting()
-    m.heard(SAM, "Nova, what is on the calendar?", final=True)
-    await _settle(m)
-    assert not m.excluded(SAM)
-    m.joiner.close()
-
-
-async def test_opt_out_removes_only_that_person_from_notes_and_audio_and_persists(model_opts_out):
-    b, mix, stopped = _Backend(), meet.Mix(), []
-    m = _meeting(b, mix=mix, on_opt_out=stopped.append)
-    m.joiner.final(SAM, "Nova.")  # split STT final at the name
+async def test_an_exclusion_that_appears_after_start_is_applied_live():
+    mix, stopped = meet.Mix(), []
+    m = _meeting(mix=mix, on_opt_out=stopped.append)
     frame = rtc.AudioFrame(np.full(meet.FRAME, 2000, dtype=np.int16).tobytes(), meet.RATE, 1, meet.FRAME)
+    m.joiner.final(SAM, "Nova.")
     mix.push(SAM, frame)
-    mix.tick()
-    m.heard(SAM, "Nova, please stop transcribing my voice", final=True)
-    await _settle(m)
-    assert stopped == [SAM] and m.excluded(SAM) and not m.excluded(MAYA)
-    assert not mix.ring and SAM not in mix._q  # mixed pre-roll contains their voice too
-    mix.push(SAM, frame)  # a frame already in flight must not get back in
-    mix.push(MAYA, frame)
-    mix.tick()
-    assert np.frombuffer((await mix.__anext__()).data, dtype=np.int16).tolist() == [2000] * meet.FRAME
-    m.heard(SAM, "I should never enter the notes", final=True)
+    m.adopt_exclusions([{"id": "12", "name": "Sam"}])  # the record the /events poll returned
+    m.adopt_exclusions([{"id": "12", "name": "Sam"}])  # polled again: applied once
+    assert stopped == [SAM] and m.excluded(SAM) and not m.excluded(MAYA) and len(m.not_transcribed) == 1
+    assert not m.joiner._parts and SAM not in mix._q
+    m.heard(SAM, "never in the notes", final=True)
     m.joiner._flush(SAM)
-    assert not m.lines and not m.joiner._parts
-    assert b.sent == [("transcription", {"participantId": "12", "name": "Sam", "optOut": True})]
-    # A new worker restores the persisted name when Recall gives the person another id.
-    restored = _meeting(not_transcribed=m.not_transcribed)
-    restored.names.pop(SAM)  # the old participant id is no longer in the current meeting roster
+    assert not m.lines
+    m.joiner.close()
+
+
+async def test_events_poll_applies_the_exclusion():
+    stopped = []
+    m = _meeting(_Backend([{"messages": [], "after": 0, "notTranscribed": [{"id": "12", "name": "Sam"}]}]), on_opt_out=stopped.append)
+    task = asyncio.ensure_future(m.events().__anext__())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    assert stopped == [SAM] and m.excluded(SAM)
+    m.joiner.close()
+
+
+async def test_a_restarted_worker_restores_the_exclusion_by_name():
+    restored = _meeting(not_transcribed=[{"id": "12", "name": "Sam"}])
+    restored.names.pop(SAM)
     restored.person("meet:r:99", "Sam")
     assert restored.excluded("meet:r:99", "sAm") and not restored.excluded(MAYA, "Maya")
-    restored.heard("meet:r:99", "This is excluded after restart", final=True)
-    assert not restored.joiner._parts
-    m.joiner.close()
     restored.joiner.close()
-
-
-async def test_opt_out_stays_local_and_retries_a_transient_persistence_failure(model_opts_out):
-    b = _Backend()
-    saved = b.meet
-    attempts = []
-
-    async def flaky(op, body):
-        attempts.append((op, body))
-        if len(attempts) == 1:
-            raise OSError("temporary transport failure")
-        return await saved(op, body)
-
-    b.meet = flaky
-    m = _meeting(b, mix=meet.Mix())
-    m.heard(SAM, "Nova, stop transcribing me", final=True)
-    await asyncio.sleep(0)
-    assert m.excluded(SAM)
-    m.heard(SAM, "Private words while persistence is retrying", final=True)
-    assert not m.lines
-    await m.close()
-    assert len(attempts) == 2 and attempts[0] == attempts[1]
-    assert b.sent == [attempts[1]]
 
 
 def test_opt_out_name_fallback_does_not_exclude_a_distinct_same_named_attendee():

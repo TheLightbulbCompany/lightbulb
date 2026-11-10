@@ -1406,7 +1406,7 @@ def test_recurring_asks_are_automations_not_requests():
     Worker made an Active Paperclip routine in UTC, with no confirm card. The prompt listed five tools and not
     propose_automation, and said to start everything: recurring work is propose_automation, never start_task."""
     text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
-    assert "ignore, propose_automation, meeting_chat, meeting_context)" in text
+    assert "ignore, propose_automation, meeting_chat, meeting_stop_transcribing, meeting_context)" in text
     assert "Recurring work" in text and "propose_automation, never start_task" in text
 
 

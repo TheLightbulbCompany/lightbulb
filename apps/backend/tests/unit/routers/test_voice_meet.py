@@ -492,3 +492,19 @@ async def test_unproven_occurrence_keeps_the_app_link_without_provider_delivery(
         line = await _announce_made(m, _made_task())
     assert line.endswith("taskId=k9")
     m["say"].assert_not_awaited()
+
+
+async def test_ask_records_who_spoke_and_events_carry_the_exclusions(m):
+    from types import SimpleNamespace
+
+    with patch.object(
+        voice_meet.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m9"))
+    ):
+        await voice_meet.ask(
+            ROOM, voice_meet.AskIn(ownerId="org_1", roomToken="t", text="Nova, stop", participantId="12")
+        )
+    assert m["meeting"]["askSpeakers"] == {"m9": "12"}  # the meeting's record, not the model's say-so
+    m["meeting"]["notTranscribed"] = [{"id": "12", "name": "Sam"}]
+    with patch.object(voice_meet, "agent_lines", AsyncMock(return_value={"messages": [], "after": 3})):
+        out = await voice_meet.events(ROOM, voice_meet.EventsIn(ownerId="org_1", roomToken="t", after=3))
+    assert out == {"messages": [], "after": 3, "notTranscribed": [{"id": "12", "name": "Sam"}]}

@@ -159,9 +159,9 @@ export function useQuestions() {
   }, { refreshInterval: 30_000 });
 }
 
-/** A call still waiting on the owner: the assistant didn't know, or a caller wanted a person. */
-export const callNeedsYou = (i: TimelineItem): i is CallItem =>
-  i.type === "call" && !i.resolvedAt && (i.outcome === "needs_you" || i.outcome === "handoff_missed");
+/** A call still waiting on the owner: the assistant didn't know, a caller wanted a person, or left a message. */
+export const callNeedsYou = (i: TimelineItem): i is CallItem => i.type === "call" && !i.resolvedAt
+  && (i.outcome === "needs_you" || i.outcome === "handoff_missed" || i.outcome === "message");
 
 export const mmss = (sec?: number) => sec == null ? "" : `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
 export const who = (c: CallItem) => c.callerName || (c.caller ? usPhone(c.caller) : "Unknown caller");

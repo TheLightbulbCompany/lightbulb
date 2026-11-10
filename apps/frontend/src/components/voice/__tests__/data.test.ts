@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { callNeedsYou, callSummary, mmss, nameOf } from "../data";
 
 describe("voice data helpers", () => {
-  it("a call needs you until it is resolved, and only for the two waiting outcomes", () => {
+  it("a call needs you until it is resolved, and only for the three waiting outcomes", () => {
     const call = { type: "call" as const, roomId: "r", at: 0 };
     expect(callNeedsYou({ ...call, outcome: "needs_you" })).toBe(true);
     expect(callNeedsYou({ ...call, outcome: "handoff_missed" })).toBe(true);
+    expect(callNeedsYou({ ...call, outcome: "message" })).toBe(true); // a taken message: the owner calls back
     expect(callNeedsYou({ ...call, outcome: "needs_you", resolvedAt: "2026-11-07" })).toBe(false);
     expect(callNeedsYou({ ...call, outcome: "booked" })).toBe(false);
     expect(callNeedsYou({ type: "meeting", roomId: "m", at: 0 })).toBe(false);

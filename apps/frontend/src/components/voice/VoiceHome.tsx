@@ -154,7 +154,7 @@ function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClo
     </div>
     <p style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><Tag outcome={call.outcome} />
       {call.booking && <span className="vx-muted" style={{ fontSize: "var(--text-caption)" }}>{call.booking}</span>}</p>
-    {call.summary?.trim() && <p className="vx-tx" style={{ marginTop: 8 }}>{call.summary.trim()}</p>}
+    <p className="vx-tx" style={{ marginTop: 8 }}>{callSummary(call)}</p>
     {!call.ownerMode && <div className="vx-actions"><ReachBack number={call.caller} /></div>}
     {!!call.steps?.length && <section><h3>What {name} did</h3>
       <ol className="vx-steps">{call.steps.map((s, n) => <li key={n}><time>{mmss(s.t)}</time><span>{s.text}

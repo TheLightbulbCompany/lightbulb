@@ -505,7 +505,13 @@ async def sweep_phone_calls(now: int) -> int:
     from routers import voice_phone
 
     table = messaging_repo._table()
-    rows = (await run_in_thread(table.query, KeyConditionExpression=Key("pk").eq(voice_phone.OPEN_CALLS_PK)))["Items"]
+    rows, kw = [], {"KeyConditionExpression": Key("pk").eq(voice_phone.OPEN_CALLS_PK)}
+    while True:
+        page = await run_in_thread(table.query, **kw)
+        rows += page["Items"]
+        if not page.get("LastEvaluatedKey"):
+            break
+        kw["ExclusiveStartKey"] = page["LastEvaluatedKey"]
     done = 0
     for row in rows:
         started = int(row.get("startedAtEpoch", now))

@@ -118,3 +118,14 @@ it("saves supported voice and Spanish settings without rewriting the saved legac
   expect(screen.getByLabelText("Sample language")).toBeInTheDocument();
   vi.useRealTimers();
 });
+
+it("a new closure starts on today's date in the business's time zone, not UTC's", async () => {
+  const { Closures } = await import("../AgentPage");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T01:00:00Z")); // 5 pm on 10 Nov in Los Angeles, already 11 Nov in UTC
+  const set = vi.fn();
+  render(<Closures c={{ ...DEFAULT_CONFIG, timezone: "America/Los_Angeles", holidays: [] }} set={set} />);
+  fireEvent.click(screen.getByRole("button", { name: /Add a closed date/ }));
+  expect(set).toHaveBeenCalledWith({ holidays: [{ from: "2026-11-10", to: "2026-11-10" }] });
+  vi.useRealTimers();
+});

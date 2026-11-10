@@ -175,7 +175,7 @@ export function Closures({ c, set }: Edit) {
       <input className="vx-field" type="date" aria-label="Closed until" value={r.to} min={r.from} onChange={(e) => put(n, { to: e.target.value })} />
       <Button size="icon-sm" variant="ghost" aria-label="Remove closure" onClick={() => set({ holidays: list.filter((_, i) => i !== n) })}><X /></Button>
     </div>)}
-    <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => { const d = new Date().toISOString().slice(0, 10); set({ holidays: [...list, { from: d, to: d }] }); }}><Plus /> Add a closed date</Button></div>
+    <div style={{ marginTop: 8 }}><Button size="sm" variant="outline" onClick={() => { const d = new Intl.DateTimeFormat("en-CA", { timeZone: c.timezone || undefined }).format(new Date()); set({ holidays: [...list, { from: d, to: d }] }); }}><Plus /> Add a closed date</Button></div>
   </div>;
 }
 

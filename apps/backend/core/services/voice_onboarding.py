@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.parse import urljoin, urlsplit
 
@@ -34,6 +35,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from core.config import settings
+from core.constants import SYSTEM_ACTOR_ID
 from core.billing import voice_billing
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -202,9 +204,8 @@ async def _twilio(method: str, path: str, **params: str) -> dict:
 async def release_number(ws: str) -> str:
     """Delete the workspace's `PHONE#` line row, so its number answers nobody, and give a bought number back to
     Twilio. The number released, or "" when the workspace had none. Wipes call it before the owner partition goes
-    (the Agent page's `number` is how a bought number is found).
-    ponytail: the 30-day paused/unused release has no caller yet: nothing is bought while VOICE_BUY_NUMBERS is off.
-    Call it from the watchdog's daily tick (core/temporal/watchdog_workflow.py) once buying is on."""
+    (the Agent page's `number` is how a bought number is found). A lapsed voice plan's number goes back through
+    `release_lapsed_numbers` instead."""
     cfg = await messaging_repo.get_voice_agent(ws) or {}
     provision_key = {"pk": messaging_repo.owner_pk(ws), "sk": "VOICENUMBER"}
     pending = await messaging_repo._get(**provision_key) or {}
@@ -225,6 +226,91 @@ async def release_number(ws: str) -> str:
     await run_in_thread(messaging_repo._table().delete_item, Key={"pk": f"PHONE#{number}", "sk": "LINE"})
     await run_in_thread(messaging_repo._table().delete_item, Key=provision_key)
     return number
+
+
+RELEASE_GRACE = timedelta(days=30)  # a voice plan that renews within this keeps its bought number
+
+
+def _tag(ws: str) -> str:
+    """The FriendlyName `_provision_number` buys a workspace's number under: how we know the number is ours."""
+    return f"lightbulb-{settings.ENVIRONMENT}-{hashlib.sha256(ws.encode()).hexdigest()[:24]}"
+
+
+def _lapsed(account: dict, now: datetime) -> bool:
+    """The voice plan ended more than RELEASE_GRACE ago and is not live (or retrying payment) again."""
+    if not account.get("voice_plan_stripe_subscription_id"):
+        return False
+    if account.get("voice_plan_stripe_status") in ("active", "trialing", "past_due"):
+        return False  # renewed, or Stripe still retrying the card
+    try:
+        ended = datetime.fromisoformat(account.get("voice_plan_ending_at") or "")
+    except ValueError:
+        return False  # no end date: never guess one
+    return (ended if ended.tzinfo else ended.replace(tzinfo=UTC)) + RELEASE_GRACE < now
+
+
+async def _release_lapsed(ws: str, now: datetime) -> str:
+    """Give one lapsed workspace's bought number back to Twilio. The outcome (logged; the number never is)."""
+    key = {"pk": messaging_repo.owner_pk(ws), "sk": "VOICENUMBER"}
+    receipt = await messaging_repo._get(**key) or {}
+    number, sid = receipt.get("number"), receipt.get("sid")
+    if not (number and sid):
+        return "none"  # nothing bought, or a choice never paid for
+    if number == settings.VOICE_LINE_NUMBER or receipt.get("friendlyName") != _tag(ws):
+        return "not_ours"
+    lease = f"voice-number#{ws}"  # the lock provision_at_go_live buys under
+    token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=180)
+    if not token:
+        return "busy"
+    try:
+        if not _lapsed(await billing_repo.get_by_owner_id(ws, consistent_read=True) or {}, now):
+            return "renewed"
+        try:
+            await _twilio("DELETE", f"IncomingPhoneNumbers/{sid}.json")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:  # 404: already released
+                raise
+        if settings.VOICE_INBOUND_TRUNK_ID:
+            await _route_number(number, remove=True)
+        try:
+            await run_in_thread(
+                messaging_repo._table().delete_item,
+                Key={"pk": f"PHONE#{number}", "sk": "LINE"},
+                ConditionExpression="ownerId = :ws",
+                ExpressionAttributeValues={":ws": ws},
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise  # missing, or another workspace's line: nothing of ours to delete
+        await messaging_repo.modify_voice_agent(
+            ws,
+            lambda cfg: {**cfg, "live": False, "number": ""} if cfg.get("number") == number else None,
+            SYSTEM_ACTOR_ID,
+        )
+        await run_in_thread(messaging_repo._table().delete_item, Key=key)  # last, so any failed step above retries
+        return "released"
+    finally:
+        await container_repo.release_owner_lifecycle_claim(lease, token=token)
+
+
+async def release_lapsed_numbers(now: datetime | None = None) -> int:
+    """Daily (voice_calls.voice_call_sweeper): release the bought number of every workspace whose voice plan ended
+    over RELEASE_GRACE ago, so we stop paying for numbers nobody uses. Idempotent; one failure never blocks the rest.
+    ponytail: scans the whole billing table once a day; index lapsed plans if that table grows large."""
+    now = now or datetime.now(UTC)
+    released = 0
+    for account in await billing_repo.scan_all():
+        ws = account.get("owner_id")
+        if not ws or not _lapsed(account, now):
+            continue
+        try:
+            outcome = await _release_lapsed(ws, now)
+        except Exception:  # noqa: BLE001 -- the next daily pass retries
+            logger.warning("lapsed voice number release failed workspace=%s", ws, exc_info=True)
+            continue
+        released += outcome == "released"
+        logger.info("lapsed voice number workspace=%s outcome=%s", ws, outcome)
+    return released
 
 
 class NoNumber(Exception):
@@ -326,7 +412,7 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
         and settings.VOICE_INBOUND_TRUNK_ID
     ):
         raise NoNumber("not_available")
-    tag = f"lightbulb-{settings.ENVIRONMENT}-{hashlib.sha256(ws.encode()).hexdigest()[:24]}"
+    tag = _tag(ws)
     query = {"FriendlyName": tag, **({"PhoneNumber": pending["number"]} if pending.get("number") else {})}
     owned = await _twilio("GET", "IncomingPhoneNumbers.json", **query)
     matches = owned.get("incoming_phone_numbers") or []

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({}) }));
 import { applyDraft, withTimezone } from "../Onboarding";
-import { DAYS, DEFAULT_CONFIG, needsOnboarding, usPhone } from "../data";
+import { DAYS, DEFAULT_CONFIG, needsOnboarding, saveRefusal, usPhone } from "../data";
 
 const week = Object.fromEntries(DAYS.map((d) => [d, { open: "10:00", close: "19:00", closed: false }]));
 
@@ -69,5 +69,16 @@ describe("a second read of the site", () => {
   it("keeps the consent-gated texts off by default", () => {
     expect(DEFAULT_CONFIG.reminders.missedCallers).toBe(false);
     expect(DEFAULT_CONFIG.reminders.waitlist).toBe(false);
+  });
+});
+
+describe("a refused save says why", () => {
+  const refused = (code: string, status = 422) => ({ status, body: { detail: { code } } });
+  it("names the hand-off clash and the other refusals instead of a generic error", () => {
+    expect(saveRefusal(refused("handoff_is_forwarded_line"))).toMatch(/same number you forward to the assistant/);
+    expect(saveRefusal(refused("handoff_number_not_us"))).toMatch(/US or Canadian/);
+    expect(saveRefusal(refused("anything", 403))).toMatch(/Only an admin/);
+    expect(saveRefusal(refused("something_new"))).toBeNull();
+    expect(saveRefusal(new Error("network"))).toBeNull();
   });
 });

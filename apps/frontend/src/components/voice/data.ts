@@ -192,3 +192,22 @@ export function useUsage() {
 export function callSummary(call: Pick<CallItem, "summary" | "steps">): string {
   return call.summary?.trim() || [...(call.steps ?? [])].reverse().find((step) => !step.guessed && step.text.trim())?.text.trim() || "Open conversation";
 }
+
+/** Why the server refused a save, in the owner's words; null when there is nothing specific to say. One place, so no
+ * page hides a refusal behind "Couldn't save" (prod 11-10: onboarding could not pass step 1 and never said why). */
+export function saveRefusal(e: unknown): string | null {
+  const err = e as { status?: number; body?: { detail?: { code?: string; message?: string } } };
+  const code = err?.body?.detail?.code;
+  if (err?.status === 403) return "Only an admin of this workspace can change the assistant.";
+  switch (code) {
+    case "handoff_is_forwarded_line":
+      return "Your hand-off mobile is the same number you forward to the assistant, so a hand-off would ring the assistant again. Use a different number for hand-offs, or leave it empty.";
+    case "handoff_number_not_us": return "The hand-off number must be a US or Canadian number.";
+    case "handoff_number_invalid": return "That hand-off number doesn't look right. Check it and try again.";
+    case "timezone_invalid": return "Your time zone wasn't recognised. Reload the page and try again.";
+    case "too_large": return "That's too much text to save. Shorten the Knowledge or instructions.";
+    case "front_agent_unavailable": case "front_agent_invalid":
+      return err.body?.detail?.message || "Choose an active agent from this workspace.";
+    default: return null;
+  }
+}

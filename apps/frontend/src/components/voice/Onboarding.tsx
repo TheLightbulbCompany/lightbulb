@@ -37,9 +37,13 @@ export function applyDraft(c: AgentConfig, d: Draft): AgentConfig {
     services: c.services.length ? c.services : d.services,
     knowledge: [...c.knowledge, ...[...d.knowledge, ...staff].filter((k) => !asked.has(k.q.trim().toLowerCase()))],
     toAdd: c.toAdd.length ? c.toAdd : d.toAdd.filter((q) => !asked.has(q.trim().toLowerCase())),
-    forwardFrom: c.forwardFrom || d.phone,
+    // The site's number is a guess at the business line; the owner's own hand-off mobile is never it (the server
+    // refuses a hand-off that rings the forwarded line, and step 1 could not be passed).
+    forwardFrom: c.forwardFrom || (digits10(d.phone) && digits10(d.phone) === digits10(c.handoff.number) ? "" : d.phone),
   };
 }
+
+const digits10 = (n: string) => n.replace(/\D/g, "").slice(-10);
 
 /** The hours are in the owner's own zone; keep one already chosen. */
 export const withTimezone = (c: AgentConfig): AgentConfig => ({ ...c, timezone: c.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone });
@@ -76,6 +80,8 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
       setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
         : status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
         : code === "handoff_number_not_us" ? "The hand-off number must be a US or Canadian number."
+        : code === "handoff_is_forwarded_line" ? "Your mobile can't be the same number callers forward to the assistant. Use a different mobile for hand-offs."
+        : code === "handoff_number_invalid" ? "That mobile number doesn't look right. Check it and try again."
         : "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };

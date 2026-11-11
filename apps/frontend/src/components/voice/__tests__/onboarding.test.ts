@@ -25,6 +25,14 @@ describe("voice onboarding", () => {
     expect(c.toAdd).toEqual(["Parking?"]);
     expect(c.forwardFrom).toBe("(415) 555-0199");
   });
+  it("never takes the site's phone as the business line when it is the owner's own hand-off mobile", () => {
+    // prod 11-10: the site listed the owner's mobile in +1-XXX-XXX-XXXX form, the owner typed it bare as their mobile; the save 422'd
+    // (handoff_is_forwarded_line) and step 1 could not be passed.
+    const owner = { ...DEFAULT_CONFIG, handoff: { ...DEFAULT_CONFIG.handoff, number: "4155550147" } };
+    const c = applyDraft(owner, { read: true, hours: {}, services: [], staff: [], knowledge: [], toAdd: [], phone: "+1-415-555-0147" });
+    expect(c.forwardFrom).toBe("");
+    expect(c.handoff.number).toBe("4155550147");
+  });
   it("keeps the defaults when the site said nothing", () => {
     const c = applyDraft(DEFAULT_CONFIG, { read: false, hours: {}, services: [], staff: [], knowledge: [], toAdd: [], phone: "" });
     expect(c.hours).toEqual(DEFAULT_CONFIG.hours);

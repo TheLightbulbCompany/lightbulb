@@ -3,7 +3,7 @@
 // The owner's voice surfaces read three things: the timeline (calls + meetings), the assistant's settings
 // (one JSON document, GET/PUT /voice/agent) and the open Questions (/needs-you). Shapes: routers/voice.py.
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import { usPhone, type QuestionView } from "@lightbulb/shared";
@@ -78,6 +78,8 @@ export interface AgentConfig {
   runOut?: "keep" | "forward";
   /** Onboarding: what the owner typed in step 1, and the step to resume at (absent once it went live). */
   business?: string; city?: string; website?: string; onboardingStep?: number;
+  /** Go live was pressed but the voice plan was not paid yet: it goes live by itself once the plan is active. */
+  goLiveRequested?: boolean;
 }
 
 export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -202,6 +204,12 @@ export function saveRefusal(e: unknown): string | null {
   switch (code) {
     case "handoff_is_forwarded_line":
       return "Your hand-off mobile is the same number you forward to the assistant, so a hand-off would ring the assistant again. Use a different number for hand-offs, or leave it empty.";
+    case "number_unavailable": {
+      const reason = (err.body?.detail as { reason?: string } | undefined)?.reason;
+      return reason === "none_in_area_code" ? "No numbers are left in that area code. Pick another area code, or keep your own number and forward it."
+        : reason === "provisioning_in_progress" ? "Your number is being set up. Wait a minute, then try Go live again."
+        : "We couldn't get a number just now. Your setup is saved; try Go live again.";
+    }
     case "handoff_number_not_us": return "The hand-off number must be a US or Canadian number.";
     case "handoff_number_invalid": return "That hand-off number doesn't look right. Check it and try again.";
     case "timezone_invalid": return "Your time zone wasn't recognised. Reload the page and try again.";
@@ -210,4 +218,20 @@ export function saveRefusal(e: unknown): string | null {
       return err.body?.detail?.message || "Choose an active agent from this workspace.";
     default: return null;
   }
+}
+
+/** After the voice plan is paid, finish the Go live the owner already pressed (prod 11-10: payment returned to
+ * Settings, nothing went live, and the business line kept ringing through to voicemail). One try per page load. */
+export function useGoLiveAfterPayment() {
+  const api = useApi();
+  const { data, save } = useAgentConfig();
+  const waiting = !!data?.goLiveRequested && !data.live;
+  const { data: plan } = useSWR(waiting ? ["/billing/voice-plan", "go-live"] : null,
+    () => api.get("/billing/voice-plan") as Promise<{ status: string }>, { refreshInterval: 5_000 });
+  const tried = useRef(false);
+  useEffect(() => {
+    if (!data || !waiting || tried.current || plan?.status !== "active") return;
+    tried.current = true;
+    save({ ...data, live: true, paused: false, onboardingStep: undefined, goLiveRequested: undefined }).catch(() => {});
+  }, [data, waiting, plan?.status, save]);
 }

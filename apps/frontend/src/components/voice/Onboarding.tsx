@@ -70,10 +70,10 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
       const code = (e as { body?: { detail?: { code?: string } } }).body?.detail?.code;
       if (code === "voice_payment_required") {
         try {
-          const pending = { ...withTimezone(next), live: false, onboardingStep: 5 };
+          const pending = { ...withTimezone(next), live: false, onboardingStep: 5, goLiveRequested: true };
           await save(pending); setC(pending);
           setPaymentRequired(true);
-          setErr("Your setup is saved. Activate your voice plan in Settings, then return here and choose Go live to get your number.");
+          setErr("Your setup is saved. Activate your voice plan in Settings: once it is paid, your assistant goes live and gets its number by itself.");
         } catch { setErr("Couldn't save your setup. Try again before opening payment."); }
         return;
       }

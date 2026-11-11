@@ -59,7 +59,7 @@ async def start(owner_id: str, *, accepted_by: str) -> dict:
         allow_promotion_codes=True,
         # A 100%-off code owes nothing: don't ask for a card.
         payment_method_collection="if_required",
-        success_url=f"{settings.FRONTEND_URL}/voice/settings?voice=checkout_complete",
+        success_url=f"{settings.FRONTEND_URL}/voice/agent?voice=checkout_complete",  # shows it go live
         cancel_url=f"{settings.FRONTEND_URL}/voice/settings?voice=checkout_canceled",
         client_reference_id=owner_id,
         metadata=metadata,

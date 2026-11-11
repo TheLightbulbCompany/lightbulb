@@ -347,13 +347,14 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
         if not number:
             choice = cfg.get("numberChoice") if isinstance(cfg.get("numberChoice"), dict) else {}
             area = choice.get("areaCode") if choice.get("path") == "new" else _area_code(cfg.get("forwardFrom"))
+            search = ("GET", "AvailablePhoneNumbers/US/Local.json")
             found = await _twilio(
-                "GET",
-                "AvailablePhoneNumbers/US/Local.json",
-                **({"AreaCode": area} if area else {}),
-                VoiceEnabled="true",
-                SmsEnabled="true",
+                *search, **({"AreaCode": area} if area else {}), VoiceEnabled="true", SmsEnabled="true"
             )
+            if area and choice.get("path") != "new" and not found.get("available_phone_numbers"):
+                # Keep-and-forward: callers dial the business line, so the assistant's own number need not share its
+                # area code (prod 11-10: Twilio had no 215 numbers and Go live failed). A chosen area code still fails.
+                found = await _twilio(*search, VoiceEnabled="true", SmsEnabled="true")
             if not found.get("available_phone_numbers"):
                 raise NoNumber("none_in_area_code")
             number = found["available_phone_numbers"][0]["phone_number"]

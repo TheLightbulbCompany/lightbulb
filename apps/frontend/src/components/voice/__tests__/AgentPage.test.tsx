@@ -38,7 +38,20 @@ it("unpaid Go live keeps the assistant off and offers the existing payment flow"
   await act(async () => { await vi.advanceTimersByTimeAsync(700); });
   expect(screen.getByRole("link", { name: "Activate voice plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
   expect(screen.getByText("Not live yet")).toBeInTheDocument();
-  expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ live: false }));
+  expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ live: false, goLiveRequested: true }));
+  expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
+it("a Go live with no number to give stays not live and says why (prod 11-10)", async () => {
+  vi.useFakeTimers();
+  cfg.value = { ...cfg.value, live: false, number: "" };
+  cfg.save.mockRejectedValueOnce({ status: 409, body: { detail: { code: "number_unavailable", reason: "none_in_area_code" } } });
+  render(<AgentPage />);
+  fireEvent.click(screen.getByRole("button", { name: "Go live" }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(screen.getByText(/No numbers are left in that area code/)).toBeInTheDocument();
+  expect(screen.getByText("Not live yet")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();
   vi.useRealTimers();
 });

@@ -36,11 +36,15 @@ export function AgentPage() {
       save(next).then(() => setSaveState("saved"),
         async (e: { status?: number; body?: { detail?: { code?: string } } }) => {
           if (e.body?.detail?.code === "voice_payment_required") {
-            const pending = { ...next, live: false };
+            const pending = { ...next, live: false, goLiveRequested: true };
             setDraft(pending);
             try { await save(pending); setSaveState("payment"); }
             catch { setSaveState("error"); }
-          } else { setRefusal(saveRefusal(e)); setSaveState("error"); }
+          } else {
+            // A refused Go live leaves it not live: the header must not say "Live · no number yet".
+            if (next.live && !c.live) setDraft({ ...next, live: c.live, paused: c.paused });
+            setRefusal(saveRefusal(e)); setSaveState("error");
+          }
         });
     }, 600);
   };
@@ -57,7 +61,7 @@ export function AgentPage() {
           {c.number ? <> · answering {usPhone(c.number)}</> : <> · no number yet</>}</p>
         <p className="vx-save" role="status" data-err={saveState === "error"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? refusal ?? "Couldn't save the last change. Change it again to retry."
-            : saveState === "payment" ? "Your setup is saved. Activate your voice plan, then return and choose Go live to get your number."
+            : saveState === "payment" ? "Your setup is saved. Activate your voice plan: once it is paid, your assistant goes live and gets its number by itself."
             : "Changes save as you make them."}</p>
         {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
       </div>

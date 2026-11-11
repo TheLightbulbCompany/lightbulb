@@ -14,7 +14,7 @@ import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
 import { ForwardCheck, HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
 import { FORWARDING_CODES, IPHONE_NOTE, CHARGES_NOTE, forwardingCodes, type Carrier, type ForwardMode } from "./forwarding";
-import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
+import { DAYS, DEFAULT_CONFIG, nameOf, saveRefusal, usPhone, type AgentConfig } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
@@ -77,12 +77,8 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
         } catch { setErr("Couldn't save your setup. Try again before opening payment."); }
         return;
       }
-      setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
-        : status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
-        : code === "handoff_number_not_us" ? "The hand-off number must be a US or Canadian number."
-        : code === "handoff_is_forwarded_line" ? "Your mobile can't be the same number callers forward to the assistant. Use a different mobile for hand-offs."
-        : code === "handoff_number_invalid" ? "That mobile number doesn't look right. Check it and try again."
-        : "Couldn't save. Try again.");
+      setErr(status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
+        : saveRefusal(e) ?? "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };
 

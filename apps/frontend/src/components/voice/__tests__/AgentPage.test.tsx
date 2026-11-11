@@ -53,6 +53,16 @@ it("a hand-off number outside the US and Canada says why it was not saved", asyn
   vi.useRealTimers();
 });
 
+it("a hand-off mobile that is also the forwarded line says why it was not saved (prod 11-10)", async () => {
+  vi.useFakeTimers();
+  cfg.save.mockRejectedValueOnce({ status: 422, body: { detail: { code: "handoff_is_forwarded_line" } } });
+  render(<AgentPage />);
+  fireEvent.change(screen.getByPlaceholderText("Your cell"), { target: { value: "(415) 555-0147" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(screen.getByText(/same number you forward to the assistant/)).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
 it("hides what does nothing yet, and the waitlist toggle (10 Nov demo ruling)", () => {
   render(<AgentPage />);
   expect(screen.queryByLabelText(/Email me the notes/)).toBeNull();

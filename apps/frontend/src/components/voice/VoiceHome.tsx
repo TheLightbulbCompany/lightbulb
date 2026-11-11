@@ -13,7 +13,7 @@ import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, rowId, useAgentConfig, useTimeline, usPhone, who,
+  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, rowId, saveRefusal, useAgentConfig, useTimeline, usPhone, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -177,7 +177,8 @@ function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClo
 function NextTime({ roomId }: { roomId: string }) {
   const { data: config, save } = useAgentConfig();
   const [text, setText] = useState("");
-  const [state, setState] = useState<"idle" | "saving" | "saved" | "error" | "forbidden">("idle");
+  const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [refusal, setRefusal] = useState<string | null>(null);
   return <section key={roomId}><h3>Next time…</h3>
     <form onSubmit={async (e) => {
       e.preventDefault();
@@ -187,15 +188,14 @@ function NextTime({ roomId }: { roomId: string }) {
       try {
         await save({ ...config, knowledge: [...config.knowledge, { q: "", a: text.trim(), source: `added from a call, ${when}` }] });
         setText(""); setState("saved");
-      } catch (err) { setState((err as { status?: number }).status === 403 ? "forbidden" : "error"); }
+      } catch (err) { setRefusal(saveRefusal(err)); setState("error"); }
     }}>
       <textarea className="vx-field" rows={2} maxLength={1000} value={text} onChange={(e) => setText(e.target.value)}
         aria-label="What should it say next time" placeholder="Parking is behind the building, not on the street" />
       <div className="vx-actions" style={{ alignItems: "center" }}>
         <Button type="submit" size="sm" disabled={!text.trim() || state === "saving"}>Save to Knowledge</Button>
-        <span className="vx-save" role="status" data-err={state === "error" || state === "forbidden"}>
-          {state === "saved" ? "Saved. It uses this from the next call." : state === "error" ? "Couldn't save. Try again."
-            : state === "forbidden" ? "Only an admin can change Knowledge." : ""}</span>
+        <span className="vx-save" role="status" data-err={state === "error"}>
+          {state === "saved" ? "Saved. It uses this from the next call." : state === "error" ? refusal ?? "Couldn't save. Try again." : ""}</span>
       </div>
     </form>
   </section>;

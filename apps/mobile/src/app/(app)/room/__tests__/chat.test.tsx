@@ -12,19 +12,29 @@ jest.mock("react-native-markdown-display", () => ({ __esModule: true, default: (
 const mockSelect = jest.fn();
 const mockSend = jest.fn();
 let mockRuns: { roomId: string; state: string }[] = [];
+const CHAT = { roomId: "chat-1", kind: "group-dm", name: null, members: [{ kind: "agent", id: "front" }, { kind: "human", id: "me" }] };
+const CALL = { roomId: "chat-1", kind: "channel", name: "Call with Ada", members: [{ kind: "agent", id: "front" }] };
+let mockRoom: unknown = CHAT;
+let mockMessages: unknown[] = [];
 jest.mock("../../../../lib/rooms", () => ({
   useMobileRooms: () => ({
-    activeRoomId: "chat-1", selectRoom: mockSelect, sendMessage: mockSend, runs: mockRuns, optimisticMessages: [],
-    messages: [
-      { messageId: "m1", text: "What time do you open?", author: { kind: "human", displayName: "Ann" } },
-      { messageId: "m2", text: "We open at **9**.", author: { kind: "agent", displayName: "Lightbulb" } },
-    ],
+    activeRoomId: "chat-1", activeRoom: mockRoom, rooms: [], selectRoom: mockSelect, sendMessage: mockSend, runs: mockRuns,
+    optimisticMessages: [], messages: mockMessages,
   }),
 }));
+jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => ({ frontAgentId: "front" }) }));
 
-import ChatScreen from "../[roomId]/index";
+import ChatScreen, { lineText } from "../[roomId]/index";
 
-beforeEach(() => { jest.clearAllMocks(); mockRuns = []; });
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockRuns = [];
+  mockRoom = CHAT;
+  mockMessages = [
+    { messageId: "m1", text: "What time do you open?", author: { kind: "human", displayName: "Ann" } },
+    { messageId: "m2", text: "We open at **9**.", author: { kind: "agent", displayName: "Lightbulb" } },
+  ];
+});
 
 it("opens the room and shows its messages", async () => {
   await render(<ChatScreen />);
@@ -48,4 +58,35 @@ it("says when Lightbulb is replying", async () => {
   mockRuns = [{ roomId: "chat-1", state: "running" }];
   await render(<ChatScreen />);
   expect(screen.getByText("Lightbulb is replying…")).toBeTruthy();
+});
+
+it("opens a call or meeting room as a read-only record", async () => {
+  mockRoom = CALL;
+  mockMessages = [{ messageId: "c1", text: "Can I move my booking?", author: { kind: "human", displayName: "Ada" } }];
+  await render(<ChatScreen />);
+  expect(screen.getByText("Can I move my booking?")).toBeTruthy();
+  expect(screen.getByText("Ada")).toBeTruthy();
+  expect(screen.queryByLabelText("Message")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  expect(screen.queryByText("Ask Lightbulb anything.")).toBeNull();
+});
+
+it("is read-only until the room is known, and for a chat shared with another person", async () => {
+  mockRoom = undefined;
+  mockMessages = [];
+  await render(<ChatScreen />);
+  expect(screen.queryByLabelText("Message")).toBeNull();
+  mockRoom = { ...CHAT, members: [...CHAT.members, { kind: "human", id: "dana" }] };
+  await render(<ChatScreen />);
+  expect(screen.queryByLabelText("Message")).toBeNull();
+  expect(screen.getByText("Nothing was recorded here.")).toBeTruthy();
+});
+
+it("says what a line without text carries", async () => {
+  mockRoom = CALL;
+  mockMessages = [{ messageId: "a1", text: "", attachments: [{ fileName: "quote.pdf" }], author: { kind: "agent", displayName: "Lightbulb" } }];
+  await render(<ChatScreen />);
+  expect(screen.getByText("Attached: quote.pdf")).toBeTruthy();
+  expect(lineText({ text: "", taskRefs: [{ taskId: "t", role: "started" }] })).toBe("Started a task");
+  expect(lineText({ text: "  " })).toBe("(No text)");
 });

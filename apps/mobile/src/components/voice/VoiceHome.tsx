@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { fonts, useChatPalette } from "../../config/theme";
+import { isTextChat } from "../../lib/textChat";
 import { useTeamsConfig } from "../../lib/teamsData";
 import { useLive } from "../../providers/live";
 import { LogoMark } from "../LogoMark";
@@ -21,14 +22,6 @@ export function timelineSummary(item: VoiceTimelineItem): string {
 
 export function assistantRoom(rooms: readonly RoomSummary[], agentId?: string | null): RoomSummary | undefined {
   return rooms.find((room) => room.firstRun) ?? (agentId ? rooms.find((room) => room.kind === "dm" && room.members.some((member) => member.kind === "agent" && member.id === agentId)) : undefined);
-}
-
-/** The member's own text chats with the assistant: a DM or chat whose only agent is it and no other person. */
-export function textChats(rooms: readonly RoomSummary[], agentId?: string | null): RoomSummary[] {
-  if (!agentId) return [];
-  return rooms.filter((room) => (room.kind === "dm" || room.kind === "group-dm")
-    && room.members.some((m) => m.kind === "agent" && m.id === agentId)
-    && room.members.filter((m) => m.kind === "human").length <= 1);
 }
 
 type HomeRow = { key: string; roomId: string; title: string; summary: string; at: number };
@@ -61,7 +54,7 @@ export function VoiceHome({ rooms, agentId, onNewChat }: {
       key: `${item.type}:${item.roomId}`, roomId: item.roomId, at: item.at, summary: timelineSummary(item),
       title: item.type === "meeting" ? item.title || "Meeting" : item.callerName || (item.caller ? usPhone(item.caller) : "Unknown caller"),
     })),
-    ...textChats(rooms, agentId).map((chat) => ({
+    ...rooms.filter((r) => isTextChat(r, agentId)).map((chat) => ({
       key: `chat:${chat.roomId}`, roomId: chat.roomId, at: Date.parse(chat.lastMessageAt ?? chat.updatedAt) || 0,
       title: chat.name || "Chat with Lightbulb", summary: chat.lastMessage?.textPreview || "No messages yet",
     })),

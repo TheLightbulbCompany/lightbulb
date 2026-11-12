@@ -41,7 +41,7 @@ import { GroupedList, NavigationRow } from "../ui/GroupedList";
 const MEMBERSHIPS = { pageSize: 50 };
 const DANGER = [foregroundStyle(colors.danger)];
 
-function useWorkspaces() {
+export function useWorkspaces() {
   const { orgId } = useAuth();
   const { isLoaded, setActive, userMemberships } = useOrganizationList({
     userMemberships: MEMBERSHIPS,

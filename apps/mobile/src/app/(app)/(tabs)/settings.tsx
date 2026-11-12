@@ -16,6 +16,7 @@ import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
+import { useWorkspaces } from "../../../components/workspace/WorkspaceGate";
 import { WEB_ORIGIN } from "../../../config/domain";
 import { chatPalette, spacing } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
@@ -280,6 +281,24 @@ function initialsOf(name: string | null | undefined, email: string): string {
 
 /** iOS's own loading skeleton: the row's shape, greyed, until billing loads. */
 const PLACEHOLDER = [redacted("placeholder"), accessibilityLabel("Loading")];
+
+/** Switch workspace, inline: the row opens the list of the person's workspaces under it. Rendered only for 2+
+ *  memberships, so the Clerk list is read only by someone who has a choice. The tab navigator is keyed on the
+ *  active org, so every tab remounts on the new workspace. */
+function WorkspaceSwitch() {
+  const { orgId, memberships, activate } = useWorkspaces();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <NavigationRow title="Switch workspace" icon="arrow.left.arrow.right" onPress={() => setOpen((o) => !o)} />
+      {open ? memberships.map(({ organization }) => (
+        <NavigationRow key={organization.id} title={organization.name}
+          icon={organization.id === orgId ? "checkmark" : "building.2"}
+          onPress={() => { setOpen(false); if (organization.id !== orgId) void activate(organization.id); }} />
+      )) : null}
+    </>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -600,6 +619,7 @@ export default function Settings() {
             {organization != null ? <Text modifiers={m.CAPTION}>{organization.name}</Text> : null}
           </VStack>
         </HStack>
+        {(user?.organizationMemberships.length ?? 0) > 1 ? <WorkspaceSwitch /> : null}
       </Section>
 
       {billingSections}

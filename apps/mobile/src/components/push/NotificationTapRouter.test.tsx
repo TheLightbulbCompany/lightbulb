@@ -4,11 +4,18 @@ import { router } from "expo-router";
 
 import { NotificationTapRouter, notificationHref } from "./NotificationTapRouter";
 
-jest.mock("expo-router", () => ({ router: { navigate: jest.fn() } }));
+jest.mock("expo-router", () => ({ router: { navigate: jest.fn(), push: jest.fn() } }));
+let mockRooms: unknown[] = [];
+let mockRoomsLoading = false;
+jest.mock("../../lib/rooms", () => ({ useMobileRooms: () => ({ rooms: mockRooms, roomsLoading: mockRoomsLoading }) }));
+jest.mock("../../providers/live-events", () => ({ useLiveEvents: () => ({ frontAgentId: "front" }) }));
+const CHAT = { roomId: "chat-1", kind: "group-dm", members: [{ kind: "agent", id: "front" }, { kind: "human", id: "me" }] };
+const CALL = { roomId: "call-1", kind: "channel", members: [{ kind: "agent", id: "front" }] };
 
 const lastResponse = Notifications.useLastNotificationResponse as jest.Mock;
 const clear = Notifications.clearLastNotificationResponse as jest.Mock;
 const navigate = router.navigate as jest.Mock;
+const push = router.push as jest.Mock;
 
 // The router remembers the last notification id it routed (module scope), so
 // every test taps a notification of its own.
@@ -20,6 +27,34 @@ function response(data: Record<string, unknown>, id = `n${++seq}`) {
 beforeEach(() => {
   jest.clearAllMocks();
   lastResponse.mockReturnValue(null);
+  mockRooms = [CHAT, CALL];
+  mockRoomsLoading = false;
+});
+
+it("opens Home and then the chat for a push about one of the member's text chats", async () => {
+  lastResponse.mockReturnValue(response({ roomId: "chat-1" }));
+  await render(<NotificationTapRouter />);
+  expect(navigate.mock.calls).toEqual([["/(app)/(tabs)/chats"]]);
+  expect(push.mock.calls).toEqual([["/(app)/room/chat-1"]]);
+});
+
+it("stays on Home for a push about any other room", async () => {
+  lastResponse.mockReturnValue(response({ roomId: "call-1" }));
+  await render(<NotificationTapRouter />);
+  expect(navigate.mock.calls).toEqual([["/(app)/(tabs)/chats"]]);
+  expect(push).not.toHaveBeenCalled();
+});
+
+it("waits for the room list before deciding, on a cold start", async () => {
+  mockRoomsLoading = true;
+  mockRooms = [];
+  lastResponse.mockReturnValue(response({ roomId: "chat-1" }));
+  const screen = await render(<NotificationTapRouter />);
+  expect(push).not.toHaveBeenCalled();
+  mockRoomsLoading = false;
+  mockRooms = [CHAT];
+  await screen.rerender(<NotificationTapRouter />);
+  expect(push.mock.calls).toEqual([["/(app)/room/chat-1"]]);
 });
 
 it("opens Needs you for anything that asks the person to decide", () => {

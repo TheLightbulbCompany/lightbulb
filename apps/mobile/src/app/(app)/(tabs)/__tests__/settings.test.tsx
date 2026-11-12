@@ -24,6 +24,13 @@ jest.mock("@clerk/expo", () => ({
   }),
   useOrganization: () => mockOrg,
 }));
+const mockActivate = jest.fn(async () => true);
+jest.mock("../../../../components/workspace/WorkspaceGate", () => ({
+  useWorkspaces: () => ({
+    orgId: "org_a", activate: mockActivate,
+    memberships: [{ organization: { id: "org_a", name: "Salon A" } }, { organization: { id: "org_b", name: "Salon B" } }],
+  }),
+}));
 
 // Real useFocusEffect needs a navigation container; an effect is equivalent
 // for a single mount.
@@ -501,11 +508,30 @@ describe("Settings Plans row", () => {
   });
 });
 
+describe("Settings Switch workspace", () => {
+  beforeEach(() => { mockAccountFixture = new Error("offline"); mockActivate.mockClear(); });
+
+  it("is hidden with a single workspace", async () => {
+    mockMembershipCount = 1;
+    await render(<Settings />);
+    expect(screen.queryByText("Switch workspace")).toBeNull();
+  });
+
+  it("lists the workspaces inline with two or more and activates the one picked", async () => {
+    mockMembershipCount = 2;
+    await render(<Settings />);
+    await fireEvent.press(screen.getByText("Switch workspace"));
+    await fireEvent.press(screen.getByText("Salon B"));
+    expect(mockActivate).toHaveBeenCalledWith("org_b");
+    mockMembershipCount = 1;
+  });
+});
+
 describe("Settings without the old chat app", () => {
   it("has no rows for workspaces, invites, Control or sessions", async () => {
     mockAccountFixture = new Error("offline");
     await render(<Settings />);
-    for (const gone of ["Switch workspace", "Invite people", "Control", "Session notifications"]) {
+    for (const gone of ["Invite people", "Control", "Session notifications"]) {
       expect(screen.queryByText(gone)).toBeNull();
     }
   });

@@ -91,7 +91,7 @@
     "dotenv": "^17.2.3",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
-    "eslint-plugin-boundaries": "^6.0.2",
+    "eslint-plugin-boundaries": "^7.3.0",
     "jsdom": "^25.0.1",
     "msw": "^2.2.0",
     "stripe": "^17.0.0",

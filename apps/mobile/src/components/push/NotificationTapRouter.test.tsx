@@ -8,7 +8,6 @@ jest.mock("expo-router", () => ({ router: { navigate: jest.fn(), push: jest.fn()
 let mockRooms: unknown[] = [];
 let mockRoomsLoading = false;
 jest.mock("../../lib/rooms", () => ({ useMobileRooms: () => ({ rooms: mockRooms, roomsLoading: mockRoomsLoading }) }));
-jest.mock("../../providers/live-events", () => ({ useLiveEvents: () => ({ frontAgentId: "front" }) }));
 const CHAT = { roomId: "chat-1", kind: "group-dm", members: [{ kind: "agent", id: "front" }, { kind: "human", id: "me" }] };
 const CALL = { roomId: "call-1", kind: "channel", members: [{ kind: "agent", id: "front" }] };
 

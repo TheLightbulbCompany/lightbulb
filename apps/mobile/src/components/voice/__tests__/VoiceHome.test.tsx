@@ -82,3 +82,11 @@ it("New chat creates a chat and opens it", async () => {
   await fireEvent.press(screen.getByText("New chat"));
   await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(app)/room/new-room"));
 });
+
+// The server seats the configured receptionist (`_lightbulb_only`), which need not be the CEO Home resolves.
+it("lists a text chat seating a non-CEO receptionist", async () => {
+  const chat = { roomId: "chat-2", kind: "group-dm", name: null, lastMessageAt: "2026-11-11T10:00:00Z", updatedAt: "2026-11-11T10:00:00Z",
+    lastMessage: { textPreview: "Move my 3pm" }, members: [{ kind: "agent", id: "desk" }, { kind: "human", id: "me" }] } as unknown as RoomSummary;
+  await render(<VoiceHome rooms={[chat]} agentId="root" />);
+  expect(await screen.findByText("Move my 3pm")).toBeTruthy();
+});

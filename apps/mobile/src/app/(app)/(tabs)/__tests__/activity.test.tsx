@@ -60,3 +60,12 @@ it("shows who a question waits on when the viewer can't answer", async () => {
   expect(await screen.findByText("Waiting on Dana")).toBeTruthy();
   expect(screen.queryByLabelText("Your answer")).toBeNull();
 });
+
+it("answers a free-text question stored with no options", async () => {
+  mockNeedsYou.mockResolvedValue({ items: [q({ id: "q2", kind: "question", subkind: null, title: "Which colour?", options: [] })], next: null });
+  mockAnswer.mockResolvedValue({ question: q({ state: "answered" }), next: null });
+  await render(<NeedsYouScreen />);
+  await fireEvent.changeText(await screen.findByLabelText("Your answer"), "Teal");
+  await fireEvent.press(screen.getByRole("button", { name: "Answer" }));
+  expect(mockAnswer).toHaveBeenCalledWith("t1", "q2", expect.objectContaining({ optionId: "answer", text: "Teal" }));
+});

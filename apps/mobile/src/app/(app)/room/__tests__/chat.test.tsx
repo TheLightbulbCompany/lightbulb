@@ -22,7 +22,6 @@ jest.mock("../../../../lib/rooms", () => ({
     optimisticMessages: [], messages: mockMessages,
   }),
 }));
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => ({ frontAgentId: "front" }) }));
 
 import ChatScreen, { lineText } from "../[roomId]/index";
 

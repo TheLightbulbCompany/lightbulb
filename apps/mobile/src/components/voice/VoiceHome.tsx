@@ -54,7 +54,7 @@ export function VoiceHome({ rooms, agentId, onNewChat }: {
       key: `${item.type}:${item.roomId}`, roomId: item.roomId, at: item.at, summary: timelineSummary(item),
       title: item.type === "meeting" ? item.title || "Meeting" : item.callerName || (item.caller ? usPhone(item.caller) : "Unknown caller"),
     })),
-    ...rooms.filter((r) => isTextChat(r, agentId)).map((chat) => ({
+    ...rooms.filter((r) => isTextChat(r)).map((chat) => ({
       key: `chat:${chat.roomId}`, roomId: chat.roomId, at: Date.parse(chat.lastMessageAt ?? chat.updatedAt) || 0,
       title: chat.name || "Chat with Lightbulb", summary: chat.lastMessage?.textPreview || "No messages yet",
     })),

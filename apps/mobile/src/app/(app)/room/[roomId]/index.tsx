@@ -13,7 +13,6 @@ import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme"
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../../lib/rooms";
 import { isTextChat } from "../../../../lib/textChat";
-import { useLiveEvents } from "../../../../providers/live-events";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 
 type Row = { key: string; human: boolean; name: string; text: string; pending?: boolean };
@@ -42,9 +41,8 @@ export default function ChatScreen() {
   const open = !!roomId && rooms.activeRoomId === roomId;
   // The composer is only for the member's own text chats, decided from the room itself (kind and members).
   // A call or meeting room is never in that shape, so it is a record; until the room is known, nothing is writable.
-  const { frontAgentId } = useLiveEvents();
   const room = open ? rooms.activeRoom ?? rooms.rooms.find((r) => r.roomId === roomId) : undefined;
-  const writable = isTextChat(room, frontAgentId);
+  const writable = isTextChat(room);
   const replying = open && rooms.runs.some((run) => run.roomId === roomId && run.state === "running");
   const rows: Row[] = open ? [
     ...rooms.messages.filter((m) => !m.deletedAt)

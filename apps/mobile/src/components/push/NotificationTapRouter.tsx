@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react";
 
 import { useMobileRooms } from "../../lib/rooms";
 import { isTextChat } from "../../lib/textChat";
-import { useLiveEvents } from "../../providers/live-events";
 
 type TapData = {
   url?: string; source?: string; roomId?: string; agentId?: string;
@@ -51,8 +50,7 @@ let lastRouted: string | undefined;
 export function NotificationTapRouter() {
   const response = Notifications.useLastNotificationResponse();
   const { rooms, roomsLoading } = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
-  const { frontAgentId } = useLiveEvents();
-  // A tapped room push lands on Home at once; once the room list (and the front agent) is known, a push about one
+  // A tapped room push lands on Home at once; once the room list is known, a push about one
   // of the member's own text chats also opens that chat over Home. Anything else stays on Home.
   const pendingRoom = useRef<string | null>(null);
 
@@ -71,10 +69,10 @@ export function NotificationTapRouter() {
 
   useEffect(() => {
     const roomId = pendingRoom.current;
-    if (!roomId || roomsLoading || !frontAgentId) return;
+    if (!roomId || roomsLoading) return;
     pendingRoom.current = null;
-    if (isTextChat(rooms.find((room) => room.roomId === roomId), frontAgentId)) router.push(`/(app)/room/${roomId}`);
-  }, [response, rooms, roomsLoading, frontAgentId]);
+    if (isTextChat(rooms.find((room) => room.roomId === roomId))) router.push(`/(app)/room/${roomId}`);
+  }, [response, rooms, roomsLoading]);
 
   return null;
 }

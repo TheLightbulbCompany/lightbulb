@@ -2,7 +2,7 @@
 // (`GET /needs-you`), calls included — a call's "didn't know" and "wanted a person" are Questions too. The action is
 // on the card; a "didn't know" takes a typed answer, which the server files into Knowledge.
 
-import { ApiError, type QuestionView } from "@lightbulb/shared";
+import { ApiError, FREE_TEXT_OPTION, type QuestionView } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { useCallback, useEffect, useState } from "react";
 import { Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
@@ -58,7 +58,8 @@ export function NeedsYouCard({ question: q, palette, onDone }: { question: Quest
   const [done, setDone] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const caller = (q.preview as { caller?: string } | null | undefined)?.caller;
-  const typed = q.options.some((o) => o.id === "answer");
+  // A free-text question is stored with no options (task_questions.py) and answered with `FREE_TEXT_OPTION`.
+  const typed = q.options.length === 0 || q.options.some((o) => o.id === FREE_TEXT_OPTION);
   const send = async (optionId: string, answer?: string) => {
     setBusy(true); setErr(null);
     try {
@@ -86,8 +87,8 @@ export function NeedsYouCard({ question: q, palette, onDone }: { question: Quest
               placeholder="Your answer" placeholderTextColor={palette.fgMute}
               style={[styles.input, { color: palette.fg, borderColor: palette.edge }]} />
             <View style={styles.actions}>
-              <Button label="Answer" palette={palette} primary disabled={busy || !text.trim()} onPress={() => void send("answer", text.trim())} />
-              {q.options.filter((o) => o.id !== "answer").map((o) => option(o, false))}
+              <Button label="Answer" palette={palette} primary disabled={busy || !text.trim()} onPress={() => void send(FREE_TEXT_OPTION, text.trim())} />
+              {q.options.filter((o) => o.id !== FREE_TEXT_OPTION).map((o) => option(o, false))}
             </View>
           </>
         ) : <View style={styles.actions}>{q.options.map((o) => option(o, o.style === "primary"))}</View>}

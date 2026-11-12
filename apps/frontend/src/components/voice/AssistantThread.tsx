@@ -60,7 +60,9 @@ export function AssistantThread({ roomId }: { roomId: string }) {
       {pending.map((p) => <li key={p.clientMessageId} data-author="human" data-pending>
         <MarkdownView skipHtml>{p.text}</MarkdownView>
       </li>)}
-      {failed.map((f) => <li key={f.id} data-author="human" data-failed>
+      {/* A send can throw after the live channel already confirmed it, or be confirmed later by reconciliation:
+          the shared send state, not the throw, says whether it was sent. */}
+      {failed.filter((f) => rooms.sendState(f.id) !== "persisted").map((f) => <li key={f.id} data-author="human" data-failed>
         <MarkdownView skipHtml>{f.text}</MarkdownView>
         <span className="vx-thread-error" role="alert">Not sent. <button type="button" className="vx-link" onClick={() => void deliver(f.text, f.id)}>Retry</button></span>
       </li>)}

@@ -10,6 +10,7 @@ const rooms = vi.hoisted(() => ({
   runs: [] as { roomId: string; state: string }[],
   activeRoom: null as { kind: string; name: string | null } | null,
   updateRoom: vi.fn(),
+  sendState: vi.fn<(id: string) => string>(() => "idle"),
   selectRoom: vi.fn(),
   sendMessage: vi.fn(),
 }));
@@ -40,6 +41,7 @@ beforeEach(() => {
   ];
   rooms.optimisticMessages = [{ clientMessageId: "c1", text: "Thanks" }];
   rooms.runs = [];
+  rooms.sendState.mockReset().mockReturnValue("idle");
   rooms.activeRoom = { kind: "dm", name: null };
   rooms.updateRoom.mockReset().mockResolvedValue(undefined);
 });
@@ -183,4 +185,20 @@ it("a message's attachments show, an attachment-only one included, and open in a
   await waitFor(() => expect(tab.location.href).toBe("https://files.example/photo.jpg"));
   expect(live.messaging.attachmentUrl).toHaveBeenCalledWith("dm1", "att9");
   open.mockRestore();
+});
+
+it("a send that threw but the live channel confirmed (persisted) never shows as Not sent", async () => {
+  rooms.messages = [];
+  rooms.optimisticMessages = [];
+  rooms.sendMessage.mockRejectedValueOnce(new Error("lost response"));
+  const { rerender } = render(<AssistantThread roomId="dm1" />);
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: "Move Sam to 3pm" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+  const id = rooms.sendMessage.mock.calls[0][0].clientMessageId;
+  rooms.sendState.mockImplementation((c: string) => (c === id ? "persisted" : "idle"));
+  rerender(<AssistantThread roomId="dm1" />);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.queryByText("Move Sam to 3pm")).toBeNull();
 });

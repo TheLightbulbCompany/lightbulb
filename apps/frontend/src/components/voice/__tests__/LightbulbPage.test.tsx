@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../TalkOrb", () => ({ TalkOrb: ({ name }: { name: string }) => <p>orb:{name}</p> }));
@@ -8,9 +8,14 @@ vi.mock("../AssistantThread", () => ({ AssistantThread: ({ roomId }: { roomId: s
 const dm = vi.hoisted(() => ({ room: { roomId: "dm1" } as { roomId: string } | null | undefined }));
 vi.mock("@/components/huddle/useAssistantDm", () => ({ useAssistantDm: () => dm.room }));
 
+const api = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
+import { SWRConfig } from "swr";
+import { ApiError } from "@lightbulb/shared";
 import { LightbulbPage } from "../LightbulbPage";
+const fresh = (ui: React.ReactElement) => render(<SWRConfig value={{ provider: () => new Map() }}>{ui}</SWRConfig>);
 
-beforeEach(() => { dm.room = { roomId: "dm1" }; chats.data = undefined; });
+beforeEach(() => { dm.room = { roomId: "dm1" }; chats.data = undefined; api.get.mockReset(); });
 
 it("the orb on top, then the assistant's DM", () => {
   render(<LightbulbPage />);
@@ -24,15 +29,23 @@ it("?room= opens that chat instead of the DM, with New chat beside the orb", () 
   expect(screen.getByRole("button", { name: /New chat/ })).toBeInTheDocument();
 });
 
-it("a ?room= that is not one of my chats says Chat not found, with no composer, once the list is in", () => {
+it("a ?room= the list lacks is asked for by id: it opens when the room exists, Chat not found only on its 404", async () => {
   chats.data = [{ roomId: "dm1" }];
-  const { rerender } = render(<LightbulbPage room="nope" />);
-  expect(screen.getByRole("alert")).toHaveTextContent("Chat not found");
+  api.get.mockResolvedValueOnce({ roomId: "new1" }); // just made: the list's index hasn't caught up yet
+  fresh(<LightbulbPage room="new1" />);
+  expect(screen.getByText("thread:new1")).toBeInTheDocument();
+  await waitFor(() => expect(api.get).toHaveBeenCalledWith("/messaging/rooms/new1"));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("thread:new1")).toBeInTheDocument();
+});
+
+it("Chat not found, with no composer, when the room itself answers 404", async () => {
+  chats.data = [{ roomId: "dm1" }];
+  api.get.mockRejectedValueOnce(new ApiError(404, {}));
+  fresh(<LightbulbPage room="nope" />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Chat not found");
   expect(screen.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/voice");
   expect(screen.queryByText(/^thread:/)).toBeNull();
-  chats.data = [{ roomId: "dm1" }, { roomId: "nope" }];
-  rerender(<LightbulbPage room="nope" />);
-  expect(screen.getByText("thread:nope")).toBeInTheDocument();
 });
 
 it("waits while the DM is unknown, and says so when there is none", () => {

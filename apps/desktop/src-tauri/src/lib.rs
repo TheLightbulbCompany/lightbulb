@@ -631,6 +631,32 @@ fn refuse_app_nap() {
     }
 }
 
+/// An exclusive advisory `flock` on `<dir>/app.lock`, held while the file stays open: `Ok(None)`
+/// when another process holds it.
+fn claim_app_lock(dir: &std::path::Path) -> std::io::Result<Option<std::fs::File>> {
+    std::fs::create_dir_all(dir)?;
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("app.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod app_lock_tests {
+    #[test]
+    fn a_second_launch_loses_until_the_first_ends() {
+        let dir = std::env::temp_dir().join(format!("lb-app-lock-{}", std::process::id()));
+        let first = super::claim_app_lock(&dir).unwrap();
+        assert!(first.is_some());
+        assert!(super::claim_app_lock(&dir).unwrap().is_none(), "a second claim must lose");
+        drop(first);
+        assert!(super::claim_app_lock(&dir).unwrap().is_some(), "free again once the first exits");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 pub fn run() {
     let context = tauri::generate_context!();
     tauri::Builder::default()
@@ -745,6 +771,21 @@ end tell"#,
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");
 
+            // One Lightbulb per Mac user. single-instance forwards an ordinary relaunch, but two
+            // launches at the same moment can both get past it, and then one Fn press would reach
+            // two voice sessions. So this lock is taken before the window (`"create": false`) and
+            // the talk key exist, and the loser exits. Fails open: an unusable app data dir must
+            // not stop the app.
+            match app.path().app_data_dir().map(|d| claim_app_lock(&d)) {
+                Ok(Ok(Some(lock))) => std::mem::forget(lock), // held for the life of the process
+                Ok(Ok(None)) => {
+                    log("[setup] another Lightbulb is already running; exiting");
+                    std::process::exit(0);
+                }
+                Ok(Err(e)) => log(&format!("[setup] app lock unavailable: {e}")),
+                Err(e) => log(&format!("[setup] app data dir: {e}")),
+            }
+            focus_or_recreate_main_window(app.handle());
             refuse_app_nap();
             let app_data = app.path().app_data_dir().ok();
             tauri::async_runtime::spawn_blocking(move || legacy::clean(app_data));

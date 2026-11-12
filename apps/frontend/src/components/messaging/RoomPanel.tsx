@@ -935,7 +935,7 @@ function RoomContent({
               onPickAsk={(text) => { composer.onTextChange(composer.text.trim() ? `${composer.text.trimEnd()}\n${text}` : text); setFocusToken((t) => t + 1); }} />
             {/* The starter room only: #general by the backend's `isDefault` (the room is renameable, so "general" is not
                 the test), or the super-agent owner's first-run Lightbulb DM, where they land. */}
-            {(visibleRoom?.isDefault || firstRunDm) && <OnboardingBand participants={participants}
+            {!oneToOne && (visibleRoom?.isDefault || firstRunDm) && <OnboardingBand participants={participants}
               humanSpoke={pendingMessages.length > 0 || mainMessages.some((message) => message.author.kind === "human")} />}
           </> : null}
           empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this chat.</p> : null}>
@@ -955,7 +955,7 @@ function RoomContent({
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>{!resumeAnswers ? "Resume" : resumeAnswers === ownPauseAsk ? "Resume and answer" : `Resume and answer ${resumeAnswers.author.displayName}`}</Button>}
       </div>}
-      {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
+      {showFirstReplies && !oneToOne && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">
         <p className="text-ui text-muted-foreground">Only agents post to the feed.</p>
       </div> : visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
@@ -967,7 +967,7 @@ function RoomContent({
       </div> : <>{subagents && messagingClient && onSteerSubagent && onStopSubagent && onSubagentsVisible && <RoomSubagentStrip state={subagents} roomId={roomId}
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
-        <RoomComposer {...composer} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
+        <RoomComposer {...composer} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies && !oneToOne ? INCOMPLETE_FIRST_REPLIES : undefined}
         placeholder={composer.placeholder ?? composerPlaceholder}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}

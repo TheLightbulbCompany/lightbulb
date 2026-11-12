@@ -226,6 +226,9 @@ async fn apply_update_manifest(
         })?;
 
     log("[updater] install complete, restarting");
+    // Tauri's restart starts the new app (`open -n`) before this process exits: let go of the
+    // app lock first, or the new one finds it held and quits, leaving Lightbulb closed.
+    release_app_lock();
     app.restart();
 }
 
@@ -610,6 +613,14 @@ fn refuse_app_nap() {
     }
 }
 
+/// The app lock this process holds (see `run`).
+static APP_LOCK: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+/// Closes the app lock so the next launch can take it.
+fn release_app_lock() {
+    APP_LOCK.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
 /// An exclusive advisory `flock` on `<dir>/app.lock`, held while the file stays open: `Ok(None)`
 /// when another process holds it.
 fn claim_app_lock(dir: &std::path::Path) -> std::io::Result<Option<std::fs::File>> {
@@ -635,6 +646,16 @@ mod app_lock_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn an_update_restart_hands_the_lock_to_the_new_app() {
+        let dir = std::env::temp_dir().join(format!("lb-app-lock-restart-{}", std::process::id()));
+        *super::APP_LOCK.lock().unwrap() = super::claim_app_lock(&dir).unwrap();
+        assert!(super::claim_app_lock(&dir).unwrap().is_none(), "held while running");
+        super::release_app_lock();
+        assert!(super::claim_app_lock(&dir).unwrap().is_some(), "the restarted app gets it");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
 }
 
 /// `$HOME/Library/Application Support/<identifier>`: what Tauri's `app_data_dir` resolves to on
@@ -652,18 +673,16 @@ pub fn run() {
     // Events through the deep-link plugin), so the loser just exits. Fails open: an unusable app
     // data dir must not stop the app.
     let identifier = context.config().identifier.clone();
-    let _app_lock = match app_support_dir(&identifier).map(|d| claim_app_lock(&d)) {
-        Some(Ok(Some(lock))) => Some(lock), // held until the process exits
+    match app_support_dir(&identifier).map(|d| claim_app_lock(&d)) {
+        // Held until the process exits, or until an update restarts it.
+        Some(Ok(Some(lock))) => *APP_LOCK.lock().unwrap_or_else(|e| e.into_inner()) = Some(lock),
         Some(Ok(None)) => {
             log("[setup] another Lightbulb is already running; exiting");
             return;
         }
-        Some(Err(e)) => {
-            log(&format!("[setup] app lock unavailable: {e}"));
-            None
-        }
-        None => None,
-    };
+        Some(Err(e)) => log(&format!("[setup] app lock unavailable: {e}")),
+        None => {}
+    }
     tauri::Builder::default()
         // Hide-on-close, not quit-on-close: the talk key and a live call keep
         // working with the window hidden. Preventing the close also means the

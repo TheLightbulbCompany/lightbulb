@@ -116,7 +116,7 @@ export function AgentPage() {
       </div>
     </Sec>
 
-    <Sec title="Calendar & booking system" hint={<>Connect Google Calendar in <Link className="vx-link" href="/chat?panel=settings">Settings › Connections</Link>.</>}>
+    <Sec title="Calendar & booking system" hint={<>Connect Google Calendar in <Link className="vx-link" href="/voice/settings#connections">Settings › Connections</Link>.</>}>
       <label className="vx-label">Bookings go to
         <select className="vx-field" value={c.bookingsGo === "google" ? "google" : "own"} onChange={(e) => set({ bookingsGo: e.target.value as AgentConfig["bookingsGo"] })}>
           <option value="google">Google Calendar</option>

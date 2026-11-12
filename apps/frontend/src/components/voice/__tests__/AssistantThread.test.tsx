@@ -6,6 +6,8 @@ const rooms = vi.hoisted(() => ({
   messages: [] as unknown[],
   optimisticMessages: [] as unknown[],
   runs: [] as { roomId: string; state: string }[],
+  activeRoom: null as { kind: string; name: string | null } | null,
+  updateRoom: vi.fn(),
   selectRoom: vi.fn(),
   sendMessage: vi.fn(),
 }));
@@ -23,6 +25,26 @@ beforeEach(() => {
   ];
   rooms.optimisticMessages = [{ clientMessageId: "c1", text: "Thanks" }];
   rooms.runs = [];
+  rooms.activeRoom = { kind: "dm", name: null };
+  rooms.updateRoom.mockReset().mockResolvedValue(undefined);
+});
+
+it("a New chat's first message names it; a DM, or a chat with history, is never renamed", async () => {
+  rooms.activeRoom = { kind: "group-dm", name: null };
+  rooms.messages = [];
+  const { unmount } = render(<AssistantThread roomId="dm1" />);
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: "Plan the spring promo" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(rooms.updateRoom).toHaveBeenCalledWith({ name: "Plan the spring promo" }));
+  unmount();
+  rooms.updateRoom.mockClear();
+  rooms.activeRoom = { kind: "dm", name: null };
+  render(<AssistantThread roomId="dm1" />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Hi" } });
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+  await waitFor(() => expect(rooms.sendMessage).toHaveBeenCalled());
+  expect(rooms.updateRoom).not.toHaveBeenCalled();
 });
 
 it("shows one replying row while a run in this room is running, and none otherwise", () => {

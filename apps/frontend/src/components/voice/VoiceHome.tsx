@@ -5,15 +5,16 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { meetingStatus } from "@/lib/meetingStatus";
-import { ArrowLeft, Phone, UserRound, Video } from "lucide-react";
+import { ArrowLeft, MessageSquare, Phone, UserRound, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MarkdownView } from "@/components/voice/MarkdownView";
 import { TalkOrb } from "./TalkOrb";
+import { NewChatButton } from "./LightbulbPage";
 import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, callSummary, mmss, monthMinutes, LIGHTBULB, needsOnboarding, rowId, saveRefusal, useAgentConfig, useTimeline, usPhone, who,
+  callNeedsYou, callSummary, chatHref, mmss, monthMinutes, LIGHTBULB, needsOnboarding, rowId, saveRefusal, useAgentConfig, useTimeline, usPhone, useTextChats, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -49,6 +50,7 @@ const FILTERS: [Filter, string, (i: TimelineItem) => boolean][] = [
 export function VoiceHome() {
   const { data: items, error, isLoading } = useTimeline();
   const { data: config, isNew, save } = useAgentConfig();
+  const { data: chats = [] } = useTextChats();
   const name = LIGHTBULB;
   const needs = useNeedsYouTotal();
   const [filter, setFilter] = useState<Filter>("all");
@@ -76,14 +78,21 @@ export function VoiceHome() {
       <div className="vx-chips" role="group" aria-label="Show">
         {FILTERS.map(([id, label, test]) => {
           // "Needs you" filters the calls; the line above counts everything waiting (calls and Questions), so no number here.
-          const n = id === "all" || id === "needs" ? 0 : all.filter(test).length;
+          const n = id === "all" || id === "needs" ? 0 : all.filter(test).length + (id === "yours" ? chats.length : 0);
           return <button key={id} type="button" className="vx-chip" aria-pressed={filter === id} onClick={() => setFilter(id)}>
             {label}{n > 0 && <span>{n}</span>}</button>;
         })}
       </div>
       {error && <p className="vx-empty" role="alert">Couldn&apos;t load the calls. They&apos;ll show when the connection is back.</p>}
       {!error && isLoading && <p className="vx-empty">Loading calls and meetings…</p>}
-      {!error && !isLoading && shown.length === 0 && <p className="vx-empty">{filter === "all"
+      {filter === "yours" && <section aria-label="Chats">
+        <h2 className="vx-day vx-chats-h">Chats <NewChatButton /></h2>
+        {chats.map((c) => <Link key={c.roomId} className="vx-row" href={chatHref(c.roomId)}>
+          <time>{dayLabel(c.at) === "Today" ? time(c.at) : dayLabel(c.at)}</time><MessageSquare size={16} aria-label="Chat" />
+          <span><span className="vx-who">{c.title}</span></span><span className="vx-dur" />
+        </Link>)}
+      </section>}
+      {!error && !isLoading && shown.length === 0 && !(filter === "yours" && chats.length > 0) && <p className="vx-empty">{filter === "all"
         ? `No calls or meetings yet. When ${name} answers your line or joins a Meet, every conversation shows here with what it did.`
         : filter === "meetings" ? `No meetings yet. Invite ${name} to a Google Meet; the address is on the Agent page.`
         : filter === "yours" ? `Nothing yet. Conversations you start with ${name} show here.`
@@ -223,7 +232,7 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
     </section>
     {!!meeting.followUps?.length && <section><h3>Follow-ups</h3>
       <ul className="vx-tx">{meeting.followUps.map((f, n) => <li key={f.id ?? n} style={{ display: "flex", gap: 8 }}>
-        <span className="vx-tag" data-tone={f.status === "done" ? "ok" : f.status === "needs_you" ? "warn" : undefined}>{f.status === "done" ? "Done" : f.status === "needs_you" ? "Needs you" : f.status === "working" ? "Working" : f.status === "queued" ? "Queued" : "Recorded"}</span>{f.taskId ? <Link href={`/chat?panel=task-detail&taskId=${encodeURIComponent(f.taskId)}`}>{f.text}</Link> : f.text}</li>)}</ul>
+        <span className="vx-tag" data-tone={f.status === "done" ? "ok" : f.status === "needs_you" ? "warn" : undefined}>{f.status === "done" ? "Done" : f.status === "needs_you" ? "Needs you" : f.status === "working" ? "Working" : f.status === "queued" ? "Queued" : "Recorded"}</span>{f.text}</li>)}</ul>
     </section>}
   </>;
 }

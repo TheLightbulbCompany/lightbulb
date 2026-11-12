@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../TalkOrb", () => ({ TalkOrb: ({ name }: { name: string }) => <p>orb:{name}</p> }));
-vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb" }));
+vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb", useNewChat: () => ({ start: vi.fn(), state: "idle" }) }));
 vi.mock("../AssistantThread", () => ({ AssistantThread: ({ roomId }: { roomId: string }) => <p>thread:{roomId}</p> }));
 const dm = vi.hoisted(() => ({ room: { roomId: "dm1" } as { roomId: string } | null | undefined }));
 vi.mock("@/components/huddle/useAssistantDm", () => ({ useAssistantDm: () => dm.room }));
@@ -15,6 +15,12 @@ it("the orb on top, then the assistant's DM", () => {
   render(<LightbulbPage />);
   const thread = screen.getByText("thread:dm1");
   expect(screen.getByText("orb:Lightbulb").compareDocumentPosition(thread) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it("?room= opens that chat instead of the DM, with New chat beside the orb", () => {
+  render(<LightbulbPage room="g7" />);
+  expect(screen.getByText("thread:g7")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /New chat/ })).toBeInTheDocument();
 });
 
 it("waits while the DM is unknown, and says so when there is none", () => {

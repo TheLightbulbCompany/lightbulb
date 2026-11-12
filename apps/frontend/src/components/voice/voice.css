@@ -23,6 +23,8 @@
 .vx-lightbulb > .vx-page { width: 100%; max-width: none; padding: 16px 20px; border-bottom: 1px solid var(--plane-edge); }
 .vx-lightbulb .vx-talk { gap: 14px; padding: 0; border: 0; border-radius: 0; background: none; }
 .vx-lightbulb .vx-orb { width: 48px; height: 48px; }
+.vx-chats-h { display: flex; align-items: center; justify-content: space-between; }
+.vx-lightbulb-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 /* The conversation under the orb: messages scroll, the composer stays at the bottom. */
 .vx-thread { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
 .vx-thread ol { margin: 0; padding: 16px 20px; list-style: none; overflow: auto; display: grid; align-content: start; gap: 14px; }
@@ -140,6 +142,7 @@
 .vx-row { display: grid; grid-template-columns: 64px 20px minmax(0, 1fr) auto; gap: 10px; width: 100%; padding: 10px 8px; border: 0; border-bottom: 1px solid var(--plane-edge); border-radius: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; align-items: start; }
 .vx-row { transition: background-color var(--dur-fast) var(--ease-out); }
 .vx-row:hover { background: var(--plane-hover); }
+a.vx-row { text-decoration: none; }
 .vx-row[aria-current="true"] { background: color-mix(in srgb, var(--plane-selected) 65%, var(--plane-pane)); }
 .vx-row:focus-visible { outline-offset: -2px; }
 .vx-row time { white-space: nowrap; color: var(--fg-mute); font-size: var(--text-caption); font-variant-numeric: tabular-nums; padding-top: 2px; }

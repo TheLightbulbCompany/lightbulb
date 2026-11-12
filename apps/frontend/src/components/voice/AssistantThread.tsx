@@ -33,6 +33,9 @@ export function AssistantThread({ roomId }: { roomId: string }) {
     try {
       await sendMessage({ clientMessageId, text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null });
       failed.current = null;
+      // A New chat is titled by its first message (best effort: the list says "New chat" until then).
+      if (rooms.activeRoom?.kind === "group-dm" && !rooms.activeRoom.name && messages.length === 0)
+        void rooms.updateRoom({ name: body.slice(0, 80) }).catch(() => undefined);
     } catch {
       failed.current = { text: body, id: clientMessageId };
       setError(true);

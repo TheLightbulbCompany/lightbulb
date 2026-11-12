@@ -9,40 +9,10 @@
 <plist version="1.0">
 <dict>
   <!--
-    Opt out of App Nap.
-
-    This app is not a foreground-only UI. It hosts the loopback relay that
-    carries the agent's node traffic: the backend pushes a connect.challenge
-    down over the API Gateway socket THIS process owns, and it forwards the
-    frame to the bundled openclaw-host subprocess, which signs it. Backgrounded
-    and idle, macOS demotes us to the background QoS band and that forwarding
-    stalls for seconds.
-
-    Measured on a live 0.4.53 install (2026-08-03), scheduling priority:
-
-        backgrounded  lightbulb-desktop = 4    openclaw-node = 31
-        foregrounded  lightbulb-desktop = 46   openclaw-node = 31
-
-    Only the relay is throttled; the signer is unaffected. Prod API Gateway
-    logs caught the consequence — a challenge pushed at 23:08:23 and signed at
-    23:08:36, 13s later, with backend integrationLatency of 111ms. The whole
-    delay was this process waiting to be scheduled.
-
-    The backend budget for that round trip is 30s (raised from 10s, which had
-    turned a routine background app into a permanent reconnect flap), but the
-    budget is tolerance, not the fix. A relay for a remote agent must stay
-    responsive while the window is behind something else, which is the normal
-    case for this app.
-
-    NOT NSActivityIdleSystemSleepDisabled: this suppresses App Nap only and
-    deliberately does not hold the machine awake.
-
-    THIS KEY IS NOT WHAT HOLDS. macOS 26 ignores it from a bundle: on
-    2026-10-07 runningboardd set "AppNap state: active:Y" on an install that
-    carried it, six times in 26 minutes, and the session connection stalled
-    for up to 112 s. What holds is the NSProcessInfo activity
-    (.userInitiatedAllowingIdleSystemSleep) that `refuse_app_nap` in lib.rs
-    begins at launch and never ends. The key stays for a macOS that reads it.
+    Opt out of App Nap: the talk key works from any app and a call stays live
+    with the window hidden. macOS 26 ignores this key from a bundle; what holds
+    is the NSProcessInfo activity `refuse_app_nap` (lib.rs) begins at launch.
+    The key stays for a macOS that reads it.
   -->
   <key>NSAppSleepDisabled</key>
   <true/>
@@ -53,22 +23,7 @@
     macOS refuses the event with no prompt (-1743).
   -->
   <key>NSAppleEventsUsageDescription</key>
-  <string>Lightbulb opens sign-in pages in Safari and runs the commands you let your agents run on this Mac.</string>
-  <!--
-    Files and folders: approved folders (file_access.rs) and the agent's shell
-    run as this app, so macOS asks on first touch of these locations. The
-    strings replace the generic prompt text with what the access is for.
-  -->
-  <key>NSDesktopFolderUsageDescription</key>
-  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
-  <key>NSDocumentsFolderUsageDescription</key>
-  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
-  <key>NSDownloadsFolderUsageDescription</key>
-  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
-  <key>NSRemovableVolumesUsageDescription</key>
-  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
-  <key>NSNetworkVolumesUsageDescription</key>
-  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
+  <string>Lightbulb opens sign-in pages in Safari.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Lightbulb uses the microphone for voice calls with your agents.</string>
 </dict>

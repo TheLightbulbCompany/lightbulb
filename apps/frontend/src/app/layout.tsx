@@ -5,7 +5,6 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DeployRefresh } from "@/components/DeployRefresh";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
-import { ExplicitSharingNotice, LiveSharingOffer } from "@/components/desktop/ExplicitSharingNotice";
 import { InAppNavTracker } from "@/components/legal/BackButton";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
@@ -104,8 +103,6 @@ export default function RootLayout({
             <SwrProvider>
               <PostHogProvider>
                 <DesktopAuthListener />
-                <ExplicitSharingNotice />
-                <LiveSharingOffer />
                 <DeployRefresh />
                 <SupportProvider>
                   {/* One provider for the whole app so the tooltip skip-delay

@@ -37,13 +37,6 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "resources": [
-      "bin/lightbulb-browser-service-*",
-      "bin/node-*",
-      "bin/openclaw-host-*/**/*",
-      "bin/chrome-devtools-mcp/**/*",
-      "bin/lightbulb"
-    ],
     "macOS": {
       "entitlements": "entitlements.plist",
       "infoPlist": "Info.plist",

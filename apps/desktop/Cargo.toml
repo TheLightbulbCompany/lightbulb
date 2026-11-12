@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "core"]
+members = ["src-tauri"]
 resolver = "2"
 
 # Profiles only take effect in the workspace root; cargo ignores (and warns about) a

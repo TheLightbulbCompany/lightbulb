@@ -36,7 +36,7 @@
 # mobile-release.yml) starts with a pre-flight (under 10 GB free: prune; still under 6 GB: fail
 # with a clear message) and ends with an `if: always()` prune: the Rust target dirs lose
 # incremental/ and bundle/ and are wiped if still over budget (prod 6 GB, test 4 GB), and the
-# workspace's node_modules, vendored sidecars, .next/.expo and RUNNER_TEMP dmg/ipa leftovers go.
+# workspace's node_modules, .next/.expo and RUNNER_TEMP dmg/ipa leftovers go.
 # The pnpm store stays. It only touches ~/.cache/lightbulb-desktop, $GITHUB_WORKSPACE and
 # $RUNNER_TEMP.
 #
@@ -45,8 +45,6 @@ name: desktop-build
   pull_request:
     paths:
     - apps/desktop/**
-    # The app compiles in the Claude plugin's files (local_sessions/plugin.rs, enrollment.rs).
-    - packages/claude-plugin/**
   workflow_dispatch:
     inputs:
       hosted_runner:
@@ -89,22 +87,10 @@ jobs:
       run: |-
         DIR="$HOME/.cache/lightbulb-desktop/target-test"
         echo "CARGO_TARGET_DIR=$DIR" >> "$GITHUB_ENV"
-    # TAURI_CONFIG stubs the sidecar bundle so tauri-build does not demand binaries
-    # that only the signed build jobs vendor.
-    - name: Cargo test (lib)
-      run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
-        apps/desktop/src-tauri/Cargo.toml --lib
-    # The holder and the `lightbulb` command end to end: real binary, real pty.
-    - name: Cargo test (held sessions)
-      run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
-        apps/desktop/src-tauri/Cargo.toml --test cli
-    # The holder lives in lightbulb-core; its macOS-only tests run here, not on Linux.
-    - name: Cargo test (lightbulb-core)
-      run: cargo test --manifest-path apps/desktop/Cargo.toml -p lightbulb-core
-    # Run separately and unfiltered: a shared name filter matches none of the example's tests.
-    - name: Cargo test (probe example)
-      run: TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --manifest-path
-        apps/desktop/src-tauri/Cargo.toml --example local_session_probe
+    - name: Cargo test
+      run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+    - name: Cargo clippy
+      run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
     - name: Prune runner disk
       if: always()
       run: bash .github/scripts/mac-runner-disk.sh prune
@@ -161,8 +147,6 @@ jobs:
         jq -e '.remote.urls == ["https://thelightbulb.company/*"]' "$D/capabilities/default.json"
         jq -e '[.build.devUrl, .build.frontendDist, .app.windows[].url, .plugins.updater.endpoints[]]
           | all(startswith("https://thelightbulb.company/"))' "$D/tauri.conf.json"
-    - name: Vendor browser sidecar (aarch64-apple-darwin)
-      run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh aarch64-apple-darwin
     - name: Set up signing keychain
       run: |-
         set -euo pipefail
@@ -203,51 +187,6 @@ jobs:
         echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
       env:
         EXPO_ASC_API_KEY_BASE64: ${{ secrets.EXPO_ASC_API_KEY_BASE64 }}
-    - name: Pre-sign embedded native modules
-      run: |-
-        set -euo pipefail
-        export SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
-        export NODE_ENTITLEMENTS="$PWD/apps/desktop/src-tauri/entitlements-node.plist"
-        BIN_ROOT="apps/desktop/src-tauri/bin"
-
-        CANDIDATES=$(mktemp)
-        MACHO_LIST=$(mktemp)
-        find "$BIN_ROOT" \( \
-          -name '*.node' -o \
-          -name '*.dylib' -o \
-          -name '*.so' -o \
-          -name 'spawn-helper' -o \
-          -name 'node-*-apple-darwin' -o \
-          -name 'lightbulb' \
-        \) -type f -print0 > "$CANDIDATES"
-        while IFS= read -r -d '' f; do
-          if file -b "$f" | grep -q "Mach-O"; then
-            printf '%s\0' "$f" >> "$MACHO_LIST"
-          fi
-        done < "$CANDIDATES"
-        rm -f "$CANDIDATES"
-        MACHO_COUNT=$(tr -dc '\0' < "$MACHO_LIST" | wc -c | tr -d ' ')
-        echo "Found $MACHO_COUNT Mach-O binaries to sign under $BIN_ROOT."
-
-        SIGN_SCRIPT="$RUNNER_TEMP/sign-one.sh"
-        cat > "$SIGN_SCRIPT" <<'WORKER'
-        #!/usr/bin/env bash
-        set -euo pipefail
-        f="$1"
-        ENT_ARGS=()
-        case "$(basename "$f")" in
-          node-*-apple-darwin)
-            ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
-            ;;
-        esac
-        codesign --force --options runtime --timestamp \
-          ${ENT_ARGS[@]+"${ENT_ARGS[@]}"} \
-          --sign "$SIGN_ID" --keychain "$KEYCHAIN_PATH" "$f"
-        WORKER
-        chmod +x "$SIGN_SCRIPT"
-
-        xargs -0 -P 8 -n 1 "$SIGN_SCRIPT" < "$MACHO_LIST"
-        rm -f "$MACHO_LIST" "$SIGN_SCRIPT"
     # Three tries: the notarization upload inside `tauri build` and the asset uploads die on
     # this Mac's uplink. A retry finds the draft release by tag, deletes and re-uploads any
     # asset already there, and merges latest.json (tauri-action v0.6.2 source). Only a failed
@@ -267,12 +206,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # PROD, explicitly: matches lib.rs's compile-time default.
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
-        # open-source release); set here so a default change can never silently
-        # point the shipped app's pairing half somewhere else.
-        LIGHTBULB_API_BASE: https://api.thelightbulb.company
-        LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build desktop app (aarch64-apple-darwin, try 2)
       id: build2
       if: steps.build1.outcome == 'failure'
@@ -289,12 +224,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # PROD, explicitly: matches lib.rs's compile-time default.
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
-        # open-source release); set here so a default change can never silently
-        # point the shipped app's pairing half somewhere else.
-        LIGHTBULB_API_BASE: https://api.thelightbulb.company
-        LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build desktop app (aarch64-apple-darwin, try 3)
       if: steps.build2.outcome == 'failure'
       uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
@@ -309,12 +240,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # PROD, explicitly: matches lib.rs's compile-time default.
         LIGHTBULB_CALLBACK_URL: https://thelightbulb.company/auth/desktop-callback
-        # PROD, explicitly. These match lib.rs's compile-time defaults (prod since the
-        # open-source release); set here so a default change can never silently
-        # point the shipped app's pairing half somewhere else.
-        LIGHTBULB_API_BASE: https://api.thelightbulb.company
-        LIGHTBULB_WS_URL: wss://bv.thelightbulb.company/api/v1/gateway/ws
     - name: Build, sign + notarize DMG (headless)
       run: |-
         set -euo pipefail

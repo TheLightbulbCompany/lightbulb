@@ -225,8 +225,7 @@ CI was stripped on purpose (F23). A PR runs only:
 - `backend-arm64.yml`: builds the ARM64 backend image and smoke-tests it. Path-filtered to `apps/backend/**`,
   `service-stack.ts` and `app.ts`. **It does not run the backend unit tests or lint.**
 - `huddle-agent.yml`: the voice worker's tests, path-filtered to `apps/huddle-agent/**`.
-- `desktop-build.yml` (Rust tests) and `desktop-core.yml`, path-filtered to `apps/desktop/**` and
-  `packages/claude-plugin/**`.
+- `desktop-build.yml` (Rust tests and clippy), path-filtered to `apps/desktop/**`.
 - `roll-hermes-runtime.yml`, path-filtered to its own script and bootstrap files.
 
 There is **no backend or frontend test or lint run on a PR**, and no infra CI. Run the tests you touched before
@@ -569,10 +568,12 @@ mail), `HERMES_SHARED_RUNTIME_ARN`, `VOICE_BUY_NUMBERS`, `VOICE_INBOUND_TRUNK_ID
 Tauri 2 at `apps/desktop/`, bundle id `company.thelightbulb.desktop`. It opens voice Home with the mic and Fn
 hold-to-talk (F18). Prod is the default flavor (`tauri.conf.json`, `capabilities/default.json`); dev is opt-in
 (`pnpm build:dev`, `tauri.dev.conf.json`), and each flavor grants only its own origin to local commands.
-Sidecars ship as bundle **resources**, never `externalBin` (xattr-signed scripts in `Contents/MacOS` break the
-updater's seal). Consent is given once, at pairing, never per operation; a missing permissions store allows
-nothing. Selected-Mac execution is gated by `DESKTOP_EXECUTION_ENABLED`
-(`docs/runbooks/desktop-execution-staged-acceptance.md`).
+It is a voice shell only: the window, the 🌐 talk key (`voice_key.rs`), the tray, native notifications
+(`notify.rs`), sign-in through Safari and the `flickmeon://auth` ticket, and the updater. It calls no backend
+route itself (the callback page calls `/auth/desktop/sign-in-token`). There is no pairing, node, session sharing or
+network engine; `legacy.rs` keeps the hooks, launch agent and shell block older releases installed from opening
+a window, and removes the last two at launch. Never ship a script under `Contents/MacOS` (xattr signatures
+break the updater's seal).
 
 ## Mobile app (Expo)
 

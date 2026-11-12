@@ -1,4 +1,1 @@
-# Sidecar binaries produced by scripts/vendor-sidecars.sh.
-# Regenerated at CI build time; not committed.
-src-tauri/bin/
 target/

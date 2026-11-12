@@ -63,7 +63,7 @@ impl FnKey {
 /// One talk-key event to the web's TalkOrb (TALK_KEY).
 pub fn send(app: &AppHandle, detail: &str) {
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.eval(&format!(
+        let _ = w.eval(format!(
             "window.dispatchEvent(new CustomEvent('lightbulb:talk-key',{{detail:'{detail}'}}))"
         ));
     }

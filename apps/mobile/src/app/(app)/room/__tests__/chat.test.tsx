@@ -46,15 +46,24 @@ it("opens the room and shows its messages", async () => {
   expect(screen.getByText("We open at **9**.")).toBeTruthy();
 });
 
-it("sends the typed text and reuses the id when a failed send is retried", async () => {
+it("keeps a failed message as its own retry row while the next one is typed and sent", async () => {
+  let n = 0;
+  jest.requireMock("expo-crypto").randomUUID = () => `msg-${++n}`;
   mockSend.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
   await render(<ChatScreen />);
   await fireEvent.changeText(screen.getByLabelText("Message"), "Book me in");
   await fireEvent.press(screen.getByRole("button", { name: "Send" }));
-  expect(await screen.findByText("Not sent. Try again.")).toBeTruthy();
+  const retry = await screen.findByLabelText("Not sent: Book me in. Tap to retry");
+  // The next message goes out on its own id; the failed one stays.
+  await fireEvent.changeText(screen.getByLabelText("Message"), "And a trim");
   await fireEvent.press(screen.getByRole("button", { name: "Send" }));
-  expect(mockSend.mock.calls.map((c) => c[0].clientMessageId)).toEqual(["msg-1", "msg-1"]);
-  expect(mockSend.mock.calls[0][0]).toMatchObject({ text: "Book me in", mentions: [], replyToMessageId: null, threadRootMessageId: null });
+  expect(screen.getByLabelText("Not sent: Book me in. Tap to retry")).toBeTruthy();
+  await fireEvent.press(retry);
+  expect(mockSend.mock.calls.map((c) => [c[0].clientMessageId, c[0].text])).toEqual([
+    ["msg-1", "Book me in"], ["msg-2", "And a trim"], ["msg-1", "Book me in"],
+  ]);
+  expect(mockSend.mock.calls[0][0]).toMatchObject({ mentions: [], replyToMessageId: null, threadRootMessageId: null });
+  expect(screen.queryByLabelText("Not sent: Book me in. Tap to retry")).toBeNull();
 });
 
 it("says when Lightbulb is replying", async () => {

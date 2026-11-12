@@ -15,7 +15,7 @@ import { useMobileRooms } from "../../../../lib/rooms";
 import { isTextChat } from "../../../../lib/textChat";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 
-type Row = { key: string; human: boolean; name: string; text: string; pending?: boolean };
+type Row = { key: string; human: boolean; name: string; text: string; pending?: boolean; unsent?: boolean };
 
 /** What a line says. A line with no text (an attachment, a task card) says what it carries instead of vanishing. */
 export function lineText(m: Pick<CanonicalRoomMessage, "text" | "attachments" | "taskRefs">): string {
@@ -46,31 +46,27 @@ export default function ChatScreen() {
   const room = open ? rooms.activeRoom ?? rooms.rooms.find((r) => r.roomId === roomId) : undefined;
   const writable = isTextChat(room);
   const replying = open && rooms.runs.some((run) => run.roomId === roomId && run.state === "running");
+  const [text, setText] = useState("");
+  // A failed send stays on screen as its own "Not sent" row, apart from the composer, so typing the next message
+  // never loses it; a tap resends it with the same id, so the server's idempotency receipt dedupes an uncertain one.
+  const [unsent, setUnsent] = useState<{ id: string; text: string }[]>([]);
+  const send = async (body: string, clientMessageId: string = randomUUID()) => {
+    if (!body || !open || !writable) return;
+    setUnsent((rows) => rows.filter((r) => r.id !== clientMessageId));
+    try {
+      await rooms.sendMessage({ clientMessageId, text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null });
+    } catch {
+      setUnsent((rows) => [...rows, { id: clientMessageId, text: body }]);
+    }
+  };
+  const submit = () => { const body = text.trim(); if (!body) return; setText(""); void send(body); };
+
   const rows: Row[] = open ? [
     ...rooms.messages.filter((m) => !m.deletedAt)
       .map((m) => ({ key: m.messageId, human: writable && m.author.kind === "human", name: m.author.displayName ?? "", text: lineText(m) })),
     ...rooms.optimisticMessages.map((p) => ({ key: p.clientMessageId, human: true, name: "", text: p.text, pending: true })),
+    ...unsent.map((u) => ({ key: u.id, human: true, name: "", text: u.text, unsent: true })),
   ].reverse() : [];
-
-  const [text, setText] = useState("");
-  const [error, setError] = useState(false);
-  // An uncertain send retried with the same text reuses its id, so the server's idempotency receipt dedupes it.
-  const failed = useRef<{ text: string; id: string } | null>(null);
-  const send = async () => {
-    const body = text.trim();
-    if (!body || !open || !writable) return;
-    setText("");
-    setError(false);
-    const clientMessageId = failed.current?.text === body ? failed.current.id : randomUUID();
-    try {
-      await rooms.sendMessage({ clientMessageId, text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null });
-      failed.current = null;
-    } catch {
-      failed.current = { text: body, id: clientMessageId };
-      setError(true);
-      setText((current) => current || body);
-    }
-  };
 
   const fg = { color: palette.fg, fontFamily: fonts.sans, fontSize: 16, lineHeight: 23 };
   return (
@@ -80,7 +76,13 @@ export default function ChatScreen() {
         keyboardDismissMode="interactive"
         ListHeaderComponent={replying && writable ? <Text accessibilityRole="text" accessibilityLiveRegion="polite" style={[fg, { color: palette.fgMute }]}>Lightbulb is replying…</Text> : null}
         ListEmptyComponent={<Text style={[fg, styles.empty, { color: palette.fgMute }]}>{!open ? "Loading…" : writable ? "Ask Lightbulb anything." : "Nothing was recorded here."}</Text>}
-        renderItem={({ item }) => item.human ? (
+        renderItem={({ item }) => item.unsent ? (
+          <Pressable accessibilityRole="button" accessibilityLabel={`Not sent: ${item.text}. Tap to retry`}
+            onPress={() => void send(item.text, item.key)} style={[styles.mine, { backgroundColor: palette.selected }]}>
+            <Text style={fg}>{item.text}</Text>
+            <Text style={[fg, styles.error, { color: palette.alert }]}>Not sent. Tap to retry</Text>
+          </Pressable>
+        ) : item.human ? (
           <View style={[styles.mine, { backgroundColor: palette.selected, opacity: item.pending ? 0.6 : 1 }]}>
             <Text selectable style={fg}>{item.text}</Text>
           </View>
@@ -92,12 +94,11 @@ export default function ChatScreen() {
         )} />
       {writable ? (
         <>
-          {error ? <Text accessibilityRole="alert" style={[fg, styles.error, { color: palette.alert }]}>Not sent. Try again.</Text> : null}
           <View style={[styles.composer, { borderColor: palette.edge, paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
             <TextInput value={text} onChangeText={setText} multiline accessibilityLabel="Message" placeholder="Message Lightbulb"
               placeholderTextColor={palette.fgMute} style={[fg, styles.input, { borderColor: palette.edge }]} />
             <Pressable accessibilityRole="button" accessibilityLabel="Send" accessibilityState={{ disabled: !text.trim() || !open }}
-              disabled={!text.trim() || !open} onPress={() => void send()} hitSlop={6}
+              disabled={!text.trim() || !open} onPress={submit} hitSlop={6}
               style={({ pressed }) => [styles.send, { backgroundColor: palette.fg, opacity: pressed || !text.trim() || !open ? 0.5 : 1 }]}>
               <Text style={{ color: palette.onFg, fontFamily: fonts.sansSemiBold, fontSize: 15 }}>Send</Text>
             </Pressable>
@@ -115,7 +116,7 @@ const styles = StyleSheet.create({
   mine: { alignSelf: "flex-end", maxWidth: "85%", borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   theirs: { alignSelf: "stretch" },
   name: { fontSize: 13, lineHeight: 18 },
-  error: { paddingHorizontal: spacing.lg, fontSize: 14 },
+  error: { fontSize: 14 },
   composer: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm, paddingHorizontal: spacing.md, paddingTop: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth },
   input: { flex: 1, minHeight: 44, maxHeight: 140, borderWidth: 1, borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   send: { minHeight: 44, minWidth: 64, borderRadius: 999, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md },

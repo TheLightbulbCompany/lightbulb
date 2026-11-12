@@ -357,19 +357,6 @@ fn redact_url(url_str: &str) -> String {
     }
 }
 
-/// Pick the deep-link URL out of a second-instance argv.
-///
-/// A plain relaunch (Dock, Finder, Spotlight, `open -a`) forwards only the
-/// executable path — and LaunchServices can append `-psn_0_1234` — so *most*
-/// second launches carry no URL at all. This deliberately returns an `Option`
-/// rather than a parse that can fail: nothing about argv may stop the caller
-/// from restoring the window. See `focus_or_recreate_main_window`.
-fn deep_link_from_argv(argv: &[String]) -> Option<&str> {
-    argv.iter()
-        .find(|a| a.starts_with("flickmeon://"))
-        .map(|s| s.as_str())
-}
-
 /// The two states the main window can be in when we need it back.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WindowRecovery {
@@ -559,41 +546,12 @@ mod window_recovery_tests {
     use super::*;
 
     #[test]
-    fn plain_relaunch_argv_carries_no_deep_link() {
-        // The bug: the owner's relaunch forwarded only the executable path,
-        // the callback found no flickmeon:// entry, and did nothing at all.
-        // `None` here MUST NOT be treated as "nothing to do".
-        let argv = vec![
-            "/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop".to_string(),
-            "-psn_0_886372".to_string(),
-        ];
-        assert_eq!(deep_link_from_argv(&argv), None);
-    }
-
-    #[test]
-    fn unparseable_argv_does_not_panic_or_match() {
-        let argv = vec!["<unparseable>".to_string(), String::new(), "?!".to_string()];
-        assert_eq!(deep_link_from_argv(&argv), None);
-        // And the log redaction that produced `<unparseable>` in the report
-        // is just a logging concern — it never gates control flow.
-        assert_eq!(redact_url("not a url"), "<unparseable>");
-    }
-
-    #[test]
-    fn deep_link_is_found_among_other_args() {
-        let argv = vec![
-            "/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop".to_string(),
-            "flickmeon://auth?ticket=abc".to_string(),
-        ];
-        assert_eq!(deep_link_from_argv(&argv), Some("flickmeon://auth?ticket=abc"));
-    }
-
-    #[test]
     fn redact_url_drops_the_ticket_query() {
         // /tmp/lightbulb-desktop.log is world-readable; the Clerk one-time
         // sign-in ticket must never reach it.
         let redacted = redact_url("flickmeon://auth?ticket=super-secret#frag");
         assert!(!redacted.contains("super-secret"), "leaked: {redacted}");
+        assert_eq!(redact_url("not a url"), "<unparseable>");
     }
 
     #[test]
@@ -677,15 +635,6 @@ mod app_lock_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn the_loser_forwards_to_single_instance_socket_and_data_dir() {
-        assert_eq!(
-            super::single_instance_socket("company.thelightbulb.desktop"),
-            "/tmp/company_thelightbulb_desktop_si.sock"
-        );
-        let dir = super::app_support_dir("company.thelightbulb.desktop").unwrap();
-        assert!(dir.ends_with("Library/Application Support/company.thelightbulb.desktop"));
-    }
 }
 
 /// `$HOME/Library/Application Support/<identifier>`: what Tauri's `app_data_dir` resolves to on
@@ -695,47 +644,18 @@ fn app_support_dir(identifier: &str) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(home).join("Library/Application Support").join(identifier))
 }
 
-/// tauri-plugin-single-instance's socket for `identifier` (2.5, `semver` feature off).
-fn single_instance_socket(identifier: &str) -> String {
-    format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_"))
-}
-
-/// A launch that lost the app lock: hand its argv (a deep link, or just "show yourself") to the
-/// running app the way single-instance does (`cwd\0\0arg\0arg…` on its socket), then exit. The
-/// winner may still be binding that socket, so it is tried for up to 2 s.
-/// ponytail: copies the plugin's wire format; re-check it when the plugin moves past 2.5.
-fn forward_to_running(identifier: &str) {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        let socket = single_instance_socket(identifier);
-        let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned();
-        let message = format!("{cwd}\0\0{}", std::env::args().collect::<Vec<_>>().join("\0"));
-        for _ in 0..20 {
-            if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) {
-                let _ = stream.write_all(message.as_bytes());
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        log("[setup] the running Lightbulb's launch socket did not answer");
-    }
-    #[cfg(not(unix))]
-    let _ = identifier;
-}
-
 pub fn run() {
     let context = tauri::generate_context!();
-    // One Lightbulb per Mac user, decided before any plugin starts. Two launches at the same
-    // moment can both get past single-instance's connect check, and its setup unlinks and rebinds
-    // the socket, so the loser could take the winner's socket with it; and one Fn press would
-    // reach two voice sessions. The loser never builds the app: it forwards its launch and exits.
-    // Fails open: an unusable app data dir must not stop the app.
+    // One Lightbulb per Mac user, decided before the app is built: two at once would each install
+    // the talk key, and one Fn press would reach two voice sessions. A second process is rare on
+    // macOS (LaunchServices activates the running app, and flickmeon:// links arrive as Apple
+    // Events through the deep-link plugin), so the loser just exits. Fails open: an unusable app
+    // data dir must not stop the app.
     let identifier = context.config().identifier.clone();
     let _app_lock = match app_support_dir(&identifier).map(|d| claim_app_lock(&d)) {
         Some(Ok(Some(lock))) => Some(lock), // held until the process exits
         Some(Ok(None)) => {
-            forward_to_running(&identifier);
+            log("[setup] another Lightbulb is already running; exiting");
             return;
         }
         Some(Err(e)) => {
@@ -770,32 +690,6 @@ pub fn run() {
                 let _ = webview.eval(window_open_override_script());
             }
         })
-        // MUST be registered before any other plugin so it can hijack
-        // launches from a deep-link click: macOS spawns a new process for
-        // `flickmeon://...` URLs, and without single_instance the new process
-        // starts Tauri fresh — a second window, a fresh webview with no
-        // Clerk session, and the ticket never reaches the original app.
-        // With single_instance, the second launch's argv gets forwarded
-        // to this callback on the ORIGINAL process and we can wake it up.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // Redact each argv entry before logging. Protocol-handler
-            // launches include flickmeon://auth?...&ticket=... in argv, which
-            // would leak the Clerk one-time sign-in ticket otherwise.
-            let redacted: Vec<String> = argv.iter().map(|a| redact_url(a)).collect();
-            log(&format!(
-                "[single-instance] second launch argv={:?}",
-                redacted
-            ));
-            // Restore the window FIRST and unconditionally. A plain relaunch
-            // (clicking the app icon) forwards no flickmeon:// URL, so the
-            // old `for arg in argv { if starts_with(...) }` loop matched
-            // nothing and the callback returned having done nothing — every
-            // relaunch of a windowless process was silently swallowed.
-            focus_or_recreate_main_window(app);
-            if let Some(url) = deep_link_from_argv(&argv) {
-                handle_deep_link_url(app, url);
-            }
-        }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -901,10 +795,8 @@ end tell"#,
             // once someone signs in (`notify::notification_permission`).
             notify::install(app.handle());
 
-            // Handle deep links (flickmeon:// protocol). This fires when the app
-            // is already running and a cross-process deep link is delivered
-            // by the OS directly (no second process spawn). The parallel
-            // single_instance callback above handles the cold-launch case.
+            // flickmeon:// links. On macOS they arrive as Apple Events (RunEvent::Opened) to
+            // this process, whether it was running or the link launched it; never as argv.
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url_obj in event.urls() {
@@ -918,8 +810,7 @@ end tell"#,
         .expect("error while running tauri application")
         .run(|_app, _event| {
             // Dock-icon click on an already-running app: macOS delivers
-            // applicationShouldHandleReopen instead of spawning a second
-            // process, so single_instance never fires for this path.
+            // applicationShouldHandleReopen instead of spawning a second process.
             #[cfg(target_os = "macos")]
             if matches!(_event, tauri::RunEvent::Reopen { .. }) {
                 log("[reopen] dock reopen; restoring main window");

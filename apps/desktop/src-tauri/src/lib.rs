@@ -676,10 +676,74 @@ mod app_lock_tests {
         assert!(super::claim_app_lock(&dir).unwrap().is_some(), "free again once the first exits");
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn the_loser_forwards_to_single_instance_socket_and_data_dir() {
+        assert_eq!(
+            super::single_instance_socket("company.thelightbulb.desktop"),
+            "/tmp/company_thelightbulb_desktop_si.sock"
+        );
+        let dir = super::app_support_dir("company.thelightbulb.desktop").unwrap();
+        assert!(dir.ends_with("Library/Application Support/company.thelightbulb.desktop"));
+    }
+}
+
+/// `$HOME/Library/Application Support/<identifier>`: what Tauri's `app_data_dir` resolves to on
+/// macOS, known before the app is built.
+fn app_support_dir(identifier: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+    Some(std::path::PathBuf::from(home).join("Library/Application Support").join(identifier))
+}
+
+/// tauri-plugin-single-instance's socket for `identifier` (2.5, `semver` feature off).
+fn single_instance_socket(identifier: &str) -> String {
+    format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_"))
+}
+
+/// A launch that lost the app lock: hand its argv (a deep link, or just "show yourself") to the
+/// running app the way single-instance does (`cwd\0\0arg\0arg…` on its socket), then exit. The
+/// winner may still be binding that socket, so it is tried for up to 2 s.
+/// ponytail: copies the plugin's wire format; re-check it when the plugin moves past 2.5.
+fn forward_to_running(identifier: &str) {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        let socket = single_instance_socket(identifier);
+        let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned();
+        let message = format!("{cwd}\0\0{}", std::env::args().collect::<Vec<_>>().join("\0"));
+        for _ in 0..20 {
+            if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) {
+                let _ = stream.write_all(message.as_bytes());
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        log("[setup] the running Lightbulb's launch socket did not answer");
+    }
+    #[cfg(not(unix))]
+    let _ = identifier;
 }
 
 pub fn run() {
     let context = tauri::generate_context!();
+    // One Lightbulb per Mac user, decided before any plugin starts. Two launches at the same
+    // moment can both get past single-instance's connect check, and its setup unlinks and rebinds
+    // the socket, so the loser could take the winner's socket with it; and one Fn press would
+    // reach two voice sessions. The loser never builds the app: it forwards its launch and exits.
+    // Fails open: an unusable app data dir must not stop the app.
+    let identifier = context.config().identifier.clone();
+    let _app_lock = match app_support_dir(&identifier).map(|d| claim_app_lock(&d)) {
+        Some(Ok(Some(lock))) => Some(lock), // held until the process exits
+        Some(Ok(None)) => {
+            forward_to_running(&identifier);
+            return;
+        }
+        Some(Err(e)) => {
+            log(&format!("[setup] app lock unavailable: {e}"));
+            None
+        }
+        None => None,
+    };
     tauri::Builder::default()
         // Hide-on-close, not quit-on-close: the talk key and a live call keep
         // working with the window hidden. Preventing the close also means the
@@ -792,20 +856,6 @@ end tell"#,
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");
 
-            // One Lightbulb per Mac user. single-instance forwards an ordinary relaunch, but two
-            // launches at the same moment can both get past it, and then one Fn press would reach
-            // two voice sessions. So this lock is taken before the window (`"create": false`) and
-            // the talk key exist, and the loser exits. Fails open: an unusable app data dir must
-            // not stop the app.
-            match app.path().app_data_dir().map(|d| claim_app_lock(&d)) {
-                Ok(Ok(Some(lock))) => std::mem::forget(lock), // held for the life of the process
-                Ok(Ok(None)) => {
-                    log("[setup] another Lightbulb is already running; exiting");
-                    std::process::exit(0);
-                }
-                Ok(Err(e)) => log(&format!("[setup] app lock unavailable: {e}")),
-                Err(e) => log(&format!("[setup] app data dir: {e}")),
-            }
             focus_or_recreate_main_window(app.handle());
             refuse_app_nap();
             let app_data = app.path().app_data_dir().ok();

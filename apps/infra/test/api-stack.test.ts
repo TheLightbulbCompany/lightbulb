@@ -1000,7 +1000,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
 });
 
 describe("ApiStack — retired advanced search", () => {
-  test.each(["dev", "prod"])("%s keeps canonical messaging without an indexer or search network", (env) => {
+  test.each(["dev", "prod"] as const)("%s keeps canonical messaging without an indexer or search network", (env) => {
     const template = env === "dev" ? API_TEMPLATE : synthApiStack(env);
     const resources = template.toJSON().Resources;
     expect(Object.values(resources).some((r: any) => r.Type.startsWith("AWS::OpenSearchServerless::"))).toBe(false);

@@ -68,7 +68,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         },
     ),
     "metronome-fast-gate": ([("owner_id", "HASH", "S")], {}),
-    "bedrock-aip-owners": ([("aip_arn", "HASH", "S")], {}),
     "oauth-tokens": ([("user_id", "HASH", "S")], {}),
     "oauth-state": ([("state", "HASH", "S")], {}),
     "integrations": ([("owner_id", "HASH", "S"), ("provider", "RANGE", "S")], {}),
@@ -76,7 +75,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         [("workflow_id", "HASH", "S")],
         {"owner-state-index": [("owner_id", "HASH", "S"), ("state", "RANGE", "S")]},
     ),
-    "room-read-cursors": ([("owner_id", "HASH", "S"), ("cursor_key", "RANGE", "S")], {}),
     "workspace-join-links": ([("org_id", "HASH", "S")], {}),
     "launch-waitlist": ([("email", "HASH", "S")], {"referral-code-index": [("referral_code", "HASH", "S")]}),
     "launch-entries": ([("owner_id", "HASH", "S")], {}),
@@ -89,25 +87,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
             "by-org-id": [("org_id", "HASH", "S")],
         },
     ),
-    "marketplace-listings": (
-        [("listing_id", "HASH", "S"), ("version", "RANGE", "N")],
-        {
-            "slug-version-index": [("slug", "HASH", "S"), ("version", "RANGE", "N")],
-            "seller-created-index": [("seller_id", "HASH", "S"), ("created_at", "RANGE", "S")],
-            "status-published-index": [("status", "HASH", "S"), ("published_at", "RANGE", "S")],
-            "tag-published-index": [("tag", "HASH", "S"), ("published_at", "RANGE", "S")],
-        },
-    ),
-    "marketplace-purchases": (
-        [("buyer_id", "HASH", "S"), ("purchase_id", "RANGE", "S")],
-        {
-            "listing-created-index": [("listing_id", "HASH", "S"), ("created_at", "RANGE", "S")],
-            "license-key-index": [("license_key", "HASH", "S")],
-        },
-    ),
-    "marketplace-payout-accounts": ([("seller_id", "HASH", "S")], {}),
-    "marketplace-takedowns": ([("listing_id", "HASH", "S"), ("takedown_id", "RANGE", "S")], {}),
-    "marketplace-sellers": ([("seller_id", "HASH", "S")], {"handle-index": [("handle", "HASH", "S")]}),
 }
 
 

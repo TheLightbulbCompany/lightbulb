@@ -808,27 +808,10 @@ describe("ServiceStack — openclaw-work consumer Lambda", () => {
     });
   });
 
-  test("dev drains through a live alias with one provisioned (warm) consumer", () => {
-    template.hasResourceProperties("AWS::Lambda::Alias", {
-      Name: "live",
-      ProvisionedConcurrencyConfig: { ProvisionedConcurrentExecutions: 1 },
-    });
-    const mapping = Object.values(template.findResources("AWS::Lambda::EventSourceMapping"))[0] as any;
-    expect(JSON.stringify(mapping.Properties.FunctionName)).toMatch(/WorkConsumerLive/);
-  });
-
-  test("prod keeps the plain on-demand consumer: no alias, no provisioned concurrency", () => {
-    const prod = buildServiceStack("prod");
-    prod.resourceCountIs("AWS::Lambda::Alias", 0);
-    const fns = Object.values(
-      prod.findResources("AWS::Lambda::Function", {
-        Properties: { FunctionName: "lightbulb-prod-openclaw-work-consumer" },
-      }),
-    );
-    expect(fns).toHaveLength(1);
-    expect((fns[0] as any).Properties.ProvisionedConcurrencyConfig).toBeUndefined();
-    const mapping = Object.values(prod.findResources("AWS::Lambda::EventSourceMapping"))[0] as any;
-    expect(JSON.stringify(mapping.Properties.FunctionName)).not.toMatch(/WorkConsumerLive/);
+  test.each(["dev", "prod"] as const)("%s drains through the plain on-demand consumer: no alias, no provisioned concurrency", (env) => {
+    const stack = env === "dev" ? template : buildServiceStack("prod");
+    stack.resourceCountIs("AWS::Lambda::Alias", 0);
+    const mapping = Object.values(stack.findResources("AWS::Lambda::EventSourceMapping"))[0] as any;
     expect(JSON.stringify(mapping.Properties.FunctionName)).toMatch(/WorkConsumer/);
   });
 

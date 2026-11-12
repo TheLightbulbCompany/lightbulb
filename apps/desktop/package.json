@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "LIGHTBULB_API_BASE=https://api-dev.thelightbulb.company LIGHTBULB_WS_URL=wss://bv-dev.thelightbulb.company/api/v1/gateway/ws LIGHTBULB_CALLBACK_URL=https://dev.thelightbulb.company/auth/desktop-callback cargo tauri dev --config src-tauri/tauri.dev.conf.json",
-    "build:dev": "LIGHTBULB_API_BASE=https://api-dev.thelightbulb.company LIGHTBULB_WS_URL=wss://bv-dev.thelightbulb.company/api/v1/gateway/ws LIGHTBULB_CALLBACK_URL=https://dev.thelightbulb.company/auth/desktop-callback cargo tauri build --config src-tauri/tauri.dev.conf.json",
+    "dev": "LIGHTBULB_CALLBACK_URL=https://dev.thelightbulb.company/auth/desktop-callback cargo tauri dev --config src-tauri/tauri.dev.conf.json",
+    "build:dev": "LIGHTBULB_CALLBACK_URL=https://dev.thelightbulb.company/auth/desktop-callback cargo tauri build --config src-tauri/tauri.dev.conf.json",
     "build": "cargo tauri build",
     "icons": "cargo tauri icon"
   }

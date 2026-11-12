@@ -29,7 +29,7 @@ prune_target() { # dir budget_gb
 prune() {
   prune_target "$CACHE/target" "$BUDGET_GB_TARGET"
   prune_target "$CACHE/target-test" "$BUDGET_GB_TARGET_TEST"
-  # Rebuilt by every run (vendor-sidecars.sh, pnpm install); the pnpm store keeps installs fast.
+  # Rebuilt by every run (pnpm install; src-tauri/bin is leftovers from the retired sidecars).
   if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE" ]; then
     rm -rf "$GITHUB_WORKSPACE/apps/desktop/src-tauri/bin" "$GITHUB_WORKSPACE/apps/desktop/src-tauri/.sidecar-tmp"
     find "$GITHUB_WORKSPACE" -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null

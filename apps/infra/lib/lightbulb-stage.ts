@@ -331,18 +331,12 @@ export class LightbulbStage extends cdk.Stage {
           usersTable: tableName(env, "users"),
           containersTable: tableName(env, "containers"),
           billingTable: tableName(env, "billing-accounts"),
-          usageCountersTable: tableName(env, "usage-counters"),
-          pendingUpdatesTable: tableName(env, "pending-updates"),
-          channelLinksTable: tableName(env, "channel-links"),
           companySlugsTable: tableName(env, "company-slugs"),
           agentEmailAddressesTable: tableName(env, "agent-email-addresses"),
-          // Both owned by ApiStack, not DatabaseStack (see api-stack.ts) —
-          // still plain literal names, for the same no-cross-stack-export
-          // reason as the eight above.
+          // Owned by ApiStack, not DatabaseStack (see api-stack.ts) — still a
+          // plain literal name, for the same no-cross-stack-export reason.
           messagingTable: api.messagingTableName,
-          wsConnectionsTable: api.connectionsTableName,
         },
-        authorizerFunctionName: `${resourcePrefix(env)}ws-authorizer`,
         messaging: {
           workQueueName: api.openClawWorkQueueName,
           workDlqName: api.openClawWorkDlqName,

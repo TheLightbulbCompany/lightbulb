@@ -101,23 +101,23 @@ describe("DatabaseStack — admin-actions table — prod", () => {
   });
 });
 
-describe("DatabaseStack — native room read cursors", () => {
-  test("creates one durable owner/profile/room cursor table without transcript indexes", () => {
-    const template = buildStack("prod");
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-prod-room-read-cursors",
-      KeySchema: [
-        { AttributeName: "owner_id", KeyType: "HASH" },
-        { AttributeName: "cursor_key", KeyType: "RANGE" },
-      ],
-      BillingMode: "PAY_PER_REQUEST",
-      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
-    });
-    const tables = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-prod-room-read-cursors" },
-    });
-    const table = Object.values(tables)[0] as { Properties: Record<string, unknown> };
-    expect(table.Properties.GlobalSecondaryIndexes).toBeUndefined();
+describe.each(["dev", "prod"] as const)("DatabaseStack — retired orphan tables (%s)", (environment) => {
+  test("no construct remains for tables nothing on main reads", () => {
+    const names = Object.values(buildStack(environment).findResources("AWS::DynamoDB::Table")).map(
+      (r: any) => r.Properties.TableName as string,
+    );
+    for (const suffix of [
+      "apps",
+      "bedrock-aip-owners",
+      "room-read-cursors",
+      "marketplace-listings",
+      "marketplace-purchases",
+      "marketplace-payout-accounts",
+      "marketplace-takedowns",
+      "marketplace-sellers",
+    ]) {
+      expect(names).not.toContain(`lightbulb-${environment}-${suffix}`);
+    }
   });
 });
 
@@ -175,24 +175,6 @@ describe("DatabaseStack — paperclip-companies table", () => {
         SSEEnabled: true,
         SSEType: "KMS",
       }),
-    });
-  });
-});
-
-describe("DatabaseStack — bedrock-aip-owners reverse table", () => {
-  let template: Template;
-  beforeAll(() => {
-    template = buildStack("dev");
-  });
-
-  test("creates the bedrock-aip-owners reverse table keyed on aip_arn", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-bedrock-aip-owners",
-      KeySchema: [{ AttributeName: "aip_arn", KeyType: "HASH" }],
-      AttributeDefinitions: Match.arrayWith([
-        { AttributeName: "aip_arn", AttributeType: "S" },
-      ]),
-      BillingMode: "PAY_PER_REQUEST",
     });
   });
 });
@@ -332,25 +314,6 @@ describe("DatabaseStack — provisioning-workflows table", () => {
       TableName: Match.stringLikeRegexp("provisioning-workflows$"),
       KeySchema: [{ AttributeName: "workflow_id", KeyType: "HASH" }],
       GlobalSecondaryIndexes: [Match.objectLike({ IndexName: "owner-state-index" })],
-    }));
-  });
-});
-
-describe("DatabaseStack — apps table", () => {
-  test("apps keyed by app_id with owner-index and name-index", () => {
-    buildStack("dev").hasResourceProperties("AWS::DynamoDB::Table", Match.objectLike({
-      TableName: Match.stringLikeRegexp("apps$"),
-      KeySchema: [{ AttributeName: "app_id", KeyType: "HASH" }],
-      GlobalSecondaryIndexes: [
-        Match.objectLike({
-          IndexName: "owner-index",
-          KeySchema: [
-            { AttributeName: "owner_id", KeyType: "HASH" },
-            { AttributeName: "name", KeyType: "RANGE" },
-          ],
-        }),
-        Match.objectLike({ IndexName: "name-index", KeySchema: [{ AttributeName: "name", KeyType: "HASH" }] }),
-      ],
     }));
   });
 });

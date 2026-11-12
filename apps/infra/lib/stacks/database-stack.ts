@@ -34,21 +34,12 @@ export class DatabaseStack extends cdk.Stack {
   public readonly metronomeFastGateTable: dynamodb.Table;
   public readonly openrouterKeysTable: dynamodb.Table;
   public readonly openrouterRequestsTable: dynamodb.Table;
-  public readonly bedrockAipOwnersTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly oauthStateTable: dynamodb.Table;
   public readonly integrationsTable: dynamodb.Table;
   public readonly provisioningWorkflowsTable: dynamodb.Table;
-  public readonly appsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
-  public readonly roomReadCursorsTable: dynamodb.Table;
   public readonly workspaceJoinLinksTable: dynamodb.Table;
-
-  public readonly marketplaceListingsTable: dynamodb.Table;
-  public readonly marketplacePurchasesTable: dynamodb.Table;
-  public readonly marketplacePayoutAccountsTable: dynamodb.Table;
-  public readonly marketplaceTakedownsTable: dynamodb.Table;
-  public readonly marketplaceSellersTable: dynamodb.Table;
 
   public readonly launchWaitlistTable: dynamodb.Table;
   public readonly launchEntriesTable: dynamodb.Table;
@@ -293,13 +284,6 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "created_at", type: dynamodb.AttributeType.NUMBER },
     });
 
-    // Per-owner Bedrock AIP -> owner reverse index (Plan 2). PK aip_arn.
-    // Written by ensure_owner_aips; read by the bedrock-usage-meter Lambda's
-    // own boto3 GetItem on its hot path (no backend code reads this table).
-    this.bedrockAipOwnersTable = createTable("BedrockAipOwnersTable", "bedrock-aip-owners", {
-      partitionKey: { name: "aip_arn", type: dynamodb.AttributeType.STRING },
-    });
-
     // ChatGPT OAuth bootstrap tokens — Fernet-encrypted access + refresh
     // tokens captured during signup, used once when staging the user's EFS
     // codex/auth.json file at container provision. Per spec §5.1.
@@ -339,30 +323,6 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // One row per app, plus one NAME#<name> guard row per app that makes names
-    // globally unique (the guard has no owner_id or name, so neither index holds it).
-    this.appsTable = createTable("AppsTable", "apps", {
-      partitionKey: { name: "app_id", type: dynamodb.AttributeType.STRING },
-    });
-    this.appsTable.addGlobalSecondaryIndex({
-      indexName: "owner-index",
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "name", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-    this.appsTable.addGlobalSecondaryIndex({
-      indexName: "name-index",
-      partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Product-only per-human sequence state. Native OpenClaw SQLite remains
-    // canonical for every room message, sender, and search result.
-    this.roomReadCursorsTable = createTable("RoomReadCursorsTable", "room-read-cursors", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "cursor_key", type: dynamodb.AttributeType.STRING },
     });
 
     // Workspace join links — ONE row per Clerk org (PK org_id), holding the
@@ -433,82 +393,6 @@ export class DatabaseStack extends cdk.Stack {
       value: this.integrationsTable.tableName,
       exportName: `${this.stackName}-integrations-table`,
     });
-
-    this.marketplaceListingsTable = createTable("MarketplaceListingsTable", "marketplace-listings", {
-      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
-    });
-    this.marketplaceListingsTable.addGlobalSecondaryIndex({
-      indexName: "seller-created-index",
-      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
-    });
-    this.marketplaceListingsTable.addGlobalSecondaryIndex({
-      indexName: "status-published-index",
-      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.marketplacePurchasesTable = createTable("MarketplacePurchasesTable", "marketplace-purchases", {
-      partitionKey: { name: "buyer_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "purchase_id", type: dynamodb.AttributeType.STRING },
-    });
-    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
-      indexName: "listing-created-index",
-      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
-    });
-    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
-      indexName: "license-key-index",
-      partitionKey: { name: "license_key", type: dynamodb.AttributeType.STRING },
-    });
-    // Used by the charge.refunded Stripe webhook to find the purchase row
-    // matching a Stripe payment_intent ID without scanning the full table.
-    // Sparse: only paid purchases (which all carry stripe_payment_intent_id)
-    // appear in the index — refund/revoke writes don't add load.
-    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
-      indexName: "payment-intent-index",
-      partitionKey: {
-        name: "stripe_payment_intent_id",
-        type: dynamodb.AttributeType.STRING,
-      },
-    });
-
-    this.marketplacePayoutAccountsTable = createTable("MarketplacePayoutAccountsTable", "marketplace-payout-accounts", {
-      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.marketplaceTakedownsTable = createTable("MarketplaceTakedownsTable", "marketplace-takedowns", {
-      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "takedown_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Marketplace seller profiles — per-seller chosen handle / display name.
-    // The seller_id is the Clerk user_id; the handle is the public marketplace
-    // identity surfaced on listing bylines and (future) star / credibility
-    // surfaces. `handle-index` enforces uniqueness via conditional writes.
-    this.marketplaceSellersTable = createTable("MarketplaceSellersTable", "marketplace-sellers", {
-      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
-    });
-    this.marketplaceSellersTable.addGlobalSecondaryIndex({
-      indexName: "handle-index",
-      partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Stage 1 of the approved marketplace retirement. Deploy this policy change
-    // while the five resources still exist in the template; only then remove
-    // their constructs. Otherwise prod's previous RETAIN policy orphans them.
-    // Workspace identities, provisioning records and every other table keep
-    // their existing per-environment retention policy.
-    for (const table of [
-      this.marketplaceListingsTable,
-      this.marketplacePurchasesTable,
-      this.marketplacePayoutAccountsTable,
-      this.marketplaceTakedownsTable,
-      this.marketplaceSellersTable,
-    ]) {
-      table.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    }
 
     // Launch Competition waitlist.
     // Waitlist rows are keyed by lowercased email — the join to an account is

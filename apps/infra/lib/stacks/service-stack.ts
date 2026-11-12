@@ -1327,54 +1327,6 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // Marketplace Artifacts S3 Bucket
-    //
-    // Stores artifacts uploaded for marketplace listings (agent bundles,
-    // screenshots, manifests, signed receipts). Versioned so a bad publish
-    // can be rolled back without losing buyer history. Blocked from public
-    // access; bytes are served via signed URLs from the marketplace API.
-    // -------------------------------------------------------------------------
-    // Data resource: nothing reads it since the Marketplace deletion (#4975). Kept so
-    // removing it from CDK does not delete it; delete with the founder's go.
-    new s3.Bucket(this, "MarketplaceArtifactsBucket", {
-      bucketName: `lightbulb-${env}-marketplace-artifacts`,
-      versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy:
-        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: env !== "prod",
-      // Backup-import uploads go browser → S3 directly via a presigned PUT
-      // (API Gateway caps bodies at 10 MB; real OpenClaw backups are 10×–100×
-      // that, dominated by a Chrome profile the importer discards anyway).
-      cors: [
-        {
-          allowedMethods: [s3.HttpMethods.PUT],
-          allowedOrigins:
-            env === "prod"
-              ? [`https://${rootDomain}`]
-              : [
-                  `https://dev.${rootDomain}`,
-                  "http://localhost:3000",
-                  "https://*.vercel.app",
-                ],
-          allowedHeaders: ["content-type"],
-          maxAge: 3600,
-        },
-      ],
-      lifecycleRules: [
-        {
-          // Raw uploads are consumed within minutes; nothing under imports/
-          // is ever read twice. Versioned bucket → expire noncurrent too.
-          prefix: "imports/",
-          expiration: cdk.Duration.days(1),
-          noncurrentVersionExpiration: cdk.Duration.days(1),
-          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
-        },
-      ],
-    });
-
-    // -------------------------------------------------------------------------
     // CFN Templates S3 Bucket (public-read of the connector template only)
     //
     // Hosts the AWS connector CloudFormation template so the
@@ -2239,20 +2191,9 @@ export class ServiceStack extends cdk.Stack {
         LAMBDA_SECRET_ENV_MAP: secretEnvMap,
       },
     });
-    // Dev keeps one consumer warm (Walk 14, 6 Nov 2026): every "queue wait" over 3 s on dev was a cold
-    // start, 6.3-10.2 s of the handler's first-invoke setup (env rebuild, backend import, Temporal
-    // connect), while a warm one waits ~35 ms. FIFO queues have no batching window to tune. A
-    // provisioned environment runs that setup at init (scripts/work_lambda.py), where Lambda allows it
-    // well past 10 s. ponytail: one warm instance; a second concurrent room still cold-starts.
-    const workTarget: lambda.IFunction =
-      env === "dev"
-        ? new lambda.Alias(this, "WorkConsumerLive", {
-            aliasName: "live",
-            version: workConsumer.currentVersion,
-            provisionedConcurrentExecutions: 1,
-          })
-        : workConsumer;
-    const workMapping = workTarget.addEventSourceMapping("OpenClawWorkQueue", {
+    // No provisioned concurrency (it was dev-only, ~$17.5/mo): a cold consumer adds 6-10 s to the
+    // first room turn after idle, which dev accepts.
+    const workMapping = workConsumer.addEventSourceMapping("OpenClawWorkQueue", {
       eventSourceArn: props.openClawWorkQueueArn,
       // One message per invoke: a FIFO batch holds one group, run in order, so a
       // bigger batch would multiply the worst case past the timeout and keep the

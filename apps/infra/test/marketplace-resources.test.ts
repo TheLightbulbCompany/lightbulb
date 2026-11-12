@@ -8,24 +8,6 @@ import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
 
-function buildDbStack(environment: "dev" | "prod"): Template {
-  const app = new cdk.App();
-  const env = { account: "877352799272", region: "us-east-1" };
-  const supportStack = new cdk.Stack(app, `Support-${environment}`, { env });
-  const kmsKey = new kms.Key(supportStack, "KmsKey");
-  // DatabaseStack now requires a VPC for the Paperclip Aurora cluster.
-  const network = new NetworkStack(app, `Network-${environment}`, {
-    env,
-    environment,
-  });
-  const dbStack = new DatabaseStack(app, `Database-${environment}`, {
-    env,
-    environment,
-    kmsKey,
-  });
-  return Template.fromStack(dbStack);
-}
-
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
  * Container). Mirrors the wiring in lightbulb-stage.ts so the synthesized template
@@ -116,127 +98,15 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(service);
 }
 
-describe("DatabaseStack — marketplace tables", () => {
-  const template = buildDbStack("dev");
-
-  test("creates marketplace-listings table with composite key", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-listings",
-      KeySchema: [
-        { AttributeName: "listing_id", KeyType: "HASH" },
-        { AttributeName: "version", KeyType: "RANGE" },
-      ],
-      BillingMode: "PAY_PER_REQUEST",
-    });
-  });
-
-  test("marketplace-listings has the expected GSIs", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-listings",
-      GlobalSecondaryIndexes: Match.arrayWith([
-        Match.objectLike({ IndexName: "seller-created-index" }),
-        Match.objectLike({ IndexName: "status-published-index" }),
-      ]),
-    });
-  });
-
-  test("dev environment uses DESTROY removal policy for marketplace tables", () => {
-    template.hasResource("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-marketplace-listings" },
-      DeletionPolicy: "Delete",
-    });
-  });
-
-  test("creates marketplace-purchases table with buyer_id PK", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-purchases",
-      KeySchema: [
-        { AttributeName: "buyer_id", KeyType: "HASH" },
-        { AttributeName: "purchase_id", KeyType: "RANGE" },
-      ],
-    });
-  });
-
-  test("marketplace-purchases has all 3 expected GSIs", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-purchases",
-      GlobalSecondaryIndexes: Match.arrayWith([
-        Match.objectLike({ IndexName: "listing-created-index" }),
-        Match.objectLike({ IndexName: "license-key-index" }),
-        Match.objectLike({ IndexName: "payment-intent-index" }),
-      ]),
-    });
-  });
-
-  test("creates marketplace-payout-accounts table with seller_id PK", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-payout-accounts",
-      KeySchema: [{ AttributeName: "seller_id", KeyType: "HASH" }],
-    });
-  });
-
-  test("creates marketplace-takedowns table with composite key", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-marketplace-takedowns",
-      KeySchema: [
-        { AttributeName: "listing_id", KeyType: "HASH" },
-        { AttributeName: "takedown_id", KeyType: "RANGE" },
-      ],
-    });
-  });
-
-});
-
-// Hoist a single ServiceStack synthesis and reuse across describe blocks.
 const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 
-describe("ServiceStack — marketplace S3 bucket", () => {
-  const template = SERVICE_TEMPLATE_DEV;
-
-  test("creates lightbulb-dev-marketplace-artifacts bucket with versioning + S3-managed encryption + block-all-public", () => {
-    template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "lightbulb-dev-marketplace-artifacts",
-      VersioningConfiguration: { Status: "Enabled" },
-      BucketEncryption: {
-        ServerSideEncryptionConfiguration: [
-          { ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } },
-        ],
-      },
-      PublicAccessBlockConfiguration: {
-        BlockPublicAcls: true,
-        BlockPublicPolicy: true,
-        IgnorePublicAcls: true,
-        RestrictPublicBuckets: true,
-      },
-    });
-  });
-
-  it("artifacts bucket accepts presigned PUTs from the web origin and expires imports/", () => {
-    for (const env of ["dev", "prod"] as const) {
-      const t = buildServiceStack(env);
-      t.hasResourceProperties("AWS::S3::Bucket", {
-        BucketName: `lightbulb-${env}-marketplace-artifacts`,
-        CorsConfiguration: {
-          CorsRules: Match.arrayWith([
-            Match.objectLike({
-              AllowedMethods: ["PUT"],
-              AllowedOrigins:
-                env === "prod"
-                  ? [`https://${ROOT_DOMAIN}`]
-                  : Match.arrayWith([
-                      `https://dev.${ROOT_DOMAIN}`,
-                      "http://localhost:3000",
-                    ]),
-            }),
-          ]),
-        },
-        LifecycleConfiguration: {
-          Rules: Match.arrayWith([
-            Match.objectLike({ Prefix: "imports/", ExpirationInDays: 1, Status: "Enabled" }),
-          ]),
-        },
-      });
-    }
+describe("ServiceStack — retired marketplace bucket", () => {
+  test("no marketplace-artifacts bucket is defined", () => {
+    SERVICE_TEMPLATE_DEV.resourcePropertiesCountIs(
+      "AWS::S3::Bucket",
+      { BucketName: "lightbulb-dev-marketplace-artifacts" },
+      0,
+    );
   });
 });
 
@@ -264,23 +134,5 @@ describe("ServiceStack — gog file-keyring password", () => {
         }),
       ]),
     });
-  });
-});
-
-// First retirement deploy: removing constructs while prod still says Retain would orphan the tables.
-describe.each(["dev", "prod"] as const)("Marketplace retirement policy (%s)", (environment) => {
-  const template = buildDbStack(environment);
-  test("only the five retired marketplace tables opt into physical deletion", () => {
-    const tables = Object.values(template.findResources("AWS::DynamoDB::Table")) as any[];
-    const retired = tables.filter((resource) => resource.Properties.TableName.startsWith(`${tablePrefix(environment)}marketplace-`));
-    expect(retired).toHaveLength(5);
-    for (const resource of retired) {
-      expect(resource.DeletionPolicy).toBe("Delete");
-      expect(resource.UpdateReplacePolicy).toBe("Delete");
-    }
-    for (const resource of tables.filter((table) => !retired.includes(table))) {
-      expect(resource.DeletionPolicy).toBe(environment === "prod" ? "Retain" : "Delete");
-      expect(resource.UpdateReplacePolicy).toBe(environment === "prod" ? "Retain" : "Delete");
-    }
   });
 });

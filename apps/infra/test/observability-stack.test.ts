@@ -88,15 +88,10 @@ function buildTemplate(envName: "dev" | "prod"): Template {
         usersTable: `${tablePrefix(envName)}users`,
         containersTable: `${tablePrefix(envName)}containers`,
         billingTable: `${tablePrefix(envName)}billing-accounts`,
-        usageCountersTable: `${tablePrefix(envName)}usage-counters`,
-        pendingUpdatesTable: `${tablePrefix(envName)}pending-updates`,
-        channelLinksTable: `${tablePrefix(envName)}channel-links`,
         companySlugsTable: `${tablePrefix(envName)}company-slugs`,
         agentEmailAddressesTable: `${tablePrefix(envName)}agent-email-addresses`,
         messagingTable: `${tablePrefix(envName)}messaging`,
-        wsConnectionsTable: `${tablePrefix(envName)}ws-connections`,
       },
-      authorizerFunctionName: `isol8-${envName}-ws-authorizer`,
       messaging: {
         workQueueName: `${resourcePrefix(envName)}openclaw-work.fifo`,
         workDlqName: `${resourcePrefix(envName)}openclaw-work-dlq.fifo`,
@@ -502,6 +497,21 @@ describe("ObservabilityStack", () => {
   // Nothing else watches whether the alert topics have a live destination, and
   // the failure mode is total silence, so missing monitor data must read as
   // failure rather than health.
+  test("retired-product alarms are gone and the stack's Lambdas log to expiring groups", () => {
+    const names = Object.values(template.findResources("AWS::CloudWatch::Alarm")).map(
+      (r: any) => r.Properties.AlarmName as string,
+    );
+    for (const gone of [/-P10-/, /-P11-/, /-W1[34]-/, /-W3[0-5]-/, /-W51-/, /-W53-/, /-W66-/, /-ddb-[a-z]+-(usage-counters|pending-updates|channel-links|ws-connections)$/]) {
+      expect(names.filter((n) => gone.test(n))).toEqual([]);
+    }
+    for (const fn of ["alert-subscription-monitor", "task-stopped-metric"]) {
+      template.hasResourceProperties("AWS::Logs::LogGroup", {
+        LogGroupName: `/lightbulb/dev/${fn}`,
+        RetentionInDays: 30,
+      });
+    }
+  });
+
   test("subscription-confirmation alarms exist and treat missing data as breaching", () => {
     for (const [name, tier] of [
       ["lightbulb-dev-P17-alert-subscriptions-page-topic", "page"],
@@ -517,7 +527,11 @@ describe("ObservabilityStack", () => {
         Period: 3600,
         // Dev has only the mailbox on both tiers.
         Threshold: 1,
-        Dimensions: [{ Name: "topic", Value: tier }],
+        // Per env: a topic-only series mixed dev's 1 with prod's 2 and held prod's P17 in ALARM.
+        Dimensions: [
+          { Name: "env", Value: "dev" },
+          { Name: "topic", Value: tier },
+        ],
         // Both page: a warn-tier alarm about a dead warn topic would deliver
         // to the topic it is reporting on.
         AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],

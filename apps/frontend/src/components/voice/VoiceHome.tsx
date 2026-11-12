@@ -7,7 +7,7 @@ import Link from "next/link";
 import { meetingStatus } from "@/lib/meetingStatus";
 import { ArrowLeft, Phone, UserRound, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 import { TalkOrb } from "./TalkOrb";
 import { Onboarding } from "./Onboarding";
 import { useApi } from "@/lib/api";

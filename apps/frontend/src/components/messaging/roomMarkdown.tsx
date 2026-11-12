@@ -1,10 +1,10 @@
 import { lazy, Suspense, type ComponentType, type ReactNode } from "react";
 import type { Components, ExtraProps } from "react-markdown";
 import { CARD_FENCE } from "@lightbulb/shared";
-import { markdownComponents } from "@/components/teams/shared/components/MarkdownView";
+import { markdownComponents } from "@/components/voice/MarkdownView";
 import { useCardContext } from "./openui/CardContext";
-import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
-import { safeHref } from "@/components/teams/shared/lib/safeHref";
+import { attachmentIdFromHref } from "@/lib/attachments";
+import { safeHref } from "@/lib/safeHref";
 import { appLinkTarget, type AppLink } from "./appLinks";
 import { useMessagingWorkspaceOptional } from "./MessagingWorkspaceContext";
 import { openAppLink } from "./RoomAppLinks";

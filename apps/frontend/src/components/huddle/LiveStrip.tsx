@@ -8,7 +8,7 @@ import {
   BarVisualizer, RoomContext, StartAudio, TrackToggle, useIsSpeaking, useParticipantAttributes, useParticipants, useTracks,
   type AgentState,
 } from "@livekit/components-react";
-import { Identity } from "@/components/teams/shared/components/Identity";
+import { Identity } from "@/components/voice/Identity";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { agentTint } from "@/lib/agentTint";
 import { navigateShell } from "@/lib/shellNav";

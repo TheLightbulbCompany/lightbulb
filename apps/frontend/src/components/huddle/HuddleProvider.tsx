@@ -7,7 +7,7 @@ import { LIVE_AGENT_IDENTITY, LIVE_NOTICE_TOPIC, liveJoinErrorCode, parseLiveNot
 import { useApi } from "@/lib/api";
 import { notifyFailure, notifySuccess } from "@/lib/notify";
 import { navigateShell } from "@/lib/shellNav";
-import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
+import { agentInspectorUrl } from "@/lib/agentInspectorUrl";
 
 export const CEO_IDENTITY = LIVE_AGENT_IDENTITY;
 

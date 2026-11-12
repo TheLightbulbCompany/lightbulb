@@ -5,7 +5,7 @@ import { answerIsTableOf, tableReply } from "@lightbulb/shared";
 import { Button as UiButton } from "@/components/ui/button";
 import { Input as UiInput } from "@/components/ui/input";
 import { Table as UiTable, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { safeHref } from "@/components/teams/shared/lib/safeHref";
+import { safeHref } from "@/lib/safeHref";
 import { appLinkTarget } from "../../appLinks";
 import { useMessagingWorkspaceOptional } from "../../MessagingWorkspaceContext";
 import { openAppLink } from "../../RoomAppLinks";

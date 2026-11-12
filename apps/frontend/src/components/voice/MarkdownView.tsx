@@ -4,8 +4,8 @@ import { memo, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components, Options, UrlTransform } from "react-markdown";
-import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-breaks";
-import { safeHref } from "@/components/teams/shared/lib/safeHref";
+import { remarkSoftBreaks } from "@/lib/remark-soft-breaks";
+import { safeHref } from "@/lib/safeHref";
 import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
 import { normalizeCtaLinks } from "@/lib/ctaLinks";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -14,7 +14,7 @@ import {
   issueAttachmentContentPath,
   useAttachmentIssueId,
   useAttachmentObjectUrl,
-} from "@/components/teams/shared/lib/attachments";
+} from "@/lib/attachments";
 import { notifyApiError } from "@/lib/notify";
 
 function textContent(node: React.ReactNode): string {

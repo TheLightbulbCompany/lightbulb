@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, expect, it, vi } from "vitest";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 import { CardContext, type CardContextValue } from "../openui/CardContext";
 import { roomMarkdown } from "../roomMarkdown";
 

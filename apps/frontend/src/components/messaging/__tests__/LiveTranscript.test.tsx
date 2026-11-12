@@ -10,7 +10,7 @@ vi.mock("@livekit/components-react", () => ({
 }));
 const huddle = vi.hoisted(() => ({ roomId: "dm1" as string | null, room: {} as object | null }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => huddle }));
-vi.mock("@/components/teams/shared/components/Identity", () => ({ Identity: () => null }));
+vi.mock("@/components/voice/Identity", () => ({ Identity: () => null }));
 
 import { CLEAR_MS, LiveTranscript } from "../LiveTranscript";
 

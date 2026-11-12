@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronRight, Copy, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FileViewerContent, isPaneViewable, normalizeContentType } from "@/components/media/FileViewerContent";
-import { issueAttachmentContentPath } from "@/components/teams/shared/lib/attachments";
+import { issueAttachmentContentPath } from "@/lib/attachments";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
 import { openPanel, openTaskPane, updatePanelParams, useWorkspaceState } from "../workspaceController";

@@ -23,6 +23,14 @@
 .vx-lightbulb > .vx-page { width: 100%; max-width: none; padding: 16px 20px; border-bottom: 1px solid var(--plane-edge); }
 .vx-lightbulb .vx-talk { gap: 14px; padding: 0; border: 0; border-radius: 0; background: none; }
 .vx-lightbulb .vx-orb { width: 48px; height: 48px; }
+/* The conversation under the orb: messages scroll, the composer stays at the bottom. */
+.vx-thread { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
+.vx-thread ol { margin: 0; padding: 16px 20px; list-style: none; overflow: auto; display: grid; align-content: start; gap: 14px; }
+.vx-thread li { display: grid; gap: 2px; max-width: 72ch; color: var(--fg); font-size: var(--text-ui); }
+.vx-thread li b { font-weight: 600; font-size: var(--text-caption); color: var(--fg-soft); }
+.vx-thread li[data-pending] { color: var(--fg-mute); }
+.vx-thread form { display: flex; gap: 8px; align-items: end; padding: 12px 20px; border-top: 1px solid var(--plane-edge); }
+.vx-thread-error { margin: 0; padding: 0 20px 12px; color: var(--alert); font-size: var(--text-caption); }
 
 /* Phone: the four places become the bottom tabs. */
 @media (max-width: 640px) {

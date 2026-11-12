@@ -6,7 +6,7 @@ import { composerBox, composerValue, selectInComposer, typeInComposer, typeKeys 
 import { editorOf } from "../ComposerEditor";
 import { lexical } from "../lexical";
 import type { RoomParticipant } from "../types";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 
 function Harness({ members = [] }: { members?: readonly RoomParticipant[] }) {
   const [text, setText] = useState("ship it");

@@ -1,5 +1,5 @@
 import { Terminal } from "lucide-react";
-import { Identity, type IdentityProps } from "@/components/teams/shared/components/Identity";
+import { Identity, type IdentityProps } from "@/components/voice/Identity";
 import { LogoMark } from "@/components/Logo";
 import { agentTint } from "@/lib/agentTint";
 import type { DirectoryParticipant, RoomParticipant } from "./types";

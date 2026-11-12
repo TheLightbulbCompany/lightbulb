@@ -10,7 +10,7 @@
 // push grows a history entry (Back steps panel → panel, detail → list);
 // replace canonicalizes in place (param strips, filter dismissals).
 
-import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
+import { agentInspectorUrl } from "@/lib/agentInspectorUrl";
 
 function currentUrlWith(params: URLSearchParams): string {
   const qs = params.toString();

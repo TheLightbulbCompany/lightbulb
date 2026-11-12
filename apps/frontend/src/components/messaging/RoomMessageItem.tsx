@@ -8,8 +8,8 @@ import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard"
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { openMessagePanel } from "@/components/workspace/workspaceController";
 import { Button } from "@/components/ui/button";
-import { Identity } from "@/components/teams/shared/components/Identity";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { Identity } from "@/components/voice/Identity";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 import { cn } from "@/lib/utils";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";

@@ -1,21 +1,19 @@
 import { useAuth, useOrganization, useUser } from "@clerk/expo";
-import { Button, HStack, LabeledContent, Picker, Section, Text, VStack } from "../../../components/ui/swiftui";
+import { Button, HStack, LabeledContent, Section, Text, VStack } from "../../../components/ui/swiftui";
 import {
   accessibilityLabel,
   background,
   font,
   foregroundStyle,
   frame,
-  pickerStyle,
   redacted,
   shapes,
-  tag,
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking, Platform, useColorScheme } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
-import { ApiError, createApiClient, type SessionNotifications } from "@lightbulb/shared";
+import { ApiError, createApiClient } from "@lightbulb/shared";
 
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../../config/domain";
@@ -25,7 +23,6 @@ import { paywallProductIds } from "../../../lib/appleIap";
 import { isAppleManaged } from "../../../lib/manageSubscription";
 import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../../lib/managedProvider";
 import { unregisterDevice } from "../../../lib/pushDevice";
-import { prefsSaver, readSessionNotifications } from "../../../lib/sessionNotifications";
 
 // Billing here never points outside the app. This screen used to carry
 // "Upgrade on thelightbulb.company" and "Manage billing on thelightbulb.company" rows out to
@@ -229,8 +226,7 @@ export function providerLabel(
   // fallback, never a `provider_choice` row value itself. A cardless free
   // trial AND a paid Base/Workspace/Ultra row that never picked a provider
   // both run there — "No provider selected" would wrongly tell either of
-  // them to go pick one. Shared with control/llm.tsx (managedProvider.ts)
-  // so the two provider cards can't drift apart.
+  // them to go pick one (managedProvider.ts).
   if (isManagedNoChoiceAccount(account)) {
     return { ...MANAGED_NO_CHOICE_LABEL };
   }
@@ -286,69 +282,6 @@ function initialsOf(name: string | null | undefined, email: string): string {
 const PLACEHOLDER = [redacted("placeholder"), accessibilityLabel("Loading")];
 
 // ---------------------------------------------------------------------------
-// Session notifications: the same per-person prefs the web's Settings card edits.
-// The phone gets a push only for a kind set to Banner.
-// ---------------------------------------------------------------------------
-
-const NOTIFY_KINDS = [
-  { key: "waiting", label: "Waiting on you" },
-  { key: "finished", label: "Finished" },
-] as const;
-const NOTIFY_LEVELS = [
-  { value: "banner", label: "Banner" },
-  { value: "badge", label: "Badge only" },
-  { value: "off", label: "Off" },
-] as const;
-
-function SessionNotificationsSection({ api, menu }: { api: ReturnType<typeof createApiClient>; menu: ReturnType<typeof pickerStyle>[] }) {
-  const [prefs, setPrefs] = useState<SessionNotifications | null>(null);
-  const saver = useRef<ReturnType<typeof prefsSaver> | null>(null);
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      readSessionNotifications(api)
-        .then((value) => {
-          if (cancelled) return;
-          setPrefs(value);
-          saver.current = prefsSaver(api, value, setPrefs, () =>
-            Alert.alert("Notifications", "The setting could not be saved."),
-          );
-        })
-        .catch(() => undefined);
-      return () => {
-        cancelled = true;
-      };
-    }, [api]),
-  );
-  if (prefs === null) return null;
-  const save = (change: Partial<SessionNotifications>) => void saver.current?.(change);
-  const options = (items: readonly { value: string; label: string }[]) =>
-    items.map((item) => (
-      <Text key={item.value} modifiers={[tag(item.value)]}>
-        {item.label}
-      </Text>
-    ));
-  return (
-    <Section title="Session notifications">
-      {NOTIFY_KINDS.map(({ key, label }) => (
-        <Picker key={key} label={label} selection={prefs[key]} modifiers={menu}
-          onSelectionChange={(value: string) => save({ [key]: value })}>
-          {options(NOTIFY_LEVELS)}
-        </Picker>
-      ))}
-      <Picker label="Banners on the Mac" selection={prefs.onlyUnfocused ? "unfocused" : "always"} modifiers={menu}
-        onSelectionChange={(value: string) => save({ onlyUnfocused: value === "unfocused" })}>
-        {options([{ value: "always", label: "Always" }, { value: "unfocused", label: "When Lightbulb isn't focused" }])}
-      </Picker>
-      <Picker label="Sound" selection={prefs.sound ? "on" : "off"} modifiers={menu}
-        onSelectionChange={(value: string) => save({ sound: value === "on" })}>
-        {options([{ value: "on", label: "On" }, { value: "off", label: "Off" }])}
-      </Picker>
-    </Section>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -363,7 +296,6 @@ export default function Settings() {
       DANGER: [foregroundStyle(p.alert)],
       ERROR: [foregroundStyle(p.alert)],
       PLACEHOLDER,
-      MENU: [pickerStyle("menu")],
       AVATAR: [
         font({ textStyle: "subheadline", weight: "semibold" }),
         foregroundStyle(p.fg),
@@ -668,22 +600,7 @@ export default function Settings() {
             {organization != null ? <Text modifiers={m.CAPTION}>{organization.name}</Text> : null}
           </VStack>
         </HStack>
-        {(user?.organizationMemberships.length ?? 0) > 1 ? (
-          <NavigationRow
-            title="Switch workspace"
-            icon="arrow.left.arrow.right"
-            onPress={() => router.push("/workspaces")}
-          />
-        ) : null}
       </Section>
-
-      <Section title="Workspace">
-        {/* Everyone sees it: a member gets "ask an admin" there, not a missing door. */}
-        <NavigationRow title="Invite people" icon="person.badge.plus" onPress={() => router.push("/invite")} />
-        <NavigationRow title="Control" icon="slider.horizontal.3" onPress={() => router.push("/(app)/control")} />
-      </Section>
-
-      <SessionNotificationsSection api={api} menu={m.MENU} />
 
       {billingSections}
 

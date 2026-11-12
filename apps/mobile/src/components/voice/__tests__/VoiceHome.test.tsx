@@ -28,13 +28,11 @@ beforeEach(() => {
   mockGet.mockResolvedValue({ items: [] });
 });
 
-it("opens voice and typed input in the same assistant DM, never a specialist DM", async () => {
+it("opens voice in the assistant DM, never a specialist DM", async () => {
   await render(<VoiceHome rooms={[room("specialist", "worker"), room("owner", "root")]} agentId="root" />);
   await waitFor(() => expect(mockGet).toHaveBeenCalledWith("/voice/timeline"));
   await fireEvent.press(screen.getByRole("button", { name: "Talk to Lightbulb" }));
   expect(mockJoin).toHaveBeenCalledWith("owner", "Lightbulb");
-  await fireEvent.press(screen.getByText("Type to Lightbulb"));
-  expect(mockPush).toHaveBeenCalledWith("/(app)/room/owner");
   expect(assistantRoom([room("specialist", "worker")])).toBeUndefined();
 });
 
@@ -62,5 +60,25 @@ it("retries a failed timeline fetch", async () => {
   mockGet.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ items: [] });
   await render(<VoiceHome rooms={[]} />);
   await fireEvent.press(await screen.findByText("Couldn’t load recent activity. Retry"));
-  expect(await screen.findByText("Calls and meetings will appear here.")).toBeTruthy();
+  expect(await screen.findByText("Calls, meetings and chats will appear here.")).toBeTruthy();
+});
+
+it("lists the member's own text chats with calls and opens each in the chat screen", async () => {
+  mockGet.mockResolvedValue({ items: [{ type: "call", roomId: "call-1", at: Date.parse("2026-11-10T10:00:00Z"), callerName: "Ada", summary: "Booked" }] });
+  const chat = { roomId: "chat-1", kind: "group-dm", name: null, lastMessageAt: "2026-11-11T10:00:00Z", updatedAt: "2026-11-11T10:00:00Z",
+    lastMessage: { textPreview: "Draft the rota" }, members: [{ kind: "agent", id: "root" }, { kind: "human", id: "me" }] } as unknown as RoomSummary;
+  const shared = { ...chat, roomId: "team", members: [...chat.members, { kind: "human", id: "dana" }] } as unknown as RoomSummary;
+  await render(<VoiceHome rooms={[chat, shared]} agentId="root" />);
+  await screen.findByText("Ada");
+  expect(screen.getByText("Draft the rota")).toBeTruthy();
+  expect(screen.queryAllByText("Chat with Lightbulb")).toHaveLength(1); // the chat with another person is not the member's own
+  await fireEvent.press(screen.getByText("Draft the rota"));
+  expect(mockPush).toHaveBeenCalledWith("/(app)/room/chat-1");
+});
+
+it("New chat creates a chat and opens it", async () => {
+  const onNewChat = jest.fn(async () => "new-room");
+  await render(<VoiceHome rooms={[]} agentId="root" onNewChat={onNewChat} />);
+  await fireEvent.press(screen.getByText("New chat"));
+  await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(app)/room/new-room"));
 });

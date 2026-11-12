@@ -152,7 +152,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.10 | The orb: connecting, listening, thinking, speaking, with a caption; each talk kept as a "Yours" row | yes | yes | part | | Product | |
 | 4.11 | The orb does the general agent work the old product did | yes | yes | no | | Product | Founder ruling: the orb is a full third use case |
 | 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
-| 4.13 | Mobile: four tabs, voice Home | yes | yes | no | | Product | Shipped by OTA |
+| 4.13 | Mobile: four tabs, voice Home | yes | yes | no | | Product | Shipped by OTA. The old chat app (rooms list, sessions, tasks, Control, workspaces, invites) is removed by the mobile-voice-tabs PR: Home is the orb, New chat and recent calls, meetings and text chats; Needs you answers `/needs-you` Questions on the card; a text chat is a plain timeline and composer. Not yet seen on a device |
 | 4.14 | Mobile: voice settings, billing and onboarding match the web; old purchase screens gone | no | no | no | | Product | |
 | 4.15 | Push: Needs-you cards, and the first three calls after Go live | yes | no | no | | Product | Card pushes already existed (one per card, retry-safe). #5188 trims their text to the kind and a first name (no caller number or question) and adds a push for the owner's first three answered calls. Not seen on a device. A tap opens the task, not the Needs-you list |
 | 4.16 | Ten-second undo on send or spend | no | no | no | | Product | Not in the code |

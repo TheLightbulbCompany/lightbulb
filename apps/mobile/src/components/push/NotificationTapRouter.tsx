@@ -1,49 +1,27 @@
-import { approvalActivityId, interactionActivityId } from "@lightbulb/shared";
 import * as Notifications from "expo-notifications";
 import { router, type Href } from "expo-router";
 import { useEffect } from "react";
 
-import { getCurrentTarget } from "../../lib/activeAgent";
-import { parseAgentDeepLink } from "../../lib/deepLink";
-import { shouldSuppressBanner, type NotificationData } from "../../lib/notifications";
-
-type TapData = NotificationData & {
-  url?: string; source?: string; eventType?: string; issueId?: string;
-  approvalId?: string; interactionId?: string; sessionId?: string; taskId?: string;
+type TapData = {
+  url?: string; source?: string; roomId?: string; agentId?: string;
+  approvalId?: string; interactionId?: string; issueId?: string; sessionId?: string; taskId?: string;
 };
 
+const HOME = "/(app)/(tabs)/chats" as Href;
+const NEEDS_YOU = "/(app)/(tabs)/activity" as Href;
+
 /**
- * Where a tapped notification lands, as the screens to push over the tabs.
- *
- * Teams is checked first: its pushes deliberately carry no `agentId` (that id
- * is a Paperclip uuid — see `push_data` in routers/paperclip_events.py), and
- * `source` is required so an unrelated payload carrying an `issueId` cannot
- * claim the route. A thread reply opens its room underneath the thread, the
- * same hierarchy an in-app "Reply in thread" builds, so back goes to the room.
+ * Which tab a tapped notification opens. Anything that asks the person to decide
+ * (an approval, an agent's question, a task's question) opens Needs you; any other
+ * conversation push (a room, a session, a legacy agent link) opens Home. `source` is
+ * required for the Teams kinds so an unrelated payload carrying an `issueId` cannot
+ * claim the route.
  */
-export function notificationHrefs(data: TapData | undefined): Href[] | null {
-  // An approval opens Activity on it: pinned under "Needs you", decided inline.
-  if (data?.source === "teams" && data.approvalId) {
-    return [{ pathname: "/(app)/(tabs)/activity", params: { focus: approvalActivityId(data.approvalId) } }];
-  }
-  // So does an agent's question (a thread interaction), answered inline there.
-  if (data?.source === "teams" && data.interactionId && data.issueId) {
-    return [{ pathname: "/(app)/(tabs)/activity", params: { focus: interactionActivityId(data.issueId, data.interactionId) } }];
-  }
-  // A super-agent thread's question (task_questions.py push data): its task screen, ahead of the room fallback.
-  if (data?.source === "task_question" && data.taskId) {
-    return [{ pathname: "/(app)/task/[taskId]", params: { taskId: data.taskId } }];
-  }
-  // One of your shared sessions is waiting for you or finished.
-  if (data?.source === "session" && data.sessionId) {
-    return [{ pathname: "/(app)/session/[sessionId]", params: { sessionId: data.sessionId } }];
-  }
-  if (data?.roomId) {
-    // Threads are gone: a reply's notification opens its room.
-    return [`/(app)/room/${data.roomId}` as Href];
-  }
-  const agentId = data?.agentId ?? (data?.url ? parseAgentDeepLink(data.url)?.agentId : undefined);
-  return agentId ? [`/agent/${agentId}` as Href] : null;
+export function notificationHref(data: TapData | undefined): Href | null {
+  if (data?.source === "teams" && (data.approvalId || (data.interactionId && data.issueId))) return NEEDS_YOU;
+  if (data?.source === "task_question" && data.taskId) return NEEDS_YOU;
+  if (data?.roomId || data?.agentId || (data?.source === "session" && data.sessionId) || data?.url) return HOME;
+  return null;
 }
 
 /** The last tap routed, by notification id. A tap landing while this mounts
@@ -64,10 +42,6 @@ let lastRouted: string | undefined;
  * `useLastNotificationResponse` is the single source for both paths, and the
  * response is cleared once handled: the native module otherwise keeps
  * returning the last tap for the life of the process.
- *
- * It pushes over whatever is open rather than unwinding to the tabs: every
- * pushed screen keeps its composer draft in its own state, and unwinding would
- * throw an unsent message away.
  */
 export function NotificationTapRouter() {
   const response = Notifications.useLastNotificationResponse();
@@ -79,20 +53,8 @@ export function NotificationTapRouter() {
     if (id === lastRouted) return;
     lastRouted = id;
 
-    const data = response.notification.request.content.data as TapData | undefined;
-    const hrefs = notificationHrefs(data);
-    if (!hrefs) return;
-    const current = getCurrentTarget();
-    // Already on screen: the message arrives live, and a push would stack a
-    // second copy of the screen under the reader's back button.
-    if (shouldSuppressBanner(current, data ?? {})) return;
-
-    if (data?.roomId && current.roomId === data.roomId) {
-      // Inside that room already: go back down to the room.
-      router.dismissTo(hrefs[0]);
-      return;
-    }
-    for (const href of hrefs) router.push(href);
+    const href = notificationHref(response.notification.request.content.data as TapData | undefined);
+    if (href) router.navigate(href);
   }, [response]);
 
   return null;

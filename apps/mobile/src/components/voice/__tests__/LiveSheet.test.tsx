@@ -15,7 +15,7 @@ let mockEmit: (e: LiveEvent) => void = () => {};
 jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
 const mockLiveEvents = { onEvent: (h: (e: LiveEvent) => void) => { mockEmit = h; return () => {}; }, connectionRevision: 0 };
 jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLiveEvents }));
-jest.mock("expo-router", () => ({ router: { push: (...a: unknown[]) => mockPush(...a) } }));
+jest.mock("expo-router", () => ({ router: { push: (...a: unknown[]) => mockPush(...a), navigate: (...a: unknown[]) => mockPush(...a) } }));
 jest.mock("../../../lib/webrtc", () => ({ setupWebRTC: jest.fn() }));
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
@@ -44,7 +44,7 @@ jest.mock("@livekit/components-react", () => ({
 jest.mock("@livekit/react-native", () => ({ registerGlobals: jest.fn(), setupIOSAudioManagement: jest.fn(), useTrackVolume: jest.fn(() => 0) }));
 
 import { liveErrorText } from "@lightbulb/shared";
-import { LiveProvider, useLive, useRoomLive } from "../../../providers/live";
+import { LiveProvider, useLive } from "../../../providers/live";
 import { LiveSheet } from "../LiveSheet";
 
 function GoLive() {
@@ -257,12 +257,12 @@ describe("Live", () => {
     } finally { jest.useRealTimers(); }
   });
 
-  it("a voice-note banner: Edit opens the agent's detail and hides the sheet", async () => {
+  it("a voice-note banner: Edit opens the Agent tab and hides the sheet", async () => {
     await goLive();
     await notice({ kind: "voice_note_saved", agentId: "gauge", name: "Gauge", text: "be more blunt", by: "user-a" });
     expect(screen.getByText("Gauge will remember: be more blunt")).toBeTruthy();
     await fireEvent.press(screen.getByText("Edit"));
-    expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/control/agent-detail", params: { agentId: "gauge" } });
+    expect(mockPush).toHaveBeenCalledWith("/(app)/(tabs)/teams");
     expect(screen.queryByText("Gauge will remember: be more blunt")).toBeNull();
   });
 
@@ -317,20 +317,3 @@ describe("Live", () => {
   });
 });
 
-describe("useRoomLive", () => {
-  function Probe() {
-    const { userIds, available } = useRoomLive("room-1");
-    return <Text>{`${available ? "on" : "off"}:${userIds.join(",")}`}</Text>;
-  }
-
-  it("seeds from the server, then follows room.huddle.changed", async () => {
-    mockGet.mockResolvedValue({ userIds: ["u1"], available: true });
-    await render(<Probe />);
-    expect(await screen.findByText("on:u1")).toBeTruthy();
-    expect(mockGet).toHaveBeenCalledWith("/huddles/room-1");
-    await act(async () => { mockEmit({ type: "room.huddle.changed", payload: { roomId: "room-1", userIds: ["u1", "u2"] } } as unknown as LiveEvent); });
-    expect(screen.getByText("on:u1,u2")).toBeTruthy();
-    await act(async () => { mockEmit({ type: "room.huddle.changed", payload: { roomId: "other", userIds: [] } } as unknown as LiveEvent); });
-    expect(screen.getByText("on:u1,u2")).toBeTruthy();
-  });
-});

@@ -78,7 +78,7 @@ async def test_outbox_failure_returns_error_and_the_retry_admits(env):
     assert await tasks_repo.get_trigger(WS, "mail:<m1@example.com>") is not None
 
 
-@pytest.mark.parametrize("router", ["ses_inbound"])
+@pytest.mark.parametrize("router", ["ses_inbound", "photon_inbound"])
 def test_stranger_caps_stay_in_the_callers_before_admission(router):
     """§14.6: today's stranger caps run in the routers; a capped message never reaches `deliver_to_agent`."""
     src = (Path(__file__).parents[4] / "routers" / f"{router}.py").read_text()

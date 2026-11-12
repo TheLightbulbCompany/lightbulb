@@ -268,6 +268,17 @@ async def _unlink(owner_id: str, sid: str, public_id: str) -> None:
         await repo.update_schedule(owner_id, sid, {"hookPublicIds": kept}, expected_version=sched["version"])
 
 
+async def arm(owner_id: str, public_id: str, secret: str) -> bool:
+    """The paste half of a guided hook: the provider's secret into Secrets Manager, the hook armed.
+    False when there is no such `HOOK#` (the caller falls back to today's path)."""
+    hook = await repo.get_hook(owner_id, public_id)
+    if hook is None:
+        return False
+    await integration_secret_store.put(owner_id, hook["secretRef"], {"secret": secret, "mode": hook["signingMode"]})
+    await repo.update_hook(owner_id, public_id, {"armed": True}, expected_version=hook["version"])
+    return True
+
+
 async def delete(owner_id: str, public_id: str) -> None:
     """Unregister the provider side (best effort), stop its keeper, drop the secret and the row, unlink it
     from its automation. Already gone is done."""

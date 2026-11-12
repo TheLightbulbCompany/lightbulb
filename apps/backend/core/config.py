@@ -444,6 +444,13 @@ class Settings(BaseSettings):
     # Hosted assistants are offered network workers' assign tools (off: hidden, as in the engine).
     HOSTED_NETWORK_WORKERS: bool = False
 
+    # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
+    # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client
+    # application; PUBLISHABLE_KEY is the Stripe pk that Link's /auth and /auth/token require.
+    LINK_CLIENT_ID: str = ""
+    LINK_CLIENT_SECRET: str = ""
+    LINK_PUBLISHABLE_KEY: str = ""
+
     # --- Native multiplayer messaging (set by CDK ServiceStack; spec
     # docs/superpowers/specs/2026-09-09-native-multiplayer-messaging-architecture.md).
     # The env names are the frozen cross-packet contract — do not rename.

@@ -737,6 +737,23 @@ async def _wake(owner, sender, *, day=_DAY, owner_cap=50, sender_cap=10):
 
 
 @pytest.mark.asyncio
+async def test_a_released_stranger_wake_admits_the_sender_again_within_the_day(dynamodb_table):
+    """A wake admitted but not sent gives its slot back, so the delivery's retry is admitted."""
+    from core.repositories import container_repo
+
+    await _seed("owner_a", {"hook_token": "t"})
+    assert await _wake("owner_a", "s1", owner_cap=1, sender_cap=1) is True
+    assert await _wake("owner_a", "s1", owner_cap=1, sender_cap=1) is False
+    await container_repo.release_stranger_wake("owner_a", sender_key="s1", day=_DAY)
+    assert await _wake("owner_a", "s1", owner_cap=1, sender_cap=1) is True
+    # Nothing to give back (a sender never admitted, or another day's window) is a quiet no-op.
+    await container_repo.release_stranger_wake("owner_a", sender_key="s9", day=_DAY)
+    await container_repo.release_stranger_wake("owner_a", sender_key="s1", day="2026-09-25")
+    row = await container_repo.get_by_owner_id("owner_a", consistent=True)
+    assert row["stranger_wake_count"] == 1 and row["stranger_wake_senders"] == {"s1": 1}
+
+
+@pytest.mark.asyncio
 async def test_stranger_wake_is_capped_per_sender_and_a_new_sender_is_unaffected(dynamodb_table):
     await _seed("owner_a", {"hook_token": "t"})
 

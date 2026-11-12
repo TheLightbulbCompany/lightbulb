@@ -1,4 +1,4 @@
-"""GET /voice/timeline, POST /voice/calls/{id}/done, GET/PUT /voice/agent against the moto messaging table."""
+"""GET /voice/timeline and GET/PUT /voice/agent against the moto messaging table."""
 
 import pytest
 from unittest.mock import AsyncMock

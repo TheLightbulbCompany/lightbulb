@@ -22,7 +22,8 @@ from core.config import settings
 from core.billing import voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.services import apple_iap, openrouter_keys, trial_cap
+from core.repositories.workspace_repo import customer_ops_agent_id
+from core.services import apple_iap, billing_service, openrouter_keys, photon, text_lines, trial_cap
 from core.services.billing_service import SEATS_INCLUDED, BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
@@ -417,6 +418,70 @@ async def create_workspace_checkout(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     return result
+
+
+class FrontDeskRequest(BaseModel):
+    return_to: Literal["web", "app"] = "web"
+
+
+@router.post(
+    "/front-desk",
+    summary="Add the Front desk add-on, or start Checkout for Team plus the add-on",
+    operation_id="create_front_desk",
+)
+async def create_front_desk(
+    body: FrontDeskRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """The line itself is provisioned by the Stripe webhook, never by this click."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    account = await _get_billing_account(auth)
+    if apple_iap.apple_is_live(account):
+        raise HTTPException(status_code=409, detail="apple_managed")
+
+    # The add-on needs the Customer Operations agent; refuse before any billing call.
+    if not await customer_ops_agent_id(owner_id):
+        raise HTTPException(status_code=409, detail="no_front_desk_agent")
+
+    if apple_iap.stripe_is_live(account):
+        outcome = await billing_service.add_front_desk_item(owner_id)
+        if outcome == "already":
+            # The subscription has the add-on but the line may not: a failed purchase leaves no event to retry.
+            try:
+                await text_lines.ensure_line(owner_id)
+            except (billing_service.BillingServiceError, photon.PhotonError) as e:
+                logger.warning("front desk line request failed owner_id=%s: %s", owner_id, e)
+                raise HTTPException(status_code=502, detail="line_provision_failed") from e
+        if outcome in ("added", "already"):
+            return {"status": outcome}
+        raise HTTPException(status_code=400, detail=outcome)
+
+    if not account or not account.get("stripe_customer_id"):
+        try:
+            await BillingService().create_customer_for_owner(
+                owner_id=owner_id,
+                owner_type="org",
+                email=auth.email,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("front desk customer creation failed owner_id=%s: %s", owner_id, e)
+            raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
+
+    try:
+        result = await billing_service.create_workspace_checkout(
+            owner_id=owner_id,
+            clerk_user_id=auth.user_id,
+            plan="workspace",
+            return_to=body.return_to,
+            front_desk=True,
+        )
+    except billing_service.BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            raise HTTPException(status_code=409, detail="checkout_in_progress") from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return {"status": "checkout", "url": result["checkout_url"]}
 
 
 # ---------------------------------------------------------------------------

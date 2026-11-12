@@ -266,6 +266,46 @@ class TestFromIntegration:
         mock_seed.assert_not_awaited()
 
 
+class TestSetWebhookSecret:
+    """Arming a trigger stores the secret and arms its HOOK# row (``automation_hooks.arm``);
+    no HOOK# row is an unknown trigger. Paperclip is never called (Phase 1 task 7)."""
+
+    @pytest.mark.asyncio
+    async def test_arms_the_hook_row(self, async_client):
+        with patch("routers.automations.automation_hooks.arm", AsyncMock(return_value=True)) as arm:
+            response = await async_client.put(
+                "/api/v1/automations/pubabc123456/webhook-secret", json={"webhook_secret": "whsec_abc123"}
+            )
+        assert response.status_code == 200 and response.json() == {"status": "stored"}
+        arm.assert_awaited_once_with("org_test_456", "pubabc123456", "whsec_abc123")
+
+    @pytest.mark.asyncio
+    async def test_no_hook_row_404s(self, async_client):
+        with patch("routers.automations.automation_hooks.arm", AsyncMock(return_value=False)):
+            response = await async_client.put(
+                "/api/v1/automations/notminepub1234/webhook-secret", json={"webhook_secret": "whsec_abc123"}
+            )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_malformed_public_id_400s_before_any_lookup(self, async_client):
+        with patch("routers.automations.automation_hooks.arm", AsyncMock()) as arm:
+            response = await async_client.put(
+                "/api/v1/automations/not-alnum!/webhook-secret", json={"webhook_secret": "whsec_abc123"}
+            )
+        assert response.status_code == 400
+        arm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_org_member_forbidden(self, async_client_org_member):
+        with patch("routers.automations.automation_hooks.arm", AsyncMock()) as arm:
+            response = await async_client_org_member.put(
+                "/api/v1/automations/pubabc123456/webhook-secret", json={"webhook_secret": "whsec_abc123"}
+            )
+        assert response.status_code == 403
+        arm.assert_not_awaited()
+
+
 class TestMultiEventBody:
     """``event_ids`` is the multi-select shape; ``event_id`` is the deprecated
     one-event alias that maps into it. Sending both is ambiguous, so it is
@@ -338,3 +378,13 @@ class TestMultiEventBody:
         )
         assert response.status_code == 400
         assert "separate triggers" in response.json()["detail"]
+
+
+@pytest.fixture(autouse=True)
+def _no_hook_row(monkeypatch):
+    """set_webhook_secret's Paperclip fallback: a trigger with no `HOOK#` row."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services import automation_hooks
+
+    monkeypatch.setattr(automation_hooks, "arm", _AsyncMock(return_value=False))

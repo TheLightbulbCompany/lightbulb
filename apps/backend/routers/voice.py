@@ -4,7 +4,7 @@
 whose META has `kind == "call"` and its record under `META.call` (caller, callerName, returning, startedAt,
 durationSec, outcome, summary, steps, transcript, callerMemory, recordingUrl, ownerMode, resolvedAt); a meeting is a
 room with `META.meeting` (title, startAt, endAt, status, roster, plus the summary/asked/followUps the meeting agent
-writes). `POST /api/v1/voice/calls/{roomId}/done` marks a call's Needs-you card handled.
+writes).
 
 `GET/PUT /api/v1/voice/agent`: the Agent page, one JSON document per workspace (any member reads, an org admin
 writes). The page owns the defaults; an unset workspace reads `{"config": null}` and the page opens onboarding.

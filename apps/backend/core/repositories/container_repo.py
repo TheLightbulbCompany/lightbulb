@@ -276,6 +276,27 @@ async def try_consume_stranger_wake(
         return False
 
 
+async def release_stranger_wake(
+    owner_id: str, *, sender_key: str, day: str, attr_prefix: str = "stranger_wake"
+) -> None:
+    """Give back the slot ``try_consume_stranger_wake`` admitted when what it admitted could not be sent,
+    so the delivery's retry is admitted again. Best effort, and only inside the same day's window: a slot
+    the window has rolled past, or a sender never admitted, is left alone."""
+    day_a, count_a, senders_a = f"{attr_prefix}_day", f"{attr_prefix}_count", f"{attr_prefix}_senders"
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=f"SET {count_a} = {count_a} - :one, {senders_a}.#k = {senders_a}.#k - :one",
+            ConditionExpression=f"{day_a} = :d AND {senders_a}.#k >= :one",
+            ExpressionAttributeNames={"#k": sender_key},
+            ExpressionAttributeValues={":d": day, ":one": 1},
+        )
+    except Exception as e:  # noqa: BLE001 — a slot not given back costs one retry's reply, never the ingestion
+        if getattr(e, "response", {}).get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.warning("release_stranger_wake failed for %s", owner_id, exc_info=True)
+
+
 async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = "complaint") -> bool:
     """Claim the once-per-UTC-day slot for a ``kind`` platform notice to ``owner_id``.
 

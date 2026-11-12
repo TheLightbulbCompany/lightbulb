@@ -9,6 +9,12 @@ every other trigger-creation path in the system:
   same posture as every mutating endpoint in ``routers/connections.py``.
 - ``require_always_on_entitlement`` — a webhook trigger IS always-on
   automation: a trial container scales to zero and never wakes to serve a triggered dispatch.
+
+``PUT /automations/{public_id}/webhook-secret`` is the guided-paste
+companion: once the owner has pasted the hook URL into their Stripe
+Dashboard, Stripe hands them a signing secret and the frontend posts it here.
+It stores the secret and arms the owner's ``HOOK#`` row (``automation_hooks.arm``);
+``routers/hooks.py`` verifies every delivery against it. A foreign or typo'd id 404s.
 """
 
 from __future__ import annotations
@@ -92,6 +98,10 @@ class FromIntegrationBody(BaseModel):
         return list(dict.fromkeys(self.event_ids if self.event_ids is not None else [self.event_id or ""]))
 
 
+class WebhookSecretBody(BaseModel):
+    webhook_secret: str = Field(min_length=1, max_length=512)
+
+
 @router.post("/from-integration")
 async def from_integration(
     body: FromIntegrationBody,
@@ -117,6 +127,32 @@ async def from_integration(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/{public_id}/webhook-secret")
+async def set_webhook_secret(
+    public_id: str,
+    body: WebhookSecretBody,
+    auth: AuthContext = Depends(get_current_user),
+) -> dict:
+    """Arm one guided-paste trigger with its provider-issued signing secret
+    (the paste half of the guided flow — the frontend calls this once the
+    owner has the ``whsec_`` Stripe showed them).
+
+    Stores the secret and arms the caller's ``HOOK#`` row for ``public_id`` (404 when there is none).
+    """
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+
+    # Same path-injection / unbounded-key guard the proxy fire route uses
+    # (publicIds are 24-hex upstream).
+    if not public_id.isalnum() or len(public_id) > 64:
+        raise HTTPException(status_code=400, detail="invalid_public_id")
+
+    # The secret goes to Secrets Manager and the HOOK# row is armed; no HOOK# row is an unknown trigger.
+    if not await automation_hooks.arm(owner_id, public_id, body.webhook_secret):
+        raise HTTPException(status_code=404, detail="unknown_trigger")
+    return {"status": "stored"}
 
 
 # =====================================================================================================

@@ -174,6 +174,47 @@ async def test_failed_operation_releases_the_claim_and_raises_from_webhook(m):
     m.request.assert_not_awaited()
 
 
+async def _read(owner_id="org_1"):
+    """The panel's read (routers.agent_text.get_line): one look, then the subscription re-check on a failure."""
+    from routers import agent_text
+
+    outcome = await text_lines.complete_pending(owner_id)
+    return await agent_text._recheck(owner_id) if outcome == "failed" else outcome
+
+
+async def test_read_after_cancel_does_not_rebuy_when_the_item_is_gone(m, monkeypatch):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: False)
+    _stub_retrieve(monkeypatch, "active", [{}])
+    m.pending.return_value = PENDING
+    m.get_op.return_value = {"operationId": "op_1", "state": "cancelled", "reason": "by_us"}
+    assert await _read() == "absent"
+    m.request.assert_not_awaited()
+    m.claim.assert_not_awaited()
+    m.set_fd.assert_awaited_with("org_1")
+    m.metric.assert_any_call("text_line.provision_failed", dimensions={"code": "by_us"})
+
+
+async def test_read_after_cancel_without_a_subscription_is_absent(m):
+    m.account.return_value = {}
+    m.pending.return_value = PENDING
+    m.get_op.return_value = {"operationId": "op_1", "state": "cancelled"}
+    assert await _read() == "absent"
+    m.request.assert_not_awaited()
+
+
+@pytest.mark.parametrize("item_on_subscription", [True, False])
+async def test_read_after_failed_rebuys_only_when_the_item_is_still_on_the_subscription(
+    m, monkeypatch, item_on_subscription
+):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: item_on_subscription)
+    _stub_retrieve(monkeypatch, "active", [{}])
+    m.pending.return_value = PENDING
+    m.get_op.side_effect = [{"operationId": "op_1", "state": "failed"}, DONE]
+    expected = "provisioned" if item_on_subscription else "absent"
+    assert await _read() == expected
+    assert m.request.await_count == int(item_on_subscription)
+
+
 async def test_no_pending_row_is_absent(m):
     assert await text_lines.complete_pending("org_1") == "absent"
     m.get_op.assert_not_awaited()
@@ -366,6 +407,15 @@ async def test_a_surplus_release_not_done_keeps_the_pending_row(m):
     m.release.side_effect = photon.PhotonError(500, "http_500")
     assert await text_lines.complete_pending("org_1") == "provisioned"
     m.del_pending.assert_not_awaited()
+
+
+async def test_read_path_second_failure_is_absent_without_looping(m, monkeypatch):
+    monkeypatch.setattr(text_lines, "_is_front_desk_item", lambda i: True)
+    _stub_retrieve(monkeypatch, "active", [{}])
+    m.pending.return_value = PENDING
+    m.get_op.return_value = {"operationId": "op_1", "state": "failed"}
+    assert await _read() == "absent"
+    m.request.assert_awaited_once()
 
 
 async def test_no_customer_operations_is_no_agent_without_a_request(m):

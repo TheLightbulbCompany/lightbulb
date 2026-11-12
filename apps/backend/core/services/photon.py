@@ -80,6 +80,20 @@ async def send_text(*, sender_id: str, space_id: str, text: str, idempotency_key
     )
 
 
+async def send_typing(*, sender_id: str, space_id: str, typing: bool = True) -> None:
+    try:
+        await _call("POST", f"/spaces/{space_id}/typing", {"senderId": sender_id, "typing": typing})
+    except Exception:
+        logger.warning("photon typing indicator failed", exc_info=True)
+
+
+async def mark_read(message_id: str) -> None:
+    try:
+        await _call("POST", f"/messages/{message_id}/read", idempotency_key=f"read-{message_id}")
+    except Exception:
+        logger.warning("photon mark read failed", exc_info=True)
+
+
 async def request_dedicated_line(*, idempotency_key: str) -> dict:
     return await _call("POST", "/platforms/imessage/dedicated", idempotency_key=idempotency_key)
 

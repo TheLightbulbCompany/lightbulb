@@ -872,7 +872,7 @@ async def remember(call_id: str, body: RememberIn) -> dict:
 
 
 async def resolve_call(owner_id: str, call_id: str, by: str) -> None:
-    """A call's Question was answered: the call is handled (what POST /voice/calls/{id}/done writes), so Home's
+    """A call's Question was answered: the call is handled (`resolvedAt`), so Home's
     "Needs you" stops listing it. ponytail: the first answered Question resolves a call that had several."""
     meta = await messaging_repo.get_room(call_id)
     if not meta or meta.get("ownerId") != owner_id or meta.get("kind") != "call":

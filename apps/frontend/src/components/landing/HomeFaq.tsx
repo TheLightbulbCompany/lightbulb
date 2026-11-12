@@ -16,7 +16,6 @@ function withPrivacyLink(text: string) {
 // The comparison page that answers an objection at length (11 task 7).
 const MORE: Record<string, { href: string; label: string }> = {
   "We already have Slack.": { href: "/compare/slack", label: "Lightbulb vs Slack AI" },
-  "Claude already does this for me.": { href: "/claude-code-session-sharing", label: "Sharing Claude Code sessions with a team" },
 };
 
 /** The four objections, answered. Also emitted as FAQPage JSON-LD on `/`. */

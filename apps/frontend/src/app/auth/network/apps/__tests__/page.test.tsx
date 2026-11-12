@@ -17,7 +17,7 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: s.signedIn }),
   SignIn: () => <div>sign in</div>,
 }));
-vi.mock("@/components/control/panels/AgentKeysSection", () => ({ AgentKeysSection: () => <div>agent keys</div> }));
+vi.mock("../AgentKeysSection", () => ({ AgentKeysSection: () => <div>agent keys</div> }));
 
 function page() {
   return render(<SWRConfig value={{ provider: () => new Map() }}><NetworkAppsPage /></SWRConfig>);

@@ -143,6 +143,8 @@ export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] =
   ["/blog/ai-native-company-operating-system", "/blog"],
   // Said Lightbulb runs "behind the scenes" of Slack; the comparison page is the one Slack story.
   ["/ai-agents-for-slack", "/compare/slack"],
+  // Web session sharing went with the old chat app.
+  ["/claude-code-session-sharing", "/"],
 ].map(([source, destination]) => ({ source, destination }));
 
 // Only the production host may be indexed. Keyed on host, not VERCEL_ENV: the

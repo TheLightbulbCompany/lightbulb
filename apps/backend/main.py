@@ -57,6 +57,7 @@ from routers import (
     meet_bot,
     meetings,
     messaging,
+    meta_webhook,
     metronome_webhook,
     oauth,
     ops,
@@ -621,6 +622,10 @@ app.include_router(oauth.router, prefix="/api/v1")
 # Webhook automation fires at /api/v1/hooks/t/{owner_id}/{public_id}: no edge auth, the
 # backend verifies each delivery against its HOOK# row. See routers/hooks.py.
 app.include_router(hooks.router, prefix="/api/v1/hooks", tags=["hooks"])
+# App-LEVEL Meta ingress at /api/v1/hooks/meta — deliberately ownerless, because
+# a Meta app has ONE callback URL for every user. Routed by the asset id in the
+# payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
+app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 # Public /request-setup form (unauthenticated, rate-limited per IP).

@@ -490,6 +490,14 @@ class Settings(BaseSettings):
     # HMAC key for service-token JWTs (``service_token.py``), the digest/Needs-you email links and
     # the session-share signature.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""
+    # The `hub.verify_token` Meta echoes back on the one-time subscribe
+    # handshake for the APP-LEVEL webhook callback (routers/meta_webhook.py).
+    # It is a shared string of our choosing, set identically here and in the
+    # Meta app's webhook config; it authenticates nothing after setup (real
+    # deliveries carry X-Hub-Signature-256 instead). Empty ⇒ the whole /hooks/meta
+    # route 503s, so a half-configured environment can never complete a
+    # handshake and start receiving events it cannot verify.
+    META_WEBHOOK_VERIFY_TOKEN: str = ""
     # Public URL of the frontend (e.g. https://dev.thelightbulb.company).
     FRONTEND_URL: str = "https://dev.thelightbulb.company"
 

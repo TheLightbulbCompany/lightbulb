@@ -38,23 +38,29 @@ function TaskResult({ taskId, shown }: { taskId: string; shown: string }): React
 }
 
 function Output({ output: o }: { output: TaskOutput }): ReactElement {
-  const { messaging } = useLiveEvents();
   const ref = o.ref ?? {};
   if ((o.kind === "link" || o.kind === "pr") && /^https?:\/\//.test(ref.url ?? "")) {
     return <a className="vx-link" href={ref.url} target="_blank" rel="noopener noreferrer">{o.title}</a>;
   }
   if ((o.kind === "file" || o.kind === "document") && ref.roomId && ref.attachmentId) {
-    const open = async () => {
-      // The tab opens on the press (a popup blocker allows that), then goes to the signed address once it is known.
-      const tab = window.open("", "_blank");
-      try {
-        const { url } = await messaging.attachmentUrl(ref.roomId, ref.attachmentId);
-        if (tab) { tab.opener = null; tab.location.href = url; } else window.location.assign(url);
-      } catch {
-        tab?.close();
-      }
-    };
-    return <button type="button" className="vx-link" onClick={() => void open()}>{o.title}</button>;
+    return <AttachmentLink roomId={ref.roomId} attachmentId={ref.attachmentId} name={o.title} />;
   }
   return <span>{o.title}</span>;
+}
+
+/** A file in a room (a task's output, or a message's attachment): opens in a new tab through its short-lived signed
+ *  address. No viewer of our own on the voice pages. */
+export function AttachmentLink({ roomId, attachmentId, name }: { roomId: string; attachmentId: string; name: string }): ReactElement {
+  const { messaging } = useLiveEvents();
+  const open = async () => {
+    // The tab opens on the press (a popup blocker allows that), then goes to the signed address once it is known.
+    const tab = window.open("", "_blank");
+    try {
+      const { url } = await messaging.attachmentUrl(roomId, attachmentId);
+      if (tab) { tab.opener = null; tab.location.href = url; } else window.location.assign(url);
+    } catch {
+      tab?.close();
+    }
+  };
+  return <button type="button" className="vx-link" onClick={() => void open()}>{name}</button>;
 }

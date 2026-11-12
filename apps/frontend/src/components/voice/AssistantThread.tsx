@@ -10,7 +10,7 @@ import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard"
 import { MarkdownView } from "./MarkdownView";
 import { cardMarkdown } from "./cardMarkdown";
 import { CardContext, useCardPressState, type CardContextValue } from "./openui/CardContext";
-import { TaskResults } from "./TaskResults";
+import { AttachmentLink, TaskResults } from "./TaskResults";
 
 const NONE: CanonicalRoomMessage[] = [];
 
@@ -57,7 +57,7 @@ export function AssistantThread({ roomId }: { roomId: string }) {
   if (!open) return <p className="vx-empty" role="status">Loading chat…</p>;
   return <section className="vx-thread" aria-label="Conversation">
     <ol ref={list}>
-      {messages.filter((m) => !m.deletedAt && (m.text || m.taskRefs?.length)).map((m) => <Message key={m.messageId} message={m}
+      {messages.filter((m) => !m.deletedAt && (m.text || m.taskRefs?.length || m.attachments?.length)).map((m) => <Message key={m.messageId} message={m}
         answer={answers.get(m.messageId) ?? null} send={sendMessage} attachmentUrl={rooms.attachmentUrl} />)}
       {pending.map((p) => <li key={p.clientMessageId} data-author="human" data-pending>
         <MarkdownView skipHtml>{p.text}</MarkdownView>
@@ -92,6 +92,8 @@ function Message({ message: m, answer, send, attachmentUrl }: {
   return <li data-author={m.author.kind}>
     <b>{m.author.displayName}</b>
     <CardContext.Provider value={card}><MarkdownView skipHtml components={cardMarkdown}>{m.text}</MarkdownView></CardContext.Provider>
+    {!!m.attachments?.length && <ul className="vx-task-outputs" aria-label="Attachments">{m.attachments.map((a) =>
+      <li key={a.id}><AttachmentLink roomId={m.roomId} attachmentId={a.id} name={a.fileName} /></li>)}</ul>}
     <TaskResults message={m} />
     {m.kind === "automation_confirm" && m.automationId && <AutomationConfirmCard automationId={m.automationId} />}
   </li>;

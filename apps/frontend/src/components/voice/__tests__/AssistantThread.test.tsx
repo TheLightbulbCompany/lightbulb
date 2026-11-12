@@ -163,3 +163,17 @@ it("(c) an automation_confirm message keeps its Turn on button", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
   await waitFor(() => expect(api.post).toHaveBeenCalledWith("/automations/au1/activate", {}));
 });
+
+it("a message's attachments show, an attachment-only one included, and open in a new tab", async () => {
+  live.messaging.attachmentUrl.mockResolvedValue({ url: "https://files.example/photo.jpg" });
+  const tab = { opener: {}, location: { href: "" }, close: vi.fn() };
+  const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+  rooms.messages = [{ messageId: "p1", roomId: "dm1", threadRootMessageId: null, author: { kind: "human", id: "u1", displayName: "Ana" }, text: "",
+    attachments: [{ id: "att9", fileName: "photo.jpg", contentType: "image/jpeg", size: 10 }] }];
+  rooms.optimisticMessages = [];
+  fresh(<AssistantThread roomId="dm1" />);
+  fireEvent.click(screen.getByRole("button", { name: "photo.jpg" }));
+  await waitFor(() => expect(tab.location.href).toBe("https://files.example/photo.jpg"));
+  expect(live.messaging.attachmentUrl).toHaveBeenCalledWith("dm1", "att9");
+  open.mockRestore();
+});

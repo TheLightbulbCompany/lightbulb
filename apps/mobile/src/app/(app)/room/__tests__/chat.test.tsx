@@ -18,10 +18,15 @@ const CHAT = { roomId: "chat-1", kind: "group-dm", name: null, members: [{ kind:
 const CALL = { roomId: "chat-1", kind: "channel", name: "Call with Ada", members: [{ kind: "agent", id: "front" }] };
 let mockRoom: unknown = CHAT;
 let mockMessages: unknown[] = [];
+let mockStates: Record<string, string> = {};
+let mockHistory = { historyError: false, historyLoading: false };
+const mockLoadHistory = jest.fn();
+const mockReconcile = jest.fn(async () => {});
 jest.mock("../../../../lib/rooms", () => ({
   useMobileRooms: () => ({
     activeRoomId: "chat-1", activeRoom: mockRoom, rooms: [], selectRoom: mockSelect, sendMessage: mockSend, runs: mockRuns,
-    optimisticMessages: [], messages: mockMessages,
+    optimisticMessages: [], messages: mockMessages, ...mockHistory, loadHistory: mockLoadHistory,
+    sendState: (id: string) => mockStates[id] ?? "idle", reconcileSend: mockReconcile,
   }),
 }));
 
@@ -30,6 +35,8 @@ import ChatScreen, { lineText } from "../[roomId]/index";
 beforeEach(() => {
   jest.clearAllMocks();
   mockParams = { roomId: "chat-1" };
+  mockStates = {};
+  mockHistory = { historyError: false, historyLoading: false };
   mockTitles.length = 0;
   mockRuns = [];
   mockRoom = CHAT;
@@ -49,21 +56,40 @@ it("opens the room and shows its messages", async () => {
 it("keeps a failed message as its own retry row while the next one is typed and sent", async () => {
   let n = 0;
   jest.requireMock("expo-crypto").randomUUID = () => `msg-${++n}`;
-  mockSend.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
-  await render(<ChatScreen />);
+  mockSend.mockImplementationOnce(async () => { mockStates["msg-1"] = "rejected"; throw new Error("offline"); })
+    .mockImplementation(async (r: { clientMessageId: string }) => { mockStates[r.clientMessageId] = "persisted"; });
+  const { rerender } = await render(<ChatScreen />);
   await fireEvent.changeText(screen.getByLabelText("Message"), "Book me in");
   await fireEvent.press(screen.getByRole("button", { name: "Send" }));
-  const retry = await screen.findByLabelText("Not sent: Book me in. Tap to retry");
   // The next message goes out on its own id; the failed one stays.
   await fireEvent.changeText(screen.getByLabelText("Message"), "And a trim");
   await fireEvent.press(screen.getByRole("button", { name: "Send" }));
-  expect(screen.getByLabelText("Not sent: Book me in. Tap to retry")).toBeTruthy();
+  await rerender(<ChatScreen />);
+  const retry = screen.getByLabelText("Not sent: Book me in. Tap to retry");
+  expect(screen.queryByLabelText("Not sent: And a trim. Tap to retry")).toBeNull();
   await fireEvent.press(retry);
-  expect(mockSend.mock.calls.map((c) => [c[0].clientMessageId, c[0].text])).toEqual([
-    ["msg-1", "Book me in"], ["msg-2", "And a trim"], ["msg-1", "Book me in"],
-  ]);
+  expect(mockReconcile).toHaveBeenCalledWith("msg-1");
+  expect(mockSend.mock.calls.map((c) => [c[0].clientMessageId, c[0].text])).toEqual([["msg-1", "Book me in"], ["msg-2", "And a trim"]]);
   expect(mockSend.mock.calls[0][0]).toMatchObject({ mentions: [], replyToMessageId: null, threadRootMessageId: null });
-  expect(screen.queryByLabelText("Not sent: Book me in. Tap to retry")).toBeNull();
+});
+
+it("shows no Not sent row for a send that threw after the message was confirmed", async () => {
+  jest.requireMock("expo-crypto").randomUUID = () => "msg-x";
+  mockSend.mockImplementationOnce(async () => { mockStates["msg-x"] = "persisted"; throw new Error("late failure"); });
+  const { rerender } = await render(<ChatScreen />);
+  await fireEvent.changeText(screen.getByLabelText("Message"), "Book me in");
+  await fireEvent.press(screen.getByRole("button", { name: "Send" }));
+  await rerender(<ChatScreen />);
+  expect(screen.queryByLabelText(/Not sent/)).toBeNull();
+});
+
+it("says when the history failed to load and retries it, instead of an empty chat", async () => {
+  mockMessages = [];
+  mockHistory = { historyError: true, historyLoading: false };
+  await render(<ChatScreen />);
+  expect(screen.queryByText("Ask Lightbulb anything.")).toBeNull();
+  await fireEvent.press(screen.getByText("Couldn’t load this conversation. Retry"));
+  expect(mockLoadHistory).toHaveBeenCalled();
 });
 
 it("says when Lightbulb is replying", async () => {

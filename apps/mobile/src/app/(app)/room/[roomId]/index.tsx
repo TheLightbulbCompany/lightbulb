@@ -48,17 +48,19 @@ export default function ChatScreen() {
   const replying = open && rooms.runs.some((run) => run.roomId === roomId && run.state === "running");
   const [text, setText] = useState("");
   // A failed send stays on screen as its own "Not sent" row, apart from the composer, so typing the next message
-  // never loses it; a tap resends it with the same id, so the server's idempotency receipt dedupes an uncertain one.
-  const [unsent, setUnsent] = useState<{ id: string; text: string }[]>([]);
-  const send = async (body: string, clientMessageId: string = randomUUID()) => {
+  // never loses it. Which sends failed is the rooms machine's `sendState` (a send can throw after its message was
+  // already confirmed, or be confirmed later by reconciliation), so only rejected or uncertain ones show.
+  const [sent, setSent] = useState<{ id: string; text: string }[]>([]);
+  const unsent = sent.filter((u) => ["rejected", "uncertain"].includes(rooms.sendState(u.id)));
+  const send = async (body: string) => {
     if (!body || !open || !writable) return;
-    setUnsent((rows) => rows.filter((r) => r.id !== clientMessageId));
-    try {
-      await rooms.sendMessage({ clientMessageId, text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null });
-    } catch {
-      setUnsent((rows) => [...rows, { id: clientMessageId, text: body }]);
-    }
+    const clientMessageId = randomUUID();
+    setSent((rows) => [...rows, { id: clientMessageId, text: body }]);
+    await rooms.sendMessage({ clientMessageId, text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null })
+      .catch(() => {}); // sendState now reads rejected or uncertain, which draws the row
   };
+  // The machine's own retry: it reconciles history first and resends the SAME request, so an uncertain send dedupes.
+  const retry = (clientMessageId: string) => void rooms.reconcileSend(clientMessageId).catch(() => {});
   const submit = () => { const body = text.trim(); if (!body) return; setText(""); void send(body); };
 
   const rows: Row[] = open ? [
@@ -75,10 +77,16 @@ export default function ChatScreen() {
       <FlatList inverted data={rows} keyExtractor={(row) => row.key} contentContainerStyle={styles.list}
         keyboardDismissMode="interactive"
         ListHeaderComponent={replying && writable ? <Text accessibilityRole="text" accessibilityLiveRegion="polite" style={[fg, { color: palette.fgMute }]}>Lightbulb is replying…</Text> : null}
-        ListEmptyComponent={<Text style={[fg, styles.empty, { color: palette.fgMute }]}>{!open ? "Loading…" : writable ? "Ask Lightbulb anything." : "Nothing was recorded here."}</Text>}
+        ListEmptyComponent={open && rooms.historyError && !rooms.historyLoading ? (
+          <Pressable accessibilityRole="button" onPress={rooms.loadHistory} style={styles.emptyBox}>
+            <Text style={[fg, styles.empty, { color: palette.alert }]}>Couldn’t load this conversation. Retry</Text>
+          </Pressable>
+        ) : <Text style={[fg, styles.empty, { color: palette.fgMute }]}>
+          {!open || rooms.historyLoading ? "Loading…" : writable ? "Ask Lightbulb anything." : "Nothing was recorded here."}
+        </Text>}
         renderItem={({ item }) => item.unsent ? (
           <Pressable accessibilityRole="button" accessibilityLabel={`Not sent: ${item.text}. Tap to retry`}
-            onPress={() => void send(item.text, item.key)} style={[styles.mine, { backgroundColor: palette.selected }]}>
+            onPress={() => retry(item.key)} style={[styles.mine, { backgroundColor: palette.selected }]}>
             <Text style={fg}>{item.text}</Text>
             <Text style={[fg, styles.error, { color: palette.alert }]}>Not sent. Tap to retry</Text>
           </Pressable>
@@ -113,6 +121,7 @@ const styles = StyleSheet.create({
   page: { flex: 1 },
   list: { padding: spacing.lg, gap: spacing.md },
   empty: { textAlign: "center", marginTop: spacing.xl },
+  emptyBox: { minHeight: 44, justifyContent: "center" },
   mine: { alignSelf: "flex-end", maxWidth: "85%", borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   theirs: { alignSelf: "stretch" },
   name: { fontSize: 13, lineHeight: 18 },

@@ -43,7 +43,6 @@ from routers import (
     config,
     connections,
     container,
-    container_recover,
     debug,
     desktop_auth,
     desktop_pair,
@@ -54,8 +53,6 @@ from routers import (
     desktop_execution,
     desktop_session_pickup,
     desktop_session_resume,
-    google_accounts,
-    launch,
     mac_cdp,
     meet_audio,
     meet_bot,
@@ -73,7 +70,6 @@ from routers import (
     agent_keys as agent_keys_router,
     network as network_router,
     network_route as network_route_router,
-    settings_keys,
     setup_requests,
     support_tickets,
     users,
@@ -581,14 +577,10 @@ app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac
 app.include_router(website_logins.router, prefix="/api/v1/website-logins", tags=["browser"])
 app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])
 
-# Container recovery (POST /recover)
-app.include_router(container_recover.router, prefix="/api/v1/container", tags=["container"])
-
 # Config read/patch over the owner's roster profiles
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
 app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
-app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 # Under /internal/messaging: the bridge's `_post_backend` prefixes every callback with it.
 app.include_router(network_router.internal_router, prefix="/api/v1/internal/messaging/network", tags=["settings"])
 # `lightbulb login`/`logout`/`invite --agents` and the doorbell. The CLI's routes carry no Clerk
@@ -602,9 +594,6 @@ app.include_router(network_route_router.router, prefix="/api/v1", tags=["network
 app.include_router(connections.router, prefix="/api/v1", tags=["connections"])
 # Public OAuth callback surface (provider redirects the unauthenticated browser here)
 app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connections"])
-
-# Per-agent Google-account assignment (list accounts + bind/unbind an agent)
-app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accounts"])
 
 # 1-click Automations trigger seeding (connect an app, pick an event, get a
 # pre-filled webhook-triggered routine) + the Stripe guided-paste whsec_
@@ -643,7 +632,6 @@ app.include_router(hooks.router, prefix="/api/v1/hooks", tags=["hooks"])
 app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
-app.include_router(launch.router, prefix="/api/v1/launch", tags=["launch"])
 # Public /request-setup form (unauthenticated, rate-limited per IP).
 app.include_router(setup_requests.router, prefix="/api/v1/setup-requests", tags=["setup-requests"])
 
@@ -665,17 +653,6 @@ app.include_router(admin_router.router, prefix="/api/v1")
 # Teams BFF — native UI for Paperclip. The router itself carries the
 # /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
 app.include_router(teams_router, prefix="/api/v1")
-
-# Company Stripe account — status, create + hosted onboarding, connect existing, disconnect.
-from routers import company_stripe  # noqa: E402
-
-app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=["company-stripe"])
-
-# Capability policy + revoke-all (the P0d slice — row + surface only;
-# enforcement in the rails is P1).
-from routers import company_policy  # noqa: E402
-
-app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
 
 # Stripe Link Agent Wallet (every route 404s until Link's OAuth client is configured).
 from routers import company_link_wallet  # noqa: E402

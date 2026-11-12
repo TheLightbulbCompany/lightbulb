@@ -139,26 +139,6 @@ def _no_real_jev_key(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _launch_settings_read_defaults():
-    """Default every test to a launch-settings row that reads cleanly as
-    "nothing saved yet" (feature off).
-
-    Unit tests have no DynamoDB, so the real ``get_sync`` would attempt a
-    network read and fail. Patching the read to "no row" keeps the launch
-    feature off for tests that aren't about it. Tests that want a live
-    schedule use the ``launch_schedule`` fixture (it patches over this one);
-    the repo's own moto tests override this fixture to exercise the real
-    read. The cache is dropped either side so no row leaks across tests."""
-    from core.repositories import launch_settings_repo
-    from core.services import launch_phase
-
-    launch_phase.invalidate()
-    with patch.object(launch_settings_repo, "get_sync", return_value=None):
-        yield
-    launch_phase.invalidate()
-
-
-@pytest.fixture(autouse=True)
 def _runtime_session_gate_off():
     """Unit tests have no DynamoDB, so ``runtime_transport``'s single-flight wake gate would
     reach for a real table on every invoke (and every stop would clear a real row). Off by default (invoke directly, the gate's own
@@ -401,46 +381,3 @@ def mock_settings():
         mock.API_V1_STR = "/api/v1"
         mock.ENCRYPTION_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0xMjM0NTY3OA=="
         yield mock
-
-
-@pytest.fixture
-def launch_schedule():
-    """Patch the launch-settings row in memory. Call with (closes_at[, start_at,
-    end_at]) datetimes, or no args to turn the feature off. ``closed_at``
-    simulates the admin close action's stamp."""
-    from contextlib import contextmanager
-    from datetime import timedelta
-    from unittest.mock import patch
-
-    from core.repositories import launch_settings_repo
-    from core.services import launch_phase
-
-    @contextmanager
-    def _set(closes_at=None, start_at=None, end_at=None, *, comp_slots=200, closed_at=None, enabled=None):
-        start = start_at or (closes_at + timedelta(hours=12) if closes_at else None)
-        end = end_at or (start + timedelta(days=61) if start else None)
-        row = {
-            **launch_settings_repo.DEFAULTS,
-            "enabled": (closes_at is not None) if enabled is None else enabled,
-            "sheet_closes_at": closes_at.isoformat() if closes_at else None,
-            "competition_start_at": start.isoformat() if start else None,
-            "competition_end_at": end.isoformat() if end else None,
-            "closed_at": closed_at.isoformat() if closed_at else None,
-            "comp_slots": comp_slots,
-        }
-
-        async def _get():
-            return row
-
-        def _get_sync():
-            return row
-
-        launch_phase.invalidate()
-        with (
-            patch.object(launch_settings_repo, "get", _get),
-            patch.object(launch_settings_repo, "get_sync", _get_sync),
-        ):
-            yield
-        launch_phase.invalidate()
-
-    return _set

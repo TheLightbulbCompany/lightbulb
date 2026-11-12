@@ -2,10 +2,8 @@
 
 ``provision_new_workspace`` is the ONE door that starts a new workspace's first
 provision: the Clerk ``organization.created`` webhook calls it, and it raises on a
-failure so Svix redelivers the event. ``ensure_user_ready`` is the lazy, on-demand
-workspace JOIN (plus the owner seed reconcile on a running workspace) for the Teams
-self-heal; it never dispatches a provision.
-``GET /container/status`` calls neither -- it is a cold read.
+failure so Svix redelivers the event. ``GET /container/status`` does not call it -- it is
+a cold read.
 
 Every helper here is idempotent -- every call is safe to repeat.
 """
@@ -23,7 +21,7 @@ from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
     capture_product_event,
 )
-from core.repositories import billing_repo, container_repo
+from core.repositories import billing_repo
 from core.services import workspace_provisioning
 from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import evaluate_provision_gate
@@ -120,72 +118,6 @@ async def provision_new_workspace(org_id: str, created_by: str | None = None) ->
     except Exception:
         put_metric("provision.org_created.error")
         raise
-
-
-async def ensure_user_ready(auth: AuthContext) -> None:
-    """The lazy workspace JOIN for a real on-demand request. Idempotent; never dispatches.
-
-    Caller: the Teams self-heal (``routers/teams/agents._self_heal_reconcile``). The
-    ``organizationMembership.created`` webhook is the primary JOIN; this catches a member it
-    missed (e.g. one invited before the workspace was active).
-
-      1. Workspace JOIN (org context; role-blind). JOIN-ONLY: it never creates a
-         workspace, so no provision gate may swallow it.
-      2. For an org ADMIN with the gate clear and a RUNNING workspace, the owner workspace
-         seed reconcile (``_reconcile_owner_seed``) -- the one state a provision execution's
-         step 0 will not reach. A workspace that is not running is the executor's to seed.
-
-    Workspace-only. A caller with no org claim returns here, before anything else.
-    """
-    # Personal workspaces no longer exist, in the code or in the data: the
-    # September 2026 cohort was purged or migrated onto workspaces (#2624,
-    # #2625, #2627), and every helper below is org-only. Refusing here is the
-    # fence; resolve_owner_id 409s the same caller at every product API, and
-    # provision_runner step 0 refuses a non-org owner the executor is handed.
-    if not auth.is_org_context:
-        logger.info(
-            "ensure_user_ready: personal (no-org) caller user=%s refused — a workspace is required",
-            auth.user_id,
-        )
-        put_metric("ensure_user_ready.personal_refused")
-        return
-
-    owner_id = resolve_owner_id(auth)
-
-    # A seed/join failure never escapes: the caller answers 202 and the next request retries.
-    try:
-        await _ensure_workspace_member(org_id=owner_id, member_user_id=auth.user_id)
-    except Exception:
-        put_metric("workspace.seed.error")
-        logger.exception(
-            "ensure_user_ready: workspace membership-add failed for owner=%s user=%s — retried by the next request",
-            owner_id,
-            auth.user_id,
-        )
-
-    if not auth.is_org_admin:
-        return
-    # A provision gate speaks to workspace-CREATE economics, so it guards the seed alone.
-    if await evaluate_provision_gate(owner_id=owner_id, is_admin=True, actor_user_id=auth.user_id) is not None:
-        return
-    row = await container_repo.get_by_owner_id(owner_id)
-    if (row or {}).get("status") != "running":
-        return
-    try:
-        await _reconcile_owner_seed(auth, owner_id)
-    except Exception:
-        put_metric("workspace.seed.error")
-        logger.exception(
-            "workspace seed reconcile failed for owner %s — container unaffected; Teams degraded",
-            owner_id,
-        )
-
-
-async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
-    """Run the OWNER workspace seed in-request, for the one case the executor's step 0
-    cannot cover: the workspace is already running, so no provision will run.
-    Only reached from ensure_user_ready's admin branch; a no-op on an active workspace."""
-    await _ensure_workspace_for_org(org_id=owner_id, user_id=auth.user_id, is_admin=True)
 
 
 def ceo_agent_id(row) -> str | None:

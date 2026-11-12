@@ -329,11 +329,11 @@ def _grace_period_expiry(data) -> int | None:
     return int(expires)
 
 
-async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSubscription, was_live: bool) -> None:
+async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSubscription) -> None:
     """An active Apple subscription: make the workspace match it, on EVERY such event.
 
     Mirrors what a Stripe checkout does (stripe_webhook_handlers.handle_subscription_state):
-    first-entry side effects, the plan, the OpenRouter limit, owner facts, then a reconcile.
+    the plan, the OpenRouter limit, owner facts, then a reconcile.
 
     ``provider_choice`` is deliberately NOT written. An unset provider on a paid plan is
     the capped managed default (trial_cap.is_managed_capped) — what a Stripe buyer gets.
@@ -350,12 +350,9 @@ async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSu
         return
 
     from core.dynamodb import utc_now_iso
-    from core.services import stripe_webhook_handlers
     from core.services.owner_facts import write_owner_facts
     from core.services.provision_dispatch import dispatch_reconcile
 
-    if not was_live:
-        await stripe_webhook_handlers.on_entering_live(owner_id)
     await billing_repo.set_plan(owner_id, plan=subscription.plan, now_iso=utc_now_iso())
     if settings.OPENROUTER_WORKSPACE_ID:
         try:
@@ -680,8 +677,6 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
         )
         raise AppleIapError("this Apple transaction was refunded or revoked and cannot be linked")
 
-    # Captured BEFORE the write: was_live is an observation of the pre-write
-    # row, and set_apple_subscription moves the status.
     before = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if stripe_is_live(before):
         raise _stripe_managed(owner_id, subscription)
@@ -696,9 +691,6 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
         if str(e) == "stripe_managed":
             raise _stripe_managed(owner_id, subscription) from e
         raise CheckoutInProgress(str(e)) from e
-    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
-
-    was_live = (before or {}).get("subscription_status") in LIVE_SUBSCRIPTION_STATUSES
 
     written = await billing_repo.set_apple_subscription(
         owner_id,
@@ -734,7 +726,7 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
             return replace(subscription, status=authoritative)
         # No billing row, or the row is bound to a different Apple transaction.
         raise AppleIapError(f"could not link this transaction to owner {owner_id}")
-    await _reconcile_active_subscription(owner_id, subscription=subscription, was_live=was_live)
+    await _reconcile_active_subscription(owner_id, subscription=subscription)
     logger.info(
         # environment is logged because a "sandbox" grant is a REAL plan given
         # away for free (bounded by its expiry — see _verify_signed).
@@ -905,10 +897,6 @@ async def _apply_verified_notification(
 
     owner_id = row["owner_id"]
 
-    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
-
-    was_live = row.get("subscription_status") in LIVE_SUBSCRIPTION_STATUSES
-
     # Out-of-order guard. Apple does not promise delivery order, so a retried
     # older notification can land after a newer one; applying it would move
     # entitlement backwards — or worse, forwards after a cancellation.
@@ -936,7 +924,7 @@ async def _apply_verified_notification(
         return None
     if subscription.status == "active":
         # Every active notification reconciles, redeliveries included (see the helper).
-        await _reconcile_active_subscription(owner_id, subscription=subscription, was_live=was_live)
+        await _reconcile_active_subscription(owner_id, subscription=subscription)
 
     if subscription.status != "canceled":
         # Apple says this subscription is live again — a resubscribe reuses the

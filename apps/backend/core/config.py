@@ -280,8 +280,6 @@ class Settings(BaseSettings):
     METRONOME_RATE_CARD_ID: str = ""
     """Rate card the per-customer contract references at provision time.
     Created once per env in the Metronome console (runbook step)."""
-    METRONOME_CREDITS_PRODUCT_ID: str = ""
-    """Metronome product id the prepaid credit commit draws against. Per-env."""
     METRONOME_STRIPE_DELIVERY_METHOD_ID: str = ""
     """The Stripe integration Metronome bills through. Required by Metronome once an env has more
     than one Stripe integration (dev keeps a legacy one until Metronome support removes it);
@@ -440,24 +438,8 @@ class Settings(BaseSettings):
     # configuration set — fine for envs without the outbound stack.
     AGENT_MAIL_CONFIGURATION_SET: str = ""
 
-    # Company Stripe account (the owner's own business account on our Connect
-    # platform). Hosted onboarding bounces back to these; the Standard-OAuth
-    # "connect existing" flow returns to the backend callback, which must be
-    # registered verbatim as a redirect URI in Stripe → Connect settings.
-    STRIPE_COMPANY_REFRESH_URL: str = ""
-    STRIPE_COMPANY_RETURN_URL: str = ""
-    STRIPE_COMPANY_OAUTH_REDIRECT_URL: str = ""
-    # Connect platform client id (ca_…). Public, not a secret.
+    # Connect platform client id (ca_…), used to deauthorize a company's Stripe account. Public, not a secret.
     STRIPE_CONNECT_CLIENT_ID: str = ""
-    # The platform's publishable key (pk_…). Public, not a secret: Connect
-    # embedded onboarding initialises with it. Empty ⇒ the Stripe card falls
-    # back to the hosted Account Link.
-    STRIPE_PUBLISHABLE_KEY: str = ""
-
-    # The Accounts v2 API version for the account/account-link calls. The guide
-    # pins them with `Stripe-Version: {{ACCOUNTS_V2_VERSION}}` and says to
-    # confirm it during preview onboarding. Empty ⇒ the provisioning preview (2026-09-30.preview).
-    STRIPE_ACCOUNTS_V2_VERSION: str = ""
 
     # Hosted assistants are offered network workers' assign tools (off: hidden, as in the engine).
     HOSTED_NETWORK_WORKERS: bool = False

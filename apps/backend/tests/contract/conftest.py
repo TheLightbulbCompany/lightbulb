@@ -76,9 +76,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         {"owner-state-index": [("owner_id", "HASH", "S"), ("state", "RANGE", "S")]},
     ),
     "workspace-join-links": ([("org_id", "HASH", "S")], {}),
-    "launch-waitlist": ([("email", "HASH", "S")], {"referral-code-index": [("referral_code", "HASH", "S")]}),
-    "launch-entries": ([("owner_id", "HASH", "S")], {}),
-    "launch-settings": ([("id", "HASH", "S")], {}),
     "setup-requests": ([("id", "HASH", "S")], {}),
     "paperclip-companies": (
         [("user_id", "HASH", "S")],

@@ -25,14 +25,12 @@ async def test_user_created_sends_no_welcome(async_client, monkeypatch):
         patch("core.repositories.user_repo.put", new=AsyncMock(return_value=None)),
         patch("core.services.welcome_email.send_teammate_welcome", new=AsyncMock()) as teammate,
         patch("core.services.welcome_email.send_owner_welcome", new=AsyncMock()) as owner,
-        patch("core.repositories.launch_waitlist_repo.join", new=AsyncMock()) as join,
     ):
         resp = await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_HEADERS)
 
     assert resp.status_code == 200
     teammate.assert_not_awaited()
     owner.assert_not_awaited()
-    join.assert_not_awaited()
 
 
 def _membership(user_id: str) -> dict:

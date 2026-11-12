@@ -36,7 +36,7 @@ from core.services.apple_iap import (
     owner_account_token,
     stripe_is_live,
 )
-from core.services.billing_service import BillingService, BillingServiceError, retire_pending_checkout_for_apple
+from core.services.billing_service import BillingServiceError, retire_pending_checkout_for_apple
 
 logger = logging.getLogger(__name__)
 
@@ -96,53 +96,6 @@ async def link_apple_purchase(payload: dict, auth: AuthContext = Depends(get_cur
         "plan": subscription.plan,
         "expires_at": subscription.expires_at_ms,
     }
-
-
-@router.post(
-    "/billing/apple/portal",
-    summary="Stripe customer portal session that returns into the iOS app",
-    description=(
-        "Same portal as POST /billing/portal, but with a universal-link return "
-        "URL so iOS hands control back to the app when the customer finishes."
-    ),
-)
-async def create_mobile_portal(auth: AuthContext = Depends(get_current_user)):
-    """Exists ONLY for the return URL.
-
-    /billing/portal sends the customer to the web settings page when they are
-    done, which is correct in a browser and wrong from the app — a subscriber
-    who just cancelled would be left standing on isol8.co in Safari instead of
-    back where they started. Stripe's iOS guidance is to point `return_url` at
-    a universal link, which is what this does; the path is covered by the same
-    apple-app-site-association entry as the checkout return.
-
-    The path is chosen HERE, not accepted from the client: a caller-supplied
-    return_url on a billing endpoint is an open redirect.
-
-    Unlike the checkout endpoints there is no org-OWNER fence: this manages
-    whatever subscription the owner already has, including a Workspace or Ultra one,
-    and changes no plan shape — so an org admin is a legitimate caller.
-    An org MEMBER is not. `resolve_owner_id` returns the ORG's billing row in
-    org context, so without the admin check any member could open a portal
-    session that cancels the whole team's subscription. `/billing/portal` has
-    carried this check all along; the mobile return-to-app twin was written from
-    its behaviour and inherited the reasoning without the guard.
-    """
-    if auth.is_org_context:
-        require_org_admin(auth)
-
-    owner_id = resolve_owner_id(auth)
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or not account.get("stripe_customer_id"):
-        raise HTTPException(status_code=404, detail="Billing account not found")
-
-    try:
-        url = await BillingService().create_portal_session(account, return_path="/checkout_redirect/portal")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("apple_iap.portal_failed owner_id=%s: %s", owner_id, e)
-        raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
-
-    return {"portal_url": url}
 
 
 @router.post(

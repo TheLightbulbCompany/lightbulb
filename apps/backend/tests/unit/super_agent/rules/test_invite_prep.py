@@ -8,7 +8,6 @@ import pytest
 
 from core.repositories import automations_repo, google_accounts_repo
 from core.services import clerk_admin, rules, rules_builtins
-from scripts import rules_backfill_invite_prep as backfill
 from tests.unit.super_agent.automations.test_seed_hooks import _channel, env  # noqa: F401
 
 WS = "org_1"
@@ -102,21 +101,6 @@ def _event(**over):
 )
 def test_calendar_invite_match(event, expected):
     assert rules.open_invite(event, ME, NOW) is expected
-
-
-async def test_backfill_refuses_prod(world, monkeypatch):
-    monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "prod")
-    assert await backfill.run(WS, apply=True) == 2
-    assert await _rows() == []
-
-
-async def test_backfill_default_is_dry_run(world, monkeypatch, capsys):
-    monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "dev")
-    assert await backfill.run(WS) == 0
-    assert await _rows() == []
-    assert rules.invite_prep_id(ME) in capsys.readouterr().out
-    assert await backfill.run(WS, apply=True) == 0
-    assert len(await _rows()) == 1
 
 
 async def test_on_google_connect_is_best_effort(monkeypatch):

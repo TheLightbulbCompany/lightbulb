@@ -58,7 +58,6 @@ CRX_URL = (
     "&acceptformat=crx3&x=id%3D{id}%26uc"
 )
 _WEBSTORE_ID = re.compile(r"(?<![a-z])[a-p]{32}(?![a-z])")
-_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 HELPER_DIR = Path(__file__).resolve().parents[2] / "browser_helper"
 #: A session's hard lifetime (browser_control.SESSION_SECONDS); the token also dies with its
@@ -141,10 +140,6 @@ async def _current(owner: str) -> list[dict]:
         except ClientError as exc:
             logger.warning("browser extension migration failed owner=%s: %s", owner, exc.response["Error"]["Code"])
     return [e for e in old if e["key"].startswith(f"browser-state/{owner}/")]
-
-
-async def list_extensions(owner: str) -> list[dict]:
-    return [_public(e) for e in await _current(owner)]
 
 
 # ---------------------------------------------------------------------------
@@ -301,31 +296,6 @@ def _display_name(manifest: dict, zf: zipfile.ZipFile) -> str:
         if isinstance(name, str) and name.strip():
             return name.strip()
     return ""
-
-
-def slug_for(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40].strip("-")
-    if not _SLUG.match(slug):
-        raise ExtensionError("Could not derive a name for that extension.")
-    return slug
-
-
-async def upload(owner: str, data: bytes, user: str) -> dict:
-    manifest = read_manifest(data)
-    name = manifest["_name"]
-    return await _store(owner, slug_for(name), data, name, str(manifest.get("version", "")), "upload", user)
-
-
-async def remove(owner: str, slug: str) -> bool:
-    old = await container_repo.get_browser_extensions(owner)
-    gone = next((e for e in old or [] if e["slug"] == slug), None)
-    if not gone:
-        return False
-    # List first: a session starting in between must not name an object that is gone.
-    if not await container_repo.compare_browser_extensions(owner, old, [e for e in old if e["slug"] != slug]):
-        raise ExtensionError("Extensions changed. Refresh and try again.")
-    await run_in_thread(_s3().delete_object, Bucket=settings.OWNER_STATE_BUCKET, Key=gone["key"])
-    return True
 
 
 # ---------------------------------------------------------------------------

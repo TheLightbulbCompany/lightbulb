@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import { fixtureTask } from "@lightbulb/shared/tasks/fixtures";
@@ -71,22 +71,29 @@ it("shows one replying row while a run in this room is running, and none otherwi
   expect(screen.getByText("Lightbulb is replying…")).toBeInTheDocument();
 });
 
-it("a retry of a failed send with the same text reuses its clientMessageId; new text gets a new one", async () => {
-  rooms.sendMessage.mockRejectedValueOnce(new Error("timeout"));
+it("a failed send stays as its own Not sent row while the next is typed and sent; Retry reuses its id", async () => {
+  rooms.messages = [];
+  rooms.optimisticMessages = [];
+  let failA!: (e: Error) => void;
+  rooms.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { failA = reject; }));
   render(<AssistantThread roomId="dm1" />);
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: "Cancel Tuesday" } });
   fireEvent.keyDown(box, { key: "Enter" });
-  expect(await screen.findByRole("alert")).toBeInTheDocument();
-  expect(box).toHaveValue("Cancel Tuesday");
+  fireEvent.change(box, { target: { value: "And book Friday" } }); // B is being typed when A fails
+  await act(async () => failA(new Error("timeout")));
+  expect(box).toHaveValue("And book Friday"); // the draft is the person's, never overwritten
+  const row = screen.getByText("Cancel Tuesday").closest("li")!;
+  expect(row).toHaveAttribute("data-failed");
   fireEvent.keyDown(box, { key: "Enter" });
   await waitFor(() => expect(rooms.sendMessage).toHaveBeenCalledTimes(2));
-  const [first, second] = rooms.sendMessage.mock.calls.map(([req]) => req.clientMessageId);
-  expect(second).toBe(first);
-  fireEvent.change(box, { target: { value: "Something else" } });
-  fireEvent.keyDown(box, { key: "Enter" });
+  expect(screen.getByText("Cancel Tuesday").closest("li")).toHaveAttribute("data-failed"); // A survives B's send
+  const idA = rooms.sendMessage.mock.calls[0][0].clientMessageId;
+  expect(rooms.sendMessage.mock.calls[1][0].clientMessageId).not.toBe(idA);
+  fireEvent.click(within(row).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(rooms.sendMessage).toHaveBeenCalledTimes(3));
-  expect(rooms.sendMessage.mock.calls[2][0].clientMessageId).not.toBe(first);
+  expect(rooms.sendMessage.mock.calls[2][0]).toEqual(expect.objectContaining({ clientMessageId: idA, text: "Cancel Tuesday" }));
+  await waitFor(() => expect(screen.queryByText("Cancel Tuesday")).toBeNull());
 });
 
 it("opens the DM and renders its messages, markdown and all", () => {

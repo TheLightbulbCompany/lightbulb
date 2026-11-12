@@ -20,7 +20,8 @@ export function AssistantThread({ roomId }: { roomId: string }) {
   const { selectRoom, sendMessage } = rooms;
   useEffect(() => { selectRoom(roomId); }, [roomId, selectRoom]);
   const [text, setText] = useState("");
-  const [error, setError] = useState(false);
+  // Sends that failed: each stays in the thread as its own "Not sent" row until a retry (same id) lands.
+  const [failed, setFailed] = useState<{ id: string; text: string }[]>([]);
   const list = useRef<HTMLOListElement>(null);
   const open = rooms.activeRoomId === roomId;
   const messages = open ? rooms.messages : NONE;
@@ -28,27 +29,24 @@ export function AssistantThread({ roomId }: { roomId: string }) {
   const answers = useMemo(() => cardAnswersFor(messages), [messages]);
   const replying = open && rooms.runs.some((run) => run.roomId === roomId && run.state === "running");
   useEffect(() => { if (list.current) list.current.scrollTop = list.current.scrollHeight; }, [messages.length, pending.length, replying]);
-  // An uncertain send retried with the same text reuses its id, so the server's idempotency receipt dedupes it.
-  const failed = useRef<{ text: string; id: string } | null>(null);
-
-  async function send(e?: FormEvent) {
-    e?.preventDefault();
-    const body = text.trim();
-    if (!body || !open) return;
-    setText("");
-    setError(false);
-    const clientMessageId = failed.current?.text === body ? failed.current.id : crypto.randomUUID();
+  // A retry reuses the failed send's id, so the server's idempotency receipt dedupes an uncertain send.
+  async function deliver(body: string, clientMessageId: string) {
+    setFailed((rows) => rows.filter((f) => f.id !== clientMessageId));
     try {
       await sendMessage({ clientMessageId, text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null });
-      failed.current = null;
       // A New chat is titled by its first message (best effort: the list says "New chat" until then).
       if (rooms.activeRoom?.kind === "group-dm" && !rooms.activeRoom.name && messages.length === 0)
         void rooms.updateRoom({ name: body.slice(0, 80) }).catch(() => undefined);
     } catch {
-      failed.current = { text: body, id: clientMessageId };
-      setError(true);
-      setText((current) => current || body);
+      setFailed((rows) => [...rows, { id: clientMessageId, text: body }]);
     }
+  }
+  function send(e?: FormEvent) {
+    e?.preventDefault();
+    const body = text.trim();
+    if (!body || !open) return;
+    setText("");
+    void deliver(body, crypto.randomUUID());
   }
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) void send(e);
@@ -62,6 +60,10 @@ export function AssistantThread({ roomId }: { roomId: string }) {
       {pending.map((p) => <li key={p.clientMessageId} data-author="human" data-pending>
         <MarkdownView skipHtml>{p.text}</MarkdownView>
       </li>)}
+      {failed.map((f) => <li key={f.id} data-author="human" data-failed>
+        <MarkdownView skipHtml>{f.text}</MarkdownView>
+        <span className="vx-thread-error" role="alert">Not sent. <button type="button" className="vx-link" onClick={() => void deliver(f.text, f.id)}>Retry</button></span>
+      </li>)}
       {replying && <li data-pending role="status">Lightbulb is replying…</li>}
     </ol>
     <form onSubmit={send}>
@@ -69,7 +71,6 @@ export function AssistantThread({ roomId }: { roomId: string }) {
         placeholder="Message Lightbulb" aria-label="Message" />
       <Button type="submit" size="sm" disabled={!text.trim()}>Send</Button>
     </form>
-    {error && <p className="vx-thread-error" role="alert">Not sent. Try again.</p>}
   </section>;
 }
 

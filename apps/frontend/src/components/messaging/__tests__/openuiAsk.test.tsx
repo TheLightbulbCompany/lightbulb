@@ -1,8 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import { CardContext, useCardPressState } from "../openui/CardContext";
-import { OpenUICard } from "../openui/OpenUICard";
+import { CardContext, useCardPressState } from "@/components/voice/openui/CardContext";
+import { OpenUICard } from "@/components/voice/openui/OpenUICard";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const ctx = (over = {}) => ({ messageId: "card", roomId: "room", authorId: "a", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, retry: null, ...over });

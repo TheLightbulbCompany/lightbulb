@@ -32,6 +32,12 @@
 .vx-thread li b { font-weight: 600; font-size: var(--text-caption); color: var(--fg-soft); }
 .vx-thread li[data-pending] { color: var(--fg-mute); }
 .vx-thread form { display: flex; gap: 8px; align-items: end; padding: 12px 20px; border-top: 1px solid var(--plane-edge); }
+.vx-tasks { display: grid; gap: 6px; margin-top: 4px; }
+.vx-task { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--plane-edge); border-radius: var(--radius-md); font-size: var(--text-caption); color: var(--fg-soft); }
+.vx-task-line b { color: var(--fg); font-size: inherit; }
+.vx-task-outputs { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; }
+.vx-task-outputs button { padding: 0; border: 0; background: none; font: inherit; cursor: pointer; }
+.vx-task-answer summary { cursor: pointer; color: var(--fg); }
 .vx-thread-error { margin: 0; padding: 0 20px 12px; color: var(--alert); font-size: var(--text-caption); }
 
 /* Phone: the four places become the bottom tabs. */

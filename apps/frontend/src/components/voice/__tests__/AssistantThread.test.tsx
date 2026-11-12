@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { SWRConfig } from "swr";
+import { fixtureTask } from "@lightbulb/shared/tasks/fixtures";
 
 const rooms = vi.hoisted(() => ({
   activeRoomId: "dm1" as string | null,
@@ -12,6 +14,19 @@ const rooms = vi.hoisted(() => ({
   sendMessage: vi.fn(),
 }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: () => rooms }));
+const live = vi.hoisted(() => ({
+  tasks: { cacheScope: "org_t", get: vi.fn() },
+  messaging: { attachmentUrl: vi.fn() },
+  agentNames: new Map<string, string>(),
+}));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
+const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), del: vi.fn(), patch: vi.fn() }));
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+// The card is a lazy chunk: load it before the first card mounts.
+beforeAll(() => import("../openui/OpenUICard"));
+const fresh = (ui: React.ReactElement) => render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{ui}</SWRConfig>);
+const agent = { kind: "agent", id: "a1", displayName: "Lightbulb" };
 
 import { AssistantThread } from "../AssistantThread";
 
@@ -98,4 +113,53 @@ it("Enter sends the text through the hook and empties the box; Shift+Enter does 
   fireEvent.keyDown(box, { key: "Enter" });
   expect(rooms.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Move it to 3pm", mentions: [], replyToMessageId: null, threadRootMessageId: null }));
   expect(box).toHaveValue("");
+});
+
+it("(a) an agent's openui card draws live buttons; a press replies to the card's message, addressed to its author", async () => {
+  rooms.messages = [{ messageId: "card1", roomId: "dm1", threadRootMessageId: null, author: agent,
+    text: "Approve this?\n\n```openui-lang\nroot = Stack([b])\nb = Buttons([Button(\"Approve\"), Button(\"Deny\")])\n```" }];
+  rooms.optimisticMessages = [];
+  fresh(<AssistantThread roomId="dm1" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(rooms.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+    text: "Approve", replyToMessageId: "card1", threadRootMessageId: null, mentions: [{ kind: "agent", id: "a1" }],
+  })));
+  expect(screen.queryByText(/openui-lang/)).toBeNull();
+});
+
+it("(b) a task result shows its status, opens its file in a new tab, and offers the full answer", async () => {
+  const task = fixtureTask({ taskId: "t1", title: "Spring menu", status: "idle", shownGroup: "idle",
+    activity: { n: 1, status: "ended", outcome: "done", lastHeartbeatAt: "2026-11-04T14:00:00.000Z" },
+    outputs: [{ id: "o1", kind: "file", title: "menu.pdf", ref: { roomId: "task-room-t1", attachmentId: "att1" }, createdAt: "2026-11-04T14:00:00.000Z" }] });
+  live.tasks.get.mockResolvedValue({ task, attempts: [{ n: 1, status: "ended", startedAt: "2026-11-04T14:00:00.000Z", output: "The whole long answer." }], questions: [], effects: [], subscriptions: [], taskRoomId: "task-room-t1" });
+  live.messaging.attachmentUrl.mockResolvedValue({ url: "https://files.example/menu.pdf" });
+  const tab = { opener: {}, location: { href: "" }, close: vi.fn() };
+  const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+  rooms.messages = [{ messageId: "r1", roomId: "dm1", threadRootMessageId: null, author: agent, kind: "task_line", text: "Done: the menu.", taskRefs: [{ taskId: "t1", role: "started" }] }];
+  rooms.optimisticMessages = [];
+  fresh(<AssistantThread roomId="dm1" />);
+  fireEvent.click(await screen.findByRole("button", { name: "menu.pdf" }));
+  await waitFor(() => expect(tab.location.href).toBe("https://files.example/menu.pdf"));
+  expect(live.messaging.attachmentUrl).toHaveBeenCalledWith("task-room-t1", "att1");
+  expect(tab.opener).toBeNull();
+  expect(screen.getByText("Full answer")).toBeInTheDocument();
+  expect(screen.getByText("The whole long answer.")).toBeInTheDocument();
+  open.mockRestore();
+});
+
+it("(c) an automation_confirm message keeps its Turn on button", async () => {
+  api.get.mockImplementation(async (path: string) => {
+    if (path === "/automations/au1") return { id: "au1", name: "Weekly promo", instructions: "", status: "draft", pausedReason: null,
+      schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: null, deliverTo: "dm",
+      budgetPerRunUsd: null, ownerUserId: "user_test_123", createdBy: "router", mode: null, lastTaskId: null, activeRunTaskId: null, runCount: 0, version: 1 };
+    if (path === "/messaging/rooms") return { rooms: [] };
+    throw new Error(`no route ${path}`);
+  });
+  api.post.mockResolvedValue({});
+  rooms.messages = [{ messageId: "m9", roomId: "dm1", threadRootMessageId: null, author: agent, kind: "automation_confirm", automationId: "au1",
+    text: "Set up below. Turn it on with the button on the card." }];
+  rooms.optimisticMessages = [];
+  fresh(<AssistantThread roomId="dm1" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledWith("/automations/au1/activate", {}));
 });

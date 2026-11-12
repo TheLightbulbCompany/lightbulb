@@ -1,8 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import { CardContext, type CardContextValue, useCardPressState } from "../openui/CardContext";
-import { OpenUICard } from "../openui/OpenUICard";
+import { CardContext, type CardContextValue, useCardPressState } from "@/components/voice/openui/CardContext";
+import { OpenUICard } from "@/components/voice/openui/OpenUICard";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const ctx = (over: Partial<CardContextValue> = {}): CardContextValue => ({ messageId: "card", roomId: "room", authorId: "a", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, retry: null, ...over });
@@ -57,11 +57,10 @@ it("Image shows only the message's own attachment", async () => {
   expect(screen.getByText("Remote")).toBeInTheDocument();
 });
 
-it("an in-app source opens in the shell, an external one in a new tab", () => {
-  render(<Card program={'root = Stack([src])\nsrc = Sources([{title: "The plan", url: "/ISOA/issues/ISOA-12#document-plan"}, {title: "Stripe docs", url: "https://stripe.com/docs"}])'} />);
-  const inApp = screen.getByRole("link", { name: "The plan" });
-  expect(inApp.getAttribute("href")).toMatch(/^\/chat/);
-  expect(inApp).not.toHaveAttribute("target");
+it("a source opens in a new tab; an unsafe one stays text", () => {
+  render(<Card program={'root = Stack([src])\nsrc = Sources([{title: "Bad", url: "javascript:alert(1)"}, {title: "Stripe docs", url: "https://stripe.com/docs"}])'} />);
+  expect(screen.queryByRole("link", { name: "Bad" })).toBeNull();
+  expect(screen.getByText("Bad")).toBeInTheDocument();
   const ext = screen.getByRole("link", { name: "Stripe docs" });
   expect(ext).toHaveAttribute("href", "https://stripe.com/docs");
   expect(ext).toHaveAttribute("target", "_blank");

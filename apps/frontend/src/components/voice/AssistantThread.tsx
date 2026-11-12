@@ -2,10 +2,17 @@
 
 // The member's DM with the assistant on the Lightbulb page: its messages and a plain composer, over the same rooms
 // hook (and live room subscription) the old chat room used. No threads, tasks, panes or invites: talking is the orb.
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { cardAnswersFor, cardReplyRequest, type CanonicalRoomMessage, type CreateMessageRequest } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { Button } from "@/components/ui/button";
+import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard";
 import { MarkdownView } from "./MarkdownView";
+import { cardMarkdown } from "./cardMarkdown";
+import { CardContext, useCardPressState, type CardContextValue } from "./openui/CardContext";
+import { TaskResults } from "./TaskResults";
+
+const NONE: CanonicalRoomMessage[] = [];
 
 // ponytail: the newest page only (bounded history); add rooms.loadOlder on scroll-to-top when people ask for more.
 export function AssistantThread({ roomId }: { roomId: string }) {
@@ -16,8 +23,9 @@ export function AssistantThread({ roomId }: { roomId: string }) {
   const [error, setError] = useState(false);
   const list = useRef<HTMLOListElement>(null);
   const open = rooms.activeRoomId === roomId;
-  const messages = open ? rooms.messages : [];
+  const messages = open ? rooms.messages : NONE;
   const pending = open ? rooms.optimisticMessages : []; // the hook drops each one when its canonical copy lands
+  const answers = useMemo(() => cardAnswersFor(messages), [messages]);
   const replying = open && rooms.runs.some((run) => run.roomId === roomId && run.state === "running");
   useEffect(() => { if (list.current) list.current.scrollTop = list.current.scrollHeight; }, [messages.length, pending.length, replying]);
   // An uncertain send retried with the same text reuses its id, so the server's idempotency receipt dedupes it.
@@ -49,10 +57,8 @@ export function AssistantThread({ roomId }: { roomId: string }) {
   if (!open) return <p className="vx-empty" role="status">Loading chat…</p>;
   return <section className="vx-thread" aria-label="Conversation">
     <ol ref={list}>
-      {messages.filter((m) => !m.deletedAt && m.text).map((m) => <li key={m.messageId} data-author={m.author.kind}>
-        <b>{m.author.displayName}</b>
-        <MarkdownView skipHtml>{m.text}</MarkdownView>
-      </li>)}
+      {messages.filter((m) => !m.deletedAt && (m.text || m.taskRefs?.length)).map((m) => <Message key={m.messageId} message={m}
+        answer={answers.get(m.messageId) ?? null} send={sendMessage} attachmentUrl={rooms.attachmentUrl} />)}
       {pending.map((p) => <li key={p.clientMessageId} data-author="human" data-pending>
         <MarkdownView skipHtml>{p.text}</MarkdownView>
       </li>)}
@@ -65,4 +71,28 @@ export function AssistantThread({ roomId }: { roomId: string }) {
     </form>
     {error && <p className="vx-thread-error" role="alert">Not sent. Try again.</p>}
   </section>;
+}
+
+/** One message. An agent's message is a card's home: its fences draw live controls, and a press posts the answer as a
+ *  reply to this message (`replyToMessageId`), which is how the card's author knows it was answered. */
+function Message({ message: m, answer, send, attachmentUrl }: {
+  message: CanonicalRoomMessage; answer: string | null;
+  send: (request: CreateMessageRequest) => Promise<unknown>;
+  attachmentUrl: CardContextValue["attachmentUrl"];
+}) {
+  const agent = m.author.kind === "agent";
+  const reply = useCallback((text: string, clientMessageId: string) => send(cardReplyRequest({
+    text, agentId: m.author.id, messageId: m.messageId, threadRootMessageId: m.threadRootMessageId, clientMessageId,
+  })).then(() => undefined), [send, m.author.id, m.messageId, m.threadRootMessageId]);
+  const press = useCardPressState(agent ? reply : undefined, answer);
+  const card = useMemo<CardContextValue | null>(() => agent ? {
+    messageId: m.messageId, roomId: m.roomId, authorId: m.author.id, threadRootMessageId: m.threadRootMessageId,
+    attachments: m.attachments ?? [], ...press, attachmentUrl,
+  } : null, [agent, m.messageId, m.roomId, m.author.id, m.threadRootMessageId, m.attachments, press, attachmentUrl]);
+  return <li data-author={m.author.kind}>
+    <b>{m.author.displayName}</b>
+    <CardContext.Provider value={card}><MarkdownView skipHtml components={cardMarkdown}>{m.text}</MarkdownView></CardContext.Provider>
+    <TaskResults message={m} />
+    {m.kind === "automation_confirm" && m.automationId && <AutomationConfirmCard automationId={m.automationId} />}
+  </li>;
 }

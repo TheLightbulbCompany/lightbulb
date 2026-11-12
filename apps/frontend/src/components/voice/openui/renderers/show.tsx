@@ -6,9 +6,6 @@ import { Button as UiButton } from "@/components/ui/button";
 import { Input as UiInput } from "@/components/ui/input";
 import { Table as UiTable, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { safeHref } from "@/lib/safeHref";
-import { appLinkTarget } from "../../appLinks";
-import { useMessagingWorkspaceOptional } from "../../MessagingWorkspaceContext";
-import { openAppLink } from "../../RoomAppLinks";
 import { useCardContext } from "../CardContext";
 import { useCardPress } from "./shared";
 import type { RenderProps, SubComponent } from "./shared";
@@ -85,14 +82,9 @@ export function StepsView({ props }: RenderProps<{ steps: { label: string; statu
 }
 
 export function SourcesView({ props }: RenderProps<{ sources: { title: string; url: string }[] }>) {
-  const ws = useMessagingWorkspaceOptional();
   return (
     <ul className="grid gap-1 text-caption" aria-label="Sources">
       {props.sources.map((s, i) => {
-        const link = appLinkTarget(s.url);
-        if (link && link.href.startsWith("/chat")) {
-          return <li key={i}><a href={link.href} className="text-info underline underline-offset-4" onClick={(e) => openAppLink(e, link, ws)}>{s.title}</a></li>;
-        }
         const href = safeHref(s.url);
         return <li key={i}>{href
           ? <a href={href} target="_blank" rel="noopener noreferrer" className="text-info underline underline-offset-4">{s.title}</a>

@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
-import { CardContext, type CardContextValue, useCardPressState } from "./openui/CardContext";
+import { CardContext, type CardContextValue, useCardPressState } from "@/components/voice/openui/CardContext";
 import { RoomAppLinks } from "./RoomAppLinks";
 import { RoomLinkPreviews } from "./RoomLinkPreviews";
 import { RoomMessageContent } from "./RoomMessageContent";

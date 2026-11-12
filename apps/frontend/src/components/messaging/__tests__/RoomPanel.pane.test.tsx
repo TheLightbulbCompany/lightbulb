@@ -38,7 +38,7 @@ const props: RoomPanelProps = {
 };
 
 // The card is a lazy chunk; warm it so the first mount fits findByRole's 1 s budget.
-beforeAll(() => import("../openui/OpenUICard"));
+beforeAll(() => import("@/components/voice/openui/OpenUICard"));
 
 beforeEach(() => {
   _resetControllerForTests();

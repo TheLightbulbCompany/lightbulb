@@ -7,7 +7,7 @@ import { RoomMessageItem } from "../RoomMessageItem";
 import { roomMarkdown } from "../roomMarkdown";
 
 // The card is a lazy chunk; the first mount in a file otherwise pays the import inside findByRole's 1 s budget.
-beforeAll(() => import("../openui/OpenUICard"));
+beforeAll(() => import("@/components/voice/openui/OpenUICard"));
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 

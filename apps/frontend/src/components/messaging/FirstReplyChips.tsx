@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 
-/** The three pre-typed replies. The backend's messaging.FIRST_REPLIES carries the same strings;
+/** The three pre-typed replies;
  *  onboarding_brief.first_message_intake recognises the third by its "Not sure yet" prefix. */
 export const FIRST_REPLIES = [
   "Here's our website: ",

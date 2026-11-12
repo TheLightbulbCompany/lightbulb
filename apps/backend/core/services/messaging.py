@@ -143,23 +143,9 @@ FEED_WELCOME = (
 # Seeded ONCE per workspace as a message from the front agent (``ensure_default_room``
 # returns early on any room that already has messages): the first thing a new
 # user reads. It speaks as Lightbulb, the coordinator; specialists do the tasks (founder, 6 Nov 2026).
-#: The three pre-typed replies. The frontend's FirstReplyChips.tsx carries the same strings;
-#: the third's prefix is what onboarding_brief.first_message_intake recognises as "you pick".
-FIRST_REPLIES: tuple[str, str, str] = (
-    "Here's our website: ",
-    "I'm starting ",
-    "Not sure yet. Pick something useful and show me how you work.",
-)
-
 _FIRST_MESSAGE = (
-    "Welcome to {workspace}. I'm Lightbulb. I hand work to Growth, Engineering, Finance, Analytics and "
-    "Customer Ops, and show you each task.\n\n"
-    "One thing gets us started: what's the business? A website or a sentence is plenty.\n\n"
-    "→ Here's our website: …\n"
-    "→ I'm starting …\n"
-    "→ Not sure yet. Pick something useful and show me how you work.\n\n"
-    "I'll turn your answer into a plan and hand the first tasks to the specialists. "
-    "You'll watch them work here."
+    "Hi, I'm Lightbulb. I answer your calls, book appointments and take messages. "
+    'Ask me anything, like "Who called today?" or "What\'s on tomorrow?"'
 )
 
 

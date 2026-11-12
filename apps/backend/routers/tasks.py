@@ -7,12 +7,10 @@ through `TaskWorkflow` (`core.temporal.client`), never a direct row write. Mount
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from temporalio.client import WorkflowUpdateFailedError
 from temporalio.service import RPCError
@@ -304,36 +302,6 @@ async def _mark_action(ws: str, task: dict, action: str, user_id: str) -> None:
         )
     except Exception:  # noqa: BLE001 -- the action happened; its line is cosmetic
         logger.warning("action marker not posted task=%s action=%s", task["taskId"], action, exc_info=True)
-
-
-_EXPORT_PAGE = 100
-
-
-@router.get("/tasks/export")
-async def export_tasks(auth: Auth) -> StreamingResponse:
-    """Owner-only download of every task in the workspace, one JSON object per line (replaces
-    `/teams/workspace/export`). Declared before `/tasks/{id}`."""
-    ws = await _workspace(auth)
-    if not auth.is_org_admin:
-        raise _err(403, "forbidden")
-
-    async def lines():
-        for status in _STATUSES:
-            cursor: str | None = None
-            while True:
-                rows, cursor = await tasks_repo.list_tasks_by_status(ws, status, limit=_EXPORT_PAGE, cursor=cursor)
-                for t in rows:
-                    line = {k: t.get(k) for k in ("taskId", "status", "title", "createdAt", "resolvedAt")}
-                    line["status"] = "resolved" if t["status"] == "proposed" else t["status"]
-                    yield json.dumps({**line, "outputs": t.get("outputs") or []}, default=str) + "\n"
-                if not cursor:
-                    break
-
-    return StreamingResponse(
-        lines(),
-        media_type="application/x-ndjson",
-        headers={"Content-Disposition": 'attachment; filename="lightbulb-tasks.ndjson"'},
-    )
 
 
 @router.get("/tasks/{task_id}")

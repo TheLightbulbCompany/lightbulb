@@ -276,27 +276,6 @@ async def try_consume_stranger_wake(
         return False
 
 
-async def release_stranger_wake(
-    owner_id: str, *, sender_key: str, day: str, attr_prefix: str = "stranger_wake"
-) -> None:
-    """Give back the slot ``try_consume_stranger_wake`` admitted when what it admitted could not be sent,
-    so the delivery's retry is admitted again. Best effort, and only inside the same day's window: a slot
-    the window has rolled past, or a sender never admitted, is left alone."""
-    day_a, count_a, senders_a = f"{attr_prefix}_day", f"{attr_prefix}_count", f"{attr_prefix}_senders"
-    try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=f"SET {count_a} = {count_a} - :one, {senders_a}.#k = {senders_a}.#k - :one",
-            ConditionExpression=f"{day_a} = :d AND {senders_a}.#k >= :one",
-            ExpressionAttributeNames={"#k": sender_key},
-            ExpressionAttributeValues={":d": day, ":one": 1},
-        )
-    except Exception as e:  # noqa: BLE001 — a slot not given back costs one retry's reply, never the ingestion
-        if getattr(e, "response", {}).get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            logger.warning("release_stranger_wake failed for %s", owner_id, exc_info=True)
-
-
 async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = "complaint") -> bool:
     """Claim the once-per-UTC-day slot for a ``kind`` platform notice to ``owner_id``.
 
@@ -454,21 +433,6 @@ async def try_claim_owner_lifecycle(owner_id: str, *, stale_s: int = LIFECYCLE_C
     except Exception as e:  # noqa: BLE001 -- BotoCoreError carries no Error code; fail closed
         logger.warning("try_claim_owner_lifecycle: fault for owner=%s: %s", owner_id, e)
         return None
-
-
-async def mark_oauth_revoked(owner_id: str) -> int:
-    """Revoke-all's mark: an OAuth connect whose state was minted at or before it is refused
-    (``routers.connections.oauth_callback``). On the lease row, which the release leaves alone
-    (it removes only ``claimed_at``/``tok``). Milliseconds, so a connect started later in the
-    same second is not refused."""
-    now = int(time.time() * 1000)
-    await run_in_thread(
-        _get_table().update_item,
-        Key={"owner_id": f"{LIFECYCLE_KEY_PREFIX}{owner_id}"},
-        UpdateExpression="SET oauth_revoked_at_ms = :now",
-        ExpressionAttributeValues={":now": now},
-    )
-    return now
 
 
 async def get_oauth_revoked_at(owner_id: str) -> int | None:
@@ -1337,17 +1301,6 @@ async def try_claim_idle_stop(
 async def idle_stop_claim_current(owner_id: str, claim: str) -> bool:
     row = await get_by_owner_id(owner_id, consistent=True)
     return bool(row and row.get("status") == "running" and row.get("idle_stop_claim") == claim)
-
-
-async def update_error(owner_id: str, error: str) -> dict | None:
-    """Record the last error for a container."""
-    return await update_fields(
-        owner_id,
-        {
-            "last_error": error,
-            "last_error_at": utc_now_iso(),
-        },
-    )
 
 
 async def delete(owner_id: str) -> dict | None:

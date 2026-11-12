@@ -22,8 +22,7 @@ from core.config import settings
 from core.billing import voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.repositories.workspace_repo import customer_ops_agent_id
-from core.services import apple_iap, billing_service, openrouter_keys, photon, text_lines, trial_cap
+from core.services import apple_iap, openrouter_keys, trial_cap
 from core.services.billing_service import SEATS_INCLUDED, BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
@@ -36,7 +35,6 @@ from schemas.billing import (
     PortalResponse,
     UsageSummary,
     MemberUsage,
-    MyUsageResponse,
     SpendResponse,
 )
 
@@ -322,36 +320,6 @@ async def get_usage(
 
 
 @router.get(
-    "/my-usage",
-    response_model=MyUsageResponse,
-    summary="Get current user's own usage",
-    description="Returns the authenticated user's personal usage for the current billing period. No admin gating — any authenticated user can see their own usage.",
-    operation_id="get_my_usage",
-)
-async def get_my_usage(
-    auth: AuthContext = Depends(get_current_user),
-):
-    from datetime import datetime, timezone
-
-    owner_id = resolve_owner_id(auth)
-    user_id = auth.user_id
-
-    now = datetime.now(timezone.utc)
-    period = f"{now.year}-{now.month:02d}"
-
-    member_key = f"member:{user_id}:{period}"
-    m = await usage_repo.get_period_usage(owner_id, member_key) or {}
-
-    return MyUsageResponse(
-        period=period,
-        total_spend=m.get("total_spend_microdollars", 0) / 1_000_000,
-        total_input_tokens=m.get("total_input_tokens", 0),
-        total_output_tokens=m.get("total_output_tokens", 0),
-        request_count=m.get("request_count", 0),
-    )
-
-
-@router.get(
     "/spend",
     response_model=SpendResponse,
     summary="Spend summary",
@@ -451,81 +419,6 @@ async def create_workspace_checkout(
     return result
 
 
-class FrontDeskRequest(BaseModel):
-    return_to: Literal["web", "app"] = "web"
-
-
-@router.post(
-    "/front-desk",
-    summary="Add the Front desk add-on, or start Checkout for Team plus the add-on",
-    operation_id="create_front_desk",
-)
-async def create_front_desk(
-    body: FrontDeskRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    """The line itself is provisioned by the Stripe webhook, never by this click."""
-    require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
-    account = await _get_billing_account(auth)
-    if apple_iap.apple_is_live(account):
-        raise HTTPException(status_code=409, detail="apple_managed")
-
-    # The add-on needs the Customer Operations agent; refuse before any billing call.
-    if not await customer_ops_agent_id(owner_id):
-        raise HTTPException(status_code=409, detail="no_front_desk_agent")
-
-    if apple_iap.stripe_is_live(account):
-        outcome = await billing_service.add_front_desk_item(owner_id)
-        if outcome == "already":
-            # The subscription has the add-on but the line may not: a failed purchase leaves no event to retry.
-            try:
-                await text_lines.ensure_line(owner_id)
-            except (billing_service.BillingServiceError, photon.PhotonError) as e:
-                logger.warning("front desk line request failed owner_id=%s: %s", owner_id, e)
-                raise HTTPException(status_code=502, detail="line_provision_failed") from e
-        if outcome in ("added", "already"):
-            return {"status": outcome}
-        raise HTTPException(status_code=400, detail=outcome)
-
-    if not account or not account.get("stripe_customer_id"):
-        try:
-            await BillingService().create_customer_for_owner(
-                owner_id=owner_id,
-                owner_type="org",
-                email=auth.email,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("front desk customer creation failed owner_id=%s: %s", owner_id, e)
-            raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
-
-    try:
-        result = await billing_service.create_workspace_checkout(
-            owner_id=owner_id,
-            clerk_user_id=auth.user_id,
-            plan="workspace",
-            return_to=body.return_to,
-            front_desk=True,
-        )
-    except billing_service.BillingServiceError as e:
-        if str(e) == "checkout_in_progress":
-            raise HTTPException(status_code=409, detail="checkout_in_progress") from e
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return {"status": "checkout", "url": result["checkout_url"]}
-
-
-# Hard cap on credit-purchase amounts — a safety rail: without an upper
-# bound, a compromised session could lock in an unreasonable
-# charge-automatically payment against the saved card. Metronome/Stripe
-# would likely reject extremes too, but defense in depth says we cap
-# server-side. Raise via a code change + a pricing-tier conversation.
-#
-# Defined with the top-up request so its upper bound stays an explicit payment
-# safety rail independent of subscription Checkout.
-_TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
-
-
 # ---------------------------------------------------------------------------
 # Post-onboarding provider switch (POST /billing/provider)
 # ---------------------------------------------------------------------------
@@ -587,23 +480,6 @@ async def change_provider(
 # ---------------------------------------------------------------------------
 # Credit endpoints — Metronome is the only balance source
 # ---------------------------------------------------------------------------
-
-
-class TopUpRequest(BaseModel):
-    amount_cents: int = Field(
-        ...,
-        ge=500,
-        le=_TOP_UP_MAX_CENTS,
-        description="Min $5 (500 cents), max $1,000 (100000 cents).",
-    )
-    request_id: UUID = Field(
-        ...,
-        description=(
-            "Client-generated UUID — one per user intent and stable across "
-            "retries. A retry replays the original Metronome commit instead "
-            "of charging twice."
-        ),
-    )
 
 
 def _is_exhausted(balance_microcents: int | None) -> bool:
@@ -705,68 +581,6 @@ async def get_credits_balance(
             else None
         ),
     }
-
-
-@router.post(
-    "/credits/top_up",
-    summary="Request a credit top-up (Metronome payment-gated commit)",
-    description=(
-        "Creates a PAYMENT-GATED Metronome prepaid commit. Metronome invoices "
-        "the owner's saved Stripe card (charge_automatically) and releases the "
-        "credits when the payment collects — there is no checkout redirect and "
-        "no local balance write. The balance updates asynchronously; the gate's "
-        "lazy refresh picks it up."
-    ),
-    operation_id="credits_top_up",
-)
-async def top_up_credits(
-    body: TopUpRequest,
-    ctx: AuthContext = Depends(get_current_user),
-):
-    import httpx
-
-    from core.billing.metronome_client import MetronomeError
-    from core.billing.metronome_funding import FundingError, request_top_up
-    from core.services.webhook_dedup import TopUpIntentConflict
-
-    require_org_admin(ctx)
-    owner_id = resolve_owner_id(ctx)
-    try:
-        await request_top_up(owner_id, body.amount_cents, request_id=str(body.request_id))
-    except TopUpIntentConflict as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    except FundingError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except (MetronomeError, httpx.HTTPError) as e:
-        # A provider-side rejection/outage is not the caller's fault and must
-        # not surface as an unhandled 500 — money endpoints answer precisely.
-        logger.exception("Metronome top-up failed for owner %s", owner_id)
-        raise HTTPException(status_code=502, detail="billing provider error") from e
-
-    # Pull the fresh balance through the gate right after the commit so a
-    # depleted owner who buys credits is re-armed immediately. Restore is
-    # pull-based (no payment-success webhook reaches us), so it otherwise waits
-    # for the next balance poll or chat-gate refresh — both race the owner's
-    # FIRST send after buying credits, which then fails AccessDenied (observed
-    # live 2026-06-11).
-    #
-    # RESTORE-ONLY here: act ONLY on a confirmed-POSITIVE balance. A ≤0 read in
-    # this path is the gated commit not yet released (Stripe collection is
-    # async) — NOT a depleted owner — so handing it to apply_fresh_balance
-    # (which re-asserts the revoke on ≤0) would wrongly REVOKE someone who just
-    # paid. A top-up never depletes, so there is nothing to enforce here; the
-    # normal lazy refresh (chat / balance poll) re-arms once the credits land.
-    # Best-effort: apply_fresh_balance never raises.
-    try:
-        from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
-
-        balance_uc = await read_net_balance_microcents(owner_id)
-        if balance_uc is not None and balance_uc > 0:
-            await apply_fresh_balance(owner_id, balance_uc)
-    except Exception:
-        logger.warning("Post-top-up balance refresh failed for owner %s", owner_id, exc_info=True)
-
-    return {"status": "requested", "amount_cents": body.amount_cents}
 
 
 @router.post(

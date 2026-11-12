@@ -148,14 +148,6 @@ async def fire(owner_id: str, public_id: str, request: Request, hook: dict | Non
     return await _start(owner_id, hook, dedupe_key(provider, headers, body, mode=hook["signingMode"]), body)
 
 
-async def fire_verified(owner_id: str, public_id: str, body: bytes, *, dedupe_key: str) -> Response:
-    """A delivery whose signature the caller already checked (Meta's app secret)."""
-    hook = await automations_repo.get_hook(owner_id, public_id)
-    if hook is None:
-        return _json(404, {"detail": "unknown_trigger"})
-    return await _start(owner_id, hook, dedupe_key, body)
-
-
 @router.post("/t/{owner_id}/{public_id}")
 async def fire_route(owner_id: str, public_id: str, request: Request) -> Response:
     # public ids are short alphanumerics; the guard keeps path injection out of keys and rate buckets.

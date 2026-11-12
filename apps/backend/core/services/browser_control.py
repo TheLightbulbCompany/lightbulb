@@ -1064,18 +1064,6 @@ async def _save(owner: str, old: dict, *, stop: bool = False, reason: str | None
         raise BrowserError("Could not save the browser. Try again.") from None
 
 
-async def stop(owner: str, user: str, generation: str | None = None) -> dict:
-    """Any member's Stop: save, then end the session (an agent mid-turn is disconnected)."""
-    row = await _row(owner)
-    old = row.get("browser_state") or {}
-    if _mode(old) in ("transition", "error") or not old.get("session_id"):
-        raise BrowserError("The browser is not running.")
-    if not await _owned(owner, row, old):
-        raise BrowserError("The browser session expired. Its last completed save is available on restart.")
-    await _save(owner, old, stop=True, reason="stopped")
-    return await view(owner, user)
-
-
 _restarts: set[asyncio.Task] = set()
 
 

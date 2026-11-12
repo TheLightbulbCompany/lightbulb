@@ -1,6 +1,5 @@
 """Tests for container endpoints: GET /status."""
 
-import asyncio
 import contextlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,20 +14,6 @@ from core.auth import AuthContext
 def mock_auth_context(mock_org_admin_context):
     """Container requests default to an active organization workspace."""
     return mock_org_admin_context
-
-
-@pytest.fixture(autouse=True)
-def _close_request_background_tasks(request):
-    create_task = asyncio.create_task
-
-    def dispatch(coro):
-        if "async_client" in request.fixturenames:
-            coro.close()
-            return MagicMock()
-        return create_task(coro)
-
-    with patch("routers.container.asyncio.create_task", side_effect=dispatch):
-        yield
 
 
 def _workspace_auth(user_id: str = "user_x", email: str = "u@example.com") -> AuthContext:
@@ -172,7 +157,6 @@ async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
             patch.object(billing_repo, "_get_table", return_value=table),
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_workspace_auth())
 
@@ -286,12 +270,9 @@ class TestContainerStatus:
         assert data["last_error_at"] is None
 
     @pytest.mark.asyncio
-    @patch("routers.container.asyncio.create_task")
     @patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock)
     @patch("routers.container.container_repo.get_by_owner_id")
-    async def test_returns_provisioning_without_container(
-        self, mock_get_row, mock_gate, mock_create_task, async_client
-    ):
+    async def test_returns_provisioning_without_container(self, mock_get_row, mock_gate, async_client):
         """No container row + no gate fires (owner) -> 200 with phase=provisioning, and
         no background dispatch (the status read triggers nothing)."""
         mock_get_row.return_value = None
@@ -301,7 +282,6 @@ class TestContainerStatus:
         body = response.json()
         assert body["container_status"] is None
         assert body["runtime_phase"] == "provisioning"
-        mock_create_task.assert_not_called()
 
 
 class TestContainerStatusGate:
@@ -324,7 +304,6 @@ class TestContainerStatusGate:
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
             patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
             patch("routers.container.dispatch_provision", new=AsyncMock()) as dispatch,
-            patch("routers.container.asyncio.create_task") as create_task,
         ):
             result = await container_status(auth=_workspace_auth())
 
@@ -332,7 +311,6 @@ class TestContainerStatusGate:
         assert result["container_status"] is None
         assert result["container_substatus"] is None
         dispatch.assert_not_awaited()
-        create_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_first_admin_read_that_beats_the_webhook_sees_the_trial_not_the_paywall(self):
@@ -376,12 +354,10 @@ class TestContainerStatusGate:
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.asyncio.create_task") as create_task,
             pytest.raises(HTTPException) as exc,
         ):
             await container_status(_org_member_auth())
         assert exc.value.status_code == 202
-        create_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_container_with_gate_raises_402_structured(self):
@@ -412,7 +388,6 @@ class TestContainerStatusGate:
                 new_callable=AsyncMock,
                 return_value=fake_gate,
             ),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             with pytest.raises(HTTPException) as exc:
                 await container_status(auth=mock_auth)
@@ -442,7 +417,6 @@ class TestContainerStatusGate:
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
             patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close() or c),
         ):
             result = await container_status(auth=_workspace_auth())
 
@@ -473,7 +447,6 @@ class TestContainerStatusGate:
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
             ),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(auth=mock_auth)
 
@@ -559,7 +532,6 @@ class TestContainerStatusGate:
                 new_callable=AsyncMock,
                 return_value=fake_gate,
             ),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             with pytest.raises(HTTPException) as exc:
                 await container_status(auth=mock_auth)
@@ -579,7 +551,6 @@ class TestContainerStatusColdRead:
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
             patch("routers.container.dispatch_provision", new=AsyncMock()),
-            patch("routers.container.asyncio.create_task"),
             patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()),
         )
 
@@ -597,14 +568,13 @@ class TestContainerStatusColdRead:
         from routers.container import container_status
 
         with contextlib.ExitStack() as stack:
-            dispatch, create_task, trial_default = [stack.enter_context(p) for p in self._patches(row)][2:]
+            dispatch, trial_default = [stack.enter_context(p) for p in self._patches(row)][2:]
             result = await container_status(_workspace_auth())
 
         assert result["container_status"] == row["status"]
         assert result["container_substatus"] == row["substatus"]
         assert result["last_error"] == (row.get("last_error") if row["status"] == "error" else None)
         dispatch.assert_not_awaited()
-        create_task.assert_not_called()
         trial_default.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -673,7 +643,6 @@ class TestContainerStatusTeamsStatus:
                 new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=failed_repo),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_workspace_auth())
 
@@ -696,7 +665,6 @@ class TestContainerStatusTeamsStatus:
                 new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=active_repo),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_workspace_auth())
 
@@ -765,7 +733,6 @@ class TestContainerStatusOnboarded:
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_RUNNING_ROW)),
             patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
             patch("core.repositories.workspace_repo.WorkspaceRepo", return_value=repo),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             return await container_status(_workspace_auth())
 
@@ -796,80 +763,6 @@ class TestContainerStatusOnboarded:
             _onboarding_state_with(funnel_state="not_started", onboarding_generation=None)
         )
         assert result["onboarded"] is False
-
-
-class TestProvisionTaskObservability:
-    """Part A: the detached ensure_user_ready dispatches (Paperclip-proxy handshake) carry a done-callback
-    so a raised exception is surfaced (metric + log) instead of vanishing as a
-    silent "Task exception was never retrieved"."""
-
-    @pytest.mark.asyncio
-    async def test_watch_provision_task_emits_metric_on_failure(self):
-        from routers.container import _watch_provision_task
-
-        async def boom():
-            raise ValueError("boom")
-
-        task = asyncio.get_running_loop().create_task(boom())
-        await asyncio.gather(task, return_exceptions=True)
-        with patch("routers.container.put_metric") as mock_metric:
-            _watch_provision_task(task)
-        mock_metric.assert_called_once_with("container.provision", dimensions={"status": "error"})
-
-    @pytest.mark.asyncio
-    async def test_watch_provision_task_no_metric_on_success(self):
-        from routers.container import _watch_provision_task
-
-        async def ok():
-            return None
-
-        task = asyncio.get_running_loop().create_task(ok())
-        await asyncio.gather(task, return_exceptions=True)
-        with patch("routers.container.put_metric") as mock_metric:
-            _watch_provision_task(task)
-        mock_metric.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_watch_provision_task_ignores_cancelled(self):
-        from routers.container import _watch_provision_task
-
-        async def sleeper():
-            await asyncio.sleep(10)
-
-        task = asyncio.get_running_loop().create_task(sleeper())
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        with patch("routers.container.put_metric") as mock_metric:
-            _watch_provision_task(task)  # must not raise, must not emit
-        mock_metric.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_dispatch_watched_surfaces_raising_task(self):
-        """End-to-end wiring: a coroutine dispatched through _dispatch_watched
-        that raises fires the provision-error metric via the attached
-        done-callback (proves the site attaches it to a real Task)."""
-        from routers.container import _dispatch_watched
-
-        holder: dict = {}
-
-        def cap(coro):
-            task = asyncio.get_running_loop().create_task(coro)
-            holder["task"] = task
-            return task
-
-        async def boom():
-            raise ValueError("boom")
-
-        with (
-            patch("routers.container.asyncio.create_task", side_effect=cap),
-            patch("routers.container.put_metric") as mock_metric,
-        ):
-            _dispatch_watched(boom())
-            await asyncio.gather(holder["task"], return_exceptions=True)
-            await asyncio.sleep(0)  # let the done-callback fire
-
-        mock_metric.assert_called_once_with("container.provision", dimensions={"status": "error"})
 
 
 class TestStatusResponseRuntimeHost:

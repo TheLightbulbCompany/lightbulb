@@ -121,15 +121,6 @@ async def test_a_recurring_meetings_past_occurrences_are_their_own_rows(repos, a
 
 
 @pytest.mark.asyncio
-async def test_done_marks_the_call_resolved(repos, async_client_org_admin):  # noqa: F811
-    await _room("c1", "call", "2026-11-07T10:00:00+00:00", call={"outcome": "needs_you"})
-    assert (await async_client_org_admin.post("/api/v1/voice/calls/c1/done")).status_code == 200
-    call = (await messaging_repo.get_room("c1"))["call"]
-    assert call["outcome"] == "needs_you" and call["resolvedAt"]
-    assert (await async_client_org_admin.post("/api/v1/voice/calls/nope/done")).status_code == 404
-
-
-@pytest.mark.asyncio
 async def test_agent_config_round_trip_admin_only(repos, async_client_org_admin):  # noqa: F811
     assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] is None
     cfg = {"name": "Nova", "allow": {"book": True}, "hours": [{"day": "Mon", "open": "09:00"}], "price": 4.5}

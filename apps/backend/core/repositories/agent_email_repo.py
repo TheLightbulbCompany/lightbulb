@@ -12,7 +12,6 @@ Prefix-convention table (``core.dynamodb.get_table``), matching
 """
 
 import logging
-from typing import Literal
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -308,45 +307,6 @@ async def text_line_for_owner(owner_id: str) -> dict | None:
     return next((r for r in await query_by_owner(owner_id) if r.get("kind") == "text"), None)
 
 
-async def set_business_phone(number: str, phone: str) -> None:
-    await run_in_thread(
-        _get_table().update_item,
-        Key={"address": number},
-        UpdateExpression="SET business_phone = :p",
-        ConditionExpression="attribute_exists(address)",
-        ExpressionAttributeValues={":p": phone},
-    )
-
-
-async def set_thread_mode(number: str, customer: str, mode: Literal["human", "agent"]) -> None:
-    """``human`` marks a customer's thread as taken over by a person; ``agent`` hands it back.
-    ``customer`` is a phone number or an email address, so it goes in as a name placeholder."""
-    kwargs: dict = {
-        "Key": {"address": number},
-        "ConditionExpression": "attribute_exists(address)",
-        "ExpressionAttributeNames": {"#c": customer},
-    }
-    if mode == "human":
-        kwargs["UpdateExpression"] = "SET human_threads.#c = :iso"
-        kwargs["ExpressionAttributeValues"] = {":iso": utc_now_iso()}
-    else:
-        kwargs["UpdateExpression"] = "REMOVE human_threads.#c"
-    await run_in_thread(_get_table().update_item, **kwargs)
-
-
-async def set_disclosed(number: str, customer: str) -> None:
-    """Record that ``customer`` has been told the line is an automated assistant (the first reply).
-    The first time stands: a later call never moves it."""
-    await run_in_thread(
-        _get_table().update_item,
-        Key={"address": number},
-        UpdateExpression="SET disclosed.#c = if_not_exists(disclosed.#c, :iso)",
-        ConditionExpression="attribute_exists(address)",
-        ExpressionAttributeNames={"#c": customer},
-        ExpressionAttributeValues={":iso": utc_now_iso()},
-    )
-
-
 async def set_member_phone(number: str, phone: str, user_id: str | None) -> None:
     """Set (``user_id``) or remove (``None``) a member's phone on the line row, so their texts are
     posted to the main room as them. The ``member_phones`` map is created with the line. A phone is
@@ -369,41 +329,6 @@ async def drop_member_phones(line: dict, user_id: str) -> None:
     for phone, uid in (line.get("member_phones") or {}).items():
         if uid == user_id:
             await set_member_phone(line["address"], phone, None)
-
-
-async def put_phone_code(number: str, code: str, user_id: str, expires_at: int, *, prune: list[str]) -> bool:
-    """Store a link code for ``user_id`` (``expires_at`` in epoch seconds) and remove the expired codes in
-    ``prune`` in the same update. False when ``code`` is already on the row."""
-    prune = [c for c in prune if c != code]  # one path may not be both SET and REMOVEd
-    names = {"#c": code, **{f"#e{i}": c for i, c in enumerate(prune)}}
-    expr = "SET phone_codes.#c = :v"
-    if prune:
-        expr += " REMOVE " + ", ".join(f"phone_codes.#e{i}" for i in range(len(prune)))
-    return await _conditional(
-        _get_table().update_item,
-        Key={"address": number},
-        UpdateExpression=expr,
-        ConditionExpression="attribute_exists(address) AND attribute_not_exists(phone_codes.#c)",
-        ExpressionAttributeNames=names,
-        ExpressionAttributeValues={":v": {"user_id": user_id, "exp": expires_at}},
-    )
-
-
-async def bind_member_phone(number: str, *, code: str, phone: str, user_id: str, now: int, drop: list[str]) -> bool:
-    """Link ``phone`` to ``user_id`` with the code they texted from it: the code is single-use, must belong to
-    ``user_id`` and be live at ``now``. ``drop`` is the user's other phones, so one member holds one phone.
-    False when the code was used or has expired."""
-    drop = [d for d in drop if d != phone]
-    names = {"#c": code, "#p": phone, **{f"#d{i}": d for i, d in enumerate(drop)}}
-    removes = ["phone_codes.#c", *(f"member_phones.#d{i}" for i in range(len(drop)))]
-    return await _conditional(
-        _get_table().update_item,
-        Key={"address": number},
-        UpdateExpression="SET member_phones.#p = :uid REMOVE " + ", ".join(removes),
-        ConditionExpression="phone_codes.#c.user_id = :uid AND phone_codes.#c.exp > :now",
-        ExpressionAttributeNames=names,
-        ExpressionAttributeValues={":uid": user_id, ":now": now},
-    )
 
 
 async def add_meeting(address: str, meeting_id: str) -> None:

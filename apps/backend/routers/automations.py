@@ -9,12 +9,6 @@ every other trigger-creation path in the system:
   same posture as every mutating endpoint in ``routers/connections.py``.
 - ``require_always_on_entitlement`` — a webhook trigger IS always-on
   automation: a trial container scales to zero and never wakes to serve a triggered dispatch.
-
-``PUT /automations/{public_id}/webhook-secret`` is the guided-paste
-companion: once the owner has pasted the hook URL into their Stripe
-Dashboard, Stripe hands them a signing secret and the frontend posts it here.
-It stores the secret and arms the owner's ``HOOK#`` row (``automation_hooks.arm``);
-``routers/hooks.py`` verifies every delivery against it. A foreign or typo'd id 404s.
 """
 
 from __future__ import annotations
@@ -24,7 +18,6 @@ import logging
 import re
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
@@ -39,11 +32,6 @@ from core.config import settings
 from core.repositories import automations_repo, messaging_repo, tasks_repo
 from core.repositories.tasks_repo import IllegalTransition, VersionConflict
 from core.services.inbound_triggers import (
-    list_github_repos,
-    list_google_accounts,
-    list_instagram_accounts,
-    list_meta_pages,
-    list_vercel_projects,
     seed_trigger_routine,
 )
 from core.services import automation_hooks, automation_schedule, chat_gate, tasks_access
@@ -104,10 +92,6 @@ class FromIntegrationBody(BaseModel):
         return list(dict.fromkeys(self.event_ids if self.event_ids is not None else [self.event_id or ""]))
 
 
-class WebhookSecretBody(BaseModel):
-    webhook_secret: str = Field(min_length=1, max_length=512)
-
-
 @router.post("/from-integration")
 async def from_integration(
     body: FromIntegrationBody,
@@ -133,72 +117,6 @@ async def from_integration(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/providers/{provider}/resources")
-async def provider_resources(
-    provider: str,
-    auth: AuthContext = Depends(get_current_user),
-) -> list[dict]:
-    """Provider-side resources the owner's connected token can see (GitHub
-    repositories, Vercel projects, connected Google account emails) — feeds
-    the create dialog's resource picker for the auto-registering registration
-    shapes.
-
-    Org-admin gated like ``from_integration``, but WITHOUT the always-on
-    entitlement gate: listing resources is read-only and commits the owner to
-    nothing. 404 for a provider with no lister or one that isn't connected;
-    502 when the provider itself fails.
-    """
-    require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
-    # Built per-call, not at module level, so the module-level names stay the
-    # patch points (tests replace routers.automations.list_github_repos).
-    lister = {
-        "github": list_github_repos,
-        "vercel_cli": list_vercel_projects,
-        "google": list_google_accounts,
-        "meta_ads": list_meta_pages,
-        "instagram": list_instagram_accounts,
-    }.get(provider)
-    if lister is None:
-        raise HTTPException(status_code=404, detail="unknown_provider")
-    try:
-        return await lister(owner_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    # RuntimeError = the provider answered 200 with a body we don't recognise
-    # (Meta's /me/accounts without a `data` list). Same class of "the provider
-    # is not behaving" as an HTTP error, and far better than guessing a shape.
-    except (httpx.HTTPError, RuntimeError) as exc:
-        logger.warning("automations: %s resource listing failed owner=%s err=%s", provider, owner_id, exc)
-        raise HTTPException(status_code=502, detail=f"{provider}_unavailable") from exc
-
-
-@router.put("/{public_id}/webhook-secret")
-async def set_webhook_secret(
-    public_id: str,
-    body: WebhookSecretBody,
-    auth: AuthContext = Depends(get_current_user),
-) -> dict:
-    """Arm one guided-paste trigger with its provider-issued signing secret
-    (the paste half of the guided flow — the frontend calls this once the
-    owner has the ``whsec_`` Stripe showed them).
-
-    Stores the secret and arms the caller's ``HOOK#`` row for ``public_id`` (404 when there is none).
-    """
-    require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
-
-    # Same path-injection / unbounded-key guard the proxy fire route uses
-    # (publicIds are 24-hex upstream).
-    if not public_id.isalnum() or len(public_id) > 64:
-        raise HTTPException(status_code=400, detail="invalid_public_id")
-
-    # The secret goes to Secrets Manager and the HOOK# row is armed; no HOOK# row is an unknown trigger.
-    if not await automation_hooks.arm(owner_id, public_id, body.webhook_secret):
-        raise HTTPException(status_code=404, detail="unknown_trigger")
-    return {"status": "stored"}
 
 
 # =====================================================================================================

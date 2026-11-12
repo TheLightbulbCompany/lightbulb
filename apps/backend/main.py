@@ -32,7 +32,6 @@ from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_mail,
-    agent_text,
     apple_iap,
     automations,
     internal_automations,
@@ -43,7 +42,6 @@ from routers import (
     config,
     connections,
     container,
-    container_recover,
     debug,
     desktop_auth,
     desktop_pair,
@@ -54,26 +52,21 @@ from routers import (
     desktop_execution,
     desktop_session_pickup,
     desktop_session_resume,
-    google_accounts,
-    launch,
     mac_cdp,
     meet_audio,
     meet_bot,
     meetings,
     messaging,
-    meta_webhook,
     metronome_webhook,
     oauth,
     ops,
     orgs,
-    photon_inbound,
     platform_info,
     runtime_rpc,
     ses_inbound,
     agent_keys as agent_keys_router,
     network as network_router,
     network_route as network_route_router,
-    settings_keys,
     setup_requests,
     support_tickets,
     users,
@@ -524,7 +517,6 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 
 # SES-inbound agent-email ingest (provisioned agent email, inbound leg).
 # A Lambda parses raw SES mail and POSTs the clean JSON payload here.
-app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
@@ -581,14 +573,10 @@ app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac
 app.include_router(website_logins.router, prefix="/api/v1/website-logins", tags=["browser"])
 app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])
 
-# Container recovery (POST /recover)
-app.include_router(container_recover.router, prefix="/api/v1/container", tags=["container"])
-
 # Config read/patch over the owner's roster profiles
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
 app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
-app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 # Under /internal/messaging: the bridge's `_post_backend` prefixes every callback with it.
 app.include_router(network_router.internal_router, prefix="/api/v1/internal/messaging/network", tags=["settings"])
 # `lightbulb login`/`logout`/`invite --agents` and the doorbell. The CLI's routes carry no Clerk
@@ -603,12 +591,8 @@ app.include_router(connections.router, prefix="/api/v1", tags=["connections"])
 # Public OAuth callback surface (provider redirects the unauthenticated browser here)
 app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connections"])
 
-# Per-agent Google-account assignment (list accounts + bind/unbind an agent)
-app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accounts"])
-
-# 1-click Automations trigger seeding (connect an app, pick an event, get a
-# pre-filled webhook-triggered routine) + the Stripe guided-paste whsec_
-# write. See routers/automations.py.
+# Automations, and 1-click trigger seeding (connect an app, pick an event, get a
+# pre-filled webhook-triggered routine). See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
 app.include_router(voice_phone.router, prefix="/api/v1", tags=["voice"])  # the phone receptionist worker
@@ -637,13 +621,8 @@ app.include_router(oauth.router, prefix="/api/v1")
 # Webhook automation fires at /api/v1/hooks/t/{owner_id}/{public_id}: no edge auth, the
 # backend verifies each delivery against its HOOK# row. See routers/hooks.py.
 app.include_router(hooks.router, prefix="/api/v1/hooks", tags=["hooks"])
-# App-LEVEL Meta ingress at /api/v1/hooks/meta — deliberately ownerless, because
-# a Meta app has ONE callback URL for every user. Routed by the asset id in the
-# payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
-app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
-app.include_router(launch.router, prefix="/api/v1/launch", tags=["launch"])
 # Public /request-setup form (unauthenticated, rate-limited per IP).
 app.include_router(setup_requests.router, prefix="/api/v1/setup-requests", tags=["setup-requests"])
 
@@ -655,7 +634,6 @@ app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["
 # Agent mail (container routes under /u/{owner_id}/… use hook-token auth;
 # /addresses routes use Clerk). Policy lives in core/services/agent_mail_send.
 app.include_router(agent_mail.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
-app.include_router(agent_text.router, prefix="/api/v1/agent-text", tags=["agent-text"])
 
 # Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402
@@ -665,25 +643,6 @@ app.include_router(admin_router.router, prefix="/api/v1")
 # Teams BFF — native UI for Paperclip. The router itself carries the
 # /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
 app.include_router(teams_router, prefix="/api/v1")
-
-# Company Stripe account — status, create + hosted onboarding, connect existing, disconnect.
-from routers import company_stripe  # noqa: E402
-
-app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=["company-stripe"])
-
-# Capability policy + revoke-all (the P0d slice — row + surface only;
-# enforcement in the rails is P1).
-from routers import company_policy  # noqa: E402
-
-app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
-
-# Stripe Link Agent Wallet (every route 404s until Link's OAuth client is configured).
-from routers import company_link_wallet  # noqa: E402
-
-app.include_router(company_link_wallet.router, prefix="/api/v1/company/link-wallet", tags=["company-link-wallet"])
-app.include_router(
-    company_link_wallet.internal_router, prefix="/api/v1/internal/link-wallet", tags=["company-link-wallet"]
-)
 
 from routers import company_slug  # noqa: E402
 

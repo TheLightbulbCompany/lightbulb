@@ -242,47 +242,7 @@ async def test_unavailable_is_logged_with_ids_only(env, client, caplog):
     assert SECRET not in record.getMessage()
 
 
-async def test_meta_backend_fire_unavailable_still_200_but_logged(env, client, monkeypatch, caplog):
-    from core.temporal.client import TemporalUnavailable
-    from routers import meta_webhook
-
-    await _hook(provider="instagram", signingMode="hmac_sha256")
-    monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "vt")
-    env.temporal.fail = TemporalUnavailable("down")
-    binding = {"owner_id": WS, "trigger_public_id": PID, "trigger_secret": "x", "fields": []}
-    body = json.dumps({"object": "instagram", "entry": [{"id": "17841", "time": 1700000000, "changes": []}]}).encode()
-    with (
-        patch.object(meta_webhook, "_signature_valid", AsyncMock(return_value=True)),
-        patch.object(meta_webhook, "_bindings_for_asset", AsyncMock(return_value=[binding])),
-        patch.object(meta_webhook, "billing_repo") as billing,
-        caplog.at_level("WARNING"),
-    ):
-        billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
-        r = client.post("/api/v1/hooks/meta", content=body, headers={"X-Hub-Signature-256": "sha256=x"})
-    assert r.status_code == 200
-    assert any(r.name == "routers.meta_webhook" and PID in r.getMessage() for r in caplog.records)
-
-
 async def test_no_hook_row_is_404_never_paperclip(env, client):
     """A pre-switch Paperclip trigger (no `HOOK#` row) no longer fires anywhere."""
     r = _post(client, _stripe_body(), _stripe_headers(_stripe_body()))
     assert r.status_code == 404 and env.temporal.started == []
-
-
-async def test_meta_entry_fires_verified(env, client, monkeypatch):
-    from routers import meta_webhook
-
-    await _hook(provider="instagram", signingMode="hmac_sha256")
-    monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "vt")
-    binding = {"owner_id": WS, "trigger_public_id": PID, "trigger_secret": "x", "fields": []}
-    body = json.dumps({"object": "instagram", "entry": [{"id": "17841", "time": 1700000000, "changes": []}]}).encode()
-    with (
-        patch.object(meta_webhook, "_signature_valid", AsyncMock(return_value=True)),
-        patch.object(meta_webhook, "_bindings_for_asset", AsyncMock(return_value=[binding])),
-        patch.object(meta_webhook, "billing_repo") as billing,
-    ):
-        billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
-        r = client.post("/api/v1/hooks/meta", content=body, headers={"X-Hub-Signature-256": "sha256=x"})
-        r2 = client.post("/api/v1/hooks/meta", content=body, headers={"X-Hub-Signature-256": "sha256=x"})
-    assert r.status_code == r2.status_code == 200
-    assert [s[2] for s in env.temporal.started] == [f"hook:{WS}:{PID}:17841:1700000000:0"]

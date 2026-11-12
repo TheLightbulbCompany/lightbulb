@@ -3,10 +3,6 @@
 Every ``/agents`` route reads and writes ``agent_registry``; none calls Paperclip. The body schemas
 (``PatchAgentBody``) forbids extra keys, so client-supplied
 ``adapterType`` / ``adapterConfig`` / ``url`` / ``headers`` return 422 at the FastAPI boundary.
-
-This module also defines the shared ``_ctx`` Depends helper (and the
-indirection helper it leans on — ``_repo``) that the rest
-of the Teams BFF (Tasks 7-12) imports.
 """
 
 from __future__ import annotations
@@ -32,13 +28,7 @@ from core.services.agent_lifecycle import (
     ensure_root_ceo_survives,
 )
 from core.services.person_label import NEW_MEMBER, is_relay_email
-from core.services.provision_gate import evaluate_provision_gate
-from core.services.user_provision import (
-    ensure_user_ready,
-    ensure_workspace_trial_default,
-)
 
-from . import deps as deps_mod
 from .deps import TeamsContext
 from .schemas import PatchAgentBody
 
@@ -202,70 +192,6 @@ async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
     except Exception:
         logger.exception("teams: member principal map failed for org=%s", ctx.org_id)
     return principal_to_clerk
-
-
-async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
-    """Resolve the Teams BFF context for the current request: Clerk auth -> workspace META row ->
-    membership. ``deps_mod.resolve_teams_context`` (not a direct import) so tests that monkeypatch
-    the deps module Just Works.
-
-    Self-heal: a ``reconcile`` callback (``ensure_user_ready(auth)``) makes a non-member drive
-    provisioning and get 202 (the UI polls until active) instead of a 409. ``/teams`` never polled
-    ``/container/status``, so without this a member could only get provisioned by visiting ``/chat``.
-    """
-    return await deps_mod.resolve_teams_context(
-        auth=auth,
-        repo=_repo(),
-        reconcile=lambda: _self_heal_reconcile(auth),
-    )
-
-
-async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
-    """The lazy Paperclip JOIN for a /teams visitor with no Paperclip row.
-
-    Returns the blocked-gate payload (-> 402 "subscribe required") when a
-    provision gate is up, else None (-> 202 "keep polling") after launching
-    ``ensure_user_ready`` in the background. It never provisions a workspace:
-    that is the ``organization.created`` webhook's (and the user's Retry's) job.
-
-    **Gate first (awaited)**, so a visitor with no subscription / credits /
-    provider gets the subscribe/setup CTA instead of an endless 202.
-
-    **Join in the background**: ``ensure_user_ready`` can fail transiently
-    (Paperclip admin 5xx/timeout, owner-email lookup), and the Teams frontend
-    only auto-retries the **202** sentinel — awaiting it inline would let such a
-    failure escape as a 500. The next /teams request re-fires it.
-    """
-    owner_id = resolve_owner_id(auth)
-    is_admin = auth.is_org_admin
-
-    await ensure_workspace_trial_default(auth, owner_id)
-    gate = await evaluate_provision_gate(
-        owner_id=owner_id,
-        is_admin=is_admin,
-        actor_user_id=auth.user_id,
-    )
-    if gate is not None:
-        # Blocked — don't launch provisioning (it would no-op); tell the
-        # caller to return 402 so the UI shows the subscribe/setup CTA.
-        return gate.to_payload()
-
-    asyncio.create_task(_provision_after_gate(auth, owner_id))
-    return None
-
-
-async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
-    """Background half of the self-heal (runs after the gate has cleared): the
-    Paperclip JOIN, plus the owner seed reconcile on a running workspace — see
-    ``ensure_user_ready``. Off the request path so transient failures stay
-    retryable rather than 500-ing /teams.
-    """
-    try:
-        await ensure_user_ready(auth)
-    except Exception:
-        # Background task: log and swallow so a transient failure doesn't
-        # surface as an unretrieved-task error. The next /teams poll re-fires.
-        logger.exception("teams self-heal: background provisioning failed for owner_id=%s", owner_id)
 
 
 # --- Routes ---

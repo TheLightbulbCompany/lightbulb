@@ -646,51 +646,6 @@ async def sync_seat_quantity(owner_id: str) -> str:
     return "changed"
 
 
-async def add_front_desk_item(owner_id: str) -> str:
-    """Add the Front desk item to a live Stripe subscription, prorated.
-
-    Returns ``added | already | not_live | front_desk_price_unconfigured``.
-    Removal is Stripe's (billing portal / dashboard); the webhook releases the line.
-    """
-    from core.services.apple_iap import stripe_is_live
-
-    price = settings.STRIPE_FRONT_DESK_PRICE_ID
-    if not price:
-        return "front_desk_price_unconfigured"
-    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-    sub_id = (account or {}).get("stripe_subscription_id")
-    if not sub_id or not stripe_is_live(account) or account.get("subscription_source") == "apple_iap":
-        return "not_live"
-    with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
-        subscription = stripe.Subscription.retrieve(sub_id)
-    status = subscription.get("status")
-    if status not in ("active", "trialing"):
-        return "not_live"
-    if subscription_item_on_price(subscription["items"]["data"], price):
-        return "already"
-    key = f"front-desk-item:v1:{sub_id}"
-    if status == "trialing":
-        # The add-on carries no trial: the paid plan starts now, invoiced now.
-        with timing("stripe.api.latency", {"op": "subscription.modify"}):
-            stripe.Subscription.modify(
-                sub_id,
-                items=[{"price": price, "quantity": 1}],
-                trial_end="now",
-                proration_behavior="always_invoice",
-                idempotency_key=key,
-            )
-        return "added"
-    with timing("stripe.api.latency", {"op": "subscription_item.create"}):
-        stripe.SubscriptionItem.create(
-            subscription=sub_id,
-            price=price,
-            quantity=1,
-            proration_behavior="always_invoice",
-            idempotency_key=key,
-        )
-    return "added"
-
-
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
     """The single idempotency-key shape for subscription Checkout sessions.
 
@@ -749,15 +704,9 @@ async def _build_subscription_checkout(
         cancel_url=cancel_url,
         allow_promotion_codes=allow_promotion_codes,
         payment_method_collection="always",
-        # The SAME dict on BOTH, because Stripe puts them on different objects
-        # and two different webhooks read them:
-        #   subscription_data.metadata → the created Subscription, which is
-        #     what customer.subscription.* carries (handle_subscription_state).
-        #   metadata                   → the Session itself, which is what
-        #     checkout.session.completed carries (handle_checkout_session).
-        # Keep Checkout and Subscription metadata aligned: Stripe emits them
-        # on different webhook objects, and launch-coupon settlement reads the
-        # session while subscription lifecycle reads the subscription.
+        # The SAME dict on BOTH: subscription_data.metadata lands on the created
+        # Subscription, which customer.subscription.* carries
+        # (handle_subscription_state); metadata stays on the Session itself.
         metadata=metadata,
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,

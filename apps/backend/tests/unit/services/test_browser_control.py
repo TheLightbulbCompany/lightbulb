@@ -341,17 +341,6 @@ def _record_order(monkeypatch, key):
 
 
 @pytest.mark.asyncio
-async def test_any_member_stop_disconnects_the_agent_saves_then_ends(workspace, agent_tools, monkeypatch):
-    _agent(workspace)
-    order = _record_order(monkeypatch, "stop")
-    await control.stop("org_browser", "teammate")
-    assert order == ["disable", "enable", "save", "stop"]
-    state = workspace["browser_state"]
-    assert state["session_id"] is None and state["mode"] == "idle"
-    assert state["saved_key"].endswith("stop.json")
-
-
-@pytest.mark.asyncio
 async def test_teardown_checkpoints_before_stopping_and_retains_pointer(workspace, monkeypatch):
     order = _record_order(monkeypatch, "checkpoint")
     await control.teardown("org_browser", workspace)
@@ -724,25 +713,6 @@ async def test_start_on_top_of_a_start_in_flight_answers_starting(workspace, age
     workspace["browser_state"] = {**state, "mode": "transition", "operation_at": int(time.time())}
     with pytest.raises(control.BrowserError, match="Browser is changing"):
         await control._claim("org_browser", "run")
-
-
-@pytest.mark.asyncio
-async def test_a_persons_stop_stands_until_start(workspace, agent_tools, monkeypatch):
-    # However many panels are still open: their heartbeats restart a browser that idled out or
-    # expired, never one a person just stopped.
-    _record_order(monkeypatch, "stop")
-    client = MagicMock()
-    client.start_browser_session.return_value = {"sessionId": "fresh"}
-    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
-    out = await control.stop("org_browser", "teammate")
-    assert out["active"] is False and out["endedReason"] == "stopped"
-    assert (await control.watch("org_browser", "user"))["endedReason"] == "stopped"
-    client.start_browser_session.assert_not_called()
-    await control.start("org_browser", "user")
-    client.start_browser_session.assert_called_once()
-    state = workspace["browser_state"]
-    assert state["session_id"] == "fresh" and state.get("ended_reason") is None
 
 
 @pytest.mark.asyncio

@@ -1411,32 +1411,6 @@ async def _write_company_stripe(owner_id: str, mutate, *, condition: str, values
     return after
 
 
-async def set_company_stripe_account(owner_id: str, *, account_id: str, source: str) -> dict | None:
-    """Bind the company account exactly once. None = no row, or already bound."""
-    # "api_key" is the owner's OWN restricted key, held backend-side — no
-    # Connect relationship exists for that row, so the account.updated
-    # webhook never fires for it and status is re-read on demand instead.
-    if source not in ("created", "connected", "api_key"):
-        raise ValueError("source must be 'created', 'connected' or 'api_key'")
-    if not account_id:
-        raise ValueError("account_id must be non-empty (it keys a GSI)")
-
-    def mutate(row: dict) -> None:
-        row["company_stripe_account_id"] = account_id
-        row["company_stripe_source"] = source
-        row["company_stripe_details_submitted"] = False
-        row["company_stripe_charges_enabled"] = False
-        row["company_stripe_payouts_enabled"] = False
-        row["company_stripe_connected_at"] = utc_now_iso()
-
-    return await _write_company_stripe(
-        owner_id,
-        mutate,
-        condition="attribute_exists(owner_id) AND attribute_not_exists(company_stripe_account_id)",
-        values={},
-    )
-
-
 async def set_company_stripe_project_id(owner_id: str, *, project_id: str) -> dict | None:
     """Record the company's Provisioning Project, exactly once.
 
@@ -1459,51 +1433,6 @@ async def set_company_stripe_project_id(owner_id: str, *, project_id: str) -> di
     )
 
 
-async def set_company_stripe_projects_account(owner_id: str, *, account_id: str) -> dict | None:
-    """Record the services account, exactly once, beside a bound main account.
-    None = no row, no main binding, or another worker got there first."""
-    if not account_id:
-        raise ValueError("account_id must be non-empty")
-
-    def mutate(row: dict) -> None:
-        row["company_stripe_projects_account_id"] = account_id
-
-    return await _write_company_stripe(
-        owner_id,
-        mutate,
-        condition="attribute_exists(company_stripe_account_id) AND attribute_not_exists(company_stripe_projects_account_id)",
-        values={},
-    )
-
-
-async def set_company_stripe_status(
-    owner_id: str,
-    *,
-    account_id: str,
-    details_submitted: bool,
-    charges_enabled: bool,
-    payouts_enabled: bool,
-    livemode: bool | None = None,
-) -> dict | None:
-    """Mirror Connect's account.updated. None = the row is bound to a different account.
-    ``livemode`` is only known for api_key rows (from the key prefix); Connect
-    rows follow the platform key and leave it unset."""
-
-    def mutate(row: dict) -> None:
-        row["company_stripe_details_submitted"] = bool(details_submitted)
-        row["company_stripe_charges_enabled"] = bool(charges_enabled)
-        row["company_stripe_payouts_enabled"] = bool(payouts_enabled)
-        if livemode is not None:
-            row["company_stripe_livemode"] = bool(livemode)
-
-    return await _write_company_stripe(
-        owner_id,
-        mutate,
-        condition="company_stripe_account_id = :acct",
-        values={":acct": account_id},
-    )
-
-
 async def clear_company_stripe_account(owner_id: str, *, account_id: str) -> dict | None:
     """Unbind after deauthorization. Conditioned on the id so a stale event can't clear a rebound row."""
 
@@ -1517,20 +1446,6 @@ async def clear_company_stripe_account(owner_id: str, *, account_id: str) -> dic
         condition="company_stripe_account_id = :acct",
         values={":acct": account_id},
     )
-
-
-async def get_by_company_stripe_account_id(account_id: str) -> dict | None:
-    if not account_id:
-        return None
-    resp = await run_in_thread(
-        _get_table().query,
-        IndexName="company-stripe-account-index",
-        KeyConditionExpression="company_stripe_account_id = :acct",
-        ExpressionAttributeValues={":acct": account_id},
-        Limit=1,
-    )
-    items = resp.get("Items") or []
-    return items[0] if items else None
 
 
 async def list_company_stripe_owners() -> list[str]:
@@ -1580,35 +1495,6 @@ async def get_capability_policy(owner_id: str) -> dict:
     return _fill_capability_policy(row.get("capability_policy"))
 
 
-async def set_capability_policy(owner_id: str, updates: dict) -> dict | None:
-    """Merge ``updates`` over the stored map and write it. Raises ValueError on
-    an unknown key or mode; ``None`` = no billing row. Returns the filled map."""
-    unknown = set(updates) - {*CAPABILITY_POLICY_KEYS, APPROVAL_MODE_KEY}
-    if unknown:
-        raise ValueError(f"unknown capability keys: {sorted(unknown)}")
-    if APPROVAL_MODE_KEY in updates and updates[APPROVAL_MODE_KEY] not in APPROVAL_MODES:
-        raise ValueError(f"approval_mode must be one of {list(APPROVAL_MODES)}")
-    if any(not isinstance(v, bool) for k, v in updates.items() if k != APPROVAL_MODE_KEY):
-        raise ValueError("capability keys take true or false")
-    row = await get_by_owner_id(owner_id)
-    if row is None:
-        return None
-    merged = {**(row.get("capability_policy") or {}), **updates}
-    try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET capability_policy = :p",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":p": merged},
-        )
-    except ClientError as e:
-        if _is_condition_failure(e):
-            return None
-        raise
-    return _fill_capability_policy(merged)
-
-
 # --- Purchase limits (Link Agent Wallet) -----------------------------------
 # Structured, never free text. Absent = no limit configured = purchases refused (fail-closed).
 
@@ -1625,21 +1511,3 @@ def _fill_purchase_limits(stored: dict | None) -> dict:
 async def get_purchase_limits(owner_id: str) -> dict:
     row = await get_by_owner_id(owner_id) or {}
     return _fill_purchase_limits(row.get("purchase_limits"))
-
-
-async def set_purchase_limits(owner_id: str, limits: dict) -> dict | None:
-    """Replace the limits map. ``None`` = no billing row."""
-    filled = _fill_purchase_limits(limits)
-    try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET purchase_limits = :p",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":p": filled},
-        )
-    except ClientError as e:
-        if _is_condition_failure(e):
-            return None
-        raise
-    return filled

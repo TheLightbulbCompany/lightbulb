@@ -97,9 +97,9 @@ schema = (
     .exclude(
         path_regex="^/api/v1/teams/",
     )
-    # Public ingress under /hooks/ (webhook automations, Meta) reads DDB on every
+    # Public ingress under /hooks/ (webhook automations) reads DDB on every
     # request, so it 5xxes without a real DDB. Coverage lives in
-    # super_agent/automations/test_hooks.py + test_meta_webhook.py.
+    # super_agent/automations/test_hooks.py.
     .exclude(
         path_regex="^/api/v1/hooks/",
     )
@@ -112,14 +112,6 @@ schema = (
     # NOT excluded here — they go through the shared Clerk auth override.
     .exclude(
         path_regex="^/api/v1/agent-mail/u/",
-    )
-    # Container-authed company hook routes (hook token, same shape as
-    # agent-mail): Hypothesis filters too many generated owner_id/body pairs
-    # here (filter_too_much). Covered end-to-end by
-    # tests/unit/routers/test_company_stripe.py and fuzzed for 5xx by
-    # tests/chaos/api/test_contract_negative.py, which suppresses that check.
-    .exclude(
-        path_regex="^/api/v1/company/[a-z-]+/u/",
     )
     .exclude(
         path_regex="^/health$",

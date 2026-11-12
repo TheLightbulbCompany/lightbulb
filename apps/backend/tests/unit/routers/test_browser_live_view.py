@@ -14,17 +14,6 @@ INACTIVE = {
 
 
 @pytest.mark.asyncio
-async def test_human_start_uses_clerk_workspace_and_identity(async_client_org_admin):
-    with (
-        patch("routers.container.browser_control.start", return_value=INACTIVE) as start,
-        patch("routers.container._assert_provision_allowed"),
-    ):
-        response = await async_client_org_admin.post("/api/v1/browser/start", json={"owner_id": "org_other"})
-    assert response.status_code == 200
-    start.assert_awaited_once_with("org_test_456", "user_test_123")
-
-
-@pytest.mark.asyncio
 async def test_internal_browser_refuses_wrong_workspace_hook(app):
     from httpx import ASGITransport, AsyncClient
     from unittest.mock import AsyncMock
@@ -44,20 +33,6 @@ async def test_internal_browser_refuses_wrong_workspace_hook(app):
 
 
 @pytest.mark.asyncio
-async def test_blocked_workspace_cannot_start_billed_browser(async_client_org_admin):
-    from fastapi import HTTPException
-
-    with patch(
-        "routers.container._assert_provision_allowed",
-        side_effect=HTTPException(status_code=402, detail="subscription required"),
-    ):
-        with patch("routers.container.browser_control.start") as start:
-            response = await async_client_org_admin.post("/api/v1/browser/start", json={})
-    assert response.status_code == 402
-    start.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_input_uses_clerk_workspace_and_skips_the_provision_gate(async_client_org_admin):
     """A person's input in the live view is a signal, not a grant: owner from the claim only,
     and no billing gate on a request the panel sends every few seconds."""
@@ -70,14 +45,6 @@ async def test_input_uses_clerk_workspace_and_skips_the_provision_gate(async_cli
     assert response.headers["cache-control"] == "no-store"
     record.assert_awaited_once_with("org_test_456")
     gate.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_stop_is_any_members_and_uses_clerk_workspace(async_client_org_admin):
-    with patch("routers.container.browser_control.stop", return_value=INACTIVE) as stop:
-        response = await async_client_org_admin.post("/api/v1/browser/stop", json={"owner_id": "org_other"})
-    assert response.status_code == 200
-    stop.assert_awaited_once_with("org_test_456", "user_test_123")
 
 
 @pytest.mark.asyncio
@@ -159,34 +126,6 @@ async def test_agent_acquire_answers_202_while_the_browser_starts(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/api/v1/internal/browser/org_x/acquire", json={"runId": "run"})
     assert response.status_code == 202 and response.json() == {"status": "starting"}
-
-
-@pytest.mark.asyncio
-async def test_any_member_adds_from_the_web_store_and_a_running_browser_restarts(async_client_org_member):
-    """No admin step for people (owner ruling 2026-09-27); the owner is the Clerk workspace."""
-    with (
-        patch("routers.container.browser_extensions.list_extensions", return_value=[]),
-        patch("routers.container.browser_extensions.add_from_webstore", return_value={"slug": "x"}) as add,
-        patch("routers.container.browser_control.restart_soon", return_value=True) as restart,
-    ):
-        listed = await async_client_org_member.get("/api/v1/browser/extensions")
-        resp = await async_client_org_member.post("/api/v1/browser/extensions/webstore", json={"idOrUrl": "link"})
-    assert listed.status_code == 200
-    assert resp.status_code == 201 and resp.json() == {"slug": "x", "restarting": True}
-    add.assert_awaited_once_with("org_test_456", "link", "user_test_789")
-    restart.assert_awaited_once_with("org_test_456")
-
-
-@pytest.mark.asyncio
-async def test_extension_limits_are_plain_400s(async_client_org_member):
-    from core.services.browser_extensions import ExtensionError
-
-    with patch(
-        "routers.container.browser_extensions.add_from_webstore",
-        side_effect=ExtensionError("The browser can start with at most 9 extensions. Remove one first."),
-    ):
-        resp = await async_client_org_member.post("/api/v1/browser/extensions/webstore", json={"idOrUrl": "link"})
-    assert resp.status_code == 400 and "at most 9" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

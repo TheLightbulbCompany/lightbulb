@@ -48,19 +48,6 @@ def _row(table, owner_id):
 
 
 @pytest.mark.asyncio
-async def test_the_revoke_all_mark_survives_the_lease_and_reads_back(dynamodb_table):
-    """Revoke-all's mark lives on the lease row, and a claim + release must not erase it."""
-    from core.repositories import container_repo
-
-    assert await container_repo.get_oauth_revoked_at("org_1") is None
-    at = await container_repo.mark_oauth_revoked("org_1")
-    token = await container_repo.try_claim_owner_lifecycle("org_1")
-    await container_repo.release_owner_lifecycle_claim("org_1", token=token)
-    assert await container_repo.get_oauth_revoked_at("org_1") == at
-    assert abs(at - time.time() * 1000) < 5_000, "the mark is in milliseconds"
-
-
-@pytest.mark.asyncio
 async def test_two_callers_for_one_owner_serialize(dynamodb_table):
     from core.repositories import container_repo
 

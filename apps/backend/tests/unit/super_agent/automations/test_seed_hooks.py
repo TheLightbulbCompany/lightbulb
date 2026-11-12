@@ -343,15 +343,6 @@ async def test_attach_refuses_to_reassign(env):
         await _seed("stripe", ["charge.refunded"], routine_id=first["automation_id"], assignee_agent_id="agent_x")
 
 
-async def test_arm_stores_secret_and_arms(env):
-    out = await _seed("stripe", ["invoice.payment_failed"])
-    pid = out["trigger_public_id"]
-    assert await automation_hooks.arm(WS, pid, "whsec_live") is True
-    assert env.secrets[(WS, f"hook-{pid}")] == {"secret": "whsec_live", "mode": "hmac_sha256"}
-    assert (await repo.get_hook(WS, pid))["armed"] is True
-    assert await automation_hooks.arm(WS, "0" * 24, "x") is False
-
-
 # --- the webhook-secret route --------------------------------------------------------------------
 
 
@@ -368,22 +359,6 @@ def _as_org_admin():
     from core.auth import AuthContext
 
     return AuthContext(user_id=USER, org_id=WS, org_role="org:admin")
-
-
-async def test_webhook_secret_put_super_agent_branch(env, api, monkeypatch):
-    from core.auth import get_current_user
-    from main import app
-
-    out = await _seed("stripe", ["invoice.payment_failed"])
-    pid = out["trigger_public_id"]
-    app.dependency_overrides[get_current_user] = _as_org_admin
-    try:
-        r = api.put(f"/api/v1/automations/{pid}/webhook-secret", json={"webhook_secret": "whsec_live"})
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
-    assert r.status_code == 200 and r.json() == {"status": "stored"}
-    assert env.secrets[(WS, f"hook-{pid}")]["secret"] == "whsec_live"
-    assert (await repo.get_hook(WS, pid))["armed"] is True
 
 
 def test_hook_row_fields_in_schema():

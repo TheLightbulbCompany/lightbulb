@@ -211,17 +211,6 @@ async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
     }
 
 
-@router.post("/voice/calls/{room_id}/done")
-async def call_done(room_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
-    ws = resolve_owner_id(auth)
-    meta = await messaging_repo.get_room(room_id)
-    if not meta or meta.get("ownerId") != ws or meta.get("kind") != "call":
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    call = {**(meta.get("call") or {}), "resolvedAt": utc_now_iso(), "resolvedBy": auth.user_id}
-    await messaging_repo.patch_room_meta(room_id, {"call": call}, expected_revision=int(meta["revision"]))
-    return {"ok": True}
-
-
 @router.get("/voice/waitlist")
 async def waitlist(auth: AuthContext = Depends(get_current_user)) -> dict:
     """Callers waiting for a day (any member reads), soonest day first. Rows expire a day after their date."""

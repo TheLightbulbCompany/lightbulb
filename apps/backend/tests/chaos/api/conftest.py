@@ -67,22 +67,6 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
 
 
 @pytest.fixture(autouse=True)
-def _meta_webhook_configured(monkeypatch):
-    """Configure the Meta app-level webhook for the fuzz.
-
-    Unconfigured, that route 503s wholesale — a deliberate fail-closed (an
-    environment that can't verify a Meta signature must not be able to complete
-    the subscribe handshake), but a 5xx the not_a_server_error check reads as a
-    crash. Setting the verify token makes the fuzz exercise what actually
-    guards the route: the 403 on a wrong verify token and the 401 on an
-    unsigned delivery.
-    """
-    from core.config import settings
-
-    monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "chaos-verify-token")
-
-
-@pytest.fixture(autouse=True)
 def _messaging_table(chaos_ddb, monkeypatch):
     """Provision the messaging table for the fuzz.
 

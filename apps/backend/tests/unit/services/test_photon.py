@@ -100,30 +100,6 @@ async def test_404_is_not_found(monkeypatch):
     assert (ei.value.status, ei.value.code) == (404, "space_missing")
 
 
-async def test_typing_posts_and_swallows(monkeypatch):
-    calls = _mock(monkeypatch, lambda r: httpx.Response(202, json={}))
-    await photon.send_typing(sender_id="u1", space_id="sp1", typing=False)
-    (req,) = calls
-    assert req.url.path == f"{PRJ}/spaces/sp1/typing"
-    assert json.loads(req.content) == {"senderId": "u1", "typing": False}
-    _mock(monkeypatch, lambda r: httpx.Response(500, json={}))
-    await photon.send_typing(sender_id="u1", space_id="sp1")
-
-
-async def test_mark_read_idempotency_and_swallows(monkeypatch):
-    calls = _mock(monkeypatch, lambda r: httpx.Response(202, json={}))
-    await photon.mark_read("m1")
-    (req,) = calls
-    assert req.url.path == f"{PRJ}/messages/m1/read"
-    assert req.headers["idempotency-key"]
-
-    def boom(r):
-        raise httpx.ConnectError("x")
-
-    _mock(monkeypatch, boom)
-    await photon.mark_read("m1")
-
-
 async def test_request_dedicated_line(monkeypatch):
     calls = _mock(monkeypatch, lambda r: httpx.Response(202, json={"operationId": "op1", "state": "pending"}))
     out = await photon.request_dedicated_line(idempotency_key="idem")

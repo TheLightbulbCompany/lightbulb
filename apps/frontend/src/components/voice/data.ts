@@ -79,7 +79,9 @@ export function useNewChat() {
     setState("busy");
     try {
       const room = (await api.post("/messaging/rooms", { clientRoomId: crypto.randomUUID(), kind: "group-dm", name: null, members: [] })) as { roomId: string };
-      void mutate((key) => Array.isArray(key) && key[0] === CHATS_KEY);
+      // In the list at once, so /voice/lightbulb?room= never reads the new chat as "not found" before the refetch.
+      void mutate((key) => Array.isArray(key) && key[0] === CHATS_KEY,
+        (chats?: TextChat[]) => chats && [{ roomId: room.roomId, title: "New chat", at: Date.now() }, ...chats]);
       setState("idle");
       router.push(chatHref(room.roomId));
     } catch {

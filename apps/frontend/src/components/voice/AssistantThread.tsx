@@ -18,7 +18,10 @@ export function AssistantThread({ roomId }: { roomId: string }) {
   const open = rooms.activeRoomId === roomId;
   const messages = open ? rooms.messages : [];
   const pending = open ? rooms.optimisticMessages : []; // the hook drops each one when its canonical copy lands
-  useEffect(() => { if (list.current) list.current.scrollTop = list.current.scrollHeight; }, [messages.length, pending.length]);
+  const replying = open && rooms.runs.some((run) => run.roomId === roomId && run.state === "running");
+  useEffect(() => { if (list.current) list.current.scrollTop = list.current.scrollHeight; }, [messages.length, pending.length, replying]);
+  // An uncertain send retried with the same text reuses its id, so the server's idempotency receipt dedupes it.
+  const failed = useRef<{ text: string; id: string } | null>(null);
 
   async function send(e?: FormEvent) {
     e?.preventDefault();
@@ -26,9 +29,12 @@ export function AssistantThread({ roomId }: { roomId: string }) {
     if (!body || !open) return;
     setText("");
     setError(false);
+    const clientMessageId = failed.current?.text === body ? failed.current.id : crypto.randomUUID();
     try {
-      await sendMessage({ clientMessageId: crypto.randomUUID(), text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null });
+      await sendMessage({ clientMessageId, text: body, mentions: [], replyToMessageId: null, threadRootMessageId: null });
+      failed.current = null;
     } catch {
+      failed.current = { text: body, id: clientMessageId };
       setError(true);
       setText((current) => current || body);
     }
@@ -47,6 +53,7 @@ export function AssistantThread({ roomId }: { roomId: string }) {
       {pending.map((p) => <li key={p.clientMessageId} data-author="human" data-pending>
         <MarkdownView skipHtml>{p.text}</MarkdownView>
       </li>)}
+      {replying && <li data-pending role="status">Lightbulb is replying…</li>}
     </ol>
     <form onSubmit={send}>
       <textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={2} className="vx-field"

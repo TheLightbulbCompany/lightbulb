@@ -746,7 +746,8 @@ end tell"#,
             log("[setup] Lightbulb desktop app starting");
 
             refuse_app_nap();
-            tauri::async_runtime::spawn_blocking(legacy::clean);
+            let app_data = app.path().app_data_dir().ok();
+            tauri::async_runtime::spawn_blocking(move || legacy::clean(app_data));
 
             // Force-register flickmeon:// with this running binary's path so
             // macOS LaunchServices dispatches deep links here. Without

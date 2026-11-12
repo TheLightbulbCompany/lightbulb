@@ -13,6 +13,8 @@ const WORDS: &[&str] = &["serve", "local-session-hook", "session-mcp", "holder",
 const LAUNCH_AGENT: &str = "Library/LaunchAgents/company.thelightbulb.serve.plist";
 const BEGIN: &str = "# >>> lightbulb live sessions >>>";
 const END: &str = "# <<< lightbulb live sessions <<<";
+/// `<app_data>/agent-chrome`, the old agent Chrome's profile.
+const AGENT_CHROME: &str = "agent-chrome";
 const RC_FILES: &[&str] = &[".zshrc", ".bashrc", ".bash_profile", ".bash_login", ".profile"];
 
 /// `Some(exit code)` for a call from something an older release installed; `None` opens the app.
@@ -34,7 +36,13 @@ pub fn argv(argv: &[String]) -> Option<i32> {
         #[cfg(unix)]
         Some(tool @ ("claude" | "codex")) => {
             use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new(tool).args(&rest[1..]).exec();
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+            let Some(real) = find_tool(tool, &path, this.as_deref()) else {
+                eprintln!("{tool}: not found on PATH");
+                return Some(127);
+            };
+            let err = std::process::Command::new(&real).arg0(tool).args(&rest[1..]).exec();
             eprintln!("{tool}: {err}");
             Some(127)
         }
@@ -45,9 +53,29 @@ pub fn argv(argv: &[String]) -> Option<i32> {
     }
 }
 
-/// At launch: stop and remove the `serve` launch agent (KeepAlive would restart it forever) and
-/// take the shell block out of the startup files. Logs; never fails the launch.
-pub fn clean() {
+/// The first executable `tool` on `path` that is not this app (`this`, canonical): the old shell
+/// function must never resolve back to the app it is calling from.
+#[cfg(unix)]
+fn find_tool(tool: &str, path: &std::ffi::OsStr, this: Option<&Path>) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path).map(|dir| dir.join(tool)).find(|cand| {
+        let Ok(canon) = std::fs::canonicalize(cand) else { return false };
+        let executable = std::fs::metadata(&canon).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+        executable && Some(canon.as_path()) != this
+    })
+}
+
+/// At launch: stop and remove the `serve` launch agent (KeepAlive would restart it forever), take
+/// the shell block out of the startup files, and delete the old agent Chrome's profile (it holds
+/// workspace sign-in cookies and nothing else can wipe it now). Logs; never fails the launch.
+pub fn clean(app_data: Option<std::path::PathBuf>) {
+    if let Some(dir) = app_data.map(|d| d.join(AGENT_CHROME)) {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => crate::log("[legacy] removed the old agent Chrome profile"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => crate::log(&format!("[legacy] agent Chrome profile: {e}")),
+        }
+    }
     let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else { return };
     let agent = home.join(LAUNCH_AGENT);
     if agent.exists() {
@@ -67,7 +95,7 @@ pub fn clean() {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let kept = without_block(&text);
         if kept != text {
-            match std::fs::write(&path, kept) {
+            match replace(&path, &kept) {
                 Ok(()) => crate::log(&format!("[legacy] removed the session block from ~/{name}")),
                 Err(e) => crate::log(&format!("[legacy] ~/{name}: {e}")),
             }
@@ -75,7 +103,24 @@ pub fn clean() {
     }
 }
 
-/// `text` without the old app's guarded block; every other line exactly as it was.
+/// Replaces the file `path` resolves to (a dotfiles symlink stays a symlink) with `text`: a
+/// temp file beside it with the same mode, then a rename, so a crash never leaves it half written.
+fn replace(path: &Path, text: &str) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path)?;
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = target.with_file_name(format!(".{name}.lightbulb-tmp"));
+    std::fs::write(&tmp, text)?;
+    let done = std::fs::metadata(&target)
+        .and_then(|m| std::fs::set_permissions(&tmp, m.permissions()))
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
+}
+
+/// `text` without the old app's guarded block; every other line exactly as it was. A BEGIN with
+/// no END is not our block: the text stays as it is.
 fn without_block(text: &str) -> String {
     let mut out = String::new();
     let mut inside = false;
@@ -86,6 +131,9 @@ fn without_block(text: &str) -> String {
             _ if !inside => out.push_str(line),
             _ => {}
         }
+    }
+    if inside {
+        return text.to_owned();
     }
     out
 }
@@ -121,5 +169,54 @@ mod tests {
         let rc = format!("export A=1\n{BEGIN}\ncase $- in\n  *i*)\n    function claude {{ x; }}\n    ;;\nesac\n{END}\nalias b=c\n");
         assert_eq!(without_block(&rc), "export A=1\nalias b=c\n");
         assert_eq!(without_block("export A=1\n"), "export A=1\n");
+    }
+
+    #[test]
+    fn a_begin_with_no_end_changes_nothing() {
+        let rc = format!("export A=1\n{BEGIN}\nfunction claude {{ x; }}\nalias b=c\n");
+        assert_eq!(without_block(&rc), rc);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_real_tool_is_never_this_app() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lb-legacy-{}", std::process::id()));
+        let (ours, theirs) = (dir.join("ours"), dir.join("theirs"));
+        for d in [&ours, &theirs] {
+            std::fs::create_dir_all(d).unwrap();
+            let f = d.join("claude");
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([&ours, &theirs]).unwrap();
+        let this = std::fs::canonicalize(ours.join("claude")).unwrap();
+        let found = find_tool("claude", &path, Some(&this)).unwrap();
+        assert_eq!(std::fs::canonicalize(found).unwrap(), std::fs::canonicalize(theirs.join("claude")).unwrap());
+        let only_ours = std::env::join_paths([&ours]).unwrap();
+        assert_eq!(find_tool("claude", &only_ours, Some(&this)), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_rc_file_is_replaced_whole_with_its_mode() {
+        let dir = std::env::temp_dir().join(format!("lb-legacy-rc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rc = dir.join(".zshrc");
+        std::fs::write(&rc, "old\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        replace(&rc, "new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&rc).unwrap(), "new\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&rc).unwrap().permissions().mode() & 0o777, 0o640);
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp file left");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

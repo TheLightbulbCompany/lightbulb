@@ -313,12 +313,18 @@ const DESKTOP_CALLBACK_URL: &str = match option_env!("LIGHTBULB_CALLBACK_URL") {
 fn is_oauth_url(url: &Url) -> bool {
     let host = url.host_str().unwrap_or("");
     let path = url.path();
-    // Real identity providers: always intercept (Google/Apple OAuth).
+    // Google/Apple: only the OAuth start a sign-in button makes, which Clerk sends back to its
+    // own `/v1/oauth_callback`. wry asks about every navigation, iframes included, with the URL
+    // alone, so this cannot tell a click from a background load: on a signed-out sign-in page a
+    // hidden frame loads accounts.google.com/o/oauth2/auth by itself, and matching the host alone
+    // threw Safari at the callback page on every signed-out launch.
     let is_provider = ["accounts.google.com", "appleid.apple.com"]
         .iter()
         .any(|d| host == *d || host.ends_with(&format!(".{}", d)));
     if is_provider {
-        return true;
+        return url.query_pairs().any(|(k, v)| {
+            k == "redirect_uri" && Url::parse(&v).is_ok_and(|r| is_oauth_callback_path(r.path()))
+        });
     }
     // Clerk: only intercept the actual OAuth callback path, NOT every hit
     // to clerk.accounts.dev. Endpoints like `/v1/client/handshake` are the
@@ -328,10 +334,11 @@ fn is_oauth_url(url: &Url) -> bool {
     let is_clerk = ["clerk.accounts.dev", "clerk.com"]
         .iter()
         .any(|d| host == *d || host.ends_with(&format!(".{}", d)));
-    if is_clerk && (path == "/v1/oauth_callback" || path.starts_with("/v1/oauth_callback/")) {
-        return true;
-    }
-    false
+    is_clerk && is_oauth_callback_path(path)
+}
+
+fn is_oauth_callback_path(path: &str) -> bool {
+    path == "/v1/oauth_callback" || path.starts_with("/v1/oauth_callback/")
 }
 
 /// Handle a URL arriving via the second-instance argv (macOS protocol-
@@ -490,6 +497,20 @@ mod flavor_origin_tests {
         }
         let cap = parse(include_str!("../capabilities/default.json"));
         assert_eq!(cap["remote"]["urls"], json!(["https://thelightbulb.company/*"]));
+    }
+
+    #[test]
+    fn only_a_clerk_sign_in_start_leaves_for_safari() {
+        let oauth = |u: &str| is_oauth_url(&Url::parse(u).unwrap());
+        // The sign-in buttons: Clerk's OAuth start, back to Clerk's callback.
+        assert!(oauth("https://accounts.google.com/o/oauth2/auth?client_id=x&redirect_uri=https%3A%2F%2Fclerk.thelightbulb.company%2Fv1%2Foauth_callback&state=s"));
+        assert!(oauth("https://appleid.apple.com/auth/authorize?redirect_uri=https%3A%2F%2Fclerk.thelightbulb.company%2Fv1%2Foauth_callback"));
+        assert!(oauth("https://x.clerk.accounts.dev/v1/oauth_callback?code=c"));
+        // Background loads by Google's own scripts stay in the webview.
+        assert!(!oauth("https://accounts.google.com/o/oauth2/auth"));
+        assert!(!oauth("https://accounts.google.com/o/oauth2/auth?prompt=none&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fthelightbulb.company"));
+        assert!(!oauth("https://accounts.google.com/gsi/iframe/select?client_id=x"));
+        assert!(!oauth("https://x.clerk.accounts.dev/v1/client/handshake"));
     }
 
     #[test]

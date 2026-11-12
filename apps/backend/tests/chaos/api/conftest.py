@@ -63,11 +63,6 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     "POST /api/v1/agent-mail/u/{owner_id}/send": "hook-token lookup; containers table not provisioned hermetically",
     "POST /api/v1/agent-mail/u/{owner_id}/address": "hook-token lookup; containers table not provisioned hermetically",
     "GET /api/v1/agent-mail/u/{owner_id}/inbox": "hook-token lookup; containers table not provisioned hermetically",
-    # Slack Events ingress: reads the platform app's signing secret from
-    # Secrets Manager before anything else and answers a deliberate 503 when
-    # it is absent (Slack retries; a request can't be verified without it).
-    # Covered by tests/unit/routers/test_slack_app.py.
-    "POST /api/v1/slack/events": "platform Slack app secret (Secrets Manager) not provisioned hermetically → deliberate 503",
 }
 
 

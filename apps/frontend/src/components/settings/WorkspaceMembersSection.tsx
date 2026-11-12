@@ -7,9 +7,10 @@ import { useClerk, useOrganization } from "@clerk/nextjs";
 import { ApiError, useApi } from "@/lib/api";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { Button } from "@/components/ui/button";
-import { InvitePeoplePanel } from "@/components/workspace/InvitePeoplePanel";
+import { InvitePeoplePanel } from "@/components/settings/InvitePeoplePanel";
 import { Input } from "@/components/ui/input";
-import type { CompanyMember } from "@/components/teams/shared/types";
+
+type CompanyMember = { userId: string; name?: string | null; email?: string | null; imageUrl?: string | null };
 
 // =============================================================================
 // Workspace members — who is here, email invitations, and the link that lets

@@ -28,14 +28,4 @@ describe("shared typography fonts", () => {
     expect(css).toMatch(/body\s*\{[^}]*font-family:\s*var\(--font-sans\);/s);
     expect(css).toMatch(/:where\(\.prose,\s*\.long-form,\s*\.blog-prose\)\s*\{[^}]*font-family:\s*var\(--font-body\);/s);
   });
-
-  it("maps workspace navigation and message copy to the shared tokens", () => {
-    const workspace = read("components/workspace/workspace.css");
-    const messaging = read("components/messaging/messaging.css");
-
-    expect(workspace).toMatch(/\.cream-sidebar\s*\{[^}]*font-family:\s*var\(--font-sans\);/s);
-    expect(workspace).toMatch(/\.workspace-rail\s*\{[^}]*font-family:\s*var\(--font-sans\);/s);
-    expect(messaging).toMatch(/\.room-message-content\s*\{[^}]*font-family:\s*var\(--font-body\);/s);
-    expect(messaging).toMatch(/\.room-message-content\s*>\s*:is\(\.prose,\s*\[class\*="prose"\]\)\s*\{[^}]*font-family:\s*inherit;/s);
-  });
 });

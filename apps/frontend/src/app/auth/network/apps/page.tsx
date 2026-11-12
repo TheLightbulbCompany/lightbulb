@@ -4,7 +4,7 @@ import { SignIn, useAuth } from "@clerk/nextjs";
 import { useState } from "react";
 import useSWR from "swr";
 
-import { AgentKeysSection } from "@/components/control/panels/AgentKeysSection";
+import { AgentKeysSection } from "./AgentKeysSection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApi } from "@/lib/api";

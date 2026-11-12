@@ -6,8 +6,6 @@ import { RoomAudioRenderer, RoomContext } from "@livekit/components-react";
 import { LIVE_AGENT_IDENTITY, LIVE_NOTICE_TOPIC, liveJoinErrorCode, parseLiveNotice, renamedText, voiceNoteText } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { notifyFailure, notifySuccess } from "@/lib/notify";
-import { navigateShell } from "@/lib/shellNav";
-import { agentInspectorUrl } from "@/lib/agentInspectorUrl";
 
 export const CEO_IDENTITY = LIVE_AGENT_IDENTITY;
 
@@ -94,7 +92,7 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
               }),
             });
           } else if (n.kind === "voice_note_saved") {
-            notifySuccess(voiceNoteText(n.name, n.text), { action: { label: "Edit", onClick: () => navigateShell(agentInspectorUrl(n.agentId)) } });
+            notifySuccess(voiceNoteText(n.name, n.text));
           }
           return;
         }

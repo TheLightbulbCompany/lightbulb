@@ -6,8 +6,8 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({ download, read: () => ({ data: undefined }) }),
 }));
 
-import { MarkdownView } from "../MarkdownView";
-import { AttachmentIssueContext, attachmentPathFromHref } from "@/components/teams/shared/lib/attachments";
+import { MarkdownView } from "@/components/voice/MarkdownView";
+import { AttachmentIssueContext, attachmentPathFromHref } from "@/lib/attachments";
 import { roomUrlTransform } from "@/components/messaging/markdown";
 
 describe("attachmentPathFromHref", () => {

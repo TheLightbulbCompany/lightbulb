@@ -8,7 +8,7 @@
 // itself, or a post that failed), so it never sticks.
 import { useEffect, useState } from "react";
 import { RoomContext, useLocalParticipant, useTranscriptions } from "@livekit/components-react";
-import { Identity } from "@/components/teams/shared/components/Identity";
+import { Identity } from "@/components/voice/Identity";
 import { useHuddle } from "@/components/huddle/HuddleProvider";
 
 export const CLEAR_MS = 4000;

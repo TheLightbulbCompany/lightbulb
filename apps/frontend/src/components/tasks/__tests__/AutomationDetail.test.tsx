@@ -16,8 +16,7 @@ vi.mock("@/components/workspace/workspaceController", () => ({
 }));
 const clerk = vi.hoisted(() => ({ userId: "user_sam", role: "org:admin" as string | undefined }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: clerk.userId }), useOrganization: () => ({ membership: clerk.role ? { role: clerk.role } : null }) }));
-const messaging = vi.hoisted(() => ({ value: null as unknown }));
-vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagingWorkspaceOptional: () => messaging.value }));
+const messaging = vi.hoisted(() => ({ rooms: [] as unknown[] }));
 import { ApiError } from "@lightbulb/shared";
 
 import { AutomationDetail } from "../AutomationDetail";
@@ -35,6 +34,7 @@ const routes = (over: Partial<AutomationView> = {}) => {
   api.get.mockImplementation(async (path: string) => {
     if (path === "/automations") return { automations: [a] };
     if (path === "/automations/a1") return a;
+    if (path === "/messaging/rooms") return { rooms: messaging.rooms };
     if (path === "/automations/a1/runs") return { runs: [FIXTURES.step09.tasks[2]], next: null };
     throw new Error(`no route ${path}`);
   });
@@ -96,11 +96,11 @@ describe("AutomationDetail (the automation pane)", () => {
     const { unmount } = render(<Detail viewerTz="Europe/London" />);
     expect(await screen.findByText(/Mondays 2:00 PM \(New York time: Mondays 9:00 AM\) · posts in a room/)).toBeInTheDocument();
     unmount();
-    messaging.value = { directoryProps: { rooms: [{ roomId: "room-workshop-launch", kind: "channel", name: "walk-8", participants: [] }] } };
+    messaging.rooms = [{ roomId: "room-workshop-launch", kind: "channel", name: "walk-8", members: [] }];
     try {
       render(<Detail />);
       expect(await screen.findByText(/^Mondays 9:00 AM New York time · posts to #walk-8 · /)).toBeInTheDocument();
-    } finally { messaging.value = null; }
+    } finally { messaging.rooms = []; }
   });
 
   it("Run now follows the server's rules: a live run is opened, not restarted; only an admin or the owner may act", async () => {

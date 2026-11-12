@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { blobText } from "./readBlob";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 
 export const TEXT_MAX_BYTES = 1024 * 1024;
 

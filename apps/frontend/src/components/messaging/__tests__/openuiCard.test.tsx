@@ -1,11 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, expect, it, vi } from "vitest";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import { CardContext, type CardContextValue } from "../openui/CardContext";
+import { MarkdownView } from "@/components/voice/MarkdownView";
+import { CardContext, type CardContextValue } from "@/components/voice/openui/CardContext";
 import { roomMarkdown } from "../roomMarkdown";
 
 // The card is a lazy chunk; the first mount in a file otherwise pays the import inside findByRole's 1 s budget.
-beforeAll(() => import("../openui/OpenUICard"));
+beforeAll(() => import("@/components/voice/openui/OpenUICard"));
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 import { capture } from "@/lib/analytics";

@@ -19,11 +19,12 @@ vi.mock("@/components/huddle/useAssistantDm", () => ({
   useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "human", id: "u" }, { kind: "agent", id: "a1" }] }),
 }));
 vi.mock("../VoiceShell", () => ({ useNeedsYouTotal: () => 0 }));
-const items = vi.hoisted(() => ({ list: [] as TimelineItem[], del: vi.fn(), revalidate: vi.fn() }));
+const items = vi.hoisted(() => ({ list: [] as TimelineItem[], chats: [] as { roomId: string; title: string; at: number }[], del: vi.fn(), revalidate: vi.fn() }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ del: items.del }) }));
 vi.mock("../data", async (orig) => ({
   ...(await orig<typeof import("../data")>()),
   useTimeline: () => ({ data: items.list, isLoading: false, mutate: items.revalidate }),
+  useTextChats: () => ({ data: items.chats }),
   useAgentConfig: () => ({ data: { name: "Nova" }, isNew: false, save: vi.fn() }),
   needsOnboarding: () => false,
 }));
@@ -31,7 +32,7 @@ vi.mock("../data", async (orig) => ({
 import { VoiceHome } from "../VoiceHome";
 
 beforeEach(() => {
-  lk.attrs = {}; lk.agent = { identity: "agent-ceo" }; lk.lines = []; items.list = []; items.del.mockReset(); items.revalidate.mockReset();
+  lk.attrs = {}; lk.agent = { identity: "agent-ceo" }; lk.lines = []; items.list = []; items.chats = []; items.del.mockReset(); items.revalidate.mockReset();
   huddle.roomId = "dm1"; huddle.room = connectedRoom; mic.mockClear();
 });
 
@@ -91,6 +92,18 @@ it("Yours chip lists the in-app talk", () => {
   expect(within(pane).getByText("One thing: the post.").closest("p")).toHaveTextContent("Lightbulb: One thing: the post.");
 });
 
+it("Yours lists the text chats, newest first as given, each opening its chat, with New chat", () => {
+  items.chats = [{ roomId: "g2", title: "Plan the spring promo", at: Date.now() }, { roomId: "dm1", title: "You and Lightbulb", at: Date.now() - 864e5 * 3 }];
+  render(<VoiceHome />);
+  expect(screen.getByRole("button", { name: /^Yours/ })).toHaveTextContent("2");
+  fireEvent.click(screen.getByRole("button", { name: /^Yours/ }));
+  const chats = within(screen.getByRole("region", { name: "Chats" })).getAllByRole("link");
+  expect(chats.map((a) => a.textContent)).toEqual([expect.stringContaining("Plan the spring promo"), expect.stringContaining("You and Lightbulb")]);
+  expect(chats[0]).toHaveAttribute("href", "/voice/lightbulb?room=g2");
+  expect(screen.getByRole("button", { name: /New chat/ })).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing yet/)).not.toBeInTheDocument();
+});
+
 it("call pane Forget clears memory", async () => {
   items.list = [{ type: "call", roomId: "c1", at: Date.now(), caller: "+14155550100", callerName: "Maya", callerMemory: ["Prefers mornings"] }];
   items.del.mockResolvedValueOnce({ ok: true });
@@ -122,7 +135,7 @@ it("meeting pane shows follow-up status", () => {
   fireEvent.click(screen.getByRole("button", { name: /Standup/ }));
   const pane = screen.getByRole("complementary", { name: "Details" });
   expect(within(pane).getByText("Pat: send deck").closest("li")).toHaveTextContent("Recorded");
-  expect(within(pane).getByRole("link", { name: "Send deck" })).toHaveAttribute("href", "/chat?panel=task-detail&taskId=finished-task");
+  expect(within(pane).queryByRole("link", { name: "Send deck" })).toBeNull(); // the old task pane is gone with /chat
   expect(within(pane).getByText("Send deck").closest("li")).toHaveTextContent("Done");
   expect(within(pane).getByText("Pick vendor").closest("li")).toHaveTextContent("Needs you");
   expect(within(pane).getByText("Book room").closest("li")).toHaveTextContent("Working");

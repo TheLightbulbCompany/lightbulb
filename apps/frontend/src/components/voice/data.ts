@@ -3,10 +3,11 @@
 // The owner's voice surfaces read three things: the timeline (calls + meetings), the assistant's settings
 // (one JSON document, GET/PUT /voice/agent) and the open Questions (/needs-you). Shapes: routers/voice.py.
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import useSWR from "swr";
-import { usPhone, type QuestionView } from "@lightbulb/shared";
+import { useRouter } from "next/navigation";
+import useSWR, { useSWRConfig } from "swr";
+import { usPhone, type QuestionView, type RoomSummary } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 
 export type Outcome = "booked" | "moved" | "cancelled" | "message" | "answered" | "needs_you" | "handoff_missed" | "spam" | "silent" | "forwarded";
@@ -44,6 +45,50 @@ export function useTimeline() {
   // ponytail: a 20 s poll, not a push; subscribe to the room events when calls must land live.
   return useSWR("/voice/timeline", async () => ((await api.get("/voice/timeline")) as { items: TimelineItem[] }).items,
     { refreshInterval: 20_000 });
+}
+
+/** A typed chat with the assistant: the member's DM, or a group chat "New chat" made (only them and agents in it). */
+export interface TextChat { roomId: string; title: string; at: number }
+export const chatHref = (roomId: string) => `/voice/lightbulb?room=${encodeURIComponent(roomId)}`;
+
+export function textChats(rooms: RoomSummary[], me: string): TextChat[] {
+  return rooms
+    .filter((r) => (r.kind === "dm" || r.kind === "group-dm") && r.members.some((m) => m.kind === "agent")
+      && r.members.every((m) => m.kind !== "human" || m.id === me))
+    .map((r) => ({ roomId: r.roomId, title: r.name ?? (r.kind === "dm" ? `You and ${LIGHTBULB}` : "New chat"),
+      at: Date.parse(r.lastMessageAt ?? r.updatedAt) || 0 }))
+    .sort((a, b) => b.at - a.at);
+}
+
+const CHATS_KEY = "/messaging/rooms#voice-chats";
+export function useTextChats() {
+  const api = useApi();
+  const { isLoaded, userId, orgId } = useAuth();
+  return useSWR(isLoaded && userId && orgId ? [CHATS_KEY, userId, orgId] : null,
+    async () => textChats(((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms, userId!));
+}
+
+/** "New chat": a group chat with only the member in the request; the backend seats Lightbulb in every new Router
+ *  room (messaging._lightbulb_only). A DM cannot be the second chat: there is one per pair. Named on its first send. */
+export function useNewChat() {
+  const api = useApi();
+  const router = useRouter();
+  const { mutate } = useSWRConfig();
+  const [state, setState] = useState<"idle" | "busy" | "failed">("idle");
+  const start = useCallback(async () => {
+    setState("busy");
+    try {
+      const room = (await api.post("/messaging/rooms", { clientRoomId: crypto.randomUUID(), kind: "group-dm", name: null, members: [] })) as { roomId: string };
+      // In the list at once, so /voice/lightbulb?room= never reads the new chat as "not found" before the refetch.
+      void mutate((key) => Array.isArray(key) && key[0] === CHATS_KEY,
+        (chats?: TextChat[]) => chats && [{ roomId: room.roomId, title: "New chat", at: Date.now() }, ...chats]);
+      setState("idle");
+      router.push(chatHref(room.roomId));
+    } catch {
+      setState("failed");
+    }
+  }, [api, mutate, router]);
+  return { start, state };
 }
 
 export interface Knowledge { q: string; a: string; source?: string }

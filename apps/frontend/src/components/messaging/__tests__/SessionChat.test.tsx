@@ -7,7 +7,7 @@ const rooms = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: (...args: unknown[]) => { rooms.value.args = args; return rooms.value; } }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 // The card is a lazy chunk; warm it so the first mount fits findByRole's 1 s budget.
-beforeAll(() => import("../openui/OpenUICard"));
+beforeAll(() => import("@/components/voice/openui/OpenUICard"));
 
 import { SessionChat } from "../SessionChat";
 

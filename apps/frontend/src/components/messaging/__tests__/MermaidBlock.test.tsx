@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 import { roomMarkdown } from "../roomMarkdown";
 import mermaid from "mermaid";
 

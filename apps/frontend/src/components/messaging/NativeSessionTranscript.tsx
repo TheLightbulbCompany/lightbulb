@@ -7,7 +7,7 @@ import {
   type DiffLine, type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type SessionSubagent, type ThinkingTranscriptRow, type ToolGroupItem,
   type ToolTranscriptRow, type TranscriptRow,
 } from "@lightbulb/shared";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 import { roomMarkdown } from "./roomMarkdown";
 
 export type Provider = LocalSessionProvider;

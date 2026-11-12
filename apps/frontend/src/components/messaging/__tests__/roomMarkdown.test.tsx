@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/voice/MarkdownView";
 import { roomMarkdown } from "../roomMarkdown";
 
 // The bundled paperclip skill writes internal links as native Paperclip paths

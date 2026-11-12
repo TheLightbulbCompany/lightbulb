@@ -135,7 +135,7 @@ Names from deleted systems that still carry load. Prove nothing reads a resource
 - **`LitestreamReplicaLifecycle`** in `service-stack.ts`: carries the bucket-scoped `s3:ListBucket` every profile
   read, write and delete needs.
 - **`components/messaging`, `workspace`, `teams` and `control`** in the web app: partly live. `/voice/lightbulb`
-  mounts `workspace/RightPane` (which renders `teams` and `control` panels) and `messaging`; `/voice/settings`
+  no longer mounts them (it renders `voice/AssistantThread` over `hooks/useRooms`), but `/voice/settings`
   mounts `settings/SettingsPlace`, which pulls in `control` panels. Prove a file has no importer before you delete it.
 
 ## Critical Rules
@@ -514,7 +514,7 @@ fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client re
 React 19, Tailwind v4, Clerk, SWR. The app lives under `src/app/voice/`: Home (`/voice`), `/voice/lightbulb` (the
 orb and the conversation), `/voice/agent`, `/voice/needs-you`, `/voice/settings`, `/voice/setup`, with components in
 `components/voice/`. Sign-in, sign-up and the Mac app land on `/voice`. `/chat` redirects to `/voice/lightbulb`
-(or `/voice/settings` for provider and settings links); the old workspace shell is deleted; `RightPane` survives inside `/voice/lightbulb`. `src/middleware.ts`
+(or `/voice/settings` for provider and settings links); the old workspace shell is deleted. Nothing under `components/voice` or `components/huddle` imports `messaging`, `workspace` or `teams`. `src/middleware.ts`
 protects `/voice` and the other app routes and runs the admin-host gate (`/admin` 404s off admin hosts).
 
 - **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the API client, the AppSync live-events client and

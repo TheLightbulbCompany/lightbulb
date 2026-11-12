@@ -1,4 +1,4 @@
-// apps/frontend/src/components/teams/shared/lib/safeHref.ts
+// apps/frontend/src/lib/safeHref.ts
 
 // Shared link-safety guard for Teams-rendered hrefs. Agent/BFF-supplied URLs are
 // only length-checked upstream, so a compromised or buggy agent could emit a

@@ -4549,6 +4549,15 @@ def select_dispatch_targets(
             return []
         woken = sorted((mentioned & set(feed_roster)) - {source_agent_id})
         return [{"agentId": agent_id, "eventKind": "user_request"} for agent_id in woken]
+    # One person talking to one agent in a group chat (the voice app's "New chat") is addressed like a DM: a plain
+    # "ok thanks" would otherwise be ambient, and Jev may answer it with silence. Only a human's message, and never a
+    # channel (a meeting or task channel can hold one person and one agent and must stay ambient).
+    one_to_one = (
+        room_kind == "group-dm"
+        and source_agent_id is None
+        and sum(m.get("kind") == "human" for m in members) == 1
+        and sum(m.get("kind") == "agent" and m.get("listenMode") != "observe" for m in members) == 1
+    )
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
         if member.get("kind") != "agent" or member.get("id") == source_agent_id:
@@ -4561,7 +4570,7 @@ def select_dispatch_targets(
         # A DM is addressed by construction: without this, an unmentioned DM is
         # an ambient room_event, which OpenClaw runs message-tool-only and the
         # agent's plain reply is muted (observed on dev 2026-09-10).
-        if agent_id in mentioned or room_kind == "dm":
+        if agent_id in mentioned or room_kind == "dm" or one_to_one:
             targets[agent_id] = "user_request"
         elif member.get("listenMode") == "active":
             targets.setdefault(agent_id, "room_event")

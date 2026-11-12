@@ -27,7 +27,9 @@ export function lineText(m: Pick<CanonicalRoomMessage, "text" | "attachments" | 
 
 // ponytail: the newest page only (bounded history); add rooms.loadOlder on scroll-to-top when people ask for more.
 export default function ChatScreen() {
-  const { roomId } = useLocalSearchParams<{ roomId: string }>();
+  // `title`: the row's own words from Home (a meeting's title, a caller's name), display only; a call room's
+  // stored name is an internal slug.
+  const { roomId, title } = useLocalSearchParams<{ roomId: string; title?: string }>();
   const palette = useChatPalette();
   const insets = useSafeAreaInsets();
   const keyboardOffset = usePushedScreenKeyboardOffset();
@@ -73,7 +75,7 @@ export default function ChatScreen() {
   const fg = { color: palette.fg, fontFamily: fonts.sans, fontSize: 16, lineHeight: 23 };
   return (
     <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={keyboardOffset} style={[styles.page, { backgroundColor: palette.ground }]}>
-      <Stack.Screen options={{ title: writable ? "Lightbulb" : room?.name || "Record" }} />
+      <Stack.Screen options={{ title: writable ? "Lightbulb" : title || room?.name || "Record" }} />
       <FlatList inverted data={rows} keyExtractor={(row) => row.key} contentContainerStyle={styles.list}
         keyboardDismissMode="interactive"
         ListHeaderComponent={replying && writable ? <Text accessibilityRole="text" accessibilityLiveRegion="polite" style={[fg, { color: palette.fgMute }]}>Lightbulb is replying…</Text> : null}

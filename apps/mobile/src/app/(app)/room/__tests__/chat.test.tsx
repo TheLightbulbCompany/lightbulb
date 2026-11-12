@@ -1,9 +1,11 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
 
+let mockParams: Record<string, string> = { roomId: "chat-1" };
+const mockTitles: string[] = [];
 jest.mock("expo-router", () => ({
-  Stack: { Screen: () => null },
+  Stack: { Screen: ({ options }: { options: { title: string } }) => { mockTitles.push(options.title); return null; } },
   useFocusEffect: (cb: () => void) => require("react").useEffect(cb, [cb]),
-  useLocalSearchParams: () => ({ roomId: "chat-1" }),
+  useLocalSearchParams: () => mockParams,
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "msg-1" }));
 jest.mock("react-native-keyboard-controller", () => ({ KeyboardAvoidingView: require("react-native").View }));
@@ -27,6 +29,8 @@ import ChatScreen, { lineText } from "../[roomId]/index";
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockParams = { roomId: "chat-1" };
+  mockTitles.length = 0;
   mockRuns = [];
   mockRoom = CHAT;
   mockMessages = [
@@ -88,4 +92,11 @@ it("says what a line without text carries", async () => {
   expect(screen.getByText("Attached: quote.pdf")).toBeTruthy();
   expect(lineText({ text: "", taskRefs: [{ taskId: "t", role: "started" }] })).toBe("Started a task");
   expect(lineText({ text: "  " })).toBe("(No text)");
+});
+
+it("titles a record with the row's own words, not the room's internal name", async () => {
+  mockRoom = CALL;
+  mockParams = { roomId: "chat-1", title: "Weekly sync" };
+  await render(<ChatScreen />);
+  expect(mockTitles.at(-1)).toBe("Weekly sync");
 });

@@ -73,7 +73,7 @@ it("lists the member's own text chats with calls and opens each in the chat scre
   expect(screen.getByText("Draft the rota")).toBeTruthy();
   expect(screen.queryAllByText("Chat with Lightbulb")).toHaveLength(1); // the chat with another person is not the member's own
   await fireEvent.press(screen.getByText("Draft the rota"));
-  expect(mockPush).toHaveBeenCalledWith("/(app)/room/chat-1");
+  expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/room/[roomId]", params: { roomId: "chat-1", title: "Chat with Lightbulb" } });
 });
 
 it("New chat creates a chat and opens it", async () => {

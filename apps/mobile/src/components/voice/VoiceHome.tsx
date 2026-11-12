@@ -95,7 +95,7 @@ export function VoiceHome({ rooms, agentId, onNewChat }: {
     {loading && rows.length === 0 ? <ActivityIndicator accessibilityLabel="Loading recent calls, meetings and chats" color={palette.fg} /> : null}
     {failed ? <Pressable accessibilityRole="button" onPress={() => setRetry((n) => n + 1)} style={styles.action}><Text style={[text, { color: palette.alert }]}>Couldn’t load recent activity. Retry</Text></Pressable> : null}
     {!loading && !failed && rows.length === 0 ? <Text style={[text, { color: palette.fgSoft }]}>Calls, meetings and chats will appear here.</Text> : null}
-    {rows.map((row) => <Pressable key={row.key} accessibilityRole="button" onPress={() => router.push(`/(app)/room/${row.roomId}`)}
+    {rows.map((row) => <Pressable key={row.key} accessibilityRole="button" onPress={() => router.push({ pathname: "/(app)/room/[roomId]", params: { roomId: row.roomId, title: row.title } })}
       style={[styles.row, { borderColor: palette.edge }]}>
       <Text style={text}>{row.title}</Text>
       <Text style={[text, styles.subtitle, { color: palette.fgSoft }]} numberOfLines={2}>{row.summary}</Text>

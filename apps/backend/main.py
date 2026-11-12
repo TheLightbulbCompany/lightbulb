@@ -43,7 +43,6 @@ from routers import (
     config,
     connections,
     container,
-    container_files,
     container_recover,
     debug,
     desktop_auth,
@@ -53,7 +52,6 @@ from routers import (
     hooks,
     huddles,
     desktop_execution,
-    desktop_sessions,
     desktop_session_pickup,
     desktop_session_resume,
     google_accounts,
@@ -77,7 +75,6 @@ from routers import (
     network_route as network_route_router,
     settings_keys,
     setup_requests,
-    slack_app,
     support_tickets,
     users,
     webhooks,
@@ -544,7 +541,6 @@ app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gatewa
 # Recall's per-person Meet audio: the same door, since it is the only raw-WS path the bv- edge forwards.
 app.include_router(meet_audio.router, prefix="/api/v1/gateway", tags=["meetings"])
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
-app.include_router(desktop_sessions.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_resume.router, prefix="/api/v1", tags=["desktop"])
 
@@ -584,9 +580,6 @@ app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac
 # Workspace website logins (the store behind every agent's browser vault)
 app.include_router(website_logins.router, prefix="/api/v1/website-logins", tags=["browser"])
 app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])
-
-# Workspace file uploads (POST /files)
-app.include_router(container_files.router, prefix="/api/v1/container", tags=["container"])
 
 # Container recovery (POST /recover)
 app.include_router(container_recover.router, prefix="/api/v1/container", tags=["container"])
@@ -648,9 +641,6 @@ app.include_router(hooks.router, prefix="/api/v1/hooks", tags=["hooks"])
 # a Meta app has ONE callback URL for every user. Routed by the asset id in the
 # payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
 app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
-# The platform Slack app: one Request URL for every workspace (events,
-# interactivity, slash) + the OAuth install rail. See routers/slack_app.py.
-app.include_router(slack_app.router, prefix="/api/v1/slack", tags=["slack"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 app.include_router(launch.router, prefix="/api/v1/launch", tags=["launch"])
@@ -695,16 +685,8 @@ app.include_router(
     company_link_wallet.internal_router, prefix="/api/v1/internal/link-wallet", tags=["company-link-wallet"]
 )
 
-# Money reads — the stored day rollup plus live Stripe payments/customers/products.
-from routers import company_money  # noqa: E402
-
-app.include_router(company_money.router, prefix="/api/v1/company", tags=["company-money"])
-
-# The "paste your context" door: merges into the CEO's Hermes memories/USER.md.
-from routers import company_context  # noqa: E402
 from routers import company_slug  # noqa: E402
 
-app.include_router(company_context.router, prefix="/api/v1/company", tags=["company-context"])
 app.include_router(company_slug.router, prefix="/api/v1/company", tags=["company-slug"])
 
 # Super-agent Questions (wave2-Q): /needs-you, /tasks/{id}/questions. Mounted before routers/tasks.py.
@@ -716,11 +698,6 @@ app.include_router(questions_router.router, prefix="/api/v1", tags=["questions"]
 from routers import voice as voice_router  # noqa: E402
 
 app.include_router(voice_router.router, prefix="/api/v1", tags=["voice"])
-
-# Proactive rules (wave2-S): /automations/{id}/mode, /automations/{id}/matches.
-from routers import rules as rules_router  # noqa: E402
-
-app.include_router(rules_router.router, prefix="/api/v1", tags=["rules"])
 
 # Super-agent task API (wave2-O Task 8, C15). After questions so /tasks/{id}/questions stays theirs.
 from routers import tasks as tasks_router  # noqa: E402

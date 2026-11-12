@@ -122,8 +122,6 @@ async def test_text_edit_drops_to_observe_and_resets_count(api):
     view = r.json()
     assert (view["ruleVersion"], view["mode"]) == (2, "observe")
     assert view["stats"] == {"matches": 5, "matchesThisVersion": 0, "doneByHuman": 0}
-    listed = _as(api).get(f"/api/v1/automations/{sid}/matches").json()
-    assert len(listed["matches"]) == 5 and listed["stats"]["matchesThisVersion"] == 0  # old matches stay listed
     r = _as(api).patch(
         f"{BASE}/{sid}", json={"dailyCapUsd": 5, "version": view["version"]}
     )  # a budget edit keeps the version

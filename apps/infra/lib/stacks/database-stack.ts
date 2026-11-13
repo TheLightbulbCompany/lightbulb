@@ -41,9 +41,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly paperclipCompaniesTable: dynamodb.Table;
   public readonly workspaceJoinLinksTable: dynamodb.Table;
 
-  public readonly launchWaitlistTable: dynamodb.Table;
-  public readonly launchEntriesTable: dynamodb.Table;
-  public readonly launchSettingsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -392,28 +389,6 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "IntegrationsTableName", {
       value: this.integrationsTable.tableName,
       exportName: `${this.stackName}-integrations-table`,
-    });
-
-    // Launch Competition waitlist.
-    // Waitlist rows are keyed by lowercased email — the join to an account is
-    // users.email (written by the Clerk user.created webhook). The counter row
-    // (email = "__counter__") hands out positions atomically.
-    this.launchWaitlistTable = createTable("LaunchWaitlistTable", "launch-waitlist", {
-      partitionKey: { name: "email", type: dynamodb.AttributeType.STRING },
-    });
-    this.launchWaitlistTable.addGlobalSecondaryIndex({
-      indexName: "referral-code-index",
-      partitionKey: { name: "referral_code", type: dynamodb.AttributeType.STRING },
-    });
-    this.launchEntriesTable = createTable("LaunchEntriesTable", "launch-entries", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
-    // Launch admin settings — a small single-row-per-id config table replacing
-    // the retired schedule file + env vars; the backend reads it via
-    // get_table("launch-settings"). Covered by the existing backend wildcard
-    // table grant in service-stack.ts (table/*-{env}-*) — no IAM change needed.
-    this.launchSettingsTable = createTable("LaunchSettingsTable", "launch-settings", {
-      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
     });
 
     // Guided-setup requests from the public /request-setup form, one row per

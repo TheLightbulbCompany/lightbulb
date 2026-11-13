@@ -7,7 +7,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
 import { vi } from "vitest";
 import { ContainerStack } from "../lib/stacks/container-stack";
-import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
+import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
@@ -506,20 +506,23 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("the Accounts v2 version pin defaults empty, and no Stripe rail flag reaches the task env", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([Match.objectLike({ Name: "STRIPE_ACCOUNTS_V2_VERSION", Value: "" })]),
-        }),
-      ]),
-    }));
+  test("no Stripe rail flag or removed company-Stripe/top-up setting reaches the task env", () => {
     const taskDefs = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
-    expect(taskDefs).not.toContain("STRIPE_PROVISIONING_ENABLED");
-    expect(taskDefs).not.toContain("STRIPE_PROJECTS_DEVELOPER_CONFIG");
+    for (const removed of [
+      "STRIPE_PROVISIONING_ENABLED",
+      "STRIPE_PROJECTS_DEVELOPER_CONFIG",
+      "STRIPE_ACCOUNTS_V2_VERSION",
+      "STRIPE_COMPANY_REFRESH_URL",
+      "STRIPE_COMPANY_RETURN_URL",
+      "STRIPE_COMPANY_OAUTH_REDIRECT_URL",
+      "STRIPE_PUBLISHABLE_KEY",
+      "METRONOME_CREDITS_PRODUCT_ID",
+    ]) {
+      expect(taskDefs).not.toContain(`"${removed}"`);
+    }
   });
 
-  test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {
+  test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name", () => {
     const backendTaskDefs = Object.values(
       template.findResources("AWS::ECS::TaskDefinition", {
         Properties: { Family: "lightbulb-dev-backend" },
@@ -553,7 +556,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     }
   });
 
-  test("backend role's wildcard table statement admits the launch tables without a new grant", () => {
+  test("backend role's wildcard table statement admits every table without a per-table grant", () => {
     // allTableArns(env) → table/lightbulb-{env}-* plus its indexes.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
@@ -1162,7 +1165,7 @@ describe("ServiceStack — production HTTP CORS origins", () => {
           Environment: Match.arrayWith([
             Match.objectLike({
               Name: "CORS_ORIGINS",
-              Value: `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://${LAUNCH_DOMAIN},https://www.${LAUNCH_DOMAIN}`,
+              Value: `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN}`,
             }),
           ]),
         }),
@@ -1193,7 +1196,7 @@ describe("ServiceStack — Metronome per-env wiring", () => {
     });
   });
 
-  test("prod references the prod rate card + credits product", () => {
+  test("prod references the prod rate card", () => {
     // Prod's runbook completed 2026-06-12: prod token in Secrets Manager,
     // rate card + credits product created via API (rates verified 12/12
     // against sandbox), Stripe live product wired, webhook secret set.
@@ -1205,10 +1208,6 @@ describe("ServiceStack — Metronome per-env wiring", () => {
             Match.objectLike({
               Name: "METRONOME_RATE_CARD_ID",
               Value: "fdac2edd-f207-4f11-b65b-01fad6fbbdbc",
-            }),
-            Match.objectLike({
-              Name: "METRONOME_CREDITS_PRODUCT_ID",
-              Value: "876e1694-9d76-4c37-9814-c957dbd9370f",
             }),
           ]),
         }),

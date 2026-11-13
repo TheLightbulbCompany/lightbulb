@@ -113,23 +113,6 @@ schema = (
     .exclude(
         path_regex="^/api/v1/agent-mail/u/",
     )
-    # Container-authed company hook routes (hook token, same shape as
-    # agent-mail): Hypothesis filters too many generated owner_id/body pairs
-    # here (filter_too_much). Covered end-to-end by
-    # tests/unit/routers/test_company_stripe.py and fuzzed for 5xx by
-    # tests/chaos/api/test_contract_negative.py, which suppresses that check.
-    .exclude(
-        path_regex="^/api/v1/company/[a-z-]+/u/",
-    )
-    # Slack Events ingress: the first thing it does is read the platform app's
-    # signing secret from Secrets Manager, and without one it answers 503 on
-    # purpose (Slack retries; nothing can be verified without the secret). The
-    # harness has no Secrets Manager, so every fuzzed request lands on that
-    # branch. Same class as /webhooks/ (signed ingress that can't be verified
-    # hermetically). Covered by tests/unit/routers/test_slack_app.py.
-    .exclude(
-        path_regex="^/api/v1/slack/events$",
-    )
     .exclude(
         path_regex="^/health$",
     )

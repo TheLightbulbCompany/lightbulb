@@ -556,6 +556,10 @@ async def voice_call_sweeper(stop: asyncio.Event) -> None:
             if await admitted("voice_calls", interval_s=_SWEEP_SECONDS):
                 await sweep_calls_once()
                 await sweep_phone_calls(int(time.time()))
+            if await admitted("voice_number_release", interval_s=24 * 3600):
+                from core.services import voice_onboarding
+
+                await voice_onboarding.release_lapsed_numbers()
         except Exception:  # noqa: BLE001
             logger.warning("voice call sweep failed", exc_info=True)
         try:

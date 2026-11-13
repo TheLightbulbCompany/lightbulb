@@ -229,6 +229,38 @@ async def test_second_workspace_409_when_buying_off(repos, async_client_org_admi
 
 
 @pytest.mark.asyncio
+async def test_keep_my_number_takes_any_us_number_when_its_area_code_has_none(repos, monkeypatch):  # noqa: F811
+    """Prod 11-10: a 215 business line, Twilio had no 215 numbers, Go live 409'd. Callers dial the business line
+    and it forwards, so the assistant's own number need not share its area code."""
+    _buying(monkeypatch, True)
+    provider = _fake_twilio(monkeypatch)
+
+    async def full_area(method, path, **params):
+        if path.startswith("AvailablePhoneNumbers") and params.get("AreaCode"):
+            return {"available_phone_numbers": []}
+        return await provider(method, path, **params)
+
+    monkeypatch.setattr(vo, "_twilio", full_area)
+    keep = {"forwardFrom": "+1-215-555-0100", "numberChoice": {"path": "keep", "carrier": "verizon", "mode": "missed"}}
+    assert await vo.provision_at_go_live(WS, keep, "user_a") == NEW
+
+
+@pytest.mark.asyncio
+async def test_a_chosen_area_code_with_no_numbers_still_says_so(repos, monkeypatch):  # noqa: F811
+    _buying(monkeypatch, True)
+    provider = _fake_twilio(monkeypatch)
+
+    async def full_area(method, path, **params):
+        if path.startswith("AvailablePhoneNumbers") and params.get("AreaCode"):
+            return {"available_phone_numbers": []}
+        return await provider(method, path, **params)
+
+    monkeypatch.setattr(vo, "_twilio", full_area)
+    with pytest.raises(vo.NoNumber, match="none_in_area_code"):
+        await vo.provision_at_go_live(WS, {"numberChoice": {"path": "new", "areaCode": "215"}}, "user_a")
+
+
+@pytest.mark.asyncio
 async def test_go_live_buys_in_area_code_when_on(repos, async_client_org_admin, monkeypatch):  # noqa: F811
     _buying(monkeypatch, True)
     twilio = _fake_twilio(monkeypatch)

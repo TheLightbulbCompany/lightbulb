@@ -143,23 +143,9 @@ FEED_WELCOME = (
 # Seeded ONCE per workspace as a message from the front agent (``ensure_default_room``
 # returns early on any room that already has messages): the first thing a new
 # user reads. It speaks as Lightbulb, the coordinator; specialists do the tasks (founder, 6 Nov 2026).
-#: The three pre-typed replies. The frontend's FirstReplyChips.tsx carries the same strings;
-#: the third's prefix is what onboarding_brief.first_message_intake recognises as "you pick".
-FIRST_REPLIES: tuple[str, str, str] = (
-    "Here's our website: ",
-    "I'm starting ",
-    "Not sure yet. Pick something useful and show me how you work.",
-)
-
 _FIRST_MESSAGE = (
-    "Welcome to {workspace}. I'm Lightbulb. I hand work to Growth, Engineering, Finance, Analytics and "
-    "Customer Ops, and show you each task.\n\n"
-    "One thing gets us started: what's the business? A website or a sentence is plenty.\n\n"
-    "→ Here's our website: …\n"
-    "→ I'm starting …\n"
-    "→ Not sure yet. Pick something useful and show me how you work.\n\n"
-    "I'll turn your answer into a plan and hand the first tasks to the specialists. "
-    "You'll watch them work here."
+    "Hi, I'm Lightbulb. I answer your calls, book appointments and take messages. "
+    'Ask me anything, like "Who called today?" or "What\'s on tomorrow?"'
 )
 
 
@@ -4563,6 +4549,15 @@ def select_dispatch_targets(
             return []
         woken = sorted((mentioned & set(feed_roster)) - {source_agent_id})
         return [{"agentId": agent_id, "eventKind": "user_request"} for agent_id in woken]
+    # One person talking to one agent in a group chat (the voice app's "New chat") is addressed like a DM: a plain
+    # "ok thanks" would otherwise be ambient, and Jev may answer it with silence. Only a human's message, and never a
+    # channel (a meeting or task channel can hold one person and one agent and must stay ambient).
+    one_to_one = (
+        room_kind == "group-dm"
+        and source_agent_id is None
+        and sum(m.get("kind") == "human" for m in members) == 1
+        and sum(m.get("kind") == "agent" and m.get("listenMode") != "observe" for m in members) == 1
+    )
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
         if member.get("kind") != "agent" or member.get("id") == source_agent_id:
@@ -4575,7 +4570,7 @@ def select_dispatch_targets(
         # A DM is addressed by construction: without this, an unmentioned DM is
         # an ambient room_event, which OpenClaw runs message-tool-only and the
         # agent's plain reply is muted (observed on dev 2026-09-10).
-        if agent_id in mentioned or room_kind == "dm":
+        if agent_id in mentioned or room_kind == "dm" or one_to_one:
             targets[agent_id] = "user_request"
         elif member.get("listenMode") == "active":
             targets.setdefault(agent_id, "room_event")

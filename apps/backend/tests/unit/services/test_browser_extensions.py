@@ -74,23 +74,6 @@ def test_read_manifest_refuses_what_chrome_would_not_load(data, message):
         ext.read_manifest(data)
 
 
-@pytest.mark.asyncio
-async def test_upload_list_remove_round_trip(store):
-    row, s3 = store
-    added = await ext.upload(
-        "org_a", _zip({"manifest_version": 3, "name": "__MSG_n__", "short_name": "My Tool!", "version": "2"}), "u1"
-    )
-    assert added["slug"] == "my-tool" and added["version"] == "2" and added["source"] == "upload"
-    put = s3.put_object.call_args.kwargs
-    assert put["Key"] == "browser-state/org_a/extensions/my-tool.zip" and put["ContentType"] == "application/zip"
-    assert [e["slug"] for e in await ext.list_extensions("org_a")] == ["my-tool"]
-
-    assert await ext.remove("org_a", "my-tool")
-    assert not await ext.remove("org_a", "my-tool")
-    s3.delete_object.assert_called_once_with(Bucket="bucket", Key="browser-state/org_a/extensions/my-tool.zip")
-    assert row["list"] == []
-
-
 def test_localized_name_resolves_from_default_locale():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -99,15 +82,6 @@ def test_localized_name_resolves_from_default_locale():
         )
         zf.writestr("_locales/en/messages.json", json.dumps({"APPNAME": {"message": "Real Name"}}))
     assert ext.read_manifest(buf.getvalue())["_name"] == "Real Name"
-
-
-@pytest.mark.asyncio
-async def test_session_cap_leaves_room_for_the_helper(store):
-    row, _ = store
-    row["list"] = [{"slug": f"e{i}", "key": f"org_a/browser-extensions/e{i}.zip"} for i in range(ext.MAX_EXTENSIONS)]
-    with pytest.raises(ext.ExtensionError, match="at most 9"):
-        await ext.upload("org_a", _zip({"manifest_version": 3, "name": "one more"}), "u1")
-    assert ext.MAX_EXTENSIONS + 1 == 10  # AWS's per-session limit, helper included
 
 
 # --- Chrome Web Store ----------------------------------------------------------------------
@@ -280,7 +254,7 @@ async def test_an_entry_under_the_old_agent_writable_prefix_moves_before_it_load
 
     row["list"] = [{"slug": "x", "key": "org_a/browser-extensions/x.zip"}]
     s3.copy_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "CopyObject")
-    assert await ext.list_extensions("org_a") == []
+    assert await ext._current("org_a") == []
     assert (await ext.session_config("org_a", "n"))["extensions"] == [
         {"location": {"s3": {"bucket": "bucket", "prefix": "browser-state/org_a/browser-helper.zip"}}}
     ]

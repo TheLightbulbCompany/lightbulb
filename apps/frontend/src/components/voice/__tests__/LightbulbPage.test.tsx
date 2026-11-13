@@ -1,59 +1,58 @@
-import { act, render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("../TalkOrb", () => ({ TalkOrb: ({ name, compact }: { name: string; compact?: boolean }) => <p>orb:{name}:{compact ? "compact" : "full"}</p> }));
-vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb" }));
-const dm = vi.hoisted(() => ({ room: { roomId: "dm1", kind: "dm" } as { roomId: string } | null | undefined }));
+vi.mock("../TalkOrb", () => ({ TalkOrb: ({ name }: { name: string }) => <p>orb:{name}</p> }));
+const chats = vi.hoisted(() => ({ data: undefined as { roomId: string }[] | undefined }));
+vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb", useNewChat: () => ({ start: vi.fn(), state: "idle" }), useTextChats: () => chats }));
+vi.mock("../AssistantThread", () => ({ AssistantThread: ({ roomId }: { roomId: string }) => <p>thread:{roomId}</p> }));
+const dm = vi.hoisted(() => ({ room: { roomId: "dm1" } as { roomId: string } | null | undefined }));
 vi.mock("@/components/huddle/useAssistantDm", () => ({ useAssistantDm: () => dm.room }));
-const ws = vi.hoisted(() => ({ activeRoomId: null as string | null, openMessage: vi.fn(), provider: vi.fn() }));
-vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  MessagingWorkspaceProvider: ({ children }: { children: React.ReactNode }) => { ws.provider(); return <>{children}</>; },
-  useMessagingWorkspace: () => ({ activeRoomId: ws.activeRoomId, openMessage: ws.openMessage }),
-}));
-vi.mock("@/components/messaging/MessagingWorkspace", () => ({ MessagingConversation: ({ voiceControls, oneToOne }: { voiceControls?: boolean; oneToOne?: boolean }) => <p data-voice={String(voiceControls)} data-one={String(oneToOne)}>room</p> }));
-vi.mock("@/components/workspace/RightPane", () => ({ RightPane: ({ pane }: { pane: { component: string; params: Record<string, string> } }) => <aside aria-label="pane" data-kind={pane.component} data-id={pane.params.id} /> }));
-vi.mock("@/components/workspace/InvitePeopleDialog", () => ({ InvitePeopleDialog: () => null }));
 
+const api = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
+import { SWRConfig } from "swr";
+import { ApiError } from "@lightbulb/shared";
 import { LightbulbPage } from "../LightbulbPage";
-import { _resetControllerForTests, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
+const fresh = (ui: React.ReactElement) => render(<SWRConfig value={{ provider: () => new Map() }}>{ui}</SWRConfig>);
 
-beforeEach(() => { dm.room = { roomId: "dm1" }; ws.activeRoomId = null; _resetControllerForTests(); });
+beforeEach(() => { dm.room = { roomId: "dm1" }; chats.data = undefined; api.get.mockReset(); });
 
-it("the full orb on top, then the assistant's DM once the provider has it open", () => {
-  const { rerender } = render(<LightbulbPage />);
-  expect(screen.getByText("orb:Lightbulb:full")).toBeInTheDocument();
-  expect(ws.provider).toHaveBeenCalled();
-  expect(ws.openMessage).toHaveBeenCalledWith("dm1", null);
-  expect(screen.getByRole("status")).toHaveTextContent("Loading chat…");
-  ws.activeRoomId = "dm1";
-  rerender(<LightbulbPage />);
-  const room = screen.getByText("room");
-  expect(screen.getByText("orb:Lightbulb:full").compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(ws.openMessage).toHaveBeenCalledTimes(1);
-  // The orb is the only voice control: the room header drops its Live strip and Go live here.
-  expect(room).toHaveAttribute("data-voice", "false");
-  // The member's own DM: no Members tab, Add people or invites (RoomPanel).
-  expect(room).toHaveAttribute("data-one", "true");
+it("the orb on top, then the assistant's DM", () => {
+  render(<LightbulbPage />);
+  const thread = screen.getByText("thread:dm1");
+  expect(screen.getByText("orb:Lightbulb").compareDocumentPosition(thread) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-it("what the room opens in the right pane (a file, a result, a task) opens beside it here, and closes with the page", () => {
-  ws.activeRoomId = "dm1";
-  const { unmount } = render(<LightbulbPage />);
-  expect(screen.queryByRole("complementary", { name: "pane" })).toBeNull();
-  // RoomImageAttachments' tile: no shell is mounted, and it is no longer a dead click.
-  act(() => openPanel("artifact", { src: "attachment", room: "dm1", id: "a1", name: "x.png", type: "image/png" }, { pushUrl: true }));
-  expect(screen.getByRole("complementary", { name: "pane" })).toHaveAttribute("data-kind", "artifact");
-  expect(screen.getByRole("complementary", { name: "pane" })).toHaveAttribute("data-id", "a1");
-  unmount();
-  expect(getWorkspaceSnapshot().pane).toBeNull();
+it("?room= opens that chat instead of the DM, with New chat beside the orb", () => {
+  render(<LightbulbPage room="g7" />);
+  expect(screen.getByText("thread:g7")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /New chat/ })).toBeInTheDocument();
 });
 
-it("waits while the DM is unknown, and shows the provider's own pick when there is none", () => {
+it("a ?room= the list lacks is asked for by id: it opens when the room exists, Chat not found only on its 404", async () => {
+  chats.data = [{ roomId: "dm1" }];
+  api.get.mockResolvedValueOnce({ roomId: "new1" }); // just made: the list's index hasn't caught up yet
+  fresh(<LightbulbPage room="new1" />);
+  expect(screen.getByText("thread:new1")).toBeInTheDocument();
+  await waitFor(() => expect(api.get).toHaveBeenCalledWith("/messaging/rooms/new1"));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("thread:new1")).toBeInTheDocument();
+});
+
+it("Chat not found, with no composer, when the room itself answers 404", async () => {
+  chats.data = [{ roomId: "dm1" }];
+  api.get.mockRejectedValueOnce(new ApiError(404, {}));
+  fresh(<LightbulbPage room="nope" />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Chat not found");
+  expect(screen.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/voice");
+  expect(screen.queryByText(/^thread:/)).toBeNull();
+});
+
+it("waits while the DM is unknown, and says so when there is none", () => {
   dm.room = undefined;
   const { rerender } = render(<LightbulbPage />);
   expect(screen.getByRole("status")).toHaveTextContent("Loading chat…");
-  expect(ws.openMessage).not.toHaveBeenCalled();
   dm.room = null;
   rerender(<LightbulbPage />);
-  expect(screen.getByText("room")).toBeInTheDocument();
+  expect(screen.getByText(/No conversation yet/)).toBeInTheDocument();
 });

@@ -13,12 +13,8 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-badge-count",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled",
     "deep-link:default",
     "shell:allow-open",
-    "updater:default",
-    "dialog:default"
+    "updater:default"
   ]
 }

@@ -14,7 +14,6 @@ import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
 import { StatusBar } from "expo-status-bar";
 import { Text, useColorScheme } from "react-native";
 import { chatPalette, fonts } from "../../config/theme";
-import { getCurrentTarget } from "../../lib/activeAgent";
 import { clearRoomsCache } from "../../lib/roomsCache";
 import { setupWebRTC } from "../../lib/webrtc";
 import { LiveEventsProvider } from "../../providers/live-events";
@@ -25,10 +24,9 @@ import { LiveSheet } from "../../components/voice/LiveSheet";
 setupWebRTC();
 
 /**
- * Deep-link anchor. A cold start on `/(app)/room/<id>` (a tapped push) builds
- * the stack as [(tabs), room], so the native back button pops to Chats instead
- * of stranding the reader on a rootless screen — which is what the deleted
- * `HeaderBack` component existed to paper over.
+ * Deep-link anchor. A cold start on `/(app)/room/<id>` builds the stack as
+ * [(tabs), room], so the native back button pops to Home instead of
+ * stranding the reader on a rootless screen.
  */
 export const unstable_settings = { anchor: "(tabs)" };
 
@@ -43,11 +41,9 @@ const TAB_TITLES: Record<string, string> = {
 /**
  * Everything signed-in is a NATIVE STACK, and the tab bar is its first screen.
  *
- * That ordering is the whole point: a conversation, a Teams issue or a Control
- * panel is now PUSHED over the tabs — slide-in, parallax, interactive
- * edge-swipe back and a real back button, all from UIKit — where it used to be
- * a tab switch into a hidden tab, which expo-router's JS tabs render with
- * `animation: 'none'`. Nothing below draws its own header: the four tab roots
+ * That ordering is the whole point: a chat or Plans is PUSHED over the
+ * tabs — slide-in, interactive edge-swipe back and a real back button, all
+ * from UIKit. Nothing below draws its own header: the four tab roots
  * share this stack's, and every other screen gets its own pushed one.
  *
  * Navigation chrome deliberately carries NO `fontFamily`: the system font is
@@ -76,11 +72,8 @@ export default function AppLayout() {
 
   return (
     <>
-      {/* getCurrentTarget reads the conversation (and thread) currently on
-          screen (activeAgent.ts) so the notification handler suppresses the
-          banner only for a message the user is already watching arrive.
-          Push tokens are per user, so this runs ahead of both gates. */}
-      <PushRegistration getCurrentTarget={getCurrentTarget} />
+      {/* Push tokens are per user, so this runs ahead of both gates. */}
+      <PushRegistration />
       {/* Above ProvisionGate, so nothing that can reach an agent — chat, the
           first-run brief, a Teams comment — renders before the user has agreed
           to their content going to a third-party AI provider (App Store
@@ -121,17 +114,12 @@ export default function AppLayout() {
                   }}
                 >
                   {/* One header for the four tab roots, titled by whichever is
-                      focused; a Stack per tab would be four files of pure chrome.
-                      Chats adds its search bar and compose button to it itself,
-                      and so does Teams its "+" button (both via useTabHeader).
-
-                      large title on Chats only (first tab); fall back to the
-                      standard title if it jumps, per the spec ruling. */}
+                      focused; a Stack per tab would be four files of pure chrome. */}
                   <Stack.Screen
                     name="(tabs)"
                     options={({ route }) => ({
                       // undefined until the tab navigator has state — i.e. the first
-                      // render, which is always Chats.
+                      // render, which is always Home.
                       title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Home",
                       // Telegram/Signal-style: the tab's title sits in the top row,
                       // left-aligned in Satoshi, beside the tab's own buttons — not a
@@ -152,48 +140,16 @@ export default function AppLayout() {
                           ),
                         },
                       ],
-                      // A header search bar forces the bar translucent, which lays the
-                      // screen out UNDER it. Pinned on for all four tabs, or every
-                      // switch between Chats and Activity/Teams/Settings would re-lay
-                      // the whole tab controller out under and back below the bar.
+                      // Translucent for all four tabs, so the screens lay out under the
+                      // bar the same way (contentInsetAdjustmentBehavior keeps them clear).
                       unstable_nativeProps: { headerConfig: { translucent: true } },
-                      // Translucent alone draws NO material behind the title/search
-                      // bar, so a scrolled row shows through with nothing under it
-                      // (worst on Chats' large title + search bar). Set once here,
-                      // not per-tab, so it survives Chats' useTabHeader cleanup and
-                      // covers all four tabs that share this one header.
+                      // Translucent alone draws NO material behind the title, so a
+                      // scrolled row shows through; set once for all four tabs.
                       headerBlurEffect: "systemChromeMaterial",
                     })}
                   />
-                  {/* The conversation and its threads. Both set their own title from
-                      the room (`Stack.Screen` inside the screen body). */}
-                  <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
-                  <Stack.Screen name="room/[roomId]/details" options={{ title: "Details" }} />
-                  {/* A super-agent request (opened from a card, Activity, a push or a link). */}
-                  <Stack.Screen name="task/[taskId]" options={{ title: "Task" }} />
-                  {/* A super-agent automation and its run history. */}
-                  <Stack.Screen name="automation/[id]" options={{ title: "Automation" }} />
-                  {/* A shared Claude / Codex session's transcript: workspace-scoped, not
-                      a room's (it sets its own title from the session). */}
-                  <Stack.Screen name="session/[sessionId]" options={{ title: "Session" }} />
-                  {/* Teams' detail screens and Control were nested Stacks inside
-                      hidden tabs; folded in here as pushed screens, over
-                      whichever tab is showing. Teams itself is a tab now (see
-                      (tabs)/teams.tsx), so no bare "teams/index" screen lives
-                      here any more. */}
-                  <Stack.Screen name="control/index" options={{ title: "Control" }} />
-                  <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
-                  <Stack.Screen name="control/agents" options={{ title: "Agents" }} />
-                  <Stack.Screen name="control/agent-detail" options={{ title: "Agent" }} />
-                  <Stack.Screen name="control/skills" options={{ title: "Skills" }} />
-                  <Stack.Screen name="control/usage" options={{ title: "Usage" }} />
-                  <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
-                  <Stack.Screen name="control/website-signins" options={{ title: "Website sign-ins" }} />
-                  <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />
-                  <Stack.Screen name="invite" options={{ title: "Invite people" }} />
-                  {/* Legacy agent route — resolves that agent's DM and replaces
-                      itself with the room route. */}
-                  <Stack.Screen name="agent/[agentId]" options={{ title: "Chat" }} />
+                  {/* A text chat with the assistant (or a call's transcript), pushed from Home. */}
+                  <Stack.Screen name="room/[roomId]/index" options={{ title: "Lightbulb" }} />
                 </Stack>
                 {/* After the Stack, inside the gates: a tap may only navigate once
                     this Stack exists (see NotificationTapRouter). */}

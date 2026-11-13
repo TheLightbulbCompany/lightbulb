@@ -14,7 +14,7 @@ import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
 import { ForwardCheck, HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
 import { FORWARDING_CODES, IPHONE_NOTE, CHARGES_NOTE, forwardingCodes, type Carrier, type ForwardMode } from "./forwarding";
-import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
+import { DAYS, DEFAULT_CONFIG, nameOf, saveRefusal, usPhone, type AgentConfig } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
@@ -37,9 +37,13 @@ export function applyDraft(c: AgentConfig, d: Draft): AgentConfig {
     services: c.services.length ? c.services : d.services,
     knowledge: [...c.knowledge, ...[...d.knowledge, ...staff].filter((k) => !asked.has(k.q.trim().toLowerCase()))],
     toAdd: c.toAdd.length ? c.toAdd : d.toAdd.filter((q) => !asked.has(q.trim().toLowerCase())),
-    forwardFrom: c.forwardFrom || d.phone,
+    // The site's number is a guess at the business line; the owner's own hand-off mobile is never it (the server
+    // refuses a hand-off that rings the forwarded line, and step 1 could not be passed).
+    forwardFrom: c.forwardFrom || (digits10(d.phone) && digits10(d.phone) === digits10(c.handoff.number) ? "" : d.phone),
   };
 }
+
+const digits10 = (n: string) => n.replace(/\D/g, "").slice(-10);
 
 /** The hours are in the owner's own zone; keep one already chosen. */
 export const withTimezone = (c: AgentConfig): AgentConfig => ({ ...c, timezone: c.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone });
@@ -66,17 +70,15 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
       const code = (e as { body?: { detail?: { code?: string } } }).body?.detail?.code;
       if (code === "voice_payment_required") {
         try {
-          const pending = { ...withTimezone(next), live: false, onboardingStep: 5 };
+          const pending = { ...withTimezone(next), live: false, onboardingStep: 5, goLiveRequested: true };
           await save(pending); setC(pending);
           setPaymentRequired(true);
-          setErr("Your setup is saved. Activate your voice plan in Settings, then return here and choose Go live to get your number.");
+          setErr("Your setup is saved. Activate your voice plan in Settings: once it is paid, your assistant goes live and gets its number by itself.");
         } catch { setErr("Couldn't save your setup. Try again before opening payment."); }
         return;
       }
-      setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
-        : status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
-        : code === "handoff_number_not_us" ? "The hand-off number must be a US or Canadian number."
-        : "Couldn't save. Try again.");
+      setErr(status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
+        : saveRefusal(e) ?? "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };
 

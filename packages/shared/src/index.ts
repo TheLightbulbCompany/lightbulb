@@ -237,9 +237,6 @@ export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
 export { canSendToSession, endedWhy, markSessionRead, markSessionsSeen, markSessionUnread, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionArchivedByViewer, groupByDay, sessionEndable, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionState, sessionStateAction, sessionStateLabel, sessionStatus, sessionTitle, sessionWaitingLine, sessionsNeedingYou, sidebarSessionList, SESSION_NOTIFICATION_DEFAULTS, type NotifyLevel, type SessionNotifications, sessionToolName, changesLabel, sessionAgentsLabel, sessionPrLabel, sessionSignalsLine, sessionAgentName, SESSION_AGENTS, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
 export type { SessionDayGroup, SessionMarks, SessionSeen, SessionState, WorkspaceSection } from "./messaging/localSessionLabels";
-export { mergeSessionRows } from "./messaging/sessionRow";
-// `SessionState` is already the label state above; the row's is exported under its own name.
-export type { EngineRecord, SessionRow, SessionState as SessionRowState, SessionViewer } from "./messaging/sessionRow";
 export { CLI_ONLY, conversationOnly, sessionScreenNotice } from "./messaging/sessionStates";
 export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState, unescapeTyped } from "./messaging/chatList";
 export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatList";

@@ -3,10 +3,11 @@
 // The owner's voice surfaces read three things: the timeline (calls + meetings), the assistant's settings
 // (one JSON document, GET/PUT /voice/agent) and the open Questions (/needs-you). Shapes: routers/voice.py.
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import useSWR from "swr";
-import { usPhone, type QuestionView } from "@lightbulb/shared";
+import { useRouter } from "next/navigation";
+import useSWR, { useSWRConfig } from "swr";
+import { usPhone, type QuestionView, type RoomSummary } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 
 export type Outcome = "booked" | "moved" | "cancelled" | "message" | "answered" | "needs_you" | "handoff_missed" | "spam" | "silent" | "forwarded";
@@ -46,6 +47,50 @@ export function useTimeline() {
     { refreshInterval: 20_000 });
 }
 
+/** A typed chat with the assistant: the member's DM, or a group chat "New chat" made (only them and agents in it). */
+export interface TextChat { roomId: string; title: string; at: number }
+export const chatHref = (roomId: string) => `/voice/lightbulb?room=${encodeURIComponent(roomId)}`;
+
+export function textChats(rooms: RoomSummary[], me: string): TextChat[] {
+  return rooms
+    .filter((r) => (r.kind === "dm" || r.kind === "group-dm") && r.members.some((m) => m.kind === "agent")
+      && r.members.every((m) => m.kind !== "human" || m.id === me))
+    .map((r) => ({ roomId: r.roomId, title: r.name ?? (r.kind === "dm" ? `You and ${LIGHTBULB}` : "New chat"),
+      at: Date.parse(r.lastMessageAt ?? r.updatedAt) || 0 }))
+    .sort((a, b) => b.at - a.at);
+}
+
+const CHATS_KEY = "/messaging/rooms#voice-chats";
+export function useTextChats() {
+  const api = useApi();
+  const { isLoaded, userId, orgId } = useAuth();
+  return useSWR(isLoaded && userId && orgId ? [CHATS_KEY, userId, orgId] : null,
+    async () => textChats(((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms, userId!));
+}
+
+/** "New chat": a group chat with only the member in the request; the backend seats Lightbulb in every new Router
+ *  room (messaging._lightbulb_only). A DM cannot be the second chat: there is one per pair. Named on its first send. */
+export function useNewChat() {
+  const api = useApi();
+  const router = useRouter();
+  const { mutate } = useSWRConfig();
+  const [state, setState] = useState<"idle" | "busy" | "failed">("idle");
+  const start = useCallback(async () => {
+    setState("busy");
+    try {
+      const room = (await api.post("/messaging/rooms", { clientRoomId: crypto.randomUUID(), kind: "group-dm", name: null, members: [] })) as { roomId: string };
+      // In the list at once, so /voice/lightbulb?room= never reads the new chat as "not found" before the refetch.
+      void mutate((key) => Array.isArray(key) && key[0] === CHATS_KEY,
+        (chats?: TextChat[]) => chats && [{ roomId: room.roomId, title: "New chat", at: Date.now() }, ...chats]);
+      setState("idle");
+      router.push(chatHref(room.roomId));
+    } catch {
+      setState("failed");
+    }
+  }, [api, mutate, router]);
+  return { start, state };
+}
+
 export interface Knowledge { q: string; a: string; source?: string }
 export interface StaffMember { id: string; name: string }
 export type Day = { open: string; close: string; closed?: boolean };
@@ -78,6 +123,8 @@ export interface AgentConfig {
   runOut?: "keep" | "forward";
   /** Onboarding: what the owner typed in step 1, and the step to resume at (absent once it went live). */
   business?: string; city?: string; website?: string; onboardingStep?: number;
+  /** Go live was pressed but the voice plan was not paid yet: it goes live by itself once the plan is active. */
+  goLiveRequested?: boolean;
 }
 
 export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -191,4 +238,45 @@ export function useUsage() {
 /** A factual recorded step can fill a missing call summary; guessed steps never do. */
 export function callSummary(call: Pick<CallItem, "summary" | "steps">): string {
   return call.summary?.trim() || [...(call.steps ?? [])].reverse().find((step) => !step.guessed && step.text.trim())?.text.trim() || "Open conversation";
+}
+
+/** Why the server refused a save, in the owner's words; null when there is nothing specific to say. One place, so no
+ * page hides a refusal behind "Couldn't save" (prod 11-10: onboarding could not pass step 1 and never said why). */
+export function saveRefusal(e: unknown): string | null {
+  const err = e as { status?: number; body?: { detail?: { code?: string; message?: string } } };
+  const code = err?.body?.detail?.code;
+  if (err?.status === 403) return "Only an admin of this workspace can change the assistant.";
+  switch (code) {
+    case "handoff_is_forwarded_line":
+      return "Your hand-off mobile is the same number you forward to the assistant, so a hand-off would ring the assistant again. Use a different number for hand-offs, or leave it empty.";
+    case "number_unavailable": {
+      const reason = (err.body?.detail as { reason?: string } | undefined)?.reason;
+      return reason === "none_in_area_code" ? "No numbers are left in that area code. Pick another area code, or keep your own number and forward it."
+        : reason === "provisioning_in_progress" ? "Your number is being set up. Wait a minute, then try Go live again."
+        : "We couldn't get a number just now. Your setup is saved; try Go live again.";
+    }
+    case "handoff_number_not_us": return "The hand-off number must be a US or Canadian number.";
+    case "handoff_number_invalid": return "That hand-off number doesn't look right. Check it and try again.";
+    case "timezone_invalid": return "Your time zone wasn't recognised. Reload the page and try again.";
+    case "too_large": return "That's too much text to save. Shorten the Knowledge or instructions.";
+    case "front_agent_unavailable": case "front_agent_invalid":
+      return err.body?.detail?.message || "Choose an active agent from this workspace.";
+    default: return null;
+  }
+}
+
+/** After the voice plan is paid, finish the Go live the owner already pressed (prod 11-10: payment returned to
+ * Settings, nothing went live, and the business line kept ringing through to voicemail). One try per page load. */
+export function useGoLiveAfterPayment() {
+  const api = useApi();
+  const { data, save } = useAgentConfig();
+  const waiting = !!data?.goLiveRequested && !data.live;
+  const { data: plan } = useSWR(waiting ? ["/billing/voice-plan", "go-live"] : null,
+    () => api.get("/billing/voice-plan") as Promise<{ status: string }>, { refreshInterval: 5_000 });
+  const tried = useRef(false);
+  useEffect(() => {
+    if (!data || !waiting || tried.current || plan?.status !== "active") return;
+    tried.current = true;
+    save({ ...data, live: true, paused: false, onboardingStep: undefined, goLiveRequested: undefined }).catch(() => {});
+  }, [data, waiting, plan?.status, save]);
 }

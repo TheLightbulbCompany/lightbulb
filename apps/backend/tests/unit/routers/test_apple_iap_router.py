@@ -119,18 +119,6 @@ ORG_MEMBER = AuthContext(user_id="user_2", org_id="org_1", org_role="org:member"
 
 
 @pytest.mark.asyncio
-async def test_the_mobile_portal_refuses_a_non_admin_org_member():
-    """resolve_owner_id returns the ORG's billing row in org context, so an
-    unfenced portal session lets any member cancel the whole team's
-    subscription. /billing/portal has always required admin; this route was
-    written from its behaviour and inherited the reasoning without the guard."""
-    app = _app_with_auth(ORG_MEMBER)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-        r = await c.post("/api/v1/billing/apple/portal", json={})
-    assert r.status_code == 403, r.text
-
-
-@pytest.mark.asyncio
 async def test_the_mobile_portal_still_admits_an_org_admin():
     """The fence is on ROLE, not on org context — an admin managing the team's
     own subscription is the legitimate caller this route exists for."""

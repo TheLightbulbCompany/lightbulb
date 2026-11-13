@@ -12,7 +12,7 @@ vi.mock("@clerk/nextjs", () => ({
 vi.mock("../TalkSessionProvider", () => ({ TalkSessionProvider: ({ children }: { children: React.ReactNode }) => <div data-testid="talk-owner">{children}</div> }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ HuddleProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 const questions = vi.hoisted(() => ({ list: [] as { id: string }[] }));
-vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb", useQuestions: () => ({ data: questions.list }) }));
+vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb", useQuestions: () => ({ data: questions.list }), useGoLiveAfterPayment: () => {} }));
 
 import { VoiceShell } from "../VoiceShell";
 

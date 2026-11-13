@@ -8,24 +8,17 @@ import { useEffect, useMemo, useRef } from "react";
 import { Platform } from "react-native";
 
 import { makeAdapter } from "../../lib/adapter";
-import {
-  configureNotificationHandler,
-  type NotificationTarget,
-} from "../../lib/notifications";
+import { configureNotificationHandler } from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
 
 /**
  * Mounted inside the signed-in subtree (LiveEventsProvider). Requests notification
  * permission, registers the Expo push token with the backend and installs the
- * foreground-suppression handler. Renders nothing. Taps are routed by
+ * notification handler. Renders nothing. Taps are routed by
  * `NotificationTapRouter`, which has to wait for the signed-in Stack to exist —
  * this component mounts before the gates and must not navigate.
  */
-export function PushRegistration({
-  getCurrentTarget,
-}: {
-  getCurrentTarget: () => NotificationTarget;
-}) {
+export function PushRegistration() {
   const { getToken, userId } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
@@ -81,11 +74,9 @@ export function PushRegistration({
     };
   }, [api, userId]);
 
-  // Foreground-suppression handler (reads the on-screen conversation at
-  // handle-time).
   useEffect(() => {
-    configureNotificationHandler(getCurrentTarget);
-  }, [getCurrentTarget]);
+    configureNotificationHandler();
+  }, []);
 
   return null;
 }

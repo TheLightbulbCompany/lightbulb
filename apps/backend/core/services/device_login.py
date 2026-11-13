@@ -24,7 +24,6 @@ from fastapi import HTTPException
 
 from core.config import settings
 from core.repositories import messaging_repo
-from core.services.desktop_pair import _public_key_raw_bytes
 
 LOGIN_TTL_S = 600
 POLL_INTERVAL_S = 2
@@ -50,21 +49,6 @@ def _live(row: dict | None) -> bool:
 def clean_machine_name(name: str | None) -> str:
     """The Mac's hostname as the approver will read it: printable characters only, trimmed."""
     return "".join(ch for ch in (name or "") if ch.isprintable()).strip()[:MACHINE_NAME_MAX]
-
-
-async def start(tauri_mac_pubkey: str, cli_pubkey: str, machine_name: str | None = None) -> dict:
-    # Reject a bad key now: at approve it would fail inside the pairing, with the code bound.
-    for pem in (tauri_mac_pubkey, cli_pubkey):
-        try:
-            _public_key_raw_bytes(pem)
-        except Exception as exc:  # noqa: BLE001 -- any parse failure is the caller's bad key
-            raise HTTPException(status_code=422, detail="Public keys must be PEM-encoded Ed25519.") from exc
-    fields = {
-        "tauriMacPubKey": tauri_mac_pubkey,
-        "cliPubKey": cli_pubkey,
-        "machineName": clean_machine_name(machine_name),
-    }
-    return await create(fields, "/auth/connect-machine")
 
 
 async def create(fields: dict, page: str, *, code_in_url: bool = True) -> dict:
@@ -117,12 +101,6 @@ async def live_row(user_code: str, kind: str | None = None) -> dict:
     if not _live(row) or row.get("kind") != kind:
         raise HTTPException(status_code=410, detail=_EXPIRED)
     return row
-
-
-async def describe(user_code: str) -> dict:
-    """What the approve page shows before the click: the name the Mac reported."""
-    row = await live_row(user_code)
-    return {"machineName": row.get("machineName") or ""}
 
 
 async def finish(row: dict, user_id: str, result: dict) -> None:

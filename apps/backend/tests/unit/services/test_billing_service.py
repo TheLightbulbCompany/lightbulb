@@ -185,7 +185,7 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 async def test_paid_voice_can_select_provider_without_legacy_subscription(
     monkeypatch, dynamodb_billing_table, provider, legacy_status
 ):
-    """A collected voice invoice pays for access even on the original trial row."""
+    """A live voice-plan subscription pays for access even on the original trial row."""
     account = {
         "owner_id": "org_voice",
         "owner_type": "org",
@@ -193,7 +193,7 @@ async def test_paid_voice_can_select_provider_without_legacy_subscription(
         "trial_end": 1,
         "metronome_voice_contract_id": "voice-contract",
         "voice_plan_status": "active",
-        "voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}},
+        "voice_plan_stripe_status": "active",
     }
     dynamodb_billing_table.put_item(Item=account)
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")

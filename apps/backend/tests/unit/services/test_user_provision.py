@@ -1,4 +1,4 @@
-"""Unit tests for the unified ensure_user_ready helper."""
+"""Unit tests for the workspace readiness helpers."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,7 +6,6 @@ import pytest
 
 from core.auth import AuthContext
 from core.services import user_provision
-from core.services.user_provision import ensure_user_ready
 
 
 @pytest.fixture(autouse=True)
@@ -19,50 +18,12 @@ def _existing_billing_account():
 
 @pytest.fixture(autouse=True)
 def _mock_create_trial_local_if_absent():
-    """ensure_user_ready auto-defaults a genuinely-new owner into
-    trial_local before the gate is evaluated (Task 3); stub it so
-    pre-existing tests never touch real billing DDB. Tests that care
+    """Stub the trial_local create so tests never touch real billing DDB. Tests that care
     about this call inspect/override the mock directly."""
     with patch(
         "core.services.user_provision.billing_repo.create_trial_local_if_absent",
         new=AsyncMock(return_value=None),
     ) as mock:
-        yield mock
-
-
-@pytest.fixture(autouse=True)
-def _no_container_row():
-    """``ensure_user_ready`` reads the containers row: only a RUNNING workspace gets the
-    in-request owner seed reconcile. Default to NO row; the running tests override it."""
-    with patch(
-        "core.services.user_provision.container_repo.get_by_owner_id",
-        new=AsyncMock(return_value=None),
-    ) as mock:
-        yield mock
-
-
-@pytest.fixture
-def _container_running(_no_container_row):
-    """Owner already has a RUNNING container: no executor run is dispatched, so
-    the seed must be reconciled on this thread."""
-    _no_container_row.return_value = {"status": "running", "service_name": "openclaw-x"}
-    return _no_container_row
-
-
-@pytest.fixture
-def _stub_trial_default():
-    """Keep billing initialization and member JOIN external to dispatch tests.
-
-    The workspace trial tests below call the real initializer. Membership
-    tests override the join stub with their own doubles.
-    """
-    with (
-        patch(
-            "core.services.user_provision.ensure_workspace_trial_default",
-            new=AsyncMock(),
-        ) as mock,
-        patch.object(user_provision, "_ensure_workspace_member", AsyncMock()),
-    ):
         yield mock
 
 
@@ -110,31 +71,6 @@ def _up_gate(code: str = "credits_required") -> MagicMock:
     return gate
 
 
-@pytest.mark.asyncio
-async def test_ensure_user_ready_no_op_when_gate_blocks(_stub_trial_default):
-    """If evaluate_provision_gate returns a Gate (not None), nothing
-    is provisioned. Caller's pre-condition responsibility."""
-    fake_gate = MagicMock()  # truthy non-None
-    fake_gate.code = "subscription_required"
-    with (
-        patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=fake_gate),
-        ),
-        patch(
-            "core.services.user_provision._ensure_owner_workspace",
-            new=AsyncMock(),
-        ) as mock_seed,
-        patch(
-            "core.services.user_provision.dispatch_provision",
-            new=AsyncMock(),
-        ) as mock_container,
-    ):
-        await ensure_user_ready(_org_admin_auth())
-    mock_seed.assert_not_awaited()
-    mock_container.assert_not_awaited()
-
-
 # Workspace trial initialization.
 
 
@@ -179,22 +115,6 @@ async def test_workspace_trial_rejects_missing_or_mismatched_org(
         await user_provision.ensure_workspace_trial_default(auth, workspace_id)
     assert exc.value.status_code == status
     _mock_create_trial_local_if_absent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_missing_org_returns_before_the_gate_and_creates_nothing(_stub_trial_default):
-    """The workspace-first fence: a personal (no-org) caller leaves
-    ``ensure_user_ready`` as its FIRST statement — before the JOIN, the gate and
-    the seed — so no personal world can be built for anyone who signs up alone."""
-    gate = AsyncMock(return_value=_up_gate())
-    with (
-        patch.object(user_provision, "evaluate_provision_gate", gate),
-        patch.object(user_provision, "_reconcile_owner_seed", AsyncMock()) as seed,
-    ):
-        assert await ensure_user_ready(_personal_auth()) is None
-    gate.assert_not_awaited()
-    seed.assert_not_awaited()
-    user_provision._ensure_workspace_member.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -266,85 +186,6 @@ async def test_org_created_webhook_keys_the_trial_on_the_creator(
     assert event["event"] == "trial_started"
     assert event["distinct_id"] == "user_creator"
     assert event["properties"]["workspace_id"] == "org_456"
-
-
-# ---------------------------------------------------------------------------
-# Owner seed placement. The OWNER workspace seed normally runs in the
-# executor's runner (scripts.provision_runner step 0) — that is the #1442 fix.
-# The ONE case that stays here is a workspace that is already running, so no
-# provision will run at all. ensure_user_ready never dispatches a provision.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("row", [None, {"status": "error"}, {"status": "stopped"}, {"status": "provisioning"}])
-async def test_ensure_user_ready_never_dispatches_and_leaves_a_non_running_seed_to_the_executor(
-    _stub_trial_default, _no_container_row, row
-):
-    """The Teams/proxy doors are a lazy JOIN, never a provision: whatever the row says,
-    nothing is dispatched, the member JOIN runs, and a workspace that is not running is
-    the executor's to seed (a retryable error waits for the user's Retry)."""
-    _no_container_row.return_value = row
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision.dispatch_provision", new=AsyncMock()) as dispatch,
-        patch("core.services.user_provision._ensure_workspace_for_org", new=AsyncMock()) as inline_org,
-    ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
-    dispatch.assert_not_awaited()
-    inline_org.assert_not_awaited()
-    user_provision._ensure_workspace_member.assert_awaited_once_with(org_id="org_xyz", member_user_id="user_admin")
-
-
-@pytest.mark.asyncio
-async def test_gate_up_org_member_branch_is_unchanged():
-    """The gate-up member branch (#1435) is orthogonal to where the owner seed
-    runs: with the gate UP, an org member still gets the idempotent
-    membership-add and no container is dispatched."""
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=_up_gate())),
-        patch("core.services.user_provision._ensure_workspace_member", new=AsyncMock()) as member,
-        patch("core.services.user_provision.dispatch_provision", new=AsyncMock()) as container,
-    ):
-        await ensure_user_ready(_org_member_auth("user_member", "org_456", "m@example.com"))
-    member.assert_awaited_once_with(org_id="org_456", member_user_id="user_member")
-    container.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Self-heal on a box that is already up: the two regressions this design
-# exists to prevent. Both used to be served by an INLINE seed reached through
-# ensure_user_ready(provision_container=False); with the seed in the executor
-# and the executor refusing a running row, "dispatch and hope" seeds nothing.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_running_container_workspace_owner_seed_is_reconciled(_stub_trial_default, _container_running):
-    """A running workspace with no active row seeds on the poll thread;
-    the executor cannot help because running rows are unclaimable."""
-    inline_owner = AsyncMock()
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision._ensure_workspace_for_org", new=inline_owner),
-    ):
-        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
-    inline_owner.assert_awaited_once_with(org_id="org_p", user_id="user_p", is_admin=True)
-
-
-@pytest.mark.asyncio
-async def test_running_container_seed_failure_is_swallowed_and_metered(_stub_trial_default, _container_running):
-    """The reconcile is best-effort: a failure records workspace.seed.error and never escapes the poll."""
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.user_provision._ensure_workspace_for_org",
-            new=AsyncMock(side_effect=RuntimeError("registry down")),
-        ),
-        patch("core.services.user_provision.put_metric") as mock_metric,
-    ):
-        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
-    mock_metric.assert_any_call("workspace.seed.error")
 
 
 @pytest.mark.asyncio

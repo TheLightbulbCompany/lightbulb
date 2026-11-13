@@ -109,7 +109,7 @@ def write_private(path: Path, data: dict) -> None:
 
 
 def fixture_file(orgs: list[dict], users: list[dict], expires_at: int) -> dict:
-    """What k6 and mac_sim read. No Clerk secret, no session handle: only JWTs that expire."""
+    """What k6 reads. No Clerk secret, no session handle: only JWTs that expire."""
     keys = ("userId", "email", "orgId", "apiJwt", "appsyncJwt")
     return {"api": API, "expiresAt": expires_at, "orgs": orgs, "users": [{k: u[k] for k in keys} for u in users]}
 
@@ -191,16 +191,6 @@ class BapiSession:
     def token(self) -> str:
         if not self._jwt:
             self._jwt = self.mint()
-        return self._jwt
-
-
-class StaticSession:
-    """A JWT minted by ``fixtures.py run``, for tools reading fixtures.json (mac_sim)."""
-
-    def __init__(self, jwt: str):
-        self._jwt = jwt
-
-    def token(self) -> str:
         return self._jwt
 
 
@@ -287,7 +277,7 @@ def run(args) -> int:
     child: list[subprocess.Popen] = []
 
     def stop(signum, _frame):
-        # The file goes at once (k6 and mac_sim read it at start). Ctrl-C already reached the
+        # The file goes at once (k6 reads it at start). Ctrl-C already reached the
         # child through the terminal; a second one here would make k6 skip its summary, so only
         # SIGTERM is passed on, and the child is then waited for.
         remove(FIXTURES)

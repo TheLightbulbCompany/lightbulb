@@ -10,7 +10,7 @@ import { OrganizationList, UserButton, useAuth, useOrganization } from "@clerk/n
 import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
-import { LIGHTBULB as ASSISTANT_NAME, useQuestions } from "./data";
+import { LIGHTBULB as ASSISTANT_NAME, useGoLiveAfterPayment, useQuestions } from "./data";
 import { TalkSessionProvider } from "./TalkSessionProvider";
 
 export function useNeedsYouTotal(): number {
@@ -30,6 +30,7 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
   const { userId } = useAuth();
   const { organization, isLoaded } = useOrganization();
   const needs = useNeedsYouTotal();
+  useGoLiveAfterPayment();
   if (isLoaded && !organization) {
     // Clerk <OrganizationList> props: https://clerk.com/docs/components/organization/organization-list
     return <main className="vx-page"><h1 className="vx-title">Choose your workspace</h1>

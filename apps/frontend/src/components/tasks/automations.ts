@@ -4,13 +4,12 @@
 // through the shared hooks (`useAutomations(useAutomationSource())`).
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { useAuth, useOrganization } from "@clerk/nextjs";
 import {
   automationKey, automationRunsKey, automationsKey, canDecide, canEdit, deliveryRoomId, deliveryWords, roomDisplayName, specialistLabel, runNow as runNowShared,
-  type AutomationSource, type AutomationView, type RunNowOutcome,
+  type AutomationSource, type AutomationView, type RoomSummary, type RunNowOutcome,
 } from "@lightbulb/shared";
-import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
 import { errorCopy } from "./useTaskActions";
@@ -90,11 +89,15 @@ export function useSpecialistLabel(): (specialistId: string | null | undefined) 
 
 /** Where an automation posts, naming the room the viewer knows it as: "posts to #walk-8" (dev walk W8). */
 export function useDeliveryWords(): (deliverTo: string) => string | null {
-  const rooms = useMessagingWorkspaceOptional()?.directoryProps.rooms;
+  const api = useApi();
+  const { userId } = useAuth();
+  // The viewer's room list (SWR dedupes it across cards); before it loads the room reads as "a room".
+  const { data: rooms } = useSWR(userId ? ["/messaging/rooms#delivery", userId] : null,
+    async () => ((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms);
   return useCallback((deliverTo) => {
     const id = deliveryRoomId(deliverTo);
     const room = id ? rooms?.find((r) => r.roomId === id) : undefined;
-    const name = room ? roomDisplayName(room, room.participants) : null;
+    const name = room ? roomDisplayName(room, room.members ?? []) : null;
     return deliveryWords(deliverTo, name ? (room!.kind === "channel" ? `#${name}` : name) : null);
   }, [rooms]);
 }

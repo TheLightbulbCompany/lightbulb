@@ -21,25 +21,10 @@ import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 import { resourcePrefix, tableName } from "./table-names";
 
-// Connect platform client id (ca_…) per environment, for the company Stripe
-// account's Standard-OAuth "connect an existing account" flow. Public, not a
-// secret — safe as a plain constant (contrast the STRIPE_*_PRICE_ID_{DEV,PROD}
-// values in app.ts, which are actual account identifiers read from GitHub
-// secrets at synth time). Read from the live dashboard 2026-09-01 (platform
-// acct_1TBLi5I54BysGS3r); empty would mean STRIPE_CONNECT_CLIENT_ID ships as
-// "" and that OAuth flow can't start.
-//
-// ⚠️ The client id ALONE does not make live OAuth work. Two dashboard settings
-// on Connect → Onboarding options → OAuth are still required, and both were
-// unset when this value was read:
-//   1. "Enable OAuth" (OAuth for Stripe Dashboard accounts) — toggle is OFF.
-//   2. At least one redirect URI. The dashboard refuses the flow outright:
-//      "You must define a redirect URI to onboard users via OAuth." Ours is
-//      STRIPE_COMPANY_OAUTH_REDIRECT_URL below —
-//      https://api.thelightbulb.company/api/v1/company/stripe/connect/callback (prod).
-// Docs: "You must specify all redirect URLs in your platform settings"
-// (docs.stripe.com/connect/oauth-standard-accounts). Until both are set, the
-// authorize URL this id builds will be rejected by Stripe.
+// Connect platform client id (ca_…) per environment. Public, not a secret. The
+// company-Stripe OAuth connect flow and its callback are gone (#5248); account
+// wipe still uses this id to deauthorize an owner's connected account
+// (`company_stripe.deauthorize`). Empty means wipe skips the revoke at Stripe.
 const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
   dev: "ca_VAYlHjvDMa4nm0M4C3uEen6Hk7cfpBBO",
   prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
@@ -331,18 +316,12 @@ export class LightbulbStage extends cdk.Stage {
           usersTable: tableName(env, "users"),
           containersTable: tableName(env, "containers"),
           billingTable: tableName(env, "billing-accounts"),
-          usageCountersTable: tableName(env, "usage-counters"),
-          pendingUpdatesTable: tableName(env, "pending-updates"),
-          channelLinksTable: tableName(env, "channel-links"),
           companySlugsTable: tableName(env, "company-slugs"),
           agentEmailAddressesTable: tableName(env, "agent-email-addresses"),
-          // Both owned by ApiStack, not DatabaseStack (see api-stack.ts) —
-          // still plain literal names, for the same no-cross-stack-export
-          // reason as the eight above.
+          // Owned by ApiStack, not DatabaseStack (see api-stack.ts) — still a
+          // plain literal name, for the same no-cross-stack-export reason.
           messagingTable: api.messagingTableName,
-          wsConnectionsTable: api.connectionsTableName,
         },
-        authorizerFunctionName: `${resourcePrefix(env)}ws-authorizer`,
         messaging: {
           workQueueName: api.openClawWorkQueueName,
           workDlqName: api.openClawWorkDlqName,

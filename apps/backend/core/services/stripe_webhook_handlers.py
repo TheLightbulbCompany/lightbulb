@@ -39,30 +39,9 @@ from core.services.billing_service import BillingService, _is_front_desk_item
 logger = logging.getLogger(__name__)
 
 
-# A Checkout Session Stripe has actually SETTLED — the precondition for
-# stamping the launch winner's coupon as consumed.
-#   - "paid"               : card cleared synchronously.
-#   - "no_payment_required": $0 due — a 100%-off coupon, which is exactly the
-#                            shape of the launch winner's free Workspace month —
-#                            still a completed purchase.
-# Anything else ("unpaid") is a delayed method (ACH etc.): Stripe fires
-# checkout.session.completed immediately and async_payment_succeeded (or
-# _failed) later, so nothing may be granted or stamped until that second
-# event arrives on this same handler.
-_SETTLED_PAYMENT_STATUSES = ("paid", "no_payment_required")
-
-
 # Namespace for the deterministic ``trial_converted`` event uuid: Stripe delivers several events per
 # subscription change, each can see ``old_status == "trial_local"``, and PostHog dedupes on the uuid.
 _TRIAL_CONVERTED_NAMESPACE = uuid.UUID("2b7e3c1a-9d4f-4e6b-8a2c-5f1d7e9b3c60")
-
-
-async def on_entering_live(owner_id: str) -> None:
-    """Side effects of a workspace's FIRST move onto a paid subscription, from either
-    provider (Stripe here, Apple in apple_iap). Best-effort/deduped."""
-    from core.services import launch_referral
-
-    await launch_referral.on_subscription_activated(owner_id)
 
 
 # ---------------------------------------------------------------------------
@@ -430,17 +409,6 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
             )
 
-    # First-PAID side effects (referral credit, company-Stripe workflow): a card-on-file trial
-    # (trial_local -> trialing, T05) has paid nothing, so they wait for its trialing -> active.
-    # Any arrival at "active" from a non-active status counts (trial charge, or its recovery from
-    # past_due); the hook is deduped inside, so a repeat for an old customer is a no-op.
-    if new_status == "active" and (entering_live or old_status != "active"):
-        # The Metronome customer is NOT created here: this transition dispatches a durable
-        # reconcile (below), and ``reconcile_runtime`` ensures the customer for a ledger-eligible
-        # non-ChatGPT/BYO owner -- an SFN execution a backend deploy cannot kill, where the old
-        # fire-and-forget task here could die and Stripe's redelivery never re-enters this edge.
-        await on_entering_live(account["owner_id"])
-
     plan_persisted = False
     try:
         await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
@@ -775,36 +743,6 @@ async def handle_voice_plan_reversal(event: dict[str, Any], billing_service: Bil
     return None
 
 
-async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
-    """Handle the Checkout events still owned outside subscription lifecycle.
-
-    Subscription state is handled exclusively by ``customer.subscription.*``.
-    Customer credit purchases use Metronome payment-gated commits directly;
-    there is no Stripe Checkout credit-settlement or bundled-credit branch.
-    """
-    session = event["data"]["object"]
-    session_metadata = session.get("metadata") or {}
-    # Launch competition: a settled session that carried the winner free-month
-    # discount just CONSUMED the coupon — stamp the sheet row so a forced
-    # close rerun cannot attach a second free month to the subscription this
-    # checkout minted. This check happens before the handler returns because
-    # most winner checkouts carry no credits at all. The settled check is
-    # load-bearing, not defensive: a delayed-payment session fires
-    # checkout.session.completed while the payment can still FAIL, and
-    # stamping there burns the winner's free month without ever giving it to
-    # them. async_payment_succeeded lands back here and stamps it then.
-    # Best-effort — never raises.
-    if (
-        session_metadata.get("launch_winner_coupon") == "true"
-        and session_metadata.get("owner_id")
-        and session.get("payment_status") in _SETTLED_PAYMENT_STATUSES
-    ):
-        from core.services.launch_close import mark_winner_coupon_consumed
-
-        await mark_winner_coupon_consumed(session_metadata["owner_id"])
-    return Response(status_code=200)
-
-
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -821,6 +759,4 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "invoice.paid": handle_invoice_paid,
     "charge.refunded": handle_voice_plan_reversal,
     "charge.dispute.created": handle_voice_plan_reversal,
-    "checkout.session.completed": handle_checkout_session,
-    "checkout.session.async_payment_succeeded": handle_checkout_session,
 }

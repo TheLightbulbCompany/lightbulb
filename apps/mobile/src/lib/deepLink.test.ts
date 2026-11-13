@@ -1,31 +1,4 @@
-import { isConnectionReturn, parseAgentDeepLink, parseCheckoutReturn } from "./deepLink";
-
-it("recognises only our OAuth return links", () => {
-  expect(isConnectionReturn("https://thelightbulb.company/checkout_redirect/connected?connected=posthog")).toBe(true);
-  expect(isConnectionReturn("flickmeon://checkout_redirect/connect_failed?error=oauth_provider")).toBe(true);
-  expect(isConnectionReturn("https://thelightbulb.company.evil.com/checkout_redirect/connected")).toBe(false);
-  expect(isConnectionReturn("https://thelightbulb.company/checkout_redirect/success")).toBe(false);
-});
-
-describe("parseAgentDeepLink", () => {
-  it("parses an agent deep link", () => {
-    expect(parseAgentDeepLink("flickmeon://agent/agent_123")).toEqual({ agentId: "agent_123" });
-  });
-  it("parses with a query string", () => {
-    expect(parseAgentDeepLink("flickmeon://agent/agent_123?session=s1")).toEqual({ agentId: "agent_123" });
-  });
-  it("returns null for the oauth callback", () => {
-    expect(parseAgentDeepLink("flickmeon://oauth-native-callback")).toBeNull();
-  });
-  it("returns null for junk", () => {
-    expect(parseAgentDeepLink("https://example.com")).toBeNull();
-    expect(parseAgentDeepLink("flickmeon://agent/")).toBeNull();
-  });
-  it("returns null (not throws) for malformed percent-encoding", () => {
-    expect(parseAgentDeepLink("flickmeon://agent/%")).toBeNull();
-    expect(parseAgentDeepLink("flickmeon://agent/%zz")).toBeNull();
-  });
-});
+import { parseCheckoutReturn } from "./deepLink";
 
 describe("parseCheckoutReturn", () => {
   // Both legs must work: iOS hands back the https universal link when the

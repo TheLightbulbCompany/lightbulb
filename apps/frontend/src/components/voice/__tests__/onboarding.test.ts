@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({}) }));
 import { applyDraft, withTimezone } from "../Onboarding";
-import { DAYS, DEFAULT_CONFIG, needsOnboarding, usPhone } from "../data";
+import { DAYS, DEFAULT_CONFIG, needsOnboarding, saveRefusal, usPhone } from "../data";
 
 const week = Object.fromEntries(DAYS.map((d) => [d, { open: "10:00", close: "19:00", closed: false }]));
 
@@ -24,6 +24,14 @@ describe("voice onboarding", () => {
     expect(c.knowledge.map((k) => k.q)).toEqual(["Walk-ins?", "Who works here?"]);
     expect(c.toAdd).toEqual(["Parking?"]);
     expect(c.forwardFrom).toBe("(415) 555-0199");
+  });
+  it("never takes the site's phone as the business line when it is the owner's own hand-off mobile", () => {
+    // prod 11-10: the site listed the owner's mobile in +1-XXX-XXX-XXXX form, the owner typed it bare as their mobile; the save 422'd
+    // (handoff_is_forwarded_line) and step 1 could not be passed.
+    const owner = { ...DEFAULT_CONFIG, handoff: { ...DEFAULT_CONFIG.handoff, number: "4155550147" } };
+    const c = applyDraft(owner, { read: true, hours: {}, services: [], staff: [], knowledge: [], toAdd: [], phone: "+1-415-555-0147" });
+    expect(c.forwardFrom).toBe("");
+    expect(c.handoff.number).toBe("4155550147");
   });
   it("keeps the defaults when the site said nothing", () => {
     const c = applyDraft(DEFAULT_CONFIG, { read: false, hours: {}, services: [], staff: [], knowledge: [], toAdd: [], phone: "" });
@@ -61,5 +69,16 @@ describe("a second read of the site", () => {
   it("keeps the consent-gated texts off by default", () => {
     expect(DEFAULT_CONFIG.reminders.missedCallers).toBe(false);
     expect(DEFAULT_CONFIG.reminders.waitlist).toBe(false);
+  });
+});
+
+describe("a refused save says why", () => {
+  const refused = (code: string, status = 422) => ({ status, body: { detail: { code } } });
+  it("names the hand-off clash and the other refusals instead of a generic error", () => {
+    expect(saveRefusal(refused("handoff_is_forwarded_line"))).toMatch(/same number you forward to the assistant/);
+    expect(saveRefusal(refused("handoff_number_not_us"))).toMatch(/US or Canadian/);
+    expect(saveRefusal(refused("anything", 403))).toMatch(/Only an admin/);
+    expect(saveRefusal(refused("something_new"))).toBeNull();
+    expect(saveRefusal(new Error("network"))).toBeNull();
   });
 });

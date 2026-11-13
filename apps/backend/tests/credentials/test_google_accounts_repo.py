@@ -64,6 +64,15 @@ def fake_table(monkeypatch):
     return store
 
 
+def _assign(store, owner_id: str, agent_id: str, email: str) -> None:
+    """An existing assignment row (nothing writes new ones; old rows still resolve)."""
+    store[(owner_id, f"google#assign#{agent_id}")] = {
+        "owner_id": owner_id,
+        "provider": f"google#assign#{agent_id}",
+        "email": email,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Account inventory
 # ---------------------------------------------------------------------------
@@ -126,7 +135,7 @@ async def test_list_accounts_returns_both_sorted_by_connected_at(fake_table):
 @pytest.mark.asyncio
 async def test_list_accounts_ignores_assignment_rows(fake_table):
     await google_accounts_repo.add_account("org_1", "alice@gmail.com")
-    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+    _assign(fake_table, "org_1", "agent_x", "alice@gmail.com")
 
     accounts = await google_accounts_repo.list_accounts("org_1")
     assert [a["email"] for a in accounts] == ["alice@gmail.com"]
@@ -154,19 +163,9 @@ async def test_remove_account_deletes_the_right_item(fake_table):
 
 
 @pytest.mark.asyncio
-async def test_set_assignment_writes_namespaced_sk(fake_table):
-    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
-
-    item = fake_table[("org_1", "google#assign#agent_x")]
-    assert item["owner_id"] == "org_1"
-    assert item["provider"] == "google#assign#agent_x"
-    assert item["email"] == "alice@gmail.com"
-
-
-@pytest.mark.asyncio
 async def test_list_assignments_returns_map(fake_table):
-    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
-    await google_accounts_repo.set_assignment("org_1", "agent_y", "bob@gmail.com")
+    _assign(fake_table, "org_1", "agent_x", "alice@gmail.com")
+    _assign(fake_table, "org_1", "agent_y", "bob@gmail.com")
 
     assert await google_accounts_repo.list_assignments("org_1") == {
         "agent_x": "alice@gmail.com",
@@ -177,7 +176,7 @@ async def test_list_assignments_returns_map(fake_table):
 @pytest.mark.asyncio
 async def test_list_assignments_ignores_account_rows(fake_table):
     await google_accounts_repo.add_account("org_1", "alice@gmail.com")
-    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+    _assign(fake_table, "org_1", "agent_x", "alice@gmail.com")
 
     assert await google_accounts_repo.list_assignments("org_1") == {"agent_x": "alice@gmail.com"}
 
@@ -189,8 +188,8 @@ async def test_list_assignments_empty(fake_table):
 
 @pytest.mark.asyncio
 async def test_remove_assignment_deletes_the_right_item(fake_table):
-    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
-    await google_accounts_repo.set_assignment("org_1", "agent_y", "bob@gmail.com")
+    _assign(fake_table, "org_1", "agent_x", "alice@gmail.com")
+    _assign(fake_table, "org_1", "agent_y", "bob@gmail.com")
 
     await google_accounts_repo.remove_assignment("org_1", "agent_x")
 
@@ -200,7 +199,7 @@ async def test_remove_assignment_deletes_the_right_item(fake_table):
 
 @pytest.mark.asyncio
 async def test_get_assignment_returns_the_explicit_email(fake_table):
-    await google_accounts_repo.set_assignment("org_1", "agent_x", "alice@gmail.com")
+    _assign(fake_table, "org_1", "agent_x", "alice@gmail.com")
 
     assert await google_accounts_repo.get_assignment("org_1", "agent_x") == "alice@gmail.com"
 

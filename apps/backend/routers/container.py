@@ -3,18 +3,16 @@
 Provides the container status read and the manual provision/retry endpoints.
 """
 
-import asyncio
 import logging
 import time
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.services import browser_control, browser_extensions, mac_live, readiness_state
-from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import evaluate_provision_gate
@@ -23,47 +21,6 @@ from core.services.user_provision import ensure_workspace_trial_default
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _watch_provision_task(task: "asyncio.Task") -> None:
-    """Done-callback for the detached ``ensure_user_ready`` dispatches.
-
-    ``ensure_user_ready`` is fired with ``asyncio.create_task`` from the Paperclip-proxy
-    handshake and never awaited, so a raised exception would otherwise be a silent
-    "Task exception was never retrieved" — invisible to the W1
-    provision-error alarm. Surface it: log the task's traceback and emit the
-    SAME ``container.provision`` ``{status: error}`` metric the synchronous
-    provision path emits (see ``container_provision.emit_provision_metric``),
-    so a dispatch-path failure lands on the exact CloudWatch stream that alarm
-    already watches. A cancelled task carries no failure. Best-effort
-    throughout — a done-callback must never raise.
-    """
-    try:
-        exc = task.exception()
-    except asyncio.CancelledError:
-        return
-    if exc is None:
-        return
-    logger.error("Background ensure_user_ready task failed", exc_info=exc)
-    try:
-        put_metric("container.provision", dimensions={"status": "error"})
-    except Exception:  # noqa: BLE001 — telemetry must never raise in a callback
-        logger.debug("container.provision metric emission failed", exc_info=True)
-
-
-def _dispatch_watched(coro) -> None:
-    """Fire-and-forget a provisioning coroutine with the exception-surfacing
-    done-callback attached (Part A observability for the ``ensure_user_ready``
-    dispatches).
-
-    ``add_done_callback`` is a real-``asyncio.Task`` method; unit tests patch
-    ``asyncio.create_task`` and may hand back a non-Task (``None``, a bare
-    coroutine, or a ``MagicMock``), so attach the callback only when a genuine
-    Task came back. In production ``create_task`` always returns a Task.
-    """
-    task = asyncio.create_task(coro)
-    if isinstance(task, asyncio.Task):
-        task.add_done_callback(_watch_provision_task)
 
 
 def _owner_role(auth: AuthContext) -> str:
@@ -238,14 +195,6 @@ async def _browser_result(operation):
         # class only, so a 503 is at least attributable.
         logger.warning("browser operation failed: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Browser is temporarily unavailable. Try again.") from None
-
-
-@browser_router.post("/start")
-async def browser_start(response: Response, auth: AuthContext = Depends(get_current_user)):
-    response.headers["Cache-Control"] = "no-store"
-    owner_id = resolve_owner_id(auth)
-    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin, actor_user_id=auth.user_id)
-    return await _browser_result(browser_control.start(owner_id, auth.user_id))
 
 
 class BrowserViewing(BaseModel):
@@ -441,12 +390,6 @@ async def browser_input(
     return await _browser_result(browser_control.send_input(owner_id, body.model_dump(exclude_none=True)))
 
 
-@browser_router.post("/stop")
-async def browser_stop(response: Response, auth: AuthContext = Depends(get_current_user)):
-    response.headers["Cache-Control"] = "no-store"
-    return await _browser_result(browser_control.stop(resolve_owner_id(auth), auth.user_id))
-
-
 async def _extension_result(operation):
     try:
         return await operation
@@ -469,34 +412,6 @@ async def _extension_change(owner_id: str, operation) -> dict:
 
 class WebStoreInstall(BaseModel):
     idOrUrl: str = Field(min_length=1, max_length=2048)
-
-
-@browser_router.get("/extensions")
-async def browser_extensions_list(auth: AuthContext = Depends(get_current_user)):
-    """Any member. A change restarts a running, idle browser (extensions load at session start)."""
-    return {"extensions": await browser_extensions.list_extensions(resolve_owner_id(auth))}
-
-
-@browser_router.post("/extensions/webstore", status_code=201)
-async def browser_extensions_webstore(body: WebStoreInstall, auth: AuthContext = Depends(get_current_user)):
-    owner_id = resolve_owner_id(auth)
-    return await _extension_change(owner_id, browser_extensions.add_from_webstore(owner_id, body.idOrUrl, auth.user_id))
-
-
-@browser_router.post("/extensions", status_code=201)
-async def browser_extensions_upload(file: UploadFile = File(...), auth: AuthContext = Depends(get_current_user)):
-    owner_id = resolve_owner_id(auth)
-    # Read one byte past the cap so an oversized upload is refused without buffering all of it.
-    data = await file.read(browser_extensions.MAX_BYTES + 1)
-    return await _extension_change(owner_id, browser_extensions.upload(owner_id, data, auth.user_id))
-
-
-@browser_router.delete("/extensions/{slug}")
-async def browser_extensions_remove(slug: str, auth: AuthContext = Depends(get_current_user)):
-    owner_id = resolve_owner_id(auth)
-    if not await _extension_result(browser_extensions.remove(owner_id, slug)):
-        raise HTTPException(status_code=404, detail="Extension not found.")
-    return {"restarting": await _restart(owner_id)}
 
 
 class ExtensionAsk(WebStoreInstall):

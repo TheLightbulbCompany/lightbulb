@@ -63,3 +63,34 @@ def test_the_addressing_stages_agents_ride_in_mentions():
         {"agentId": FRIDAY["id"], "eventKind": "user_request"},
         {"agentId": GAUGE["id"], "eventKind": "user_request"},
     ]
+
+
+def test_group_chat_of_one_person_and_one_agent_is_addressed_like_a_dm():
+    """The voice app's "New chat" is a group-dm: "ok thanks" must reach the agent, not Jev's silence."""
+    targets = select_dispatch_targets([FRIDAY, HUMAN], [], None, room_kind="group-dm")
+    assert targets == [{"agentId": FRIDAY["id"], "eventKind": "user_request"}]
+
+
+def test_group_chat_with_two_agents_stays_ambient():
+    targets = select_dispatch_targets([FRIDAY, PULSE, HUMAN], [], None, room_kind="group-dm")
+    assert targets == [
+        {"agentId": PULSE["id"], "eventKind": "room_event"},
+        {"agentId": FRIDAY["id"], "eventKind": "room_event"},
+    ]
+
+
+def test_group_chat_with_two_people_stays_ambient():
+    other = {"kind": "human", "id": "user_2", "displayName": "Sam"}
+    targets = select_dispatch_targets([FRIDAY, HUMAN, other], [], None, room_kind="group-dm")
+    assert targets == [{"agentId": FRIDAY["id"], "eventKind": "room_event"}]
+
+
+def test_an_agents_message_in_a_one_to_one_group_chat_is_unchanged():
+    """An agent-authored line (a Worker's result) stays ambient: two agents must not answer each other."""
+    targets = select_dispatch_targets([FRIDAY, HUMAN], [], GAUGE["id"], room_kind="group-dm")
+    assert targets == [{"agentId": FRIDAY["id"], "eventKind": "room_event"}]
+
+
+def test_a_channel_of_one_person_and_one_agent_stays_ambient():
+    targets = select_dispatch_targets([FRIDAY, HUMAN], [], None, room_kind="channel")
+    assert targets == [{"agentId": FRIDAY["id"], "eventKind": "room_event"}]

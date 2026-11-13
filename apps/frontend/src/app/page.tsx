@@ -1,6 +1,4 @@
 import type { Metadata } from "next";
-import { Suspense } from "react";
-import { LaunchRefCapture } from "@/components/launch/LaunchRefCapture";
 import { Navbar } from "@/components/landing/Navbar";
 import { Hero } from "@/components/landing/Hero";
 import { ProofBand } from "@/components/landing/ProofBand";
@@ -42,10 +40,6 @@ export default async function LandingPage() {
   return (
     <main className="ld-page min-h-screen">
       <JsonLd data={homeJsonLd} />
-      {/* Invisible: persists `/?ref=CODE` (the backend's referral link target). */}
-      <Suspense fallback={null}>
-        <LaunchRefCapture />
-      </Suspense>
       <Navbar />
       <Hero />
       <ProblemBand />

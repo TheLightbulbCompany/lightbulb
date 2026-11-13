@@ -14,8 +14,6 @@
  *
  * Clerk keeps the chosen org on the session (`lastActiveOrganizationId`), so a
  * relaunch restores it with no storage of our own.
- *
- * `WorkspaceList` is the same list behind Settings → Switch workspace.
  */
 import { useAuth, useOrganizationList } from "@clerk/expo";
 import { Button, Section } from "../ui/swiftui";
@@ -43,7 +41,7 @@ import { GroupedList, NavigationRow } from "../ui/GroupedList";
 const MEMBERSHIPS = { pageSize: 50 };
 const DANGER = [foregroundStyle(colors.danger)];
 
-function useWorkspaces() {
+export function useWorkspaces() {
   const { orgId } = useAuth();
   const { isLoaded, setActive, userMemberships } = useOrganizationList({
     userMemberships: MEMBERSHIPS,
@@ -134,30 +132,6 @@ export function WorkspaceChooser({ autoActivate = true }: { autoActivate?: boole
         </Section>
       </GroupedList>
     </Page>
-  );
-}
-
-/** Settings → Switch workspace. Picking the current one switches nothing. */
-export function WorkspaceList({ onSwitched }: { onSwitched: () => void }) {
-  const { orgId, memberships, activate } = useWorkspaces();
-  const pick = async (id: string) => {
-    if (id !== orgId) await activate(id);
-    onSwitched();
-  };
-  return (
-    <GroupedList>
-      <Section>
-        {memberships.map(({ organization }) => (
-          <NavigationRow
-            key={organization.id}
-            title={organization.name}
-            subtitle={organization.id === orgId ? "Current workspace" : undefined}
-            icon="building.2"
-            onPress={() => void pick(organization.id)}
-          />
-        ))}
-      </Section>
-    </GroupedList>
   );
 }
 

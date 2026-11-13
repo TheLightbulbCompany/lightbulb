@@ -20,8 +20,9 @@ three surfaces:
 
 Typed messages (web, Mac, mobile) still exist and take the same path as speech.
 
-**The engine** is the same for every surface. **GPT-Live** (OpenAI, through LiveKit) is the voice. It holds no
-business data and has no tools: it hands every business request to the workspace's **Router**, a Temporal
+**The engine** is the same for every surface. **GPT-Live** (OpenAI, through LiveKit) is the voice. It has no
+tools. On the phone it holds the owner's Agent page facts and answers what they state; every other business request
+goes to the workspace's **Router**, a Temporal
 workflow that only decides (start a task, reply, ask, note, ignore, and a few surface actions). Real work runs
 as **Workers**: Temporal task workflows that run turns of **Hermes** (`nousresearch/hermes-agent`) on the
 **shared Hermes pool**, one AgentCore runtime per tier with one session per owner or per task. DynamoDB is the
@@ -46,12 +47,19 @@ Stripe and Metronome. Infrastructure is AWS CDK in `apps/infra/` (the single sou
 From plan Part 1 (F-numbers). Each constrains code; do not reopen them.
 
 - **F38 One architecture for every use case.** Phone, Meet, the orb and typed messages all go voice or text, then
-  the Router, then a Worker. A new use case adds tools and permissions, never a new shape.
+  the Router, then a Worker. A new use case adds tools and permissions, never a new shape. The phone voice starts
+  with the Agent page's static facts (F4/F5); that is not a new shape.
 - **F2/F3 The Router decides only;** facts it cannot see go to a Worker thread.
-- **F4/F5 GPT-Live is the voice on all three surfaces, with no business data and no tools, and the model owns the
-  conversation.** Code enforces permissions, settings, effect safety, identity and duplicate prevention. No keyword
+- **F4/F5 GPT-Live is the voice on all three surfaces, with no tools, and the model owns the conversation.** On the
+  phone it holds the owner's own Agent page facts and Instructions, read-only, loaded once at call start;
+  Instructions take priority. It holds no other business data. Meet and the orb still hold no business data until
+  the founder rules on them. Code enforces permissions, settings, effect safety, identity and duplicate prevention. No keyword
   rules, canned lines, mute gates or one-question prompt patches.
-- **F6 Phone uses the same Router and Workers under a caller principal.** No fast path for callers.
+- **F6 Phone uses the same Router and Workers under a caller principal for anything dynamic:** availability,
+  bookings, messages, transfers and any question the facts do not answer. The only thing the voice answers by
+  itself is what the Agent page facts state. No other fast path for callers.
+- **Founder ruling 12 Nov 2026: static facts live with the phone voice; dynamic work goes to the Router and
+  Workers.** It amends F4/F5, F6 and F38 as written above.
 - **F7/F8 Approvals are card taps only** (a voice can be anyone's). In a meeting everyone acts with the inviting
   member's authority; spend, send and publish need that member's tap.
 - **Caller boundary.** A caller or texter gets the business profile and their own bookings and messages, never owner
@@ -229,8 +237,7 @@ CI was stripped on purpose (F23). A PR runs only:
 - `backend-arm64.yml`: builds the ARM64 backend image and smoke-tests it. Path-filtered to `apps/backend/**`,
   `service-stack.ts` and `app.ts`. **It does not run the backend unit tests or lint.**
 - `huddle-agent.yml`: the voice worker's tests, path-filtered to `apps/huddle-agent/**`.
-- `desktop-build.yml` (Rust tests) and `desktop-core.yml`, path-filtered to `apps/desktop/**` and
-  `packages/claude-plugin/**`.
+- `desktop-build.yml` (Rust tests and clippy), path-filtered to `apps/desktop/**`.
 - `roll-hermes-runtime.yml`, path-filtered to its own script and bootstrap files.
 
 There is **no backend or frontend test or lint run on a PR**, and no infra CI. Run the tests you touched before
@@ -573,10 +580,12 @@ mail), `HERMES_SHARED_RUNTIME_ARN`, `VOICE_BUY_NUMBERS`, `VOICE_INBOUND_TRUNK_ID
 Tauri 2 at `apps/desktop/`, bundle id `company.thelightbulb.desktop`. It opens voice Home with the mic and Fn
 hold-to-talk (F18). Prod is the default flavor (`tauri.conf.json`, `capabilities/default.json`); dev is opt-in
 (`pnpm build:dev`, `tauri.dev.conf.json`), and each flavor grants only its own origin to local commands.
-Sidecars ship as bundle **resources**, never `externalBin` (xattr-signed scripts in `Contents/MacOS` break the
-updater's seal). Consent is given once, at pairing, never per operation; a missing permissions store allows
-nothing. Selected-Mac execution is gated by `DESKTOP_EXECUTION_ENABLED`
-(`docs/runbooks/desktop-execution-staged-acceptance.md`).
+It is a voice shell only: the window, the 🌐 talk key (`voice_key.rs`), the tray, native notifications
+(`notify.rs`), sign-in through Safari and the `flickmeon://auth` ticket, and the updater. It calls no backend
+route itself (the callback page calls `/auth/desktop/sign-in-token`). There is no pairing, node, session sharing or
+network engine; `legacy.rs` keeps the hooks, launch agent and shell block older releases installed from opening
+a window, and removes the last two at launch. Never ship a script under `Contents/MacOS` (xattr signatures
+break the updater's seal).
 
 ## Mobile app (Expo)
 

@@ -8,11 +8,11 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
+import { DAYS, nameOf, saveRefusal, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 
-type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "payment" | "handoff";
+type Save = "idle" | "saving" | "saved" | "error" | "payment";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
@@ -20,6 +20,7 @@ export function AgentPage() {
   const { organization } = useOrganization();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [saveState, setSaveState] = useState<Save>("idle");
+  const [refusal, setRefusal] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
   if (error) return <div className="vx-page"><p className="vx-empty" role="alert">Couldn&apos;t load the assistant&apos;s settings. Reload to try again.</p></div>;
@@ -35,11 +36,15 @@ export function AgentPage() {
       save(next).then(() => setSaveState("saved"),
         async (e: { status?: number; body?: { detail?: { code?: string } } }) => {
           if (e.body?.detail?.code === "voice_payment_required") {
-            const pending = { ...next, live: false };
+            const pending = { ...next, live: false, goLiveRequested: true };
             setDraft(pending);
             try { await save(pending); setSaveState("payment"); }
             catch { setSaveState("error"); }
-          } else setSaveState(e?.status === 403 ? "forbidden" : e.body?.detail?.code === "handoff_number_not_us" ? "handoff" : "error");
+          } else {
+            // A refused Go live leaves it not live: the header must not say "Live · no number yet".
+            if (next.live && !c.live) setDraft({ ...next, live: c.live, paused: c.paused });
+            setRefusal(saveRefusal(e)); setSaveState("error");
+          }
         });
     }, 600);
   };
@@ -54,11 +59,9 @@ export function AgentPage() {
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
           {c.number ? <> · answering {usPhone(c.number)}</> : <> · no number yet</>}</p>
-        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "handoff"} style={{ marginTop: 6 }}>
-          {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
-            : saveState === "forbidden" ? "Only an admin can change the assistant."
-            : saveState === "handoff" ? "The hand-off number must be a US or Canadian number. Change it to save."
-            : saveState === "payment" ? "Your setup is saved. Activate your voice plan, then return and choose Go live to get your number."
+        <p className="vx-save" role="status" data-err={saveState === "error"} style={{ marginTop: 6 }}>
+          {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? refusal ?? "Couldn't save the last change. Change it again to retry."
+            : saveState === "payment" ? "Your setup is saved. Activate your voice plan: once it is paid, your assistant goes live and gets its number by itself."
             : "Changes save as you make them."}</p>
         {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
       </div>
@@ -113,7 +116,7 @@ export function AgentPage() {
       </div>
     </Sec>
 
-    <Sec title="Calendar & booking system" hint={<>Connect Google Calendar in <Link className="vx-link" href="/chat?panel=settings">Settings › Connections</Link>.</>}>
+    <Sec title="Calendar & booking system" hint={<>Connect Google Calendar in <Link className="vx-link" href="/voice/settings#connections">Settings › Connections</Link>.</>}>
       <label className="vx-label">Bookings go to
         <select className="vx-field" value={c.bookingsGo === "google" ? "google" : "own"} onChange={(e) => set({ bookingsGo: e.target.value as AgentConfig["bookingsGo"] })}>
           <option value="google">Google Calendar</option>

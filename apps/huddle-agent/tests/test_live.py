@@ -739,7 +739,10 @@ async def test_terminal_receipt_ends_waiting_but_ack_and_final_keep_the_original
         {"id": "final", "inReplyTo": "m_1", "text": "Booked.", "waiting": False}
     )
     assert s.awaiting == {} and s.pending == {"item_1": "m_1"}
-    assert t.appends == [("On it.", "item_1"), ("Booked.", "item_1")]
+    # GPT-Live already said its own holding line; the team's "On it." is silent context, so the caller hears one
+    # holding line, then the answer (12 Nov prod Meet: "I'll check…" then "Forge is checking…" back to back)
+    assert t.appends == [("Booked.", "item_1")]
+    assert t.thoughts == ["Team status (not yet the answer): On it."] and t.thought_ids == ["item_1"]
     await s.close()
 
 

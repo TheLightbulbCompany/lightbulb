@@ -334,6 +334,8 @@ class LiveSession:
         quiet = m.get("voiceDelivery") == "context"
         if quiet:
             self.send_context(f"Sent in the meeting chat: {text}", delegation_id)
+        elif m.get("waiting") is True:  # a thread started, its answer pending: GPT-Live already said its own holding
+            self.send_context(f"Team status (not yet the answer): {text}", delegation_id)  # line; one is enough
         else:
             self.send_result(delegation_id, text)
         if delegation_id and m.get("waiting") is True:

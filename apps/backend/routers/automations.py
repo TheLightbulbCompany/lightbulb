@@ -24,7 +24,6 @@ import logging
 import re
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
@@ -39,11 +38,6 @@ from core.config import settings
 from core.repositories import automations_repo, messaging_repo, tasks_repo
 from core.repositories.tasks_repo import IllegalTransition, VersionConflict
 from core.services.inbound_triggers import (
-    list_github_repos,
-    list_google_accounts,
-    list_instagram_accounts,
-    list_meta_pages,
-    list_vercel_projects,
     seed_trigger_routine,
 )
 from core.services import automation_hooks, automation_schedule, chat_gate, tasks_access
@@ -133,46 +127,6 @@ async def from_integration(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/providers/{provider}/resources")
-async def provider_resources(
-    provider: str,
-    auth: AuthContext = Depends(get_current_user),
-) -> list[dict]:
-    """Provider-side resources the owner's connected token can see (GitHub
-    repositories, Vercel projects, connected Google account emails) — feeds
-    the create dialog's resource picker for the auto-registering registration
-    shapes.
-
-    Org-admin gated like ``from_integration``, but WITHOUT the always-on
-    entitlement gate: listing resources is read-only and commits the owner to
-    nothing. 404 for a provider with no lister or one that isn't connected;
-    502 when the provider itself fails.
-    """
-    require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
-    # Built per-call, not at module level, so the module-level names stay the
-    # patch points (tests replace routers.automations.list_github_repos).
-    lister = {
-        "github": list_github_repos,
-        "vercel_cli": list_vercel_projects,
-        "google": list_google_accounts,
-        "meta_ads": list_meta_pages,
-        "instagram": list_instagram_accounts,
-    }.get(provider)
-    if lister is None:
-        raise HTTPException(status_code=404, detail="unknown_provider")
-    try:
-        return await lister(owner_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    # RuntimeError = the provider answered 200 with a body we don't recognise
-    # (Meta's /me/accounts without a `data` list). Same class of "the provider
-    # is not behaving" as an HTTP error, and far better than guessing a shape.
-    except (httpx.HTTPError, RuntimeError) as exc:
-        logger.warning("automations: %s resource listing failed owner=%s err=%s", provider, owner_id, exc)
-        raise HTTPException(status_code=502, detail=f"{provider}_unavailable") from exc
 
 
 @router.put("/{public_id}/webhook-secret")

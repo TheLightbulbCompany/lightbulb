@@ -3,38 +3,9 @@ import { APP_SCHEME, WEB_ORIGIN } from "../config/domain";
 /** Escape a literal for embedding in a RegExp source. */
 const re = (literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const AGENT_LINK_RE = new RegExp(`^${re(APP_SCHEME)}://agent/([^/?#]+)`);
-
-/**
- * Parse an `<scheme>://agent/<agentId>` deep link (optionally with a query
- * string). Returns null for any other scheme/host (e.g. the
- * oauth-native-callback link).
- */
-export function parseAgentDeepLink(url: string): { agentId: string } | null {
-  const match = AGENT_LINK_RE.exec(url);
-  if (!match) return null;
-  // Deep links are externally triggerable, so a malformed percent-encoding
-  // (e.g. `<scheme>://agent/%`) must return null rather than throw a URIError.
-  let agentId: string;
-  try {
-    agentId = decodeURIComponent(match[1]);
-  } catch {
-    return null;
-  }
-  return agentId ? { agentId } : null;
-}
-
 const CHECKOUT_RETURN_RE = new RegExp(
   `^(?:${re(WEB_ORIGIN)}|${re(APP_SCHEME)}://)/?checkout_redirect/(success|cancel|portal)`,
 );
-const CONNECTION_RETURN_RE = new RegExp(
-  `^(?:${re(WEB_ORIGIN)}|${re(APP_SCHEME)}://)/?checkout_redirect/(connected|connect_failed)(?:[?#]|$)`,
-);
-
-/** A return URL only triggers a server refresh; it does not grant a connection. */
-export function isConnectionReturn(url: string): boolean {
-  return CONNECTION_RETURN_RE.test(url);
-}
 
 /**
  * Recognise the return leg of a Stripe app-to-web Checkout.

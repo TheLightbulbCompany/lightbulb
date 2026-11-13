@@ -175,10 +175,10 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 // (e.g. `/ISOA/issues/ISOA-317`); a direct hit on one 404'd because the
 // retired /teams/* tree never redirected them.
 describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
-  it('redirects a direct hit on an agent-written issue path to the in-shell panel', () => {
+  it('redirects a direct hit on an agent-written issue path to the Lightbulb place', () => {
     expect(decidePaperclipLinkRedirect('/ISOA/issues/ISOA-317')).toEqual({
       kind: 'redirect',
-      to: '/chat?panel=activity',
+      to: '/voice/lightbulb',
     });
   });
 
@@ -194,12 +194,20 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
     // defensive fallback (comment-style.md still requires the prefix).
     expect(decidePaperclipLinkRedirect('/issues/ISOA-317')).toEqual({
       kind: 'redirect',
-      to: '/chat?panel=activity',
+      to: '/voice/lightbulb',
     });
     expect(decidePaperclipLinkRedirect('/approvals/ca6ba09d-b558')).toEqual({
       kind: 'redirect',
-      to: '/chat?panel=activity',
+      to: '/voice/lightbulb',
     });
+  });
+
+  it('maps the retired /teams/tasks links and prefixed agent, run and goal links', () => {
+    for (const path of ['/teams/tasks/ISOA-12', '/PAP/agents/cto', '/PAP/agents/cto/runs/run-9', '/PAP/goals/g-142']) {
+      expect(decidePaperclipLinkRedirect(path)).toEqual({ kind: 'redirect', to: '/voice/lightbulb' });
+    }
+    expect(decidePaperclipLinkRedirect('/teams/inbox')).toBeNull();
+    expect(decidePaperclipLinkRedirect('/PAP/sprints/1')).toBeNull();
   });
 
   it('still requires the prefix for agents/projects/goals', () => {

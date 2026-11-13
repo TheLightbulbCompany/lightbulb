@@ -22,10 +22,6 @@ ROWS = [
 
 @pytest.fixture
 def client(monkeypatch):
-    def paperclip_down(*_a, **_k):
-        raise AssertionError("the roster must not call Paperclip")
-
-    monkeypatch.setattr(agents_mod, "_ctx", paperclip_down)
     monkeypatch.setattr(agent_registry_repo, "list_agents", AsyncMock(return_value=ROWS))
     repo = MagicMock()
     repo.get_workspace = AsyncMock(return_value=SimpleNamespace(seeded_agent_ids=[CEO], member_user_ids={"user_sam"}))

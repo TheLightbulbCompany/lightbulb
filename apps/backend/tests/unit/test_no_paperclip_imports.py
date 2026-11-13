@@ -97,10 +97,8 @@ MENTIONS = {
     "routers/gateway_relay.py",
     "routers/memory.py",
     "routers/orgs.py",
-    "routers/sessions.py",
     "routers/teams/agents.py",
     "routers/webhooks.py",
-    "routers/websocket_chat.py",
 }
 
 

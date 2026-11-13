@@ -10,19 +10,15 @@ from moto import mock_aws
 
 from core.services.webhook_dedup import (
     MembershipLifecycleInProgress,
-    TopUpIntentConflict,
     WebhookProcessingInProgress,
     WebhookDedupResult,
     begin_membership_lifecycle,
     begin_event_processing,
-    complete_top_up_intent,
     complete_membership_lifecycle,
     complete_event_processing,
-    get_or_create_top_up_intent,
     get_active_top_up,
     membership_lifecycle_key,
     record_event_or_skip,
-    settle_active_top_up,
     set_active_top_up_status,
 )
 
@@ -157,7 +153,7 @@ async def test_non_conditional_client_error_logs_and_reraises(monkeypatch, caplo
 async def test_put_item_is_offloaded_to_a_thread(monkeypatch):
     """The admin idempotency claim (and every other caller) reaches this on the
     request-handling event loop -- the blocking boto3 PutItem must not run on
-    it directly, exactly like the sibling `_claim_active_top_up` PutItem."""
+    it directly."""
     monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
 
     fake_table = MagicMock()
@@ -200,129 +196,6 @@ async def test_processing_lease_retries_only_after_expiry_and_completed_events_s
 
 
 @pytest.mark.asyncio
-async def test_top_up_intent_pins_money_binding_and_rejects_a_changed_workspace_link(dedup_table, monkeypatch):
-    """A retry must keep the original Metronome body, but must not replay it
-    after the workspace's Stripe/Metronome binding changes."""
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    binding = {
-        "amount_cents": 2500,
-        "effective_at": "2026-09-10T00:00:00.000Z",
-        "metronome_customer_id": "metro_1",
-        "metronome_contract_id": "contract_1",
-        "stripe_customer_id": "cus_1",
-        "product_id": "prod_1",
-        "credit_type_id": "credit_1",
-        "description": "isol8 top-up owner=org_1 amount_cents=2500",
-        "idempotency_key": "topup:org_1:11111111-1111-4111-8111-111111111111",
-    }
-
-    created = await get_or_create_top_up_intent("org_1", "11111111-1111-4111-8111-111111111111", binding)
-    replay = await get_or_create_top_up_intent("org_1", "11111111-1111-4111-8111-111111111111", binding)
-
-    assert created["state"] == replay["state"] == "pending"
-    assert {key: replay[key] for key in binding} == binding
-    await complete_top_up_intent(replay["event_id"])
-    completed = await get_or_create_top_up_intent("org_1", "11111111-1111-4111-8111-111111111111", binding)
-    assert completed["state"] == "completed"
-
-    with pytest.raises(TopUpIntentConflict, match="binding changed"):
-        await get_or_create_top_up_intent(
-            "org_1",
-            "11111111-1111-4111-8111-111111111111",
-            {**binding, "stripe_customer_id": "cus_replaced"},
-        )
-
-
-@pytest.mark.asyncio
-async def test_top_up_provider_attempt_timestamp_is_first_writer_wins(dedup_table, monkeypatch):
-    """Concurrent/replayed requests share the first possible provider-write time."""
-    from core.services import webhook_dedup
-
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    request_id = "10111111-1111-4111-8111-111111111111"
-    binding = {
-        "amount_cents": 2500,
-        "effective_at": "2026-09-10T00:00:00.000Z",
-        "metronome_customer_id": "metro_1",
-        "metronome_contract_id": "contract_1",
-        "stripe_customer_id": "cus_1",
-        "product_id": "prod_1",
-        "credit_type_id": "credit_1",
-        "description": "isol8 top-up owner=org_1 amount_cents=2500",
-        "idempotency_key": request_id,
-    }
-    intent = await get_or_create_top_up_intent("org_1", request_id, binding)
-
-    with patch("core.services.webhook_dedup.time.time", return_value=100):
-        first = await webhook_dedup.record_top_up_provider_attempt(intent["event_id"])
-    with patch("core.services.webhook_dedup.time.time", return_value=200):
-        replay = await webhook_dedup.record_top_up_provider_attempt(intent["event_id"])
-
-    assert first == replay == 100
-
-
-@pytest.mark.asyncio
-async def test_active_top_up_allows_same_request_and_replaces_only_after_terminal_settlement(dedup_table, monkeypatch):
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    first_request = "12111111-1111-4111-8111-111111111111"
-    second_request = "13111111-1111-4111-8111-111111111111"
-    binding = {
-        "amount_cents": 2500,
-        "effective_at": "2026-09-10T00:00:00.000Z",
-        "metronome_customer_id": "metro_1",
-        "metronome_contract_id": "contract_1",
-        "stripe_customer_id": "cus_1",
-        "product_id": "prod_1",
-        "credit_type_id": "credit_1",
-        "description": "isol8 top-up owner=org_1 amount_cents=2500",
-        "idempotency_key": first_request,
-    }
-    first = await get_or_create_top_up_intent("org_1", first_request, binding)
-    assert (await get_or_create_top_up_intent("org_1", first_request, binding))["event_id"] == first["event_id"]
-
-    with pytest.raises(TopUpIntentConflict, match="active"):
-        await get_or_create_top_up_intent("org_1", second_request, {**binding, "idempotency_key": second_request})
-
-    assert await settle_active_top_up("org_1", "metro_1", "contract_1", "paid", invoice_id="invoice_1") is True
-    assert (await get_active_top_up("org_1"))["status"] == "paid"
-    assert (await get_or_create_top_up_intent("org_1", first_request, binding))["state"] == "paid"
-    second = await get_or_create_top_up_intent("org_1", second_request, {**binding, "idempotency_key": second_request})
-    assert second["request_id"] == second_request
-
-
-@pytest.mark.asyncio
-async def test_active_top_up_rejects_customer_or_contract_mismatch_and_records_failure(dedup_table, monkeypatch):
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    request_id = "14111111-1111-4111-8111-111111111111"
-    binding = {
-        "amount_cents": 2500,
-        "effective_at": "2026-09-10T00:00:00.000Z",
-        "metronome_customer_id": "metro_1",
-        "metronome_contract_id": "contract_1",
-        "stripe_customer_id": "cus_1",
-        "product_id": "prod_1",
-        "credit_type_id": "credit_1",
-        "description": "isol8 top-up owner=org_1 amount_cents=2500",
-        "idempotency_key": request_id,
-    }
-    await get_or_create_top_up_intent("org_1", request_id, binding)
-    assert await settle_active_top_up("org_1", "metro_other", "contract_1", "failed", invoice_id="invoice_1") is False
-    assert await settle_active_top_up("org_1", "metro_1", "contract_other", "failed", invoice_id="invoice_1") is False
-    assert await settle_active_top_up("org_1", "metro_1", "contract_1", "failed", invoice_id="invoice_1") is True
-    assert (await get_active_top_up("org_1"))["status"] == "failed"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["paid", "failed"])
-async def test_late_acceptance_preserves_terminal_intent(dedup_table, monkeypatch, status):
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    table = boto3.resource("dynamodb", region_name="us-east-1").Table(dedup_table)
-    table.put_item(Item={"event_id": "intent_A", "kind": "metronome-top-up", "state": status})
-    await complete_top_up_intent("intent_A")
-    assert table.get_item(Key={"event_id": "intent_A"})["Item"]["state"] == status
-
-
-@pytest.mark.asyncio
 async def test_old_request_acknowledgement_cannot_advance_new_pointer(dedup_table, monkeypatch):
     monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
     table = boto3.resource("dynamodb", region_name="us-east-1").Table(dedup_table)
@@ -342,76 +215,6 @@ async def test_old_request_acknowledgement_cannot_advance_new_pointer(dedup_tabl
         is False
     )
     assert (await get_active_top_up("org_1"))["status"] == "pending"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["paid", "failed"])
-@pytest.mark.parametrize("fail_write", [None, "binding", 1, 2, 3])
-async def test_invoice_replay_finishes_only_its_bound_intent(dedup_table, monkeypatch, status, fail_write):
-    from core.services import webhook_dedup
-
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    binding = {
-        "amount_cents": 2500,
-        "effective_at": "2026-09-10T00:00:00.000Z",
-        "metronome_customer_id": "metro_1",
-        "metronome_contract_id": "contract_1",
-        "stripe_customer_id": "cus_1",
-        "product_id": "prod_1",
-        "credit_type_id": "credit_1",
-        "description": "isol8 top-up owner=org_1 amount_cents=2500",
-        "idempotency_key": "request_1",
-    }
-    first = await get_or_create_top_up_intent("org_1", "request_1", binding)
-    table = boto3.resource("dynamodb", region_name="us-east-1").Table(dedup_table)
-    if fail_write:
-        update = table.update_item
-        put = table.put_item
-        writes = 0
-
-        def interrupted_put(**kwargs):
-            result = put(**kwargs)
-            if fail_write == "binding":
-                raise RuntimeError("response lost after durable write")
-            return result
-
-        def interrupted_update(**kwargs):
-            nonlocal writes
-            writes += 1
-            result = update(**kwargs)
-            if writes == fail_write:
-                raise RuntimeError("response lost after durable write")
-            return result
-
-        with (
-            patch.object(webhook_dedup, "_table", return_value=table),
-            patch.object(table, "update_item", side_effect=interrupted_update),
-            patch.object(table, "put_item", side_effect=interrupted_put),
-        ):
-            with pytest.raises(RuntimeError, match="response lost"):
-                await settle_active_top_up("org_1", "metro_1", "contract_1", status, invoice_id="invoice_1")
-
-    # If a partial settlement already released the pointer, a new purchase can
-    # start before the old invoice is retried.
-    if (await get_active_top_up("org_1"))["status"] in {"paid", "failed"}:
-        await get_or_create_top_up_intent("org_1", "request_2", {**binding, "idempotency_key": "request_2"})
-    await settle_active_top_up("org_1", "metro_1", "contract_1", status, invoice_id="invoice_1")
-    await complete_top_up_intent(first["event_id"])
-    assert table.get_item(Key={"event_id": first["event_id"]})["Item"]["state"] == status
-    second = await get_or_create_top_up_intent("org_1", "request_2", {**binding, "idempotency_key": "request_2"})
-    # A different event ID (including a contrary status) for the same invoice
-    # must be a permanent no-op even after the active pointer changes.
-    assert await settle_active_top_up("org_1", "metro_1", "contract_1", "paid", invoice_id="invoice_1") is False
-    assert await settle_active_top_up("org_1", "metro_1", "contract_1", "failed", invoice_id="invoice_1") is False
-    assert (await get_active_top_up("org_1"))["request_id"] == "request_2"
-    assert (await get_active_top_up("org_1"))["status"] == "pending"
-    assert table.get_item(Key={"event_id": second["event_id"]})["Item"]["state"] == "pending"
-    assert (await get_or_create_top_up_intent("org_1", "request_1", binding))["state"] == status
-    assert (await get_active_top_up("org_1"))["request_id"] == "request_2"
-    marker = table.get_item(Key={"event_id": "metronome-top-up-invoice:invoice_1"})["Item"]
-    assert marker["intent_event_id"] == first["event_id"]
-    assert marker["state"] == "completed"
-    assert "ttl" not in marker
 
 
 @pytest.mark.asyncio

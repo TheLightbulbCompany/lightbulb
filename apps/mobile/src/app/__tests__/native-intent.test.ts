@@ -27,13 +27,24 @@ describe("checkout return links", () => {
   });
 
   it("leaves every other deep link alone", () => {
-    expect(redirectSystemPath({ path: "/(app)/task/42", initial: false })).toBe(
-      "/(app)/task/42",
-    );
+    expect(redirectSystemPath({ path: "/plans", initial: false })).toBe("/plans");
     // Guards the regex boundary: a route that merely starts with the same
     // letters is a real destination and must still resolve.
     expect(redirectSystemPath({ path: "/checkout_redirection", initial: false })).toBe(
       "/checkout_redirection",
     );
+  });
+});
+
+describe("links to the removed chat app", () => {
+  it.each(["/(app)/task/42", "flickmeon://agent/agent_1", "/(app)/room/r1/details", "/session/s1", "/workspaces", "control/llm"])(
+    "sends %s to Home",
+    (path) => expect(redirectSystemPath({ path, initial: true })).toBe("/"),
+  );
+  it("keeps the chat screen", () => {
+    expect(redirectSystemPath({ path: "/(app)/room/r1", initial: true })).toBe("/(app)/room/r1");
+  });
+  it("keeps a route that only starts with the same letters", () => {
+    expect(redirectSystemPath({ path: "/worker", initial: false })).toBe("/worker");
   });
 });

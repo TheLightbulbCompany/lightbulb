@@ -140,34 +140,6 @@ async def delete(
     )
 
 
-async def sweep_by_owner_provider_agent(
-    *,
-    owner_id: str,
-    provider: str,
-    agent_id: str,
-) -> int:
-    """Delete all link rows for one bot. Used by bot-delete cleanup.
-
-    Queries the main table with a ``provider#agent_id#`` SK prefix and
-    deletes all matches. Does NOT paginate — acceptable because a single
-    bot's linked-member count is bounded by the org's member count, which
-    fits in a single 1MB query page in practice. If a bot ever accumulates
-    >~400 linked peers, items beyond the page boundary would be silently
-    left behind; revisit pagination if that becomes a real concern.
-
-    Returns the number of rows deleted.
-    """
-    table = _get_table()
-    prefix = f"{provider}#{agent_id}#"
-    response = await run_in_thread(
-        table.query,
-        KeyConditionExpression=Key("owner_id").eq(owner_id) & Key("sk").begins_with(prefix),
-    )
-    items = response.get("Items", [])
-    await _batch_delete(table, items)
-    return len(items)
-
-
 async def sweep_by_owner(owner_id: str) -> int:
     """Delete all link rows for one container. Used by container-delete cleanup.
 

@@ -26,14 +26,7 @@ import { PushRegistration } from "./PushRegistration";
 it("requests a token and POSTs it once", async () => {
   // RNTL 14's render() is async — await it before asserting effects.
   await render(
-    <PushRegistration
-      getCurrentTarget={() => ({
-        agentId: null,
-        sessionId: null,
-        roomId: null,
-        threadId: null,
-      })}
-    />,
+    <PushRegistration />,
   );
   await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
   const [path, body] = mockPost.mock.calls[0];
@@ -51,9 +44,7 @@ it("on Android, makes the default channel first and registers as android", async
   mockPost.mockClear();
   try {
     await render(
-      <PushRegistration
-        getCurrentTarget={() => ({ agentId: null, sessionId: null, roomId: null, threadId: null })}
-      />,
+      <PushRegistration />,
     );
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
     expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith(

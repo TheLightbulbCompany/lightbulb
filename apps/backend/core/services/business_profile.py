@@ -4,7 +4,7 @@ owner and member chat, the orb and Meet never do (founder, 8 Nov).
 
 It reuses the phone's readers: the Agent page (`voice_phone.agent_config`, `_facts`: services, prices, durations,
 hours, the Knowledge answers that hold the policies), open slots (`voice_phone.free_slots`) and the caller's own
-bookings (`VOICEBOOK#` rows with their number). Best-effort: bounded to ~2k characters, cached 60 s, 2 s at most.
+bookings (`VOICEBOOK#` rows with their number). Best-effort: bounded to ~5k characters, cached 60 s, 2 s at most.
 
 Business facts and optional availability return independently: provider failures or
 calendar-level errors mark availability unknown and never manufacture free slots.
@@ -24,7 +24,9 @@ TTL_S = 60.0
 GOOGLE_S = 1.0  # the week's freeBusy; past it external availability is unknown
 ORG_S, ORG_TTL_S = 1.0, 3600.0  # the business's name (Clerk): bounded, and cached once read
 DAYS = 7
-_FACTS_MAX, _SLOTS_MAX, _BOOKINGS_MAX = 1200, 600, 200
+# A salon with 18 services and 15 saved answers is ~2.5k characters of facts; 1,200 cut it mid-answer. 4,000 keeps a
+# realistic Agent page whole; a larger one is marked partial (business_facts has the rest).
+_FACTS_MAX, _SLOTS_MAX, _BOOKINGS_MAX = 4000, 600, 200
 _cache: dict[tuple[str, str | None], tuple[float, str]] = {}
 _names: dict[str, tuple[float, str]] = {}
 

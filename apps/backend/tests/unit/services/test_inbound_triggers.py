@@ -91,58 +91,11 @@ def _gh_http_patch(response: httpx.Response):
     return patch("core.services.inbound_triggers.httpx.AsyncClient", new=_fake), client
 
 
-@pytest.mark.asyncio
-async def test_list_github_repos_maps_full_names():
-    from core.services.inbound_triggers import list_github_repos
-
-    p_http, gh_client = _gh_http_patch(_gh_response(200, [{"full_name": "acme/site"}, {"full_name": "acme/api"}]))
-    with _gh_token_patch(), p_http:
-        out = await list_github_repos("owner_1")
-    assert out == [
-        {"id": "acme/site", "label": "acme/site"},
-        {"id": "acme/api", "label": "acme/api"},
-    ]
-    assert gh_client.get.await_args.args[0] == "https://api.github.com/user/repos"
-    assert gh_client.get.await_args.kwargs["params"] == {"per_page": 100, "sort": "updated"}
-
-
-@pytest.mark.asyncio
-async def test_list_github_repos_not_connected_raises_lookup_error():
-    from core.services.inbound_triggers import list_github_repos
-
-    with _gh_token_patch(token=None), pytest.raises(LookupError, match="not connected"):
-        await list_github_repos("owner_1")
-
-
 # --- auto_vercel ------------------------------------------------------------
 #
 # Same mocking approach as auto_github above. `_gh_token_patch` is reused for
 # the Vercel credential — it patches the shared integration_secret_store.get,
 # and the paste rail stores the same {"token": ...} shape for vercel_cli.
-
-
-@pytest.mark.asyncio
-async def test_list_vercel_projects_maps_ids_and_names():
-    from core.services.inbound_triggers import list_vercel_projects
-
-    p_http, vc_client = _gh_http_patch(
-        _gh_response(200, {"projects": [{"id": "prj_1", "name": "site"}, {"id": "prj_2", "name": "api"}]})
-    )
-    with _gh_token_patch(token="vc_tok_1"), p_http:
-        out = await list_vercel_projects("owner_1")
-    assert out == [
-        {"id": "prj_1", "label": "site"},
-        {"id": "prj_2", "label": "api"},
-    ]
-    assert vc_client.get.await_args.args[0] == "https://api.vercel.com/v9/projects"
-
-
-@pytest.mark.asyncio
-async def test_list_vercel_projects_not_connected_raises_lookup_error():
-    from core.services.inbound_triggers import list_vercel_projects
-
-    with _gh_token_patch(token=None), pytest.raises(LookupError, match="not connected"):
-        await list_vercel_projects("owner_1")
 
 
 # --- auto_google_watch --------------------------------------------------------
@@ -188,26 +141,6 @@ def _watch_state_patch(roster=("agent_ceo",)):
         patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": a} for a in roster])),
     ):
         yield writes
-
-
-@pytest.mark.asyncio
-async def test_list_google_accounts_maps_emails():
-    from core.services.inbound_triggers import list_google_accounts
-
-    with _google_accounts_patch(emails=("ada@example.com", "team@example.com")):
-        out = await list_google_accounts("owner_1")
-    assert out == [
-        {"id": "ada@example.com", "label": "ada@example.com"},
-        {"id": "team@example.com", "label": "team@example.com"},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_list_google_accounts_not_connected_raises_lookup_error():
-    from core.services.inbound_triggers import list_google_accounts
-
-    with _google_accounts_patch(emails=()), pytest.raises(LookupError, match="not connected"):
-        await list_google_accounts("owner_1")
 
 
 def test_google_watch_stop_argv():
@@ -323,88 +256,6 @@ def _ig_creds_patch(creds=None):
 
 
 # --- Meta resource listers ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_list_meta_pages_maps_and_strips_tokens():
-    from core.services.inbound_triggers import list_meta_pages
-
-    p_http, _ = _meta_http_patch()
-    with (
-        p_http,
-        patch(
-            "core.services.inbound_triggers.integration_secret_store.get",
-            AsyncMock(return_value={"access_token": "meta_user_tok"}),
-        ),
-    ):
-        out = await list_meta_pages("owner_1")
-    # The picker feed is owner-facing JSON — a Page access token must never
-    # ride out of the resources endpoint.
-    assert out == [{"id": "1112223334", "label": "Acme Page"}]
-
-
-@pytest.mark.asyncio
-async def test_list_meta_pages_never_substitutes_user_token_for_page_token():
-    from core.services.inbound_triggers import list_meta_pages
-
-    p_http, _ = _meta_http_patch(pages={"data": [{"id": "1112223334", "name": "Acme Page"}]})
-    with (
-        p_http,
-        patch(
-            "core.services.inbound_triggers.integration_secret_store.get",
-            AsyncMock(return_value={"access_token": "meta_user_tok"}),
-        ),
-        pytest.raises(RuntimeError, match="without Page access tokens"),
-    ):
-        await list_meta_pages("owner_1")
-
-
-@pytest.mark.asyncio
-async def test_list_meta_pages_not_connected():
-    from core.services.inbound_triggers import list_meta_pages
-
-    with (
-        patch("core.services.inbound_triggers.integration_secret_store.get", AsyncMock(return_value=None)),
-        pytest.raises(LookupError, match="Meta Ads is not connected"),
-    ):
-        await list_meta_pages("owner_1")
-
-
-@pytest.mark.asyncio
-async def test_list_meta_pages_unrecognised_body_is_not_guessed_at():
-    """A 200 without a `data` list is the provider misbehaving — the router
-    turns this into a 502 rather than the lister inventing an empty picker."""
-    from core.services.inbound_triggers import list_meta_pages
-
-    p_http, _ = _meta_http_patch(pages={"paging": {}})
-    with (
-        p_http,
-        patch(
-            "core.services.inbound_triggers.integration_secret_store.get",
-            AsyncMock(return_value={"access_token": "meta_user_tok"}),
-        ),
-        pytest.raises(RuntimeError, match="no page list"),
-    ):
-        await list_meta_pages("owner_1")
-
-
-@pytest.mark.asyncio
-async def test_list_instagram_accounts_maps_and_strips_token():
-    from core.services.inbound_triggers import list_instagram_accounts
-
-    with _ig_creds_patch():
-        assert await list_instagram_accounts("owner_1") == [{"id": "7778889990", "label": "acme.co"}]
-
-
-@pytest.mark.asyncio
-async def test_list_instagram_accounts_not_connected():
-    from core.services.inbound_triggers import list_instagram_accounts
-
-    with (
-        patch("core.services.inbound_triggers._read_instagram_credentials", side_effect=FileNotFoundError()),
-        pytest.raises(LookupError, match="Instagram is not connected"),
-    ):
-        await list_instagram_accounts("owner_1")
 
 
 # ---------------------------------------------------------------------------

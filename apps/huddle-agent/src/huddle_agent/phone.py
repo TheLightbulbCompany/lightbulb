@@ -49,11 +49,12 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-#: What the backend does for a caller (GPT-Live's `Backend tools`): the Router's Business profile and transfer_call,
-#: and the caller-scoped Front desk thread's actions (front_desk: availability, book, my_bookings, move, cancel,
-#: waitlist, message), nothing more.
+#: What the backend does for a caller (GPT-Live's `Backend tools`): the Router's transfer_call and the caller-scoped
+#: Front desk thread's actions (front_desk: availability, book, my_bookings, move, cancel, waitlist, message), and
+#: the questions Business facts do not answer. The Agent page's static facts are in the prompt (founder 12 Nov:
+#: "static information can live with the voice model"), so they are not a backend tool.
 TOOLS = [
-    "Business profile: the business's actual description, what it does, services, prices, durations, hours and policies.",
+    "Questions: anything about the business that Business facts do not answer.",
     "Availability: find open times for a service on a day.",
     "Bookings: book a time, or list, move or cancel the caller's own bookings.",
     "Messages: take a message for the owner, with the caller's name and a callback number.",
@@ -86,8 +87,11 @@ Names, dates and numbers: before a booking is made, say the name it goes under b
 have it right. If an important name, date, or number is unclear, ask about that part. Use the caller's correction.
 Do not guess the missing value.
 
-While backend work is running, say only neutral holding words ("one moment"): never that a booking is being changed, canceled or finalized, or how far along it is, because no result has said so. Wait for the backend's result before describing this business or its services, stating a price or a time, confirming a booking, or saying that a message was
-taken or a transfer is under way. Never share anything about other customers.
+{facts}
+
+While backend work is running, say only neutral holding words ("one moment"): never that a booking is being changed, canceled or finalized, or how far along it is, because no result has said so.
+You may state anything in Business facts directly. Do not guess anything they do not state: say you will check, or
+offer to take a message. Wait for the backend's result before stating an open appointment time, confirming a booking, a change or a cancellation, or saying that a message was taken or a transfer started. Never share anything about other customers.
 If the caller objects to being recorded, answer honestly that the business may keep a transcript of the call, and
 offer a person or a message.
 Never give the caller a phone number to call instead, not even one the business lists. When something cannot be
@@ -122,9 +126,20 @@ Approvals happen on the card in the Lightbulb app, never by voice: when somethin
 on the card in the app. A spoken yes approves nothing."""
 
 
+def facts_section(info: dict) -> str:
+    """Start's `facts` (the Agent page's static facts, the Router's Business profile text) and the owner's
+    `instructions`, verbatim and read last, so they win over the facts. Fetched once: an edit applies to the next call."""
+    facts = (info.get("facts") or "").strip()
+    out = f"Business facts (the owner's Agent page):\n{facts}" if facts else "Business facts: none for this call."
+    if rules := (info.get("instructions") or "").strip():
+        out += f"\n\nThe owner's instructions. They take priority over Business facts:\n{rules}"
+    return out
+
+
 def prompt(info: dict) -> str:
     paused = info.get("mode") == "message_only"
     return PROMPT.format(
+        facts=facts_section(info),
         language=(
             "Open in English. Speak English or Spanish, following the caller's choice. Switch naturally when the "
             "caller speaks or asks for Spanish or English; keep all permissions rules in either language."
@@ -145,7 +160,8 @@ def prompt(info: dict) -> str:
         else "" if info.get("transfer") else "No person is available to transfer a call to; take a message instead.\n",
         owner=OWNER_PIN if info.get("ownerPin") else "",
         delegation=live.delegation_policy(
-            MESSAGE_ONLY_TOOLS if paused else TOOLS if info.get("transfer") else TOOLS[:-1]  # no number: no person tool
+            MESSAGE_ONLY_TOOLS if paused else TOOLS if info.get("transfer") else TOOLS[:-1],  # no number: no person tool
+            facts_in_prompt=True,
         ),
     )
 
@@ -514,7 +530,10 @@ async def entrypoint(ctx: JobContext) -> None:
         if session.user_state == "away":
             _away(type("Ev", (), {"new_state": "away"}))
 
-    silence_checks.append(still_away)
+    # An answer returns a caller who went quiet during the hold to the ordinary silence timer: LiveKit's own, which
+    # runs AWAY_S only once the voice has finished saying it. `still_away` would tell GPT-Live QUIET at once (mid-answer)
+    # and hang up AWAY_S after the answer arrived (a prod call, 13 Nov), because LiveKit never re-times an away caller.
+    silence_checks.append(session.reset_away_timer)
 
     @session.on("user_state_changed")
     def _away(ev) -> None:

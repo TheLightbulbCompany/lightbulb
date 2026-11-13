@@ -11,7 +11,7 @@ const lk = vi.hoisted(() => {
     on: vi.fn((ev: string, fn: (...a: unknown[]) => void) => { state.handlers[ev] = fn; }),
     localParticipant: { identity: "u1", performRpc: vi.fn(async () => ""), setMicrophoneEnabled: vi.fn(async () => {}) },
   };
-  return { state, room, post: vi.fn(), patch: vi.fn(), success: vi.fn(), failure: vi.fn(), nav: vi.fn(), client: {} as { post: unknown; patch: unknown } };
+  return { state, room, post: vi.fn(), patch: vi.fn(), success: vi.fn(), failure: vi.fn(), client: {} as { post: unknown; patch: unknown } };
 });
 vi.mock("livekit-client", () => ({ Room: function Room() { return lk.room; }, Track: { Source: { Microphone: "microphone" } }, RoomEvent: { DataReceived: "dataReceived", Disconnected: "disconnected" } }));
 vi.mock("@livekit/components-react", () => ({
@@ -24,30 +24,28 @@ vi.mock("@livekit/components-react", () => ({
 }));
 vi.mock("@/lib/api", () => { lk.client = { post: lk.post, patch: lk.patch }; return { useApi: () => lk.client }; });
 vi.mock("@/lib/notify", () => ({ notifySuccess: lk.success, notifyFailure: lk.failure }));
-vi.mock("@/lib/shellNav", () => ({ navigateShell: lk.nav }));
 import { HuddleProvider, useHuddle } from "../HuddleProvider";
-import { LiveStrip } from "../LiveStrip";
-
 function Probe() {
   const h = useHuddle();
   return <>
     <button onClick={() => void h.join("r1", "general")}>join {h.roomId ?? "none"}</button>
     <button onClick={() => h.talkStart("a1")}>talk a1</button>
     <button onClick={() => h.talkStart()}>talk anyone</button>
+    <button onClick={h.leave}>leave</button>
+    <button onClick={h.dismissError}>dismiss</button>
+    <span data-testid="error">{h.error?.code ?? ""}</span>
     <span data-testid="notice">{h.agentNotice ? `${h.agentNotice.kind}:${h.agentNotice.agentId}` : ""}</span>
   </>;
 }
-const members = [{ kind: "agent", id: "a1", displayName: "Nova", listenMode: "active" }] as never;
-const mount = (here = "r1") => render(<HuddleProvider><Probe /><LiveStrip roomId={here} members={members} /></HuddleProvider>);
-const joinNow = async (here?: string) => {
-  mount(here);
+const mount = () => render(<HuddleProvider><Probe /></HuddleProvider>);
+const joinNow = async () => {
+  mount();
   fireEvent.click(screen.getByText("join none"));
-  await screen.findByRole("group", { name: "Live in general" });
+  await screen.findByText("join r1");
 };
-const openDetails = () => fireEvent.click(screen.getByRole("button", { name: /Details$/ }));
+const errorCode = () => screen.getByTestId("error").textContent;
 
 beforeEach(() => {
-  window.matchMedia = (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
   vi.clearAllMocks(); lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }]; lk.state.attrs = {}; lk.room.localParticipant.identity = "u1";
   lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok", lightbulb: true });
   lk.patch.mockResolvedValue({});
@@ -59,153 +57,58 @@ it("join posts to the API and connects with the returned url and token", async (
   expect(lk.room.connect).toHaveBeenCalledWith("wss://lk", "tok");
 });
 
-it("the header strip says Live and carries the mic toggle and Leave", async () => {
+it("leave disconnects", async () => {
   await joinNow();
-  expect(screen.getByText("Live")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Microphone" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Leave Live" })).toBeInTheDocument();
-});
-
-it("leave disconnects and the strip goes", async () => {
-  await joinNow();
-  fireEvent.click(screen.getByRole("button", { name: "Leave Live" }));
+  fireEvent.click(screen.getByText("leave"));
   expect(lk.room.disconnect).toHaveBeenCalled();
-  expect(screen.queryByRole("group")).toBeNull();
+  expect(screen.getByText("join none")).toBeInTheDocument();
 });
 
 it("unmount disconnects", async () => {
-  const { unmount } = render(<HuddleProvider><Probe /></HuddleProvider>);
+  const { unmount } = mount();
   fireEvent.click(screen.getByText("join none"));
   await waitFor(() => expect(lk.room.connect).toHaveBeenCalled());
   unmount();
   expect(lk.room.disconnect).toHaveBeenCalled();
 });
 
-const methods = () => (lk.room.localParticipant.performRpc.mock.calls as unknown as { method: string }[][]).map((c) => c[0].method);
 const err = (code: unknown, from: string) =>
   act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code })), { identity: from }, undefined, "huddle.error"));
 
-it("tapping an agent's tile sends talk_start with its id to agent-ceo, once per click, and never talk_end", async () => {
-  await joinNow();
-  const talk = screen.getByRole("button", { name: "Nova, agent" });
-  fireEvent.click(talk);
-  expect(lk.room.localParticipant.performRpc).toHaveBeenCalledWith({ destinationIdentity: "agent-ceo", method: "talk_start", payload: '{"agentId":"a1"}' });
-  fireEvent.click(talk);
-  expect(methods()).toEqual(["talk_start", "talk_start"]);
-});
-
-it("shows the plain-word message for a huddle.error, opening the details", async () => {
-  await joinNow();
-  act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code: "voice_busy", reason: "x" })), { identity: "agent-ceo" }, undefined, "huddle.error"));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Someone in your workspace is already on a free call.");
-  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-  expect(screen.queryByRole("alert")).toBeNull();
-});
-
-it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls back", async () => {
+it("keeps a huddle.error from agent-ceo until dismissed, and ignores anyone else's", async () => {
   await joinNow();
   err("voice_busy", "user_evil");
-  expect(screen.queryByRole("alert")).toBeNull();
-  err("__proto__", "agent-ceo");
-  expect(await screen.findByRole("alert")).toHaveTextContent("Live couldn't start.");
+  expect(errorCode()).toBe("");
+  err("voice_busy", "agent-ceo");
+  expect(errorCode()).toBe("voice_busy");
+  fireEvent.click(screen.getByText("dismiss"));
+  expect(errorCode()).toBe("");
 });
 
 it("a failed talk_start says the agent couldn't be reached", async () => {
   await joinNow();
   lk.room.localParticipant.performRpc.mockRejectedValueOnce(new Error("x"));
-  fireEvent.click(screen.getByRole("button", { name: "Nova, agent" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(/Couldn't reach/);
-});
-
-it("a join refused with workspace_not_ready says so in the header", async () => {
-  lk.post.mockRejectedValueOnce({ status: 409, body: { detail: { code: "workspace_not_ready" } } });
-  mount();
-  fireEvent.click(screen.getByText("join none"));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Your workspace is still getting ready.");
-  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-  expect(screen.queryByRole("alert")).toBeNull();
-});
-
-it("the details list everyone here", async () => {
-  lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }, { identity: "u1", name: "Ana", isLocal: true }, { identity: "u2", name: "Ben" }];
-  await joinNow();
-  openDetails();
-  const list = await screen.findByRole("list", { name: "People in Live" });
-  expect(list).toHaveTextContent("Ana (you)");
-  expect(list).toHaveTextContent("Ben");
-});
-
-it("more than three people collapse into +N", async () => {
-  lk.state.participants = [{ identity: "agent-ceo" }, ...["a", "b", "c", "d", "e"].map((n) => ({ identity: n, name: n.toUpperCase() }))];
-  await joinNow();
-  expect(screen.getByText("+2")).toBeInTheDocument();
-});
-
-it("a people-only room shows no Lightbulb: no bars, no joining, no 45 s Retry", async () => {
-  lk.state.participants = [{ identity: "u1", name: "Ana", isLocal: true }];
-  lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok", lightbulb: false });
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  try {
-    await joinNow();
-    expect(screen.queryByTestId("bars")).toBeNull();
-    expect(screen.queryByRole("group", { name: "Agents in Live" })).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    openDetails();
-    expect(await screen.findByRole("list", { name: "People in Live" })).toHaveTextContent("Ana (you)");
-    expect(screen.queryByText(/tap an agent/)).toBeNull();
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-it("agents can't be tapped until the worker joins, then it gives up after 45 s with a Retry that joins again", async () => {
-  lk.state.participants = [];
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  try {
-    await joinNow();
-    expect(screen.getByRole("button", { name: "Nova, agent" })).toBeDisabled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(lk.post).toHaveBeenCalledTimes(2));
-    expect(lk.post).toHaveBeenLastCalledWith("/huddles/r1/join", {});
-  } finally {
-    vi.useRealTimers();
-  }
+  fireEvent.click(screen.getByText("talk a1"));
+  await waitFor(() => expect(errorCode()).toBe("lightbulb_unreachable"));
 });
 
 it("an idle room ends Live and says why", async () => {
   await joinNow();
   err("idle_ended", "agent-ceo");
   expect(lk.room.disconnect).toHaveBeenCalled();
-  expect(screen.queryByRole("group")).toBeNull();
-  expect(await screen.findByRole("alert")).toHaveTextContent("Live ended — no one was talking.");
-});
-
-it("in another room's header it is a compact Live in general with Return and Leave", async () => {
-  const seen: unknown[] = [];
-  const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);
-  window.addEventListener("openRoom", onOpen);
-  try {
-    await joinNow("r2");
-    expect(screen.queryByRole("group", { name: "Agents in Live" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Return/ }));
-    expect(seen).toEqual([{ roomId: "r1", threadId: null }]);
-    fireEvent.click(screen.getByRole("button", { name: "Leave Live" }));
-    expect(lk.room.disconnect).toHaveBeenCalled();
-  } finally {
-    window.removeEventListener("openRoom", onOpen);
-  }
+  expect(screen.getByText("join none")).toBeInTheDocument();
+  expect(errorCode()).toBe("idle_ended");
 });
 
 it.each([
-  [{ status: 404, body: { code: "ROOM_NOT_FOUND", message: "x" } }, "This channel no longer exists."],
-  [Object.assign(new Error("none"), { name: "NotFoundError" }), "No microphone found."],
-])("a failed join maps %j to plain words", async (error, text) => {
+  [{ status: 409, body: { detail: { code: "workspace_not_ready" } } }, "workspace_not_ready"],
+  [{ status: 404, body: { code: "ROOM_NOT_FOUND", message: "x" } }, "room_not_found"],
+  [Object.assign(new Error("none"), { name: "NotFoundError" }), "no_mic"],
+])("a failed join maps %j to %s", async (error, code) => {
   lk.post.mockRejectedValueOnce(error);
   mount();
   fireEvent.click(screen.getByText("join none"));
-  expect(await screen.findByRole("alert")).toHaveTextContent(text);
+  await waitFor(() => expect(errorCode()).toBe(code));
 });
 
 const notice = (body: unknown, from = "agent-ceo") =>
@@ -240,12 +143,10 @@ it("a failed Undo says so", async () => {
   await waitFor(() => expect(lk.failure).toHaveBeenCalledWith("Couldn't undo the rename."));
 });
 
-it("a saved voice note toasts with Edit, which opens the agent inspector", async () => {
+it("a saved voice note toasts what the agent will remember", async () => {
   await joinNow();
   notice({ kind: "voice_note_saved", agentId: "a1", name: "Nova", text: "be more blunt", by: "u2" });
-  expect(lk.success.mock.calls[0][0]).toBe("Nova will remember: be more blunt");
-  lk.success.mock.calls[0][1].action.onClick();
-  expect(lk.nav).toHaveBeenCalledWith("/chat?panel=agent-inspector&agent=a1");
+  expect(lk.success).toHaveBeenCalledWith("Nova will remember: be more blunt");
 });
 
 it("ignores notices from anyone but agent-ceo, and bad JSON", async () => {
@@ -260,7 +161,7 @@ it("ambiguous_name sets agentNotice and leaving clears it", async () => {
   await joinNow();
   notice({ kind: "ambiguous_name", agentId: "a1" });
   expect(screen.getByTestId("notice")).toHaveTextContent("ambiguous_name:a1");
-  fireEvent.click(screen.getByRole("button", { name: "Leave Live" }));
+  fireEvent.click(screen.getByText("leave"));
   expect(screen.getByTestId("notice")).toHaveTextContent("");
 });
 

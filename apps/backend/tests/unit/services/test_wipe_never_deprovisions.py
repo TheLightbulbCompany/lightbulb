@@ -22,7 +22,7 @@ from core.services.account_wipe import wipe_account  # noqa: E402
 from core.repositories import integrations_repo  # noqa: E402
 from core.services.company_stripe import deauthorize as real_company_stripe_deauthorize  # noqa: E402
 from core.services.credentials import integration_secret_store  # noqa: E402
-from routers import company_policy, connections  # noqa: E402
+from routers import connections  # noqa: E402
 from tests.unit.services.test_account_wipe import OWNER_ID, wipe_mocks  # noqa: E402, F401
 
 # What this rail's blob is actually NAMED, computed the same way the writer
@@ -41,7 +41,6 @@ _TEARDOWN_MODULES = (
     workspace_wipe,
     entitlement_teardown,
     owner_secret_sweep,
-    company_policy,
     connections,
 )
 

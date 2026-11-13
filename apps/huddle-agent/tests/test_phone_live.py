@@ -33,10 +33,42 @@ class Emitter:
             f(ev)
 
 
+class FakeSession(Emitter):
+    """livekit-agents 1.8.11's user-away timer, as far as the phone relies on it: AWAY_S runs only while the caller
+    and the voice both listen, it is never restarted for a caller already away, and `reset_away_timer` returns an
+    away caller to listening."""
+
+    def __init__(self):
+        super().__init__()
+        self.user_state, self.agent_state, self._timer = "listening", "listening", None
+
+    def _arm(self):
+        if self._timer:
+            self._timer.cancel()
+            self._timer = None
+        if self.user_state == self.agent_state == "listening":
+            self._timer = asyncio.get_running_loop().call_later(phone.AWAY_S, self.set_user, "away")
+
+    def set_user(self, state):
+        self.user_state = state
+        self._arm()
+        self.emit("user_state_changed", SimpleNamespace(new_state=state))
+
+    def set_agent(self, old, new):
+        self.agent_state = new
+        self._arm()
+        self.emit("agent_state_changed", SimpleNamespace(old_state=old, new_state=new))
+
+    def reset_away_timer(self):
+        if self.user_state == "away":
+            self.set_user("listening")
+        elif self.user_state == self.agent_state == "listening":
+            self._arm()
+
+
 class FakeLive:
     def __init__(self):
-        self.session = Emitter()
-        self.session.user_state, self.session.agent_state = "listening", "listening"
+        self.session = FakeSession()
         self.sent: list[tuple] = []
         self.pending: dict[str, str | None] = {}
         self.awaiting = self.pending
@@ -116,9 +148,7 @@ class Call:
         self.live.session.emit("conversation_item_added", ev)
 
     def state(self, old, new):
-        self.live.session.emit(
-            "agent_state_changed", SimpleNamespace(old_state=old, new_state=new)
-        )
+        self.live.session.set_agent(old, new)
 
 
 def _with_info(info):
@@ -284,8 +314,7 @@ async def test_phone_hangup_ends_session_and_billing(monkeypatch):
 
 
 def _away(call, state="away"):
-    call.live.session.user_state = state
-    call.live.session.emit("user_state_changed", SimpleNamespace(new_state=state))
+    call.live.session.set_user(state)
 
 
 async def test_a_silent_line_is_told_once_then_hung_up_unless_a_request_is_pending(
@@ -373,53 +402,59 @@ async def test_a_voice_start_failure_ends_the_call_and_requests_a_callback(monke
 async def test_completed_work_restores_normal_silence_timeout_without_losing_correlation(
     monkeypatch,
 ):
-    monkeypatch.setattr(phone, "AWAY_S", 0.02)
+    """A prod call (13 Nov): the caller waited quietly for the team's answer, LiveKit marked them away during the
+    hold, and the call hung up AWAY_S after the answer ARRIVED, while the voice was still saying it. The answer
+    returns the caller to the ordinary silence timer, counted from when the voice has finished: AWAY_S, then QUIET,
+    then AWAY_S more, then the hang-up; a word from the caller cancels it."""
+    monkeypatch.setattr(phone, "AWAY_S", 0.05)
     monkeypatch.setattr(phone, "WAIT_S", 90)
-    monkeypatch.setattr(phone, "POLL_S", 0)
-    call = await Call(
-        monkeypatch,
-        replies={
-            "turn": {"messageId": "m1"},
-            "events": [
-                {
-                    "messages": [
-                        {
-                            "id": "ack",
-                            "inReplyTo": "m1",
-                            "text": "On it.",
-                            "waiting": True,
-                        }
-                    ],
-                    "after": 5,
-                },
-                {
-                    "messages": [
-                        {
-                            "id": "answer",
-                            "inReplyTo": "m1",
-                            "text": "Booked.",
-                            "waiting": False,
-                        }
-                    ],
-                    "after": 6,
-                },
-            ],
-        },
-    ).answer()
-    call.live.awaiting = {"item_1": await call.started["post"]("Book Saturday", [])}
-    call.live.pending = dict(call.live.awaiting)
-    _away(call)
-    events = call.started["events"]()
-    assert (await anext(events))["waiting"] is True
-    assert (await anext(events))["waiting"] is False
-    assert call.deleted == 0 and len(call.live.sent) == 1  # ack never completes work
-    call.live.awaiting.clear()  # LiveSession._result's terminal receipt, independently tested
-    reader = asyncio.create_task(anext(events))
-    await asyncio.sleep(0.04)
-    reader.cancel()
-    await asyncio.gather(reader, return_exceptions=True)
+
+    async def answered():
+        call = await Call(
+            monkeypatch,
+            replies={
+                "turn": {"messageId": "m1"},
+                "events": [
+                    {"messages": [{"id": "ack", "inReplyTo": "m1", "text": "On it.", "waiting": True}], "after": 5},
+                    {"messages": [{"id": "answer", "inReplyTo": "m1", "text": "We do nails.", "waiting": False}],
+                     "after": 6},
+                ],
+            },
+        ).answer()  # fmt: skip
+        call.live.awaiting = {"item_1": await call.started["post"]("What services do you offer", [])}
+        call.live.pending = dict(call.live.awaiting)
+        _away(call)  # the caller waits quietly for the team
+        events = call.started["events"]()
+        assert (await anext(events))["waiting"] is True
+        assert (await anext(events))["waiting"] is False
+        call.live.awaiting.clear()  # LiveSession._result's terminal receipt, independently tested
+        call.reader = asyncio.create_task(anext(events))
+        await asyncio.sleep(0.001)
+        call.state("listening", "speaking")  # the voice says the answer, longer than AWAY_S
+        await asyncio.sleep(0.12)
+        assert call.deleted == 0 and len(call.live.sent) == 1  # no QUIET and no hang-up mid-answer
+        call.state("speaking", "listening")
+        await asyncio.sleep(0.03)
+        assert len(call.live.sent) == 1  # the ordinary first AWAY_S of silence
+        await asyncio.sleep(0.04)
+        assert call.live.sent[1] == (None, phone.QUIET) and call.deleted == 0
+        return call
+
+    async def stop(call):
+        call.reader.cancel()
+        await asyncio.gather(call.reader, return_exceptions=True)
+
+    call = await answered()
+    await asyncio.sleep(0.06)
+    await stop(call)
     assert call.live.pending == {"item_1": "m1"}
     assert call.deleted == 1 and call.shutdowns == ["caller silent"]
+
+    back = await answered()
+    _away(back, "speaking")  # the caller answers: the hang-up is off
+    await asyncio.sleep(0.08)
+    await stop(back)
+    assert back.deleted == 0
 
 
 async def test_bilingual_bootstrap_sets_voice_and_language_without_changing_delegation(

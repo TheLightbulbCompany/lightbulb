@@ -4,7 +4,7 @@
 whose META has `kind == "call"` and its record under `META.call` (caller, callerName, returning, startedAt,
 durationSec, outcome, summary, steps, transcript, callerMemory, recordingUrl, ownerMode, resolvedAt); a meeting is a
 room with `META.meeting` (title, startAt, endAt, status, roster, plus the summary/asked/followUps the meeting agent
-writes). `POST /api/v1/voice/calls/{roomId}/done` marks a call's Needs-you card handled.
+writes).
 
 `GET/PUT /api/v1/voice/agent`: the Agent page, one JSON document per workspace (any member reads, an org admin
 writes). The page owns the defaults; an unset workspace reads `{"config": null}` and the page opens onboarding.
@@ -209,17 +209,6 @@ async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
         "overageRate": voice_billing.OVERAGE_USD_PER_MINUTE,
         "runOut": "forward" if cfg.get("runOut") == "forward" else "keep",
     }
-
-
-@router.post("/voice/calls/{room_id}/done")
-async def call_done(room_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
-    ws = resolve_owner_id(auth)
-    meta = await messaging_repo.get_room(room_id)
-    if not meta or meta.get("ownerId") != ws or meta.get("kind") != "call":
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    call = {**(meta.get("call") or {}), "resolvedAt": utc_now_iso(), "resolvedBy": auth.user_id}
-    await messaging_repo.patch_room_meta(room_id, {"call": call}, expected_revision=int(meta["revision"]))
-    return {"ok": True}
 
 
 @router.get("/voice/waitlist")

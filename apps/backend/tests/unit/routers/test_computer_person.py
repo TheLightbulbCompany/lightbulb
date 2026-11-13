@@ -168,7 +168,7 @@ def test_only_listed_routes_accept_computer_person():
         (sorted(route.methods)[0], route.path)
         for route in sessions.router.routes
         if sessions.caller in set(deps(route.dependant))
-    ) == [("DELETE", "/{session_id}"), ("GET", ""), ("POST", ""), ("POST", "/{session_id}/share")]
+    ) == [("DELETE", "/{session_id}"), ("GET", ""), ("POST", "")]
 
 
 def test_room_post_from_a_computer_carries_the_session_label(env, monkeypatch):

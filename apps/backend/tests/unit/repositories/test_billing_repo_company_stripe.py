@@ -41,59 +41,20 @@ def billing_table():
             yield table
 
 
-@pytest.mark.asyncio
-async def test_set_company_stripe_account_binds_once(billing_table):
-    from core.repositories import billing_repo
-
-    row = await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
-    assert row["company_stripe_account_id"] == "acct_1"
-    assert row["company_stripe_source"] == "created"
-    assert row["plan"] == "flat"  # untouched field survives the diff write
-
-    again = await billing_repo.set_company_stripe_account("org_a", account_id="acct_2", source="connected")
-    assert again is None
-    assert billing_table.get_item(Key={"owner_id": "org_a"})["Item"]["company_stripe_account_id"] == "acct_1"
-
-
-@pytest.mark.asyncio
-async def test_set_company_stripe_account_no_row_is_none(billing_table):
-    from core.repositories import billing_repo
-
-    assert await billing_repo.set_company_stripe_account("org_missing", account_id="acct_1", source="created") is None
-
-
-@pytest.mark.asyncio
-async def test_status_update_requires_matching_account(billing_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
-    row = await billing_repo.set_company_stripe_status(
-        "org_a", account_id="acct_1", details_submitted=True, charges_enabled=True, payouts_enabled=False
+def _bind(table, owner_id: str, account_id: str, source: str) -> None:
+    """A row bound to a company Stripe account (no code path binds one any more; old rows remain)."""
+    table.update_item(
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET company_stripe_account_id = :a, company_stripe_source = :s",
+        ExpressionAttributeValues={":a": account_id, ":s": source},
     )
-    assert row["company_stripe_charges_enabled"] is True
-    assert row["company_stripe_payouts_enabled"] is False
-
-    stale = await billing_repo.set_company_stripe_status(
-        "org_a", account_id="acct_other", details_submitted=True, charges_enabled=True, payouts_enabled=True
-    )
-    assert stale is None
-
-
-@pytest.mark.asyncio
-async def test_get_by_company_stripe_account_id(billing_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="connected")
-    found = await billing_repo.get_by_company_stripe_account_id("acct_1")
-    assert found["owner_id"] == "org_a"
-    assert await billing_repo.get_by_company_stripe_account_id("acct_nope") is None
 
 
 @pytest.mark.asyncio
 async def test_clear_company_stripe_account(billing_table):
     from core.repositories import billing_repo
 
-    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
+    _bind(billing_table, "org_a", "acct_1", "created")
     assert await billing_repo.clear_company_stripe_account("org_a", account_id="acct_zzz") is None
     row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
     assert "company_stripe_account_id" not in row
@@ -120,7 +81,7 @@ async def test_list_company_stripe_owners_only_bound_rows(billing_table):
     from core.repositories import billing_repo
 
     billing_table.put_item(Item={"owner_id": "org_unbound", "owner_type": "org", "plan": "flat"})
-    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="connected")
+    _bind(billing_table, "org_a", "acct_1", "connected")
 
     assert await billing_repo.list_company_stripe_owners() == ["org_a"]
 
@@ -131,25 +92,7 @@ async def test_clearing_the_company_account_drops_the_project_pointer(billing_ta
     a pointer into an account we can no longer reach is worse than none."""
     from core.repositories import billing_repo
 
-    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="created")
+    _bind(billing_table, "org_a", "acct_1", "created")
     await billing_repo.set_company_stripe_project_id("org_a", project_id="proj_1")
     row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
     assert "company_stripe_project_id" not in row
-
-
-@pytest.mark.asyncio
-async def test_services_account_binds_once_beside_the_main_and_unbinds_with_it(billing_table):
-    """Every release path (wipe, revoke-all, disconnect, deauthorize webhook)
-    goes through clear_company_stripe_account, so the services account must
-    go with the main binding."""
-    from core.repositories import billing_repo
-
-    assert await billing_repo.set_company_stripe_projects_account("org_a", account_id="acct_svc") is None
-    await billing_repo.set_company_stripe_account("org_a", account_id="acct_1", source="connected")
-    row = await billing_repo.set_company_stripe_projects_account("org_a", account_id="acct_svc")
-    assert row["company_stripe_projects_account_id"] == "acct_svc"
-    assert row["company_stripe_account_id"] == "acct_1" and row["company_stripe_source"] == "connected"
-    assert await billing_repo.set_company_stripe_projects_account("org_a", account_id="acct_other") is None
-    row = await billing_repo.clear_company_stripe_account("org_a", account_id="acct_1")
-    assert "company_stripe_projects_account_id" not in row
-    assert "company_stripe_projects_account_id" not in billing_table.get_item(Key={"owner_id": "org_a"})["Item"]

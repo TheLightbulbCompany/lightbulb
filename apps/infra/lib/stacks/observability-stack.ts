@@ -70,24 +70,17 @@ export interface ObservabilityStackProps extends cdk.StackProps {
     usersTable: string;
     containersTable: string;
     billingTable: string;
-    usageCountersTable: string;
-    pendingUpdatesTable: string;
-    channelLinksTable: string;
     companySlugsTable: string;
     agentEmailAddressesTable: string;
     /**
-     * The canonical messaging store and the machine-relay connection map.
-     * Both live in `api-stack.ts`, not `database-stack.ts` — they are still
-     * just dimension strings here, so the same names-not-constructs rule
-     * above applies. The messaging table is now the product's hottest table
+     * The canonical messaging store. It lives in `api-stack.ts`, not
+     * `database-stack.ts` — still just a dimension string here, so the same
+     * names-not-constructs rule above applies. The messaging table is now the product's hottest table
      * (every room message, member and work row) and had no throttle, capacity
      * or SystemErrors alarm at all.
      */
     messagingTable: string;
-    wsConnectionsTable: string;
   };
-  // Lambda authorizer function name (for Lambda alarms)
-  authorizerFunctionName: string;
   /**
    * Messaging-plane names for the dashboard's Messaging block. All owned by
    * ApiStack.
@@ -126,13 +119,9 @@ function alarmedTables(
     ["users", tables.usersTable],
     ["containers", tables.containersTable],
     ["billing", tables.billingTable],
-    ["usage-counters", tables.usageCountersTable],
-    ["pending-updates", tables.pendingUpdatesTable],
-    ["channel-links", tables.channelLinksTable],
     ["company-slugs", tables.companySlugsTable],
     ["agent-email-addresses", tables.agentEmailAddressesTable],
     ["messaging", tables.messagingTable],
-    ["ws-connections", tables.wsConnectionsTable],
   ];
 }
 
@@ -430,9 +419,14 @@ export class ObservabilityStack extends cdk.Stack {
     const monitor = new lambda.Function(this, "AlertSubscriptionMonitor", {
       functionName: `${resourcePrefix(this.envName)}alert-subscription-monitor`,
       runtime: lambda.Runtime.PYTHON_3_13,
+      logGroup: this.functionLogGroup("AlertSubscriptionMonitorLogs", "alert-subscription-monitor"),
       handler: "index.handler",
       timeout: cdk.Duration.seconds(30),
       environment: {
+        // The metric is per env: with only a topic dimension, dev's one-subscriber
+        // page topic and prod's two shared a series, so prod's P17 read
+        // Minimum = 1 < 2 and sat in ALARM for months.
+        ENV_NAME: this.envName,
         PAGE_TOPIC_ARN: this.pageTopic.topicArn,
         WARN_TOPIC_ARN: this.warnTopic.topicArn,
       },
@@ -462,10 +456,11 @@ def handler(event, context):
                 "Timestamp": int(time.time() * 1000),
                 "CloudWatchMetrics": [{
                     "Namespace": "LightbulbAI/Alerting",
-                    "Dimensions": [["topic"]],
+                    "Dimensions": [["env", "topic"]],
                     "Metrics": [{"Name": "SubscriptionsConfirmed", "Unit": "Count"}],
                 }],
             },
+            "env": os.environ["ENV_NAME"],
             "topic": tier,
             "SubscriptionsConfirmed": confirmed,
         }))
@@ -497,7 +492,7 @@ def handler(event, context):
         namespace: "LightbulbAI/Alerting",
         metricName: "SubscriptionsConfirmed",
         statistic: "Minimum",
-        dimensions: { topic: tier },
+        dimensions: { env: this.envName, topic: tier },
         threshold: expected,
         periodMinutes: 60,
         evaluationPeriods: 2,
@@ -569,43 +564,17 @@ def handler(event, context):
   }
 
   /**
-   * A Sum over the [env, service, status] rollup put_metric publishes
-   * (core/observability/metrics.py, _STATUS_ROLLUP_KEYS).
-   *
-   * Reach for this when an alarm cares about ONE dimension value
-   * (status="error") but the emitter also tags a qualifier the alarm has no
-   * business enumerating (op, provider). Binding the full set literally would
-   * name a metric identity per qualifier value -- a permanently silent alarm
-   * the moment a new provider appears. The { env, service } rollup is no help
-   * either: it collapses the very dimension being filtered on, so an error
-   * alarm would count successes too.
-   *
-   * This was a `SUM(SEARCH(...))` metric-math expression, which reads like the
-   * natural answer and cannot work: CloudWatch rejects it with "SEARCH is not
-   * supported on Metric Alarms" and rolled this stack back on EVERY deploy,
-   * which also skipped every prod stage behind it. The limitation is at the
-   * alarm layer with no workaround, so the aggregate has to be a real published
-   * dimension set instead -- hence the emitter change rather than a cleverer
-   * expression here. New qualifier values are still picked up automatically,
-   * because they all land on the same rollup.
+   * An owned, expiring log group for one of this stack's Lambdas. Without one,
+   * Lambda auto-creates `/aws/lambda/<fn>` with no retention. A new path, not
+   * that one: the auto-created group already exists and CloudFormation cannot
+   * adopt it. The old group stops receiving logs and can be deleted by hand.
    */
-  private statusSum(opts: {
-    metricName: string;
-    status: string;
-    periodMinutes: number;
-    label: string;
-  }): cloudwatch.Metric {
-    return new cloudwatch.Metric({
-      namespace: "LightbulbAI",
-      metricName: opts.metricName,
-      statistic: "Sum",
-      period: cdk.Duration.minutes(opts.periodMinutes),
-      dimensionsMap: {
-        env: this.envName,
-        service: "lightbulb-backend",
-        status: opts.status,
-      },
-      label: opts.label,
+  private functionLogGroup(id: string, suffix: string): logs.LogGroup {
+    return new logs.LogGroup(this, id, {
+      logGroupName: logGroupPath(this.envName, suffix),
+      retention:
+        this.envName === "prod" ? logs.RetentionDays.THREE_MONTHS : logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
   }
 
@@ -628,24 +597,8 @@ def handler(event, context):
       description: "Stripe webhook signature verification failed",
     });
 
-    // P11: marketplace-path-traversal
-    // Backend emits marketplace.path_traversal_attempt (no extra dims) in
-    // core/services/agent_export.py when a seller's agent_id resolves outside
-    // their workspaces dir. A breach-on-event security trip-wire: pages so a
-    // marketplace export attack is never silent.
-    this.createAlarm({
-      id: "P11",
-      name: "marketplace-path-traversal",
-      metricName: "marketplace.path_traversal_attempt",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "page",
-      description:
-        "Marketplace agent export path traversal attempt blocked - security event",
-    });
+    // P11 (marketplace-path-traversal) DELETED: its emitter went with the
+    // Marketplace (#4975), so it could never fire.
 
     // P28: provision-reconcile-failed
     // hermes_provisioning.reconcile_runtime (provider switch, plan change,
@@ -830,62 +783,8 @@ def handler(event, context):
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     p9.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
-    // P10: apigw-ws-server-error-rate (AWS-native metric math)
-    //
-    // BLIND-PAGE FIXED: this PAGE-tier alarm read `5XXError` and `Count` — WS
-    // APIs publish NEITHER (verified live: a WebSocket ApiId publishes only
-    // ClientError, ExecutionError, IntegrationError, IntegrationLatency,
-    // ConnectCount, MessageCount). Numerator and denominator were both always
-    // missing, so it could never fire: a page-tier alarm worse than none.
-    // Repointed to the real server-side failure signal — ExecutionError (API GW
-    // could not execute the route) + IntegrationError (the ws-* Lambda
-    // integration returned an error) — as a rate over the two traffic metrics
-    // that exist (MessageCount + ConnectCount). Distinct from P9 (ALB 5xx),
-    // which is blind to the WS Lambda integration layer.
-    //
-    // datapointsToAlarm 2-of-3: a rate on a low-traffic launch fleet spikes when
-    // one error lands in a near-empty window; requiring the elevated rate to
-    // persist across 2 of 3 five-minute periods keeps a single blip from paging.
-    //
-    // FILL(m,0) on EVERY operand is load-bearing: CloudWatch arithmetic yields
-    // NO datapoint for a period unless every operand has data in it, and these
-    // error/traffic metrics are sparse (an error metric with no errors reports
-    // nothing). Without FILL the rate goes null on almost every window, and
-    // NOT_BREACHING then keeps the alarm from EVER firing — the same dead-page
-    // failure mode we just fixed. FILL treats a missing operand as 0.
-    const wsMetric = (metricName: string) =>
-      new cloudwatch.Metric({
-        namespace: "AWS/ApiGateway",
-        metricName,
-        statistic: "Sum",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ApiId: props.wsApiId },
-      });
-    const apiGwServerErrorRate = new cloudwatch.MathExpression({
-      expression:
-        "100 * (FILL(execErr,0) + FILL(intErr,0)) / IF((FILL(messages,0) + FILL(connects,0)) > 0, FILL(messages,0) + FILL(connects,0), 1)",
-      usingMetrics: {
-        execErr: wsMetric("ExecutionError"),
-        intErr: wsMetric("IntegrationError"),
-        messages: wsMetric("MessageCount"),
-        connects: wsMetric("ConnectCount"),
-      },
-      period: cdk.Duration.minutes(5),
-    });
-
-    const p10 = new cloudwatch.Alarm(this, "P10", {
-      alarmName: `${resourcePrefix(this.envName)}P10-apigw-ws-server-error-rate`,
-      alarmDescription:
-        "API Gateway WebSocket server-error rate (ExecutionError + IntegrationError) exceeds 5%",
-      metric: apiGwServerErrorRate,
-      threshold: 5,
-      evaluationPeriods: 3,
-      datapointsToAlarm: 2,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    p10.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    // P10 (apigw-ws-server-error-rate) DELETED with W30-W35: the WebSocket API
+    // only carries the retiring desktop relay, and old clients kept W30 in ALARM.
     // -------------------------------------------------------------------
     // P12: backend metrics-loop liveness heartbeat
     // -------------------------------------------------------------------
@@ -1017,39 +916,6 @@ def handler(event, context):
         "An inline provision attempt hit its 1800s hard timeout - the owner " +
         "has been down for that whole window and recovery now rides the SFN " +
         "leg (or nothing, in the unwatched degrade).",
-    });
-
-    // -------------------------------------------------------------------
-    // P16: company-stripe-account-created
-    // -------------------------------------------------------------------
-    // routers/company_stripe.py POST /company/stripe/create mints a real
-    // Stripe Express account for an owner's company. That door is live in
-    // prod and the owner has accepted the exposure, but there was no signal
-    // at all when a real owner first touches it. Backend emits
-    // company_stripe.account.created ONLY when a brand-new account is
-    // actually minted and bound in that request (not the idempotent
-    // early-return when one already exists, and not an account adopted
-    // after losing a concurrent create race) — see routers/company_stripe.py.
-    //
-    // WARN, not page, and deliberately so: an owner minting their company
-    // Stripe account is a DESIRABLE business event. It is worth knowing about
-    // promptly while the door is new and unverified, but it fires again on
-    // every future success, and an alarm that pages on success is how a team
-    // learns to ignore pages. P5/P11 page because the event they catch is
-    // one nobody wants; this one is the opposite.
-    this.createAlarm({
-      id: "P16",
-      name: "company-stripe-account-created",
-      metricName: "company_stripe.account.created",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description:
-        "A company Stripe Express account was minted via the live " +
-        "create door - first real usage signal, not an outage.",
     });
   }
 
@@ -1462,43 +1328,8 @@ def handler(event, context):
 
     // -- Channels (W13-W15) --
 
-    // W13: channel-rpc-error-rate
-    // Both channel metrics are tagged { provider, status }, so the old literal
-    // { status: "error" } bound a set nothing publishes. Use the status rollup.
-    this.createAlarm({
-      id: "W13",
-      name: "channel-rpc-error-rate",
-      metric: this.statusSum({
-        metricName: "channel.rpc",
-        status: "error",
-        periodMinutes: 60,
-        label: "Channel RPC errors (all providers)",
-      }),
-      threshold: 10,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Channel RPC errors exceed 10 per hour",
-    });
-
-    // W14: channel-configure-fail
-    this.createAlarm({
-      id: "W14",
-      name: "channel-configure-fail",
-      metric: this.statusSum({
-        metricName: "channel.configure",
-        status: "error",
-        periodMinutes: 1,
-        label: "Channel configure failures (all providers)",
-      }),
-      threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Channel configure step failed",
-    });
+    // W13 (channel-rpc-error-rate) and W14 (channel-configure-fail) DELETED:
+    // nothing on main emits channel.rpc or channel.configure any more.
 
     // W15 (channel-webhook-inbound-absent) DELETED: the channel.webhook.inbound
     // metric is never emitted, so a BREACHING absence alarm fired constantly.
@@ -1594,26 +1425,8 @@ def handler(event, context):
       description: "Update worker loop iteration caught an exception",
     });
 
-    // W53: operator-relay-churn (next free id — W2-W27 are custom-warn,
-    // W28-W48 are the AWS-native block, W49-W52 are taken). A per-user
-    // container is dropping its Paperclip relay connection (operator upstream
-    // closed) abnormally often. A healthy relay establishes once and holds;
-    // sustained churn means the container is too unhealthy to keep an agent
-    // connected, so heartbeat runs fail at the connect handshake — a
-    // degradation the ECS healthcheck reports as HEALTHY.
-    this.createAlarm({
-      id: "W53",
-      name: "operator-relay-churn",
-      metricName: "operator.upstream.closed",
-      threshold: 10,
-      evaluationPeriods: 1,
-      periodMinutes: 15,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description:
-        "A per-user container is dropping Paperclip relay connections >10/15min - agent heartbeats can't stay connected; find the owner via the relay.close logs",
-    });
+    // W53 (operator-relay-churn) DELETED: operator.upstream.closed was emitted by
+    // the per-user Paperclip relay, which is gone.
 
     // W54 (gateway-reconnect-throttle-storm) DELETED with the gateway
     // connection pool (Task 10, stateless-backend): it read
@@ -1768,150 +1581,8 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // -- API Gateway WebSocket (W30-W32) --
-
-    // W30: API GW WS client-error rate
-    //
-    // BLIND-ALARM FIXED: read `4XXError` and `Count`, which WS APIs do not
-    // publish (only ClientError, ExecutionError, IntegrationError,
-    // IntegrationLatency, ConnectCount, MessageCount exist), so it could never
-    // fire. Repointed to ClientError (the WS 4xx-equivalent: rejected/malformed
-    // client frames) as a rate over the traffic metrics that exist
-    // (MessageCount + ConnectCount). 3-of-5 over 5-min periods so a single
-    // client-error blip on a quiet window does not warn-then-clear.
-    //
-    // FILL(m,0) on every operand: CloudWatch arithmetic drops a period unless
-    // every operand has data, and ClientError/traffic are sparse — without FILL
-    // the rate (and the whole denominator) goes null the moment one operand is
-    // missing, so a real ClientError spike could produce no datapoint at all.
-    const wsMetric30 = (metricName: string) =>
-      new cloudwatch.Metric({
-        namespace: "AWS/ApiGateway",
-        metricName,
-        statistic: "Sum",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ApiId: props.wsApiId },
-      });
-    const apiGwClientErrorRate = new cloudwatch.MathExpression({
-      expression:
-        "100 * FILL(errors,0) / IF((FILL(messages,0) + FILL(connects,0)) > 0, FILL(messages,0) + FILL(connects,0), 1)",
-      usingMetrics: {
-        errors: wsMetric30("ClientError"),
-        messages: wsMetric30("MessageCount"),
-        connects: wsMetric30("ConnectCount"),
-      },
-      period: cdk.Duration.minutes(5),
-    });
-    this.createAlarm({
-      id: "W30",
-      name: "apigw-ws-client-error-rate",
-      description: "API Gateway WebSocket client-error rate exceeds 5%",
-      metric: apiGwClientErrorRate,
-      threshold: 5,
-      evaluationPeriods: 5,
-      datapointsToAlarm: 3,
-      severity: "warn",
-    });
-
-    // W31: API GW WS IntegrationLatency p99
-    // FLAPPING FIXED: was 1-of-1, so a single slow integration datapoint tripped
-    // it then cleared — a real prod signal that multiplied notifications. 3-of-5
-    // over 5-min periods (25-min window). Missing data = no messages =
-    // NOT_BREACHING (helper default).
-    this.createAlarm({
-      id: "W31",
-      name: "apigw-ws-integration-latency",
-      description: "API Gateway WebSocket integration latency p99 exceeds 2s",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/ApiGateway",
-        metricName: "IntegrationLatency",
-        statistic: "p99",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ApiId: props.wsApiId },
-      }),
-      threshold: 2000,
-      evaluationPeriods: 5,
-      datapointsToAlarm: 3,
-      severity: "warn",
-    });
-
-    // W32: API GW WS ConnectCount drop (static threshold — zero connections)
-    // NOT_BREACHING: only catches a real non-zero → zero transition, not the
-    // simple absence of connections on idle dev (the old BREACHING config
-    // false-fired constantly when nobody was connected).
-    this.createAlarm({
-      id: "W32",
-      name: "apigw-ws-connect-drop",
-      description: "API Gateway WebSocket connect count dropped to zero",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/ApiGateway",
-        metricName: "ConnectCount",
-        statistic: "Sum",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ApiId: props.wsApiId },
-      }),
-      threshold: 0,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      severity: "warn",
-    });
-
-    // -- Lambda authorizer (W33-W35) --
-    const lambdaDims = {
-      FunctionName: props.authorizerFunctionName,
-    };
-
-    // W33: Lambda Errors
-    this.createAlarm({
-      id: "W33",
-      name: "lambda-auth-errors",
-      description: "Lambda authorizer errors > 0",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/Lambda",
-        metricName: "Errors",
-        statistic: "Sum",
-        period: cdk.Duration.minutes(1),
-        dimensionsMap: lambdaDims,
-      }),
-      threshold: 0,
-      severity: "warn",
-    });
-
-    // W34: Lambda Throttles
-    this.createAlarm({
-      id: "W34",
-      name: "lambda-auth-throttles",
-      description: "Lambda authorizer throttles > 0",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/Lambda",
-        metricName: "Throttles",
-        statistic: "Sum",
-        period: cdk.Duration.minutes(1),
-        dimensionsMap: lambdaDims,
-      }),
-      threshold: 0,
-      severity: "warn",
-    });
-
-    // W35: Lambda Duration p99
-    // Flap resistance: 3-of-5 over 5-min periods so one cold-start-skewed p99
-    // bucket does not warn-then-clear. Missing data = no invocations =
-    // NOT_BREACHING (helper default).
-    this.createAlarm({
-      id: "W35",
-      name: "lambda-auth-duration-p99",
-      description: "Lambda authorizer p99 duration exceeds 1s",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/Lambda",
-        metricName: "Duration",
-        statistic: "p99",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: lambdaDims,
-      }),
-      threshold: 1000,
-      evaluationPeriods: 5,
-      datapointsToAlarm: 3,
-      severity: "warn",
-    });
+    // W30-W32 (API Gateway WebSocket) and W33-W35 (its ws-authorizer Lambda)
+    // DELETED: see P10. The dashboard still charts the WebSocket API until it goes.
 
     // -- ECS (W36-W39) --
 
@@ -2018,6 +1689,7 @@ def handler(event, context):
     const taskStoppedFn = new lambda.Function(this, "TaskStoppedFn", {
       functionName: `${resourcePrefix(this.envName)}task-stopped-metric`,
       runtime: lambda.Runtime.PYTHON_3_12,
+      logGroup: this.functionLogGroup("TaskStoppedFnLogs", "task-stopped-metric"),
       handler: "index.handler",
       timeout: cdk.Duration.seconds(10),
       code: lambda.Code.fromInline(`
@@ -2270,41 +1942,8 @@ def handler(event, context):
   // =========================================================================
 
   private createLateAlarms(props: ObservabilityStackProps): void {
-    // W66: onboarding-bootstrap-failed
-    //
-    // The activation funnel had NO alarm at all until this one. Four prod
-    // owners signed up, submitted a goal, and never got an agent response;
-    // nothing anywhere emitted a metric for it, so the only detection was an
-    // owner complaining. `bootstrap.state{status:"failed"}` is written by
-    // PaperclipRepo.mark_bootstrap_failed on the conditional write that lands
-    // the terminal transition — one datapoint per owner permanently stuck.
-    //
-    // Uses the status rollup (see statusSum) rather than a literal dimension
-    // map so the alarm binds the [env, service, status] set the emitter
-    // actually publishes.
-    //
-    // Threshold 0 / GREATER_THAN over 15 min: ONE wedged owner is worth
-    // looking at — this is not a rate to be tuned, it is a state nobody
-    // should be in. Warn, not page: the owner is already stuck by the time it
-    // fires, so it wants a human within the hour, not out of bed. The bounded
-    // in-dispatch retries and the /readyz gate mean a routine boot race no
-    // longer reaches `failed`, so this should be quiet in steady state.
-    this.createAlarm({
-      id: "W66",
-      name: "onboarding-bootstrap-failed",
-      description:
-        "Friday's first-run kickoff hit a terminal failure for at least one owner in 15 min - they submitted a goal and will never get an agent response without a bootstrap reset. Check bootstrap_last_error on the paperclip-companies row.",
-      metric: this.statusSum({
-        metricName: "bootstrap.state",
-        status: "failed",
-        periodMinutes: 15,
-        label: "Wedged onboarding kickoffs",
-      }),
-      threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-    });
+    // W66 (onboarding-bootstrap-failed) DELETED: bootstrap.state was emitted by
+    // the Paperclip repo, which is gone.
 
     // W84: open voice windows near the GPT-Live concurrent-session tier
     // (voice_calls.VOICE_SESSION_TIER = 25). The sweeper emits the gauge once
@@ -2522,25 +2161,8 @@ def handler(event, context):
       w50.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
     }
 
-    // W51: NAT Gateway data transfer anomaly
-    const w51 = new cloudwatch.Alarm(this, "W51", {
-      alarmName: `${resourcePrefix(this.envName)}W51-nat-gateway-data-transfer`,
-      alarmDescription:
-        "NAT Gateway data transfer spike - potential cost anomaly",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/NATGateway",
-        metricName: "BytesOutToDestination",
-        statistic: "Sum",
-        period: cdk.Duration.hours(1),
-      }),
-      // 10 GB/hour threshold — adjust after baselining
-      threshold: 10_737_418_240,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w51.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+    // W51 (nat-gateway-data-transfer) DELETED: there are no NAT gateways any more
+    // (NAT instances, see network-stack), so AWS/NATGateway has no data.
 
     // W52: Bedrock cache-write token volume — runaway-inference guard.
     // ENV-BLIND, so PROD-GATED (see W46/W47). AWS/Bedrock CacheWriteInputTokenCount

@@ -355,21 +355,3 @@ async def test_add_always_allow_gives_up_after_three_lost_races(monkeypatch, rul
     with pytest.raises(questions.RulesBusy):
         await questions.add_always_allow(WS, "mail.send", {"to": "x@example.com"}, by="user_sam")
     assert a2a_repo.put_rules_if.await_count == 3
-
-
-async def test_settings_lists_and_removes_always_allow_rules(monkeypatch):
-    """Settings › Approvals: the rules a card wrote, listed by kind and target; Remove drops one (that action asks
-    again) and keeps the A2A defaults and the other rule; an A2A rule of an admin's is never removed from here."""
-    monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
-    await questions.add_always_allow(WS, "mail.send", {"to": "x@example.com"}, by="user_sam")
-    await questions.add_always_allow(WS, "app.publish", {"appId": "app-1"}, by="user_sam")
-    listed = await questions.always_allow_rules(WS)
-    assert [(r["kind"], r["key"], r["value"]) for r in listed] == [
-        ("mail.send", "to", "x@example.com"),
-        ("app.publish", "appId", "app-1"),
-    ]
-    assert await questions.remove_always_allow(WS, listed[0]["id"], by="user_ada") is True
-    assert [r["kind"] for r in await questions.always_allow_rules(WS)] == ["app.publish"]
-    assert "r1" in [r.id for r in Rules.model_validate(await a2a_repo.get_rules(WS)).rules]
-    assert await questions.remove_always_allow(WS, listed[0]["id"], by="user_ada") is False  # already gone
-    assert await questions.remove_always_allow(WS, "r1", by="user_ada") is False  # not an Always-allow rule

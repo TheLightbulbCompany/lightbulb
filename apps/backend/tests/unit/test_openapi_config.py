@@ -14,7 +14,6 @@ from httpx import AsyncClient, ASGITransport
 
 EXPECTED_TAGS = [
     "users",
-    "websocket",
     "billing",
     "container",
     "debug",

@@ -88,15 +88,10 @@ function buildTemplate(envName: "dev" | "prod"): Template {
         usersTable: `${tablePrefix(envName)}users`,
         containersTable: `${tablePrefix(envName)}containers`,
         billingTable: `${tablePrefix(envName)}billing-accounts`,
-        usageCountersTable: `${tablePrefix(envName)}usage-counters`,
-        pendingUpdatesTable: `${tablePrefix(envName)}pending-updates`,
-        channelLinksTable: `${tablePrefix(envName)}channel-links`,
         companySlugsTable: `${tablePrefix(envName)}company-slugs`,
         agentEmailAddressesTable: `${tablePrefix(envName)}agent-email-addresses`,
         messagingTable: `${tablePrefix(envName)}messaging`,
-        wsConnectionsTable: `${tablePrefix(envName)}ws-connections`,
       },
-      authorizerFunctionName: `isol8-${envName}-ws-authorizer`,
       messaging: {
         workQueueName: `${resourcePrefix(envName)}openclaw-work.fifo`,
         workDlqName: `${resourcePrefix(envName)}openclaw-work-dlq.fifo`,
@@ -151,7 +146,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "bootstrap.state": [["status"]],
   "channel.configure": [["provider", "status"]],
   "channel.rpc": [["provider", "status"]],
-  "company_stripe.account.created": [[]],
   "container.efs.access_point": [["op", "status"]],
   "container.error_state": [[]],
   "container.lifecycle.latency": [["op"]],
@@ -464,25 +458,6 @@ describe("ObservabilityStack", () => {
     });
   });
 
-  // The company Stripe create door is live in prod and owner-accepted, but
-  // was otherwise silent — this is how we learn when a real owner first
-  // mints a company Stripe account through it.
-  // WARNS rather than pages, on purpose: minting a company Stripe account is a
-  // desirable business event that recurs on every future success, and an alarm
-  // that pages on success is how a team learns to ignore pages. The topic is
-  // asserted so that intent cannot be flipped back silently.
-  test("P16 warns (does not page) when a company Stripe account is minted", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P16-company-stripe-account-created",
-      Namespace: "LightbulbAI",
-      MetricName: "company_stripe.account.created",
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
-    });
-  });
-
   // The prod subscriptions CloudFormation believed it owned had been deleted
   // by SNS, and CFN still reported them CREATE_COMPLETE — only a NEW construct
   // id recreates them. Pin the ids so a later "tidy up" rename does not
@@ -502,6 +477,21 @@ describe("ObservabilityStack", () => {
   // Nothing else watches whether the alert topics have a live destination, and
   // the failure mode is total silence, so missing monitor data must read as
   // failure rather than health.
+  test("retired-product alarms are gone and the stack's Lambdas log to expiring groups", () => {
+    const names = Object.values(template.findResources("AWS::CloudWatch::Alarm")).map(
+      (r: any) => r.Properties.AlarmName as string,
+    );
+    for (const gone of [/-P10-/, /-P11-/, /-W1[34]-/, /-W3[0-5]-/, /-W51-/, /-W53-/, /-W66-/, /-ddb-[a-z]+-(usage-counters|pending-updates|channel-links|ws-connections)$/]) {
+      expect(names.filter((n) => gone.test(n))).toEqual([]);
+    }
+    for (const fn of ["alert-subscription-monitor", "task-stopped-metric"]) {
+      template.hasResourceProperties("AWS::Logs::LogGroup", {
+        LogGroupName: `/lightbulb/dev/${fn}`,
+        RetentionInDays: 30,
+      });
+    }
+  });
+
   test("subscription-confirmation alarms exist and treat missing data as breaching", () => {
     for (const [name, tier] of [
       ["lightbulb-dev-P17-alert-subscriptions-page-topic", "page"],
@@ -517,7 +507,11 @@ describe("ObservabilityStack", () => {
         Period: 3600,
         // Dev has only the mailbox on both tiers.
         Threshold: 1,
-        Dimensions: [{ Name: "topic", Value: tier }],
+        // Per env: a topic-only series mixed dev's 1 with prod's 2 and held prod's P17 in ALARM.
+        Dimensions: [
+          { Name: "env", Value: "dev" },
+          { Name: "topic", Value: tier },
+        ],
         // Both page: a warn-tier alarm about a dead warn topic would deliver
         // to the topic it is reporting on.
         AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],

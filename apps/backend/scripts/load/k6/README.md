@@ -63,34 +63,3 @@ run's 60 s drain?), `completeness_read_failed` = 0. Recorded: `turns_sent`, `rep
 `replies_without_token`. The server-side bars (`messaging.work.queue_wait`,
 `messaging.reply.latency`, run sweeps, DLQs, Lambda throttles, usage-counter deltas) are read from
 CloudWatch (see `../README.md`); cold vs warm is labelled from bridge process-start logs only.
-
-## Scenario 3: viewers (`viewers.js`, driven by `mac_sim.py`)
-
-`mac_sim.py` registers the sessions, writes `mac_sessions.json`, and runs the k6 command itself. Its
-Macs are the first `--macs` fixture users; viewers are the other users of the same org.
-
-| Sub-test | Fixtures | Command |
-|---|---|---|
-| 3a fan-out | `--orgs 1 --users-per-org 51` | one run per V in 1, 5, 10, 25, 50: `uv run python -m scripts.load.mac_sim --macs 1 --fps 4 --frame-bytes 8192 -- k6 run -e SEND_S=180 -e VIEWERS=V scripts/load/k6/viewers.js` |
-| 3a′ limiter | `--users-per-org 11` | `mac_sim --macs 1 --fps 20 --frame-bytes 8192 -- k6 run -e SEND_S=180 -e VIEWERS=10 …` (`frame_delivered` is the drop rate here; its threshold failing is the expected result) |
-| 3b relay breadth | `--users-per-org 50` | `mac_sim --macs M --sessions 3 --events-per-s 1 --fps 0 --duration 600` for M in 10, 25, 50 (no viewers) |
-| 3c reconnect storm | `--users-per-org 50` | 3b at M = 50 with `--storm-at 300` |
-| 3d viewer churn | `--users-per-org 51` | 3a with `-e VIEWERS=50 -e CHURN_S=30` |
-| 3e link viewers (T18) | `--users-per-org 1` | one run per V up to `session_links.MAX_LINK_VIEWERS`: `mac_sim --macs 1 --fps 4 --frame-bytes 8192 -- k6 run -e SEND_S=180 -e RAMP_S=60 -e VIEWERS=V scripts/load/k6/link_viewers.js` (add `-e EXPECT_SEATED=V` at or below the cap). Anonymous viewers of one "Anyone with the link" link (`/public/session-links/viewing`, `/pub/<publicId>`); records `viewers_seated`, `viewers_full`, `viewers_throttled` (the `/public` bucket: 10 rps in dev, 50 in prod, shared by every link) and `viewers_never_live` |
-
-Viewers hold `SEND_S + 15` s (no head start: `mac_sim` streams before k6 starts and stops when it exits).
-
-`frame_delivered` counts against what the Mac sent while each view was live: `mac_sim` sends output
-frames on a fixed `fps` schedule (written to `mac_sessions.json`) and stamps each with its send time,
-so a view expects `fps × seconds watched` frames and every one it never got — leading, trailing, or
-all of them — is a loss. (k6 reads files only at init, so a sent-seq list written during the run
-could not be read back.)
-
-Each viewer subscribes to the session's frames channel, `/ws/<ws>/session-frames/<sid>` (shared by
-every viewer: a frame is one AppSync publish), then starts its `POST` renewals.
-
-Thresholds: `frame_latency_ms` p95 < 1 s, `frame_delivered` ≥ 99% (3a), `viewers_unsubscribed` = 0 (a view
-that never went live fails the run and its due frames count as lost), `/viewing`
-`http_req_duration{name:POST /messaging/sessions/:id/viewing}` p95 < 500 ms, `http_req_failed` < 0.5%.
-`mac_sim` prints heartbeat-ack RTT p50/p95 (pass: p95 < 1 s), `offline_while_connected` (pass: 0),
-frames sent, and every relay error by frame and code.

@@ -23,7 +23,7 @@ jest.mock("react-native-safe-area-context", () => ({
 }));
 
 import { WEB_ORIGIN } from "../../../config/domain";
-import { WorkspaceGate, WorkspaceList } from "../WorkspaceGate";
+import { WorkspaceGate } from "../WorkspaceGate";
 
 const membership = (id: string, name: string) => ({ organization: { id, name } });
 
@@ -106,32 +106,3 @@ it("re-reads memberships when the app returns to the foreground", async () => {
   expect(mockRevalidate).toHaveBeenCalled();
 });
 
-describe("WorkspaceList (Settings → Switch workspace)", () => {
-  it("switching to another workspace clears cached reads before reporting back", async () => {
-    mockOrgId = "org_1";
-    mockMemberships = [membership("org_1", "Acme"), membership("org_2", "Beta")];
-    const onSwitched = jest.fn();
-    await render(<WorkspaceList onSwitched={onSwitched} />);
-
-    await act(async () => {
-      fireEvent.press(screen.getByText("Beta"));
-    });
-    expect(mockSetActive).toHaveBeenCalledWith({ organization: "org_2" });
-    expect(mockResetSwrCache).toHaveBeenCalledTimes(1);
-    expect(onSwitched).toHaveBeenCalledTimes(1);
-  });
-
-  it("picking the current workspace changes nothing", async () => {
-    mockOrgId = "org_1";
-    mockMemberships = [membership("org_1", "Acme"), membership("org_2", "Beta")];
-    const onSwitched = jest.fn();
-    await render(<WorkspaceList onSwitched={onSwitched} />);
-
-    await act(async () => {
-      fireEvent.press(screen.getByText("Acme"));
-    });
-    expect(mockSetActive).not.toHaveBeenCalled();
-    expect(mockResetSwrCache).not.toHaveBeenCalled();
-    expect(onSwitched).toHaveBeenCalledTimes(1);
-  });
-});

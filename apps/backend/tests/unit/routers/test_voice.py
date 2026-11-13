@@ -1,4 +1,4 @@
-"""GET /voice/timeline, POST /voice/calls/{id}/done, GET/PUT /voice/agent against the moto messaging table."""
+"""GET /voice/timeline and GET/PUT /voice/agent against the moto messaging table."""
 
 import pytest
 from unittest.mock import AsyncMock
@@ -118,15 +118,6 @@ async def test_a_recurring_meetings_past_occurrences_are_their_own_rows(repos, a
     assert current["status"] == "bot_created" and "decisions" not in current and "history" not in current
     assert held | {"title": "Weekly", "status": "ended", "hasTranscript": True, "notes": "Hours set."} == held
     assert held["decisions"] == [{"text": "Open 10 to 4"}] and held["at"] == 1793466000 * 1000
-
-
-@pytest.mark.asyncio
-async def test_done_marks_the_call_resolved(repos, async_client_org_admin):  # noqa: F811
-    await _room("c1", "call", "2026-11-07T10:00:00+00:00", call={"outcome": "needs_you"})
-    assert (await async_client_org_admin.post("/api/v1/voice/calls/c1/done")).status_code == 200
-    call = (await messaging_repo.get_room("c1"))["call"]
-    assert call["outcome"] == "needs_you" and call["resolvedAt"]
-    assert (await async_client_org_admin.post("/api/v1/voice/calls/nope/done")).status_code == 404
 
 
 @pytest.mark.asyncio

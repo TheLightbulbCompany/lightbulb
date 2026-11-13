@@ -1,5 +1,4 @@
 # apps/backend/tests/unit/services/test_session_presence.py
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -79,78 +78,6 @@ async def test_entry_names_viewers_typists_and_pending_requests(monkeypatch):
     # A Mac that does not advertise pickupRequests would call a pick-up "asked to join": it gets none.
     older = {**row, "deviceFeatures": ["sessionPresence"]}
     assert [r["kind"] for r in (await presence.entry(older, 123))["joinRequests"]] == ["join"]
-
-
-@pytest.mark.asyncio
-async def test_ack_lists_only_sessions_with_something_to_show_and_stays_in_the_envelope(monkeypatch):
-    monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden"]))
-    rows = {f"s{i}": _row(sessionId=f"s{i}", generation="g" * 100) for i in range(24)}
-    rows["quiet"] = _row(sessionId="quiet")
-    monkeypatch.setattr(
-        presence.repo, "get_sessions", AsyncMock(side_effect=lambda owner, sids: [rows[s] for s in sids])
-    )
-    monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
-    quiet_query = _rows()
-
-    async def query(pk, begins_with):
-        return await (quiet_query if pk.endswith("quiet") else _rows(viewers=["user_aden"]))(pk, begins_with)
-
-    monkeypatch.setattr(presence.store, "_query", query)
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
-    assert "quiet" not in [e["sessionId"] for e in ack["presence"]]
-    assert ack["presenceAt"] == NOW * 1000 and {e["at"] for e in ack["presence"]} == {NOW * 1000}
-    assert len(json.dumps(ack, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
-
-
-@pytest.mark.asyncio
-async def test_ack_never_trims_an_entry_that_holds_a_join_request(monkeypatch):
-    big = {f"user_v{i}": None for i in range(30)}
-    rows = {f"q{i}": _row(sessionId=f"q{i}", generation="g" * 100) for i in range(20)}
-    rows |= {
-        f"r{i}": _row(sessionId=f"r{i}", joinRequests={"user_zoe": {"state": "pending", "requestId": f"req{i}"}})
-        for i in range(4)
-    }
-    rows |= {
-        f"p{i}": _row(
-            sessionId=f"p{i}",
-            pickupRequests={"user_zoe": {"state": "pending", "requestId": f"pk{i}"}},
-            deviceFeatures=["pickupRequests", "sessionPresence"],
-        )
-        for i in range(2)
-    }
-    monkeypatch.setattr(
-        presence.repo, "get_sessions", AsyncMock(side_effect=lambda owner, sids: [rows[s] for s in sids])
-    )
-    monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
-    monkeypatch.setattr(presence.store, "_query", _rows(viewers=list(big)))
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
-    listed = [e["sessionId"] for e in ack["presence"]]
-    assert {f"r{i}" for i in range(4)} | {"p0", "p1"} <= set(listed)
-    assert len(json.dumps(ack, separators=(",", ":")).encode()) <= sessions.MAX_ENVELOPE_BYTES
-
-
-@pytest.mark.asyncio
-async def test_ack_drops_viewers_then_presence_rather_than_a_join_request(monkeypatch):
-    one = {"user_zoe": {"state": "pending", "requestId": "req"}}
-    many = {f"user_p{i}": {"state": "pending", "requestId": f"req{i}"} for i in range(8)}
-    rows = {f"r{i}": _row(sessionId=f"r{i}", joinRequests=one) for i in range(24)}
-    monkeypatch.setattr(
-        presence.repo, "get_sessions", AsyncMock(side_effect=lambda owner, sids: [rows[s] for s in sids])
-    )
-    monkeypatch.setattr(presence.human_display_name, "side_effect", lambda u: "N" * 120)
-    monkeypatch.setattr(presence.store, "_query", _rows(viewers=[f"user_v{i}" for i in range(30)]))
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
-    assert len(ack["presence"]) == 24 and all(e["viewers"] == [] and e["joinRequests"] for e in ack["presence"])
-    rows = {f"r{i}": _row(sessionId=f"r{i}", joinRequests=many) for i in range(24)}
-    ack = await presence.ack_with_presence({"type": "local.device.heartbeat.ack"}, "org_a", "mac_a", list(rows))
-    assert "presence" not in ack, "requests alone overflow: send none, so the Mac keeps every freeze"
-
-
-@pytest.mark.asyncio
-async def test_ack_survives_a_read_failure(monkeypatch):
-    monkeypatch.setattr(presence.repo, "get_sessions", AsyncMock(side_effect=RuntimeError("ddb")))
-    ack = {"type": "local.device.heartbeat.ack"}
-    assert await presence.ack_with_presence(ack, "org_a", "mac_a", ["s1"]) == ack
 
 
 @pytest.mark.asyncio
@@ -235,34 +162,6 @@ def test_terminal_resize_only_for_a_live_terminal_on_a_mac_that_advertised_remot
     assert sessions._session_public({**base, "deviceFeatures": ["remoteInput"]}, "user_aden").terminal_resize is False
     terminal = None
     assert sessions._session_public({**base, **resizable}, "user_aden").terminal_resize is False
-
-
-@pytest.mark.asyncio
-async def test_an_ack_sized_just_under_the_limit_still_passes_the_envelope_check(monkeypatch):
-    from core.services.local_session_relay import check_envelope
-
-    monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden"]))
-    monkeypatch.setattr(presence.repo, "get_sessions", AsyncMock(return_value=[_row()]))
-    kind = {"type": "local.device.heartbeat.ack"}
-    listed = (await presence.ack_with_presence({**kind, "pad": ""}, "org_a", "mac_a", ["s"]))["presence"]
-    assert listed, "the session is listed"
-    # The ack's own fields fill the envelope exactly when `presenceAt` is one digit long.
-    size = len(json.dumps({**kind, "pad": "", "presence": listed, "presenceAt": 0}, separators=(",", ":")).encode())
-    ack = {**kind, "pad": "x" * (sessions.MAX_ENVELOPE_BYTES - size)}
-    check_envelope(await presence.ack_with_presence(ack, "org_a", "mac_a", ["s"]))
-
-
-def test_a_mac_that_advertises_pickup_requests_lands_the_feature():
-    from core.services.local_session_relay import FEATURES, DeviceHeartbeat
-
-    assert presence.PICKUP_FEATURE in FEATURES
-    frame = {"type": "local.device.heartbeat", "sessions": [], "sessionPresence": True}
-    assert DeviceHeartbeat.model_validate(frame).device_features() == ["sessionPresence"]
-    newer = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True})
-    assert newer.device_features() == ["pickupRequests", "sessionPresence"]
-    assert presence.BAND_OWNER_ONLY_FEATURE in FEATURES
-    newest = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True, "bandOwnerOnly": True})
-    assert newest.device_features() == ["bandOwnerOnly", "pickupRequests", "sessionPresence"]
 
 
 @pytest.mark.asyncio

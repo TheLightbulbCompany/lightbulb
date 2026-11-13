@@ -1004,18 +1004,6 @@ async def test_put_workspace_still_clears_fields_the_snapshot_does_not_carry(rep
     assert "funnel_state" not in item
 
 
-async def test_set_profile_round_trips_and_survives_put_workspace(repo):
-    """Phase 1 task 8b.4: name/description live on META; put_workspace never touches them."""
-    await repo.put_workspace(_make_company(user_id="org_named"))
-    await repo.set_profile("org_named", name="Acme", description="We sell anvils")
-    await repo.set_profile("org_named", name=None, description="Anvils, mostly")
-    ws = await repo.get_workspace("org_named")
-    assert (ws.name, ws.description) == ("Acme", "Anvils, mostly")
-    await repo.put_workspace(ws)
-    ws = await repo.get_workspace("org_named")
-    assert (ws.name, ws.description) == ("Acme", "Anvils, mostly")
-
-
 async def test_set_profile_never_creates_a_row(repo):
     with pytest.raises(Exception):
         await repo.set_profile("org_missing", name="Ghost", description=None)

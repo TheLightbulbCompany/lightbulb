@@ -53,7 +53,7 @@ async def test_the_profile_holds_the_facts_slots_and_only_this_callers_bookings(
 async def test_the_profile_is_bounded_and_cached(sources):
     sources.return_value = CFG | {"knowledge": [{"q": f"Q{i}?", "a": "x" * 200} for i in range(100)]}
     text = await bp.business_profile("org_x", "+15550001")
-    assert len(text) <= 2100
+    assert len(text) <= 5000  # facts 4,000 + slots 600 + bookings 200 + the head
     await bp.business_profile("org_x")
     await bp.business_profile("org_x")
     assert sources.await_count == 4  # get_voice_agent + agent_config, once more: the member's second is cached
@@ -281,9 +281,24 @@ async def test_worker_facts_reader_preserves_a_saved_policy_after_the_profile_ex
 async def test_bounded_router_excerpt_is_explicitly_partial_and_full_reader_stays_complete(sources):
     sources.return_value = CFG | {"knowledge": [{"q": f"Policy {i}", "a": "Saved answer " * 40} for i in range(20)]}
     profile = await bp.business_profile("org_x", "+15550001")
-    assert len(profile) <= 2100
+    assert len(profile) <= 5000
     assert "Partial profile" in profile and "business_facts" in profile
     assert "Policy 19" in await bp.facts_text("org_x")
+
+
+async def test_a_realistic_salon_profile_reaches_the_router_whole(sources):
+    """18 services and 15 saved answers (~2.5k characters) once cut at 1,200: the Router's caller profile carries
+    the same complete facts the voice is given at call start."""
+    sources.return_value = CFG | {
+        "services": [{"name": f"Service number {i}", "price": f"${40 + i}", "minutes": 30 + 5 * i} for i in range(18)],
+        "knowledge": [
+            {"q": f"Question {i} a caller asks?", "a": f"The owner's saved answer {i}, in a full sentence."}
+            for i in range(15)
+        ],  # fmt: skip
+    }
+    profile = await bp.business_profile("org_x", "+15550001")
+    assert "Partial profile" not in profile
+    assert vp._facts(await vp.agent_config("org_x")) in profile
 
 
 async def test_no_hand_off_number_tells_the_model_nobody_is_there_to_transfer_to(sources):

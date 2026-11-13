@@ -6,7 +6,7 @@ import {
   ROOT_DOMAIN,
   SITE_URL,
 } from "@/lib/domain";
-import { shellUrlFromPaperclipPath } from "@/lib/shellNav";
+import { paperclipLinkTarget } from "@/lib/paperclipLinks";
 
 // `/voice` and its pages only: `/voice(.*)` also matched the public stock samples
 // under `/voice-samples/`, which the iPhone app plays without a web session.
@@ -98,13 +98,13 @@ export function decideAdminHostRouting(
  * links as native Paperclip paths (e.g. `/ISOA/issues/ISOA-317`), which have
  * no route in this app — the retired `/teams/*` tree never redirected them,
  * so a direct hit (typed, pasted, or opened from a notification) 404'd.
- * Bounces it onto the in-shell Teams panel equivalent instead.
+ * Bounces it onto the Lightbulb place instead.
  */
 export function decidePaperclipLinkRedirect(
   pathname: string,
 ): { kind: "redirect"; to: string } | null {
-  const shellUrl = shellUrlFromPaperclipPath(pathname);
-  return shellUrl ? { kind: "redirect", to: shellUrl } : null;
+  const to = paperclipLinkTarget(pathname);
+  return to ? { kind: "redirect", to } : null;
 }
 
 

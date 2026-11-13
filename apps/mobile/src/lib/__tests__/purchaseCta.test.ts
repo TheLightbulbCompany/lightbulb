@@ -5,7 +5,6 @@ import {
   isPurchaseGate,
   isSubscriptionGate,
   purchaseGateCopy,
-  purchaseSafeMessage,
 } from "../purchaseCta";
 
 // The full gate-code list from apps/backend/core/services/provision_gate.py
@@ -103,41 +102,3 @@ describe("which gates a paywall can actually resolve", () => {
   });
 });
 
-// purchaseSafeMessage — the helper every Alert/Text site showing a caught
-// ApiError's message routes through (M0's server-402-copy-in-native-Alerts fix).
-describe("purchaseSafeMessage", () => {
-  function gatedError(code: string, message: string): ApiError {
-    return new ApiError(402, { detail: { blocked: true, code, message } }, message);
-  }
-
-  const ALL_PURCHASE_CODES = [...PURCHASE, "routines_require_subscription"];
-
-  it.each(ALL_PURCHASE_CODES)(
-    "maps a %s error to its local neutral copy, not the server message",
-    (code) => {
-      const serverMessage = "Upgrade to thelightbulb.company to keep going — pick a plan for $20/mo.";
-      const err = gatedError(code, serverMessage);
-      const out = purchaseSafeMessage(err, "fallback");
-      expect(out).toBe(purchaseGateCopy(code)?.body);
-      expect(out).not.toBe(serverMessage);
-      // The poisoned server copy (Upgrade / pick a plan / $ / thelightbulb.company)
-      // never survives into the sanitized output.
-      expect(out).not.toMatch(/upgrade|pick a plan|\$\d/i);
-      expect(out).not.toMatch(/thelightbulb\.company/i);
-    },
-  );
-
-  it("passes through a non-purchase ApiError's own message unchanged", () => {
-    const err = new ApiError(404, { detail: "Issue not found" }, "Issue not found");
-    expect(purchaseSafeMessage(err, "fallback")).toBe("Issue not found");
-  });
-
-  it("falls back for a non-Error value with no body", () => {
-    expect(purchaseSafeMessage("not an error", "fallback")).toBe("fallback");
-    expect(purchaseSafeMessage(null, "fallback")).toBe("fallback");
-  });
-
-  it("falls back to a plain Error's message when there is no structured code", () => {
-    expect(purchaseSafeMessage(new Error("network down"), "fallback")).toBe("network down");
-  });
-});

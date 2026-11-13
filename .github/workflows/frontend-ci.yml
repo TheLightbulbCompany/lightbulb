@@ -1,0 +1,73 @@
+# Frontend CI (PRs only): lint, tsc, vitest, next build.
+name: Frontend CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/frontend/**'
+      # packages/shared resolves straight to its src with no build step, and the frontend suite exercises it.
+      - 'packages/shared/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/frontend-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  lint-and-build:
+    name: Lint & Build
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm --filter @lightbulb/frontend run lint
+
+      - name: Type check
+        run: pnpm --filter @lightbulb/frontend exec tsc --noEmit
+
+      # No secrets (PRs from forks get none): the dev Clerk publishable key is public by design
+      # and already checked in (apps/mobile/package.json start:dev).
+      - name: Build
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk
+          NEXT_PUBLIC_API_URL: https://api-dev.thelightbulb.company/api/v1
+        run: pnpm --filter @lightbulb/frontend run build
+
+  unit-tests:
+    name: Unit tests (shard ${{ matrix.shard }}/4)
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      # Extra args reach the script's last command, `vitest run`.
+      - name: Unit tests
+        run: pnpm --filter @lightbulb/frontend run test --shard=${{ matrix.shard }}/4

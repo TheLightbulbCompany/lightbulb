@@ -109,8 +109,8 @@ describe("useContainerStatus parked + visibility wiring", () => {
 // mobile onboarding-parity Slice 2: `onboarded` used to be discarded when
 // parsing the /container/status body. These prove it now surfaces on the
 // `ready` (and `starting`) ContainerStatus variants — FirstRunGate's
-// funnel-eligibility decision reads the READY one straight off this hook's
-// status via ContainerStatusContext (see containerStatusContext.test.tsx).
+// funnel-eligibility decision read the READY one straight off this hook's
+// status.
 describe("useContainerStatus onboarded field", () => {
   beforeEach(() => {
     mockUseOnboardingStatus.mockReset();

@@ -1,8 +1,8 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from scripts import announce_pending_reconnects, reapply_instagram_skill
+from scripts import announce_pending_reconnects
 
 
 @pytest.mark.asyncio
@@ -25,26 +25,3 @@ async def test_announce_defaults_to_dry_run_and_apply_announces_only_reconnect_r
     assert await announce_pending_reconnects.main(["--apply"]) == 0
     announce.assert_awaited_once_with("org_a", "microsoft365")
     facts.assert_awaited_once_with("org_a")
-
-
-@pytest.mark.asyncio
-async def test_instagram_skill_rewrites_only_profiles_holding_credentials(monkeypatch, capsys):
-    monkeypatch.setattr(
-        reapply_instagram_skill, "load_agent_roster", AsyncMock(return_value=[{"id": "a1"}, {"id": "a2"}])
-    )
-    monkeypatch.setattr(reapply_instagram_skill.settings, "OWNER_STATE_BUCKET", "bucket", raising=False)
-    monkeypatch.setattr(
-        "core.services.hermes_profiles._s3_get",
-        lambda bucket, key: "{}" if "/a1/" in key else None,
-    )
-    write = MagicMock()
-    monkeypatch.setattr("core.services.hermes_profiles.write_profile_subtree", write)
-
-    assert await reapply_instagram_skill.main(["--owner-id", "org_a"]) == 0
-
-    assert write.call_count == 1
-    owner, agent, files, removed = write.call_args.args
-    assert (owner, agent) == ("org_a", "a1")
-    assert set(files) == {"skills/instagram/SKILL.md", "skills/instagram/token.sh"}  # never credentials.json
-    out = capsys.readouterr().out
-    assert "a1 updated" in out and "a2 skipped" in out

@@ -37,7 +37,7 @@ import {
   tablePrefix,
 } from "../table-names";
 import { Construct } from "constructs";
-import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { ROOT_DOMAIN } from "../domains";
 import { superAgentEnabled } from "../super-agent";
 
 // =============================================================================
@@ -324,11 +324,7 @@ export class ApiStack extends cdk.Stack {
       // FastAPI's middleware was correct, but AWS API Gateway returned its
       // own preflight response with PATCH missing from allow_methods.
       corsConfiguration: {
-        // The launch-competition site (LAUNCH_DOMAIN) reads the public /launch
-        // endpoints cross-origin; it never holds a Clerk session.
-        allowOrigins: isProd
-          ? [frontendUrl, `https://www.${rootDomain}`, `https://${LAUNCH_DOMAIN}`, `https://www.${LAUNCH_DOMAIN}`]
-          : [frontendUrl, `https://dev.${LAUNCH_DOMAIN}`],
+        allowOrigins: isProd ? [frontendUrl, `https://www.${rootDomain}`] : [frontendUrl],
         allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allowHeaders: [
           "Content-Type",

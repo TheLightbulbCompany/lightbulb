@@ -175,3 +175,32 @@ def test_recording_objections_do_not_promise_unrecorded_service():
     assert "say only neutral holding words" in instructions and "or finalized" in instructions
 
 
+
+
+def test_static_facts_are_answered_directly_and_dynamic_claims_still_wait():
+    """A recent prod call: "what services do you offer?" was delegated and the caller heard 19 s of silence. The Agent page's
+    facts come with start and the voice states them itself; open times, bookings, messages and transfers still
+    wait for the backend (#5215)."""
+    services = "; ".join(f"Service number {i} ${40 + i} ({30 + 5 * i} min)" for i in range(18))
+    answers = " ".join(f"Q: Question {i}? A: Saved answer {i}." for i in range(15))
+    facts = f"City: Austin. Services: {services}. Opening hours: Mon 09:00–18:00. {answers}"
+    p = phone.prompt({**INFO, "facts": facts, "instructions": "Do not state a street number.", "transfer": True})
+    assert facts in p  # whole, never cut
+    assert "Do not state a street number." in p
+    assert p.index("Business facts") < p.index("Do not state a street number.")  # the owner's rule is read last
+    assert "take priority over Business facts" in p
+    assert "Business profile" not in p  # nothing to delegate for what the prompt already holds
+    assert "You may state anything in Business facts directly" in p
+    assert (
+        "Wait for the backend's result before stating an open appointment time, confirming a booking, a change or a cancellation,"
+        " or saying that a message was taken or a transfer started." in p
+    )
+    assert "facts about this business, including its description" not in p  # the shared Meet/orb rule is not here
+    assert "Do not guess" in p
+
+
+def test_no_facts_means_nothing_about_the_business_is_stated():
+    """Answering questions off or a paused line: start sends no facts, and the voice must not invent any."""
+    p = phone.prompt(INFO)
+    assert "Business facts: none for this call." in p
+    assert "Business profile" not in p

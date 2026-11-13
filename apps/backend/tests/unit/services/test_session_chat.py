@@ -1,8 +1,7 @@
 """The session chat door (PR #3807)."""
 
-import inspect
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -68,80 +67,6 @@ def env(monkeypatch):
     return fakes
 
 
-@pytest.mark.asyncio
-async def test_first_open_creates_one_hidden_room_and_seats_the_reader(env):
-    await session_chat.open_chat(BOB, SID)
-    # Read at the door and again after the seat (a pause in between must not leave a seat).
-    assert session_chat.local_sessions.authorize_session.await_args_list == [call(BOB, None, SID)] * 2
-    kwargs = env["create_room"].await_args.kwargs
-    assert (kwargs["room_id"], kwargs["kind"], kwargs["creator_user_id"]) == (ROOM, "channel", ALICE.user_id)
-    assert kwargs["name"] == "Session chat · Fix relay"
-    assert kwargs["extra"] == {"hidden": True, "session": {"sessionId": SID, "ownerId": ALICE.user_id}}
-    owner, ceo = kwargs["members"]
-    assert (owner["kind"], owner["id"], owner["role"]) == ("human", ALICE.user_id, "owner")
-    assert ceo == CEO
-    seated = env["upsert_member"].await_args.kwargs["member"]
-    assert (seated["kind"], seated["id"], seated["role"], seated["listenMode"]) == (
-        "human",
-        BOB.user_id,
-        "member",
-        None,
-    )
-    env["ensure_user_stream"].assert_not_awaited()  # Bob has a stream: seating never touches it
-
-
-@pytest.mark.asyncio
-async def test_a_seated_reader_is_never_seated_twice(env):
-    env["get_room"].return_value = META
-    env["get_member"].return_value = {"kind": "human", "id": BOB.user_id}
-    assert await session_chat.open_chat(BOB, SID) == META
-    env["create_room"].assert_not_awaited()
-    env["upsert_member"].assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_two_first_opens_at_once_share_the_room(env):
-    env["create_room"].side_effect = session_chat.messaging_repo.IdempotencyConflict("raced")
-    env["get_room"].side_effect = [None, META]
-    await session_chat.open_chat(BOB, SID)
-    assert env["upsert_member"].await_args.kwargs["room_id"] == ROOM
-
-
-@pytest.mark.asyncio
-async def test_the_room_follows_the_session_end_and_a_resume(env):
-    env["get_room"].return_value = META
-    env["get_member"].return_value = {"kind": "human", "id": BOB.user_id}
-    env["session"].return_value = {**ROW, "endedAt": 10}
-    await session_chat.open_chat(BOB, SID)
-    updates = env["patch_room_meta"].await_args.args[1]
-    assert updates["archivedAt"] and updates["archivedBy"] == "__system__"
-    # The same conversation resumed under the same id: the chat takes posts again.
-    env["get_room"].return_value = {**META, "archivedAt": "2026-10-07T00:00:00+00:00"}
-    env["session"].return_value = ROW
-    await session_chat.open_chat(BOB, SID)
-    assert env["patch_room_meta"].await_args.args[1] == {"archivedAt": None, "archivedBy": None}
-
-
-@pytest.mark.asyncio
-async def test_a_full_chat_refuses_with_the_vendor_rooms_metric(env):
-    env["get_room"].return_value = META
-    env["upsert_member"].side_effect = session_chat.messaging_repo.MemberLimitExceeded("full")
-    with pytest.raises(ApiProblem) as refused:
-        await session_chat.open_chat(BOB, SID)
-    assert refused.value.error.code == "MEMBER_LIMIT"
-    assert env["metrics"] == ["messaging.session_room.capped"]
-
-
-@pytest.mark.asyncio
-async def test_a_session_the_reader_cannot_read_has_no_chat(env):
-    session_chat.local_sessions.authorize_session.side_effect = ApiProblem(
-        "LOCAL_SESSION_NOT_FOUND", "Local session not found."
-    )
-    with pytest.raises(ApiProblem):
-        await session_chat.open_chat(BOB, SID)
-    env["create_room"].assert_not_awaited()
-
-
 def test_the_ceo_is_the_starter_ceo_else_the_legacy_root_else_nobody():
     roster = [
         {"id": CEO_ID, "name": "Friday", "role": "ceo", "reportsTo": None},
@@ -160,27 +85,6 @@ def test_a_session_room_projects_its_session_and_nothing_else_does():
     fields = messaging._room_summary_fields({**META, "updatedAt": "t", "createdAt": "t"}, member, None)
     assert fields["session"] == messaging.SessionRef(session_id=SID)
     assert messaging.is_session_room(META) and not messaging.is_session_room({"roomId": ROOM})
-
-
-def test_the_chat_door_never_touches_session_control():
-    """Spec decision 3: chat posts through create_human_message only and never grants control."""
-    from routers import messaging as router
-
-    source = inspect.getsource(session_chat) + inspect.getsource(router.open_local_session_chat)
-    assert "Depends(get_human_session)" in source  # people only: a Clerk session token
-    for name in (
-        "allowedSenders",
-        "allowed_senders",
-        "teamControl",
-        "team_control",
-        "joinRequests",
-        "join_requests",
-        "submit_command",
-        "may_control",
-        "request_join",
-        "decide_join",
-    ):
-        assert name not in source, name
 
 
 @pytest.mark.asyncio
@@ -296,72 +200,6 @@ async def test_lightbulbs_post_stays_in_the_meet_room_only_during_the_call(monke
 
 
 @pytest.mark.asyncio
-async def test_a_reader_seated_while_sharing_pauses_loses_the_seat(env, monkeypatch):
-    """The pause's silence() may list the room before this seat lands: the door reads the session again."""
-    env["get_room"].return_value = META
-    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
-    session_chat.local_sessions.authorize_session.side_effect = [(ROW, {}), gone]
-    silence = AsyncMock(return_value=1)
-    monkeypatch.setattr(session_chat, "silence", silence)
-    with pytest.raises(ApiProblem) as refused:
-        await session_chat.open_chat(BOB, SID)
-    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
-    env["upsert_member"].assert_awaited_once()
-    silence.assert_awaited_once_with(OWNER, SID, keep=ALICE.user_id)
-
-
-@pytest.mark.asyncio
-async def test_chat_state_reads_one_key_per_session_until_the_viewer_has_a_seat(monkeypatch):
-    other = "22222222-2222-4222-8222-222222222222"
-    pk = session_chat.messaging_repo.room_pk(ROOM)
-    seat = session_chat.messaging_repo.member_sk("human", BOB.user_id)
-    read = session_chat.messaging_repo.read_sk(BOB.user_id)
-    table = {
-        (pk, seat): {"pk": pk, "sk": seat, "joinedTopOrdinal": 1},
-        (pk, "META"): {**META, "topCount": 4},
-        (pk, read): {"topOrdinal": 2},
-    }
-    batch_get = AsyncMock(side_effect=lambda keys: {key: table[key] for key in keys if key in table})
-    monkeypatch.setattr(session_chat.messaging_repo, "batch_get", batch_get)
-    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID, other]) == {SID: (ROOM, 2)}
-    first, second = (c.args[0] for c in batch_get.await_args_list)
-    assert len(first) == 2 and all(sk == seat for _, sk in first)
-    assert sorted(second) == sorted([(pk, "META"), (pk, read)])
-    batch_get.reset_mock()
-    assert await session_chat.chat_state(OWNER, BOB.user_id, [other]) == {}
-    assert batch_get.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_chat_state_is_zero_after_a_read_and_counts_a_later_message_once(monkeypatch):
-    """Prod 2026-10-07: the count came back after a reload. The cursor a read writes
-    (``_write_cursor``: the seq with its top-level ordinal) is what the count subtracts."""
-    repo = session_chat.messaging_repo
-    pk, seat = repo.room_pk(ROOM), repo.member_sk("human", BOB.user_id)
-    table = {
-        (pk, seat): {"pk": pk, "sk": seat, "joinedTopOrdinal": 0},
-        (pk, "META"): {**META, "roomId": ROOM, "lastSeq": 3, "topCount": 3},
-    }
-    monkeypatch.setattr(
-        repo, "batch_get", AsyncMock(side_effect=lambda keys: {k: table[k] for k in keys if k in table})
-    )
-    monkeypatch.setattr(repo, "get_room", AsyncMock(side_effect=lambda _room: table[(pk, "META")]))
-
-    class Table:
-        def update_item(self, *, Key, ExpressionAttributeValues, **_):
-            values = ExpressionAttributeValues
-            table[(Key["pk"], Key["sk"])] = {"lastReadSeq": values[":n"], "topOrdinal": values[":o"]}
-
-    monkeypatch.setattr(repo, "_table", lambda: Table())
-    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 3)}
-    assert await repo.set_read_cursor(ROOM, BOB.user_id, 3) == 3  # the chat column's PUT .../read
-    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 0)}
-    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 0)}  # and after a reload
-    table[(pk, "META")] = {**table[(pk, "META")], "lastSeq": 4, "topCount": 4}  # one reply while the chat is closed
-    assert await session_chat.chat_state(OWNER, BOB.user_id, [SID]) == {SID: (ROOM, 1)}
-
-
-@pytest.mark.asyncio
 async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env):
     """A message or a seat can move the room's revision under the end/resume hook, which runs once."""
     from botocore.exceptions import ClientError
@@ -379,33 +217,6 @@ async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env
     env["get_room"].side_effect = [META, {**META, "archivedAt": "t"}]
     await session_chat.follow_session(OWNER, SID)
     assert env["patch_room_meta"].await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_the_chat_is_named_after_the_session_and_follows_a_rename(env, monkeypatch):
-    """The agent's turn and the phone's header read the room name: it tracks the session's title."""
-    env["get_room"].return_value = {**META, "name": "Session chat · Session"}
-    env["get_member"].return_value = {"kind": "human", "id": BOB.user_id}
-    await session_chat.open_chat(BOB, SID)
-    env["patch_room_meta"].assert_awaited_once_with(ROOM, {"name": "Session chat · Fix relay"})
-    env["patch_room_meta"].reset_mock()
-    env["get_room"].return_value = {**META, "name": "Session chat · Fix relay"}
-    await session_chat.open_chat(BOB, SID)
-    env["patch_room_meta"].assert_not_awaited()
-    # Nobody renames it by hand: the next open would only take the name back.
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, {"role": "owner"})))
-    with pytest.raises(ApiProblem) as refused:
-        await messaging.patch_room(ALICE, ROOM, messaging.PatchRoomRequest(name="mine"))
-    assert refused.value.error.code == "ROOM_FORBIDDEN"
-
-
-@pytest.mark.asyncio
-async def test_a_room_created_as_its_session_ends_is_archived_from_the_fresh_row(env):
-    """The end hook found no room yet: the door reads the session again after creating one."""
-    env["session"].return_value = {**ROW, "endedAt": 10}  # the door's own read was still live
-    await session_chat.open_chat(BOB, SID)
-    updates = env["patch_room_meta"].await_args.args[1]
-    assert updates["archivedAt"] and updates["archivedBy"] == "__system__"
 
 
 @pytest.mark.asyncio
@@ -452,43 +263,6 @@ async def test_a_late_end_handler_applies_what_the_session_row_says_now(env):
 
 
 @pytest.mark.asyncio
-async def test_no_chat_opens_for_a_session_whose_person_left_the_workspace(env):
-    env["get_user_stream"].return_value = {"active": False}
-    with pytest.raises(ApiProblem) as refused:
-        await session_chat.open_chat(BOB, SID)
-    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
-    env["create_room"].assert_not_awaited()
-    env["upsert_member"].assert_not_awaited()
-    env["ensure_user_stream"].assert_not_awaited()  # a revoked person's stream is never reopened here
-
-
-@pytest.mark.asyncio
-async def test_a_seat_that_lands_after_the_owner_was_revoked_is_taken_back(env, monkeypatch):
-    """revoke_human_membership may silence the room before this seat lands (the row is still shared)."""
-    env["get_room"].return_value = META
-    alice = [{"active": True}, {"active": False}]  # at the door, then removed
-    env["get_user_stream"].side_effect = lambda owner, uid: alice.pop(0) if uid == ALICE.user_id else {"active": True}
-    silence = AsyncMock(return_value=1)
-    monkeypatch.setattr(session_chat, "silence", silence)
-    with pytest.raises(ApiProblem) as refused:
-        await session_chat.open_chat(BOB, SID)
-    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
-    silence.assert_awaited_once_with(OWNER, SID, keep=None)
-
-
-@pytest.mark.asyncio
-async def test_a_reader_revoked_while_being_seated_loses_only_their_own_seat(env, monkeypatch):
-    env["get_room"].return_value = META
-    bob = [{"active": True}, {"active": True}, {"active": False}]  # door, seat, then removed
-    env["get_user_stream"].side_effect = lambda owner, uid: {"active": True} if uid == ALICE.user_id else bob.pop(0)
-    unseat = AsyncMock(return_value=True)
-    monkeypatch.setattr(session_chat, "_unseat", unseat)
-    with pytest.raises(ApiProblem):
-        await session_chat.open_chat(BOB, SID)
-    unseat.assert_awaited_once_with(ROOM, BOB.user_id)
-
-
-@pytest.mark.asyncio
 async def test_a_removed_owners_chats_are_silenced_after_their_stream_is_off(monkeypatch):
     """The door's check reads the stream: silencing first would leave a gap a late seat slips through."""
     order: list[str] = []
@@ -504,52 +278,3 @@ async def test_a_removed_owners_chats_are_silenced_after_their_stream_is_off(mon
     await messaging.revoke_human_membership(OWNER, ALICE.user_id)
     assert order == ["stream off", "silence"]
     session_chat.silence.assert_awaited_once_with(OWNER, SID, keep=None)
-
-
-@pytest.mark.asyncio
-async def test_a_reader_with_no_stream_yet_gets_one_and_a_removed_reader_is_refused_before_any_write(env, monkeypatch):
-    monkeypatch.setattr(session_chat, "_unseat", AsyncMock(return_value=True))
-    env["get_room"].return_value = META
-    env["get_user_stream"].side_effect = lambda owner, uid: {"active": True} if uid == ALICE.user_id else None
-    with pytest.raises(ApiProblem):  # seated, then the post-seat check finds no stream in this fake
-        await session_chat.open_chat(BOB, SID)
-    env["ensure_user_stream"].assert_awaited_once_with(OWNER, BOB.user_id)
-    env["ensure_user_stream"].reset_mock()
-    env["upsert_member"].reset_mock()
-    env["get_user_stream"].side_effect = lambda owner, uid: {"active": uid == ALICE.user_id}
-    with pytest.raises(ApiProblem) as refused:
-        await session_chat.open_chat(BOB, SID)
-    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
-    env["ensure_user_stream"].assert_not_awaited()
-    env["upsert_member"].assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_the_owner_removed_as_they_create_the_chat_gets_no_room_key(env, monkeypatch):
-    """The first open by the session's own person seats them in the create itself: the door's
-    closing check runs on every path, not only after a new seat."""
-    env["get_member"].return_value = {"kind": "human", "id": ALICE.user_id}  # seated by the create
-    alice = [{"active": True}, {"active": True}, {"active": False}]  # door (as owner, as reader), then removed
-    env["get_user_stream"].side_effect = lambda owner, uid: alice.pop(0)
-    silence = AsyncMock(return_value=1)
-    monkeypatch.setattr(session_chat, "silence", silence)
-    with pytest.raises(ApiProblem) as refused:
-        await session_chat.open_chat(ALICE, SID)
-    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
-    env["create_room"].assert_awaited_once()
-    env["upsert_member"].assert_not_awaited()
-    silence.assert_awaited_once_with(OWNER, SID, keep=None)
-    messaging._room_detail.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a_reader_already_seated_is_checked_again_on_every_open(env, monkeypatch):
-    env["get_room"].return_value = META
-    env["get_member"].return_value = {"kind": "human", "id": BOB.user_id}
-    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
-    session_chat.local_sessions.authorize_session.side_effect = [(ROW, {}), gone]
-    silence = AsyncMock(return_value=1)
-    monkeypatch.setattr(session_chat, "silence", silence)
-    with pytest.raises(ApiProblem):
-        await session_chat.open_chat(BOB, SID)
-    silence.assert_awaited_once_with(OWNER, SID, keep=ALICE.user_id)

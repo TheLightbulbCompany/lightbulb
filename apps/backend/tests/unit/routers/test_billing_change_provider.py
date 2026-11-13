@@ -36,7 +36,7 @@ def paid_voice_account():
         "trial_end": 1,
         "metronome_voice_contract_id": "voice-contract",
         "voice_plan_status": "active",
-        "voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}},
+        "voice_plan_stripe_status": "active",
     }
 
 
@@ -118,14 +118,14 @@ async def test_paid_voice_chatgpt_selection_retains_credential_ownership_guards(
     "changes",
     [
         {"metronome_voice_contract_id": None},
-        {"voice_plan_status": "pending_payment", "voice_plan_paid_periods": {}},
-        {"voice_plan_unpaid_invoice_ids": {"unpaid"}},
-        {"voice_plan_paid_periods": {"invoice": {"start": "2098-01-01T00:00:00Z", "end": "2099-01-01T00:00:00Z"}}},
-        {"voice_plan_paid_periods": {"invoice": {"start": "2000-01-01T00:00:00Z", "end": "2001-01-01T00:00:00Z"}}},
+        {"voice_plan_stripe_status": None},
+        {"voice_plan_stripe_status": "incomplete"},
+        {"voice_plan_stripe_status": "past_due"},
+        {"voice_plan_stripe_status": "canceled"},
         {"voice_plan_status": "canceled"},
         {"voice_plan_ending_at": "2001-01-01T00:00:00Z"},
     ],
-    ids=["unpaid-trial", "pending", "unpaid-invoice", "future", "expired", "canceled", "ended"],
+    ids=["unpaid-trial", "no-subscription", "incomplete", "past-due", "subscription-canceled", "canceled", "ended"],
 )
 async def test_voice_without_current_paid_coverage_cannot_select_provider(
     async_client_org_admin, paid_voice_account, patch_dispatch_provision, monkeypatch, provider, changes

@@ -178,6 +178,14 @@ def _create_tables(resource):
         ],
     )
 
+    # tasks: PK pk, SK sk — the PUBLIC A2A Agent Card reads the workspace's
+    # AGENT# roster rows, so the fuzzer needs the table to reach the real 404.
+    _make(
+        f"{_PREFIX}tasks",
+        [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+        [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}],
+    )
+
     for name in waiters:
         resource.meta.client.get_waiter("table_exists").wait(TableName=name)
 

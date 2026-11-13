@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { fonts, useChatPalette } from "../../config/theme";
+import { isTextChat } from "../../lib/textChat";
 import { useTeamsConfig } from "../../lib/teamsData";
 import { useLive } from "../../providers/live";
 import { LogoMark } from "../LogoMark";
@@ -23,8 +24,12 @@ export function assistantRoom(rooms: readonly RoomSummary[], agentId?: string | 
   return rooms.find((room) => room.firstRun) ?? (agentId ? rooms.find((room) => room.kind === "dm" && room.members.some((member) => member.kind === "agent" && member.id === agentId)) : undefined);
 }
 
-/** The existing room is the same conversation for voice and typing. */
-export function VoiceHome({ rooms, agentId }: { rooms: readonly RoomSummary[]; agentId?: string | null }) {
+type HomeRow = { key: string; roomId: string; title: string; summary: string; at: number };
+
+/** Home: the orb, New chat, and the member's text chats listed with calls and meetings, newest first. */
+export function VoiceHome({ rooms, agentId, onNewChat }: {
+  rooms: readonly RoomSummary[]; agentId?: string | null; onNewChat?: () => Promise<string>;
+}) {
   const palette = useChatPalette();
   const live = useLive();
   const room = assistantRoom(rooms, agentId);
@@ -34,6 +39,8 @@ export function VoiceHome({ rooms, agentId }: { rooms: readonly RoomSummary[]; a
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [createFailed, setCreateFailed] = useState(false);
   useFocusEffect(useCallback(() => {
     let alive = true;
     setLoading(true);
@@ -42,6 +49,21 @@ export function VoiceHome({ rooms, agentId }: { rooms: readonly RoomSummary[]; a
     }).catch(() => { if (alive) setFailed(true); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [api, retry]));
+  const rows: HomeRow[] = [
+    ...items.map((item) => ({
+      key: `${item.type}:${item.roomId}`, roomId: item.roomId, at: item.at, summary: timelineSummary(item),
+      title: item.type === "meeting" ? item.title || "Meeting" : item.callerName || (item.caller ? usPhone(item.caller) : "Unknown caller"),
+    })),
+    ...rooms.filter((r) => isTextChat(r)).map((chat) => ({
+      key: `chat:${chat.roomId}`, roomId: chat.roomId, at: Date.parse(chat.lastMessageAt ?? chat.updatedAt) || 0,
+      title: chat.name || "Chat with Lightbulb", summary: chat.lastMessage?.textPreview || "No messages yet",
+    })),
+  ].sort((a, b) => b.at - a.at).slice(0, 20);
+  const newChat = async () => {
+    if (!onNewChat || creating) return;
+    setCreating(true); setCreateFailed(false);
+    try { router.push(`/(app)/room/${await onNewChat()}`); } catch { setCreateFailed(true); } finally { setCreating(false); }
+  };
   const active = !!room && live.roomId === room.roomId;
   const elsewhere = !!(live.roomId || live.joining) && !active && live.joining !== room?.roomId;
   const joining = !!room && live.joining === room.roomId;
@@ -60,26 +82,25 @@ export function VoiceHome({ rooms, agentId }: { rooms: readonly RoomSummary[]; a
       <Text accessibilityLiveRegion="polite" style={[text, styles.subtitle, { color: palette.fgSoft }]}>
         {elsewhere ? "A live conversation is already open" : joining ? "Connecting…" : active ? "Your live conversation is open" : "Talk it through. Keep things moving."}
       </Text>
-      <Pressable accessibilityRole="button" disabled={!room} accessibilityState={{ disabled: !room }}
-        onPress={() => room && router.push(`/(app)/room/${room.roomId}`)} style={styles.action}>
-        <Text style={[text, { color: room ? palette.link : palette.fgMute }]}>Type to Lightbulb</Text>
-      </Pressable>
     </View>
     <View style={styles.links}>
+      <Pressable accessibilityRole="button" accessibilityState={{ disabled: !onNewChat || !agentId || creating, busy: creating }}
+        disabled={!onNewChat || !agentId || creating} onPress={() => void newChat()} style={styles.action}>
+        <Text style={[text, { color: onNewChat && agentId ? palette.link : palette.fgMute }]}>{creating ? "Starting…" : "New chat"}</Text>
+      </Pressable>
       <Pressable accessibilityRole="button" onPress={() => router.navigate("/(app)/(tabs)/activity")} style={styles.action}><Text style={[text, { color: palette.link }]}>Needs you</Text></Pressable>
-      <Pressable accessibilityRole="button" onPress={() => router.push("/(app)/work")} style={styles.action}><Text style={[text, { color: palette.link }]}>Work & schedules</Text></Pressable>
     </View>
-    <Text accessibilityRole="header" style={[text, styles.heading]}>Recent calls & meetings</Text>
-    {loading && items.length === 0 ? <ActivityIndicator accessibilityLabel="Loading recent calls and meetings" color={palette.fg} /> : null}
+    {createFailed ? <Text accessibilityRole="alert" style={[text, { color: palette.alert }]}>Couldn’t start a chat. Try again.</Text> : null}
+    <Text accessibilityRole="header" style={[text, styles.heading]}>Recent</Text>
+    {loading && rows.length === 0 ? <ActivityIndicator accessibilityLabel="Loading recent calls, meetings and chats" color={palette.fg} /> : null}
     {failed ? <Pressable accessibilityRole="button" onPress={() => setRetry((n) => n + 1)} style={styles.action}><Text style={[text, { color: palette.alert }]}>Couldn’t load recent activity. Retry</Text></Pressable> : null}
-    {!loading && !failed && items.length === 0 ? <Text style={[text, { color: palette.fgSoft }]}>Calls and meetings will appear here.</Text> : null}
-    {items.slice(0, 5).map((item) => <Pressable key={`${item.type}:${item.roomId}`} accessibilityRole="button"
-      onPress={() => router.push(`/(app)/room/${item.roomId}`)} style={[styles.row, { borderColor: palette.edge }]}>
-      <Text style={text}>{item.type === "meeting" ? item.title || "Meeting" : item.callerName || (item.caller ? usPhone(item.caller) : "Unknown caller")}</Text>
-      <Text style={[text, styles.subtitle, { color: palette.fgSoft }]} numberOfLines={2}>{timelineSummary(item)}</Text>
-      <Text style={[text, styles.date, { color: palette.fgMute }]}>{new Date(item.at).toLocaleString()}</Text>
+    {!loading && !failed && rows.length === 0 ? <Text style={[text, { color: palette.fgSoft }]}>Calls, meetings and chats will appear here.</Text> : null}
+    {rows.map((row) => <Pressable key={row.key} accessibilityRole="button" onPress={() => router.push({ pathname: "/(app)/room/[roomId]", params: { roomId: row.roomId, title: row.title } })}
+      style={[styles.row, { borderColor: palette.edge }]}>
+      <Text style={text}>{row.title}</Text>
+      <Text style={[text, styles.subtitle, { color: palette.fgSoft }]} numberOfLines={2}>{row.summary}</Text>
+      {row.at ? <Text style={[text, styles.date, { color: palette.fgMute }]}>{new Date(row.at).toLocaleString()}</Text> : null}
     </Pressable>)}
-    <Text accessibilityRole="header" style={[text, styles.heading]}>Conversations</Text>
   </View>;
 }
 

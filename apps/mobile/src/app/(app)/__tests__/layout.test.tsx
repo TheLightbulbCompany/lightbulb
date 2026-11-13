@@ -112,47 +112,16 @@ beforeEach(() => {
   mockWorkspaceGateRenders = 0;
 });
 
-// The defect this restructure fixes: a conversation used to be a HIDDEN TAB
-// containing its own Stack, so opening one was a tab switch — expo-router's JS
-// tabs render those with `animation: 'none'`, which is why there was no
-// slide-in, no edge-swipe back and no native back button. Both room screens
-// being siblings of `(tabs)` on this Stack is what makes `router.push` a real
-// push OVER the tab bar. (home.test.tsx asserts the path it pushes.)
-it("owns both room screens as pushed Stack screens, not tabs", async () => {
+// The four tabs belong to the (tabs) group's own layout; the one pushed screen
+// it names is the text chat. The old chat app's screens (threads, sessions,
+// tasks, Control) are gone.
+it("registers the tab group and the chat screen, nothing else", async () => {
   await render(<AppLayout />);
-  expect(names()).toEqual(
-    expect.arrayContaining(["room/[roomId]/index"]),
-  );
-  expect(names()).toContain("(tabs)");
-  // The four tabs belong to the (tabs) group's own layout. A `chats`/`activity`/
-  // `teams`/`settings`/`room` screen here would mean the old hidden-tab shape
-  // had come back.
-  for (const tab of ["chats", "activity", "teams", "settings", "room"]) {
-    expect(names()).not.toContain(tab);
-  }
+  expect(names()).toEqual(["(tabs)", "room/[roomId]/index"]);
 });
 
-// Control and the legacy agent route are pushed screens on the (app) stack.
-// Teams and Settings used to be pushed screens too (reached only through
-// More); they are real tabs now, owned by the (tabs) group's own layout, and
-// must not come back here as a bare "teams/index" or "settings" screen.
-it("owns Control and the legacy agent route; Teams and Settings are tabs now", async () => {
-  await render(<AppLayout />);
-  expect(names()).toEqual(
-    expect.arrayContaining([
-      "control/index",
-      "agent/[agentId]",
-      "session/[sessionId]",
-    ]),
-  );
-  for (const gone of ["teams/issue/[id]", "teams/run/[runId]", "teams/index", "settings", "sessions", "session/new", "control/marketplace", "control/listing/[id]"]) {
-    expect(names()).not.toContain(gone);
-  }
-});
-
-// A cold-start push deep link (`/(app)/room/<id>`, or its thread) has to build
-// the stack as [(tabs), room] so back has somewhere to go. That is the whole
-// reason the custom HeaderBack chevron could be deleted.
+// A cold-start deep link (`/(app)/room/<id>`) has to build the stack as
+// [(tabs), room] so back has somewhere to go.
 it("anchors the stack on the tabs so a cold-start deep link can go back", () => {
   expect(unstable_settings.anchor).toBe("(tabs)");
 });

@@ -131,54 +131,6 @@ def native_source_condition(source: dict) -> dict:
     return condition
 
 
-async def put_enrollment(
-    owner_id: str,
-    user_id: str,
-    device_id: str,
-    cli_device_id: str | None,
-    enabled: bool,
-    expected_revision: str | None = None,
-    *,
-    enable_revision: str | None = None,
-    previous_revision: str | None = None,
-    has_predecessor: bool = False,
-) -> dict:
-    row = {
-        "pk": user_pk(owner_id, user_id),
-        "sk": f"DEVICE#{device_id}",
-        "ownerId": owner_id,
-        "humanUserId": user_id,
-        "deviceId": device_id,
-        "cliDeviceId": cli_device_id,
-        "enabled": enabled,
-        "revision": enable_revision or expected_revision or str(uuid.uuid4()),
-    }
-    put = {"TableName": store._table().name, "Item": row}
-    if expected_revision is not None:
-        put.update(
-            ConditionExpression="revision = :expected", ExpressionAttributeValues={":expected": expected_revision}
-        )
-    if has_predecessor:
-        # Cancellation may win before the first enable arrives. Writing the
-        # attempted revision disabled fences both that request and all replays.
-        values = {":no": False} if previous_revision is not None else {}
-        predecessor = "attribute_not_exists(pk)"
-        if previous_revision is not None:
-            predecessor = "(revision = :previous AND enabled = :no)"
-            values[":previous"] = previous_revision
-        condition = predecessor
-        if not enabled:
-            condition = f"(revision = :expected OR {predecessor})"
-            values[":expected"] = expected_revision
-        put["ConditionExpression"] = condition
-        if values:
-            put["ExpressionAttributeValues"] = values
-    await container_repo.retry_conflict(
-        lambda: store._transact([pairing_condition(owner_id, user_id, device_id, cli_device_id), {"Put": put}])
-    )
-    return row
-
-
 async def put_session(row: dict, previous: dict | None, enrollment: dict, *, extra: Sequence[dict] = ()) -> None:
     """CAS preserves concurrent command ordering; canonical and directory land together."""
     put = {"TableName": store._table().name, "Item": row, "ConditionExpression": "attribute_not_exists(sk)"}
@@ -276,39 +228,6 @@ def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool
 async def list_commands(owner: str, sid: str) -> list[dict]:
     # ponytail: per-session receipt history scan; add an ordered pending index if measured volume warrants it.
     return sorted(await store._query(session_pk(owner, sid), begins_with="COMMAND#"), key=lambda row: row["commandSeq"])
-
-
-async def mark_reconcile_asked(command: dict, now: int, every: int) -> bool:
-    """True for the one heartbeat that may ask the desktop to reconcile this command now."""
-    try:
-        await store.run_in_thread(
-            store._table().update_item,
-            Key={"pk": command["pk"], "sk": command["sk"]},
-            UpdateExpression="SET reconcileAskedAt = :now",
-            ConditionExpression="attribute_exists(sk) AND (attribute_not_exists(reconcileAskedAt) OR reconcileAskedAt <= :cutoff)",
-            ExpressionAttributeValues={":now": now, ":cutoff": now - every},
-        )
-    except store.ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-    return True
-
-
-async def replace_command(
-    previous: dict, updated: dict, *, checks: Sequence[dict] = (), extra: Sequence[dict] = ()
-) -> None:
-    put = {
-        "TableName": store._table().name,
-        "Item": updated,
-        "ConditionExpression": "attribute_not_exists(revision) AND #state = :state",
-        "ExpressionAttributeNames": {"#state": "state"},
-        "ExpressionAttributeValues": {":state": previous["state"]},
-    }
-    if previous.get("revision"):
-        put["ConditionExpression"] = "#state = :state AND revision = :revision"
-        put["ExpressionAttributeValues"][":revision"] = previous["revision"]
-    await store._transact([*checks, {"Put": put}, *extra])
 
 
 async def admit_command(

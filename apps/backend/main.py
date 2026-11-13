@@ -51,8 +51,6 @@ from routers import (
     hooks,
     huddles,
     desktop_execution,
-    desktop_session_pickup,
-    desktop_session_resume,
     mac_cdp,
     meet_audio,
     meet_bot,
@@ -75,7 +73,6 @@ from routers import (
     users,
     webhooks,
     website_logins,
-    websocket_chat,
     workspace_files,
 )
 from routers.teams import router as teams_router
@@ -185,7 +182,6 @@ async def lifespan(app: FastAPI):
     from core.services.durable_activity import run_trial_idle_sweeper
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
-    from core.services.session_pickup import run_pickup_sweeper
     from core.services.memory_api import run_memory_sweeper
     from core.services.voice_calls import voice_call_sweeper
 
@@ -198,8 +194,6 @@ async def lifespan(app: FastAPI):
     browser_autosave_task = asyncio.create_task(run_autosave_sweeper(browser_autosave_stop))
     voice_sweeper_stop = asyncio.Event()
     voice_sweeper_task = asyncio.create_task(voice_call_sweeper(voice_sweeper_stop))
-    pickup_sweeper_stop = asyncio.Event()
-    pickup_sweeper_task = asyncio.create_task(run_pickup_sweeper(pickup_sweeper_stop))
     memory_sweeper_stop = asyncio.Event()
     memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
     digest_stop = asyncio.Event()
@@ -219,7 +213,6 @@ async def lifespan(app: FastAPI):
             "run_ledger_sweeper": run_sweeper_task,
             "browser_autosave_sweeper": browser_autosave_task,
             "voice_call_sweeper": voice_sweeper_task,
-            "session_pickup_sweeper": pickup_sweeper_task,
             "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
@@ -261,7 +254,6 @@ async def lifespan(app: FastAPI):
     run_sweeper_stop.set()
     browser_autosave_stop.set()
     voice_sweeper_stop.set()
-    pickup_sweeper_stop.set()
     memory_sweeper_stop.set()
     digest_stop.set()
     away_stop.set()
@@ -277,7 +269,6 @@ async def lifespan(app: FastAPI):
                 run_sweeper_task,
                 browser_autosave_task,
                 voice_sweeper_task,
-                pickup_sweeper_task,
                 memory_sweeper_task,
                 digest_task,
                 away_task,
@@ -292,7 +283,6 @@ async def lifespan(app: FastAPI):
             run_sweeper_task,
             browser_autosave_task,
             voice_sweeper_task,
-            pickup_sweeper_task,
             memory_sweeper_task,
             digest_task,
             away_task,
@@ -305,7 +295,6 @@ async def lifespan(app: FastAPI):
             run_sweeper_task,
             browser_autosave_task,
             voice_sweeper_task,
-            pickup_sweeper_task,
             memory_sweeper_task,
             digest_task,
             away_task,
@@ -321,10 +310,6 @@ openapi_tags = [
     {
         "name": "users",
         "description": "User registration and sync.",
-    },
-    {
-        "name": "websocket",
-        "description": "WebSocket connect, disconnect, and message endpoints (API Gateway integration).",
     },
     {
         "name": "billing",
@@ -383,19 +368,14 @@ async def messaging_api_problem_handler(request, exc: ApiProblem):
 
 @app.exception_handler(RequestValidationError)
 async def messaging_validation_error_handler(request, exc: RequestValidationError):
-    # website-logins too: FastAPI's default 422 echoes the rejected input -- a password.
     if request.url.path.startswith(
         (
             "/api/v1/messaging",
             "/api/v1/runtime",
             "/api/v1/internal/messaging",
-            "/api/v1/website-logins",
             # huddles too: a rejected turn would echo a live transcript.
             "/api/v1/internal/huddles",
             "/api/v1/internal/voice",
-            # session links: a rejected body carries a link token or a PKCE verifier.
-            "/api/v1/public",
-            "/api/v1/session-links",
         )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
@@ -523,9 +503,6 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
-# WebSocket routes (API Gateway WebSocket -> HTTP POST)
-app.include_router(websocket_chat.router, prefix="/api/v1/ws")
-
 # Browser/mobile canonical messaging and the guarded HTTP runtime bridge.
 app.include_router(messaging.router, prefix="/api/v1", tags=["messaging"])
 app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messaging"])
@@ -537,8 +514,6 @@ app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gatewa
 # Recall's per-person Meet audio: the same door, since it is the only raw-WS path the bv- edge forwards.
 app.include_router(meet_audio.router, prefix="/api/v1/gateway", tags=["meetings"])
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
-app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["desktop"])
-app.include_router(desktop_session_resume.router, prefix="/api/v1", tags=["desktop"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
@@ -574,7 +549,6 @@ app.include_router(container.provision_events_router, prefix="/api/v1/internal/p
 app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac-cdp"])
 
 # Workspace website logins (the store behind every agent's browser vault)
-app.include_router(website_logins.router, prefix="/api/v1/website-logins", tags=["browser"])
 app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])
 
 # Config read/patch over the owner's roster profiles
@@ -691,7 +665,6 @@ app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memor
 from routers import sessions as sessions_router  # noqa: E402
 
 app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
-app.include_router(sessions_router.shared_router, prefix="/api/v1/shared", tags=["sessions"])
 
 
 @app.get(

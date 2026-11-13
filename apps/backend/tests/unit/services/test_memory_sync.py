@@ -877,34 +877,3 @@ async def test_the_sweep_retries_owed_wipes_for_every_workspace(monkeypatch):
     monkeypatch.setattr(memory_api.evaluator, "collect_due", AsyncMock(return_value=0))
     await memory_api.sweep_once()
     retry.assert_awaited_once_with("org_1")
-
-
-async def test_tab_delete_of_a_mirrored_record_forgets_its_entry_and_drops_both_rows(table, agentcore, monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from core.auth import AuthContext
-    from routers import memory as routes
-
-    record = "mem-" + rid("ar1")  # the route's id shape
-    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
-    agentcore.add_response("batch_create_memory_records", created(("x1", record)))
-    no_sessions(agentcore)
-    await run(Member([entry(1, "x1", remember("db host", "pg1"))]))
-    link = memory_sync._get(OWNER, f"MEMLINK#{record}")
-    assert (link["entry"], link["mirror"]) == ("x1", True)
-
-    monkeypatch.setattr(memory_sync.settings, "AGENTCORE_MEMORY_ID", MEM, raising=False)
-    queue, delete = AsyncMock(), AsyncMock()
-    monkeypatch.setattr("core.services.network_member.call_op", AsyncMock(return_value=None))  # parked
-    monkeypatch.setattr("core.services.network_member.queue_op", queue)
-    monkeypatch.setattr(routes.workspace_memory, "check_deletable", AsyncMock())  # in the caller's scope
-    monkeypatch.setattr(routes.workspace_memory, "delete_memory", delete)
-    agentcore.add_response(  # the route deleted the record already: drop_mirror tolerates it
-        "batch_delete_memory_records",
-        {"successfulRecords": [], "failedRecords": [{"memoryRecordId": record, "status": "FAILED", "errorCode": 404}]},
-        {"memoryId": MEM, "records": [{"memoryRecordId": record}]},
-    )
-    await routes.delete_memory(record, AuthContext(user_id="user_me", org_id=OWNER, org_role="org:member"))
-    queue.assert_awaited_once_with(OWNER, "memory.forget", {"entry": "x1"})
-    delete.assert_awaited_once_with(OWNER, "user_me", record)
-    assert memory_sync._get(OWNER, f"MEMLINK#{record}") == {} and memory_sync._get(OWNER, "MEMENTRY#x1") == {}

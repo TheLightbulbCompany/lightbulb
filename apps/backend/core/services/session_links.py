@@ -8,12 +8,9 @@ owner, user, workspace or session id, or a path, to someone outside the session'
 from __future__ import annotations
 
 import asyncio
-import base64
 import codecs
 import gzip
 import hashlib
-import hmac
-import html
 import json
 import logging
 import secrets
@@ -21,17 +18,13 @@ import tarfile
 import tempfile
 import time
 import uuid
-from typing import Annotated, Literal
 
 from botocore.exceptions import ClientError
-from pydantic import Field, model_serializer
 
-from core import encryption
-from core.auth import AuthContext, resolve_owner_id
+from core.auth import AuthContext
 from core.dynamodb import run_in_thread
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions, session_pickup as pickup
-from core.services.local_sessions import _drop_none
 from core.services.messaging import ApiProblem, ContractModel
 from core.services.session_redact import redact, redact_value
 from core.services.session_screen import _still_a_member
@@ -39,21 +32,10 @@ from core.services.session_screen import _still_a_member
 logger = logging.getLogger(__name__)
 
 GONE = "This link was turned off or is not for you."
-Token = Annotated[str, Field(min_length=16, max_length=128)]
 
 
 def _gone() -> ApiProblem:
     return ApiProblem("LOCAL_SESSION_NOT_FOUND", GONE)
-
-
-class LinkTokenRequest(ContractModel):
-    """The token travels in a body, never a path or query: those land in access logs."""
-
-    token: Token
-
-
-class LinkOpenRequest(LinkTokenRequest):
-    refresh: bool = False  # the page's poll: same answer, no "opened" event
 
 
 async def _member(auth: AuthContext | None, row: dict) -> bool:
@@ -134,76 +116,6 @@ async def _name(user_id: str, *, first: bool) -> str:
     return name.split()[0][:40] if first else name[:80]
 
 
-async def _audit_name(user_id: str) -> str:
-    """For the owner's own audit trail: the workspace's usual display name, never a raw user id
-    (human_display_name falls back to one)."""
-    from core.services.messaging import human_display_name
-
-    try:
-        name = (await human_display_name(user_id)).strip()
-    except Exception:
-        return "Someone"
-    return name[:80] if name and name != user_id else "Someone"
-
-
-class LinkCode(ContractModel):
-    visibility: Literal["public", "private", "none", "workspace"]
-    remote: str | None = None
-    branch: str | None = None
-    commit: str | None = None
-
-    @model_serializer(mode="wrap")
-    def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("remote", "branch", "commit"))
-
-
-class LinkMe(ContractModel):
-    signed_in: bool
-    member: bool
-    # "Ask to join" from the page (D1/D2): whether this viewer may ask, and their ask's state. Set
-    # only for a signed-out or outside viewer of an "Anyone" link. `allowed`: the owner let them in;
-    # the page then gets the ids it needs to open the session (`session_id`, `workspace_id`).
-    can_ask: bool = False
-    join: Literal["pending", "allowed"] | None = None
-
-    @model_serializer(mode="wrap")
-    def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("join",))
-
-
-class LinkPage(ContractModel):
-    title: str | None
-    owner_first_name: str
-    provider: sessions.Provider
-    state: Literal["live", "ended", "offline"]
-    code: LinkCode
-    continuable: bool
-    me: LinkMe
-    # Members only: their in-app paths (Watch, Pick up) need it.
-    session_id: str | None = None
-    # Only once the owner let an outside viewer in: the workspace to switch to before opening it.
-    workspace_id: str | None = None
-
-    @model_serializer(mode="wrap")
-    def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("session_id", "workspace_id"))
-
-
-def code_line(row: dict, manifest: dict | None, member: bool) -> LinkCode:
-    """Spec §3.3's table. A private repo carries the flag and nothing else."""
-    if member:
-        snapshot = row.get("pickupSnapshot") or {}
-        if snapshot.get("repo"):
-            return LinkCode(visibility="workspace", remote=snapshot["repo"], branch=snapshot.get("branch"))
-        return LinkCode(visibility="none")
-    info = (manifest or {}).get("repoInfo")
-    if not info or not info.get("pushed"):
-        return LinkCode(visibility="none")
-    if not info.get("public"):
-        return LinkCode(visibility="private")
-    return LinkCode(visibility="public", remote=info["remote"], branch=info.get("branch"), commit=info["head"])
-
-
 def _state(row: dict) -> str:
     if row.get("endedAt") is not None:
         return "ended"
@@ -235,163 +147,12 @@ def _title(row: dict, member: bool) -> str | None:
     return shown or None
 
 
-async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = False) -> LinkPage:
-    row, link, member = await resolve(auth, token)
-    manifest = await store._get(row["pk"], "PICKUP") if row.get("pickupAllowed") else None
-    continuable = (
-        row["provider"] == "claude"
-        and manifest is not None
-        and (row.get("pickupSnapshot") or {}).get("state") == "ready"
-        and not pickup._expired(row)
-    )
-    if not refresh:  # the page's poll re-opens every few seconds: one open, one event
-        # `link_ref` names the link without being it: a hash of the stored token hash. A signed-out
-        # open is its own anonymous person, `anon:<link_ref>`, with no person profile made for it.
-        link_ref = hashlib.sha256(link["tokenHash"].encode()).hexdigest()[:16]
-        signed_in = auth is not None
-        sessions._capture_growth(
-            row,
-            "share_link_opened",
-            auth.user_id if auth is not None else f"anon:{link_ref}",
-            member=member,
-            signed_in=signed_in,
-            link_ref=link_ref,
-            state=_state(row),
-            **({} if signed_in else {"$process_person_profile": False}),
-        )
-    me = LinkMe(signed_in=auth is not None, member=member, **_ask_state(auth, row, link, member))
-    let_in = me.join == "allowed"
-    return LinkPage(
-        title=_title(row, member),
-        owner_first_name=await _name(row["humanUserId"], first=True),
-        provider=row["provider"],
-        state=_state(row),
-        code=code_line(row, manifest, member),
-        continuable=continuable,
-        me=me,
-        session_id=row["sessionId"] if member or let_in else None,
-        workspace_id=row["ownerId"] if let_in else None,
-    )
-
-
 # --- Ask to join from the page (06 §2, D1/D2) ---------------------------------------------------
 #
 # The one ask to join left (owner ruling 2026-10-26: members never ask), made by a signed-in person outside
 # the workspace on an "Anyone with the link" page. The row is the session's own `joinRequests`,
 # marked `outsider` and carrying the label the owner sees. The owner's Allow
 # (local_sessions.decide_join) makes them a workspace member, then lets them use the session.
-
-#: Outside asks waiting on one session at once: what an open public link can put in front of its owner.
-MAX_OUTSIDER_ASKS = 20
-
-
-def _ask_state(auth: AuthContext | None, row: dict, link: dict, member: bool) -> dict:
-    if member or not sessions.public_id(link, row) or row.get("endedAt") is not None:
-        return {}
-    if auth is not None and auth.user_id in sessions.allowed_senders(row):
-        return {"join": "allowed"}
-    request = (row.get("joinRequests") or {}).get(auth.user_id) if auth is not None else None
-    if request and request.get("state") == "pending":
-        return {"join": "pending"}
-    # A declined ask reads as never asked (a decline is not announced); they may ask again.
-    # Owner ruling 2026-10-26: link viewers may always ask (no per-session switch).
-    return {"can_ask": True}
-
-
-class JoinAsk(ContractModel):
-    join: Literal["pending", "allowed", "member"]
-
-
-async def _outsider_label(user_id: str) -> str:
-    from core.services import clerk_admin
-    from core.services.messaging import human_display_name
-
-    name = await human_display_name(user_id)
-    try:
-        email = await clerk_admin.get_primary_email(user_id)
-    except Exception:  # noqa: BLE001 -- the name alone still says who asked
-        email = None
-    if name == user_id:  # no name on the account: the address is the name
-        return email or "Someone"
-    return f"{name} ({email})" if email else name
-
-
-async def ask_to_join(auth: AuthContext, token: str) -> JoinAsk:
-    """A signed-in viewer of an "Anyone" page asks the owner to let them in. Asking again while
-    pending changes nothing. Every refusal of the link reads as `resolve`'s."""
-    from core.services.local_session_relay import publish_resources_changed
-
-    me = auth.user_id
-    label: str | None = None
-    for _ in range(6):
-        row, link, member = await resolve(auth, token)
-        if member:
-            return JoinAsk(join="member")
-        state = _ask_state(auth, row, link, member)
-        if state.get("join"):
-            return JoinAsk(join=state["join"])
-        if not state.get("can_ask"):
-            raise _gone() if row.get("endedAt") is None else ApiProblem("LOCAL_SESSION_OFFLINE", "This session ended.")
-        requests = dict(row.get("joinRequests") or {})
-        if sum(1 for r in requests.values() if r.get("outsider") and r.get("state") == "pending") >= MAX_OUTSIDER_ASKS:
-            raise ApiProblem("RATE_LIMITED", "Too many people are waiting to join this session. Try again later.")
-        label = label or await _outsider_label(me)
-        requests[me] = {**sessions._new_request(), "outsider": True, "name": label}
-        updated = {**row, "joinRequests": requests, "revision": str(uuid.uuid4())}
-        audit = sessions.audit_row(row["ownerId"], row["sessionId"], auth, "join_requested", detail="session_link")
-        enrollment = await sessions._enrolled(row["ownerId"], row["humanUserId"], row["deviceId"])
-        try:
-            await repo.put_session(
-                updated, row, enrollment, extra=[{"Put": {"TableName": store._table().name, "Item": audit}}]
-            )
-        except ClientError as exc:
-            if not store._is_cancelled(exc):
-                raise
-            continue
-        sessions._capture_growth(updated, "workspace_join_requested", me, via="session_link")
-        await sessions._notify_join_request(updated, me)
-        await _email_owner(updated, label)
-        await sessions._push_presence(updated)
-        await publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
-        return JoinAsk(join="pending")
-    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-
-
-async def _email_owner(row: dict, label: str) -> None:
-    """The ask, by email too (06 §2): the owner is often not in the app when a stranger asks.
-    Best effort; the Activity item and the push already went."""
-    from core.config import settings
-    from core.services import clerk_admin, email_service, notification_copy as copy
-    from core.services.daily_digest import _email_allowed, activity_url
-
-    try:
-        to = await clerk_admin.get_primary_email(row["humanUserId"])
-        if not _email_allowed(to):
-            return
-        session = copy.line(row.get("displayTitle") or row.get("title"), 60) or "your session"
-        subject = f'{label} watched "{session}" and asks to join'
-        url = activity_url()
-        text = (
-            f"{subject}.\n\nAllow makes them a member of your workspace and lets them use this session. "
-            f"Decline, and they are not told.\n\nAnswer in Activity: {url}\n"
-        )
-        e = html.escape
-        body = (
-            f'<div style="font-family:sans-serif;max-width:520px"><p><strong>{e(subject)}.</strong></p>'
-            "<p>Allow makes them a member of your workspace and lets them use this session. "
-            "Decline, and they are not told.</p>"
-            f'<p><a href="{e(url)}">Answer in Activity</a></p></div>'
-        )
-        await email_service.send_email(
-            to=to,
-            subject=subject,
-            html=body,
-            text=text,
-            from_addr=settings.EMAIL_FROM_WELCOME,
-            kind="session_join_request",
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning("session join request email failed", exc_info=True)
 
 
 # --- Watching (owner ruling 2026-10-08: an "Anyone" link shows the live terminal, view only) ---
@@ -450,12 +211,6 @@ ASK_EVERY_S = 15
 
 def public_pk(public_id: str) -> str:
     return f"PUBWATCH#{public_id}"
-
-
-class ViewingRequest(LinkTokenRequest):
-    lease: Annotated[str, Field(max_length=128)] | None = None
-    fresh: bool = False  # subscribed and has no screen: a request, granted at most once per ASK_EVERY_S per link
-    retake: bool = False  # about to connect: trade this seat for a new one if its lease was already used
 
 
 class Viewing(ContractModel):
@@ -649,67 +404,9 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
 
 # --- Copies (spec §3.5) ------------------------------------------------------------------------
 
-COPY_TTL_S = pickup.COPY_TTL_S
-CODE_WINDOW_S = 600
-RESTART_AFTER_S = 300
-COPIES_PER_HOUR = 20  # per session
-TAKER_COPIES_PER_HOUR = 5  # per session per taker, so one outsider cannot use up the session's cap
 _redacting = asyncio.Semaphore(1)  # one redaction at a time per backend task
 _running: set[asyncio.Task] = set()  # held so a running preparation is not garbage-collected
 _working: set[str] = set()  # copyIds this task is preparing or has queued
-
-Challenge = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{43}$")]
-
-
-class CopyRequest(ContractModel):
-    token: Token
-    challenge: Challenge
-
-
-class CopyCode(ContractModel):
-    code: str
-
-
-class RedeemRequest(ContractModel):
-    code: Token
-    verifier: Annotated[str, Field(min_length=43, max_length=128)]
-
-
-class CopyCodeMode(ContractModel):
-    mode: Literal["clone", "bundle", "none"]
-    remote: str | None = None
-    commit: str | None = None  # clone: the commit to check out
-    snapshot: str | None = None  # bundle: the snapshot commit
-    session_id: str | None = None  # bundle: names refs/lightbulb/snap/<id> inside the bundle (members only)
-
-    @model_serializer(mode="wrap")
-    def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("remote", "commit", "snapshot", "session_id"))
-
-
-class CopyTicket(ContractModel):
-    """Not a PickupTicket: that one names the session, its human and the folder."""
-
-    state: Literal["ready"] = "ready"
-    title: str | None
-    from_: str = Field(alias="from")
-    conversation_id: str
-    claude_version: str
-    cwd_relative: str
-    downloads: pickup.Downloads
-    code: CopyCodeMode
-
-
-class Preparing(ContractModel):
-    state: Literal["preparing"] = "preparing"
-
-
-def challenge_of(verifier: str) -> str:
-    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-
-
-def _copy_pk(code: str) -> str:
-    return f"SESSIONCOPY#{sessions._token_hash(code)}"
 
 
 def _code_mode(manifest: dict, member: bool) -> str:
@@ -717,101 +414,6 @@ def _code_mode(manifest: dict, member: bool) -> str:
         return "bundle" if manifest.get("code") else "none"
     info = manifest.get("repoInfo") or {}
     return "clone" if info.get("public") and info.get("pushed") else "none"
-
-
-async def create_copy(auth: AuthContext, token: str, challenge: str) -> CopyCode:
-    resolve_owner_id(auth)  # the taker's own workspace: the free one sign-up gives (409 without)
-    row, link, member = await resolve(auth, token)
-    if row["provider"] != "claude":
-        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Only Claude Code sessions can be continued.")
-    manifest = await pickup.ready_manifest(row)
-    now = int(time.time())
-    # ponytail: read-then-write, so two simultaneous presses can both pass; the per-session cap and
-    # the one-redaction-at-a-time semaphore bound the cost. Add a conditional claim if it is abused.
-    live = [p for p in await store._query(row["pk"], begins_with="COPY#") if int(p.get("expiresAt", 0)) > now]
-    if not member:
-        existing = await _pending_copy(live, auth.user_id, link["tokenHash"])
-        if existing:
-            code = await _reuse(existing, challenge, now)
-            if code:
-                return CopyCode(code=code)
-    mine = sum(1 for p in live if p.get("userId") == auth.user_id)
-    if mine >= TAKER_COPIES_PER_HOUR or len(live) >= COPIES_PER_HOUR:
-        raise ApiProblem("RATE_LIMITED", "Too many copies of this session. Try again later.", retryable=True)
-    code = secrets.token_urlsafe(32)
-    item = {
-        "pk": _copy_pk(code),
-        "sk": "META",
-        "ownerId": row["ownerId"],
-        "sessionId": row["sessionId"],
-        "copyId": uuid.uuid4().hex,
-        "userId": auth.user_id,
-        "member": member,
-        "challenge": challenge,
-        "linkHash": link["tokenHash"],
-        "epoch": row["pickupEpoch"],
-        "codeMode": _code_mode(manifest, member),
-        "state": "ready" if member else "preparing",
-        "createdAt": now,
-        "startedAt": now,
-        "expiresAt": now + COPY_TTL_S,
-    }
-    table = store._table().name
-    audit = sessions.audit_row(
-        row["ownerId"],
-        row["sessionId"],
-        auth,
-        "session_copied",
-        detail=await _audit_name(auth.user_id),
-        subject_user_id=auth.user_id,
-    )
-    # The per-session pointer retire follows to delete this copy's objects.
-    pointer = {
-        "pk": row["pk"],
-        "sk": f"COPY#{item['copyId']}",
-        "copyId": item["copyId"],
-        "userId": auth.user_id,
-        "itemPk": item["pk"],
-        "codeEnc": encryption.encrypt(code),
-        "expiresAt": item["expiresAt"],
-    }
-    await store._transact(
-        [
-            {"Put": {"TableName": table, "Item": item}},
-            {"Put": {"TableName": table, "Item": pointer}},
-            {"Put": {"TableName": table, "Item": audit}},
-        ]
-    )
-    if not member:
-        _start(item)
-    sessions._capture_growth(row, "session_copied", auth.user_id, member=member)
-    return CopyCode(code=code)
-
-
-async def _pending_copy(live: list[dict], user_id: str, link_hash: str) -> dict | None:
-    """This taker's copy of the session that is still being prepared, if any."""
-    for pointer in live:
-        if pointer.get("userId") != user_id:
-            continue
-        item = await store._get(pointer["itemPk"], "META")
-        if item and item["state"] == "preparing" and item["linkHash"] == link_hash:
-            return {**item, "codeEnc": pointer["codeEnc"]}
-    return None
-
-
-async def _reuse(existing: dict, challenge: str, now: int) -> str | None:
-    """Press Continue again while a copy is preparing: the same copy, with this press's verifier."""
-    try:
-        code = encryption.decrypt(existing["codeEnc"])
-    except ValueError:
-        return None
-    await run_in_thread(
-        store._table().update_item,
-        Key={"pk": existing["pk"], "sk": "META"},
-        UpdateExpression="SET challenge = :c, createdAt = :now",
-        ExpressionAttributeValues={":c": challenge, ":now": now},
-    )
-    return code
 
 
 def _start(item: dict) -> None:
@@ -996,92 +598,3 @@ def _redact_entry(source, member, tout, project: str | None, private: bool) -> N
         info.size, info.mode, info.mtime = body.tell(), member.mode, member.mtime
         body.seek(0)
         tout.addfile(info, body)
-
-
-async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
-    """The CLI's poll. The code alone is useless: it needs the verifier whose hash the confirm
-    page sent, so a code left in browser history redeems nothing."""
-    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "This continue code is no longer valid. Press Continue again.")
-    item = await store._get(_copy_pk(code), "META")
-    now = int(time.time())
-    if (
-        item is None
-        or now >= int(item["expiresAt"])
-        or now >= max(int(item["createdAt"]), int(item.get("readyAt", 0))) + CODE_WINDOW_S
-    ):
-        raise gone
-    if not hmac.compare_digest(item["challenge"], challenge_of(verifier)):
-        # Its own code: the CLI reads it as "another program answered the confirm page first".
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This continue code was confirmed for another program.")
-    row = await repo.get_session(item["ownerId"], item["sessionId"])
-    link = await _live(row, item["linkHash"])  # turned off, paused, Mac stopped: each says so
-    if row.get("pickupEpoch") != item["epoch"]:
-        raise _turned_off()  # the snapshot was retired (and maybe allowed again): this copy is gone
-    try:
-        # The same door Continue went through: a workspace link opens only for a current member.
-        if item["member"]:
-            await _still_a_member(row, item["userId"])
-        elif not sessions.public_id(link, row):
-            raise _gone()
-    except ApiProblem as exc:
-        raise _gone() from exc
-    if item["state"] == "failed":
-        raise ApiProblem("LOCAL_SESSION_CONFLICT", "This copy could not be prepared. Press Continue again.")
-    if item["state"] == "preparing":
-        if now - int(item["startedAt"]) > RESTART_AFTER_S and item["copyId"] not in _working:
-            try:
-                await _settle(item, {"startedAt": now})
-                _start({**item, "startedAt": now})
-            except Exception:
-                pass  # another poll restarted it first (a worker on another task is not visible here)
-        return Preparing()
-    manifest = await store._get(row["pk"], "PICKUP") if item["member"] else None
-    owner = await _name(row["humanUserId"], first=True)
-    return await run_in_thread(_copy_ticket, row, item, manifest, owner)
-
-
-def _copy_ticket(row: dict, item: dict, manifest: dict | None, owner: str) -> CopyTicket:
-    if manifest is not None:  # a member: the snapshot as it is, Pick up's behaviour
-        code = manifest.get("code")
-        downloads = pickup.downloads(row, manifest)
-        mode = (
-            CopyCodeMode(mode="bundle", remote=code["remote"], snapshot=code["snapshot"], session_id=row["sessionId"])
-            if code
-            else CopyCodeMode(mode="none")
-        )
-        meta = (manifest["conversationId"], manifest["claudeVersion"], manifest["cwdRelative"] if code else "")
-    else:
-        client, bucket = pickup._s3(), pickup._bucket()
-
-        def url(key: str) -> str:
-            return client.generate_presigned_url(
-                "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=pickup.URL_SECONDS
-            )
-
-        side = item.get("sidecars")
-        downloads = pickup.Downloads(
-            transcript=[
-                pickup.TranscriptDownload(index=p["index"], url=url(p["key"]), bytes=p["bytes"], sha256=p["sha256"])
-                for p in item["parts"]
-            ],
-            code=None,
-            sidecars=pickup.Download(url=url(side["key"]), bytes=side["bytes"], sha256=side["sha256"])
-            if side
-            else None,
-        )
-        repo_info = item.get("repo") or {}
-        mode = (
-            CopyCodeMode(mode="clone", remote=repo_info["remote"], commit=repo_info["head"])
-            if item["codeMode"] == "clone"
-            else CopyCodeMode(mode="none")
-        )
-        meta = (item["conversationId"], item["claudeVersion"], item.get("cwdRelative", ""))
-    return CopyTicket(
-        title=_title(row, item["member"]),
-        from_=owner,
-        conversation_id=meta[0],
-        claude_version=meta[1],
-        cwd_relative=meta[2],
-        downloads=downloads,
-        code=mode,
-    )

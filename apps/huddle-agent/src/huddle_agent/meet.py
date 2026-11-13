@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections import deque
 
@@ -38,9 +39,15 @@ from livekit.plugins import noise_cancellation, openai
 from huddle_agent import live
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.mouth import ANSWER_WITHIN_S, ENGLISH, LANGUAGE, Context, speakable
-from huddle_agent.transcript import _LIGHTBULB, _tokens
 
 logger = logging.getLogger("meet")
+_LIGHTBULB = [("lightbulb",), ("light", "bulb")]
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+|[^\s\-a-z0-9']", text.lower())  # a hyphen splits words
+
+
 # the per-person transcriber: gpt-4o-mini-transcribe shuts down 26 Feb 2027; gpt-transcribe is its successor
 # for committed turns, $0.0045/min (developers.openai.com/api/docs/deprecations, .../models/gpt-transcribe)
 TRANSCRIBE = os.environ.get("MEET_TRANSCRIBE_MODEL", "gpt-transcribe")

@@ -494,8 +494,7 @@ class Settings(BaseSettings):
     # secret — must stay stable forever or existing keyrings become unreadable.
     GOG_KEYRING_PASSWORD: str = ""
 
-    # HMAC key for service-token JWTs (``service_token.py``), the digest/Needs-you email links and
-    # the session-share signature.
+    # HMAC key for service-token JWTs (``service_token.py``) and the digest/Needs-you email links.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""
     # The `hub.verify_token` Meta echoes back on the one-time subscribe
     # handshake for the APP-LEVEL webhook callback (routers/meta_webhook.py).

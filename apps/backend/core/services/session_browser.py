@@ -30,7 +30,6 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import (
-    browser_control,
     container_rpc,
     live_events,
     local_sessions,
@@ -340,42 +339,6 @@ async def _hold_mac(auth: dict, device: str, node, channel, leased: dict) -> Non
             task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
 
-async def _open_row(auth, session_id: str, *, owner_only: bool) -> dict:
-    """The session's row for a person still in the workspace who may read it (`owner_only`: may type
-    into it, `may_control`), while its browser is open."""
-    row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=owner_only)
-    if not live_shared(row):  # its own person included: an unshared browser is shown to nobody
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", NOT_SHARED)
-    await session_screen._still_a_member(row, auth.user_id)
-    if local_sessions.browser_open(row) is None:
-        raise ApiProblem("LOCAL_SESSION_OFFLINE", "This session's browser is not open.")
-    return row
-
-
-async def watch(auth, session_id: str) -> None:
-    """The Browser tab's ~20 s beat: this session's browser frames for the next mac_live.WANTED_S.
-    Any member who may read the session; frames are stored nowhere."""
-    row = await _open_row(auth, session_id, owner_only=False)
-    try:
-        await store.run_in_thread(
-            store._table().update_item,
-            Key={"pk": repo.session_pk(row["ownerId"], row["sessionId"]), "sk": "META"},
-            UpdateExpression="SET browserWatchedAt = :now",
-            ConditionExpression="attribute_exists(pk)",
-            ExpressionAttributeValues={":now": int(_clock())},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.") from None
-
-
-async def input_target(auth, session_id: str) -> dict:
-    """The session a person drives the browser of: they may type into it, are still in the
-    workspace, and its browser is open."""
-    return await _open_row(auth, session_id, owner_only=True)
-
-
 async def may_type(owner: str, user: str, run: str) -> bool:
     """Re-checked where the Mac's socket is (mac_live.input): this person may still type into it."""
     sid = session_of(run)
@@ -613,44 +576,6 @@ async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
             del _relays[key]
         if _cloud.get(key) is channel:
             del _cloud[key]
-
-
-def cloud_events(events: list[dict]) -> list[dict]:
-    """The Mac's input shape -> the cloud cast's (bridge cdp_mux.dispatch): a press and release is one
-    click at the release; moves are dropped; wheel is vertical only (the cast reads deltaY alone). ponytail: no cloud drags; add a pointer API there if wanted."""
-    out = []
-    for event in events:
-        kind = event["type"]
-        if kind == "up":
-            out.append({"type": "click", "x": event["x"], "y": event["y"], "button": event.get("button", "left")})
-        elif kind == "wheel":
-            out.append({"type": "wheel", "x": event["x"], "y": event["y"], "deltaY": event["deltaY"]})
-        elif kind == "key":
-            out.append({"type": "key", "key": event["key"]})
-        elif kind in ("text", "paste"):
-            out.append({"type": "text", "text": event["text"]})
-    return out
-
-
-async def cloud_input(row: dict, events: list[dict]) -> None:
-    """A person's input on a session browsing the cloud: into its cast tab, as the cloud's own watcher
-    input (it counts as a person's input there too). After idle the cast's lease has lapsed and the
-    input answers "not casting": then renew it once and retry (a cloud still starting answers the
-    person's 409 rather than holding the request)."""
-    owner, run = row["ownerId"], run_id(row["sessionId"])
-    renewed = False
-    for event in cloud_events(events):
-        try:
-            await browser_control.send_input(owner, {"runId": run, **event})
-        except browser_control.BrowserError as exc:
-            if renewed or str(exc) != browser_control.NOT_CASTING:
-                raise
-            renewed = True
-            try:
-                await container_rpc.call(owner, "browser.attach", {"runId": run, "renew": True})
-            except Exception as rpc_exc:  # noqa: BLE001 -- the retry below answers "not casting"
-                logger.info("session browser input renew failed owner=%s error=%s", owner, type(rpc_exc).__name__)
-            await browser_control.send_input(owner, {"runId": run, **event})
 
 
 async def serve(owner: str, user: str, device: str, node, channel, session_id: str, mac_browser_on: bool) -> None:

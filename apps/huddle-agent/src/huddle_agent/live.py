@@ -54,17 +54,32 @@ HISTORY_ITEMS, HISTORY_CHARS = 128, 8192 * 3
 CLOSE_WAIT_S = 10.0  # how long close() lets posts in flight finish: each is a request the member made
 
 
-def delegation_policy(backend_tools: list[str]) -> str:
+def delegation_policy(backend_tools: list[str], facts_in_prompt: bool = False) -> str:
     """The `Delegation policy` section of OpenAI's live-prompting template (developers.openai.com/api/docs/guides/
-    live-prompting), with only the backend's capabilities filled in; the surface supplies them."""
+    live-prompting), with only the backend's capabilities filled in; the surface supplies them. `facts_in_prompt`:
+    the phone, whose prompt carries the Agent page's Business facts (Meet and the orb get none)."""
     tools = "\n".join(f"- {t}" for t in backend_tools)
+    needs, source = (
+        (
+            "- The answer needs a fact about this business that is not in Business facts.",
+            "Business facts are already known: answer from them. Anything about the business they do not state comes "
+            "from the backend; never guess it.",
+        )
+        if facts_in_prompt
+        else (
+            "- The answer needs facts about this business or workspace, including its description or what it does.",
+            "Business facts come from the backend. A business name or greeting is not evidence of its services, "
+            "prices,\nhours, policies or purpose. If no current backend result answers the question, delegate it "
+            "before answering.",
+        )
+    )
     return f"""Delegation policy:
 Backend tools:
 {tools}
 
 Generate <|SpawnThinking|> when:
 - The request needs a backend capability or careful reasoning.
-- The answer needs facts about this business or workspace, including its description or what it does.
+{needs}
 - A correction changes the work already requested.
 
 Do not generate <|SpawnThinking|> when:
@@ -72,8 +87,7 @@ Do not generate <|SpawnThinking|> when:
 - You need a brief clarification to understand the request.
 
 Generate <|SpawnThinking|> before giving an answer that depends on backend work.
-Business facts come from the backend. A business name or greeting is not evidence of its services, prices,
-hours, policies or purpose. If no current backend result answers the question, delegate it before answering.
+{source}
 Do not guess the result while waiting."""
 
 

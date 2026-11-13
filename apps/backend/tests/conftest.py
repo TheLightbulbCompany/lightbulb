@@ -95,7 +95,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
         memory_api,
         needs_you_email,
         run_ledger,
-        session_pickup,
         voice_calls,
     )
 
@@ -106,7 +105,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
         (run_ledger, "run_ledger_sweeper"),
         (browser_control, "run_autosave_sweeper"),
         (voice_calls, "voice_call_sweeper"),
-        (session_pickup, "run_pickup_sweeper"),
         (memory_api, "run_memory_sweeper"),
         (daily_digest, "run_digest_sweeper"),
         (needs_you_email, "run_needs_you_sweeper"),
@@ -126,6 +124,16 @@ def _reset_shutdown_flag():
     shutdown_aware.set_shutting_down(False)
     yield
     shutdown_aware.set_shutting_down(False)
+
+
+@pytest.fixture(autouse=True)
+def _no_aws_profile(monkeypatch):
+    # The dev acceptance harness (scripts/super_agent/acceptance/ctx.py aws_profile_default, reached from
+    # validate_meeting_context and the acceptance tests) setdefaults AWS_PROFILE=isol8-admin. Owning the
+    # variable here restores it after every test, so it never leaks to later tests in the xdist worker,
+    # where boto3 then fails on any machine without that local SSO profile.
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
 
 
 @pytest.fixture(autouse=True)

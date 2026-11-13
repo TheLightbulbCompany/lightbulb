@@ -7,13 +7,6 @@ import pytest
 from scripts import validate_meeting_context as mod
 
 
-@pytest.fixture(autouse=True)
-def _restore_aws_profile(monkeypatch):
-    # validate() setdefaults AWS_PROFILE=isol8-admin (acceptance/ctx.py); without this it leaks into
-    # every later test in the worker, and boto3 fails wherever that local SSO profile does not exist.
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-
-
 async def test_refuses_production_before_any_external_action(monkeypatch, tmp_path):
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "prod")
 

@@ -330,7 +330,9 @@ async def _origin_person(owner_id: str, room_id: str | None, message_id: str | N
         return None
     room = await messaging_repo.get_room(room_id)
     message = await messaging_repo.get_message_by_id(room_id, message_id)
-    if not room or room.get("ownerId") != owner_id or not message:
+    # A Meet's lines are posted as the inviter whoever said them: nobody's verified ask (as #5219's
+    # authorize_run), so never the inviter's own, auto-allowed ask of their session. A named origin refuses.
+    if not room or room.get("ownerId") != owner_id or room.get("meeting") or not message:
         return None
     author = message.get("author") or {}
     if author.get("kind") != "human" or not str(author.get("id", "")).startswith("user_"):

@@ -298,10 +298,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  server/src/services/company-artifacts.ts (issue documents created/updated by an agent,
                                  minus SYSTEM_ISSUE_DOCUMENT_KEYS; work products; attachments; never comments or the
                                  description)
-  - Mail ..................... references/surfaces.md
-                              <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (Mail rail item + badge);
-                                 apps/frontend/src/components/mail/ (MailPanel sections, chips, meeting detail, "new");
-                                 apps/backend/routers/agent_mail.py (_meeting_view status/reason/notes_room_id)
   - Message actions ......... references/surfaces.md
                               <- apps/frontend/src/components/messaging/{RoomMessageItem,RoomMessageContent}.tsx (reactions,
                                  reply-in-thread, edit/delete, the menuExtras-gated "more" menu open to every member);

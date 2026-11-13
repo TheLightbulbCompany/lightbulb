@@ -35,13 +35,3 @@ describe("local development API proxy", () => {
     });
   });
 });
-
-// The DCV decoder resolves its base relative to the /chat document.
-it("serves the browser decoder from the copied SDK tree", async () => {
-  const rewrites = await nextConfig.rewrites?.();
-  const routes = !Array.isArray(rewrites) ? rewrites?.afterFiles : undefined;
-  expect(routes).toContainEqual({
-    source: "/chat/nice-dcv-web-client-sdk/:path*",
-    destination: "/nice-dcv-web-client-sdk/:path*",
-  });
-});

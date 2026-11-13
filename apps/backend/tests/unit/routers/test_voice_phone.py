@@ -483,6 +483,32 @@ def test_next_time_note_reaches_facts():
     assert "Note: Parking is behind the building" in voice_phone._facts(cfg)
 
 
+# A realistic salon Agent page: 18 services and 15 saved answers (the old 1,200-character Router excerpt cut it).
+SALON = {
+    "city": "Austin",
+    "services": [{"name": f"Service number {i}", "price": f"${40 + i}", "minutes": 30 + 5 * i} for i in range(18)],
+    "knowledge": [
+        {"q": f"Question {i} a caller asks?", "a": f"The owner's saved answer {i}, in a full sentence."}
+        for i in range(15)
+    ],  # fmt: skip
+    "staff": [{"id": "a1", "name": "Ana"}, {"id": "m1", "name": "Maya"}],
+    "holidays": [{"from": "2026-12-24", "to": "2026-12-26"}],
+    "instructions": "Do not state a street number.",
+}
+
+
+async def test_start_returns_every_static_fact_whole_and_the_instructions(client):
+    """The voice answers these itself (founder 12 Nov): one complete text, the same `_facts` the Router's Business
+    profile reads, never cut mid-item; the owner's Instructions verbatim beside it."""
+    call = await _start(client, **SALON)
+    facts = call["facts"]
+    assert facts == voice_phone._facts({**voice_phone.DEFAULTS, **CONFIG, **SALON})
+    assert len(facts) > 1200  # larger than the old cap
+    assert "Service number 17 $57 (115 min)" in facts and "The owner's saved answer 14, in a full sentence." in facts
+    assert "City: Austin" in facts and "Staff: Ana, Maya" in facts and "Closed: 2026-12-24 to 2026-12-26" in facts
+    assert call["instructions"] == "Do not state a street number."
+
+
 async def _remember(client, call, fact, **extra):
     return client.post(
         f"/api/v1/internal/voice/calls/{call['callId']}/remember", json={"fact": fact, **extra}, headers=W

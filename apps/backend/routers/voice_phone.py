@@ -320,7 +320,9 @@ def _callers(rows: list[dict], call_id: str, call: dict) -> list[dict]:
 
 
 def _facts(cfg: dict) -> str:
-    """What the assistant may tell callers: services, prices, hours and the owner's answers (allow.answer)."""
+    """What the assistant may tell callers (allow.answer): city, services with prices and durations, hours, closures,
+    staff and the owner's answers. The phone voice gets this whole at call start and states it itself; the Router's
+    Business profile and a Worker's business_facts read the same text."""
     services = "; ".join(
         f"{s.get('name')}" + (f" {s['price']}" if s.get("price") else "") + (f" ({s['minutes']} min)" if s.get("minutes") else "")
         for s in cfg["services"] if s.get("name")
@@ -331,7 +333,19 @@ def _facts(cfg: dict) -> str:
     qa = " ".join(
         f"Q: {k['q']} A: {k['a']}" if k.get("q") else f"Note: {k['a']}" for k in cfg["knowledge"] if k.get("a")
     )
-    return f"Services: {services or 'not listed'}. Opening hours: {hours}. {qa}".strip()
+    ranges = cfg.get("holidays") if isinstance(cfg.get("holidays"), list) else []  # an old free-text value: none
+    closed = ", ".join(
+        f"{r['from']} to {r.get('to') or r['from']}" for r in ranges if isinstance(r, dict) and r.get("from")
+    )
+    staff = ", ".join(n for _, n in _staff(cfg))
+    city = str(cfg.get("city") or "").strip()
+    return (
+        (f"City: {city}. " if city else "")
+        + f"Services: {services or 'not listed'}. Opening hours: {hours}. "
+        + (f"Closed: {closed}. " if closed else "")
+        + (f"Staff: {staff}. " if staff else "")
+        + qa
+    ).strip()
 
 
 @router.post("/internal/voice/calls")

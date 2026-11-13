@@ -266,27 +266,27 @@ async def test_organization_created_dispatches_the_first_provision():
 
 
 @pytest.mark.asyncio
-async def test_a_failed_organization_created_rolls_back_its_dedup_row_so_svix_redelivers(async_client, monkeypatch):
-    """The webhook is the only thing that starts a first provision, so a failure must 5xx AND
-    drop the dedup row -- otherwise Svix's redelivery is acked as a duplicate and the
-    workspace is never provisioned."""
+async def test_organization_created_is_never_deduped_so_a_redelivery_retries(async_client, monkeypatch):
+    """The webhook is the only thing that starts a first provision, so a failure must 5xx, and
+    no dedup row may turn a redelivery (or a manual Svix resend after a provision that failed
+    later) into a silent duplicate ack."""
     from core.services import webhook_dedup
 
     _bypass_svix(monkeypatch)
-    monkeypatch.setattr(
-        webhook_dedup, "record_event_or_skip", AsyncMock(return_value=webhook_dedup.WebhookDedupResult.RECORDED)
-    )
-    delete_event = AsyncMock()
-    monkeypatch.setattr(webhook_dedup, "delete_event", delete_event)
-    monkeypatch.setattr(
-        "core.services.user_provision.provision_new_workspace", AsyncMock(side_effect=RuntimeError("sfn down"))
-    )
+    record = AsyncMock(return_value=webhook_dedup.WebhookDedupResult.ALREADY_SEEN)
+    monkeypatch.setattr(webhook_dedup, "record_event_or_skip", record)
+    provision = AsyncMock(side_effect=[RuntimeError("sfn down"), None])
+    monkeypatch.setattr("core.services.user_provision.provision_new_workspace", provision)
     monkeypatch.setattr("core.repositories.company_slug_repo.claim_hold", AsyncMock())
+    monkeypatch.setattr("core.services.workspace_source.adopt_for_workspace", AsyncMock(return_value={}))
     payload = {"type": "organization.created", "data": {"id": "org_acme", "created_by": "user_owner"}}
 
     with pytest.raises(RuntimeError):
         await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
-    delete_event.assert_awaited_once_with("msg_test")
+    resp = await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
+    assert resp.status_code == 200
+    assert provision.await_count == 2
+    record.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------

@@ -35,18 +35,13 @@ async def _assert_provision_allowed(
     is_admin: bool = True,
     actor_user_id: str | None = None,
 ) -> None:
-    """Raise 402 with a structured `blocked` payload if a provision gate fires.
+    """Raise 402 with a structured `blocked` payload if the workspace gate is up.
 
-    Delegates to ``core.services.provision_gate.evaluate_provision_gate`` so
-    /container/provision and /container/status share the same logic and can
-    never disagree about whether a gate is up. ``actor_user_id`` is the caller,
-    so a trial-expired block lands on their PostHog person.
+    Only the browser's start-on-view door uses it now: starting a browser session spends, and
+    provisioning does not. ``actor_user_id`` is the caller, so a trial-expired block lands on
+    their PostHog person.
     """
-    gate = await evaluate_provision_gate(
-        owner_id=owner_id,
-        is_admin=is_admin,
-        actor_user_id=actor_user_id,
-    )
+    gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=is_admin, actor_user_id=actor_user_id)
     if gate is not None:
         raise HTTPException(status_code=402, detail=gate.to_payload())
 
@@ -57,14 +52,14 @@ async def _assert_provision_allowed(
     description=(
         "A cold read of the workspace's status contract, fetched on mount and after a "
         "live event. It triggers no provisioning: a new workspace is provisioned by the "
-        "Clerk organization.created webhook, and a failed or stopped one waits for the "
-        "user's Retry (POST /container/recover). Its one write is creating an admin's "
+        "Clerk organization.created webhook, and a failed one is retried by that event's "
+        "redelivery or POST /container/retry. Its one write is creating an admin's "
         "missing trial row (create-if-absent), so a read that beats the webhook sees the trial."
     ),
     operation_id="container_status",
     responses={
         202: {"description": "Org-member: owner's container not ready yet"},
-        402: {"description": "Provision gate is up (structured blocked payload)"},
+        402: {"description": "Chat and orb cannot run now (structured blocked payload)"},
     },
 )
 async def container_status(
@@ -700,7 +695,6 @@ async def provision_execution_event(request: Request) -> Response:
     operation_id="container_provision",
     responses={
         200: {"description": "Container provisioned or already exists"},
-        402: {"description": "Provision/start gate is up (structured blocked payload)"},
         503: {"description": "Provisioning failed"},
     },
 )
@@ -710,12 +704,10 @@ async def container_provision(
     owner_id = resolve_owner_id(auth)
     await ensure_workspace_trial_default(auth, owner_id)
 
-    # Idempotent: an existing workspace is reported, never re-provisioned. The
-    # payment gate below is intentionally NOT applied to it — billing state can
-    # churn (cancel + resubscribe) and we don't want a stale 402 to mask the
-    # actual workspace the caller is asking about. There is no cold-start door
-    # here any more either: AgentCore starts the microVM on the next invoke, so
-    # a caller with a row has nothing to ask us to start.
+    # Idempotent: an existing workspace is reported, never re-provisioned. There is no
+    # cold-start door here: AgentCore starts the microVM on the next invoke. No billing gate
+    # either: a workspace on the shared pool costs nothing until it runs, and chat, the orb
+    # and the phone each gate their own spend.
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing:
         return {
@@ -723,15 +715,6 @@ async def container_provision(
             "owner_id": owner_id,
             "already_existed": True,
         }
-
-    # Payment gate (audit C1). New-container path only — the existing-
-    # container branch above intentionally bypasses this so we don't 402
-    # callers asking about a container they already have.
-    await _assert_provision_allowed(
-        owner_id,
-        is_admin=auth.is_org_admin,
-        actor_user_id=auth.user_id,
-    )
 
     # Provision via the PROVISION Step Functions executor (spec §7 / PR-10) —
     # the SOLE provisioning executor, no flag. dispatch_provision is a fast
@@ -753,13 +736,13 @@ async def container_provision(
     "/retry",
     summary="Retry provisioning for a failed container",
     description=(
-        "Retries the full provisioning flow for a container that is in error state. Requires an active subscription."
+        "Retries the full provisioning flow for a workspace in error state. Not billing-gated: "
+        "provisioning creates nothing billable."
     ),
     operation_id="container_retry",
     responses={
         404: {"description": "No container for this user"},
         409: {"description": "Container is not in error state"},
-        402: {"description": "No active subscription"},
     },
 )
 async def container_retry(
@@ -767,14 +750,6 @@ async def container_retry(
 ):
     owner_id = resolve_owner_id(auth)
     await ensure_workspace_trial_default(auth, owner_id)
-    # Audit C1: same hardened gate as /provision — ID existence isn't
-    # enough; status must be active/trialing AND bedrock_claude needs
-    # a positive credit balance.
-    await _assert_provision_allowed(
-        owner_id,
-        is_admin=auth.is_org_admin,
-        actor_user_id=auth.user_id,
-    )
 
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:

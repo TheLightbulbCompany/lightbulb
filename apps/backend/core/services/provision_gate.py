@@ -1,9 +1,8 @@
-"""Provision gate evaluation — single source of truth for whether an owner
-can provision a container, and *why not* when they can't.
+"""The workspace gate — whether a workspace's chat and orb can run right now, and *why not*
+when they can't. ``/container/status`` returns its structured payload on 402.
 
-Both `/container/provision` and `/container/status` consult this helper and
-return its structured payload on 402, so the two endpoints can never
-disagree about the gate state.
+The name is historical: provisioning is no longer gated (a workspace on the shared pool costs
+nothing until it runs), so sign-up and the retry doors provision unconditionally.
 
 This module also owns the pure billing-state predicates that
 ``evaluate_provision_gate`` (and several callers outside the gate) need:
@@ -374,23 +373,25 @@ async def _evaluate_provision_gate_inner(
     owner_id: str,
     is_admin: bool = True,
 ) -> Gate | None:
-    """Return a Gate if provisioning should be blocked, else None.
+    """Return a Gate if the workspace's chat and orb cannot run right now, else None.
 
-    Layers (matches existing _assert_provision_allowed logic):
+    The voice product's gate. It no longer gates provisioning: a workspace on the shared pool
+    costs nothing until it runs, so sign-up provisions unconditionally (``provision_new_workspace``)
+    and this only answers ``/container/status``. Phone is not judged here: going live needs the
+    voice plan (``voice_onboarding.provision_at_go_live`` refuses with ``voice_payment_required``).
+
     0. The owner must be a workspace (Clerk org).
-    1. Subscription must be active or trialing (or legacy stripe_subscription_id present).
-    2. For openrouter_managed: credit balance must be above the reserve floor.
-    3. For chatgpt_oauth: OAuth tokens must exist for the connector — the
-       owner who completed the device-code flow (the polling user is
-       irrelevant).
+    1. No billing row: not provisioned yet, so nothing to pay for (the provision writes the trial).
+       A row must be live: the free trial counts, as does a paid voice plan.
+    2. The spend guards on the provider the runtime will really use (``provider_choice_from_row``):
+       a capped owner (trial, or a plan on the capped model) gets the trial expiry and daily-cap
+       cards; a credit-drawing owner gets the credits card when the Metronome fast-gate blocks.
+    3. That provider's own sign-in: ChatGPT tokens for the connector, a legacy BYO row's provider.
     """
     owner_role = "admin" if is_admin else "member"
 
-    # Layer 0 — workspace. Personal workspaces no longer exist (the September
-    # 2026 cohort was purged or migrated), so a non-org owner has nothing to
-    # provision. Product APIs 409 such a caller in resolve_owner_id before they
-    # get here; this is what a server-side door (wake, webhook, admin probe)
-    # handed a stale user_ id sees.
+    # Layer 0 — workspace. Product APIs 409 a caller with no org claim in resolve_owner_id before
+    # they get here; this is what a server-side door handed a stale user_ id sees.
     if not is_org_owner_id(owner_id):
         return Gate(
             code=WORKSPACE_REQUIRED_CODE,
@@ -402,17 +403,12 @@ async def _evaluate_provision_gate_inner(
             owner_role=owner_role,
         )
 
-    # Layer 1 — subscription.
+    # Layer 1 — a live subscription (the trial included).
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account:
-        # No billing row at all: the workspace's trial row was never written
-        # (ensure_workspace_trial_default creates it before the gate). Distinct
-        # from an inactive subscription below, which has its own re-activation
-        # path.
-        return _team_billing_required_gate(owner_role)
+        return None
     if not is_subscription_active(account):
-        status = account.get("subscription_status")
-        if status == "past_due":
+        if account.get("subscription_status") == "past_due":
             return Gate(
                 code="payment_past_due",
                 title="Payment past due",
@@ -422,16 +418,9 @@ async def _evaluate_provision_gate_inner(
                 action_admin_only=True,
                 owner_role=owner_role,
             )
-        # Align routing with what /billing/trial-checkout will actually
-        # accept. trial-checkout 409s any row whose subscription_status
-        # is in TRIAL_BLOCKED_STATUSES
-        # (canceled, incomplete, incomplete_expired, unpaid, paused —
-        # plus active/trialing, but those are filtered out by
-        # is_subscription_active above). Those rows must be routed to
-        # /settings/billing — sending them to the picker would 409
-        # already_subscribed regardless of whether stripe_subscription_id
-        # is still set (cancel_subscription clears it but leaves
-        # status="canceled").
+        # A row checkout would 409 (TRIAL_BLOCKED_STATUSES: canceled, unpaid, a pending voice
+        # invoice, ...) goes to billing management; anything else (an abandoned checkout's
+        # status-None row) goes back to the workspace paywall.
         if is_trial_blocked(account):
             return Gate(
                 code="subscription_required",
@@ -442,62 +431,20 @@ async def _evaluate_provision_gate_inner(
                 action_admin_only=True,
                 owner_role=owner_role,
             )
-        # A workspace with a customer row but no subscription state (status
-        # None) STARTED checkout and abandoned it — the customer row was
-        # written by create_customer_for_owner before the Stripe tab. Route it
-        # back to the workspace paywall; the checkout 409 guard excepts a
-        # None-status row, so the retry from the paywall proceeds cleanly.
         return _team_billing_required_gate(owner_role)
 
-    # trial_local short-circuit — a no-card local trial has NO
-    # provider_choice on the row (its provider is a config-path mode resolved
-    # at provision time, not stored here), so it must not be sent through the
-    # Layer-2 provider_required check below. A trial_local owner is
-    # provision-eligible without a stored provider.
-    if account.get("subscription_status") == "trial_local" and not _paid_voice(account):
-        # ONE predicate, shared with every start path and the
-        # daily Bedrock-restore trigger, so the gate and those paths can
-        # never disagree about whether a trial owner may have a container.
-        # This branch used to inline its own expiry+cap check; the chokepoint
-        # inlined only the cap, and an EXPIRED trial could therefore wake a
-        # container the gate would have refused. Do not re-inline it.
-        #
-        # ``account`` is already in hand, so this spends no extra billing read.
-        reason = await trial_cap.reason_for_account(owner_id, account)
-        return gate_for_trial_reason(reason, owner_role)
-
-    # Layer 2 — provider must be picked.
-    #
-    # Reads ``provider_choice`` directly off the billing row already in scope
-    # so we don't burn a second DDB call for the same field, and so the gate
-    # can never disagree with itself across two reads (a concurrent
-    # ChatGPT-OAuth disconnect clears provider_choice — a re-read here used
-    # to mask the null with the legacy "bedrock_claude" fallback).
-    provider_choice = account.get("provider_choice")
-    if provider_choice is None and (account.get("plan") in {"base", "standard", "ultra_pro"} or _paid_voice(account)):
-        # Base, and (interim) a paid Workspace/Ultra row that never chose a
-        # provider, run on the capped managed model (container_provision.
-        # provider_choice_from_row). OpenRouter's per-key daily limit is the
-        # valve, not Metronome credits, so Layer 3 has no jurisdiction here.
+    # Layer 2 — spend guards. A capped owner's valve is OpenRouter's per-key daily limit (and the
+    # trial's 30 days), never credits: the same predicate as gate_chat and the openrouter-gate.
+    if trial_cap.is_managed_capped(account):
         return gate_for_trial_reason(await trial_cap.reason_for_account(owner_id, account), owner_role)
-    if provider_choice is None:
-        return Gate(
-            code="provider_required",
-            title="Pick how to power your agents",
-            message=("Choose OpenRouter managed inference or sign in with ChatGPT to continue."),
-            action_label="Pick provider",
-            action_href="/settings?panel=billing",
-            # Org members can't change the org's provider — only the admin can.
-            action_admin_only=True,
-            owner_role=owner_role,
-        )
 
-    # Layer 3 — provider-specific prerequisites.
+    from core.services.container_provision import provider_choice_from_row
+
+    provider_choice, byo_provider = provider_choice_from_row(account)
     if provider_choice == "openrouter_managed":
-        # Credits pool at the owner level — org members all draw from one
-        # balance funded by the admin. Blocked-ness comes from the shared
-        # Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
-        # refresh) so this gate and the pre-chat gate can never disagree.
+        # Credits pool at the owner level. Blocked-ness comes from the shared Metronome fast-gate
+        # read, so this card and the pre-chat gate cannot disagree. A row whose choice was cleared
+        # (a ChatGPT disconnect) resolves here too, because that is what its runtime will draw on.
         from core.services.metronome_gate import is_owner_blocked
 
         if await is_owner_blocked(owner_id):
@@ -506,58 +453,42 @@ async def _evaluate_provision_gate_inner(
                 title="Top up Lightbulb credits to start your workspace",
                 message="Top up Lightbulb credits to continue managed inference.",
                 action_label="Top up now",
-                # The PROVIDERS panel, not billing. Credits are sold by
-                # CreditsSection, which LLMPanel embeds (see
-                # settings-nav-config: "there is NO separate Credits row").
-                # This pointed at /settings/billing#credits — but that route
-                # only `router.replace`s to /settings?panel=billing, dropping
-                # the fragment, and the billing panel has no credits UI at all.
-                # The one CTA on the "you have no credits" card led somewhere
-                # you cannot buy credits.
                 action_href="/settings?panel=providers",
                 action_admin_only=False,
                 owner_role=owner_role,
             )
+        return None
 
+    # Layer 3 — the provider's own sign-in.
     if provider_choice == "chatgpt_oauth":
-        # Gate on the CONNECTOR's tokens (the workspace owner who completed
-        # the device-code flow), never the polling user — otherwise the gate
-        # flaps per-poller in orgs: admin B would be told to "sign in" even
-        # though owner A already connected. The billing row is already in
-        # scope; connector_from_account costs no extra read on this poll path.
+        # The CONNECTOR's tokens (the admin who completed the device-code flow), never the
+        # poller's, so the card does not flap per member.
         from core.services.oauth_service import connector_from_account
 
-        token_owner = connector_from_account(account, owner_id)
-        if not await _has_oauth_tokens(token_owner, owner_id):
+        if not await _has_oauth_tokens(connector_from_account(account, owner_id), owner_id):
             return Gate(
                 code="oauth_required",
                 title="Sign in with ChatGPT",
                 message="Complete the ChatGPT sign-in to start your container.",
                 action_label="Sign in with ChatGPT",
                 action_href="/chat?provider=chatgpt_oauth",
-                # Only an admin (the owner) may bind a ChatGPT account to the
-                # shared container.
                 action_admin_only=True,
                 owner_role=owner_role,
             )
 
-    if provider_choice == "byo_key":
-        # Existing workspaces may still carry a legacy BYO choice. They keep
-        # running when their saved key is present; if the row is incomplete,
-        # direct the admin to the provider settings so they can move to one of
-        # the currently supported choices. New key setup is closed.
-        if not account.get("byo_provider"):
-            return Gate(
-                code="byo_provider_required",
-                title="Finish setting up your inference provider",
-                message=(
-                    "This workspace has an incomplete saved API-key setup. Choose OpenRouter managed "
-                    "inference or sign in with ChatGPT to continue."
-                ),
-                action_label="Change provider",
-                action_href="/settings?panel=billing",
-                action_admin_only=True,
-                owner_role=owner_role,
-            )
+    if provider_choice == "byo_key" and not byo_provider:
+        # A legacy saved-key row that never recorded its provider. New key setup is closed.
+        return Gate(
+            code="byo_provider_required",
+            title="Finish setting up your inference provider",
+            message=(
+                "This workspace has an incomplete saved API-key setup. Choose OpenRouter managed "
+                "inference or sign in with ChatGPT to continue."
+            ),
+            action_label="Change provider",
+            action_href="/settings?panel=billing",
+            action_admin_only=True,
+            owner_role=owner_role,
+        )
 
-    return None  # all gates pass — provisioning allowed
+    return None

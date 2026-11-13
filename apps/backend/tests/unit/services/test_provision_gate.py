@@ -28,20 +28,13 @@ async def test_non_org_owner_returns_workspace_required():
 
 
 @pytest.mark.asyncio
-async def test_no_billing_org_owner_returns_team_billing_required():
-    """An org owner (owner_id starts with 'org_') with no billing row gets a
-    DISTINCT team_billing_required code. An org with no billing needs a
-    Workspace Stripe subscription, and the frontend keys its workspace-billing
-    CTA off this stable compatibility code."""
-    with (
-        patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
-    ):
+async def test_no_billing_row_is_no_gate_the_workspace_is_just_not_provisioned_yet():
+    """Voice: no billing row means the provision has not written the trial yet. Nothing has run
+    and nothing can spend, so the status read says pending, never a paywall (a member's read
+    that beat the organization.created webhook used to see "Set up workspace billing")."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(return_value=None)
-        gate = await evaluate_provision_gate(owner_id="org_xyz", is_admin=True)
-    assert gate is not None
-    assert gate.code == "team_billing_required"
-    assert gate.action_admin_only is True
+        assert await evaluate_provision_gate(owner_id="org_xyz", is_admin=False) is None
 
 
 @pytest.mark.asyncio
@@ -312,33 +305,42 @@ async def test_trial_local_missing_trial_end_not_expired():
 
 
 @pytest.mark.asyncio
-async def test_active_subscription_no_provider_choice_returns_provider_required():
-    """Active subscription + provider_choice absent (e.g. ChatGPT disconnect cleared it,
-    or the row pre-dates provider_choice writes) must surface provider_required
-    so the frontend routes the owner to the picker, not the credits/oauth/byo
-    gates which would silently treat the legacy fallback as Bedrock.
-    """
+@pytest.mark.parametrize(("blocked", "code"), [(True, "credits_required"), (False, None)])
+async def test_a_cleared_provider_choice_is_judged_on_the_credits_it_will_draw(blocked, code):
+    """No stored provider on an uncapped live row (a ChatGPT disconnect cleared it) resolves to
+    managed credits (provider_choice_from_row), so the gate checks those credits instead of the
+    old "Pick how to power your agents" card, which blocked a workspace that would run."""
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.trial_cap.billing_repo", repo),
+        patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=blocked)),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active", "stripe_subscription_id": "s"})
+        gate = await evaluate_provision_gate(owner_id="org_x")
+    assert (gate.code if gate else None) == code
+
+
+@pytest.mark.asyncio
+async def test_a_live_trial_runs_chat_and_orb_without_a_plan_or_provider():
+    """The voice contract: a fresh trial's chat and orb work (phone is go-live's job)."""
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None})
+        assert await evaluate_provision_gate(owner_id="org_x") is None
+
+
+@pytest.mark.asyncio
+async def test_a_trial_with_a_stray_chatgpt_choice_is_judged_as_the_trial_it_runs_as():
+    """A trial row runs on managed inference whatever provider_choice it carries, so no
+    ChatGPT sign-in card for it: the trial predicate alone."""
+    oauth = AsyncMock(return_value=False)
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.provision_gate._has_oauth_tokens", oauth),
     ):
         repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "subscription_status": "active",
-                "stripe_subscription_id": "sub_x",
-                # No provider_choice on the row.
-            },
+            return_value={"subscription_status": "trial_local", "provider_choice": "chatgpt_oauth"}
         )
-        gate = await evaluate_provision_gate(
-            owner_id="org_x",
-        )
-    assert gate is not None
-    assert gate.code == "provider_required"
-    # The action opens the same billing provider picker as ChatErrorCard.
-    assert gate.action_href == "/settings?panel=billing"
-    # Provider choice is an admin-only mutation for orgs; personal owners
-    # are admin of themselves so the action button still renders for them.
-    assert gate.action_admin_only is True
+        assert await evaluate_provision_gate(owner_id="org_x") is None
+    oauth.assert_not_awaited()
 
 
 @pytest.mark.asyncio

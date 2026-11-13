@@ -2,8 +2,8 @@
 
 ``provision_new_workspace`` is the ONE door that starts a new workspace's first
 provision: the Clerk ``organization.created`` webhook calls it, and it raises on a
-failure so Svix redelivers the event. ``GET /container/status`` does not call it -- it is
-a cold read.
+failure so Svix redelivers the event (redelivery is also the retry for a provision that failed
+later). ``GET /container/status`` does not call it -- it is a cold read.
 
 Every helper here is idempotent -- every call is safe to repeat.
 """
@@ -21,10 +21,9 @@ from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
     capture_product_event,
 )
-from core.repositories import billing_repo
+from core.repositories import billing_repo, container_repo
 from core.services import workspace_provisioning
 from core.services.provision_dispatch import dispatch_provision
-from core.services.provision_gate import evaluate_provision_gate
 from core.services.trial_cap import utc_today
 
 logger = logging.getLogger(__name__)
@@ -37,7 +36,7 @@ _TRIAL_STARTED_NAMESPACE = uuid.UUID("6f6c9f2e-2d5b-4a1c-9a3f-3d5c8e1b7a40")
 
 
 async def ensure_workspace_trial_default(auth: AuthContext, workspace_id: str) -> None:
-    """Create the active workspace's unarmed trial once, before either provision gate.
+    """Create the active workspace's unarmed trial once.
 
     The conditional put selects one creator across members and backend instances.
     Existing trial analytics describe row creation; runtime readiness arms its clock.
@@ -100,18 +99,18 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
 async def provision_new_workspace(org_id: str, created_by: str | None = None) -> None:
     """Clerk ``organization.created``: start the new workspace's first provision.
 
-    Creates the trial row, checks the provision gate as an org admin (the creator is one),
-    and dispatches. A gate that is up (e.g. an expired trial) is a normal return -- the billing
-    event that clears it provisions. Anything else RAISES: this webhook is the only thing
+    Creates the trial row and dispatches. No billing gate: a workspace on the shared pool costs
+    nothing until it runs, and every door that spends (chat, orb, phone) has its own gate. A
+    workspace already ``running`` is left alone, so a redelivered event is a no-op on a healthy
+    workspace and a retry on a failed one. Anything else RAISES: this webhook is the only thing
     that starts a first provision, so a failure must make Svix redeliver the event.
     """
     if not is_org_owner_id(org_id):
         return
     try:
         await _ensure_trial_row(org_id, actor_user_id=created_by)
-        gate = await evaluate_provision_gate(owner_id=org_id, is_admin=True, actor_user_id=created_by)
-        if gate is not None:
-            logger.info("provision_new_workspace: gate up for %s (%s); its clearing event provisions", org_id, gate)
+        row = await container_repo.get_by_owner_id(org_id, consistent=True) or {}
+        if row.get("status") == "running":
             return
         if not await dispatch_provision(org_id):
             raise RuntimeError(f"provision dispatch did not start for {org_id}")

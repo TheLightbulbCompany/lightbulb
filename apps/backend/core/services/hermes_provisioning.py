@@ -1337,7 +1337,7 @@ async def reconcile_runtime(owner_id: str) -> str:
     and that execution runs this at its end (``provision_runner``), reading the same billing.
 
     Before any of that, ``_reconcile_entitlements`` -- the billing-derived duties that live
-    outside the runtime (Metronome customer, nightly CEO) -- so a Stripe re-entitlement reaches
+    outside the runtime (Metronome customer, retired-schedule cleanup) -- so a Stripe re-entitlement reaches
     them however the runtime half goes.
 
     Returns ``"dispatched"``, ``"failed"``, or ``roll_runtime_image``'s answer. A failure NEVER
@@ -1346,7 +1346,7 @@ async def reconcile_runtime(owner_id: str) -> str:
 
     A Metronome ensure failure also answers ``"failed"`` -- AFTER the runtime work, which it does
     not block -- so a reconcile execution is retried by the machine (a credit-drawing payer with
-    no ledger is blocked by the credits gate). The nightly CEO arm stays best-effort."""
+    no ledger is blocked by the credits gate). The schedule cleanup stays best-effort."""
     metronome_ok = await _reconcile_entitlements(owner_id)
     result = await _reconcile_runtime_to_billing(owner_id)
     return result if metronome_ok else "failed"

@@ -514,7 +514,10 @@ async def entrypoint(ctx: JobContext) -> None:
         if session.user_state == "away":
             _away(type("Ev", (), {"new_state": "away"}))
 
-    silence_checks.append(still_away)
+    # An answer returns a caller who went quiet during the hold to the ordinary silence timer: LiveKit's own, which
+    # runs AWAY_S only once the voice has finished saying it. `still_away` would tell GPT-Live QUIET at once (mid-answer)
+    # and hang up AWAY_S after the answer arrived (a prod call, 13 Nov), because LiveKit never re-times an away caller.
+    silence_checks.append(session.reset_away_timer)
 
     @session.on("user_state_changed")
     def _away(ev) -> None:

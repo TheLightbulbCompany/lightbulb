@@ -55,7 +55,6 @@ jobs:
         env:
           CLERK_ISSUER: https://test.clerk.accounts.dev
           HUGGINGFACE_TOKEN: test_token
-          DYNAMODB_TABLE_PREFIX: lightbulb-test-
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
@@ -66,7 +65,7 @@ jobs:
 
       # The Python Lambdas' own suites: the backend suite does not collect them.
       - name: Run Lambda tests
-        if: matrix.shard == 1
+        if: matrix.shard == 1 && (success() || failure())
         env:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing

@@ -221,6 +221,8 @@ jobs:
       # No Docker needed: the bundled Lambdas use local.tryBundle (npm/pip3 on
       # the host), and the hosted runner has both.
       - name: Check deploy.yml matches the pipeline definition
+        # Runs even when the suite is red: drift breaks every deploy after merge.
+        if: success() || failure()
         working-directory: apps/infra
         run: |
           npx cdk synth --no-notices > /dev/null

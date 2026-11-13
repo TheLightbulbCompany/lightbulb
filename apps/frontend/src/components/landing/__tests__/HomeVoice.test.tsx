@@ -20,7 +20,7 @@ import { ProofStories } from "../ProofStories";
 import { WorkspaceBand } from "../WorkspaceBand";
 import { ASK_AI_PROMPT } from "../askAiPrompt";
 
-const PRICING = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2" };
+const PRICING = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2", voiceMonthlyUsd: 250, voiceIncludedMinutes: 1500, voiceOverageUsd: 0.35 };
 const BANNED = /multiplayer|AI-native|orchestration|\bbots?\b|\bprompts?\b|autonomous|Paperclip|Hermes|AgentCore|\bJev\b/i;
 
 describe("homepage voice", () => {
@@ -43,7 +43,7 @@ describe("homepage voice", () => {
     expect(text).not.toMatch(BANNED);
     // The founding line's price comes from the billing API; retired plan prices never appear.
     expect(text).not.toMatch(/\$\s?150\b|\bUltra\b|\bBase\b/);
-    expect(text).toContain("30 days free, then $50 a month for up to 5 people and $20 a member from the 6th");
+    expect(text).toContain("$250 a month includes 1,500 call minutes, then $0.35 a minute.");
     expect(text).toContain("Anna’s Frozen Treats");
     expect(text).toContain("Second Catch");
     expect(text).toContain("Mention one in a room.");

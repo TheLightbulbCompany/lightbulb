@@ -19,7 +19,7 @@ from core.auth import (
     require_org_admin,
 )
 from core.config import settings
-from core.billing import voice_plan, voice_plan_checkout
+from core.billing import voice_billing, voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.repositories.workspace_repo import customer_ops_agent_id
@@ -188,6 +188,10 @@ async def get_public_prices(response: Response):
         "included_members": SEATS_INCLUDED,
         "seat_price_usd": settings.SEAT_PRICE_USD,
         "front_desk_price_usd": _front_desk_price_usd(),
+        # The voice receptionist plan (what get_voice_plan bills): $250/month, minutes included, then a per-minute rate.
+        "voice_plan_monthly_usd": 250,
+        "voice_included_minutes": voice_billing.INCLUDED_MINUTES,
+        "voice_overage_usd_per_minute": voice_billing.OVERAGE_USD_PER_MINUTE,
         "trial_days": billing_repo._TRIAL_LOCAL_DURATION_SECONDS // 86400,
         # The one billed copy is repo-root openrouter-pricing.json, fed in by CDK.
         "managed_markup": settings.OPENROUTER_MARKUP or None,

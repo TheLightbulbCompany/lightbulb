@@ -45,7 +45,7 @@ export function HowItWorks() {
             </div>
             <div className="lb-card-b">
               <h3>Invite your team</h3>
-              <p>Send your cofounder the join link. They land in #general with everyone, and the first five people are free.</p>
+              <p>Send your cofounder the join link. They land in #general with everyone, and there are no per-seat fees.</p>
             </div>
           </article>
 

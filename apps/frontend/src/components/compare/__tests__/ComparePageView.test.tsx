@@ -10,7 +10,7 @@ import { COMPARE_PAGES, getComparePage } from "@/content/compare";
 
 import { ComparePageView } from "../ComparePageView";
 
-const PRICING = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2" };
+const PRICING = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2", voiceMonthlyUsd: 250, voiceIncludedMinutes: 1500, voiceOverageUsd: 0.35 };
 
 beforeEach(() => getPricing.mockResolvedValue(PRICING));
 

@@ -592,6 +592,9 @@ async def test_public_prices_need_no_sign_in_and_match_checkout(async_client, mo
         "trial_days": 30,
         "managed_markup": settings.OPENROUTER_MARKUP or None,
         "front_desk_price_usd": settings.FRONT_DESK_PRICE_USD,
+        "voice_plan_monthly_usd": 250,
+        "voice_included_minutes": 1500,
+        "voice_overage_usd_per_minute": 0.35,
     }
 
 

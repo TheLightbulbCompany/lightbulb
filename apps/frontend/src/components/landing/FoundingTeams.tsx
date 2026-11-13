@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-import { ordinal, type Pricing } from "@/lib/pricing";
+import { VOICE_PLAN_NEUTRAL, voicePlanLine, type Pricing } from "@/lib/pricing";
 import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
@@ -26,9 +26,7 @@ export function FoundingTeams({ pricing: p }: { pricing: Pricing | null }) {
         </p>
         <ul className="lb-founding-list">
           {[
-            p
-              ? `${p.trialDays} days free, then $${p.teamPriceUsd} a month for up to ${p.includedMembers} people and $${p.seatPriceUsd} a member from the ${ordinal(p.includedMembers + 1)}`
-              : "30 days free",
+            voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL,
             ...OFFER,
           ].map((item) => (
             <li key={item}>{item}</li>

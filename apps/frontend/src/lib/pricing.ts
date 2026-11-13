@@ -14,6 +14,10 @@ export type Pricing = {
   frontDeskPriceUsd: number | null;
   /** Managed AI is billed at the model provider's price times this (openrouter-pricing.json). */
   managedMarkup: string;
+  /** The voice receptionist plan: a monthly price with minutes included, then a per-minute rate. null until the backend sends them. */
+  voiceMonthlyUsd: number | null;
+  voiceIncludedMinutes: number | null;
+  voiceOverageUsd: number | null;
 };
 
 export const PRICING_REVALIDATE_S = 300;
@@ -39,9 +43,10 @@ export async function getPricing(): Promise<Pricing | null> {
       n("trial_days"),
       n("front_desk_price_usd"),
     ];
+    const [voiceMonthly, voiceMinutes, voiceOverage] = [n("voice_plan_monthly_usd"), n("voice_included_minutes"), n("voice_overage_usd_per_minute")];
     const markup = typeof body.managed_markup === "string" ? body.managed_markup : null;
     if (team === null || included === null || seat === null || trial === null || markup === null) return null;
-    return { teamPriceUsd: team, includedMembers: included, seatPriceUsd: seat, trialDays: trial, frontDeskPriceUsd: frontDesk, managedMarkup: markup };
+    return { teamPriceUsd: team, includedMembers: included, seatPriceUsd: seat, trialDays: trial, frontDeskPriceUsd: frontDesk, managedMarkup: markup, voiceMonthlyUsd: voiceMonthly, voiceIncludedMinutes: voiceMinutes, voiceOverageUsd: voiceOverage };
   } catch {
     return null;
   }
@@ -64,53 +69,28 @@ export function markupPercent(markup: string): number {
   return Number(((Number(markup) - 1) * 100).toFixed(2));
 }
 
-/** /pricing copy (10 §B), shared by the page, /pricing.md and the FAQ JSON-LD. */
+/** The voice plan in one sentence, or null while the billing API has not sent its numbers (callers then show neutral copy). */
+export function voicePlanLine(p: Pricing | null): string | null {
+  if (!p || p.voiceMonthlyUsd === null || p.voiceIncludedMinutes === null || p.voiceOverageUsd === null) return null;
+  return `$${p.voiceMonthlyUsd} a month includes ${p.voiceIncludedMinutes.toLocaleString("en-US")} call minutes, then $${p.voiceOverageUsd.toFixed(2)} a minute.`;
+}
+
+export const VOICE_PLAN_NEUTRAL = "One flat monthly price with call minutes included, then a per-minute rate.";
+
+/** /pricing copy, shared by the page, /pricing.md and the FAQ JSON-LD. */
 export function pricingFaq(p: Pricing): { q: string; a: string }[] {
-  const firstPaid = ordinal(p.includedMembers + 1);
   return [
     {
-      q: `Why $${p.teamPriceUsd} flat?`,
-      a:
-        "What your team gets grows with the work its agents do, not with headcount. So you pay for the workspace " +
-        `and the agents' work, and people up to ${p.includedMembers} cost nothing. ` +
-        `An eight-person team pays $${teamMonthlyUsd(p, 8)} a month.`,
+      q: "What does the voice receptionist cost?",
+      a: `${voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL} One plan for your salon, spa or barbershop; no per-seat or per-staff fees.`,
     },
     {
-      q: `What happens at the ${firstPaid} person?`,
-      a:
-        `Your bill goes up by $${p.seatPriceUsd} a month for each person from the ${firstPaid}, prorated from the ` +
-        "day they join. When someone leaves, it goes back down.",
+      q: "What counts as a call minute?",
+      a: "The time a caller is on the line with your receptionist. Minutes are tallied over the month; usage past the included minutes is billed at the per-minute rate.",
     },
-    {
-      q: "What does managed AI cost?",
-      a:
-        `The model provider's price plus ${markupPercent(p.managedMarkup)}%, drawn from prepaid ` +
-        "credits you top up. Usage shows in the workspace, and nothing runs past your balance.",
-    },
-    {
-      q: "Which inference providers can we use?",
-      a:
-        "Choose Lightbulb-managed inference, funded with workspace credits, or sign in with your ChatGPT account. " +
-        "ChatGPT bills your account directly; managed inference is charged against workspace credits.",
-    },
-    { q: "What if it doesn't stick?", a: "Cancel any time. We help you take your work with you." },
+    { q: "What if it doesn't stick?", a: "Cancel any time." },
   ];
 }
 
-export function pricingInference(p: Pricing | null): string {
-  const managed = p ? `at the model provider's price × ${p.managedMarkup}, ` : "";
-  return (
-    `Choose how your agents run AI: Lightbulb-managed inference ${managed}as prepaid workspace credits, ` +
-    "or sign in with your ChatGPT account, billed by OpenAI."
-  );
-}
-export const PRICING_TRIAL =
-  "No card to start; add one when the month ends. Founding teams put a card on file at their setup session, " +
-  "and the first charge is on day 31. Your agents run on Lightbulb-managed AI with a daily allowance meanwhile.";
-export const PRICING_FOUNDING = "A founder sets your team up with you, and your price is locked for two years.";
-export function teamIncludes(p: Pricing): string {
-  return (
-    `Up to ${p.includedMembers} people · six AI employees (CEO, Engineering, Finance, Growth, Analytics, Customer Operations) · ` +
-    "channels, DMs, task board, Library, shared browser, team email · Mac app; iPhone app on TestFlight"
-  );
-}
+export const VOICE_PLAN_INCLUDES =
+  "A receptionist that answers every call, books and reschedules appointments, answers questions about your services and hours, and texts confirmations.";

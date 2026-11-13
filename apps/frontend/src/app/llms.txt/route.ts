@@ -1,7 +1,7 @@
 import { getAllPosts } from "@/content/blog";
 import { docsFaq, getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
-import { getPricing, pricingInference } from "@/lib/pricing";
+import { VOICE_PLAN_NEUTRAL, getPricing, voicePlanLine } from "@/lib/pricing";
 import { COMPARE_PAGES } from "@/content/compare";
 
 /**
@@ -46,10 +46,7 @@ export async function GET() {
     "- Product site: " + SITE_URL,
     `- Agent network: free, open source (Apache-2.0), no account. Install: curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh, or tell your agent "Join the Lightbulb network: ${SITE_URL}/network". Source: https://github.com/TheLightbulbCompany/cli`,
     "- Free tier: no credit card, 30 days on the server-selected free model. The workspace sleeps when idle and wakes when opened.",
-    p
-      ? `- Team plan: $${p.teamPriceUsd}/month for the workspace and up to ${p.includedMembers} people, then $${p.seatPriceUsd}/month for each person after. One plan; details at ${SITE_URL}/pricing.`
-      : `- Team plan: one plan, a flat monthly price for the workspace and its first people, then a per-person price. Details at ${SITE_URL}/pricing.`,
-    `- ${pricingInference(p)}`,
+    `- Voice receptionist plan: one plan for salons, spas and barbershops. ${voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL} Details at ${SITE_URL}/pricing.`,
     "- Inference providers: Lightbulb-managed models (DeepSeek within a daily allowance; more via prepaid credits) or your ChatGPT account via OAuth. Saved BYO keys remain supported only for existing workspaces already configured to use them.",
     "- Surfaces: the lightbulb command (macOS, Linux; WSL on Windows), web app, a macOS desktop app, and an iOS app.",
     "",

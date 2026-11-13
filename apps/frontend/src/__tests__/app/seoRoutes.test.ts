@@ -25,7 +25,7 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () =>
-      json({ workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2" }),
+      json({ workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2", voice_plan_monthly_usd: 250, voice_included_minutes: 1500, voice_overage_usd_per_minute: 0.35 }),
     ),
   );
 });
@@ -56,7 +56,7 @@ describe("/llms.txt", () => {
   it("states the plan facts the backend actually charges", async () => {
     const text = await body(llms());
     // The one plan, priced by the billing API. Base and Ultra are retired: never quote them again.
-    expect(text).toContain("Team plan: $50/month for the workspace and up to 5 people, then $20/month");
+    expect(text).toContain("Voice receptionist plan: one plan for salons, spas and barbershops. $250 a month includes 1,500 call minutes, then $0.35 a minute");
     expect(text).not.toMatch(/Ultra|Base plan|vCPU/);
     expect(text).toContain("server-selected free model");
     expect(text).toContain("30 days");

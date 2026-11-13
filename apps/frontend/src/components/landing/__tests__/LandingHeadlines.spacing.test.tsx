@@ -64,8 +64,8 @@ describe("landing headlines survive .lb-brk being hidden", () => {
 
   it("PricingThreeCard states the one price", async () => {
     const { PricingThreeCard } = await import("../PricingThreeCard");
-    const { container } = render(<PricingThreeCard pricing={{ teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2" }} />);
-    expect(flatten(container)).toContain("Two ways to power your agents. One price.");
-    expect(flatten(container)).toContain("$50 a month for your workspace, up to five people.");
+    const { container } = render(<PricingThreeCard pricing={{ teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, frontDeskPriceUsd: null, managedMarkup: "1.2", voiceMonthlyUsd: 250, voiceIncludedMinutes: 1500, voiceOverageUsd: 0.35 }} />);
+    expect(flatten(container)).toContain("One plan for your front desk. One price.");
+    expect(flatten(container)).toContain("$250 a month includes 1,500 call minutes, then $0.35 a minute.");
   });
 });

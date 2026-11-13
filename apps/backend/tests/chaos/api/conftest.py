@@ -41,14 +41,6 @@ def _signed_out(monkeypatch):
 # mutates case.method during fuzzing, so the generated method is unreliable.
 # Populated empirically during implementation; NO silent skips.
 NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
-    # Proxy to the per-user OpenClaw container after a ws-connections lookup;
-    # 500 here is the connections table absent from the hermetic fixture +
-    # no live container to proxy to — not a product bug.
-    "POST /api/v1/ws/message": "proxies to a live container; ws-connections table not provisioned hermetically",
-    # Same class: looks up the ws-connections table (absent hermetically) →
-    # ConnectionServiceError 5xx on inputs that reach the lookup. Generation-
-    # dependent, so it only surfaces on some seeds — exclude deterministically.
-    "POST /api/v1/ws/connect": "ws-connections table not provisioned hermetically (connection lookup 5xx)",
     # Exchanges the OAuth code with the external provider after an oauth-state
     # lookup; both the state table and the provider call are absent hermetically.
     "GET /api/v1/oauth/{provider}/callback": "external OAuth code exchange + oauth-state table not provisioned hermetically",

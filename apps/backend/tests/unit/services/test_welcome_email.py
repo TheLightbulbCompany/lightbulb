@@ -6,40 +6,23 @@ import pytest
 
 from core.services import welcome_email
 
-URL = "https://app.example.com/chat?panel=chat&room=r1"
+URL = "https://app.example.com/voice/setup"
 
 
 def test_owner_version_is_lightbulb_speaking_and_promises_nothing_false():
     subject, text = welcome_email.owner_welcome(first_name="Ada", workspace="Acme", url=URL)
-    assert subject == "Your team at Acme is ready"
-    assert text.startswith("Hi Ada,\n\nI'm Lightbulb.")
-    assert f"Open #general: {URL}" in text
-    assert text.rstrip().endswith("— Lightbulb, Acme")
-    assert "CEO" not in text
-    for false_claim in ("container", "Nothing is\nshared", "marketplace", "overnight"):
-        assert false_claim not in text
-    assert all(ord(ch) < 0x2000 or ch in "—" for ch in subject + text)  # no emoji
+    assert subject == "Your assistant for Acme is ready to set up"
+    assert text.startswith("Hi Ada,\n\nI'm Lightbulb. I answer your calls, book appointments and take messages.")
+    assert f"Set up your assistant: {URL}" in text
+    assert text.rstrip().endswith("Lightbulb, Acme")
+    for old_product in ("CEO", "specialist", "#general", "Engineering", "container", "marketplace", "overnight"):
+        assert old_product not in text
+    assert all(ord(ch) < 0x2000 for ch in subject + text)  # no emoji, no em dash
 
 
-def test_with_the_switch_the_owner_is_sent_to_their_chat_with_lightbulb():
-    _, text = welcome_email.owner_welcome(first_name="Ada", workspace="Acme", url=URL, lightbulb_chat=True)
-    assert f"Your chat with Lightbulb: {URL}" in text
-    assert "general" not in text and "#" not in text
-
-
-@pytest.mark.asyncio
-async def test_the_owner_start_url_is_the_lightbulb_dm_with_the_switch():
-    from core.services import messaging
-
-    with (
-        patch.object(messaging, "_front_agent_id", new=AsyncMock(return_value="ceo")),
-        patch.object(messaging, "_agent_dm_room_id", new=AsyncMock(return_value="dm-1")) as dm,
-    ):
-        url, chat = await welcome_email.owner_start_url("org_1", "user_1")
-    assert url.endswith("/chat?panel=chat&room=dm-1") and chat
-    dm.assert_awaited_once_with("org_1", "user_1", "ceo")
-    with patch.object(messaging, "_front_agent_id", new=AsyncMock(return_value=None)):
-        assert await welcome_email.owner_start_url("org_1", "user_1") == (welcome_email.general_url("org_1"), False)
+def test_the_owner_is_pointed_at_assistant_setup():
+    assert welcome_email.setup_url().endswith("/voice/setup")
+    assert welcome_email.home_url().endswith("/voice")
 
 
 def test_teammate_version_names_the_inviter_when_known():
@@ -48,6 +31,7 @@ def test_teammate_version_names_the_inviter_when_known():
     assert "Ada added you to Acme." in text
     _, anonymous = welcome_email.teammate_welcome(first_name=None, inviter=None, workspace="Acme", url=URL)
     assert anonymous.startswith("Hi,\n\nYou've been added to Acme.")
+    assert "#general" not in text and "specialist" not in text and "\u2014" not in text
 
 
 @pytest.mark.asyncio
@@ -62,7 +46,8 @@ async def test_owner_welcome_is_lightbulbs_first_contact():
     kwargs = send.call_args.kwargs
     assert kwargs["owner_id"] == "org_1"
     assert kwargs["purpose"] == "first_contact"
-    assert kwargs["subject"] == "Your team at Acme is ready"
+    assert kwargs["subject"] == "Your assistant for Acme is ready to set up"
+    assert kwargs["body_text"].count(welcome_email.setup_url()) == 1
     assert kwargs["tenant_name"] == "tenant-org_1"
 
 

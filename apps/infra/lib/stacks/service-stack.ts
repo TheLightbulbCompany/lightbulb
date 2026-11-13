@@ -32,7 +32,7 @@ import {
 } from "../table-names";
 import { Construct } from "constructs";
 import { DEV_SPOT } from "./container-stack";
-import { LAUNCH_DOMAIN, LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
 
 // hermes-version.json is the per-env promotion tag for the Hermes bridge image (M4-R34),
 // same pattern as openclaw-version.json's dev.tag/prod.tag: build-hermes-image.yml pushes a
@@ -218,11 +218,6 @@ export interface ServiceStackProps extends cdk.StackProps {
   voiceLineNumber?: string;
   /** Recall Google Login Group id the Meet bot signs in with; empty = anonymous bot. */
   recallGoogleLoginGroupId?: string;
-  /**
-   * The Accounts v2 API version pinned on the company account/account-link
-   * calls (`Stripe-Version` header). Empty ⇒ the provisioning preview.
-   */
-  stripeAccountsV2Version?: string;
 }
 
 /**
@@ -1327,54 +1322,6 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // Marketplace Artifacts S3 Bucket
-    //
-    // Stores artifacts uploaded for marketplace listings (agent bundles,
-    // screenshots, manifests, signed receipts). Versioned so a bad publish
-    // can be rolled back without losing buyer history. Blocked from public
-    // access; bytes are served via signed URLs from the marketplace API.
-    // -------------------------------------------------------------------------
-    // Data resource: nothing reads it since the Marketplace deletion (#4975). Kept so
-    // removing it from CDK does not delete it; delete with the founder's go.
-    new s3.Bucket(this, "MarketplaceArtifactsBucket", {
-      bucketName: `lightbulb-${env}-marketplace-artifacts`,
-      versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy:
-        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: env !== "prod",
-      // Backup-import uploads go browser → S3 directly via a presigned PUT
-      // (API Gateway caps bodies at 10 MB; real OpenClaw backups are 10×–100×
-      // that, dominated by a Chrome profile the importer discards anyway).
-      cors: [
-        {
-          allowedMethods: [s3.HttpMethods.PUT],
-          allowedOrigins:
-            env === "prod"
-              ? [`https://${rootDomain}`]
-              : [
-                  `https://dev.${rootDomain}`,
-                  "http://localhost:3000",
-                  "https://*.vercel.app",
-                ],
-          allowedHeaders: ["content-type"],
-          maxAge: 3600,
-        },
-      ],
-      lifecycleRules: [
-        {
-          // Raw uploads are consumed within minutes; nothing under imports/
-          // is ever read twice. Versioned bucket → expire noncurrent too.
-          prefix: "imports/",
-          expiration: cdk.Duration.days(1),
-          noncurrentVersionExpiration: cdk.Duration.days(1),
-          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
-        },
-      ],
-    });
-
-    // -------------------------------------------------------------------------
     // CFN Templates S3 Bucket (public-read of the connector template only)
     //
     // Hosts the AWS connector CloudFormation template so the
@@ -1723,8 +1670,8 @@ export class ServiceStack extends cdk.Stack {
       WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"
-          ? `https://${rootDomain},https://www.${rootDomain},https://${LAUNCH_DOMAIN},https://www.${LAUNCH_DOMAIN}`
-          : `https://dev.${rootDomain},https://dev.${LAUNCH_DOMAIN}`,
+          ? `https://${rootDomain},https://www.${rootDomain}`
+          : `https://dev.${rootDomain}`,
       // SEC-8 token-origin fence: Clerk session tokens carry no `aud`, so the
       // backend validates the `azp` (authorized party) claim against this
       // allowlist instead. Broader than CORS_ORIGINS because azp reflects the
@@ -1858,17 +1805,6 @@ export class ServiceStack extends cdk.Stack {
       METRONOME_VOICE_METRIC_ID: env === "dev"
         ? "17a42d84-c10c-4c6a-907d-feb2ab02d080"
         : "8065419d-79f8-4b8e-ad1d-d933479521cc",
-      // The FIXED-type product top-up commits land on. Payment-gated
-      // invoicing additionally requires a stripe_product_id custom field
-      // on it (set: dev -> test-mode product, prod -> live-mode
-      // prod_UgkNkatoEaWFnb); without it, top-ups 400 loudly rather
-      // than silently no-op.
-      METRONOME_CREDITS_PRODUCT_ID:
-        env === "dev"
-          ? "6dab1634-020d-4288-b5e6-99568a30404c"
-          : env === "prod"
-            ? "876e1694-9d76-4c37-9814-c957dbd9370f"
-            : "",
       // The Stripe integration Metronome delivers invoices through. Dev has two (the legacy
       // live-account one can't be removed without Metronome support), and Metronome refuses a
       // billing config that doesn't name one; prod has one and names it for symmetry.
@@ -1899,28 +1835,7 @@ export class ServiceStack extends cdk.Stack {
       // anonymously). Bucket name + key are fixed, so this is a literal string
       // — no cross-stack output ref needed (the bucket lives in this stack).
       CFN_TEMPLATE_URL: `https://${resourcePrefix(env)}cfn-templates.s3.us-east-1.amazonaws.com/${CFN_TEMPLATE_KEY}`,
-      // Company Stripe account — owner's own business account on the same
-      // Connect platform. Return/refresh land on Settings → Connections; the
-      // OAuth redirect is the backend callback on the API host.
-      STRIPE_COMPANY_REFRESH_URL:
-        env === "prod"
-          ? `https://${rootDomain}/settings/connections?stripe=refresh`
-          : `https://dev.${rootDomain}/settings/connections?stripe=refresh`,
-      STRIPE_COMPANY_RETURN_URL:
-        env === "prod"
-          ? `https://${rootDomain}/settings/connections?stripe=return`
-          : `https://dev.${rootDomain}/settings/connections?stripe=return`,
-      STRIPE_COMPANY_OAUTH_REDIRECT_URL:
-        env === "prod"
-          ? `https://api.${rootDomain}/api/v1/company/stripe/connect/callback`
-          : `https://api-dev.${rootDomain}/api/v1/company/stripe/connect/callback`,
       STRIPE_CONNECT_CLIENT_ID: props.stripeConnectClientId ?? "",
-      // Platform publishable key (pk_…, public) for Connect embedded
-      // onboarding, from the STRIPE_PUBLISHABLE_KEY_{DEV,PROD} repo variables.
-      // Empty ⇒ the Stripe card falls back to the hosted Account Link.
-      STRIPE_PUBLISHABLE_KEY: env === "dev"
-        ? (process.env.STRIPE_PUBLISHABLE_KEY_DEV ?? "")
-        : (process.env.STRIPE_PUBLISHABLE_KEY_PROD ?? ""),
       LIVEKIT_URL: props.livekitUrl ?? "",
       VOICE_LINE_NUMBER: props.voiceLineNumber ?? "",
       // Certification is complete. The reviewed phone-telephony workflow creates the provider trunk/config
@@ -1928,9 +1843,6 @@ export class ServiceStack extends cdk.Stack {
       VOICE_BUY_NUMBERS: env === "prod" ? "true" : "false",
       RECALL_GOOGLE_LOGIN_GROUP_ID: props.recallGoogleLoginGroupId ?? "",
       ...(props.livekitAgentName ? { LIVEKIT_AGENT_NAME: props.livekitAgentName } : {}),
-      // Accounts v2 API version pin for the company account/account-link
-      // calls. Empty ⇒ the provisioning preview.
-      STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
       // Temporal where the super-agent gate is on.
       ...(superAgentEnabled(env)
         ? {
@@ -2239,20 +2151,9 @@ export class ServiceStack extends cdk.Stack {
         LAMBDA_SECRET_ENV_MAP: secretEnvMap,
       },
     });
-    // Dev keeps one consumer warm (Walk 14, 6 Nov 2026): every "queue wait" over 3 s on dev was a cold
-    // start, 6.3-10.2 s of the handler's first-invoke setup (env rebuild, backend import, Temporal
-    // connect), while a warm one waits ~35 ms. FIFO queues have no batching window to tune. A
-    // provisioned environment runs that setup at init (scripts/work_lambda.py), where Lambda allows it
-    // well past 10 s. ponytail: one warm instance; a second concurrent room still cold-starts.
-    const workTarget: lambda.IFunction =
-      env === "dev"
-        ? new lambda.Alias(this, "WorkConsumerLive", {
-            aliasName: "live",
-            version: workConsumer.currentVersion,
-            provisionedConcurrentExecutions: 1,
-          })
-        : workConsumer;
-    const workMapping = workTarget.addEventSourceMapping("OpenClawWorkQueue", {
+    // No provisioned concurrency (it was dev-only, ~$17.5/mo): a cold consumer adds 6-10 s to the
+    // first room turn after idle, which dev accepts.
+    const workMapping = workConsumer.addEventSourceMapping("OpenClawWorkQueue", {
       eventSourceArn: props.openClawWorkQueueArn,
       // One message per invoke: a FIFO batch holds one group, run in order, so a
       // bigger batch would multiply the worst case past the timeout and keep the

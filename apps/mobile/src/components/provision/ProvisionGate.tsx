@@ -73,7 +73,6 @@ import { WEB_ORIGIN } from "../../config/domain";
 import { makeAdapter } from "../../lib/adapter";
 import { paywallProductIds } from "../../lib/appleIap";
 import { PaywallScreen } from "../billing/PaywallScreen";
-import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 import { ProvisioningStepper } from "./ProvisioningStepper";
@@ -527,25 +526,20 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   // loaded message lists, scroll position and per-screen mount fetches each
   // time. One element type for all five states is what keeps `children` alive.
   //
-  // `children` only ever mounts from here (every earlier return replaces the
-  // whole tree with an interstitial), so this is also the one place that hands
-  // the polled status down via ContainerStatusContext to in-app consumers.
   return (
-    <ContainerStatusContext.Provider value={status}>
-      <View style={styles.gateRoot}>
-        {/* Non-blocking Teams-degraded banner over the live children. Fixed
-            index (0) above the stepper (1) — see TeamsDegradedBanner — so it
-            never remounts the tab navigator. Gated on `ready` only: a
-            container that isn't up yet has no working chat to sit this over,
-            and `teams_status` is only meaningful once the container is fine. */}
-        {status.kind === "ready" && status.teamsStatus === "failed" ? (
-          <TeamsDegradedBanner onRetry={onRetry} />
-        ) : null}
-        <ProvisioningStepper status={status}>
-          {children}
-        </ProvisioningStepper>
-      </View>
-    </ContainerStatusContext.Provider>
+    <View style={styles.gateRoot}>
+      {/* Non-blocking Teams-degraded banner over the live children. Fixed
+          index (0) above the stepper (1) — see TeamsDegradedBanner — so it
+          never remounts the tab navigator. Gated on `ready` only: a
+          container that isn't up yet has no working chat to sit this over,
+          and `teams_status` is only meaningful once the container is fine. */}
+      {status.kind === "ready" && status.teamsStatus === "failed" ? (
+        <TeamsDegradedBanner onRetry={onRetry} />
+      ) : null}
+      <ProvisioningStepper status={status}>
+        {children}
+      </ProvisioningStepper>
+    </View>
   );
 }
 

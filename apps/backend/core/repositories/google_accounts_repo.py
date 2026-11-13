@@ -87,17 +87,6 @@ async def list_accounts(owner_id: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def set_assignment(owner_id: str, agent_id: str, email: str) -> None:
-    await run_in_thread(
-        _table().put_item,
-        Item={
-            "owner_id": owner_id,
-            "provider": f"{_ASSIGN_PREFIX}{agent_id}",
-            "email": email,
-        },
-    )
-
-
 async def get_assignment(owner_id: str, agent_id: str) -> str | None:
     """The agent's EXPLICITLY assigned Google account, or None.
 

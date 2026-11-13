@@ -2,15 +2,19 @@ import { render } from "@testing-library/react-native";
 import * as Notifications from "expo-notifications";
 import { router } from "expo-router";
 
-import { claimRoomTarget } from "../../lib/activeAgent";
-import { NotificationTapRouter, notificationHrefs } from "./NotificationTapRouter";
+import { NotificationTapRouter, notificationHref } from "./NotificationTapRouter";
 
-jest.mock("expo-router", () => ({ router: { push: jest.fn(), dismissTo: jest.fn() } }));
+jest.mock("expo-router", () => ({ router: { navigate: jest.fn(), push: jest.fn() } }));
+let mockRooms: unknown[] = [];
+let mockRoomsLoading = false;
+jest.mock("../../lib/rooms", () => ({ useMobileRooms: () => ({ rooms: mockRooms, roomsLoading: mockRoomsLoading }) }));
+const CHAT = { roomId: "chat-1", kind: "group-dm", members: [{ kind: "agent", id: "front" }, { kind: "human", id: "me" }] };
+const CALL = { roomId: "call-1", kind: "channel", members: [{ kind: "agent", id: "front" }] };
 
 const lastResponse = Notifications.useLastNotificationResponse as jest.Mock;
 const clear = Notifications.clearLastNotificationResponse as jest.Mock;
+const navigate = router.navigate as jest.Mock;
 const push = router.push as jest.Mock;
-const dismissTo = router.dismissTo as jest.Mock;
 
 // The router remembers the last notification id it routed (module scope), so
 // every test taps a notification of its own.
@@ -19,126 +23,69 @@ function response(data: Record<string, unknown>, id = `n${++seq}`) {
   return { notification: { request: { identifier: id, content: { data } } } };
 }
 
-async function tap(data: Record<string, unknown>) {
-  lastResponse.mockReturnValue(response(data));
-  // RNTL 14's render() is async — await it before asserting effects.
-  return render(<NotificationTapRouter />);
-}
-
-/** Put a room (or one of its threads) on screen for the duration of a test. */
-let release: (() => void) | null = null;
-function reading(roomId: string, threadId: string | null = null) {
-  release = claimRoomTarget(roomId, threadId);
-}
-
 beforeEach(() => {
   jest.clearAllMocks();
   lastResponse.mockReturnValue(null);
-});
-afterEach(() => {
-  release?.();
-  release = null;
+  mockRooms = [CHAT, CALL];
+  mockRoomsLoading = false;
 });
 
-it("a task_question tap opens the task at once", async () => {
-  await tap({ source: "task_question", taskId: "t-1", qid: "q-1" });
-  expect(push).toHaveBeenCalledWith({ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } });
-  expect(clear).toHaveBeenCalled();
+it("opens Home and then the chat for a push about one of the member's text chats", async () => {
+  lastResponse.mockReturnValue(response({ roomId: "chat-1" }));
+  await render(<NotificationTapRouter />);
+  expect(navigate.mock.calls).toEqual([["/(app)/(tabs)/chats"]]);
+  expect(push.mock.calls).toEqual([["/(app)/room/chat-1"]]);
+});
+
+it("stays on Home for a push about any other room", async () => {
+  lastResponse.mockReturnValue(response({ roomId: "call-1" }));
+  await render(<NotificationTapRouter />);
+  expect(navigate.mock.calls).toEqual([["/(app)/(tabs)/chats"]]);
+  expect(push).not.toHaveBeenCalled();
+});
+
+it("waits for the room list before deciding, on a cold start", async () => {
+  mockRoomsLoading = true;
+  mockRooms = [];
+  lastResponse.mockReturnValue(response({ roomId: "chat-1" }));
+  const screen = await render(<NotificationTapRouter />);
+  expect(push).not.toHaveBeenCalled();
+  mockRoomsLoading = false;
+  mockRooms = [CHAT];
+  await screen.rerender(<NotificationTapRouter />);
+  expect(push.mock.calls).toEqual([["/(app)/room/chat-1"]]);
+});
+
+it("opens Needs you for anything that asks the person to decide", () => {
+  expect(notificationHref({ source: "task_question", taskId: "t-1", roomId: "r-1" })).toBe("/(app)/(tabs)/activity");
+  expect(notificationHref({ source: "teams", approvalId: "ap-9", issueId: "i" })).toBe("/(app)/(tabs)/activity");
+  expect(notificationHref({ source: "teams", interactionId: "int-1", issueId: "iss-4" })).toBe("/(app)/(tabs)/activity");
+});
+
+it("opens Home for a room, session or legacy agent push", () => {
+  expect(notificationHref({ roomId: "room-1" })).toBe("/(app)/(tabs)/chats");
+  expect(notificationHref({ source: "session", sessionId: "s-1" })).toBe("/(app)/(tabs)/chats");
+  expect(notificationHref({ agentId: "agent_1" })).toBe("/(app)/(tabs)/chats");
+});
+
+it("ignores a payload that names nothing it knows", () => {
+  expect(notificationHref({ issueId: "issue_abc" })).toBeNull();
+  expect(notificationHref({ source: "teams", issueId: "issue_abc" })).toBeNull();
+  expect(notificationHref(undefined)).toBeNull();
 });
 
 it("does nothing when the app was not opened from a notification", async () => {
   await render(<NotificationTapRouter />);
-  expect(push).not.toHaveBeenCalled();
+  expect(navigate).not.toHaveBeenCalled();
   expect(clear).not.toHaveBeenCalled();
-});
-
-it("routes a room push to the conversation", async () => {
-  await tap({ roomId: "room-1", threadRootMessageId: null });
-  expect(push.mock.calls).toEqual([["/(app)/room/room-1"]]);
-});
-
-it("opens an old thread reply's room (threads are gone)", async () => {
-  await tap({ roomId: "room-1", threadRootMessageId: "m1" });
-  expect(push.mock.calls).toEqual([["/(app)/room/room-1"]]);
-});
-
-it("opens the shared session a session push is about", async () => {
-  expect(notificationHrefs({ source: "session", sessionId: "sess-1" })).toEqual([{ pathname: "/(app)/session/[sessionId]", params: { sessionId: "sess-1" } }]);
-  await tap({ source: "session", sessionId: "sess-1" });
-  expect(push).toHaveBeenCalledWith({ pathname: "/(app)/session/[sessionId]", params: { sessionId: "sess-1" } });
-});
-
-it("opens the task screen a task_question push names, ahead of the room fallback", () => {
-  expect(notificationHrefs({ source: "task_question", taskId: "t-1", roomId: "r-1" }))
-    .toEqual([{ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } }]);
-});
-
-it("no longer opens the deleted issue or run screens for an old Teams push", () => {
-  expect(notificationHrefs({ source: "teams", eventType: "approval.created", issueId: "issue_xyz" })).toBeNull();
-  expect(notificationHrefs({ source: "teams", eventType: "agent.run.failed", issueId: "issue_xyz" })).toBeNull();
-});
-
-it("opens Activity on the approval an approval push names", async () => {
-  await tap({ source: "teams", eventType: "approval.created", approvalId: "ap-9", issueId: "issue_xyz" });
-  expect(push).toHaveBeenCalledWith({
-    pathname: "/(app)/(tabs)/activity",
-    params: { focus: "paperclip:approval:ap-9" },
-  });
-});
-
-it("opens Activity on the agent's question an interaction push names", async () => {
-  await tap({ source: "teams", eventType: "issue.thread_interaction_created", interactionId: "int-1", issueId: "iss-4" });
-  expect(push).toHaveBeenCalledWith({
-    pathname: "/(app)/(tabs)/activity",
-    params: { focus: "paperclip:interaction:iss-4:int-1" },
-  });
-});
-
-it("ignores an issueId that did not come from Teams", async () => {
-  await tap({ issueId: "issue_abc" });
-  expect(push).not.toHaveBeenCalled();
-});
-
-it("still routes a legacy agent push to its chat", async () => {
-  await tap({ agentId: "agent_1", sessionKey: "sess:abc" });
-  expect(push).toHaveBeenCalledWith("/agent/agent_1");
 });
 
 // The warm path: the hook starts at null and flips to the tapped response.
 it("routes a tap that arrives after mount", async () => {
   const screen = await render(<NotificationTapRouter />);
-  lastResponse.mockReturnValue(response({ roomId: "room-9" }));
+  lastResponse.mockReturnValue(response({ source: "task_question", taskId: "t-1" }));
   await screen.rerender(<NotificationTapRouter />);
-  expect(push.mock.calls).toEqual([["/(app)/room/room-9"]]);
-});
-
-// The double-back bug: a push for the room being read stacked a second copy.
-it("does not push the conversation the reader already has open", async () => {
-  reading("room-1");
-  await tap({ roomId: "room-1", threadRootMessageId: null });
-  expect(push).not.toHaveBeenCalled();
-  expect(dismissTo).not.toHaveBeenCalled();
-});
-
-it("stays in the room for an old thread reply when that room is on screen", async () => {
-  reading("room-1");
-  await tap({ roomId: "room-1", threadRootMessageId: "m1" });
-  expect(push).not.toHaveBeenCalled();
-});
-
-it("goes back down to the room from one of its threads, not a second copy", async () => {
-  reading("room-1", "m1");
-  await tap({ roomId: "room-1", threadRootMessageId: null });
-  expect(dismissTo).toHaveBeenCalledWith("/(app)/room/room-1");
-  expect(push).not.toHaveBeenCalled();
-});
-
-// Unwinding to the tabs would unmount the open room and its unsent draft.
-it("pushes over another open conversation instead of unwinding it", async () => {
-  reading("room-2");
-  await tap({ roomId: "room-1" });
-  expect(push.mock.calls).toEqual([["/(app)/room/room-1"]]);
-  expect(dismissTo).not.toHaveBeenCalled();
+  expect(navigate.mock.calls).toEqual([["/(app)/(tabs)/activity"]]);
 });
 
 // The cold-start loop: the native module returns the last tap until cleared,
@@ -151,6 +98,5 @@ it("consumes the response and routes a notification only once", async () => {
   first.unmount();
 
   await render(<NotificationTapRouter />);
-  expect(push).toHaveBeenCalledTimes(1);
+  expect(navigate).toHaveBeenCalledTimes(1);
 });
-

@@ -176,15 +176,3 @@ async def test_provision_runner_step0_needs_no_paperclip(rooms, monkeypatch):
     await _repo().delete(ORG)
     monkeypatch.setattr(agent_registry, "create", AsyncMock(side_effect=agent_registry.RegistryUnavailable("down")))
     assert await provision_runner._seed_owner_workspace(ORG) == provision_runner.EXIT_TRANSIENT
-
-
-async def test_teams_context_for_native_member_mints_no_session():
-    """A workspace with no Paperclip company or identity still resolves the /teams context."""
-    from core.auth import AuthContext
-    from routers.teams.deps import resolve_teams_context
-
-    await provision_org(ORG, provisioner="user_1")
-    ctx = await resolve_teams_context(
-        auth=AuthContext(user_id="user_1", org_id=ORG, org_role="org:admin"), repo=_repo()
-    )
-    assert ctx.owner_id == ORG and ctx.user_id == "user_1"

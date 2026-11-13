@@ -145,8 +145,3 @@ async def test_a_reconnect_clears_the_reason(table):
     await integrations_repo.put_status("org_a", "stripe", "connected")  # the OAuth callback's write
     row = await integrations_repo.get("org_a", "stripe", consistent=True)
     assert "reconnect_reason" not in row and "reconnect_reason_at" not in row
-
-    await integrations_repo.set_status("org_a", "slack", "reconnect_required", reason="invalid_grant")
-    await integrations_repo.add_connected_team("org_a", "slack", "T1")
-    row = await integrations_repo.get("org_a", "slack", consistent=True)
-    assert row["status"] == "connected" and "reconnect_reason" not in row

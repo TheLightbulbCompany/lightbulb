@@ -37,7 +37,7 @@ export interface Column {
 
 export interface ComparePage {
   slug: string;
-  /** Public path. Page 2 lives at the session-sharing URL from 05 B5. */
+  /** Public path. */
   path: string;
   title: string;
   description: string;
@@ -85,12 +85,6 @@ const GROK_TEAMS = "https://docs.x.ai/grok-bot/teams-and-enterprises";
 const GROK_FAQ = "https://docs.x.ai/grok-bot/faq";
 const GROK_SEC = "https://docs.x.ai/grok-bot/security-faq";
 const CURSOR_PRICING = "https://cursor.com/pricing";
-const DELTA = "https://zed.dev/blog/introducing-delta";
-const LODY = "https://lody.ai";
-const LODY_PRICE = "https://lody.ai/price/";
-const EGREGORE = "https://egregore.xyz";
-const NIMBALYST = "https://nimbalyst.com";
-const NIMBALYST_PRICE = "https://nimbalyst.com/pricing/";
 const BLOOME = "https://bloome.im";
 const AMP = "https://finviz.com/news/399638/atlassian-introduces-amp-the-agentic-multiplayer-protocol-to-power-human-ai-collaboration";
 
@@ -195,94 +189,6 @@ export const COMPARE_PAGES: ComparePage[] = [
       q: "What does it cost for 8 people?",
       a: `Slack Business+ is $120 a month billed yearly. Lightbulb is $${teamMonthlyUsd(p, 8)} a month for the workspace, plus AI usage.`,
     }),
-  },
-  {
-    slug: "shared-claude-code-sessions",
-    path: "/claude-code-session-sharing",
-    title: "Share Claude Code sessions with your team: Delta, Lody, Egregore, Nimbalyst, Bloome, Lightbulb",
-    description:
-      "Five ways to let a teammate watch, pick up and continue a Claude Code or Codex session, compared honestly, with prices for an 8-person team.",
-    h1: "How to share Claude Code sessions with your team",
-    intro:
-      "Every Claude Code session starts from zero, and your cofounder cannot see what yours just figured out. Several tools now fix that: Zed's Delta, Lody, Egregore, Nimbalyst and Bloome. Lightbulb does it too, inside a team workspace where the same history also covers email, books and approvals. Here is what each one does, and who each fits.",
-    columns: [
-      {
-        name: "Zed Delta",
-        cells: {
-          who: c("Engineers on Claude Code", DELTA),
-          where: c("Your terminal, synced to a thread; cloud runners", DELTA),
-          sees: c("People you share the link with", DELTA),
-          models: c("Claude Code first", DELTA),
-          price: c("Not published (beta)", DELTA),
-          approvals: c("Comments on code and thread", DELTA),
-          offline: c("Yes, cloud runners", DELTA),
-          work: c("Code", DELTA),
-        },
-      },
-      {
-        name: "Lody",
-        cells: {
-          who: c("Teams running coding agents", LODY),
-          where: c("Your machines via a daemon", LODY),
-          sees: c("Teammates you share with", LODY),
-          models: c("Claude Code, Codex, Grok Build, Kimi, ACP agents", LODY),
-          price: c("$64/month yearly ($8 × 8)", LODY_PRICE),
-          approvals: c("Permission requests; usage by member", LODY),
-          offline: c("On your own always-on machine", LODY),
-          work: c("Code", LODY),
-        },
-      },
-      {
-        name: "Egregore",
-        cells: {
-          who: c("Claude Code teams", EGREGORE),
-          where: c("Your Claude Code session", EGREGORE),
-          sees: c("Invited teammates", EGREGORE),
-          models: c("Claude Code shown", EGREGORE),
-          price: c("Not published", EGREGORE),
-          approvals: c("Handoffs with reasoning", EGREGORE),
-          offline: c("Not published", EGREGORE),
-          work: c("Code", EGREGORE),
-        },
-      },
-      {
-        name: "Nimbalyst",
-        cells: {
-          who: c("Builders using Claude Code and Codex", NIMBALYST),
-          where: c("Your desktop app", NIMBALYST),
-          sees: c("Team org (shared docs)", NIMBALYST),
-          models: c("Claude Code, Codex; others in alpha", NIMBALYST),
-          price: c("$160/month ($20 × 8), free in beta", NIMBALYST_PRICE),
-          approvals: c("Change history on shared docs", NIMBALYST),
-          offline: c("Not published", NIMBALYST),
-          work: c("Code plus docs, mockups, trackers", NIMBALYST),
-        },
-      },
-      {
-        name: "Bloome",
-        cells: { ...BLOOME_COL.cells, price: c("Not published", BLOOME) },
-      },
-    ],
-    betterTitle: "What they do better",
-    better: [
-      "Delta's comments anchor to a line of code and move with it, and a teammate can open a thread in the browser without installing anything. That is the best review loop on this page, and we took the “private until shared” idea from it.",
-      "Lody runs more coding agents than we do, on your own machines, and shows cost per teammate. Egregore's handoff saves the reasoning and open questions, not just the state. Nimbalyst is open source and free for one person. Bloome puts many models in one group chat, close to how Lightbulb works.",
-      "If your team only needs to share code sessions, one of these may be enough. Lightbulb fits when the same team also hands off email, books and approvals. They share the coding session. We share the company.",
-    ],
-    faq: [
-      {
-        q: "Can my teammate continue my Claude Code session?",
-        a: "In Lightbulb, yes: they can watch it, and with your OK join it or pick up a Claude Code session with the full history. Delta and Lody also support continuing a session.",
-      },
-      {
-        q: "Do I need to switch from Claude Code or Codex?",
-        a: "No. Lightbulb works alongside them and makes their sessions shareable with your team.",
-      },
-      {
-        q: "Which is cheapest?",
-        a: "Lody's paid plan is $8 a seat. Egregore installs free; Delta and Bloome have not published prices.",
-      },
-    ],
   },
   {
     slug: "slack-alternatives-for-ai-agents",

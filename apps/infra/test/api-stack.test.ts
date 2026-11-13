@@ -7,7 +7,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { ApiStack, wsHandlerCode } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
+import { ROOT_DOMAIN } from "../lib/domains";
 import { buildApiStack, synthApiStack } from "./helpers";
 
 // Hoist a single ApiStack synthesis and reuse across tests.
@@ -98,8 +98,6 @@ describe("ApiStack — production browser CORS origins", () => {
         AllowOrigins: [
           `https://${ROOT_DOMAIN}`,
           `https://www.${ROOT_DOMAIN}`,
-          `https://${LAUNCH_DOMAIN}`,
-          `https://www.${LAUNCH_DOMAIN}`,
         ],
       }),
     });
@@ -1000,7 +998,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
 });
 
 describe("ApiStack — retired advanced search", () => {
-  test.each(["dev", "prod"])("%s keeps canonical messaging without an indexer or search network", (env) => {
+  test.each(["dev", "prod"] as const)("%s keeps canonical messaging without an indexer or search network", (env) => {
     const template = env === "dev" ? API_TEMPLATE : synthApiStack(env);
     const resources = template.toJSON().Resources;
     expect(Object.values(resources).some((r: any) => r.Type.startsWith("AWS::OpenSearchServerless::"))).toBe(false);

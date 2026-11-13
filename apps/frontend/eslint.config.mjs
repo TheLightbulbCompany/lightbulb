@@ -15,8 +15,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Playwright generated files
     "test-results/**",
-    // Vendored NICE DCV web client, copied in by scripts/copy-dcv-assets.mjs.
-    // Third-party minified bundles — gitignored build output, not our source.
+    // A stale copy of the removed DCV live view's SDK (gitignored), not our source.
     "public/nice-dcv-web-client-sdk/**",
   ]),
   // CEO A2: prevent the public client bundle from importing admin code.

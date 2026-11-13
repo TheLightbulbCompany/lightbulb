@@ -24,6 +24,13 @@ jest.mock("@clerk/expo", () => ({
   }),
   useOrganization: () => mockOrg,
 }));
+const mockActivate = jest.fn(async () => true);
+jest.mock("../../../../components/workspace/WorkspaceGate", () => ({
+  useWorkspaces: () => ({
+    orgId: "org_a", activate: mockActivate,
+    memberships: [{ organization: { id: "org_a", name: "Salon A" } }, { organization: { id: "org_b", name: "Salon B" } }],
+  }),
+}));
 
 // Real useFocusEffect needs a navigation container; an effect is equivalent
 // for a single mount.
@@ -369,39 +376,6 @@ describe("deleting an Apple-billed account", () => {
   });
 });
 
-// F4: someone in two or more workspaces needs a way between them; one
-// workspace has nothing to switch to, so the row stays out of the way.
-describe("Settings Switch workspace", () => {
-  beforeEach(() => {
-    mockAccountFixture = new Error("offline");
-    mockPush.mockClear();
-  });
-
-  it("is hidden with a single workspace", async () => {
-    mockMembershipCount = 1;
-    await render(<Settings />);
-    expect(screen.queryByText("Switch workspace")).toBeNull();
-  });
-
-  it("opens the workspace list with two or more", async () => {
-    mockMembershipCount = 2;
-    await render(<Settings />);
-    await fireEvent.press(screen.getByText("Switch workspace"));
-    expect(mockPush).toHaveBeenCalledWith("/workspaces");
-  });
-});
-
-// Email invitations: the row is for everyone; any member may invite (D5).
-describe("Settings Invite people", () => {
-  it("opens the invite screen", async () => {
-    mockAccountFixture = new Error("offline");
-    mockPush.mockClear();
-    await render(<Settings />);
-    await fireEvent.press(screen.getByText("Invite people"));
-    expect(mockPush).toHaveBeenCalledWith("/invite");
-  });
-});
-
 // Deleting as the SOLE member ends the workspace and its paid subscription
 // immediately (no refund); say so only when that is actually what happens.
 describe("delete-account confirmation copy", () => {
@@ -534,23 +508,31 @@ describe("Settings Plans row", () => {
   });
 });
 
-describe("Settings absorbs More", () => {
-  beforeEach(() => {
-    mockAccountFixture = { is_subscribed: true, subscription_status: "trial_local", trial_end: null, provider_choice: null, byo_provider: null };
-    mockPush.mockClear();
+describe("Settings Switch workspace", () => {
+  beforeEach(() => { mockAccountFixture = new Error("offline"); mockActivate.mockClear(); });
+
+  it("is hidden with a single workspace", async () => {
+    mockMembershipCount = 1;
+    await render(<Settings />);
+    expect(screen.queryByText("Switch workspace")).toBeNull();
   });
 
-  it("has no switch for a pinned strip that is gone", async () => {
+  it("lists the workspaces inline with two or more and activates the one picked", async () => {
+    mockMembershipCount = 2;
     await render(<Settings />);
-    expect(await screen.findByText("Control")).toBeTruthy();
-    expect(screen.queryByLabelText("Show running sessions in pinned")).toBeNull();
+    await fireEvent.press(screen.getByText("Switch workspace"));
+    await fireEvent.press(screen.getByText("Salon B"));
+    expect(mockActivate).toHaveBeenCalledWith("org_b");
+    mockMembershipCount = 1;
   });
+});
 
-  it.each([
-    ["Control", "/(app)/control"],
-  ])("links %s", async (label, route) => {
+describe("Settings without the old chat app", () => {
+  it("has no rows for workspaces, invites, Control or sessions", async () => {
+    mockAccountFixture = new Error("offline");
     await render(<Settings />);
-    await fireEvent.press(await screen.findByLabelText(label));
-    expect(mockPush).toHaveBeenCalledWith(route);
+    for (const gone of ["Invite people", "Control", "Session notifications"]) {
+      expect(screen.queryByText(gone)).toBeNull();
+    }
   });
 });

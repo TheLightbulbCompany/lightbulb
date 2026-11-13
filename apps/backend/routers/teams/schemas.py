@@ -39,10 +39,3 @@ class PatchAgentBody(_Strict):
     capabilities: Optional[str] = Field(default=None, max_length=4000)
     reports_to: Optional[str] = Field(default=None, max_length=80)
     budget_monthly_cents: Optional[int] = Field(default=None, ge=0)
-
-
-class PatchCompanySettingsBody(_Strict):
-    """The workspace name and description (``/teams/settings``)."""
-
-    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
-    description: Optional[str] = Field(default=None, max_length=4000)

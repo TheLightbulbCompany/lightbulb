@@ -31,21 +31,13 @@ from core.services.desktop_pair import (
     revoke_desktop_device,
 )
 from core.repositories import container_repo
-from core.services import local_sessions, mac_browser
+from core.services import mac_browser
 
 logger = logging.getLogger(__name__)
 
 UNPAIR_CLEAR_SECONDS = 15  # both clears together; the whole route stays under ~20 s
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
-
-
-@router.put("/local-sessions/enrollment", response_model=local_sessions.EnrollmentResponse)
-async def set_local_sessions_enrollment(
-    body: local_sessions.EnrollmentRequest,
-    ctx: AuthContext = Depends(get_current_user),
-):
-    return await local_sessions.set_enrollment(ctx, body)
 
 
 class PairPermissions(BaseModel):

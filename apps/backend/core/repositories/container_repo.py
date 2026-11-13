@@ -456,21 +456,6 @@ async def try_claim_owner_lifecycle(owner_id: str, *, stale_s: int = LIFECYCLE_C
         return None
 
 
-async def mark_oauth_revoked(owner_id: str) -> int:
-    """Revoke-all's mark: an OAuth connect whose state was minted at or before it is refused
-    (``routers.connections.oauth_callback``). On the lease row, which the release leaves alone
-    (it removes only ``claimed_at``/``tok``). Milliseconds, so a connect started later in the
-    same second is not refused."""
-    now = int(time.time() * 1000)
-    await run_in_thread(
-        _get_table().update_item,
-        Key={"owner_id": f"{LIFECYCLE_KEY_PREFIX}{owner_id}"},
-        UpdateExpression="SET oauth_revoked_at_ms = :now",
-        ExpressionAttributeValues={":now": now},
-    )
-    return now
-
-
 async def get_oauth_revoked_at(owner_id: str) -> int | None:
     row = await get_by_owner_id(f"{LIFECYCLE_KEY_PREFIX}{owner_id}", consistent=True)
     value = (row or {}).get("oauth_revoked_at_ms")
@@ -1337,17 +1322,6 @@ async def try_claim_idle_stop(
 async def idle_stop_claim_current(owner_id: str, claim: str) -> bool:
     row = await get_by_owner_id(owner_id, consistent=True)
     return bool(row and row.get("status") == "running" and row.get("idle_stop_claim") == claim)
-
-
-async def update_error(owner_id: str, error: str) -> dict | None:
-    """Record the last error for a container."""
-    return await update_fields(
-        owner_id,
-        {
-            "last_error": error,
-            "last_error_at": utc_now_iso(),
-        },
-    )
 
 
 async def delete(owner_id: str) -> dict | None:

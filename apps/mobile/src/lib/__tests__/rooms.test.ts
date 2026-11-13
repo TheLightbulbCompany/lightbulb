@@ -21,7 +21,7 @@ jest.mock("@clerk/expo", () => ({
 jest.mock("expo-crypto", () => ({ randomUUID: () => "22222222-2222-4222-8222-222222222222" }));
 jest.mock("../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 
-import { useRoomsPlatform, useTypingReport } from "../rooms";
+import { useRoomsPlatform } from "../rooms";
 
 describe("useRoomsPlatform", () => {
   // jest-expo's AppState.addEventListener returns undefined, not a subscription;
@@ -107,92 +107,3 @@ describe("useRoomsPlatform", () => {
 // `report`/`stop` close over refs only — calling them updates no React state,
 // so they run as plain function calls below, never wrapped in `act()`; the
 // hook never triggers a re-render on its own.
-describe("useTypingReport", () => {
-  beforeEach(() => {
-    jest.useFakeTimers();
-    jest.spyOn(AppState, "addEventListener").mockReturnValue({ remove: () => {} } as never);
-  });
-  afterEach(() => {
-    jest.useRealTimers();
-    jest.restoreAllMocks();
-  });
-
-  it("reports typing once when it starts, not on every keystroke", async () => {
-    const setTyping = jest.fn();
-    const { result } = await renderHook(() => useTypingReport(setTyping, true));
-    result.current(true);
-    result.current(true);
-    result.current(true);
-    expect(setTyping).toHaveBeenCalledTimes(1);
-    expect(setTyping).toHaveBeenCalledWith(true);
-  });
-
-  it("reports stopped as soon as the draft empties, and nothing extra while already stopped", async () => {
-    const setTyping = jest.fn();
-    const { result } = await renderHook(() => useTypingReport(setTyping, true));
-    result.current(false);
-    expect(setTyping).not.toHaveBeenCalled();
-    result.current(true);
-    result.current(false);
-    expect(setTyping.mock.calls).toEqual([[true], [false]]);
-  });
-
-  it("auto-stops after 3s of no further keystroke — the web's own cadence", async () => {
-    const setTyping = jest.fn();
-    const { result } = await renderHook(() => useTypingReport(setTyping, true));
-    result.current(true);
-    setTyping.mockClear();
-    jest.advanceTimersByTime(2_999);
-    expect(setTyping).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(1);
-    expect(setTyping).toHaveBeenCalledWith(false);
-  });
-
-  it("a fresh keystroke resets the 3s auto-stop clock", async () => {
-    const setTyping = jest.fn();
-    const { result } = await renderHook(() => useTypingReport(setTyping, true));
-    result.current(true);
-    setTyping.mockClear();
-    jest.advanceTimersByTime(2_000);
-    result.current(true);
-    jest.advanceTimersByTime(2_000);
-    expect(setTyping).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(1_000);
-    expect(setTyping).toHaveBeenCalledWith(false);
-  });
-
-  it("stops immediately when the screen loses focus", async () => {
-    const setTyping = jest.fn();
-    const { result, rerender } = await renderHook(
-      ({ focused }: { focused: boolean }) => useTypingReport(setTyping, focused),
-      { initialProps: { focused: true } },
-    );
-    result.current(true);
-    setTyping.mockClear();
-    await rerender({ focused: false });
-    expect(setTyping).toHaveBeenCalledWith(false);
-  });
-
-  it("stops when the app backgrounds", async () => {
-    let onChange: ((state: string) => void) | undefined;
-    jest.spyOn(AppState, "addEventListener").mockImplementation(((_: string, cb: (s: string) => void) => {
-      onChange = cb;
-      return { remove: () => {} } as never;
-    }) as never);
-    const setTyping = jest.fn();
-    const { result } = await renderHook(() => useTypingReport(setTyping, true));
-    result.current(true);
-    setTyping.mockClear();
-    onChange?.("background");
-    expect(setTyping).toHaveBeenCalledWith(false);
-  });
-
-  it("stops on unmount if still reporting typing", async () => {
-    const setTyping = jest.fn();
-    const { result, unmount } = await renderHook(() => useTypingReport(setTyping, true));
-    result.current(true);
-    setTyping.mockClear();
-    await unmount();
-    expect(setTyping).toHaveBeenCalledWith(false);
-  });
-});

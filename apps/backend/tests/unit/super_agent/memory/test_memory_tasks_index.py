@@ -1,6 +1,6 @@
 """Task cards in memory (wave2-M Task 5): one strategy-less record per task, a MEMTASK# pointer row."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import boto3
 import pytest
@@ -165,14 +165,6 @@ async def test_private_task_without_owner_is_not_indexed_shared(table, core):
     assert core.records == {}
 
 
-def test_script_refuses_prod(monkeypatch):
-    from scripts import memory_index_tasks
-
-    monkeypatch.setattr(memory_index_tasks.settings, "ENVIRONMENT", "prod", raising=False)
-    with pytest.raises(SystemExit):
-        memory_index_tasks.main(["--owner", OWNER])
-
-
 async def test_card_text_redacts_secrets_in_title_and_description(table, core):
     key = "sk-" + "a" * 30
     await mti.index_task(OWNER, _task(title=f"Rotate {key}", description=f"token: {key} then go"))
@@ -197,16 +189,3 @@ async def test_duplicate_event_keeps_live_card(table, core, monkeypatch):
     await mti.index_task(OWNER, _task(version=3))
     assert list(core.records) == [live] and _pointer()["recordId"] == live
     assert "delete" not in core.calls
-
-
-def test_script_dry_run_by_default(monkeypatch):
-    from scripts import memory_index_tasks
-
-    monkeypatch.setattr(memory_index_tasks.settings, "ENVIRONMENT", "dev", raising=False)
-    monkeypatch.setattr(memory_index_tasks, "_all_tasks", AsyncMock(return_value=[_task()]))
-    index = AsyncMock()
-    monkeypatch.setattr(memory_index_tasks.memory_tasks_index, "index_task", index)
-    memory_index_tasks.main(["--owner", OWNER])
-    index.assert_not_called()
-    memory_index_tasks.main(["--owner", OWNER, "--apply"])
-    index.assert_awaited_once()

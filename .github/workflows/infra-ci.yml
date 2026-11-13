@@ -1,0 +1,252 @@
+# =============================================================================
+# Infra CI (PRs only)
+#
+# apps/infra had NO test job. Its vitest suite (~250 assertions covering task
+# definitions, boot commands, alarm/emitter contracts) ran only on a developer's
+# machine, so a CDK change reached main having been checked by nobody.
+#
+# That is not theoretical: #1817 shipped three alarms built on a SEARCH()
+# metric-math expression, which CloudWatch rejects on alarms outright. The stack
+# rolled back on EVERY deploy, and because the prod stages depend on dev
+# succeeding, prod deploys were silently skipped for hours. CloudFormation was
+# the first thing in the pipeline to find out, because nothing before it looked.
+#
+# Synth is the point: `cdk synth` is what turns a type-correct stack into the
+# template CloudFormation will actually reject, and the suite asserts against
+# synthesized templates rather than construct objects.
+# =============================================================================
+name: Infra CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/infra/**'
+      - '.github/workflows/infra-ci.yml'
+      - '.github/workflows/deploy.yml'
+      - '.github/workflows/desktop-build.yml'
+      - 'hermes-version.json'
+      - 'openrouter-pricing.json'
+      - 'pnpm-lock.yaml'
+
+# Supersede in-flight runs for the same PR. `github.ref` is refs/pull/<n>/merge
+# here (pull_request only), so the group is per-PR and PRs never cancel each
+# other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+permissions:
+  contents: read
+
+# GitHub-hosted Linux (vars.CI_RUNNER = ubuntu-latest): the repo is public, so minutes are free.
+jobs:
+  # The Hermes bridge (apps/infra/hermes) is Python, so the CDK job above never
+  # touches it, and build-hermes-image.yml only BUILDS the image — it runs no
+  # tests. Until this job existed, the bridge's suite (the turn lifecycle, the
+  # frame vocabulary, streaming batches, the plugin tools) ran only on a
+  # developer's machine. No path filter here: the workflow is already filtered
+  # to apps/infra/**, and the suite takes under a second.
+  hermes-bridge-tests:
+    name: Hermes bridge tests
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      # No project/lockfile: the bridge is vendored into the image, not a uv
+      # project, so the suite's deps are named inline — the same command
+      # the plan docs and every bridge task use locally.
+      - name: Run bridge tests
+        working-directory: apps/infra/hermes
+        run: uv run --no-project --with pytest --with botocore --with pyyaml --with websockets python -m pytest tests -q
+
+  # The OpenRouter streaming gate (apps/infra/lambda/openrouter-gate) is
+  # Node.js, so the backend job never collects it and the vitest suite never
+  # touches it. Its `node --test` suite (auth, model policy, reserve/outbox,
+  # SSE forwarding, release paths) ran only on a developer's machine. No path
+  # filter here: the workflow is already filtered to apps/infra/**, and the
+  # suite takes under a second once dependencies are installed.
+  openrouter-gate-tests:
+    name: OpenRouter gate tests
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/infra/lambda/openrouter-gate/package-lock.json
+
+      - name: Install gate dependencies
+        working-directory: apps/infra/lambda/openrouter-gate
+        run: npm ci --no-audit --no-fund
+
+      - name: Run gate tests
+        working-directory: apps/infra/lambda/openrouter-gate
+        run: npm test
+
+  # The suite above is unit tests with everything Hermes-shaped mocked out. The
+  # bridge's credential/identity leg only proves anything against the REAL
+  # mechanism inside the pinned image (see apps/infra/hermes/tests/smoke/*.py's
+  # own docstrings) -- two review rounds of that leg passed the suite above
+  # while delivering nothing, because the failure modes (env_overlay filtering,
+  # a passthrough list cached for the process lifetime) don't exist in a mock.
+  # No smoke files exist on main yet, so this job passes trivially until one
+  # lands; it exists so the day one does, CI runs it instead of only a
+  # developer's machine.
+  hermes-image-smokes:
+    name: Hermes bridge image smokes
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # hermes-version.json#base.image is a multi-arch manifest list (verified
+      # via `docker manifest inspect`: linux/amd64 + linux/arm64), so `docker
+      # pull` on this x86_64 runner resolves the amd64 variant with no QEMU.
+      # That's a different image from the arm64-only extended image
+      # build-hermes-image.yml builds for AgentCore -- this job runs the
+      # UPSTREAM base Hermes ships, exactly what each smoke's own `docker run`
+      # example targets.
+      - name: Pull the pinned Hermes base image
+        run: |
+          IMAGE=$(jq -r '.base.image' hermes-version.json)
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker pull "$IMAGE"
+
+      # The Lightbulb patch series (apps/infra/hermes/hermes-patches/) is applied by the image
+      # Dockerfile, but that image only builds on main. Prove it here on every PR, against the
+      # same pinned base: copy the base's /opt/hermes out, apply the series in SERIES order with
+      # --check first (exactly the Dockerfile loop), then run the patched-image smoke on it.
+      - name: Apply the Lightbulb patch series to the pinned base and smoke it
+        run: |
+          rm -rf "$RUNNER_TEMP/hermes"
+          cid=$(docker create "$IMAGE")
+          docker cp "$cid:/opt/hermes" "$RUNNER_TEMP/hermes"
+          docker rm "$cid" >/dev/null
+          cd "$RUNNER_TEMP/hermes"
+          for p in $(grep -E '^[0-9]{4}-.*\.patch$' "$GITHUB_WORKSPACE/apps/infra/hermes/hermes-patches/SERIES"); do
+            git apply --check "$GITHUB_WORKSPACE/apps/infra/hermes/hermes-patches/$p"
+            git apply "$GITHUB_WORKSPACE/apps/infra/hermes/hermes-patches/$p"
+          done
+          docker run --rm --network none \
+            -v "$RUNNER_TEMP/hermes:/opt/hermes" \
+            -v "$GITHUB_WORKSPACE/apps/infra/hermes/tests/image_smoke/patched_hermes_smoke.py:/tmp/smoke.py:ro" \
+            -e HERMES_HOME=/tmp/patched-smoke \
+            --entrypoint python "$IMAGE" /tmp/smoke.py
+
+      # Every bridge smoke runs on the PATCHED tree from the step above -- the Hermes the
+      # runtime image actually ships. Some smokes (codex_broker_smoke.py: F6's _REFRESH_DELEGATE)
+      # need a patch; the rest are unaffected because every patch is inert until the bridge opts
+      # in. Only bridge/ is bind-mounted besides that -- tools.* (terminal_tool, env_passthrough,
+      # terminal_scope) is Hermes's real code, not a stand-in. --network none: no model call, no
+      # egress. The default `bash -eo pipefail` shell fails the step on any smoke's non-zero exit.
+      - name: Run bridge smokes in the patched pinned image
+        run: |
+          shopt -s nullglob
+          smokes=(apps/infra/hermes/tests/smoke/*.py)
+          if [ ${#smokes[@]} -eq 0 ]; then
+            echo "no smokes"
+            exit 0
+          fi
+          for smoke in "${smokes[@]}"; do
+            echo "::group::$smoke"
+            docker run --rm --network none \
+              -v "$RUNNER_TEMP/hermes:/opt/hermes" \
+              -v "$PWD/apps/infra/hermes/bridge:/opt/bridge/bridge:ro" \
+              -v "$PWD/$smoke:/opt/bridge/smoke.py:ro" \
+              --entrypoint python "$IMAGE" /opt/bridge/smoke.py
+            echo "::endgroup::"
+          done
+
+  test:
+    name: Synth & Test
+    runs-on: ${{ vars.CI_RUNNER }}
+    # The suite synthesizes every stack; it runs in seconds locally, so a cap
+    # this size only catches a hang. Left explicit because an uncapped job
+    # bills GitHub's 6-hour default when a step stalls.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm --filter @lightbulb/infra exec tsc --noEmit
+
+      - name: Run tests
+        run: pnpm --filter @lightbulb/infra run test
+
+      # `.github/workflows/deploy.yml` is GENERATED from the pipeline
+      # definition in apps/infra/lib/app.ts. cdk-pipelines-github ships its own
+      # drift guard, but the throw is gated on
+      # `process.env.GITHUB_WORKFLOW === <the pipeline's own workflow name>`
+      # (node_modules/cdk-pipelines-github/lib/pipeline.js), so it can only
+      # fire from INSIDE deploy.yml — post-merge. Everywhere else, synth
+      # silently REWRITES the file instead of complaining.
+      #
+      # So a PR that edits the pipeline without committing the regenerated YAML
+      # is green, and then `Synthesize` — the first job in the pipeline — fails
+      # on merge, skipping every dev and prod deploy job until someone lands a
+      # regeneration commit. That has now happened four times (twice 2026-06,
+      # #1176 in 2026-07, #1997 on 2026-08-23).
+      #
+      # Since the local synth rewrites in place, `git diff` IS the check. This
+      # only touches the runner's working copy; nothing is committed or pushed.
+      #
+      # No Docker needed: the bundled Lambdas use local.tryBundle (npm/pip3 on
+      # the host), and the hosted runner has both.
+      - name: Check deploy.yml matches the pipeline definition
+        # Runs even when the suite is red: drift breaks every deploy after merge.
+        if: success() || failure()
+        working-directory: apps/infra
+        run: |
+          npx cdk synth --no-notices > /dev/null
+          if git diff --quiet -- ../../.github/workflows/deploy.yml; then
+            echo "deploy.yml is in sync with apps/infra/lib/app.ts"
+            exit 0
+          fi
+          git diff -- ../../.github/workflows/deploy.yml
+          cat >&2 <<'MSG'
+
+          ============================================================
+          .github/workflows/deploy.yml is OUT OF SYNC with the pipeline
+          definition in apps/infra/lib/app.ts (diff above).
+
+          deploy.yml is generated, not hand-written. Regenerate and commit it:
+
+              cd apps/infra && npx cdk synth
+              git add ../../.github/workflows/deploy.yml
+              git commit
+
+          Left unfixed, this PR merges green and then breaks the deploy
+          pipeline: its Synthesize job re-runs this same comparison, throws,
+          and every dev + prod deploy job is skipped until someone lands a
+          regeneration commit.
+          ============================================================
+          MSG
+          exit 1

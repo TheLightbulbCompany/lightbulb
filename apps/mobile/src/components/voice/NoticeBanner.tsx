@@ -37,7 +37,7 @@ export function NoticeBanner({ style }: { style?: StyleProp<ViewStyle> }) {
     ? shown.by === localIdentity && localIdentity
       ? { label: "Undo", run: () => { dismissNotice(); void api.patch(`/teams/agents/${encodeURIComponent(shown.agentId)}`, { name: shown.from }).catch(() => {}); } }
       : null
-    : { label: "Edit", run: () => { dismissNotice(); setOpen(false); router.push({ pathname: "/(app)/control/agent-detail", params: { agentId: shown.agentId } }); } };
+    : { label: "Edit", run: () => { dismissNotice(); setOpen(false); router.navigate("/(app)/(tabs)/teams"); } };
 
   return (
     <View style={[styles.banner, { backgroundColor: palette.surface }, style]} accessibilityRole="alert" accessibilityLiveRegion="polite">

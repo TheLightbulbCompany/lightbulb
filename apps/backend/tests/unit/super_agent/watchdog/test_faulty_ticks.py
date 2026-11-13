@@ -1,6 +1,7 @@
 """spec 11 §3.7 integration: 100 ticks of scan + act with orphans, a refusing start and cap pressure leave the
 Task row count unchanged (the watchdog never creates tasks)."""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 from temporalio.service import RPCError, RPCStatusCode
@@ -37,6 +38,15 @@ async def test_100_faulty_ticks_task_count_unchanged(table, metrics, monkeypatch
         )
     before = len(_tasks(table))
     monkeypatch.setattr(wd, "_scope", (0.0, []))
+
+    # The fleet cap is bucketed by UTC hour; on the wall clock a loop that crosses :00 gets a fresh
+    # bucket (3 + 3 starts) and fails. One frozen instant keeps all 100 ticks in one bucket.
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 12, 12, 30, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(wd, "datetime", FrozenDatetime)
 
     class Gone:
         async def describe(self):

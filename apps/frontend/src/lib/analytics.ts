@@ -182,14 +182,6 @@ export type AnalyticsEvent =
   | "workspace_layout_reset"
   | "workspace_panel_opened"
 
-  // Launch competition
-  | "launch_joined"
-  | "launch_modal_shown"
-  | "launch_modal_dismissed"
-  | "launch_renamed"
-  | "launch_stripe_connected"
-  | "launch_referral_copied"
-  | "launch_team_interest"
   // Cards in chat
   | "openui.parse_error";
 

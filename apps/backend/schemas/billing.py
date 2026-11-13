@@ -105,14 +105,6 @@ class UsageSummary(BaseModel):
     by_member: list[MemberUsage] = []
 
 
-class MyUsageResponse(BaseModel):
-    period: str
-    total_spend: float
-    total_input_tokens: int
-    total_output_tokens: int
-    request_count: int
-
-
 class SpendResponse(BaseModel):
     """Spend summary. Always ``tokens_only`` now: the panel keeps its token grid. The Bedrock
     billed-dollars card and ChatGPT's plan-quota windows (the Hermes bridge never returned

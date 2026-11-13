@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 // Every out-of-scope name a jest.mock factory reaches for is `mock`-prefixed
 // and read LAZILY — babel lowers these to `var` and the factories run while
 // the layout's own imports are still resolving.
-let mockUnread = 0;
 let mockOrgId: string | null = "org-a";
 jest.mock("@clerk/expo", () => ({ useAuth: () => ({ orgId: mockOrgId }) }));
 
@@ -45,11 +44,9 @@ jest.mock("expo-router/unstable-native-tabs", () => {
   NativeTabs.Trigger = Trigger;
   return { NativeTabs };
 });
-jest.mock("../../../../lib/rooms", () => ({ useMobileRooms: () => ({ rooms: [] }) }));
 let mockUnseen = 0;
-jest.mock("../../../../lib/activity", () => ({ useMobileActivity: () => ({ attentionCount: mockUnseen }) }));
-jest.mock("../../../../lib/unreadBadge", () => ({
-  badgeCount: () => mockUnread,
+jest.mock("../../../../components/tasks/NeedsYouCard", () => ({
+  useNeedsYou: () => ({ items: Array.from({ length: mockUnseen }, (_, i) => ({ id: `q${i}` })) }),
 }));
 const mockSetBadgeCountAsync = jest.fn(async (_total: number) => true);
 jest.mock("expo-notifications", () => ({
@@ -59,17 +56,12 @@ jest.mock("expo-notifications", () => ({
 import TabsLayout from "../_layout";
 
 beforeEach(() => {
-  mockUnread = 0;
   mockUnseen = 0;
   mockOrgId = "org-a";
   mockNativeTabsMounts = 0;
   mockSetBadgeCountAsync.mockClear();
 });
 
-// Control and the legacy agent route are pushed screens on the (app) stack,
-// not tabs. Teams and Settings, which used to be pushed screens reached only
-// through More, are real tabs again — and must not come back as pushed
-// screens (see (app)/__tests__/layout.test.tsx).
 it("registers Home · Agent · Needs you · Settings", async () => {
   await render(<TabsLayout />);
   expect(screen.getAllByTestId(/^tab-/).map((node) => node.props.testID)).toEqual([
@@ -85,25 +77,9 @@ it("labels the assistant configuration tab Agent", async () => {
   expect(within(screen.getByTestId("tab-teams")).getByText("Agent")).toBeTruthy();
 });
 
-// The one thing NativeTabs had to be able to express beyond labels and icons.
-it("hides the Chats badge at zero and shows the count above it", async () => {
-  await render(<TabsLayout />);
-  expect(screen.queryByTestId("tab-badge")).toBeNull();
-
-  mockUnread = 7;
-  await render(<TabsLayout />);
-  expect(within(screen.getByTestId("tab-chats")).getByTestId("tab-badge")).toHaveTextContent("7");
-});
-
 // The same number belongs on the app icon, because the projector sends no
 // `badge` in its push payload.
-it("mirrors the count onto the app icon", async () => {
-  mockUnread = 3;
-  await render(<TabsLayout />);
-  expect(mockSetBadgeCountAsync).toHaveBeenCalledWith(3);
-});
-
-it("badges Activity with its unseen count, and nothing at zero", async () => {
+it("badges Needs you with its open Questions, mirrors it onto the app icon, and draws nothing at zero", async () => {
   await render(<TabsLayout />);
   expect(screen.queryByTestId("tab-badge")).toBeNull();
 
@@ -111,10 +87,10 @@ it("badges Activity with its unseen count, and nothing at zero", async () => {
   await render(<TabsLayout />);
   expect(screen.getByTestId("tab-activity")).toHaveTextContent("Needs you4");
   expect(screen.getByTestId("tab-chats")).not.toHaveTextContent(/\d/);
+  expect(mockSetBadgeCountAsync).toHaveBeenCalledWith(4);
 });
 
-// A workspace switch must throw away every tab's mounted state (Chats'
-// sessions/presence, Teams' and Settings' data hooks) rather than leave the
+// A workspace switch must throw away every tab's mounted state rather than leave the
 // old workspace's rows on screen until each screen's own refetch lands.
 // Keying the navigator on the active org is how: this proves the key
 // actually changes (and only then) by counting NativeTabs mounts.

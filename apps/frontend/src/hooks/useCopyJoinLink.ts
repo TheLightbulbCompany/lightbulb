@@ -4,7 +4,7 @@ import { useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { ApiError, useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
-import { copyTextWhenReady, JoinLinkCopyError } from "@/components/messaging/messageLinks";
+import { copyTextWhenReady, JoinLinkCopyError } from "@/lib/clipboard";
 
 export const JOIN_LINK_COPIED = "Copied. Anyone who opens it and signs in joins this workspace.";
 

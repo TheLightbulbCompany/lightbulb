@@ -2,7 +2,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { ApiError } from "@/lib/api";
-import { JoinLinkCopyError } from "@/components/messaging/messageLinks";
+import { JoinLinkCopyError } from "@/lib/clipboard";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 const copy = vi.hoisted(() => ({ result: true }));
@@ -10,7 +10,7 @@ const capture = vi.hoisted(() => vi.fn());
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: "org_1" }) }));
 vi.mock("@/lib/api", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), useApi: () => api }));
 vi.mock("@/lib/analytics", () => ({ capture }));
-vi.mock("@/components/messaging/messageLinks", async (importOriginal) => ({
+vi.mock("@/lib/clipboard", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   copyTextWhenReady: async (text: Promise<string>) => { await text.catch(() => undefined); return copy.result; },
 }));

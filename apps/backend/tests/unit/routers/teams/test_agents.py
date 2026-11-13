@@ -6,39 +6,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from routers.teams.deps import TeamsContext
 
 
 @pytest.fixture
-def teams_ctx():
-    return TeamsContext(
-        user_id="u1",
-        org_id="o1",
-        owner_id="o1",
-    )
-
-
-@pytest.fixture
-def client(teams_ctx, monkeypatch):
-    # Bypass auth + the upstream sign-in chain by overriding the
-    # router-local _ctx Depends helper. Monkeypatching deps.resolve_teams_context
-    # would not work because agents.py imports the name into its own module
-    # namespace at import time.
+def client(monkeypatch):
     from routers.teams import agents as agents_mod
-
-    async def fake_ctx():
-        return teams_ctx
 
     monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
     monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value=set()))
     from core.auth import AuthContext, get_current_user
 
-    app.dependency_overrides[agents_mod._ctx] = fake_ctx
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="u1", org_id="o1")
     try:
         yield TestClient(app)
     finally:
-        app.dependency_overrides.pop(agents_mod._ctx, None)
         app.dependency_overrides.pop(get_current_user, None)
 
 

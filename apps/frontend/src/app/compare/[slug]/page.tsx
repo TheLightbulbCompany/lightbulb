@@ -3,7 +3,6 @@ import { notFound } from "next/navigation";
 import { ComparePageView, compareMetadata } from "@/components/compare/ComparePageView";
 import { COMPARE_PAGES, getComparePage } from "@/content/compare";
 
-// Page 2 has its own URL (/claude-code-session-sharing); only /compare/* pages render here.
 const routed = COMPARE_PAGES.filter((p) => p.path === `/compare/${p.slug}`);
 
 // The Lightbulb price cell reads the billing API; refresh with /pricing.

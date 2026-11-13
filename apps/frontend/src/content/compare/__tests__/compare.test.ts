@@ -5,9 +5,9 @@ import { COMPARE_PAGES, LIGHTBULB, ROWS } from "@/content/compare";
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
 describe("comparison pages", () => {
-  it("has six pages, each with a unique path", () => {
-    expect(COMPARE_PAGES).toHaveLength(6);
-    expect(new Set(COMPARE_PAGES.map((p) => p.path)).size).toBe(6);
+  it("has five pages, each with a unique path", () => {
+    expect(COMPARE_PAGES).toHaveLength(5);
+    expect(new Set(COMPARE_PAGES.map((p) => p.path)).size).toBe(5);
   });
 
   it("fails on any cell without a source URL or a checked-on date", () => {

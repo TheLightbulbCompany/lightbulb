@@ -276,32 +276,6 @@ async def get_human_session(
     return ctx
 
 
-async def get_optional_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
-) -> AuthContext | None:
-    """Like get_current_user but returns None instead of raising on missing/invalid auth.
-
-    Use for endpoints that work for both authenticated and anonymous users.
-    """
-    if credentials is None:
-        return None
-
-    try:
-        payload = await _decode_token(credentials.credentials)
-        org = _extract_org_claims(payload)
-        return AuthContext(
-            user_id=payload["sub"],
-            org_id=org["org_id"],
-            org_role=org["org_role"],
-            org_slug=org["org_slug"],
-            org_permissions=org["org_permissions"],
-            email=payload.get("email"),
-            verified_issuer=payload.get("iss"),
-        )
-    except Exception:
-        return None
-
-
 # Email domains that identify team members, for analytics tagging ONLY
 # (run_analytics' internal-owner flag). This is NOT an access check: any
 # self-registered Clerk account can carry one of these addresses, so platform

@@ -11,7 +11,7 @@ import { AccessibilityInfo, Modal, Pressable, ScrollView, StyleSheet, Text, View
 
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { useLive } from "../../providers/live";
-import { Avatar } from "../room/Avatar";
+import { Avatar } from "./Avatar";
 import { LevelRing } from "./LevelRing";
 import { NoticeBanner } from "./NoticeBanner";
 

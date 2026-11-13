@@ -16,8 +16,9 @@ three surfaces:
 
 Typed messages (web, Mac, mobile) still exist and take the same path as speech.
 
-**The engine** is the same for every surface. **GPT-Live** (OpenAI, through LiveKit) is the voice. It holds no
-business data and has no tools: it hands every business request to the workspace's **Router**, a Temporal
+**The engine** is the same for every surface. **GPT-Live** (OpenAI, through LiveKit) is the voice. It has no
+tools. On the phone it holds the owner's Agent page facts and answers what they state; every other business request
+goes to the workspace's **Router**, a Temporal
 workflow that only decides (start a task, reply, ask, note, ignore, and a few surface actions). Real work runs
 as **Workers**: Temporal task workflows that run turns of **Hermes** (`nousresearch/hermes-agent`) on the
 **shared Hermes pool**, one AgentCore runtime per tier with one session per owner or per task. DynamoDB is the
@@ -42,12 +43,19 @@ Stripe and Metronome. Infrastructure is AWS CDK in `apps/infra/` (the single sou
 From plan Part 1 (F-numbers). Each constrains code; do not reopen them.
 
 - **F38 One architecture for every use case.** Phone, Meet, the orb and typed messages all go voice or text, then
-  the Router, then a Worker. A new use case adds tools and permissions, never a new shape.
+  the Router, then a Worker. A new use case adds tools and permissions, never a new shape. The phone voice starts
+  with the Agent page's static facts (F4/F5); that is not a new shape.
 - **F2/F3 The Router decides only;** facts it cannot see go to a Worker thread.
-- **F4/F5 GPT-Live is the voice on all three surfaces, with no business data and no tools, and the model owns the
-  conversation.** Code enforces permissions, settings, effect safety, identity and duplicate prevention. No keyword
+- **F4/F5 GPT-Live is the voice on all three surfaces, with no tools, and the model owns the conversation.** On the
+  phone it holds the owner's own Agent page facts and Instructions, read-only, loaded once at call start;
+  Instructions take priority. It holds no other business data. Meet and the orb still hold no business data until
+  the founder rules on them. Code enforces permissions, settings, effect safety, identity and duplicate prevention. No keyword
   rules, canned lines, mute gates or one-question prompt patches.
-- **F6 Phone uses the same Router and Workers under a caller principal.** No fast path for callers.
+- **F6 Phone uses the same Router and Workers under a caller principal for anything dynamic:** availability,
+  bookings, messages, transfers and any question the facts do not answer. The only thing the voice answers by
+  itself is what the Agent page facts state. No other fast path for callers.
+- **Founder ruling 12 Nov 2026: static facts live with the phone voice; dynamic work goes to the Router and
+  Workers.** It amends F4/F5, F6 and F38 as written above.
 - **F7/F8 Approvals are card taps only** (a voice can be anyone's). In a meeting everyone acts with the inviting
   member's authority; spend, send and publish need that member's tap.
 - **Caller boundary.** A caller or texter gets the business profile and their own bookings and messages, never owner
@@ -219,7 +227,12 @@ The local `codex` CLI is the fallback when the connector does not pick a PR up; 
 
 ### What CI runs on a pull request
 
-CI was stripped on purpose (F23). A PR runs only:
+A PR runs these, all on GitHub-hosted Linux (`vars.CI_RUNNER`):
+
+- `backend.yml`: ruff + pytest in 4 shards x xdist, plus the Python Lambda suites; `apps/backend/**`.
+- `frontend-ci.yml`: lint, tsc, vitest in 4 shards, `next build`; `apps/frontend/**`, `packages/shared/**`.
+- `mobile-ci.yml`: shared + mobile typecheck, lint, tests, `expo export` Metro gate; `apps/mobile/**`, `packages/shared/**`.
+- `infra-ci.yml`: tsc, vitest, the `deploy.yml` drift guard, Hermes bridge tests and image smokes, gate tests; `apps/infra/**`.
 
 - `secret-scan.yml` (every PR and every push to `main`).
 - `backend-arm64.yml`: builds the ARM64 backend image and smoke-tests it. Path-filtered to `apps/backend/**`,
@@ -228,8 +241,8 @@ CI was stripped on purpose (F23). A PR runs only:
 - `desktop-build.yml` (Rust tests and clippy), path-filtered to `apps/desktop/**`.
 - `roll-hermes-runtime.yml`, path-filtered to its own script and bootstrap files.
 
-There is **no backend or frontend test or lint run on a PR**, and no infra CI. Run the tests you touched before
-you push (`uv run pytest <files>`, `pnpm test`); check the exit code, never `pytest | tail`.
+Let the PR's run be the test; do not run whole suites locally. If you run a file, check the exit code, never
+`pytest | tail`.
 
 ### Deploy model
 
@@ -263,7 +276,7 @@ not self-evidently an eviction. `rerun --failed` on a deploy does not work; re-d
 **`deploy.yml` is GENERATED** from `apps/infra/lib/app.ts` by `cdk-pipelines-github`. Its drift guard only throws
 inside the deploy run, post-merge; locally `cdk synth` silently rewrites the file. So any change under
 `apps/infra/lib/` must run `cd apps/infra && npx cdk synth` and commit the regenerated `deploy.yml` in the same
-PR. No PR check catches this now that `infra-ci.yml` is deleted: drift blocks every deploy job after the merge.
+PR. `infra-ci.yml` fails the PR when the committed file is out of date.
 `cdk synth` does not need Docker when node/npm and python3/pip3 are on the machine (the bundled Lambdas use
 `local.tryBundle`).
 
@@ -290,8 +303,7 @@ gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status --inter
 - **Desktop:** `desktop-build.yml` on a manual dispatch builds the signed prod DMG on the self-hosted Mac
   (`macos-desktop`) and publishes a `desktop-v0.4.*` release for the Tauri updater. There is no dev desktop build.
 - **Mobile:** `mobile-ota.yml` (merge to `main` → `eas update --channel production`, Linux) and
-  `mobile-release.yml` (`mobile-v*` tag → `eas build --local` + `eas submit`, self-hosted Mac). There is no mobile
-  PR CI any more.
+  `mobile-release.yml` (`mobile-v*` tag → `eas build --local` + `eas submit`, self-hosted Mac). PRs run `mobile-ci.yml`.
 - The self-hosted Mac runs only the native lanes (`desktop-build.yml`, `mobile-release.yml`). Anything JS-only
   belongs on `vars.CI_RUNNER`.
 

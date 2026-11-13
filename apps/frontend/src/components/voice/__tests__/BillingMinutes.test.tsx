@@ -8,9 +8,7 @@ vi.mock("../data", () => ({
   useAgentConfig: () => ({ data: { runOut: "keep" }, save: vi.fn() }),
 }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => null }));
-vi.mock("@/components/settings/SettingsPlace", () => ({ PANELS: {} }));
 vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => null }));
-vi.mock("@/components/settings/SessionNotificationsCard", () => ({ SessionNotificationsCard: () => null }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => null }));
 vi.mock("@/lib/desktopNotify", () => ({ isDesktopApp: () => false }));
 

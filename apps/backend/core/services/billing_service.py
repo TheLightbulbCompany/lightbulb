@@ -749,15 +749,9 @@ async def _build_subscription_checkout(
         cancel_url=cancel_url,
         allow_promotion_codes=allow_promotion_codes,
         payment_method_collection="always",
-        # The SAME dict on BOTH, because Stripe puts them on different objects
-        # and two different webhooks read them:
-        #   subscription_data.metadata → the created Subscription, which is
-        #     what customer.subscription.* carries (handle_subscription_state).
-        #   metadata                   → the Session itself, which is what
-        #     checkout.session.completed carries (handle_checkout_session).
-        # Keep Checkout and Subscription metadata aligned: Stripe emits them
-        # on different webhook objects, and launch-coupon settlement reads the
-        # session while subscription lifecycle reads the subscription.
+        # The SAME dict on BOTH: subscription_data.metadata lands on the created
+        # Subscription, which customer.subscription.* carries
+        # (handle_subscription_state); metadata stays on the Session itself.
         metadata=metadata,
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,

@@ -229,42 +229,6 @@ class TestGetUsage:
         mock_clerk.assert_awaited_once_with("user_test_123")
 
 
-class TestGetMyUsage:
-    @pytest.mark.asyncio
-    @patch("routers.billing.usage_repo")
-    async def test_get_my_usage_with_data(self, mock_usage_repo, async_client):
-        mock_usage_repo.get_period_usage = AsyncMock(
-            return_value={
-                "total_spend_microdollars": 3_500_000,
-                "total_input_tokens": 8000,
-                "total_output_tokens": 4000,
-                "total_cache_read_tokens": 100,
-                "total_cache_write_tokens": 50,
-                "request_count": 25,
-            }
-        )
-
-        response = await async_client.get("/api/v1/billing/my-usage")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["total_spend"] == 3.5
-        assert data["request_count"] == 25
-        call_args = mock_usage_repo.get_period_usage.call_args
-        assert call_args[0][0] == "org_test_456"
-        assert call_args[0][1].startswith("member:user_test_123:")
-
-    @pytest.mark.asyncio
-    @patch("routers.billing.usage_repo")
-    async def test_get_my_usage_no_data(self, mock_usage_repo, async_client):
-        mock_usage_repo.get_period_usage = AsyncMock(return_value=None)
-
-        response = await async_client.get("/api/v1/billing/my-usage")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["total_spend"] == 0.0
-        assert data["request_count"] == 0
-
-
 class TestStripeWebhook:
     @pytest.fixture(autouse=True)
     def _no_front_desk_sync(self, monkeypatch):

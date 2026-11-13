@@ -339,19 +339,6 @@ async def test_forget_on_behalf_of_pages_the_log_and_forgets_only_that_persons_e
         await memory_api.forget_on_behalf_of("org_x", "user_a")
 
 
-def test_memory_tab_lists_a_validto_zero_claim_as_current():
-    """The extraction model writes validTo 0 for "empty"; the tab must not call that replaced."""
-    from datetime import UTC, datetime
-
-    rec = {
-        "memoryRecordId": "z",
-        "content": {"text": "Ann: city: Oslo"},
-        "createdAt": datetime(2026, 2, 1, tzinfo=UTC),
-        "metadata": {"kind": {"stringValue": "claim"}, "validTo": {"numberValue": 0}},
-    }
-    assert workspace_memory._view(rec)["status"] == "current"
-
-
 def test_namespaces_for_adds_task_and_private_namespaces():
     """Super-agent memory (spec 07 §3): task cards in /tasks/<o>/, and a person's private lane in
     /turns/<o>:<u>/ and /tasks/<o>:<u>/. Each is a sibling of the facts namespace, never a child."""

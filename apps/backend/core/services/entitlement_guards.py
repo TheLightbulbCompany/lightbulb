@@ -18,7 +18,6 @@ WEBHOOK_AUTOMATIONS_MESSAGE = (
     "Webhook automations are part of a paid plan — on the free plan your agents "
     "only run while you're here. Upgrade to let them react to events."
 )
-COMPANY_STRIPE_MESSAGE = "Connecting your company's Stripe account is part of a paid plan. Upgrade to connect it."
 
 
 async def require_always_on_entitlement(owner_id: str, message: str | None = None) -> None:

@@ -19,7 +19,6 @@ from botocore.exceptions import ClientError
 from pydantic import Field, field_validator, model_serializer, model_validator
 
 from core.auth import AuthContext, resolve_owner_id
-from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
@@ -54,15 +53,11 @@ def iso(epoch: int | None) -> str | None:
 logger = logging.getLogger(__name__)
 
 LIVE_STATUSES = frozenset(get_args(INPUT_STATUSES))
-WORKSPACE_SESSION_CAP = 100
 
 
 OpaqueId = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_.:-]+$")]
 NetworkSessionId = Annotated[str, Field(max_length=256, pattern=r"^[A-Za-z0-9._-]{1,64}/[a-z]+:[A-Za-z0-9._-]{1,128}$")]
 DeviceId = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
-EnrollmentRevision = Annotated[
-    str, Field(pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
-]
 MAX_ENVELOPE_BYTES = 16 * 1024
 # Leave room for server-authored provenance inside the transport envelope.
 MAX_COMMAND_BYTES = 8 * 1024
@@ -70,48 +65,10 @@ OFFLINE_SEND_SECONDS = 24 * 3600
 OFFLINE_SEND_PENDING_LIMIT = 20
 
 
-class EnrollmentRequest(ContractModel):
-    device_id: DeviceId
-    cli_device_id: DeviceId | None = None
-    enabled: bool
-    expected_revision: OpaqueId | None = None
-    owner_id: OpaqueId | None = None
-    enable_revision: EnrollmentRevision | None = None
-    previous_revision: EnrollmentRevision | None = None
-
-    @model_validator(mode="after")
-    def conditional_disable_only(self):
-        if self.enabled and self.expected_revision is not None:
-            raise ValueError("expectedRevision is only valid for disable")
-        predecessor = "previous_revision" in self.model_fields_set
-        if self.enable_revision is not None and (not self.enabled or not predecessor):
-            raise ValueError("enableRevision requires enable and an explicit predecessor")
-        if predecessor:
-            if (
-                self.owner_id is None
-                or (self.enabled and self.enable_revision is None)
-                or (not self.enabled and self.expected_revision is None)
-            ):
-                raise ValueError("A nominated enrollment requires owner and revision")
-            revision = self.enable_revision if self.enabled else self.expected_revision
-            parsed = uuid.UUID(revision)
-            if str(parsed) != revision or parsed.version != 4:
-                raise ValueError("Enrollment revision must be a canonical UUIDv4")
-            if revision == self.previous_revision:
-                raise ValueError("Enrollment revision must be fresh")
-        return self
-
-
 class LocalDevice(ContractModel):
     device_id: str
     human_user_id: str
     cli_device_id: str | None = None
-
-
-class EnrollmentResponse(LocalDevice):
-    owner_id: str
-    enabled: bool
-    revision: str
 
 
 class Capabilities(ContractModel):
@@ -191,14 +148,6 @@ class SessionPr(ContractModel):
 
 #: How many subagents a session has running (gap 16).
 AgentCount = Annotated[int, Field(ge=1, le=1000)]
-
-
-class SessionStats(ContractModel):
-    """What the harness wrote about its own run; each field is absent until it does."""
-
-    model: Label | None = None
-    permission_mode: Label | None = None
-    usage: TokenUsage | None = None
 
 
 # Claude's session mode switches; "session" is Codex's "allow for this conversation"; "similar" is
@@ -484,8 +433,6 @@ class LocalSession(ContractModel):
     resume_allowed: list[str] = Field(default_factory=list)
     # A resume waiting for the owner's Mac, or the Mac's refusal of one (spec §5.7).
     resume: ResumeStatus | None = None
-    # Server-computed: ended, not background, and this workspace may start sessions on its Macs.
-    resumable: bool = False
     # A request is pending and the owner's older Mac (no bandOwnerOnly) drops remote typing
     # until it is answered.
     input_paused: bool = False
@@ -555,10 +502,6 @@ class RoomResources(ContractModel):
     devices: list[LocalDevice]
     sessions: list[LocalSession]
     paired_nodes: list[PairedNode]
-
-
-class WorkspaceSessions(ContractModel):
-    sessions: list[LocalSession]
 
 
 def _drop_none(model, result: dict, info, names: tuple[str, ...]) -> dict:
@@ -770,10 +713,6 @@ class CommandReceipt(LocalSessionCommand):
         )
 
 
-class OfflineOutbox(ContractModel):
-    commands: list[CommandReceipt]
-
-
 Caller = AuthContext | AgentInvocation
 
 
@@ -799,15 +738,6 @@ async def require_caller(auth: Caller, room: str) -> None:
         or await messaging_repo.has_foreign_members(room, owner)
     ):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
-
-
-def command_caller(owner: str, command: dict) -> AuthContext:
-    """The person who admitted ``command``. Only people command a session; a row an agent or a
-    session admitted before they left the hub is refused at delivery."""
-    if "actor" in command:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only a person can command a session.")
-    user = command["actorUserId"]
-    return AuthContext(user_id=user, org_id=owner if owner != user else None)
 
 
 def _public(model, row: dict):
@@ -894,25 +824,6 @@ def ended_empty(provider: str, status: str, event_seq: int, control_unavailable_
 ENDED_ON_PURPOSE = "on-purpose"
 
 
-async def landed_ends(owner: str, row: dict) -> list[dict]:
-    """The owner's End commands for this run that reached its Mac: sent there, and neither refused
-    nor left unanswered (`unknown`) by it. Any one makes the end on purpose; one that
-    `remove_session` sent (`removesOnEnd`) makes the end a removal too."""
-    return [
-        command
-        for command in await repo.list_commands(owner, row["sessionId"])
-        if command.get("kind") == "end"
-        and command.get("expectedGeneration") == row["generation"]
-        and command.get("state") in {"dispatched", "applied"}
-    ]
-
-
-def owner_auth(row: dict) -> AuthContext:
-    """The session's own human, for work the relay finishes in their name."""
-    owner, user = row["ownerId"], row["humanUserId"]
-    return AuthContext(user_id=user, org_id=owner if owner != user else None)
-
-
 def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     """A stopped session that a later one of the same person continues (`forkedFrom`) is listed once:
     as that later one. Offline counts as stopped: a Mac still draining an ended origin re-registers it
@@ -994,11 +905,6 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     ended = row.get("endedAt") is not None
     empty = ended_empty(row["provider"], public["status"], row.get("eventSeq", 0), row.get("controlUnavailableReason"))
     public["resumeAllowed"] = list(row.get("resumeAllowed") or []) if ended and not empty else []
-    from core.services import session_resume  # lazy: it imports this module
-
-    public["resumable"] = (
-        ended and not empty and row.get("kind") != "background" and session_resume.submissions_enabled(row["ownerId"])
-    )
     # The stored request carries the message; only its state, author and time are public.
     waiting = public.pop("resume", None)
     if ended and waiting and int(waiting["until"]) > int(time.time()):
@@ -1137,41 +1043,6 @@ async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: st
         if pair.get("userId") != user_id or pair.get("clientId") != client:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Paired desktop ownership is required.")
     return pairs
-
-
-async def set_enrollment(auth: AuthContext, request: EnrollmentRequest) -> EnrollmentResponse:
-    owner = resolve_owner_id(auth)
-    if request.owner_id is not None and request.owner_id != owner:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Enrollment workspace mismatch.")
-    await _paired(owner, auth.user_id, request.device_id, request.cli_device_id)
-    try:
-        row = await repo.put_enrollment(
-            owner,
-            auth.user_id,
-            request.device_id,
-            request.cli_device_id,
-            request.enabled,
-            request.expected_revision,
-            enable_revision=request.enable_revision,
-            previous_revision=request.previous_revision,
-            has_predecessor="previous_revision" in request.model_fields_set,
-        )
-    except ClientError as exc:
-        if not messaging_repo._is_cancelled(exc):
-            raise
-        if request.expected_revision is not None or request.enable_revision is not None:
-            raise ApiProblem("LOCAL_SESSION_CONFLICT", "Enrollment changed; cleanup is obsolete.") from exc
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Device pairing changed. Try again.") from exc
-    # The workspace session list enumerates humans via their private user
-    # stream, which is otherwise only created when someone opens web/mobile
-    # chat. A desktop-only sharer would stay invisible (and miss workspace
-    # hints) until they did, so enrollment carries the stream with it.
-    # Best-effort: enrollment itself already succeeded.
-    try:
-        await messaging_repo.ensure_user_stream(owner, auth.user_id)
-    except Exception:
-        logger.warning("Local session enrollment left without a user stream for %s", auth.user_id)
-    return _public(EnrollmentResponse, row)
 
 
 async def _enrolled(owner: str, human: str, device: str) -> dict:
@@ -1475,37 +1346,6 @@ async def _live_public_sessions(
 
 
 RECENT_ENDED_SECONDS = 7 * 24 * 3600
-RECENT_ENDED_CAP = 20
-
-
-async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) -> WorkspaceSessions:
-    """Every live session in the workspace, plus lapsed-lease (`offline`) ones
-    so a sleeping Mac reads as Offline rather than vanishing. Visibility is
-    workspace-wide by owner ruling (spec §2.3); membership is not consulted.
-    ``include_ended`` appends the sidebar's "Recent": sessions that ended in the last
-    7 days (their transcripts are kept -- nothing reaps them), newest first."""
-    owner = caller_owner(auth)
-    humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
-    since = int(time.time()) - RECENT_ENDED_SECONDS if include_ended else None
-    # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
-    viewer = _viewer(auth)
-    found = _without_moved(
-        [
-            s
-            for s in await _live_public_sessions(owner, humans, include_offline=True, ended_since=since, viewer=viewer)
-            # ponytail: legacy rows only; delete once no pre-2026-10-03 row is in the 7-day Recent window
-            if s.kind == "interactive" and (s.shared or s.human_user_id == viewer)
-        ]
-    )
-    live = [s for s in found if s.status != "ended"][:WORKSPACE_SESSION_CAP]
-    sessions = live + [s for s in found if s.status == "ended"][:RECENT_ENDED_CAP]
-    if viewer is not None and sessions:
-        from core.services import session_chat  # lazy: it imports this module
-
-        sessions = session_chat.with_chat(
-            sessions, await session_chat.chat_state(owner, viewer, [s.session_id for s in sessions])
-        )
-    return WorkspaceSessions(sessions=sessions)
 
 
 async def still_in_workspace(owner: str, user_id: str) -> bool:
@@ -1579,114 +1419,6 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
         except Exception:
             logger.warning("Referenced session %s unresolved", session_id, exc_info=True)
     return out
-
-
-async def set_sharing(
-    auth: AuthContext, session_id: str, shared: bool, *, generation: str | None = None
-) -> LocalSession:
-    """The owner pauses or resumes sharing one session. While paused the relay drops its
-    transcript instead of storing it (one notice marks the gap) and nobody else can see it.
-    ``generation`` pins the change to the run the caller saw (the Mac's terminal decisions):
-    checked on the row this write is conditioned on, so a resumed session is never changed."""
-    for _ in range(6):
-        row, enrollment = await authorize_session(auth, None, session_id, owner_only=True)
-        # owner_only admits teammates while "Let teammates control" is on; sharing stays the owner's.
-        if auth.user_id != row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
-        if generation is not None and row.get("generation") != generation:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Not this Mac's current session.")
-        if bool(row.get("unshared")) == shared:  # a change, not a no-op
-            updated = {**row, "revision": str(uuid.uuid4())}
-            if shared:
-                updated.pop("unshared", None)
-                updated.pop("pauseNoticed", None)
-            else:
-                updated["unshared"] = True
-                if public_id(row.get("shareLink")):
-                    # Only me: an "Anyone" link does not come back public when sharing resumes.
-                    updated["shareLink"] = _with_audience(row["shareLink"], "workspace")
-                updated.pop("pendingApproval", None)
-                updated.pop("pendingQuestion", None)
-                updated.pop("privateSendApproval", None)
-            try:
-                await repo.put_session(updated, row, enrollment)
-            except ClientError as exc:
-                if not messaging_repo._is_cancelled(exc):
-                    raise
-                continue
-            row = updated
-            await _push_presence(row)
-        if not shared:
-            from core.services import session_chat  # lazy: it imports this module
-
-            # On every pause, not only a change: a retry after a failed silence finishes it.
-            await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
-        return _session_public(row, auth.user_id)
-    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-
-
-async def get_session(auth: Caller, session_id: str) -> LocalSession:
-    """One session for any workspace member, ended included: the list keeps only live
-    ones, but an open view or an old link must still show a session that has ended."""
-    row, _ = await authorize_session(auth, None, session_id)
-    viewer = _viewer(auth)
-    public = _session_public(row, viewer)
-    if viewer is None:
-        return public
-    from core.services import session_chat  # lazy: it imports this module
-
-    state = await session_chat.chat_state(row["ownerId"], viewer, [row["sessionId"]])
-    return session_chat.with_chat([public], state)[0]
-
-
-class DisplayTitleRequest(ContractModel):
-    display_title: Annotated[str, Field(max_length=120)] | None
-
-    @field_validator("display_title")
-    @classmethod
-    def validate_display_title(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        title = value.strip()
-        if not title or any(ord(char) < 0x20 or ord(char) == 0x7F for char in title):
-            raise ValueError("displayTitle must be a single non-empty line")
-        return title
-
-
-async def set_display_title(auth: AuthContext, session_id: str, title: str | None) -> LocalSession:
-    """The session's own human names its Lightbulb projection, not the native transcript."""
-    from core.services.local_session_relay import publish_resources_changed
-
-    owner = resolve_owner_id(auth)
-    for _ in range(6):
-        row, enrollment = await authorize_session(auth, None, session_id)
-        if auth.user_id != row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can rename it.")
-        if row.get("displayTitle") == title:
-            return _session_public(row, auth.user_id)
-        updated = {**row, "revision": str(uuid.uuid4())}
-        if title is None:
-            updated.pop("displayTitle", None)
-        else:
-            updated["displayTitle"] = title
-        audit = audit_row(owner, session_id, auth, "display_title_changed")
-        try:
-            await repo.put_session(
-                updated, row, enrollment, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
-            )
-        except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
-                raise
-            continue
-        from core.services import session_chat  # lazy: it imports this module
-
-        try:  # the chat is named after the session: an existing one takes the new title now
-            await session_chat.follow_session(owner, row["sessionId"])
-        except Exception:  # the next chat open names it too (session_chat._follow_lifecycle)
-            logger.warning("session chat rename failed for %s", row["sessionId"], exc_info=True)
-        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
-        return _session_public(updated, auth.user_id)
-    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
 async def list_events(
@@ -1971,214 +1703,7 @@ async def submit_command(
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry the same requestId.")
 
 
-async def _expire_pending_command(owner: str, sid: str, row: dict) -> dict:
-    if row["state"] not in {"pending", "awaiting_approval"} or row["deliverBy"] > int(time.time()):
-        return row
-    expired = dict(row)
-    expired.update(state="rejected", updatedAt=int(time.time()), revision=str(uuid.uuid4()))
-    try:
-        await repo.replace_command(row, expired)
-        if row.get("offlineIdentity"):
-            await _capture_offline_terminal(owner, sid, expired, "expired")
-        return expired
-    except ClientError as exc:
-        if not messaging_repo._is_cancelled(exc):
-            raise
-        return await repo.get_command(owner, sid, row["requestId"])
-
-
-async def _capture_offline_terminal(
-    owner: str, sid: str, command: dict, reason: Literal["cancelled", "expired", "rejected"]
-) -> None:
-    try:
-        session = await repo.get_session(owner, sid)
-        if session:
-            capture_session_event(
-                session,
-                "local_session_command_settled",
-                f"{command['requestId']}:rejected:{reason}",
-                actor_user_id=command.get("actorUserId"),
-                request_id=command["requestId"],
-                command_kind="send",
-                origin="direct",
-                state="rejected",
-                offline_queued=True,
-                outcome_reason=reason,
-            )
-    except Exception:
-        logger.warning("offline command analytics capture failed", exc_info=True)
-
-
-async def get_command(auth: Caller, room_id: str | None, session_id: str, request_id: str) -> CommandReceipt:
-    room_id = validate_uuid(room_id, label="room ID") if room_id else ""
-    # An agent keeps the requester-is-owner rule; a human reads receipts they may see (below).
-    session, _ = await authorize_session(auth, room_id, session_id, owner_only=isinstance(auth, AgentInvocation))
-    # Reuse the command identifier contract without accepting payload-owned identity.
-    from pydantic import TypeAdapter, ValidationError
-
-    try:
-        TypeAdapter(OpaqueId).validate_python(request_id)
-    except ValidationError as exc:
-        raise ApiProblem("INVALID_REQUEST", "Invalid request ID.") from exc
-    row = await repo.get_command(session["ownerId"], session["sessionId"], request_id)
-    if row is None or row["roomId"] != room_id:
-        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Command not found in this room.")
-    # A receipt is its sender's and the session owner's to read -- a teammate who sent it under
-    # "teammates can control" keeps it after the owner turns that off. Agents keep their room path.
-    if not isinstance(auth, AgentInvocation) and auth.user_id not in {session["humanUserId"], row.get("actorUserId")}:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
-    if room_id:
-        await require_caller(auth, room_id)
-    return _public(CommandReceipt, await _expire_pending_command(session["ownerId"], session["sessionId"], row))
-
-
-async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutbox:
-    session, _ = await authorize_session(auth, None, session_id)
-    owner, sid, now = session["ownerId"], session["sessionId"], int(time.time())
-    commands = await repo.list_commands(owner, sid)
-    by_request_id = {row["requestId"]: row for row in commands}
-    cutoff = now - 2 * OFFLINE_SEND_SECONDS
-    saved = {}
-    for row in commands:
-        if not row.get("offlineIdentity") or row.get("actorUserId") != auth.user_id:
-            continue
-        replacement = by_request_id.get(row.get("replacedByRequestId"))
-        if row["createdAt"] < cutoff and not (
-            replacement
-            and replacement.get("replacesRequestId") == row["requestId"]
-            and replacement.get("actorUserId") == auth.user_id
-            and replacement["createdAt"] >= cutoff
-        ):
-            continue
-        saved[row["requestId"]] = row
-    linked: dict[str, dict] = {}
-    for original in saved.values():
-        if original["state"] != "rejected":
-            continue
-        replacement = by_request_id.get(original.get("replacedByRequestId"))
-        if (
-            replacement
-            and replacement.get("replacesRequestId") == original["requestId"]
-            and replacement.get("actorUserId") == auth.user_id
-        ):
-            if replacement["state"] == "pending" and replacement["deliverBy"] <= now:
-                replacement = await _expire_pending_command(owner, sid, replacement)
-                if replacement is None:
-                    continue
-                by_request_id[replacement["requestId"]] = replacement
-            linked[replacement["requestId"]] = original
-    visible = []
-    for command in commands:
-        row = by_request_id[command["requestId"]]
-        if row["requestId"] not in saved and row["requestId"] not in linked:
-            continue
-        if row["state"] == "rejected" and row.get("replacesRequestId") in saved:
-            continue  # a failed retry restores its saved original, never a second Retry action
-        replacement_id = row.get("replacedByRequestId")
-        if (
-            row["state"] == "rejected"
-            and replacement_id in linked
-            and linked[replacement_id]["requestId"] == row["requestId"]
-            and by_request_id[replacement_id]["state"] in {"pending", "dispatched", "unknown", "applied"}
-        ):
-            continue
-        visible.append(row)
-    rows = [await _expire_pending_command(owner, sid, row) for row in visible]
-    active = [
-        row
-        for row in rows
-        if row["state"] not in {"applied", "rejected"} and (row["deliverBy"] > now or row["requestId"] in linked)
-    ]
-    active_ids = {row["requestId"] for row in active}
-    recent = [row for row in rows if row["requestId"] not in active_ids]
-    selected = active[-OFFLINE_SEND_PENDING_LIMIT:]
-    if len(selected) < OFFLINE_SEND_PENDING_LIMIT:
-        selected += recent[-(OFFLINE_SEND_PENDING_LIMIT - len(selected)) :]
-    return OfflineOutbox(
-        commands=[_public(CommandReceipt, row) for row in sorted(selected, key=lambda row: row["commandSeq"])]
-    )
-
-
-async def cancel_offline_command(auth: AuthContext, session_id: str, request_id: str) -> CommandReceipt:
-    receipt = await get_command(auth, None, session_id, request_id)
-    if receipt.actor_user_id != auth.user_id:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the sender can cancel this follow-up.")
-    session_id, request_id = receipt.session_id, receipt.request_id
-    owner = resolve_owner_id(auth)
-    session = await repo.get_session(owner, session_id)
-    from core.services.local_session_relay import publish_resources_changed
-
-    for _ in range(6):
-        row = await repo.get_command(owner, session_id, request_id)
-        if not row.get("offlineIdentity"):
-            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This follow-up cannot be cancelled.")
-        if row.get("cancelledAt"):
-            if session:
-                await publish_resources_changed(owner, session["humanUserId"], session_id=session_id)
-            return _public(CommandReceipt, row)
-        if row["state"] != "pending" or row["deliverBy"] <= int(time.time()):
-            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This follow-up has already left the queue.")
-        updated = {
-            **row,
-            "state": "rejected",
-            "cancelledAt": int(time.time()),
-            "updatedAt": int(time.time()),
-            "revision": str(uuid.uuid4()),
-        }
-        audit = audit_row(owner, session_id, auth, "cancel", request_id=request_id)
-        try:
-            await repo.replace_command(
-                row, updated, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
-            )
-            await _capture_offline_terminal(owner, session_id, updated, "cancelled")
-            if session:
-                await publish_resources_changed(owner, session["humanUserId"], session_id=session_id)
-            return _public(CommandReceipt, updated)
-        except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
-                raise
-    raise ApiProblem("LOCAL_SESSION_CONFLICT", "This follow-up changed. Check delivery.")
-
-
 # --- Team control and the audit trail (owner ruling 2026-09-25) -----------------------------
-
-AUDIT_ACTIONS = Literal[
-    "display_title_changed",
-    # The four native_send_* actions were the retired approval card; old audit rows still carry them.
-    "native_send_requested",
-    "native_send_approved",
-    "native_send_denied",
-    "native_send_cancelled",
-    "send",
-    "cancel",
-    "interrupt",
-    "end",
-    "approve",
-    "answer",
-    "deny",
-    "team_control_on",
-    "team_control_off",
-    "team_control_ended",
-    "share_link_created",
-    "share_link_revoked",
-    "share_link_audience",
-    "session_copied",
-    "pickup_on",
-    "pickup_off",
-    "picked_up",
-    "pickup_expired",
-    "join_requested",
-    "join_allowed",
-    "join_declined",
-    "join_allow_undone",
-    "ask_to_join_on",
-    "ask_to_join_off",
-    "pickup_requested",
-    "pickup_request_declined",
-    "sender_removed",
-    "resume_requested",
-    "resume_revoked",
-]
 
 
 def _audit_action(request: LocalSessionCommand) -> str:
@@ -2218,100 +1743,6 @@ def audit_row(
     return row
 
 
-class AuditEntry(ContractModel):
-    at: str
-    action: AUDIT_ACTIONS
-    actor_user_id: str | None = None
-    actor_agent_id: str | None = None
-    request_id: str | None = None
-    detail: str | None = None
-    # The command's delivery state, when the entry is a command.
-    state: str | None = None
-    # The person an owner's decision was about (join_allowed, join_declined, sender_removed).
-    subject_user_id: str | None = None
-
-    @model_serializer(mode="wrap")
-    def wire(self, handler, info):
-        return _drop_none(
-            self,
-            handler(self),
-            info,
-            ("actor_user_id", "actor_agent_id", "request_id", "detail", "state", "subject_user_id"),
-        )
-
-
-class AuditPage(ContractModel):
-    entries: list[AuditEntry]
-
-
-async def list_audit(auth: AuthContext, session_id: str) -> AuditPage:
-    """Every remote control action on a session, oldest first; any workspace member reads it."""
-    session, _ = await authorize_session(auth, None, session_id)
-    owner, sid = session["ownerId"], session["sessionId"]
-    # ponytail: whole-partition audit read; page it if a session ever collects thousands of actions.
-    rows = await messaging_repo._query(repo.session_pk(owner, sid), begins_with="AUDIT#")
-    states = {c["requestId"]: c["state"] for c in await repo.list_commands(owner, sid)}
-    return AuditPage(
-        entries=[
-            AuditEntry(
-                at=datetime.fromtimestamp(int(row["at"]) / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
-                + "Z",
-                action=row["action"],
-                actor_user_id=row.get("actorUserId"),
-                actor_agent_id=row.get("actorAgentId"),
-                request_id=row.get("requestId"),
-                detail=row.get("detail"),
-                state=states.get(row.get("requestId")) if row.get("requestId") else None,
-                subject_user_id=row.get("subjectUserId"),
-            )
-            for row in rows
-        ]
-    )
-
-
-class TeamControlRequest(ContractModel):
-    enabled: bool
-
-
-async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) -> LocalSession:
-    """Only the session's own human flips it, and only while the session is running."""
-    from core.services.local_session_relay import publish_resources_changed
-
-    owner = resolve_owner_id(auth)
-    for _ in range(6):
-        row, enrollment = await authorize_session(auth, None, session_id)
-        if auth.user_id != row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can change who controls it.")
-        if row.get("endedAt") is not None:
-            raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
-        if bool(row.get("teamControl")) == enabled:
-            return _session_public(row, auth.user_id)
-        updated = {**row, "teamControl": enabled, "revision": str(uuid.uuid4())}
-        if enabled:
-            # Members may type now, so a member's pending ask (left by an older client) is answered.
-            # A link viewer's ask (`outsider`) stays: team control does not admit them.
-            updated["joinRequests"] = {
-                who: r
-                for who, r in (row.get("joinRequests") or {}).items()
-                if r.get("state") != "pending" or r.get("outsider")
-            }
-        audit = audit_row(owner, row["sessionId"], auth, "team_control_on" if enabled else "team_control_off")
-        try:
-            await repo.put_session(
-                updated, row, enrollment, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
-            )
-        except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
-                raise
-            continue
-        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
-        capture_session_event(
-            updated, "local_session_team_control_changed", updated["revision"], state="on" if enabled else "off"
-        )
-        return _session_public(updated, auth.user_id)
-    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-
-
 # --- Ask to join: one teammate at a time (owner ruling 2026-09-28) ----------------------------
 #
 # Per person, not the whole workspace. Both fields live on the session row, so every change is
@@ -2319,10 +1750,6 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
 # them; a new process generation and the Ended frame drop them (local_session_relay).
 
 JOIN_FIELDS = ("allowedSenders", "joinRequests")
-
-#: A request never expires by the clock: it stays until the owner answers, or the session ends or
-#: restarts. So the person who asked may remind the owner, at most once per this window (ISOA-729).
-ASK_AGAIN_AFTER_S = 10 * 60
 
 
 #: How long a person is told that their ask was dropped by the session ending or restarting.
@@ -2343,24 +1770,6 @@ def closed_joins(row: dict) -> dict[str, int]:
 def _asked_at(request: dict) -> str | None:
     """When this person last asked. A request from before ``askedAt`` has only its ``createdAt``."""
     return iso(int(request["askedAt"])) if request.get("askedAt") else request.get("createdAt")
-
-
-def _new_request() -> dict:
-    return {"state": "pending", "requestId": str(uuid.uuid4()), "createdAt": utc_now_iso(), "askedAt": int(time.time())}
-
-
-def _ask_again(request: dict | None) -> dict | None:
-    """The same pending request, stamped as asked again, once it has waited ASK_AGAIN_AFTER_S;
-    None otherwise. The request id stays, so the owner's open Activity item still answers it."""
-    now = int(time.time())
-    if (request or {}).get("state") != "pending" or now - int(request.get("askedAt") or 0) < ASK_AGAIN_AFTER_S:
-        return None
-    return {**request, "askedAt": now, "reminded": True}
-
-
-class JoinDecisionRequest(ContractModel):
-    decision: Literal["allow", "decline"]
-    request_id: str | None = None
 
 
 def _valid_user(user_id: str) -> str:
@@ -2400,16 +1809,6 @@ async def _change_session(
         await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
         return updated, audit
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-
-
-async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
-    """Owner ruling 2026-10-26: trust = membership. A workspace member types while the owner has
-    "Let teammates control this session" on and watches otherwise: there is no member ask. Only a
-    viewer of an "Anyone with the link" page asks (``session_links.ask_to_join``). Kept for clients
-    that still offer the old button."""
-    raise ApiProblem(
-        "LOCAL_SESSION_FORBIDDEN", "Teammates can type here only while its owner lets teammates control it."
-    )
 
 
 async def decide_join(
@@ -2491,60 +1890,11 @@ OUTSIDER_ALLOW_COPY = (
 )
 
 
-async def remove_sender(auth: AuthContext, session_id: str, user_id: str) -> LocalSession:
-    """The owner takes one person's access back; they may ask again."""
-    user_id = _valid_user(user_id)
-
-    def change(row: dict) -> dict | None:
-        if auth.user_id != row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can change who controls it.")
-        if user_id not in allowed_senders(row):
-            return None
-        return {**row, "allowedSenders": [u for u in allowed_senders(row) if u != user_id]}
-
-    row, _ = await _change_session(auth, session_id, change, "sender_removed", user_id)
-    return _session_public(row, auth.user_id)
-
-
 def pending_pickups(row: dict) -> dict[str, str]:
     """Each person waiting for the owner to allow pick-up, with the request id they asked under."""
     if row.get("pickupAllowed"):
         return {}
     return {u: r["requestId"] for u, r in (row.get("pickupRequests") or {}).items() if r.get("state") == "pending"}
-
-
-async def request_pickup_access(auth: AuthContext, session_id: str) -> LocalSession:
-    """A teammate asks the owner to allow pick-up (spec 2026-10-05-ask-to-pick-up). Claude only;
-    an ended session may be asked for (its snapshot outlives it). Asking while pending or while
-    pick-up is on changes nothing, except that a pending ask reminds the owner at most once per
-    ASK_AGAIN_AFTER_S; a declined person may ask again."""
-    from core.services import session_pickup  # lazy: it imports this module
-
-    me = auth.user_id
-
-    def change(row: dict) -> dict | None:
-        if me == row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This is your own session.")
-        if row["provider"] != "claude":
-            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Only Claude Code sessions can be picked up.")
-        if session_pickup._expired(row):
-            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
-        requests = dict(row.get("pickupRequests") or {})
-        if row.get("pickupAllowed"):
-            return None
-        if (requests.get(me) or {}).get("state") == "pending":
-            if (again := _ask_again(requests[me])) is None:
-                return None
-            requests[me] = again
-        else:
-            requests[me] = _new_request()
-        return {**row, "pickupRequests": requests}
-
-    row, audit = await _change_session(auth, session_id, change, "pickup_requested", None, allow_ended=True)
-    if audit is not None:
-        await _notify_join_request(row, me, kind="pickup")
-        await _push_presence(row)
-    return _session_public(row, me)
 
 
 async def decide_pickup_request(
@@ -2618,60 +1968,6 @@ def join_request_title(name: str, row: dict, *, again: bool = False) -> str:
     return _request_title(name, row, "join", again)
 
 
-async def _notify_join_request(
-    row: dict,
-    requester: str,
-    *,
-    kind: str = "join",
-) -> None:
-    """The owner's "needs you" item, a live event and a push. Best effort, each on its own.
-    ``kind="pickup"`` is the same item for a request to pick up (spec 2026-10-05-ask-to-pick-up)."""
-    from core.services.local_session_relay import ACTIVITY_TTL_S
-    from core.services.messaging import human_display_name
-
-    owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
-    pickup = kind == "pickup"
-    request = row["pickupRequests" if pickup else "joinRequests"][requester]
-    request_id, created = request["requestId"], request["createdAt"]
-    again = bool(request.get("reminded"))
-    try:
-        name = request.get("name") or await human_display_name(requester)
-    except Exception:
-        name = "A teammate"
-    if pickup:
-        title = pickup_request_title(name, row, again=again)
-        body = PICKUP_ALLOW_COPY
-    elif request.get("outsider"):
-        title = join_request_title(name, row, again=again)
-        body = OUTSIDER_ALLOW_COPY
-    else:
-        title = join_request_title(name, row, again=again)
-        body = "Allow them to send follow-ups and answer prompts in this session."
-    # The ask's Needs-you item is keyed by the ask, so a reminder rewrites it.
-    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}"))
-    try:
-        await messaging_repo.put_activity_row(
-            {
-                "pk": messaging_repo.activity_pk(owner, human),
-                "sk": messaging_repo.activity_sk(created, f"session:{event_id}"),
-                "kind": "session",
-                "subtype": "join_request",
-                "sessionId": sid,
-                "requesterId": requester,
-                "requesterName": name,
-                "requestId": request_id,
-                "createdAt": created,
-                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
-                **({"request": "pickup"} if pickup else {}),
-            }
-        )
-    except Exception:
-        logger.warning("Session join request activity row failed", exc_info=True)
-    if again:  # its own live event: clients drop one they have already seen
-        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}|{request['askedAt']}"))
-    await _session_notice(owner, human, sid, "join_request", title, body, event_id)
-
-
 async def _push_presence(row: dict) -> None:
     from core.services import session_presence  # imports this module
 
@@ -2736,33 +2032,6 @@ async def _notify_join_answer(
     await _session_notice(row["ownerId"], requester, sid, state, title, body, event_id)
 
 
-class UsageSharingRequest(ContractModel):
-    enabled: bool
-
-
-async def set_usage_sharing(auth: AuthContext, session_id: str, enabled: bool) -> LocalSession:
-    """The owner decides whether teammates see this session's token meter."""
-    from core.services.local_session_relay import publish_resources_changed
-
-    owner = resolve_owner_id(auth)
-    for _ in range(6):
-        row, enrollment = await authorize_session(auth, None, session_id)
-        if auth.user_id != row["humanUserId"]:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share its usage.")
-        if bool(row.get("shareUsage")) == enabled:
-            return _session_public(row, auth.user_id)
-        updated = {**row, "shareUsage": enabled, "revision": str(uuid.uuid4())}
-        try:
-            await repo.put_session(updated, row, enrollment)
-        except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
-                raise
-            continue
-        await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
-        return _session_public(updated, auth.user_id)
-    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-
-
 # --- The one link (spec 2026-10-05-public-session-links §3.1) -------------------------------
 #
 # One link per session, and its audience: the workspace, or anyone holding it (who then watches the
@@ -2780,12 +2049,6 @@ def _token_hash(token: str) -> str:
     import hashlib
 
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-class LinkRequest(ContractModel):
-    # None is Share: create a workspace link if there is none, otherwise keep its audience. Only the
-    # audience select sends one, so a stale or failed read can never narrow an "anyone" link.
-    audience: AUDIENCES | None = None
 
 
 class SessionLink(ContractModel):
@@ -2816,14 +2079,6 @@ def public_id(link: dict | None, row: dict | None = None) -> str | None:
 def _with_audience(link: dict, audience: str) -> dict:
     kept = {k: v for k, v in link.items() if k != "publicId"}
     return {**kept, "audience": audience, **({"publicId": str(uuid.uuid4())} if audience == "anyone" else {})}
-
-
-def narrow_link(row: dict) -> None:
-    """A session known to have no terminal keeps no public link: the relay narrows it on the row
-    it is writing, so a later run of the conversation in a terminal is not public again without a
-    new "Anyone with the link" choice. (`public_id`'s `row` covers the time before that write.)"""
-    if public_id(row.get("shareLink")):
-        row["shareLink"] = _with_audience(row["shareLink"], "workspace")
 
 
 def _link_public(link: dict, row: dict) -> SessionLink:
@@ -2938,15 +2193,6 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
     return _link_public(link, row)
-
-
-async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
-    row = await _owned_session(auth, session_id)
-    if not row.get("shareLink"):
-        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session has no link.")
-    if pickup_expired(row):
-        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
-    return _link_public(row["shareLink"], row)
 
 
 async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool = False) -> None:

@@ -17,7 +17,6 @@ import time
 from datetime import datetime
 
 import boto3
-from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -157,28 +156,3 @@ async def delete_session(session_id: str, *, user_id: str, workspace_id: str | N
         return False
     await _delete(item)
     return True
-
-
-async def read_shared(owner: str, session_id: str) -> dict | None:
-    """What a share link shows: the session's metadata (no user or workspace id) and, when it
-    was uploaded full, its tool calls. None when the session is gone."""
-    item = _live(await store._get(_user_pk(owner), f"S#{session_id}"))
-    if item is None:
-        return None
-    calls: list = []
-    if item.get("full"):
-        try:
-            obj = await run_in_thread(
-                _s3().get_object,
-                Bucket=settings.OWNER_STATE_BUCKET,
-                Key=_key(owner, session_id, item.get("workspace_id")),
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
-                return None  # the lifecycle rule removed it first: as gone as the row
-            raise
-        calls = json.loads(obj["Body"].read()).get("tool_calls", [])
-    return {
-        "session": {k: v for k, v in _meta(item).items() if k not in ("user_id", "workspace_id")},
-        "tool_calls": calls,
-    }

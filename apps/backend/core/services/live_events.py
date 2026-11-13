@@ -224,12 +224,6 @@ class LiveEventPublisher:
         session_id = _uuid(str(validated.payload.get("sessionId")), "session id")
         await self._publish(f"/ws/{workspace}/session-frames/{session_id}", validated)
 
-    async def publish_link_frames(self, public_id: str, event: dict[str, Any]) -> None:
-        """The same frame to an "Anyone with the link" link's watchers, on ``/pub/<publicId>``. Who
-        may subscribe is the `pub` namespace's Lambda authorizer's decision (a live lease)."""
-        validated = _validated_event(event, frozenset({"workspace.session.screen"}))
-        await self._publish(f"/pub/{_uuid(public_id, 'public id')}", validated)
-
     async def user_channel(self, owner_id: str, user_id: str) -> str | None:
         mapping = await messaging_repo.get_user_stream(owner_id, user_id)
         if mapping is None or mapping.get("active") is not True:

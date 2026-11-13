@@ -256,26 +256,6 @@ def automation_requirement(provider_key: str, event_id: str) -> dict[str, Any] |
     }
 
 
-async def list_github_repos(owner_id: str) -> list[dict[str, str]]:
-    """Repos the owner's gh token can see — feeds the create dialog's
-    repository picker for the auto_github registration shape.
-
-    Raises ``LookupError`` when GitHub isn't connected (the router maps it to
-    404); httpx errors bubble up for the router's 502.
-    """
-    token = await integration_secret_store.github_token(owner_id)
-    if not token:
-        raise LookupError("GitHub is not connected")
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        resp = await http.get(
-            f"{_GITHUB_API_BASE}/user/repos",
-            params={"per_page": 100, "sort": "updated"},
-            headers={**_GITHUB_HEADERS, "Authorization": f"Bearer {token}"},
-        )
-    resp.raise_for_status()
-    return [{"id": r["full_name"], "label": r["full_name"]} for r in resp.json()]
-
-
 async def _create_github_hook(
     *, token: str, resource: str, proxy_url: str, events: list[str], secret: str
 ) -> str | None:
@@ -336,27 +316,6 @@ async def _vercel_token(owner_id: str) -> str | None:
     return credential.get("token")
 
 
-async def list_vercel_projects(owner_id: str) -> list[dict[str, str]]:
-    """Projects the owner's Vercel token can see — feeds the create dialog's
-    project picker for the auto_vercel registration shape. No teamId param:
-    a pasted personal token's default scope is the right one, and a
-    team-scoped failure surfaces as the endpoint's 502.
-
-    Raises ``LookupError`` when Vercel isn't connected (the router maps it to
-    404); httpx errors bubble up for the router's 502.
-    """
-    token = await _vercel_token(owner_id)
-    if not token:
-        raise LookupError("Vercel is not connected")
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        resp = await http.get(
-            f"{_VERCEL_API_BASE}/v9/projects",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-    resp.raise_for_status()
-    return [{"id": p["id"], "label": p["name"]} for p in resp.json().get("projects", [])]
-
-
 async def _create_vercel_webhook(*, token: str, resource: str, proxy_url: str, events: list[str]) -> tuple[str, str]:
     """Create the project webhook pointed at the trigger proxy. Returns the
     webhook's ``(id, secret)`` — Vercel generates the secret and shows it only
@@ -381,20 +340,6 @@ async def _create_vercel_webhook(*, token: str, resource: str, proxy_url: str, e
     if not webhook_id or not secret:
         raise RuntimeError("Vercel webhook create returned no id/secret")
     return webhook_id, secret
-
-
-async def list_google_accounts(owner_id: str) -> list[dict[str, str]]:
-    """Connected Google account emails — feeds the create dialog's account
-    picker for the auto_google_watch registration shape. The email is both
-    the id and the label (it IS the human-readable name of the account).
-
-    Raises ``LookupError`` when no Google account is connected (the router
-    maps it to 404).
-    """
-    accounts = await google_accounts_repo.list_accounts(owner_id)
-    if not accounts:
-        raise LookupError("Google is not connected")
-    return [{"id": a["email"], "label": a["email"]} for a in accounts]
 
 
 # --- Meta (auto_meta) -------------------------------------------------------
@@ -500,18 +445,6 @@ async def _instagram_accounts(owner_id: str) -> list[dict[str, str]]:
 
 # provider_key -> its asset lister. Also the set of providers auto_meta accepts.
 _META_ASSET_LISTERS = {"meta_ads": _meta_pages, "instagram": _instagram_accounts}
-
-
-async def list_meta_pages(owner_id: str) -> list[dict[str, str]]:
-    """Picker feed for meta_ads' auto_meta shape — Pages, tokens stripped."""
-    return [{"id": a["id"], "label": a["label"]} for a in await _meta_pages(owner_id)]
-
-
-async def list_instagram_accounts(owner_id: str) -> list[dict[str, str]]:
-    """Picker feed for instagram's auto_meta shape — the one connected account,
-    token stripped. A one-entry dropdown, but it keeps the create dialog's
-    resource step identical across every auto shape."""
-    return [{"id": a["id"], "label": a["label"]} for a in await _instagram_accounts(owner_id)]
 
 
 async def _subscribe_meta_asset(asset: dict[str, str], fields: list[str]) -> None:

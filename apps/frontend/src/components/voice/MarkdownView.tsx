@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import type { Components, Options, UrlTransform } from "react-markdown";
 import { remarkSoftBreaks } from "@/lib/remark-soft-breaks";
 import { safeHref } from "@/lib/safeHref";
-import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
+import { paperclipLinkTarget } from "@/lib/paperclipLinks";
 import { normalizeCtaLinks } from "@/lib/ctaLinks";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import {
@@ -118,24 +118,14 @@ export const markdownComponents: Components = {
         </AttachmentLink>
       );
     }
-    const shellUrl = shellUrlFromPaperclipPath(href);
-    const safe = shellUrl ?? safeHref(href);
+    const appUrl = paperclipLinkTarget(href);
+    const safe = appUrl ?? safeHref(href);
     if (!safe) return <span {...props}>{children}</span>;
-    // In-shell links keep their real href (native middle-click / cmd-click) but
-    // commit through pushState — and only when the shell is already on that
-    // route: handleShellLinkClick swaps query params in place, so from another
-    // page (e.g. the unauthenticated landing demo) the anchor must navigate.
-    const shellAttrs = shellUrl
-      ? {
-          onClick: (e: React.MouseEvent<HTMLAnchorElement>) => {
-            if (shellUrl.split("?")[0] === window.location.pathname)
-              handleShellLinkClick(e, shellUrl);
-          },
-        }
-      : { target: "_blank", rel: "noopener noreferrer" };
+    // An old in-app link navigates in place; anything else opens in a new tab.
+    const linkAttrs = appUrl ? {} : { target: "_blank", rel: "noopener noreferrer" };
     return (
       <a href={safe} style={{ color: "var(--midnight)", textDecoration: "underline" }}
-         {...props} {...shellAttrs}>
+         {...props} {...linkAttrs}>
         {children}
       </a>
     );

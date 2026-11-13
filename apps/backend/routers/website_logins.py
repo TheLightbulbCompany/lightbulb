@@ -1,9 +1,5 @@
 """Website sign-ins: the workspace store every agent's browser fills from.
 
-Humans (Clerk, org admins only): list / add / edit / delete saved logins, list them per site
-beside the workspace browser's own sign-ins (``/sites``), and sign the browser out of a site.
-Values go in, metadata comes out -- no route ever returns a password or a cookie.
-
 The runtime (the bridge's vault token -- never the hook token, which the agent's shell holds):
 list the metadata, resolve one login at fill time, and file / poll /
 cancel an ask when a page wants a login or a code nobody has saved. The human side of an ask
@@ -13,98 +9,12 @@ route.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.services import website_logins as store
 
-router = APIRouter()
 internal_router = APIRouter()
-
-
-class AddLoginBody(BaseModel):
-    origin: str = Field(max_length=2048)
-    username: str = Field(max_length=store.MAX_FIELD)
-    password: str = Field(max_length=store.MAX_SECRET)
-
-
-def _bad(exc: store.LoginError) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(exc))
-
-
-@router.get("")
-async def list_logins(auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    return {"logins": await store.list_logins(resolve_owner_id(auth))}
-
-
-@router.post("", status_code=201)
-async def add_login(body: AddLoginBody, auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    try:
-        return await store.add_login(
-            resolve_owner_id(auth),
-            body.origin,
-            body.username,
-            body.password,
-            added_by=auth.user_id,
-            added_by_name=auth.email,
-        )
-    except store.LoginError as exc:
-        raise _bad(exc) from exc
-
-
-class UpdateLoginBody(BaseModel):
-    username: str | None = Field(default=None, max_length=store.MAX_FIELD)
-    password: str | None = Field(default=None, max_length=store.MAX_SECRET)
-
-
-class SignOutBody(BaseModel):
-    site: str = Field(min_length=1, max_length=253)
-
-
-@router.get("/sites")
-async def list_sites(auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    return {"sites": await store.list_sites(resolve_owner_id(auth))}
-
-
-@router.post("/sites/sign-out", status_code=204)
-async def sign_out_site(body: SignOutBody, auth: AuthContext = Depends(get_current_user)):
-    """Sign the workspace browser out of one site (browser_control.sign_out). 409 with a
-    reason when it cannot be done right now (an agent is using the browser, a save is running)."""
-    from core.services import browser_control
-
-    require_org_admin(auth)
-    site = body.site.strip().lower()
-    if not store.is_site(site):
-        raise HTTPException(status_code=400, detail="Enter a site like example.com.")
-    try:
-        await browser_control.sign_out(resolve_owner_id(auth), site, actor=auth.user_id)
-    except browser_control.BrowserError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-
-
-@router.patch("/{login_id}")
-async def update_login(login_id: str, body: UpdateLoginBody, auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    try:
-        updated = await store.update_login(
-            resolve_owner_id(auth), login_id, username=body.username, password=body.password, actor=auth.user_id
-        )
-    except store.LoginError as exc:
-        raise _bad(exc) from exc
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Login not found.")
-    return updated
-
-
-@router.delete("/{login_id}", status_code=204)
-async def delete_login(login_id: str, auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    if not await store.delete_login(resolve_owner_id(auth), login_id, actor=auth.user_id):
-        raise HTTPException(status_code=404, detail="Login not found.")
 
 
 # ---- runtime (vault token) ------------------------------------------------------------------

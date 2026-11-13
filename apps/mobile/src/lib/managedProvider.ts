@@ -1,8 +1,6 @@
 /**
- * Shared predicate for `apps/mobile/src/app/(app)/settings.tsx` and
- * `.../control/llm.tsx`'s provider cards. Both render `/billing/account`
- * and need the same answer to "does a null `provider_choice` mean managed
- * inference, or genuinely no provider?" — one copy so they can't drift.
+ * The predicate Settings' provider card uses on `/billing/account`: does a
+ * null `provider_choice` mean managed inference, or genuinely no provider?
  *
  * Mirrors the backend's own fallback (`provider_choice_from_row`,
  * apps/backend/core/services/container_provision.py): a cardless free

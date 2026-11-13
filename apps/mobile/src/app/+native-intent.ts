@@ -33,5 +33,7 @@ export function redirectSystemPath({ path, initial }: { path: string; initial: b
     return initial ? "/" : null;
   }
   if (/^\/?checkout_redirect(\/|$)/.test(route)) return "/";
+  // The old chat app's screens are gone: a saved or pushed link to one opens Home.
+  if (/^\/?(\(app\)\/)?(agent|room\/[^/?#]+\/details|session|task|automation|control|work|workspaces|library|invite)(?:[/?#]|$)/.test(route)) return "/";
   return path;
 }

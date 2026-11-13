@@ -3,31 +3,10 @@ import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
 import { LAUNCH_HOSTS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
-import { AWS_REGION } from "./src/lib/aws";
 
 const ENGINE_INSTALLER = "https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh";
 
-// AgentCore Browser's DCV live view: the presigned URL the backend mints is
-// fetched over https and then upgraded to wss on the SAME host, so connect-src
-// needs both schemes. Region from the app's own env-backed constant — never a
-// hardcoded us-east-1.
-const agentCoreOrigin = `bedrock-agentcore.${AWS_REGION}.amazonaws.com`;
-
-// Kept in lockstep with scripts/copy-dcv-assets.mjs, which copies this same
-// tree into public/ for the workers and wasm DCV fetches at runtime.
 const TURBOPACK_ROOT = path.resolve(__dirname, "../../");
-const DCV_SDK_DIR = path.resolve(
-  __dirname,
-  "node_modules/bedrock-agentcore/dist/src/tools/browser/live-view/nice-dcv-web-client-sdk",
-);
-// Turbopack resolves a `resolveAlias` value as a module REQUEST with THIS
-// directory as the context (its own error prints "inside of
-// [project]/apps/frontend"), and reads a leading `/` as server-root-relative —
-// so an absolute path, and a path relative to the turbopack root, both fail.
-// A `./` path relative to apps/frontend is the form that resolves.
-const dcvAlias = (file: string): string =>
-  `./${path.relative(__dirname, path.join(DCV_SDK_DIR, file)).split(path.sep).join("/")}`;
-
 // Our API origin, derived per-environment rather than enumerated. The static
 // string this replaced named prod AND dev hosts at once, which cannot be right
 // for both once the two environments sit on different domains.
@@ -89,7 +68,7 @@ const reportOnlyCsp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://${agentCoreOrigin} wss://${agentCoreOrigin} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io https://api.openai.com https://*.livekit.cloud wss://*.livekit.cloud`,
+  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io https://api.openai.com https://*.livekit.cloud wss://*.livekit.cloud`,
   // blob: is required for <iframe src="blob:...">, the PDF preview path (both
   // the new FileViewerDialog/FileContentViewer PDF branch and the pre-existing
   // Teams ArtifactViewerDialog use it) — measured live: without it, Chrome logs
@@ -143,6 +122,8 @@ export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] =
   ["/blog/ai-native-company-operating-system", "/blog"],
   // Said Lightbulb runs "behind the scenes" of Slack; the comparison page is the one Slack story.
   ["/ai-agents-for-slack", "/compare/slack"],
+  // Web session sharing went with the old chat app.
+  ["/claude-code-session-sharing", "/"],
 ].map(([source, destination]) => ({ source, destination }));
 
 // Only the production host may be indexed. Keyed on host, not VERCEL_ENV: the
@@ -175,10 +156,7 @@ const nextConfig: NextConfig = {
   // Radix primitive (tabs/select/collapsible pull from it). Next already
   // optimizes lucide-react, date-fns, recharts et al. by default, so
   // re-declaring those here is noise; three/gsap are single prebundled files
-  // with nothing to split. react-syntax-highlighter is deliberately absent:
-  // MessageList deep-imports the prism-light build and per-language modules
-  // directly, so its barrel is never pulled and there would be nothing to
-  // rewrite.
+  // with nothing to split.
   experimental: {
     optimizePackageImports: ["radix-ui"],
   },
@@ -230,16 +208,6 @@ const nextConfig: NextConfig = {
 
   turbopack: {
     root: TURBOPACK_ROOT,
-    // `bedrock-agentcore`'s BrowserLiveView imports the NICE DCV web client as
-    // the bare specifiers `dcv` / `dcv-ui`, but ships it as files inside its own
-    // `dist/` and publishes no `exports` subpath for them — so every consumer
-    // has to alias, and a package-relative request is blocked by that same
-    // `exports` map. Without these two lines the Browser panel fails the build.
-    resolveAlias: {
-      // predev/prebuild copies and guards native IPC detection for Tauri.
-      dcv: "./public/nice-dcv-web-client-sdk/dcvjs-esm/dcv.js",
-      "dcv-ui": dcvAlias("dcv-ui/dcv-ui.js"),
-    },
   },
 
   // Reverse-proxy PostHog through our own domain so ad-blockers /
@@ -265,13 +233,6 @@ const nextConfig: NextConfig = {
     return {
       afterFiles: [
         ...localDevApiProxy,
-        // DCV 1.14 resolves its worker base relative to the /chat document,
-        // even though BrowserLiveView supplies a leading slash. Keep decoder
-        // requests on the copied SDK assets instead of returning the app 404.
-        {
-          source: "/chat/nice-dcv-web-client-sdk/:path*",
-          destination: "/nice-dcv-web-client-sdk/:path*",
-        },
         {
           source: "/ingest/static/:path*",
           destination: "https://us-assets.i.posthog.com/static/:path*",

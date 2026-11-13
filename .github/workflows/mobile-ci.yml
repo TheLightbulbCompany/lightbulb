@@ -1,0 +1,58 @@
+# Mobile CI (PRs only): shared + mobile typecheck, lint, tests, and the iOS Metro bundle.
+# `expo export` runs full Metro resolution on Linux, so no EAS credentials or Mac are needed.
+# Release lanes are mobile-release.yml (self-hosted Mac) and mobile-ota.yml.
+name: Mobile CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/shared/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/mobile-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  check-and-bundle:
+    name: Check & Bundle
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Shared tests
+        run: pnpm --filter @lightbulb/shared run test
+      - name: Shared type check
+        run: pnpm --filter @lightbulb/shared run typecheck
+      - name: Shared lint
+        run: pnpm --filter @lightbulb/shared run lint
+
+      - name: Mobile type check
+        run: pnpm --filter @lightbulb/mobile run typecheck
+      - name: Mobile lint
+        run: pnpm --filter @lightbulb/mobile run lint
+      - name: Mobile tests
+        # ponytail: --forceExit papers over @clerk/expo's open MessagePort handles; mock Clerk in jest-setup to drop it.
+        run: pnpm --filter @lightbulb/mobile run test --forceExit
+
+      - name: Mobile iOS bundle (Metro export)
+        env:
+          CI: "1"
+        run: pnpm --filter @lightbulb/mobile run export:ios

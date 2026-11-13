@@ -127,6 +127,16 @@ def _reset_shutdown_flag():
 
 
 @pytest.fixture(autouse=True)
+def _no_aws_profile(monkeypatch):
+    # The dev acceptance harness (scripts/super_agent/acceptance/ctx.py aws_profile_default, reached from
+    # validate_meeting_context and the acceptance tests) setdefaults AWS_PROFILE=isol8-admin. Owning the
+    # variable here restores it after every test, so it never leaks to later tests in the xdist worker,
+    # where boto3 then fails on any machine without that local SSO profile.
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_jev_key(monkeypatch):
     """The addressing stage (messaging.address) calls Jev on any human message that names someone,
     so a send in any test would read the real gateway key where AWS credentials exist. Default to

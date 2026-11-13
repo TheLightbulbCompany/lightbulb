@@ -227,7 +227,12 @@ The local `codex` CLI is the fallback when the connector does not pick a PR up; 
 
 ### What CI runs on a pull request
 
-CI was stripped on purpose (F23). A PR runs only:
+A PR runs these, all on GitHub-hosted Linux (`vars.CI_RUNNER`):
+
+- `backend.yml`: ruff + pytest in 4 shards x xdist, plus the Python Lambda suites; `apps/backend/**`.
+- `frontend-ci.yml`: lint, tsc, vitest in 4 shards, `next build`; `apps/frontend/**`, `packages/shared/**`.
+- `mobile-ci.yml`: shared + mobile typecheck, lint, tests, `expo export` Metro gate; `apps/mobile/**`, `packages/shared/**`.
+- `infra-ci.yml`: tsc, vitest, the `deploy.yml` drift guard, Hermes bridge tests and image smokes, gate tests; `apps/infra/**`.
 
 - `secret-scan.yml` (every PR and every push to `main`).
 - `backend-arm64.yml`: builds the ARM64 backend image and smoke-tests it. Path-filtered to `apps/backend/**`,
@@ -236,8 +241,8 @@ CI was stripped on purpose (F23). A PR runs only:
 - `desktop-build.yml` (Rust tests and clippy), path-filtered to `apps/desktop/**`.
 - `roll-hermes-runtime.yml`, path-filtered to its own script and bootstrap files.
 
-There is **no backend or frontend test or lint run on a PR**, and no infra CI. Run the tests you touched before
-you push (`uv run pytest <files>`, `pnpm test`); check the exit code, never `pytest | tail`.
+Let the PR's run be the test; do not run whole suites locally. If you run a file, check the exit code, never
+`pytest | tail`.
 
 ### Deploy model
 
@@ -271,7 +276,7 @@ not self-evidently an eviction. `rerun --failed` on a deploy does not work; re-d
 **`deploy.yml` is GENERATED** from `apps/infra/lib/app.ts` by `cdk-pipelines-github`. Its drift guard only throws
 inside the deploy run, post-merge; locally `cdk synth` silently rewrites the file. So any change under
 `apps/infra/lib/` must run `cd apps/infra && npx cdk synth` and commit the regenerated `deploy.yml` in the same
-PR. No PR check catches this now that `infra-ci.yml` is deleted: drift blocks every deploy job after the merge.
+PR. `infra-ci.yml` fails the PR when the committed file is out of date.
 `cdk synth` does not need Docker when node/npm and python3/pip3 are on the machine (the bundled Lambdas use
 `local.tryBundle`).
 
@@ -298,8 +303,7 @@ gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status --inter
 - **Desktop:** `desktop-build.yml` on a manual dispatch builds the signed prod DMG on the self-hosted Mac
   (`macos-desktop`) and publishes a `desktop-v0.4.*` release for the Tauri updater. There is no dev desktop build.
 - **Mobile:** `mobile-ota.yml` (merge to `main` → `eas update --channel production`, Linux) and
-  `mobile-release.yml` (`mobile-v*` tag → `eas build --local` + `eas submit`, self-hosted Mac). There is no mobile
-  PR CI any more.
+  `mobile-release.yml` (`mobile-v*` tag → `eas build --local` + `eas submit`, self-hosted Mac). PRs run `mobile-ci.yml`.
 - The self-hosted Mac runs only the native lanes (`desktop-build.yml`, `mobile-release.yml`). Anything JS-only
   belongs on `vars.CI_RUNNER`.
 

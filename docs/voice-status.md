@@ -42,7 +42,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 |---|---|---|---|---|---|---|
 | 0.1 | GooseTown services at zero; its NAT, load balancer, WAF and DNS removed | yes | yes | yes | Platform | Verified by CloudFormation receipts on both envs |
 | 0.2 | Dormant per-business sessions stopped; nothing wakes them | yes | yes | no | Platform | Needs the quiet 24 h (row 2.14) |
-| 0.3 | Nightly CEO timer off | yes | ? | no | Platform | Nothing arms or runs a nightly timer. `should_arm_nightly_ceo` is dead code called only by tests; it can be deleted |
+| 0.3 | Nightly CEO timer off | yes | ? | no | Platform | Nothing arms or runs a nightly timer, and the arming code (`arm_nightly_ceo`, `should_arm_nightly_ceo`) is deleted. The provisioning PR fixed the last docstrings that named it |
 | 0.4 | Paperclip off in dev and prod; Aurora gone in both regions | yes | yes | part | Platform | No clusters found. Bill lines not yet confirmed gone |
 | 0.5 | 24 h of about 0 GB-hours outside live use | n/a | n/a | no | Platform | Same measurement as 2.14 |
 | 0.6 | Activate Founders application sent | n/a | n/a | n/a | Founder | No receipt |
@@ -69,6 +69,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 1.16 | Tasks export replaced before deletion | yes | ? | no | Platform | `GET /tasks/export` exists with a test |
 | 1.17 | The Lightbulb CLI's future is settled with GooseTown | no | no | n/a | Founder | Master plan open item |
 | 1.18 | The bill shows RDS, OpenSearch and Paperclip Fargate lines gone | n/a | n/a | no | Platform | |
+| 1.19 | New-workspace provisioning is voice-only: no Paperclip, no per-owner runtime, no billing gate; a redelivered `organization.created` retries a failed provision | yes | no | no | Platform | Sign-up writes the trial row and dispatches unconditionally (`provision_new_workspace`); `organization.created` is never deduped; `/container/provision` and `/container/retry` are ungated. `/container/status`'s gate now judges chat and orb only: trial expiry, daily cap, credits, the provider's sign-in; no billing row is "pending", not a paywall. Phone stays on the voice plan at Go live. Paperclip seeding and per-owner `CreateAgentRuntime` were already gone on `main` |
 
 ## Phase 2. Shared infrastructure, cost, medical-ready
 

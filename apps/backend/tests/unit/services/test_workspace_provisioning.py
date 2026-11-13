@@ -170,9 +170,53 @@ async def test_provision_runner_step0_needs_no_paperclip(rooms, monkeypatch):
     assert await provision_runner._seed_owner_workspace(ORG) == provision_runner.EXIT_OK
     ws = await _repo().resolve_owner_row(ORG)
     assert ws.provisioner_user_id == "user_1" and set(ws.starter_agent_ids) == set(STARTER_ROLE_KEYS)
-    rooms.proactive.assert_awaited_once_with(ORG)
+    rooms.proactive.assert_not_awaited()  # the end-of-run reconcile does the schedule cleanup
 
     # A store outage is transient: the state machine retries it.
     await _repo().delete(ORG)
     monkeypatch.setattr(agent_registry, "create", AsyncMock(side_effect=agent_registry.RegistryUnavailable("down")))
     assert await provision_runner._seed_owner_workspace(ORG) == provision_runner.EXIT_TRANSIENT
+
+
+async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_http(monkeypatch):
+    """A new workspace's whole provision execution (``provision_runner.run``) on real stores:
+    the META row goes active with the six-agent roster (the receptionist is the CEO UUID), and
+    nothing reaches the network (no Paperclip, no per-owner runtime). The Hermes legs, Clerk and
+    the room/mail helpers are stubbed at their own seams; any HTTP attempt fails the test."""
+    import httpx
+
+    from core.repositories import billing_repo, container_repo
+    from core.services import clerk_admin, hermes_provisioning, messaging, onboarding_brief, welcome_email
+    from scripts import provision_runner
+
+    async def no_http(*_a, **_k):
+        raise AssertionError("a provision run made an outbound HTTP call")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", no_http)
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={}))
+    for name in ("prepare_hermes_workspace", "provision_hermes_runtime", "reconcile_runtime"):
+        monkeypatch.setattr(hermes_provisioning, name, AsyncMock())
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_1"}))
+    monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": "user_1"}]))
+    for name in (
+        "ensure_default_room",
+        "ensure_feed_room",
+        "ensure_vendor_room",
+        "join_default_room",
+        "join_feed_room",
+    ):
+        monkeypatch.setattr(messaging, name, AsyncMock(return_value="room_1"))
+    monkeypatch.setattr(welcome_email, "send_owner_welcome", AsyncMock())
+    monkeypatch.setattr(onboarding_brief, "reconcile_pending_brief", AsyncMock())
+    monkeypatch.setattr(billing_repo, "arm_trial_if_unset", AsyncMock())
+
+    assert await provision_runner.run(ORG) == provision_runner.EXIT_OK
+
+    ws = await _repo().resolve_owner_row(ORG)
+    assert ws is not None and ws.status == "active" and ws.company_id == ""
+    assert set(ws.starter_agent_ids) == set(STARTER_ROLE_KEYS)
+    assert len(await agent_registry.roster(ORG)) == 6
+    hermes_provisioning.provision_hermes_runtime.assert_awaited_once_with(ORG)
+    # A rerun (the webhook redelivered, or the SFN retried) converges on the same roster.
+    assert await provision_runner.run(ORG) == provision_runner.EXIT_OK
+    assert (await _repo().resolve_owner_row(ORG)).starter_agent_ids == ws.starter_agent_ids

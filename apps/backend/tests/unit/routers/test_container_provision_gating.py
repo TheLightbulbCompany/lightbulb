@@ -1,17 +1,8 @@
-"""Tests for /container/provision payment gating (C1 audit fix).
+"""Tests for /container/provision and /container/retry: not billing-gated (voice).
 
-The primary `/container/provision` endpoint historically had no payment
-check — any signed-in Clerk user could spin up an ECS Fargate task at
-our cost. These tests pin down the gating contract:
-
-  - New workspace with no billing row    -> unarmed trial, then provision
-  - subscription_status not in {active, trialing}
-                                         -> 402
-  - openrouter_managed with $0 balance       -> 402  (no point spinning a
-                                                   container the user
-                                                   can't chat through)
-  - openrouter_managed with > 0 balance      -> 200
-  - chatgpt_oauth / byo_key (any balance) -> 200
+A workspace on the shared Hermes pool costs nothing until it runs, so both doors initialize the
+trial row and dispatch whatever the billing row says. Chat, the orb and the phone gate their own
+spend. ``_assert_provision_allowed`` survives for the browser's start-on-view door.
 """
 
 import os
@@ -27,298 +18,91 @@ def _auth(user_id: str = "user_paid", org_id: str | None = "org_paid") -> MagicM
     auth = MagicMock()
     auth.user_id = user_id
     auth.org_id = org_id
-    # A bare MagicMock auto-creates ``is_org_context``/``is_org_admin`` as
-    # truthy mocks. That makes ``resolve_owner_id`` (``org_id if is_org_context
-    # else user_id``) return ``org_id``. Set them to match the real
-    # ``AuthContext`` property semantics.
+    # A bare MagicMock auto-creates ``is_org_context``/``is_org_admin`` as truthy mocks; set them
+    # to match the real ``AuthContext`` property semantics.
     auth.is_org_context = org_id is not None
     auth.is_org_admin = True
     return auth
 
 
-@pytest.fixture(autouse=True)
-def _stub_workspace_trial_default():
-    with patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()):
-        yield
-
-
 @pytest.mark.asyncio
-async def test_direct_provision_initializes_workspace_trial_before_gate():
-    """A first provision request cannot see the pre-initialization org gate."""
-    from core.services.provision_gate import _team_billing_required_gate
+@pytest.mark.parametrize(
+    "billing",
+    [
+        {"stripe_subscription_id": "sub_123", "subscription_status": "canceled"},
+        {"stripe_subscription_id": "sub_123", "subscription_status": "past_due"},
+        {"subscription_status": "trial_local", "trial_end": 1},
+        {"subscription_status": "active", "provider_choice": "openrouter_managed"},
+    ],
+)
+async def test_provision_dispatches_without_a_billing_gate(billing):
+    """Canceled, past due, an expired trial, zero credits: the workspace is still provisioned,
+    and the gate is never read."""
     from routers import container as container_mod
 
-    initialized = False
-
-    async def initialize(_auth, owner_id):
-        nonlocal initialized
-        assert owner_id == "org_paid"
-        initialized = True
-
-    async def gate(**_kwargs):
-        return None if initialized else _team_billing_required_gate("admin")
-
+    initialized = []
+    dispatch = AsyncMock()
+    gate = AsyncMock()
     with (
-        patch(
-            "routers.container.container_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value=None,
+        patch.object(
+            container_mod,
+            "ensure_workspace_trial_default",
+            new=AsyncMock(side_effect=lambda _a, o: initialized.append(o)),
         ),
-        patch.object(container_mod, "ensure_workspace_trial_default", new=initialize),
-        patch.object(container_mod, "evaluate_provision_gate", new=gate),
-        patch.object(container_mod, "dispatch_provision", new=AsyncMock()),
+        patch.object(container_mod.container_repo, "get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.billing_repo.get_by_owner_id", new=AsyncMock(return_value=billing)),
+        patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=True)),
+        patch.object(container_mod, "evaluate_provision_gate", gate),
+        patch.object(container_mod, "dispatch_provision", dispatch),
     ):
         result = await container_mod.container_provision(auth=_auth())
 
-    assert initialized is True
-    assert result["status"] == "provisioning"
+    assert initialized, "the trial row is initialized first"
+    dispatch.assert_awaited_once_with("org_paid")
+    gate.assert_not_awaited()
+    assert result["already_existed"] is False
 
 
 @pytest.mark.asyncio
-async def test_direct_retry_initializes_workspace_trial_before_gate():
-    """The retry endpoint initializes the workspace before its provision gate."""
+async def test_retry_dispatches_an_errored_workspace_without_a_billing_gate():
     from routers import container as container_mod
 
-    initialized = False
-
-    async def initialize(_auth, owner_id):
-        nonlocal initialized
-        assert owner_id == "org_paid"
-        initialized = True
-
-    async def assert_allowed(_owner_id, *, is_admin, actor_user_id=None):
-        assert initialized, "retry evaluated its provision gate before initializing the workspace trial"
-        assert is_admin is True
-        assert actor_user_id, "the gate is told who is retrying, so a block lands on their PostHog person"
-
+    dispatch = AsyncMock()
+    gate = AsyncMock()
     with (
-        patch.object(container_mod, "ensure_workspace_trial_default", new=initialize),
-        patch.object(container_mod, "_assert_provision_allowed", new=assert_allowed),
-        patch.object(container_mod, "dispatch_provision", new=AsyncMock()),
+        patch.object(container_mod, "ensure_workspace_trial_default", new=AsyncMock()),
+        patch.object(container_mod, "evaluate_provision_gate", gate),
+        patch.object(container_mod, "dispatch_provision", dispatch),
         patch.object(
             container_mod.container_repo,
             "get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "org_paid", "status": "error"}),
         ),
     ):
-        result = await container_mod.container_retry(auth=_auth())
-
-    assert initialized is True
-    assert result == {"ok": True}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "status",
-    ["canceled", "incomplete", "incomplete_expired", "unpaid", "paused", "past_due"],
-)
-async def test_provision_rejects_inactive_subscription_status(status):
-    """Subscription exists but status is non-active -> 402."""
-    from routers.container import container_provision
-
-    with (
-        patch(
-            "routers.container.container_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch(
-            "core.services.provision_gate.billing_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={
-                "stripe_subscription_id": "sub_123",
-                "subscription_status": status,
-            },
-        ),
-    ):
-        with pytest.raises(HTTPException) as exc:
-            await container_provision(auth=_auth())
-    assert exc.value.status_code == 402
+        assert await container_mod.container_retry(auth=_auth()) == {"ok": True}
+    dispatch.assert_awaited_once_with("org_paid")
+    gate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_provision_rejects_bedrock_with_zero_balance():
-    """openrouter_managed provider + $0 balance -> 402.
-
-    A container spun up before credits are topped up is pure cost — the
-    user can't actually chat through it (gate_chat blocks on $0). Refuse
-    the provision instead of leaking ECS.
-    """
-    from routers.container import container_provision
+async def test_retry_refuses_a_running_workspace():
+    from routers import container as container_mod
 
     with (
-        patch(
-            "routers.container.container_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value=None,
+        patch.object(container_mod, "ensure_workspace_trial_default", new=AsyncMock()),
+        patch.object(
+            container_mod.container_repo, "get_by_owner_id", new=AsyncMock(return_value={"status": "running"})
         ),
-        patch(
-            "core.services.provision_gate.billing_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={
-                "owner_id": "org_paid",
-                "stripe_subscription_id": "sub_123",
-                "subscription_status": "trialing",
-                # provider_choice lives on billing_accounts.
-                "provider_choice": "openrouter_managed",
-            },
-        ),
-        patch(
-            "core.services.metronome_gate.is_owner_blocked",
-            new=AsyncMock(return_value=True),
-        ),
+        pytest.raises(HTTPException) as exc,
     ):
-        with pytest.raises(HTTPException) as exc:
-            await container_provision(auth=_auth())
-    assert exc.value.status_code == 402
-
-
-@pytest.mark.asyncio
-async def test_provision_allows_bedrock_with_positive_balance():
-    """openrouter_managed with credits topped up -> provisions normally."""
-    from routers.container import container_provision
-
-    with (
-        patch(
-            "routers.container.container_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch(
-            "core.services.provision_gate.billing_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={
-                "owner_id": "org_paid",
-                "stripe_subscription_id": "sub_123",
-                "subscription_status": "trialing",
-                # provider_choice lives on billing_accounts.
-                "provider_choice": "openrouter_managed",
-            },
-        ),
-        patch(
-            "core.services.metronome_gate.is_owner_blocked",
-            new=AsyncMock(return_value=False),
-        ),
-        patch("routers.container.dispatch_provision", new_callable=AsyncMock) as mock_dispatch,
-    ):
-        result = await container_provision(auth=_auth())
-    assert result["status"] == "provisioning"
-    mock_dispatch.assert_called_once_with("org_paid")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("provider_choice", ["chatgpt_oauth", "byo_key"])
-async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
-    """chatgpt_oauth / byo_key never need a credit balance — their LLM
-    costs land on the user's own provider account."""
-    from routers.container import container_provision
-
-    # Pre-import oauth_service so we can patch its function attribute directly,
-    # which beats sys.modules-swapping for cross-test isolation (the lazy
-    # `from core.services import oauth_service` inside the gate hits the
-    # already-imported module via package attribute lookup).
-    from core.services import oauth_service  # noqa: F401
-
-    with (
-        patch(
-            "routers.container.container_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch(
-            "core.services.provision_gate.billing_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={
-                "owner_id": "org_paid",
-                "stripe_subscription_id": "sub_123",
-                "subscription_status": "active",
-                # provider_choice lives on billing_accounts.
-                "provider_choice": provider_choice,
-                # The byo_provider sub-choice gate blocks byo_key without
-                # a sub-provider; this test isolates
-                # the credit-balance behaviour, so seed a complete BYO row.
-                "byo_provider": "anthropic" if provider_choice == "byo_key" else None,
-            },
-        ),
-        patch(
-            "core.services.oauth_service.has_active_oauth",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch("routers.container.dispatch_provision", new_callable=AsyncMock),
-    ):
-        result = await container_provision(auth=_auth())
-    assert result["status"] == "provisioning"
-
-
-@pytest.mark.asyncio
-async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
-    """Legacy billing rows may have a valid stripe_subscription_id but no
-    subscription_status backfilled yet. Other gates (gate_chat) preserve
-    those — the provision gate must too, or we 402 paying customers
-    mid-migration.
-
-    openrouter_managed users still need credits regardless of legacy
-    status, so this test uses chatgpt_oauth to isolate the legacy-row
-    behavior.
-    """
-    from routers.container import container_provision
-
-    from core.services import oauth_service  # noqa: F401
-
-    with (
-        patch(
-            "routers.container.container_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch(
-            "core.services.provision_gate.billing_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={
-                "owner_id": "org_paid",
-                "stripe_subscription_id": "sub_legacy_pre_plan_3",
-                # subscription_status deliberately absent / None
-                # provider_choice lives on billing_accounts.
-                "provider_choice": "chatgpt_oauth",
-            },
-        ),
-        patch(
-            "core.services.oauth_service.has_active_oauth",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch("routers.container.dispatch_provision", new_callable=AsyncMock),
-    ):
-        result = await container_provision(auth=_auth())
-    assert result["status"] == "provisioning"
-
-
-@pytest.mark.asyncio
-async def test_provision_existing_container_skips_payment_gate():
-    """Idempotent return for users who already have a container should
-    NOT re-run the gate — billing state can churn (cancel + resubscribe)
-    and we don't want the existing container reported as 402."""
-    from routers.container import container_provision
-
-    with (
-        patch(
-            "routers.container.container_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={"status": "running", "service_name": "openclaw-existing"},
-        ),
-    ):
-        result = await container_provision(auth=_auth())
-    assert result["already_existed"] is True
-    assert result["status"] == "running"
+        await container_mod.container_retry(auth=_auth())
+    assert exc.value.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_provision_reports_an_existing_workspace_without_re_provisioning_it():
-    """Idempotent, and deliberately NOT payment-gated: billing state churns (cancel +
-    resubscribe) and a stale 402 would mask the workspace the caller is asking about. There is no
-    cold-start door left either -- AgentCore starts the microVM on the next invoke, so a caller
-    with a row has nothing to ask us to start."""
+    """Idempotent: an existing workspace is reported, never re-dispatched. There is no cold-start
+    door either -- AgentCore starts the microVM on the next invoke."""
     from routers import container as container_mod
 
     initialized = False
@@ -337,7 +121,7 @@ async def test_provision_reports_an_existing_workspace_without_re_provisioning_i
             "get_by_owner_id",
             new=AsyncMock(return_value={"status": "stopped", "owner_id": "org_paid"}),
         ),
-        patch.object(container_mod, "_assert_provision_allowed", gate),
+        patch.object(container_mod, "evaluate_provision_gate", gate),
         patch.object(container_mod, "dispatch_provision", dispatch),
     ):
         result = await container_mod.container_provision(auth=_auth())
@@ -350,8 +134,8 @@ async def test_provision_reports_an_existing_workspace_without_re_provisioning_i
 
 @pytest.mark.asyncio
 async def test_provision_402_returns_structured_blocked_payload():
-    """Per provision-gate-ui spec: _assert_provision_allowed must raise
-    402 with a structured `blocked` payload (not a free-form string)."""
+    """_assert_provision_allowed (the browser start-on-view door) raises 402 with a structured
+    `blocked` payload, not a free-form string."""
     from core.services.provision_gate import Gate
 
     fake_gate = Gate(

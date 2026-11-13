@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -253,8 +253,7 @@ async def test_seed_step_0_error_record_failure_still_returns_exit_code(monkeypa
 
 @pytest.fixture(autouse=True)
 def _stub_proactive(monkeypatch):
-    """Step 0 ensures the proactive layer right after the seed; stub it so the
-    seed tests exercise only seed + classification."""
+    """Stub the proactive layer so no seed test reaches it (step 0 must not call it)."""
     ensure = AsyncMock()
     monkeypatch.setattr("core.services.proactive.ensure", ensure)
     return ensure
@@ -286,20 +285,12 @@ async def test_seed_helper_refuses_non_org_owner(monkeypatch, _stub_proactive):
     _stub_proactive.assert_not_awaited()
 
 
-async def test_seed_helper_ensures_proactive_after_org_seed(monkeypatch, _stub_proactive):
-    """The proactive ensure runs AFTER _ensure_workspace_for_org, with the org_id."""
-    order = MagicMock()
-    order.attach_mock(_stub_org_seed(monkeypatch), "seed")
-    order.attach_mock(_stub_proactive, "ensure")
-    assert await provision_runner._seed_owner_workspace("org_x") == provision_runner.EXIT_OK
-    assert [c[0] for c in order.mock_calls] == ["seed", "ensure"]
-    _stub_proactive.assert_awaited_once_with("org_x")
-
-
-async def test_seed_helper_proactive_failure_never_fails_the_seed(monkeypatch, _stub_proactive):
+async def test_seed_helper_leaves_the_schedule_cleanup_to_the_reconcile(monkeypatch, _stub_proactive):
+    """Step 0 is the seed alone; ``proactive.ensure`` (retired-schedule cleanup, a no-op on a new
+    workspace) runs once, in the reconcile that ends every run."""
     _stub_org_seed(monkeypatch)
-    _stub_proactive.side_effect = RuntimeError("boom")
-    assert await provision_runner._seed_owner_workspace("org_p") == provision_runner.EXIT_OK
+    assert await provision_runner._seed_owner_workspace("org_x") == provision_runner.EXIT_OK
+    _stub_proactive.assert_not_awaited()
 
 
 async def test_seed_helper_org_resolves_creator_then_calls_ensure_workspace_for_org(monkeypatch):

@@ -50,14 +50,10 @@ async def _seed_owner_workspace(owner_id: str) -> int:
     admin, and a stable per-org choice (the dispatch carries only ``owner_id``). A missing
     creator is a Clerk blip, so transient. A seed failure is classified like a runtime failure
     (``classify_provision_error``). Org-only: a non-org owner is refused (deterministic).
-
-    After the seed, ``proactive.ensure`` retires old Ideas/Feed schedules; its failure
-    is logged, not classified: the daily schedule reconcile retries the cleanup.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
     from core.services import clerk_admin
-    from core.services import proactive
     from core.services.user_provision import _ensure_workspace_for_org
 
     if not is_org_owner_id(owner_id):
@@ -75,10 +71,6 @@ async def _seed_owner_workspace(owner_id: str) -> int:
         logger.exception("seed step 0 (owner workspace) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
         return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
-    try:
-        await proactive.ensure(owner_id)
-    except Exception:  # noqa: BLE001 -- the daily schedule reconcile ensures it again
-        logger.exception("seed step 0: proactive ensure failed for owner %s", owner_id)
     return EXIT_OK
 
 

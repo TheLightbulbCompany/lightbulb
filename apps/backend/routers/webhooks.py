@@ -16,7 +16,7 @@ fail-closed path is the only one that runs off a laptop.
 
 **Workspace dispatch**:
 
-  * ``organization.created``           -> ``provision_new_workspace`` (trial row + gate + provision dispatch)
+  * ``organization.created``           -> ``provision_new_workspace`` (trial row + provision dispatch; never deduped)
   * ``organizationMembership.created`` -> idempotent workspace JOIN via ``_ensure_workspace_member``
     (join-only; a still-provisioning org self-heals on the member's next /teams request)
   * ``organizationMembership.deleted`` -> ``remove_member`` from THAT org's workspace only
@@ -278,11 +278,10 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
 async def _handle_organization_created(data: dict) -> None:
     """Start the new workspace's first provision without waiting for a browser poll.
 
-    ``provision_new_workspace`` creates the trial row, checks the provision gate and
-    dispatches the provision funnel (the workspace is seeded INSIDE the provision execution,
-    so no half-state). Nothing else starts a first provision, so a failure RAISES: the
-    dedup row is rolled back and the 5xx makes Svix redeliver. A gate that is up is a
-    normal return.
+    ``provision_new_workspace`` creates the trial row and dispatches the provision funnel (the
+    workspace is seeded INSIDE the provision execution, so no half-state). Nothing else starts a
+    first provision, so a failure RAISES and the 5xx makes Svix redeliver. This event is not
+    deduped, so a redelivery (or a manual Svix resend) also retries a provision that failed later.
     """
     org_id = data.get("id", "")
     owner_user_id = data.get("created_by", "")
@@ -665,7 +664,6 @@ async def handle_clerk_webhook(request: Request):
     )
     processing_claim = None
     membership_claim = None
-    recorded_event_id = None
     membership_owner_id = None
     membership_alias = None
 
@@ -696,14 +694,9 @@ async def handle_clerk_webhook(request: Request):
             put_metric("clerk.webhook.membership_stale", dimensions={"event_type": event_type})
             return {"status": "stale"}
 
-    # Idempotency dedupe — svix will retry on any non-2xx and on its own
-    # at-least-once delivery insurance. Without this, two retries from
-    # svix on a flaky webhook would each call ``provision_member``, the
-    # second of which fails with a duplicate-membership conflict
-    # (non-retryable: the member's Better Auth account already exists
-    # from the first run, so sign_up_user 409s) and marks the row failed
-    # forever. Keyed on svix-id which is unique per genuine Clerk event,
-    # identical across retries.
+    # Idempotency dedupe — svix retries on any non-2xx and redelivers on its own
+    # at-least-once insurance. Keyed on svix-id, which is unique per genuine Clerk
+    # event and identical across retries.
     if svix_id:
         if lifecycle_event:
             from core.services.webhook_dedup import (
@@ -727,7 +720,10 @@ async def handle_clerk_webhook(request: Request):
                 put_metric("clerk.webhook.dedup_skipped")
                 logger.info("completed clerk lifecycle webhook duplicate suppressed: %s", svix_id)
                 return {"status": "duplicate"}
-        else:
+        elif event_type != "organization.created":
+            # organization.created is not deduped: every step of it is idempotent (the trial row
+            # is create-if-absent, a running workspace is not re-dispatched, the analytics event
+            # has a fixed uuid), and a redelivery is how a provision that failed later is retried.
             try:
                 from core.services.webhook_dedup import (
                     WebhookDedupResult,
@@ -739,7 +735,6 @@ async def handle_clerk_webhook(request: Request):
                     put_metric("clerk.webhook.dedup_skipped")
                     logger.info("clerk webhook duplicate suppressed: %s", svix_id)
                     return {"status": "duplicate"}
-                recorded_event_id = svix_id
             except Exception:
                 # Non-security events retain the historical best-effort
                 # behavior; lifecycle claims above deliberately fail closed.
@@ -837,17 +832,7 @@ async def handle_clerk_webhook(request: Request):
         await delete_person_memory(user_id)
 
     elif event_type == "organization.created":
-        try:
-            await _handle_organization_created(data)
-        except Exception:
-            # The dedup row was recorded before dispatch: roll it back so Svix's redelivery
-            # of this 5xx re-attempts instead of being acked as a duplicate (billing.py's
-            # Stripe pattern). The handler is idempotent, so a partial attempt replays safely.
-            if recorded_event_id:
-                from core.services.webhook_dedup import delete_event
-
-                await delete_event(recorded_event_id)
-            raise
+        await _handle_organization_created(data)  # never deduped (above): a redelivery retries it
 
     elif event_type == "organizationMembership.created":
         pud = data.get("public_user_data") or {}

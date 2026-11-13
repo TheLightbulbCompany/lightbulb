@@ -917,39 +917,6 @@ def handler(event, context):
         "has been down for that whole window and recovery now rides the SFN " +
         "leg (or nothing, in the unwatched degrade).",
     });
-
-    // -------------------------------------------------------------------
-    // P16: company-stripe-account-created
-    // -------------------------------------------------------------------
-    // routers/company_stripe.py POST /company/stripe/create mints a real
-    // Stripe Express account for an owner's company. That door is live in
-    // prod and the owner has accepted the exposure, but there was no signal
-    // at all when a real owner first touches it. Backend emits
-    // company_stripe.account.created ONLY when a brand-new account is
-    // actually minted and bound in that request (not the idempotent
-    // early-return when one already exists, and not an account adopted
-    // after losing a concurrent create race) — see routers/company_stripe.py.
-    //
-    // WARN, not page, and deliberately so: an owner minting their company
-    // Stripe account is a DESIRABLE business event. It is worth knowing about
-    // promptly while the door is new and unverified, but it fires again on
-    // every future success, and an alarm that pages on success is how a team
-    // learns to ignore pages. P5/P11 page because the event they catch is
-    // one nobody wants; this one is the opposite.
-    this.createAlarm({
-      id: "P16",
-      name: "company-stripe-account-created",
-      metricName: "company_stripe.account.created",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description:
-        "A company Stripe Express account was minted via the live " +
-        "create door - first real usage signal, not an outage.",
-    });
   }
 
   // =========================================================================

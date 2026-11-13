@@ -14,12 +14,11 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from core.auth import AuthContext, resolve_owner_id
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import livekit_huddles, local_sessions, messaging
-from core.services.messaging import ApiProblem, RoomDetail
+from core.services.messaging import ApiProblem
 
 logger = logging.getLogger(__name__)
 
@@ -68,39 +67,6 @@ def _room_name(row: dict) -> str:
     # The agent's turn carries the room name, so "Session chat" is how it knows where it is.
     title = (row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session")[:TITLE_MAX]
     return f"Session chat · {title}"
-
-
-async def _create(owner_id: str, room_id: str, row: dict) -> dict:
-    owner_user = row["humanUserId"]
-    members = [
-        {
-            "kind": "human",
-            "id": owner_user,
-            "displayName": await messaging.human_display_name(owner_user),
-            "mentionHandle": None,
-            "role": "owner",
-            "listenMode": None,
-        },
-        *await _default_agents(owner_id),
-    ]
-    try:
-        return await messaging_repo.create_room(
-            owner_id=owner_id,
-            room_id=room_id,
-            client_room_id=f"session-room-v1:{row['sessionId']}",
-            creator_user_id=owner_user,
-            name=_room_name(row),
-            kind="channel",
-            members=members,
-            req_hash=messaging_repo.request_hash("session-room-v1", row["sessionId"]),
-            extra={"hidden": True, "session": {"sessionId": row["sessionId"], "ownerId": owner_user}},
-        )
-    except messaging_repo.MessagingRepoError:
-        # A concurrent first open created it (the META put cancels): use theirs.
-        meta = await messaging_repo.get_room(room_id)
-        if meta is None:
-            raise
-        return meta
 
 
 async def _set_archived(meta: dict, archived: bool) -> dict:
@@ -154,13 +120,6 @@ async def _follow_lifecycle(owner_id: str, session_id: str, meta: dict) -> dict:
     return meta
 
 
-async def _active(owner_id: str, user_id: str) -> bool:
-    """A current member of the workspace: their private stream is on (revoke_human_membership
-    turns it off). Strongly read."""
-    stream = await messaging_repo.get_user_stream(owner_id, user_id)
-    return bool(stream and stream.get("active"))
-
-
 async def _seat(owner_id: str, meta: dict, user_id: str, *, full: str = "This session's chat is full.") -> dict:
     """Seat one reader as a plain member. A lost revision race re-reads and retries. Also the app
     conversation's door (``app_conversation``), with its own ``full`` refusal."""
@@ -195,49 +154,6 @@ async def _seat(owner_id: str, meta: dict, user_id: str, *, full: str = "This se
         await messaging._publish_room_metadata(meta)
         return meta
     return meta  # pragma: no cover -- the loop returns or raises
-
-
-async def open_chat(auth: AuthContext, session_id: str) -> RoomDetail:
-    """The chat door: whoever can read the session gets its room, created on the first open."""
-    row, _ = await local_sessions.authorize_session(auth, None, session_id)
-    owner_id = resolve_owner_id(auth)
-    session_id, owner_user = row["sessionId"], row["humanUserId"]
-    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
-    # The session row outlives its person's membership: no chat about someone who left.
-    if not await _active(owner_id, owner_user):
-        raise gone
-    # A removed member whose token has not expired yet: refused before any write. No stream row
-    # at all is a member who has not opened messaging yet, and is seated.
-    reader = await messaging_repo.get_user_stream(owner_id, auth.user_id)
-    if reader is not None and not reader.get("active"):
-        raise gone
-    room_id = session_room_id(owner_id, session_id)
-    meta = await messaging_repo.get_room(room_id) or await _create(owner_id, room_id, row)
-    meta = await _follow_lifecycle(owner_id, session_id, meta)
-    if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
-        meta = await _seat(owner_id, meta, auth.user_id)
-    await _fence(auth, owner_id, session_id, owner_user, room_id)
-    return await messaging._room_detail(meta, auth.user_id)
-
-
-async def _fence(auth: AuthContext, owner_id: str, session_id: str, owner_user: str, room_id: str) -> None:
-    """The door's closing check, on every path (room created, reader seated, or already a
-    member), before the room and its delivery key are returned. Everything the door read may be
-    stale by now: a pause, or a removal from the workspace, can silence the room just before a
-    seat (or the create, which seats the session's person) lands. Read it all again; whoever
-    lost the session loses the seat, with the rotation."""
-    try:
-        await local_sessions.authorize_session(auth, None, session_id)
-    except ApiProblem:
-        await silence(owner_id, session_id, keep=owner_user)
-        raise
-    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
-    if not await _active(owner_id, owner_user):
-        await silence(owner_id, session_id, keep=None)
-        raise gone
-    if not await _active(owner_id, auth.user_id):
-        await _unseat(room_id, auth.user_id)
-        raise gone
 
 
 async def _unseat(room_id: str, user_id: str) -> bool:
@@ -276,30 +192,3 @@ async def follow_session(owner_id: str, session_id: str) -> None:
     meta = await messaging_repo.get_room(session_room_id(owner_id, session_id))
     if meta is not None:
         await _follow_lifecycle(owner_id, session_id, meta)
-
-
-async def chat_state(owner_id: str, viewer: str, session_ids: list[str]) -> dict[str, tuple[str, int]]:
-    """``{sessionId: (roomId, unread)}`` for the chats the viewer sits in. One key per session
-    finds the viewer's seats; only a seated chat costs its META and read cursor on top."""
-    rooms = {sid: session_room_id(owner_id, sid) for sid in session_ids}
-    seat, read = messaging_repo.member_sk("human", viewer), messaging_repo.read_sk(viewer)
-    if not rooms:
-        return {}
-    seats = await messaging_repo.batch_get([(messaging_repo.room_pk(room_id), seat) for room_id in rooms.values()])
-    rows = await messaging_repo.batch_get([(pk, sk) for pk, _ in seats for sk in ("META", read)]) if seats else {}
-    out: dict[str, tuple[str, int]] = {}
-    for sid, room_id in rooms.items():
-        pk = messaging_repo.room_pk(room_id)
-        meta, member = rows.get((pk, "META")), seats.get((pk, seat))
-        if meta and member and not meta.get("deletedAt"):
-            out[sid] = (room_id, messaging_repo.unread_count(meta, member, rows.get((pk, read))))
-    return out
-
-
-def with_chat(sessions: list, state: dict[str, tuple[str, int]]) -> list:
-    return [
-        s.model_copy(update={"chat_room_id": state[s.session_id][0], "chat_unread": state[s.session_id][1]})
-        if s.session_id in state
-        else s
-        for s in sessions
-    ]

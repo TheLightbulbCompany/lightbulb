@@ -54,7 +54,6 @@ def app(s3):
     app = FastAPI()
     app.add_exception_handler(RequestValidationError, messaging_validation_error_handler)  # main's, as deployed
     app.include_router(router.router, prefix="/api/v1/sessions")
-    app.include_router(router.shared_router, prefix="/api/v1/shared")
     return app
 
 
@@ -277,51 +276,6 @@ def test_usage_includes_capture_tokens_per_agent(app, s3):
     assert usage["user_ada"]["request_count"] == 0  # not an LLM request
 
 
-def share(client, sid="s1"):
-    return client.post(f"/api/v1/sessions/{sid}/share")
-
-
-def test_share_link_expires_in_7_days(app, s3):
-    client = as_(app, "user_ada", "org_1")
-    client.post(
-        "/api/v1/sessions", json={"sessions": [session()], "tool_calls": [call(summary="ran tests")], "mode": "full"}
-    )
-    with (
-        patch.object(settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "k" * 32),
-        patch.object(settings, "FRONTEND_URL", "https://app.example"),
-    ):
-        r = share(client)
-        assert r.status_code == 200 and r.json()["url"].startswith("https://app.example/shared/")
-        token = r.json()["url"].rsplit("/", 1)[1]
-        anon = TestClient(app)
-        got = anon.get(f"/api/v1/shared/{token}")
-        assert got.status_code == 200
-        assert "user_id" not in got.text and "org_1" not in got.text
-        assert got.json()["session"]["id"] == "s1"
-        assert [c["summary"] for c in got.json()["tool_calls"]] == ["ran tests"]
-        now = time.time()
-        with patch("time.time", return_value=now + 7 * 86400 - 60):
-            assert anon.get(f"/api/v1/shared/{token}").status_code == 200
-        with patch("time.time", return_value=now + 7 * 86400 + 60):
-            assert anon.get(f"/api/v1/shared/{token}").status_code == 404
-        body, _, sig = token.partition(".")
-        assert anon.get(f"/api/v1/shared/{body}.{'0' * len(sig)}").status_code == 404  # forged
-        assert anon.get("/api/v1/shared/garbage").status_code == 404
-        client.delete("/api/v1/sessions/s1")
-        assert anon.get(f"/api/v1/shared/{token}").status_code == 404  # session gone
-
-
-def test_share_requires_the_uploader(app, s3):
-    assert share(TestClient(app)).status_code == 401  # before any override is set
-    as_(app, "user_ada", "org_1").post(
-        "/api/v1/sessions", json={"sessions": [session()], "tool_calls": [], "mode": "metadata"}
-    )
-    assert share(as_(app, "user_eve", "org_2")).status_code == 404  # another workspace
-    assert share(as_(app, "user_eve")).status_code == 404
-    assert share(as_(app, "user_ada", "org_1")).status_code == 200  # the uploader
-    assert share(as_(app, "user_bob", "org_1")).status_code == 404  # a teammate reads it, never publishes it
-
-
 def test_upload_full_triggers_ingest_and_metadata_does_not(app, s3):
     from unittest.mock import AsyncMock
 
@@ -359,20 +313,10 @@ def test_rows_expire_with_their_retention_and_read_as_gone_once_past_it(app, s3,
     with patch("time.time", return_value=now + 31 * 86400):  # DynamoDB may not have removed it yet
         assert as_(app, "user_dee").get("/api/v1/sessions").json()["sessions"] == []
         assert asyncio.run(session_store.get_session("f", user_id="user_dee", workspace_id=None)) is None
-        assert asyncio.run(session_store.read_shared("user_dee", "f")) is None
         assert len(as_(app, "user_ada", "org_1").get("/api/v1/sessions").json()["sessions"]) == 1
 
 
-def test_a_share_link_whose_object_aged_out_is_404(app, s3):
-    client = as_(app, "user_ada")
-    client.post("/api/v1/sessions", json={"sessions": [session()], "tool_calls": [call(summary="x")], "mode": "full"})
-    with patch.object(settings, "FRONTEND_URL", "https://app.example"):
-        token = share(client).json()["url"].rsplit("/", 1)[1]
-    s3.delete_object(Bucket=BUCKET, Key="sessions/free/user_ada/s1.json")  # the lifecycle rule ran first
-    assert TestClient(app).get(f"/api/v1/shared/{token}").status_code == 404
-
-
-def test_a_cli_session_id_with_a_colon_round_trips_through_upload_list_and_share(app, s3):
+def test_a_cli_session_id_with_a_colon_round_trips_through_upload_and_list(app, s3):
     sid = "claude:abc"  # the CLI's "<harness>:<id>"
     client = as_(app, "user_ada", "org_1")
     r = client.post(
@@ -381,10 +325,6 @@ def test_a_cli_session_id_with_a_colon_round_trips_through_upload_list_and_share
     assert r.status_code == 200
     assert [s["id"] for s in client.get("/api/v1/sessions").json()["sessions"]] == [sid]
     assert keys(s3) == [f"sessions/workspace/user_ada/{sid}.json"]  # unencoded in the key, as in the API
-    with patch.object(settings, "FRONTEND_URL", "https://app.example"):
-        token = share(client, sid).json()["url"].rsplit("/", 1)[1]
-    got = TestClient(app).get(f"/api/v1/shared/{token}").json()
-    assert got["session"]["id"] == sid and [c["summary"] for c in got["tool_calls"]] == ["x"]
     assert client.delete(f"/api/v1/sessions/{sid}").status_code == 204
     assert client.post("/api/v1/sessions", json={"sessions": [session("a/b")], "mode": "metadata"}).status_code == 422
 

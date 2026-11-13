@@ -29,7 +29,6 @@ import re
 import time
 from datetime import datetime, timezone
 
-from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import network_member
@@ -220,19 +219,6 @@ async def _import_facts(owner_id: str, memory_id: str, ns: str, state: dict, sta
             done += 1
     state["records_after"] = started
     return done, False
-
-
-async def entry_for(owner_id: str, record_id: str) -> str | None:
-    """The log entry a record stands for: the one a facts record was imported as, or the one a
-    mirrored record copies (both ``MEMLINK`` rows), if any."""
-    return (await run_in_thread(_get, owner_id, f"MEMLINK#{record_id}")).get("entry")
-
-
-async def drop_mirror(owner_id: str, entry_id: str) -> None:
-    """Delete an entry's ``entries`` record and its mapping rows (what a tombstone does)."""
-    memory_id = settings.AGENTCORE_MEMORY_ID
-    if memory_id:
-        await run_in_thread(_delete_for_tombstone, _client(), owner_id, memory_id, entry_id)
 
 
 # ---------------------------------------------------------------------------

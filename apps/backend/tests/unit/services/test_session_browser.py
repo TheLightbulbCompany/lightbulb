@@ -510,40 +510,6 @@ def _auth(user):
 OPEN = {"browserOpen": {"where": "mac", "until": 2**40}}
 
 
-@pytest.mark.parametrize("change", [{"unshared": True}, {"endedAt": 1}, {"removedAt": 1}])
-async def test_nobody_watches_or_drives_a_browser_that_is_not_shared_its_own_person_included(env, monkeypatch, change):
-    from core.services.messaging import ApiProblem
-
-    row = {**env.row, **OPEN, **change}
-    monkeypatch.setattr(session_browser.local_sessions, "authorize_session", AsyncMock(return_value=(row, {})))
-    for call in (session_browser.watch, session_browser.input_target):
-        with pytest.raises(ApiProblem) as refused:
-            await call(_auth(MEMBER), SID)
-        assert refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
-    env.row.update(change)
-    assert not await session_browser.may_type(OWNER, MEMBER, RUN)
-
-
-async def test_a_watch_on_a_row_deleted_meanwhile_reads_as_gone(env, monkeypatch):
-    from botocore.exceptions import ClientError
-
-    from core.services.messaging import ApiProblem
-
-    monkeypatch.setattr(
-        session_browser.local_sessions, "authorize_session", AsyncMock(return_value=({**env.row, **OPEN}, {}))
-    )
-
-    class Table:
-        def update_item(self, **kwargs):
-            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
-
-    monkeypatch.setattr(session_browser.store, "_table", lambda: Table())
-    monkeypatch.setattr(session_browser.store, "run_in_thread", lambda fn, **kw: asyncio.to_thread(fn, **kw))
-    with pytest.raises(ApiProblem) as gone:
-        await session_browser.watch(_auth(MEMBER), SID)
-    assert gone.value.error.code == "LOCAL_SESSION_NOT_FOUND"
-
-
 async def test_the_hold_ending_stops_its_frames_and_input(env, monkeypatch):
     node, channel = _offered()
     cancelled, seen = [], []
@@ -818,70 +784,12 @@ def test_another_workspaces_ticket_never_finds_the_relay():
         session_browser._relays.clear()
 
 
-def test_cloud_input_is_the_cloud_casts_own_shape():
-    events = [
-        {"type": "down", "x": 1.0, "y": 2.0, "button": "left", "clicks": 1},
-        {"type": "up", "x": 1.0, "y": 2.0, "button": "left", "clicks": 1},
-        {"type": "move", "x": 3.0, "y": 4.0},
-        {"type": "wheel", "x": 1.0, "y": 1.0, "deltaY": -120.0},
-        {"type": "key", "key": "Enter", "modifiers": 0},
-        {"type": "paste", "text": "hi"},
-    ]
-    assert session_browser.cloud_events(events) == [
-        {"type": "click", "x": 1.0, "y": 2.0, "button": "left"},
-        {"type": "wheel", "x": 1.0, "y": 1.0, "deltaY": -120.0},
-        {"type": "key", "key": "Enter"},
-        {"type": "text", "text": "hi"},
-    ]
-
-
 async def test_a_door_that_never_joins_is_cloud_unavailable(env, cloud, monkeypatch):
     monkeypatch.setattr(session_browser, "DOOR_WAIT_S", 0.05)
     node, channel = _offered()
     await session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False)
     assert _out(node)[-1]["payload"]["code"] == "cloud_unavailable"
     assert ("open", "cloud") not in env.calls
-
-
-async def test_cloud_input_goes_straight_in_while_the_cast_is_live(cloud, monkeypatch):
-    sent = []
-
-    async def send(owner, event):
-        sent.append(event)
-
-    monkeypatch.setattr(session_browser.browser_control, "send_input", send)
-    events = [{"type": "wheel", "x": 1.0, "y": 1.0, "deltaY": 5.0}, {"type": "key", "key": "a"}]
-    await session_browser.cloud_input({"ownerId": OWNER, "sessionId": SID}, events)
-    assert cloud == [] and len(sent) == 2, "no renew while the cast takes input"
-
-
-async def test_cloud_input_renews_once_after_idle_and_retries(cloud, monkeypatch):
-    from core.services import browser_control
-
-    sent, refusals = [], [browser_control.BrowserError(browser_control.NOT_CASTING)]
-
-    async def send(owner, event):
-        sent.append(event)
-        if refusals:
-            raise refusals.pop()
-
-    monkeypatch.setattr(browser_control, "send_input", send)
-    events = [{"type": "key", "key": "a"}, {"type": "key", "key": "b"}]
-    await session_browser.cloud_input({"ownerId": OWNER, "sessionId": SID}, events)
-    assert cloud == [("browser.attach", {"runId": RUN, "renew": True})]
-    assert [e["key"] for e in sent] == ["a", "a", "b"]
-
-
-async def test_cloud_input_still_not_casting_after_its_renew_answers_the_person(cloud, monkeypatch):
-    from core.services import browser_control
-
-    async def send(owner, event):
-        raise browser_control.BrowserError(browser_control.NOT_CASTING)
-
-    monkeypatch.setattr(browser_control, "send_input", send)
-    with pytest.raises(browser_control.BrowserError):
-        await session_browser.cloud_input({"ownerId": OWNER, "sessionId": SID}, [{"type": "key", "key": "a"}])
-    assert len(cloud) == 1, "one renew only"
 
 
 async def test_the_runtime_is_woken_before_any_ticket_is_minted(env, cloud, monkeypatch):

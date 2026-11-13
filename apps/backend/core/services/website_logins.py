@@ -26,7 +26,6 @@ Where things live:
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import re
 import secrets
@@ -116,22 +115,6 @@ def site_of(host: str | None) -> str:
     host, so it never shares a row with another host."""
     host = _host(host)
     return _PSL(host).top_domain_under_public_suffix or host
-
-
-def is_site(site: str) -> bool:
-    """A site a sign-out may name: exactly what ``site_of`` answers for its own hosts, with at
-    least two labels, and never a bare public suffix ("com.ph", "co.uk", "github.io") -- that
-    would cover every site under it."""
-    if site != _host(site) or site.count(".") < 1 or site_of(site) != site:
-        return False
-    try:
-        ipaddress.ip_address(site)
-        return True  # an IP address is its own site
-    except ValueError:
-        parts = _PSL(site)
-        # No suffix the list knows (an intranet name, a suffix newer than the snapshot): the
-        # host is its own site, and a sign-out of it matches that exact host only.
-        return parts.top_domain_under_public_suffix == site or not parts.suffix
 
 
 async def connector_hint(owner_id: str, origin: str) -> str | None:
@@ -245,100 +228,6 @@ async def add_login(
         added_by,
     )
     return _public(login_id, meta)
-
-
-async def update_login(
-    owner_id: str, login_id: str, *, username: str | None = None, password: str | None = None, actor: str
-) -> dict | None:
-    """Fix a username and/or replace the password of one saved login. None = no such login.
-    Who added it and when stay as they are; ``updatedBy``/``updatedAt`` record this edit."""
-    if not LOGIN_ID_RE.match(login_id or ""):
-        return None
-    if username is None and password is None:
-        raise LoginError("Enter a new username or a new password.")
-    rows = await _rows(owner_id)
-    row = rows.get(login_id)
-    if row is None:
-        return None
-    if username is not None:
-        username = username.strip()
-        if not username or len(username) > MAX_FIELD:
-            raise LoginError("Enter the username or email.")
-        if any(
-            k != login_id and v.get("origin") == row.get("origin") and v.get("username") == username
-            for k, v in rows.items()
-        ):
-            raise LoginError(f"{username} is already saved for {host_of(row.get('origin', ''))}.")
-    if password is not None and (not password or len(password) > MAX_SECRET):
-        raise LoginError("Enter the password.")
-    if password is not None:
-        await integration_secret_store.put(owner_id, _secret_key(login_id), {"password": password})
-    changes = {"updatedAt": utc_now_iso(), "updatedBy": actor} | (
-        {"username": username} if username is not None else {}
-    )
-    names = {"#id": login_id} | {f"#f{i}": key for i, key in enumerate(changes)}
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"owner_id": owner_id, "provider": LOGINS_KEY},
-            UpdateExpression="SET " + ", ".join(f"logins.#id.#f{i} = :f{i}" for i in range(len(changes))),
-            ConditionExpression="attribute_exists(logins.#id)",
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues={f":f{i}": value for i, value in enumerate(changes.values())},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return None  # removed meanwhile
-    logger.info(
-        "website_login.updated owner=%s login=%s actor=%s username=%s password=%s",
-        owner_id,
-        login_id,
-        actor,
-        username is not None,  # whether each changed, never the value
-        password is not None,
-    )
-    return _public(login_id, {**row, **changes})
-
-
-async def list_sites(owner_id: str) -> list[dict]:
-    """One entry per site: its saved logins, and whether the workspace browser's saved sign-ins
-    hold a session there (``browser_control.signed_in_sites``)."""
-    from core.services import browser_control
-
-    sites: dict[str, dict] = {}
-    for login in await list_logins(owner_id):
-        sites.setdefault(site_of(login["origin"]), {"signedIn": False, "logins": []})["logins"].append(login)
-    try:
-        signed_in = await browser_control.signed_in_sites(owner_id)
-    except Exception as exc:  # noqa: BLE001 -- the saved logins still list
-        logger.warning("website_login sites: browser sign-ins unreadable owner=%s: %s", owner_id, type(exc).__name__)
-        signed_in = set()
-    for site in signed_in:
-        sites.setdefault(site, {"logins": []})["signedIn"] = True
-    return [{"site": site, **sites[site]} for site in sorted(sites)]
-
-
-async def delete_login(owner_id: str, login_id: str, *, actor: str) -> bool:
-    if not LOGIN_ID_RE.match(login_id or ""):
-        return False
-    # Secret first: a failure after it leaves the row listed, so a retry finds it and finishes.
-    # Row first would strand a password no list could ever reach again.
-    await integration_secret_store.delete(owner_id, _secret_key(login_id))
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"owner_id": owner_id, "provider": LOGINS_KEY},
-            UpdateExpression="REMOVE logins.#id",
-            ConditionExpression="attribute_exists(logins.#id)",
-            ExpressionAttributeNames={"#id": login_id},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return False
-    logger.info("website_login.deleted owner=%s login=%s actor=%s", owner_id, login_id, actor)
-    return True
 
 
 async def resolve_login(owner_id: str, login_id: str, *, agent_id: str) -> dict | None:

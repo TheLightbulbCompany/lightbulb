@@ -95,7 +95,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
         memory_api,
         needs_you_email,
         run_ledger,
-        session_pickup,
         voice_calls,
     )
 
@@ -106,7 +105,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
         (run_ledger, "run_ledger_sweeper"),
         (browser_control, "run_autosave_sweeper"),
         (voice_calls, "voice_call_sweeper"),
-        (session_pickup, "run_pickup_sweeper"),
         (memory_api, "run_memory_sweeper"),
         (daily_digest, "run_digest_sweeper"),
         (needs_you_email, "run_needs_you_sweeper"),

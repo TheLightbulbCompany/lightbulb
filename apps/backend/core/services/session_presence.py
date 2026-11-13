@@ -6,8 +6,6 @@ leaving, typing) rides the heartbeat ack."""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import time
 
@@ -110,45 +108,6 @@ async def entry(row: dict, at: int) -> dict:
             key=lambda r: (r["userId"], r["kind"]),
         ),
     }
-
-
-async def ack_with_presence(ack: dict, owner: str, device: str, session_ids: list[str]) -> dict:
-    """The backstop: the heartbeat ack names presence for this Mac's sessions. Never costs the heartbeat.
-    Only sessions registered from `device`: presence (a held send's preview and its sender among it)
-    is for the session owner's own Mac, never another Mac that names the id."""
-    read_at = _ms()
-    try:
-        out = []
-        rows = [
-            r
-            for r in await repo.get_sessions(owner, session_ids)
-            if r and r.get("endedAt") is None and r.get("deviceId") == device
-        ]
-        # One frame's sessions concurrently: each entry is a bounded read or two (viewers, ask slots).
-        for e in await asyncio.gather(*(entry(row, read_at) for row in rows)):
-            if e["viewers"] or e["linkViewers"] or e["joinRequests"] or e["paused"]:
-                out.append(e)
-    except Exception:  # noqa: BLE001
-        logger.warning("Session presence unavailable")
-        return ack
-    # A listed session the ack leaves out loses its presence on the Mac, so an entry holding a
-    # join request (an input freeze on an older Mac) is never trimmed: drop quiet entries, then
-    # viewer lists, and if requests alone overflow, send no presence at all (the Mac keeps what it has).
-    out.sort(key=lambda e: not e["joinRequests"])
-
-    def fits(p: list) -> bool:
-        return (
-            len(json.dumps({**ack, "presence": p, "presenceAt": read_at}, separators=(",", ":")).encode())
-            <= sessions.MAX_ENVELOPE_BYTES
-        )
-
-    while out and not out[-1]["joinRequests"] and not fits(out):
-        out.pop()
-    if not fits(out):
-        out = [{**e, "viewers": []} for e in out]
-    # `presenceAt`: a session left out is removed on the Mac only if what it holds is older.
-    full = {**ack, "presence": out, "presenceAt": read_at}
-    return full if fits(out) else ack
 
 
 async def push(row: dict) -> None:

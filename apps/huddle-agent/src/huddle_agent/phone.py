@@ -568,7 +568,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 "durationSec": duration,
                 "summary": "; ".join(did),
                 "transcript": clean_transcript(items),
-                "silent": bool(silent_end),
+                # silent = nobody spoke, not "ended on a pause" (12 Nov prod: a caller's booking call was filed silent)
+                "silent": bool(silent_end) and not any(i["role"] == "user" and i["text"].strip() for i in items),
             },
         )
         logger.info("phone: call %s ended outcome=%s", backend.call_id, out.get("outcome", out))

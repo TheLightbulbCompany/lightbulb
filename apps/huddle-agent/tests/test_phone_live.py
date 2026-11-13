@@ -358,6 +358,14 @@ async def test_a_silent_line_is_told_once_then_hung_up_unless_a_request_is_pendi
     (end,) = [b for p, b in quiet.backend.calls if p == "end"]
     assert end["silent"] is True
 
+    spoke = await Call(monkeypatch).answer()  # 12 Nov prod: a caller who spoke, then paused, was recorded "silent"
+    spoke.item("user", "Can I book Saturday afternoon?", 3.0)
+    _away(spoke)
+    await asyncio.sleep(0.04)
+    assert spoke.shutdowns == ["caller silent"]  # the pause still ends the call
+    (end,) = [b for p, b in spoke.backend.calls if p == "end"]
+    assert end["silent"] is False  # but a call the caller spoke on is not a silent call
+
     back = await Call(monkeypatch).answer()
     _away(back)
     _away(back, "speaking")  # the caller answers: the hang-up is off

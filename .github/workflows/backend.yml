@@ -1,0 +1,80 @@
+# Backend CI (PRs only): ruff + pytest. Image build is backend-arm64.yml; deploy is deploy.yml.
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/backend/**'
+      - 'apps/infra/lambda/ses-inbound/**'
+      - 'apps/infra/lambda/ws-connect/**'
+      - 'apps/infra/lambda/pub-authorizer/**'
+      - 'apps/infra/lambda/messaging-projector/**'
+      - 'apps/infra/lambda/openrouter-settlement/**'
+      - '.github/workflows/backend.yml'
+
+# `github.ref` is refs/pull/<n>/merge, so a new push supersedes only its own PR's run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint & Test (shard ${{ matrix.shard }}/4)
+    # GitHub-hosted Linux (vars.CI_RUNNER = ubuntu-latest): the repo is public, so minutes are free.
+    runs-on: ${{ vars.CI_RUNNER }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # tests/conftest.py keeps every 4th test id per shard (BACKEND_TEST_SHARD); each shard runs under xdist.
+        shard: [1, 2, 3, 4]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+        working-directory: apps/backend
+
+      - name: Lint
+        if: matrix.shard == 1
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+        working-directory: apps/backend
+
+      - name: Run tests
+        env:
+          CLERK_ISSUER: https://test.clerk.accounts.dev
+          HUGGINGFACE_TOKEN: test_token
+          DYNAMODB_TABLE_PREFIX: lightbulb-test-
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+          DEBUG: "false"
+          BACKEND_TEST_SHARD: ${{ matrix.shard }}/4
+        run: uv run pytest tests/ -q -n auto
+        working-directory: apps/backend
+
+      # The Python Lambdas' own suites: the backend suite does not collect them.
+      - name: Run Lambda tests
+        if: matrix.shard == 1
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: |
+          for l in ses-inbound ws-connect pub-authorizer messaging-projector; do
+            uv run pytest "../infra/lambda/$l" -q
+          done
+          # Settlement uses unittest, not pytest.
+          uv run python -m unittest discover -s ../infra/lambda/openrouter-settlement -t ../infra/lambda/openrouter-settlement -v
+        working-directory: apps/backend

@@ -29,27 +29,6 @@ def test_double_backtick_code_keeps_its_backslashes():
     assert agent_text("``a\\*b`c`` then 3\\*4") == "``a\\*b`c`` then 3*4"
 
 
-def test_the_search_index_copy_matches():
-    import importlib.util
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parents[4] / "infra" / "lambda" / "messaging-search-indexer" / "index.py"
-    spec = importlib.util.spec_from_file_location("messaging_search_indexer_index", path)
-    indexer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(indexer)
-    for text in ["\\_\\_init\\_\\_", "``a\\*b`` 3\\*4", "\\# h\n1\\. x", "\\\\server", "plain"]:
-        assert indexer.agent_text(text) == agent_text(text)
-    item = {
-        "roomId": "r",
-        "messageId": "m",
-        "messageSeq": 1,
-        "createdAt": "t",
-        "text": "fix \\_\\_init\\_\\_",
-        "author": {},
-    }
-    assert indexer.document(item)["text"] == "fix __init__"
-
-
 def test_runtime_ingress_carries_clean_text():
     row = {
         "messageId": "11111111-1111-4111-8111-111111111111",

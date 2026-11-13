@@ -219,6 +219,8 @@ class LiveSession:
             if role != "user":
                 break
             said.insert(0, text)
+        if self.surface == "meet":  # many people: the ask is the newest line, the side talk before it is context
+            said = said[-1:]
         tail = " ".join(pending_transcript.split())
         if tail and not " ".join(said).endswith(tail):
             said.append(tail)

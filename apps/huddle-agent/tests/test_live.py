@@ -159,6 +159,24 @@ async def test_delegation_posts_once_and_returns_immediately():
     await s.close()
 
 
+async def test_meet_ask_is_the_asking_line_and_the_side_talk_is_context():
+    # 12 Nov prod Meet: the ask posted every line said since the voice last spoke ("Isol8 Admin said in the meeting:
+    # …" up to 4000 chars). In a meeting the ask is the newest line (+ its split tail); the rest stays context.
+    t = FakeTransport()
+    t.say("user", "Maya: the demo went fine yesterday")
+    t.say("user", "Sam: yeah, the client liked the booking flow")
+    t.say("user", "Sam: Lightbulb, what did we ship this")
+    r = Router(delay=0)
+    s = live.LiveSession(t, "meet", r.post, _none)
+    s.on_delegate(delegation(1, pending=" week"))
+    await asyncio.sleep(0.01)
+    text, turns = r.posts[0]
+    assert text == "Sam: Lightbulb, what did we ship this week"
+    assert turns == ["user: Maya: the demo went fine yesterday", "user: Sam: yeah, the client liked the booking flow",
+                     "user: Sam: Lightbulb, what did we ship this"]  # fmt: skip
+    await s.close()
+
+
 async def test_ask_joins_chat_context_with_partial_pending_transcript():
     # contract §4, run 1: the turn split; "What have we shipped this" went to the chat context, pending was " week"
     t = FakeTransport()

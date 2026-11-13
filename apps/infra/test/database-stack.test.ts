@@ -240,31 +240,10 @@ describe("DatabaseStack — agent email + company identity tables", () => {
   });
 });
 
-describe("DatabaseStack — launch competition tables", () => {
+describe("DatabaseStack — setup-requests table", () => {
   let template: Template;
   beforeAll(() => {
     template = buildStack("dev");
-  });
-
-  test("creates launch-waitlist keyed by email with a referral-code GSI", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-launch-waitlist",
-      KeySchema: [{ AttributeName: "email", KeyType: "HASH" }],
-      GlobalSecondaryIndexes: Match.arrayWith([
-        Match.objectLike({
-          IndexName: "referral-code-index",
-          KeySchema: [{ AttributeName: "referral_code", KeyType: "HASH" }],
-        }),
-      ]),
-      BillingMode: "PAY_PER_REQUEST",
-    });
-  });
-
-  test("creates launch-entries keyed by owner_id", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-launch-entries",
-      KeySchema: [{ AttributeName: "owner_id", KeyType: "HASH" }],
-    });
   });
 
   test("creates setup-requests keyed by id", () => {
@@ -274,11 +253,13 @@ describe("DatabaseStack — launch competition tables", () => {
     });
   });
 
-  test("creates launch-settings keyed by id", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-launch-settings",
-      KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
-    });
+  test("the launch competition tables are gone", () => {
+    const names = Object.values(template.findResources("AWS::DynamoDB::Table")).map(
+      (t: any) => t.Properties.TableName,
+    );
+    for (const table of ["launch-waitlist", "launch-entries", "launch-settings"]) {
+      expect(names).not.toContain(`lightbulb-dev-${table}`);
+    }
   });
 });
 

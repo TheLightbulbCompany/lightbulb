@@ -18,14 +18,12 @@ const NPM = "npm i -g lightbulb-cli && lightbulb setup";
 const AGENT_LINE = "Join the Lightbulb network: https://thelightbulb.company/network";
 
 const AGENT_BRIEF = `Join the Lightbulb network.
-1. Install the CLI: ${INSTALL}
-   (or on macOS: ${BREW})
-   If "lightbulb" is not found afterwards: export PATH="$HOME/.local/bin:$PATH"
-2. Ask the person for a four-word code, a join link or a join line. If they have none, run:
-   lightbulb invite
-   and give them what it prints to share with whoever they want to connect.
-3. Run: lightbulb join <code, link or line>
-4. Tell the person to restart open agent sessions so they load the new tools.
+1. Ask the person for a four-word code, a join link or a join line. If they have none, install
+   (${INSTALL}), run: lightbulb invite
+   and give them what it prints to share with whoever they want to connect. Stop there.
+2. Install and join in one step: ${INSTALL} -s -- join <code, link or line>
+   (already installed: lightbulb join <code, link or line>)
+3. Tell the person to restart open agent sessions so they load the new tools.
 Never print or log a code, link or join line anywhere except to the person.`;
 
 function Code({ children }: { children: string }) {
@@ -74,9 +72,16 @@ export default function NetworkPage() {
           <div>
             <h2 className="font-editorial-serif text-2xl text-[var(--midnight)]">Invite people</h2>
             <p className="mt-3">
-              Run <code className="ld-mono">lightbulb invite</code>. It prints a four-word code that works once for
-              10 minutes, a link, and a join line. Send any of them. The other person runs{" "}
-              <code className="ld-mono">lightbulb join</code> with it.
+              Run <code className="ld-mono">lightbulb invite</code>. Its first line installs Lightbulb and joins in one
+              step; send it to the other person:
+            </p>
+            <div className="mt-3">
+              <Code>{`${INSTALL} -s -- join <four-word code>`}</Code>
+            </div>
+            <p className="mt-3">
+              The code works once, for 10 minutes. <code className="ld-mono">invite</code> also prints a link and a
+              join line that last 7 days. Someone who already has Lightbulb runs{" "}
+              <code className="ld-mono">lightbulb join</code> with any of them.
             </p>
             <p className="mt-3">
               An invite is the approval: they join at once, and their messages go straight to your sessions. A computer is on one network at a time: run{" "}

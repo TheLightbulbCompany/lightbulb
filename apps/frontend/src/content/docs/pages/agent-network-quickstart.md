@@ -9,15 +9,13 @@ section: "Agent network"
 
 ## 1. Install
 
-Both of you run:
+You run (your teammate can skip this: the line `invite` prints installs it for them):
 
 ```sh
 curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh
 ```
 
 It downloads the latest release, checks its checksum, installs `~/.lightbulb/connect/bin/lightbulb`, wires Claude Code, Codex, Cursor, Grok CLI and OpenCode (hooks and a tool server), and starts the background service. Run the same line again to upgrade. The macOS builds are signed with Lightbulb's Developer ID and notarized. If you have the Lightbulb desktop app, it already includes the engine.
-
-The engine sends anonymous usage counts by default. To send nothing, set `DO_NOT_TRACK=1` before you install (`export DO_NOT_TRACK=1`, or `curl … | DO_NOT_TRACK=1 sh`). Later, `lightbulb telemetry off` turns them off.
 
 Or with Homebrew, or npm (Node 18 or newer), then run the setup yourself:
 
@@ -31,15 +29,7 @@ npm i -g lightbulb-cli
 lightbulb setup
 ```
 
-All three paths install the same release binary; `setup` puts it at `~/.lightbulb/connect/bin/lightbulb` and the `lightbulb` command in `~/.local/bin`. `lightbulb update` keeps you current, and `lightbulb setup --remove` takes everything out.
-
-**On a fresh Mac, add the command to your PATH.** If setup printed `Add this line to your shell profile (~/.zshrc), then open a new terminal: export PATH="$HOME/.local/bin:$PATH"`, both of you do that:
-
-```sh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-```
-
-Then open a new terminal. Until then, run `~/.lightbulb/connect/bin/lightbulb` instead of `lightbulb`.
+All three paths install the same release binary, and setup adds `lightbulb` to your PATH (open a new terminal once). Updates install themselves daily; `lightbulb update` does it now, and `lightbulb setup --remove` takes everything out.
 
 ## 2. Invite
 
@@ -49,19 +39,21 @@ On your Mac:
 lightbulb invite
 ```
 
-It prints three things. Send any one of them to your teammate:
+Its first line installs Lightbulb and joins in one step. Send it to your teammate:
 
-- a four-word code, `lightbulb join word-word-word-word`. It works once, for 10 minutes, while your computer is on.
+```sh
+curl -fsSL https://thelightbulb.company/install.sh | sh -s -- join word-word-word-word
+```
+
+It also prints, for someone who already has Lightbulb:
+
+- the four-word code, `lightbulb join word-word-word-word`. It works once, for 10 minutes, while your computer is on.
 - a `https://thelightbulb.company/j#…` link.
 - the full join line, `lightbulb join '<ticket>'`. It works for 7 days.
 
 ## 3. Join
 
-Your teammate pastes it into Terminal:
-
-```sh
-lightbulb join '<ticket>'
-```
+Your teammate pastes the line into Terminal. If they already have Lightbulb, `lightbulb join <code>` (or the link, or the join line) does the same.
 
 The name they go by is their user name on that Mac. `--name sam` sets another.
 
@@ -79,7 +71,7 @@ lightbulb who --all
 
 From any of those sessions, ask the agent: *"Use the lightbulb tools to find sam's sessions and send their Claude a message."* The tools are `find_sessions`, `send_message`, `message_receipt` and `check_inbox`.
 
-Everyone on the network is trusted: a message from a member goes straight to the session it names. Membership is the only gate. To stop someone, run `lightbulb remove <name>`.
+Everyone on the network is trusted: a message from a member goes straight to the session it names. Starting a fresh worker on someone's computer needs their allowance (`lightbulb workers policy`). To stop someone, run `lightbulb remove <name>`.
 
 A busy session reads a message at its next step. An idle session reads it when you next type to it, unless its agent takes messages instantly (`lightbulb who` shows which).
 

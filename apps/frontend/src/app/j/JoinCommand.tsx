@@ -36,7 +36,8 @@ export function JoinCommand() {
     );
   }
 
-  const command = `${INSTALL} && ~/.lightbulb/connect/bin/lightbulb join '${ticket}'`;
+  // The installer runs `lightbulb join` itself once it has installed (or updated) the CLI.
+  const command = `${INSTALL} -s -- join '${ticket}'`;
   return (
     <div className="space-y-3">
       <pre data-private className="ph-no-capture ld-mono overflow-x-auto whitespace-pre-wrap break-all rounded-lg border border-[var(--midnight-muted)] p-4 text-sm leading-6 text-[var(--midnight)]">

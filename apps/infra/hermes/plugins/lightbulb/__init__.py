@@ -858,8 +858,11 @@ FRONT_DESK_SCHEMA = {
                    "which (my_bookings lists each with its bookingId), then repeat with that booking_id. "
                    "waitlist: when the time they want is full, put the caller on the waitlist for a day "
                    "(date, optional service, name, and a note with the time they would take, in their words); the owner sees it, "
-                   "nobody is texted yet, so never promise a call or text back. message: take a message for the "
-                   "owner (text, optional name, callback_number). Times are the business's local time, "
+                   "nobody is texted yet, so never promise a call or text back. message: only when the caller asks "
+                   "to leave a message for the owner: text is what they want passed on, in their words (optional "
+                   "name, callback_number). It is never a way to answer the caller: your answer is your reply. "
+                   "Every open time you say and every booking you confirm comes from this tool's result in this "
+                   "thread: call availability before you say a time. Times are the business's local time, "
                    "YYYY-MM-DDTHH:MM.",
     "parameters": {
         "type": "object",
@@ -873,7 +876,7 @@ FRONT_DESK_SCHEMA = {
             "booking_id": {"type": "string", "description": "my_bookings' bookingId (move, cancel; only needed "
                                                              "when two bookings share a start)"},
             "name": {"type": "string", "description": "the caller's name"},
-            "text": {"type": "string", "description": "the message (message)"},
+            "text": {"type": "string", "description": "the caller's message for the owner, in their words (message)"},
             "callback_number": {"type": "string"},
         },
         "required": ["action"],

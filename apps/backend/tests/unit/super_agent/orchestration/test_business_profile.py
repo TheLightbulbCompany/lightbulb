@@ -219,6 +219,9 @@ async def test_a_callers_thread_gets_the_profile_and_the_caller_principal(monkey
     # 10 Nov prod call: a refused cancel was narrated as "finalizing"; the answer states only what a result said
     assert 'starts with "Not done"' in note and "NOT changed" in note and "being finalized" in note
     assert "only when the message action itself returned a saved result" in note
+    # prod call: times said with no front_desk call, and an answer filed as a message nobody left
+    assert "comes from a front_desk availability result in this thread" in note
+    assert "only when the caller asks to leave one" in note
     assert "never that a booking change is being made, started or finished" in " ".join(
         router_prompt.ROUTER_INSTRUCTIONS.split()
     )
@@ -306,3 +309,12 @@ async def test_no_hand_off_number_tells_the_model_nobody_is_there_to_transfer_to
     bp._cache.clear()
     sources.return_value = {**CFG, "handoff": {"number": "+14155550147"}}
     assert "No person is available" not in await bp.business_profile("org_x")
+
+
+async def test_the_owners_instructions_reach_the_router_and_the_thread(sources):
+    """Prod call: the voice kept the Agent page's "never state our hours", the Front desk thread said them anyway."""
+    assert "The owner's instructions" not in await bp.business_profile("org_x", "+15550001")
+    sources.return_value = {**CFG, "instructions": "Never state our hours."}
+    text = await bp.business_profile("org_x", "+15550001")
+    assert "The owner's instructions. They take priority" in text and text.endswith("Never state our hours.")
+    assert vp.owner_instructions({"instructions": " Never state our hours. "}) == "Never state our hours."

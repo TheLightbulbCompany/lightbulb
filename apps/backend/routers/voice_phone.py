@@ -1453,12 +1453,14 @@ async def callers_own_words(call_id: str, text: str) -> bool:
     call: the thread filed its own answer, the open times, as a message nobody left, and the owner got a task for it).
     ponytail: content-word overlap with the caller's lines, as router_prompt.restates; an intent check if a real
     message that is all paraphrase gets refused (the thread is told to write it in the caller's words)."""
-    from core.temporal.router_prompt import _STOP, _WORD
+    from core.temporal.router_prompt import _STOP
+
+    word = re.compile(r"[a-z0-9]+")  # digits count: a message that is a number or a time is still the caller's
 
     rows = await messaging_repo.list_messages_before(call_id, 10**19, 50)
     said = " ".join(r.get("text") or "" for r in rows if (r.get("author") or {}).get("id") == f"caller:{call_id}")
-    words, heard = set(_WORD.findall(text.lower())) - _STOP, set(_WORD.findall(said.lower()))
-    return bool(words) and len(words & heard) * 2 >= len(words)
+    words, heard = set(word.findall(text.lower())) - _STOP, set(word.findall(said.lower()))
+    return len(words & heard) * 2 >= len(words)  # nothing to check ("call me") is not an invented answer
 
 
 class UnknownIn(BaseModel):

@@ -408,7 +408,8 @@ async def test_a_message_is_taken_only_in_the_callers_own_words(api, monkeypatch
     monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
     lines = [{"author": {"kind": "human", "id": f"caller:{call}"}, "text": "Can I get a skin fade today?"},
              {"author": {"kind": "agent", "id": "a1"}, "text": "I have openings today at 4 PM, 4:30 and 5."},
-             {"author": {"kind": "human", "id": f"caller:{call}"}, "text": "Tell Sam I'll be ten minutes late."}]  # fmt: skip
+             {"author": {"kind": "human", "id": f"caller:{call}"}, "text": "Tell Sam I'll be ten minutes late."},
+             {"author": {"kind": "human", "id": f"caller:{call}"}, "text": "Leave this for the owner: 123456."}]  # fmt: skip
     monkeypatch.setattr(vp.messaging_repo, "list_messages_before", AsyncMock(return_value=lines))
     taken = AsyncMock(return_value={"taken": True})
     monkeypatch.setattr(vp, "take_message", taken)
@@ -423,6 +424,7 @@ async def test_a_message_is_taken_only_in_the_callers_own_words(api, monkeypatch
     assert r.status_code == 200 and r.json()["taken"] is False and taken.await_count == 0
     r = await api.post(url, json={**body, "text": "Caller will be ten minutes late."}, headers=H)
     assert r.json() == {"taken": True} and taken.await_args.args[1].text == "Caller will be ten minutes late."
+    assert (await api.post(url, json={**body, "text": "123456"}, headers=H)).json() == {"taken": True}
 
 
 async def test_business_facts_reads_only_the_runs_own_workspace(api, monkeypatch):

@@ -583,6 +583,12 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
                 "spot. Nobody is on a waitlist yet: do not promise one.",
             }
         if body.action == "message":
+            if not await vp.callers_own_words(call_id, body.text):
+                return {
+                    "taken": False,
+                    "say": "Not taken: a message is what the caller asked to pass on to the owner, in their own "
+                    "words. Answer the caller in your reply; take a message only when they ask to leave one.",
+                }
             return await vp.take_message(
                 call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)
             )

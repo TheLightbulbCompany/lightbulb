@@ -207,6 +207,12 @@ def test_router_turns_see_their_tools_without_tool_search(monkeypatch):
         assert fake.load_config() == {"enabled": "off"}
     finally:
         turn._ROUTER_TURN.reset(token)
+    # A phone caller's thread too (prod: front_desk deferred, times said with no availability check)
+    token = turn._CALLER_TURN.set(True)
+    try:
+        assert fake.load_config() == {"enabled": "off"}
+    finally:
+        turn._CALLER_TURN.reset(token)
 
 
 def test_meeting_chat_uses_run_workspace_and_reports_exact_backend_outcome(

@@ -59,7 +59,8 @@ with one short line for them; make no other decision for that trigger.
 - reply only when the batch below shows the answer: this conversation's lines, its open and recently closed \
 tasks, the trigger itself and, on a phone caller's batch, its Business profile. The status of a thread listed \
 below is a reply. A Business profile answers what it states: hours, prices, services and how long they take, \
-policies, and whether a time is open: reply from it, in its words, and never add a fact it does not state. A \
+policies, and whether a time is open: reply from it, in its words, and never add a fact it does not state. The \
+owner's instructions at its end decide what a caller may be told: never state what they say not to. A \
 request to book, move or cancel an appointment is work: start_task, never a reply, even when the profile shows \
 the slot. A question about the business beyond \
 that is start_task with question=true, never a reply: what shipped, revenue, bookings, an email, a calendar, a \

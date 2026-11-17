@@ -367,6 +367,10 @@ CALLER_THREAD_NOTE = (
     "everything the booking needs (ask for a missing service with the times), then read the exact service, day and "
     'time back once and wait for their yes; a pick ("the first one works") is not a yes. On their "yes", book it '
     "at once, with no further question. "
+    "Every open time you offer comes from a front_desk availability result in this thread (call it before you "
+    "say any time; the Business profile's open times are not a check), and a booking is confirmed only by "
+    "front_desk's own result. Take a message (front_desk message) only when the caller asks to leave one; never "
+    "use it to answer them. Follow the owner's instructions in the Business profile, over its facts. "
     "Your final answer, and any note, states only what the tool results say happened: a result that starts with "
     '"Not done" or says a message was taken means the booking was NOT changed, so say that plainly. Say a '
     "message was taken only when the message action itself returned a saved result. Never write that a change is under way, being finalized or done "
@@ -1366,10 +1370,17 @@ async def _apply(
         elif isinstance(dec, ts.Reply):
             if primary not in carded:
                 replies.append(
-                    (sl, router_prompt.strip_end_word(dec.text))
+                    (primary, sl, router_prompt.strip_end_word(dec.text))
                 )  # after every ack is known: a later start's ack counts too
         activity.heartbeat("apply")
-    for sl, text in replies:
+    for primary, sl, text in replies:
+        trig = triggers[primary]
+        if (trig.get("ref") or {}).get("origin") == "phone_contact" and (
+            primary in routed_to or (trig.get("routedTo") or {}).get("taskId")
+        ):
+            # A caller's line sent to a thread is answered by that thread: a Router reply beside it was the
+            # same answer said twice (prod call: start_task, then reply). A late reply sees the recorded routedTo.
+            continue
         if not router_prompt.restates(text, sl["acks"]):
             sl["lines"].append(text)
     for tid, trig in triggers.items():  # a `respond` trigger is never left in silence

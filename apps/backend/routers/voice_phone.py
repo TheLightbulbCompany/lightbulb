@@ -153,6 +153,12 @@ async def agent_config(owner_id: str) -> dict:
     return cfg
 
 
+def owner_instructions(cfg: dict) -> str:
+    """The Agent page's instructions, the one text every phone model reads: the voice's prompt (start_call) and the
+    Router's and Front desk thread's Business profile (business_profile)."""
+    return str(cfg.get("instructions") or "").strip()[:4000]
+
+
 def _line_state(cfg: dict, caller: str) -> Literal["live", "message_only"]:
     """Live after Go live and not paused; the owner's own number always gets the live line (the test call)."""
     if cfg.get("_paymentBlocked"):
@@ -497,7 +503,7 @@ async def start_call(body: StartIn) -> dict:
         "spanish": cfg.get("spanish") is True,
         "greeting": greeting(cfg["greeting"], business, assistant),
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
-        "instructions": cfg["instructions"][:4000],
+        "instructions": owner_instructions(cfg),
         "callerName": call["callerName"] if allow["greetByName"] else "",
         "callerMemory": call["callerMemory"],
         "callerVerified": verified,  # the worker's prompt: unverified means no existing bookings, offer a message
@@ -1440,6 +1446,21 @@ async def take_message(call_id: str, body: MessageIn) -> dict:
                                           "callerName": c.get("callerName") or body.name,
                                           "steps": _step(c, f"Took a message: {body.text}")})  # fmt: skip
     return {"taken": True}
+
+
+async def callers_own_words(call_id: str, text: str) -> bool:
+    """A Front desk thread's message is the caller's: most of its words are words the caller said on this call (prod
+    call: the thread filed its own answer, the open times, as a message nobody left, and the owner got a task for it).
+    ponytail: content-word overlap with the caller's lines, as router_prompt.restates; an intent check if a real
+    message that is all paraphrase gets refused (the thread is told to write it in the caller's words)."""
+    from core.temporal.router_prompt import _STOP
+
+    word = re.compile(r"[a-z0-9]+")  # digits count: a message that is a number or a time is still the caller's
+
+    rows = await messaging_repo.list_messages_before(call_id, 10**19, 50)
+    said = " ".join(r.get("text") or "" for r in rows if (r.get("author") or {}).get("id") == f"caller:{call_id}")
+    words, heard = set(word.findall(text.lower())) - _STOP, set(word.findall(said.lower()))
+    return len(words & heard) * 2 >= len(words)  # nothing to check ("call me") is not an invented answer
 
 
 class UnknownIn(BaseModel):

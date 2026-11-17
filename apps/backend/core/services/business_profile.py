@@ -163,6 +163,9 @@ async def _build(ws: str, caller: str | None) -> str:
             sections.append(f"{label}: unknown (data unavailable).")
         else:
             sections.append(r)
+    # Read last, as on the voice (phone.py facts_section), so the Router and the caller's thread obey them too.
+    if rules := vp.owner_instructions(cfg):
+        sections.append(f"The owner's instructions. They take priority over Business facts and open times:\n{rules}")
     return "\n".join(sections)
 
 

@@ -1733,6 +1733,29 @@ async def test_a_reply_recorded_after_the_early_apply_posts_on_its_own(world):
 
 
 @pytest.mark.asyncio
+async def test_a_callers_line_sent_to_a_thread_gets_no_router_reply_beside_it(world, monkeypatch):
+    """Prod call: start_task, then reply on the same caller line; the caller heard the thread's answer twice. Late or
+    in the same apply, a reply on a caller's line that a thread took is dropped; a member's reply still posts."""
+    monkeypatch.setattr(acts, "_caller_profile", AsyncMock(return_value=None))
+    ref = {"roomId": ROOM, "messageId": str(uuid.uuid4()), "origin": "phone_contact", "callId": ROOM}
+    t1 = await _trig("voice:c:turn-0", source="voice", ref=ref)
+    world["first_status"] = "running"
+    world["decisions"] = [_start([t1], ack="Checking that time.")]
+    late = {"kind": "reply", "triggerIds": [t1], "text": "I have 4 PM, 4:30 or 5 today."}
+    real_get, acts.runtime_runs.get_run = _late(world, [late])
+    try:
+        await _run([t1])
+    finally:
+        acts.runtime_runs.get_run = real_get
+    assert [p["text"] for p in world["posts"]] == ["Checking that time."]
+    t2 = await _trig("voice:c:turn-1", source="voice", ref={**ref, "messageId": str(uuid.uuid4())})
+    world["first_status"] = "completed"
+    world["decisions"] = [late | {"triggerIds": [t2]}, _start([t2], ack="Checking that time too.")]
+    await _run([t2], batch="b-same")
+    assert [p["text"] for p in world["posts"]][1:] == ["Checking that time too."]
+
+
+@pytest.mark.asyncio
 async def test_the_tail_waits_only_within_the_turns_budget(world, monkeypatch):
     t1 = await _trig("chat:m1")
     world["first_status"] = world["poll_status"] = "running"  # the run never ends

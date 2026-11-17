@@ -852,8 +852,12 @@ ROUTER_CALL_TOOLSET = "lightbulb_router_call"
 MAX_DECISIONS = 40
 #: A Router turn never reads or writes memory (founder ruling A, 8 Nov 2026): a Worker reads the source.
 _ROUTER_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_router_turn", default=False)
+#: A phone caller's thread (its toolsets name the front desk): its three tools up front too (prod call: front_desk
+#: deferred behind tool_search, 3 lookups and no availability check before the times it said).
+_CALLER_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_caller_turn", default=False)
 def install_router_tool_search() -> bool:
-    """A Router turn sees its decision tools up front, never behind Hermes's tool_search.
+    """A Router turn (and a phone caller's thread, `_CALLER_TURN`) sees its tools up front, never behind
+    Hermes's tool_search.
 
     Hermes defers every plugin tool behind tool_search/tool_describe/tool_call unless
     ``tools.tool_search.enabled`` is ``off`` (config.yaml; pinned 0.21.3 ``tools/tool_search.py``
@@ -873,7 +877,7 @@ def install_router_tool_search() -> bool:
     off = tool_search.ToolSearchConfig.from_raw({"enabled": "off"})
 
     def load_config():
-        return off if _ROUTER_TURN.get() else original()
+        return off if _ROUTER_TURN.get() or _CALLER_TURN.get() else original()
 
     load_config._lightbulb_router = True
     tool_search.load_config = load_config
@@ -3968,6 +3972,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     _PRIVATE_DM.set((chat_type == "dm" and bool(_PERSON_ID.fullmatch(user_id)))
                     or (block or {}).get("lane") == "private")
     _ROUTER_TURN.set(ROUTER_TOOLSET in (limits.get("enabled_toolsets") or ()))  # a caller's batch adds one toolset
+    _CALLER_TURN.set(FRONT_DESK_TOOLSET in (limits.get("enabled_toolsets") or ()))
     callbacks = {}
     if frames is not None:
         # stream_delta_callback / reasoning_callback are the per-token text streams (Task 11).

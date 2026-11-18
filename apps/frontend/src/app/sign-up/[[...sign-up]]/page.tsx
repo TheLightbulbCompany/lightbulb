@@ -3,7 +3,6 @@ import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
 import { SignUpDoors } from "@/components/onboarding/SignUpDoors";
-import { SignupPlanPill } from "@/components/SignupPlanPill";
 
 export default function Page() {
   return (
@@ -251,8 +250,8 @@ export default function Page() {
           </div>
 
           <div className="auth-brand-middle">
-            <div className="auth-eyebrow">Get started</div>
-            <h1 className="auth-tagline">Bring your team.</h1>
+            <div className="auth-eyebrow">Set up your assistant</div>
+            <h1 className="auth-tagline">Your phone, answered and booked.</h1>
 
             <div className="auth-features" role="list">
               <div className="auth-feat" role="listitem">
@@ -262,14 +261,10 @@ export default function Page() {
                     <polyline points="12 6 12 12 16 14" />
                   </svg>
                 </div>
-                {/* Was "Always running / Works in the background, even when
-                    you're offline." That is a PAID-plan property: a free-tier
-                    container parks when idle, so it promised the one thing the
-                    tier the reader is about to get does not do. Replaced with
-                    the cost line, which this flow never stated anywhere — but
-                    branched, because a TEAM signup gets no free tier at all
-                    (see SignupPlanPill). */}
-                <SignupPlanPill />
+                <div>
+                  <div className="auth-feat-title">Answers day and night</div>
+                  <div className="auth-feat-desc">Books appointments and takes messages while you&apos;re with a client.</div>
+                </div>
               </div>
               <div className="auth-feat" role="listitem">
                 <div className="auth-feat-icon" aria-hidden="true">
@@ -281,8 +276,8 @@ export default function Page() {
                   </svg>
                 </div>
                 <div>
-                  <div className="auth-feat-title">Your team in the same rooms</div>
-                  <div className="auth-feat-desc">The first five people are included in the plan.</div>
+                  <div className="auth-feat-title">Set up in five steps</div>
+                  <div className="auth-feat-desc">Tell it about your business, forward your phone, and name it.</div>
                 </div>
               </div>
               <div className="auth-feat" role="listitem">
@@ -293,8 +288,8 @@ export default function Page() {
                   </svg>
                 </div>
                 <div>
-                  <div className="auth-feat-title">Your own cloud</div>
-                  <div className="auth-feat-desc">Each workspace runs in its own isolated environment.</div>
+                  <div className="auth-feat-title">You stay in charge</div>
+                  <div className="auth-feat-desc">See every call and what it did. Anything it can&apos;t decide comes to you.</div>
                 </div>
               </div>
               <div className="auth-feat" role="listitem">
@@ -306,8 +301,8 @@ export default function Page() {
                   </svg>
                 </div>
                 <div>
-                  <div className="auth-feat-title">Agents that ask first</div>
-                  <div className="auth-feat-desc">Plans, spending and new hires wait for a yes.</div>
+                  <div className="auth-feat-title">Pay when you go live</div>
+                  <div className="auth-feat-desc">Set everything up first. Month to month, cancel yourself in Settings.</div>
                 </div>
               </div>
             </div>

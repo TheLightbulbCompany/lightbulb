@@ -36,7 +36,7 @@ it("unpaid Go live keeps the assistant off and offers the existing payment flow"
   render(<AgentPage />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
   await act(async () => { await vi.advanceTimersByTimeAsync(700); });
-  expect(screen.getByRole("link", { name: "Activate voice plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
+  expect(screen.getByRole("link", { name: "Start your plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
   expect(screen.getByText("Not live yet")).toBeInTheDocument();
   expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ live: false, goLiveRequested: true }));
   expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();

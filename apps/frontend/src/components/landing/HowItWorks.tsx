@@ -1,116 +1,107 @@
 import Image from "next/image";
 
-const TICK = (
-  <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
-    <path d="M2.5 7.3l3 3 6-6.2" fill="none" stroke="#B68235" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-/** Three steps, each a card with artwork on top and product UI laid over it. */
+/**
+ * Setup is five steps in the app (voice/Onboarding.tsx); these three cards are
+ * what they come down to. Each card is artwork with a small copy of that
+ * step's real controls laid over it.
+ */
 export function HowItWorks() {
   return (
     <section className="lb-steps" id="how">
       <div className="lb-wrap">
-        <p className="lb-eyebrow">How it works</p>
-        <h2 className="lb-h2">
-          Bring the team first.{" "}
-          <br className="lb-brk" />
-          Then the agents.
-        </h2>
+        <h2 className="lb-h2">Set up in five steps. Here is what they come down to.</h2>
 
         <div className="lb-cards3">
           <article className="lb-card3">
-            <div className="lb-card-art">
+            <div className="lb-card-art" aria-hidden="true">
               <Image src="/landing/step-channel.jpg" alt="" fill sizes="(max-width: 980px) 100vw, 33vw" style={{ objectFit: "cover", objectPosition: "center 42%" }} />
-              <div className="lb-rows">
-                <div className="lb-row3">
-                  <span className="lb-who3">
-                    <b>Invite to Lightbulb</b>
-                  </span>
+              <div className="lb-compose">
+                <div className="lb-compose-h">
+                  <b>Your website</b>
                 </div>
-                <div className="lb-row3">
-                  <span className="lb-av hu">MR</span>
-                  <span className="lb-who3">
-                    <b>Mara Reyes</b>
-                  </span>
-                </div>
-                <div className="lb-row3">
-                  <span className="lb-av hu">JP</span>
-                  <span className="lb-who3">
-                    <b>Jonah Pike</b>
-                  </span>
-                  <span className="lb-chip3 yes">Send invite</span>
+                <div className="lb-compose-b">
+                  <div className="lb-compose-in">yoursalon.com</div>
+                  <div className="lb-compose-f">
+                    <span className="lb-send">Read my site</span>
+                  </div>
                 </div>
               </div>
             </div>
             <div className="lb-card-b">
-              <h3>Invite your team</h3>
-              <p>Send your cofounder the join link. They land in #general with everyone, and the first five people are free.</p>
+              <h3>Tell it about your business</h3>
+              <p>
+                Paste your website and it drafts your hours, services and prices. You check the draft and fix
+                anything it guessed.
+              </p>
             </div>
           </article>
 
           <article className="lb-card3">
-            <div className="lb-card-art">
+            <div className="lb-card-art" aria-hidden="true">
               <Image src="/landing/step-agents.jpg" alt="" fill sizes="(max-width: 980px) 100vw, 33vw" style={{ objectFit: "cover" }} />
               <div className="lb-rows">
                 <div className="lb-row3">
-                  <span className="lb-av ag">C</span>
+                  <span className="lb-av ag">N</span>
                   <span className="lb-who3">
-                    <b>CEO</b>
-                    <span>Runs the company</span>
+                    <b>Nova</b>
+                    <span>Voice: Marin</span>
                   </span>
-                  <span className="lb-chip3 yes">In channel</span>
                 </div>
                 <div className="lb-row3">
-                  <span className="lb-av ag">A</span>
                   <span className="lb-who3">
-                    <b>Analytics</b>
-                    <span>Reads the numbers</span>
+                    <b>Books appointments</b>
                   </span>
-                  <span className="lb-chip3">Add</span>
+                  <span className="lb-chip3 yes">On</span>
+                </div>
+                <div className="lb-row3">
+                  <span className="lb-who3">
+                    <b>Also speaks Spanish</b>
+                  </span>
+                  <span className="lb-chip3">Off</span>
                 </div>
               </div>
             </div>
             <div className="lb-card-b">
-              <h3>Add agents where the work is</h3>
-              <p>Put the CEO in #general and Engineering in #launch. An agent only sees the rooms you add it to.</p>
+              <h3>Make it yours</h3>
+              <p>
+                Name it Nova, or anything you like. Pick one of three voices, write its greeting, and choose what it
+                may do.
+              </p>
             </div>
           </article>
 
           <article className="lb-card3">
-            <div className="lb-card-art">
+            <div className="lb-card-art" aria-hidden="true">
               <Image src="/landing/step-work.jpg" alt="" fill sizes="(max-width: 980px) 100vw, 33vw" style={{ objectFit: "cover", objectPosition: "center 38%" }} />
-              <div className="lb-compose">
-                <div className="lb-compose-h">
-                  <span className="lb-hash">#</span>
-                  <b>launch</b>
+              <div className="lb-rows">
+                <div className="lb-row3">
+                  <span className="lb-who3">
+                    <b>Keep my number</b>
+                    <span>Missed and busy calls only</span>
+                  </span>
+                  <span className="lb-chip3 yes">Chosen</span>
                 </div>
-                <div className="lb-compose-b">
-                  <div className="lb-compose-in">
-                    <span className="lb-at">@Analytics</span> where are the new signups coming from?
-                  </div>
-                  <div className="lb-compose-f">
-                    <i />
-                    <i />
-                    <i />
-                    <span className="lb-send">Send</span>
-                  </div>
+                <div className="lb-row3">
+                  <span className="lb-who3">
+                    <b>Get a new number</b>
+                    <span>Choose your area code</span>
+                  </span>
                 </div>
               </div>
             </div>
             <div className="lb-card-b">
-              <h3>Mention one and go</h3>
+              <h3>Keep your number</h3>
               <p>
-                It reads the thread above it, does the work, and posts the result in the room. Anyone can approve it,
-                redirect it, or pick it up.
+                Forward missed and busy calls, or all of them. The app gives you your carrier&rsquo;s code and checks
+                that forwarding works. Or get a new local number.
               </p>
             </div>
           </article>
         </div>
+        <p className="lb-sec-sub">Your line goes live when you choose the plan.</p>
       </div>
     </section>
   );
 }
 
-export { TICK };
 export default HowItWorks;

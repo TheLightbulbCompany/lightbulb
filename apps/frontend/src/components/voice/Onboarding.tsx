@@ -73,11 +73,11 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
           const pending = { ...withTimezone(next), live: false, onboardingStep: 5, goLiveRequested: true };
           await save(pending); setC(pending);
           setPaymentRequired(true);
-          setErr("Your setup is saved. Activate your voice plan in Settings: once it is paid, your assistant goes live and gets its number by itself.");
+          setErr("Your setup is saved. Start your plan in Settings. Once it's paid, your assistant gets its number and goes live on its own.");
         } catch { setErr("Couldn't save your setup. Try again before opening payment."); }
         return;
       }
-      setErr(status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved; try Go live again from the Agent page."
+      setErr(status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved. Try Go live again from the Agent page."
         : saveRefusal(e) ?? "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };
@@ -93,7 +93,7 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
     {step === 4 && <NumberStep {...props} />}
     {step === 5 && <NameStep {...props} />}
     {err && <p className="vx-save" data-err="true" role="alert" style={{ marginTop: 12 }}>{err}</p>}
-    {paymentRequired && <Button asChild variant="outline"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
+    {paymentRequired && <Button asChild variant="outline"><Link href="/voice/settings#voice-plan-heading">Start your plan</Link></Button>}
   </div>;
 }
 
@@ -117,7 +117,7 @@ function Business({ c, set, go, busy }: StepProps) {
     setReading(true); setNote("");
     try {
       const { draft } = (await api.post("/voice/onboarding/draft", { website: c.website.trim(), business: c.business ?? "", city: c.city ?? "" })) as { draft: Draft };
-      if (!draft.read) setNote("Couldn't open that site. Fill in the cards below; you can change them any time.");
+      if (!draft.read) setNote("We couldn't open that site. Fill in the cards below. You can change them any time.");
       await go(applyDraft(base, draft), 2);
     } catch {
       await go(base, 2);
@@ -133,9 +133,9 @@ function Business({ c, set, go, busy }: StepProps) {
         <input className="vx-field" maxLength={120} value={c.city ?? ""} placeholder="Austin, TX" autoComplete="address-level2" onChange={(e) => set({ city: e.target.value })} /></label>
       <label className="vx-label">Website
         <input className="vx-field" type="text" inputMode="url" maxLength={300} value={c.website ?? ""} placeholder="mayasnails.com" autoComplete="url" onChange={(e) => set({ website: e.target.value })} /></label>
-      <label className="vx-label">Your mobile, for hand-offs and alerts
+      <label className="vx-label">Your mobile, for callers who want a person
         <input className="vx-field" type="tel" maxLength={30} value={c.handoff.number} placeholder="(415) 555-0147" autoComplete="tel" onChange={(e) => set({ handoff: { ...c.handoff, number: e.target.value } })} /></label>
-      <p className="vx-hint">Add a number to let callers reach a person. You can add it later on the Agent page.</p>
+      <p className="vx-hint">When a caller asks for you, your assistant transfers the call here. Leave it empty and it takes a message instead. You can add it later on the Agent page.</p>
       {reading ? <p className="vx-reading" role="status">Reading {c.website}. This takes about a minute.</p>
         : note && <p className="vx-save" role="status">{note}</p>}
       <Foot back={null}><Button type="submit" disabled={busy || reading}>{c.website?.trim() ? "Read my site" : "Continue"}</Button></Foot>
@@ -175,9 +175,9 @@ function Bookings({ c, set, go, busy, back }: StepProps) {
     </label>;
   return <>
     <h1 className="vx-title">Where bookings go</h1>
-    <p className="vx-sub">Your assistant books into the calendar you already use, during the call.</p>
+    <p className="vx-sub">Your assistant books appointments during the call, into your Google Calendar or its own calendar.</p>
     <div className="vx-body" role="radiogroup" aria-label="Where bookings go">
-      {choice("google", "Google Calendar", google?.status === "connected" ? "Connected" : "Books straight into your calendar",
+      {choice("google", "Google Calendar", google?.status === "connected" ? "Connected" : "Books straight into your calendar. Google says it hasn't verified this app: choose Advanced, then continue.",
         google?.status === "connected" ? <span className="vx-tag" data-tone="ok">Connected</span>
           : <Button type="button" size="sm" variant="outline" disabled={connecting || !google} onClick={connect}>{connecting ? "Opening Google…" : "Connect"}</Button>)}
       {choice("own", "Just its own calendar for now", "You see every booking on Home; connect a calendar later")}
@@ -217,7 +217,7 @@ function NumberStep({ c, set, go, busy, back }: StepProps) {
     </label>;
   return <>
     <h1 className="vx-title">Your number</h1>
-    <p className="vx-sub">Callers reach your assistant on a number. Keep yours, or get a new one.</p>
+    <p className="vx-sub">Keep your business number and forward calls to your assistant, or get a new number for it.</p>
     <div className="vx-body">
       <div role="radiogroup" aria-label="Your number" style={{ display: "grid", gap: 8 }}>
         {pick("keep", "Keep my number", "Forward your calls to your assistant. Nothing to port.")}
@@ -248,7 +248,7 @@ function NumberStep({ c, set, go, busy, back }: StepProps) {
       </> : <>
         <label className="vx-label">Area code
           <input className="vx-field" inputMode="numeric" maxLength={3} value={area} placeholder="415" style={{ width: 120 }} onChange={(e) => setArea(e.target.value.replace(/\D/g, ""))} /></label>
-        <p className="vx-sub">Your new business line is ready at Go live; put it on your Google Business Profile and website.</p>
+        <p className="vx-sub">We get your new number when you go live, after your plan is paid. Then put it on your Google Business Profile and website.</p>
       </>}
       {err && <p className="vx-save" data-err="true" role="alert">{err}</p>}
     </div>
@@ -259,7 +259,7 @@ function NumberStep({ c, set, go, busy, back }: StepProps) {
 function NameStep({ c, set, go, busy, back }: StepProps) {
   const name = nameOf(c);
   return <>
-    <h1 className="vx-title">Name it, then try it</h1>
+    <h1 className="vx-title">Name your assistant</h1>
     <p className="vx-sub">Callers hear this name. In a meeting you say &ldquo;{name}, …&rdquo;.</p>
     <div className="vx-body">
       <label className="vx-label">What should callers call your assistant?

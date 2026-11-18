@@ -1,81 +1,59 @@
+import { VERTICALS } from "@/components/vertical/verticals";
 import { getAllPosts } from "@/content/blog";
-import { docsFaq, getAllDocs } from "@/content/docs";
-import { SITE_URL } from "@/lib/domain";
-import { getPricing, pricingInference } from "@/lib/pricing";
 import { COMPARE_PAGES } from "@/content/compare";
+import { getAllDocs } from "@/content/docs";
+import { SITE_URL } from "@/lib/domain";
+import { PRODUCT_FACTS, PRODUCT_SUMMARY } from "@/lib/seo";
 
 /**
- * `/llms.txt` — a Markdown index of the public site for answer engines and
- * LLM crawlers (the emerging llms.txt convention: an H1, a blockquote summary,
- * then link sections with one-line descriptions).
+ * `/llms.txt` — a Markdown index of the public site for answer engines (the
+ * llms.txt convention: an H1, a blockquote summary, then link sections).
  *
- * Generated from the SAME sources as `sitemap.ts` (`getAllDocs`, `getAllPosts`,
- * `COMPARE_PAGES`) so it cannot drift from what is actually published. Never
- * hand-maintain a list here — add the doc or post and it appears.
- *
- * Every factual claim below is verified against the product, not marketing
- * copy: the one plan's prices come from the billing API (`lib/pricing.getPricing`),
- * and the free tier is the
- * `trial_local` path — a 30-day no-card window on the server-selected free
- * model. There is no 14-day trial; it was removed 2026-07-17.
+ * Generated from the same sources as `sitemap.ts` so it cannot drift. The
+ * facts come from lib/seo.tsx, where every line is a VERIFIED claim; no price
+ * is typed here: the price lives in /pricing.md, which reads the billing API
+ * every 5 minutes, while this file is static.
  */
-export const revalidate = 300;
+export const dynamic = "force-static";
 
 function line(name: string, path: string, description: string) {
   return `- [${name}](${SITE_URL}${path}): ${description}`;
 }
 
-export async function GET() {
-  const p = await getPricing();
-  const docs = getAllDocs();
+export function GET() {
   const posts = getAllPosts();
-
   const body = [
     "# Lightbulb",
     "",
-    "> Lightbulb is messaging for people and their AI agents. The free, open-source Lightbulb network",
-    "> lets the coding agents people already run (Claude Code, Codex, Cursor, Grok CLI, OpenCode) message",
-    "> each other and the agents of people they invite, peer to peer and end-to-end encrypted, with no",
-    "> account. A Lightbulb workspace joins the network with agents that keep working when nobody is",
-    "> logged in: they have their own runtime, memory, email and tools, share channels and DMs with the",
-    "> team, and file approval cards before anything that spends, sends or deploys. Every new workspace",
-    "> starts with a six-role team (CEO, Engineering, Finance, Growth, Analytics, Customer Operations).",
+    `> ${PRODUCT_SUMMARY}`,
     "",
     "## Key facts",
     "",
-    "- Product site: " + SITE_URL,
-    `- Agent network: free, open source (Apache-2.0), no account. Install: curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh, or tell your agent "Join the Lightbulb network: ${SITE_URL}/network". Source: https://github.com/TheLightbulbCompany/cli`,
-    "- Free tier: no credit card, 30 days on the server-selected free model. The workspace sleeps when idle and wakes when opened.",
-    p
-      ? `- Team plan: $${p.teamPriceUsd}/month for the workspace and up to ${p.includedMembers} people, then $${p.seatPriceUsd}/month for each person after. One plan; details at ${SITE_URL}/pricing.`
-      : `- Team plan: one plan, a flat monthly price for the workspace and its first people, then a per-person price. Details at ${SITE_URL}/pricing.`,
-    `- ${pricingInference(p)}`,
-    "- Inference providers: Lightbulb-managed models (DeepSeek within a daily allowance; more via prepaid credits) or your ChatGPT account via OAuth. Saved BYO keys remain supported only for existing workspaces already configured to use them.",
-    "- Surfaces: the lightbulb command (macOS, Linux; WSL on Windows), web app, a macOS desktop app, and an iOS app.",
+    ...PRODUCT_FACTS.map((f) => `- ${f}`),
     "",
-    "## Documentation",
+    "## Pages",
     "",
-    ...docs.map((doc) => line(doc.title, `/docs/${doc.slug}`, doc.description)),
-    line("Docs index", "/docs", "All documentation pages plus common questions about Lightbulb."),
-    "",
-    "## Blog",
-    "",
-    ...posts.map((post) => line(post.title, `/blog/${post.slug}`, post.description)),
-    line("Blog index", "/blog", "Writing on AI employees and the teams that work with them."),
+    line("Home", "/", "What the AI receptionist does and how to set it up."),
+    ...VERTICALS.map((v) => line(v.h1, v.path, v.description)),
+    line("Pricing", "/pricing", "The monthly plan for one business."),
+    line("What happens to your data", "/security", "Where data is kept, which providers see it, and what we don't claim."),
     "",
     "## Comparisons",
     "",
     ...COMPARE_PAGES.map((page) => line(page.h1, page.path, page.description)),
-    line("All comparisons", "/compare", "Lightbulb next to Slack, Microsoft Teams with Copilot, Grok Bot, Bloome and the tools for sharing Claude Code sessions."),
+    line("All comparisons", "/compare", "An AI receptionist next to voicemail, a front desk receptionist and a human answering service."),
     "",
-    "## Common questions",
+    ...(posts.length
+      ? ["## Blog", "", ...posts.map((post) => line(post.title, `/blog/${post.slug}`, post.description)), ""]
+      : []),
+    "## Developer network (a separate, free tool)",
     "",
-    ...docsFaq.map((item) => `- **${item.question}** ${item.answer}`),
+    line("Lightbulb network", "/network", "A free command that lets coding agents message each other, peer to peer and end-to-end encrypted."),
+    ...getAllDocs().map((doc) => line(doc.title, `/docs/${doc.slug}`, doc.description)),
     "",
     "## Optional",
     "",
-    line("Full text of every doc and post", "/llms-full.txt", "One file containing the complete Markdown of all documentation and blog posts."),
-    line("Blog feed", "/blog/rss.xml", "RSS feed of new posts."),
+    line("Full text", "/llms-full.txt", "The facts, trade pages, comparisons and every network doc in one file."),
     "",
   ].join("\n");
 

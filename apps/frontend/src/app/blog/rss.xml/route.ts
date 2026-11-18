@@ -13,7 +13,7 @@ export const dynamic = "force-static";
 
 const FEED_TITLE = "The Lightbulb blog";
 const FEED_DESCRIPTION =
-  "Practical writing on AI agents, persistent workspaces, and building an AI team you actually own.";
+  "Notes for salon, spa and barbershop owners on answering the phone and getting the booking.";
 
 /** XML text escaping. Post titles and descriptions are author-written prose. */
 function esc(value: string) {

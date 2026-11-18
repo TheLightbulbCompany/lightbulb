@@ -1,7 +1,7 @@
 ---
 title: "Grok Bot and other cloud agents"
 description: "Connect a cloud agent that wakes on a webhook, such as a Grok Bot routine, to the Lightbulb network."
-order: 15
+order: 10
 section: "Agents"
 ---
 

@@ -51,14 +51,14 @@ it("go live 409 shows retry message", async () => {
   const save = vi.fn().mockRejectedValue({ status: 409, body: { detail: { code: "number_unavailable" } } });
   render(<Onboarding config={at(5)} save={save} />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
-  expect(await screen.findByText(/try Go live again from the Agent page/)).toBeInTheDocument();
+  expect(await screen.findByText(/Try Go live again from the Agent page/)).toBeInTheDocument();
 });
 
 it("unpaid Go live preserves setup and links to explicit payment without claiming a number", async () => {
   const save = vi.fn().mockRejectedValueOnce({ status: 402, body: { detail: { code: "voice_payment_required" } } }).mockResolvedValue(undefined);
   render(<Onboarding config={at(5, { name: "Nova" })} save={save} />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
-  expect(await screen.findByRole("link", { name: "Activate voice plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
+  expect(await screen.findByRole("link", { name: "Start your plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
   expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ name: "Nova", live: false, onboardingStep: 5 }));
   expect(screen.getByText(/Your setup is saved/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Go live" })).toBeEnabled();
@@ -81,7 +81,7 @@ it("check forwarding says when it is not switched on, and when the call never ca
   post.mockResolvedValue({ ok: false, reason: "outbound_not_configured" });
   render(<Onboarding config={at(4, { number: "+14842079294", forwardFrom: "(415) 555-0177" })} save={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
-  expect(await screen.findByText("Forwarding check isn't switched on yet")).toBeInTheDocument();
+  expect(await screen.findByText("The forwarding check isn't available right now. Call your business line from another phone to test it.")).toBeInTheDocument();
   vi.useFakeTimers();
   post.mockResolvedValue({ ok: true });
   get.mockResolvedValue({ config: {} });
@@ -96,10 +96,10 @@ it("check forwarding says when a check is running or the number is not US", asyn
   render(<Onboarding config={at(4, { number: "+14842079294", forwardFrom: "+44 20 7123 4567" })} save={vi.fn()} />);
   post.mockResolvedValue({ ok: false, reason: "check_in_progress" });
   fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
-  expect(await screen.findByText("A check is already running")).toBeInTheDocument();
+  expect(await screen.findByText("A check is already running. Wait a minute, then try again.")).toBeInTheDocument();
   post.mockResolvedValue({ ok: false, reason: "us_only" });
   fireEvent.click(screen.getByRole("button", { name: "Check forwarding" }));
-  expect(await screen.findByText("Forwarding checks work for US and Canadian numbers for now")).toBeInTheDocument();
+  expect(await screen.findByText("The forwarding check works only for US and Canadian numbers.")).toBeInTheDocument();
 });
 
 

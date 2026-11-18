@@ -85,7 +85,7 @@ export default function MeetBotPage() {
         void (room as Room | null)?.disconnect();
         await sleep(BACKOFF_MS[Math.min(fails, BACKOFF_MS.length) - 1] ?? BACKOFF_MS[0]);
       }
-      if (!stop) setNotice("Couldn't reach the agents.");
+      if (!stop) setNotice("Couldn't reach the assistant.");
     })();
 
     return () => { stop = true; void room?.disconnect(); };

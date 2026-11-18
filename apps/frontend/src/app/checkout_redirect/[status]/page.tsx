@@ -25,7 +25,7 @@ import { DEEP_LINK_SCHEME } from "@/lib/domain";
  */
 
 export const metadata: Metadata = {
-  title: "Checkout — Lightbulb",
+  title: "Checkout | Lightbulb",
   // Nothing here should ever be indexed: these URLs are per-transaction
   // return targets, not content.
   robots: { index: false, follow: false },
@@ -34,7 +34,7 @@ export const metadata: Metadata = {
 const COPY: Record<string, { heading: string; body: string }> = {
   success: {
     heading: "You're subscribed.",
-    body: "Payment received. Your plan is active — head back to the Lightbulb app and your agents will pick it up within a few seconds.",
+    body: "Payment received. Your plan is active. Head back to the Lightbulb app; it shows there within a few seconds.",
   },
   cancel: {
     heading: "Checkout cancelled.",
@@ -46,7 +46,7 @@ const COPY: Record<string, { heading: string; body: string }> = {
   // sends the user back to the app instead of into the web workspace.
   connected: {
     heading: "Connected.",
-    body: "Your connection is ready. Head back to the Lightbulb app — your agents can use it now.",
+    body: "Your connection is ready. Head back to the Lightbulb app; your assistant can use it now.",
   },
   connect_failed: {
     heading: "Connection failed.",
@@ -55,7 +55,7 @@ const COPY: Record<string, { heading: string; body: string }> = {
 
   portal: {
     heading: "Billing updated.",
-    body: "Any changes you made have been saved. Head back to the Lightbulb app — your plan will reflect them within a few seconds.",
+    body: "Any changes you made have been saved. Head back to the Lightbulb app; your plan shows them within a few seconds.",
   },
 };
 

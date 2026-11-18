@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { GET as llms } from "@/app/llms.txt/route";
 import { GET as llmsFull } from "@/app/llms-full.txt/route";
@@ -7,6 +7,9 @@ import { getAllPosts } from "@/content/blog";
 import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
 import { COMPARE_PAGES } from "@/content/compare";
+import { VERTICALS } from "@/components/vertical/verticals";
+import sitemap from "@/app/sitemap";
+import { BANNED } from "@/content/__tests__/bannedCopy";
 
 /**
  * These three routes are GENERATED from the same content sources as
@@ -17,18 +20,6 @@ import { COMPARE_PAGES } from "@/content/compare";
 async function body(res: Response | Promise<Response>) {
   return (await res).text();
 }
-
-const json = (body: unknown) => new Response(JSON.stringify(body));
-
-// /llms.txt reads the plan's price from the billing API (lib/pricing.getPricing).
-beforeEach(() => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () =>
-      json({ workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2" }),
-    ),
-  );
-});
 
 describe("/llms.txt", () => {
   it("lists every doc, post, and landing page with an absolute URL", async () => {
@@ -53,21 +44,23 @@ describe("/llms.txt", () => {
     expect(text).toContain("\n> ");
   });
 
-  it("states the plan facts the backend actually charges", async () => {
+  it("states the receptionist's facts with no price, trial or old-product claim", async () => {
     const text = await body(llms());
-    // The one plan, priced by the billing API. Base and Ultra are retired: never quote them again.
-    expect(text).toContain("Team plan: $50/month for the workspace and up to 5 people, then $20/month");
-    expect(text).not.toMatch(/Ultra|Base plan|vCPU/);
-    expect(text).toContain("server-selected free model");
-    expect(text).toContain("30 days");
-    // The 14-day trial was removed in 2026-07; never reintroduce the claim.
-    expect(text).not.toMatch(/14[- ]day/i);
+    const product = text.slice(0, text.indexOf("## Developer network"));
+    expect(product).toContain("AI receptionist");
+    for (const v of VERTICALS) expect(product).toContain(`${SITE_URL}${v.path}`);
+    expect(product).toContain("There is no free trial");
+    // Only the developer section may say "agents"; no price is ever typed.
+    expect(product.replace("There is no free trial", "").match(BANNED)?.[0]).toBeUndefined();
+    expect(text).not.toMatch(/six|AI employees|CEO|seat/i);
   });
 });
 
 describe("/llms-full.txt", () => {
-  it("carries the full markdown body of every doc and post", async () => {
+  it("carries every trade page, comparison, and the full markdown of every doc and post", async () => {
     const text = await body(llmsFull());
+    for (const v of VERTICALS) for (const f of v.faq) expect(text).toContain(f.a);
+    for (const p of COMPARE_PAGES) expect(text).toContain(p.intro);
     for (const doc of getAllDocs()) {
       expect(text).toContain(doc.content.trim().slice(0, 60));
     }
@@ -77,22 +70,36 @@ describe("/llms-full.txt", () => {
   });
 });
 
+describe("/sitemap.xml", () => {
+  it("lists the trade pages and comparisons, and none of the retired pages", () => {
+    const urls = sitemap().map((e) => e.url);
+    for (const v of VERTICALS) expect(urls).toContain(`${SITE_URL}${v.path}`);
+    for (const p of COMPARE_PAGES) expect(urls).toContain(`${SITE_URL}${p.path}`);
+    expect(urls).toContain(`${SITE_URL}/network`);
+    expect(urls).toContain(`${SITE_URL}/docs`);
+    expect(urls).toContain(`${SITE_URL}/request-setup`);
+    for (const gone of ["/compare/slack", "/docs/get-started"]) {
+      expect(urls).not.toContain(`${SITE_URL}${gone}`);
+    }
+    expect(new Set(urls).size).toBe(urls.length);
+  });
+});
+
 describe("/blog/rss.xml", () => {
   it("emits one well-formed item per post, newest first", async () => {
     const res = rss();
     expect(res.headers.get("Content-Type")).toMatch(/^application\/rss\+xml/);
     const text = await body(res);
     const posts = getAllPosts();
-    expect(text.match(/<item>/g)).toHaveLength(posts.length);
+    expect(text.match(/<item>/g) ?? []).toHaveLength(posts.length);
     expect(text).toContain(`<atom:link href="${SITE_URL}/blog/rss.xml"`);
     for (const post of posts) {
       expect(text).toContain(`<guid isPermaLink="true">${SITE_URL}/blog/${post.slug}</guid>`);
     }
     // Newest-first ordering is what a reader shows at the top.
-    const first = text.indexOf(`/blog/${posts[0].slug}<`);
-    const second = text.indexOf(`/blog/${posts[1].slug}<`);
-    expect(first).toBeGreaterThan(-1);
-    expect(first).toBeLessThan(second);
+    if (posts.length > 1) {
+      expect(text.indexOf(`/blog/${posts[0].slug}<`)).toBeLessThan(text.indexOf(`/blog/${posts[1].slug}<`));
+    }
   });
 
   it("escapes XML metacharacters in titles and descriptions", async () => {

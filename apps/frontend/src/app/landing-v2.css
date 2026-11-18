@@ -1,5 +1,5 @@
 /**
- * Landing redesign — the messaging-workspace direction.
+ * Marketing pages: the homepage and the pages that share its chrome.
  *
  * SCOPE: every rule here is nested under `.ld-page`, which wraps the landing,
  * /docs, /blog and /compare — and deliberately NOT /chat, teams or admin.
@@ -140,7 +140,7 @@
 .ld-page .lb-tick { display: flex; align-items: center; gap: 0.42rem; font-size: 0.86rem; color: var(--lb-ink-mute); }
 .ld-page .lb-tick i { width: 15px; height: 15px; border-radius: 50%; background: var(--cream-deeper); display: grid; place-items: center; }
 
-/* the product: a light ground with one framed copy of the /chat workspace.
+/* the product: a light ground with one framed copy of the owner's Home.
    The window is a fixed-size layout scaled by its column, so it reads as a
    screenshot at every width instead of reflowing like a page. */
 .ld-page .lb-art {
@@ -158,112 +158,47 @@
 @media (prefers-reduced-motion: reduce) {
   .ld-page .lb-app { animation: none; opacity: 1; transform: none; }
 }
-.ld-page .lb-app svg { width: 13px; height: 13px; stroke-width: 1.8; flex: 0 0 auto; }
-.ld-page .lb-app-cols { display: grid; grid-template-columns: 52px 168px 1fr; min-height: 440px; }
-
-.ld-page .lb-app-rail { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.6rem 0; background: var(--cream-deep); border-right: 1px solid var(--rule); }
-.ld-page .lb-app-rail span { position: relative; display: flex; flex-direction: column; align-items: center; gap: 0.12rem; width: 40px; padding: 0.32rem 0; border-radius: 7px; color: var(--lb-ink-mute); }
-.ld-page .lb-app-rail span.on { background: var(--cream-deeper); color: var(--lb-ink); }
-.ld-page .lb-app-rail svg { width: 15px; height: 15px; }
-.ld-page .lb-app-rail small { font-size: 0.52rem; }
-.ld-page .lb-app-rail em { position: absolute; top: 1px; right: 7px; font-style: normal; font-size: 0.5rem; font-weight: 700; min-width: 11px; height: 11px; border-radius: 6px; display: grid; place-items: center; background: var(--midnight); color: var(--cream); }
-
-.ld-page .lb-app-sb { padding: 0.55rem 0.5rem; border-right: 1px solid var(--rule); font-size: 0.7rem; color: var(--lb-ink-mute); }
-.ld-page .lb-app-org { display: flex; align-items: center; gap: 0.2rem; font-weight: 700; font-size: 0.78rem; color: var(--lb-ink); padding: 0.1rem 0.3rem 0.5rem; border-bottom: 1px solid var(--rule); margin-bottom: 0.45rem; }
-.ld-page .lb-app-sbh { display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: var(--lb-ink); padding: 0 0.3rem 0.3rem; }
-.ld-page .lb-app-sb p { display: flex; align-items: center; gap: 0.2rem; margin: 0.4rem 0 0.15rem; padding: 0 0.15rem; font-size: 0.62rem; color: var(--lb-ink-faint); }
-.ld-page .lb-app-sb p svg { width: 10px; height: 10px; }
-.ld-page .lb-app-ch { display: flex; align-items: center; gap: 0.3rem; padding: 0.22rem 0.4rem; border-radius: 5px; }
-.ld-page .lb-app-ch.on { background: var(--cream-deeper); color: var(--lb-ink); font-weight: 600; }
-.ld-page .lb-app-note { padding: 0.1rem 0.4rem 0.3rem; font-size: 0.62rem; color: var(--lb-ink-faint); }
-
-.ld-page .lb-app-main { display: flex; flex-direction: column; min-width: 0; }
-.ld-page .lb-app-top { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--rule); }
-.ld-page .lb-app-top b { font-size: 0.86rem; margin-right: auto; }
-.ld-page .lb-app-search { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.68rem; color: var(--lb-ink-mute); }
-.ld-page .lb-app-feed { flex: 1; padding: 0.7rem 0.8rem 0.3rem; }
-.ld-page .lb-app-intro { display: flex; flex-direction: column; gap: 0.2rem; padding-bottom: 0.55rem; margin-bottom: 0.25rem; border-bottom: 1px solid var(--rule); }
-.ld-page .lb-app-intro b { font-size: 0.86rem; color: var(--lb-ink); }
-.ld-page .lb-app-intro span { font-size: 0.7rem; line-height: 1.45; color: var(--lb-ink-mute); }
-.ld-page .lb-app .lb-tx { font-size: 0.8rem; }
-.ld-page .lb-app .lb-ask { max-width: 300px; }
-.ld-page .lb-app-compose { margin: 0.3rem 0.7rem 0.7rem; border: 1px solid var(--rule); border-radius: 8px; }
-.ld-page .lb-app-tools { display: flex; gap: 0.55rem; padding: 0.35rem 0.55rem; border-bottom: 1px solid var(--rule); color: var(--lb-ink-mute); }
-.ld-page .lb-app-tools svg { width: 11px; height: 11px; }
-.ld-page .lb-app-input { display: flex; align-items: center; justify-content: space-between; padding: 0.45rem 0.55rem; font-size: 0.7rem; color: var(--lb-ink-faint); }
+/* The owner's Home (voice/VoiceHome.tsx): the call list left, one call open right. */
+.ld-page .lb-home { display: grid; grid-template-columns: minmax(0,1.05fr) minmax(0,1fr); min-height: 420px; }
+.ld-page .lb-home-list { border-right: 1px solid var(--rule); }
+.ld-page .lb-app-top { display: flex; align-items: center; gap: 0.7rem; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); }
+.ld-page .lb-app-top b { font-size: 0.86rem; }
+.ld-page .lb-calls { list-style: none; margin: 0; padding: 0.4rem; display: grid; gap: 0.15rem; }
+.ld-page .lb-calls li { display: grid; grid-template-columns: 3.7rem minmax(0,1fr); gap: 0.25rem 0.5rem; padding: 0.55rem 0.55rem; border-radius: 8px; font-size: 0.78rem; line-height: 1.42; color: var(--lb-ink-soft); }
+.ld-page .lb-calls li.on { background: var(--cream-deeper); color: var(--lb-ink); }
+.ld-page .lb-calls time { grid-row: span 2; font-size: 0.7rem; color: var(--lb-ink-faint); padding-top: 0.12rem; font-variant-numeric: tabular-nums; }
+.ld-page .lb-calls .lb-tag { justify-self: start; }
+.ld-page .lb-home-pane { padding: 0.75rem 0.95rem 0.9rem; font-size: 0.78rem; line-height: 1.45; color: var(--lb-ink-soft); }
+.ld-page .lb-home-pane > b { display: block; font-size: 0.88rem; color: var(--lb-ink); }
+.ld-page .lb-home-pane h4 { margin: 0.95rem 0 0.4rem; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--lb-ink-faint); }
+.ld-page .lb-home-pane ol { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.25rem; }
+.ld-page .lb-home-pane p { margin: 0 0 0.4rem; }
+.ld-page .lb-home-pane p b { color: var(--lb-ink); margin-right: 0.4rem; }
+.ld-page .lb-tag.warn { border-color: var(--brass); color: var(--lb-ink); }
 
 @media (max-width: 900px) {
   .ld-page .lb-hero { grid-template-columns: 1fr; min-height: 0; }
   .ld-page .lb-hero-copy { padding: clamp(34px, 8vw, 56px) var(--lb-edge); }
   .ld-page .lb-art { border-left: 0; border-top: 1px solid var(--rule); }
 }
-/* phones: the sidebar would crush the conversation, so the window keeps the rail + channel only */
+/* phones: the open call would crush the list, so the window keeps the list only */
 @media (max-width: 620px) {
-  .ld-page .lb-app-cols { grid-template-columns: 44px 1fr; min-height: 0; }
-  .ld-page .lb-app-sb, .ld-page .lb-app-search { display: none; }
-  .ld-page .lb-app-rail span { width: 34px; }
+  .ld-page .lb-home { grid-template-columns: 1fr; min-height: 0; }
+  .ld-page .lb-home-list { border-right: 0; }
+  .ld-page .lb-home-pane { display: none; }
 }
 
-/* ---------- the fake workspace used inside hero + band ---------- */
+/* ---------- pieces shared by the product copies on the page ---------- */
 .ld-page .lb-ui { font-size: 0.86rem; }
 .ld-page .lb-wbar { display: flex; align-items: center; gap: 0.34rem; padding: 0.4rem 0.55rem; background: var(--cream-deep); border-bottom: 1px solid var(--rule); }
 .ld-page .lb-wbar i { width: 7px; height: 7px; border-radius: 50%; background: var(--cream-deeper); display: block; }
-.ld-page .lb-cols { display: grid; grid-template-columns: 84px 1fr; }
-.ld-page .lb-sb { background: var(--cream-deep); border-right: 1px solid var(--rule); padding: 0.36rem 0.26rem; }
-.ld-page .lb-sb div { display: flex; align-items: center; gap: 0.28rem; font-size: 0.64rem; color: var(--lb-ink-mute); padding: 0.16rem 0.24rem; border-radius: 4px; }
-.ld-page .lb-sb div.on { background: var(--cream-deeper); color: var(--lb-ink); font-weight: 700; }
-.ld-page .lb-sb p { font-size: 0.54rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--lb-ink-faint); padding: 0.32rem 0.24rem 0.12rem; margin: 0; }
-.ld-page .lb-pane { padding: 0.45rem 0.58rem 0.5rem; }
-.ld-page .lb-ct { display: flex; align-items: center; gap: 0.28rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--rule); margin-bottom: 0.3rem; }
-.ld-page .lb-ct b { font-family: var(--font-lora-serif), Georgia, serif; font-size: 0.82rem; font-weight: 500; }
-.ld-page .lb-hash { color: var(--lb-ink-faint); font-weight: 500; }
-.ld-page .lb-lamp { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
-.ld-page .lb-lamp.on { background: var(--bulb); }
-.ld-page .lb-lamp.dim { background: var(--brass); }
-.ld-page .lb-lamp.out { background: transparent; border: 1.4px solid color-mix(in srgb, var(--midnight) 32%, transparent); }
-.ld-page .lb-m { display: flex; gap: 0.6rem; padding: 0.34rem 0; }
 .ld-page .lb-av { width: 28px; height: 28px; border-radius: 7px; flex: 0 0 auto; display: grid; place-items: center; font-size: 0.68rem; font-weight: 700; }
 .ld-page .lb-av.hu { background: var(--cream-deeper); color: var(--lb-ink-soft); }
 .ld-page .lb-av.ag { background: #0f1a2b; color: #f0c34e; border: 1px solid color-mix(in srgb, #b68235 55%, transparent); }
-.ld-page .lb-mh { display: flex; align-items: center; gap: 0.4rem; line-height: 1.2; }
-.ld-page .lb-mh b { font-size: 0.855rem; }
-.ld-page .lb-mh time { font-size: 0.7rem; color: var(--lb-ink-faint); }
-.ld-page .lb-tag { font-size: 0.66rem; font-weight: 700; letter-spacing: 0.03em; color: var(--brass); border: 1px solid var(--rule); border-radius: 4px; padding: 0 0.26rem; text-transform: uppercase; }
-.ld-page .lb-tx { font-family: var(--font-lora-serif), Georgia, serif; font-size: 0.9rem; line-height: 1.5; color: var(--lb-ink-soft); margin: 0.1rem 0 0; }
-.ld-page .lb-at { color: var(--brass); font-weight: 600; font-family: inherit; }
-.ld-page .lb-reacts { display: flex; gap: 0.3rem; margin-top: 0.34rem; }
-.ld-page .lb-re { display: inline-flex; align-items: center; gap: 0.22rem; font-size: 0.72rem; border: 1px solid var(--rule); border-radius: 999px; padding: 0.06rem 0.4rem; color: var(--lb-ink-mute); background: var(--cream-deep); }
-.ld-page .lb-run { margin-top: 0.4rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--cream-deep); overflow: hidden; }
-.ld-page .lb-run-h { display: flex; align-items: center; gap: 0.4rem; padding: 0.36rem 0.55rem; border-bottom: 1px solid var(--rule); font-size: 0.76rem; color: var(--lb-ink-mute); }
-.ld-page .lb-run-b { padding: 0.4rem 0.55rem; font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 0.72rem; color: var(--lb-ink-mute); line-height: 1.65; }
-.ld-page .lb-run-b s { text-decoration: none; color: var(--brass); }
-.ld-page .lb-ask { margin-top: 0.4rem; border: 1px solid var(--brass); border-radius: 8px; padding: 0.5rem 0.6rem; background: var(--cream-deep); }
-.ld-page .lb-ask p { font-size: 0.8rem; color: var(--lb-ink-soft); line-height: 1.45; margin: 0; }
+.ld-page .lb-tag { font-size: 0.66rem; font-weight: 700; letter-spacing: 0.03em; color: var(--lb-ink-mute); border: 1px solid var(--rule); border-radius: 4px; padding: 0 0.26rem; text-transform: uppercase; }
 .ld-page .lb-ask-r { display: flex; gap: 0.4rem; margin-top: 0.45rem; }
 .ld-page .lb-ask-r span { display: inline-flex; align-items: center; font-size: 0.76rem; font-weight: 600; padding: 0.26rem 0.7rem; border-radius: 6px; border: 1px solid var(--rule); background: var(--cream); color: var(--lb-ink); }
 .ld-page .lb-ask-r span.y { background: var(--midnight); color: var(--cream); border-color: var(--midnight); }
-.ld-page .lb-faces { display: flex; }
-.ld-page .lb-face { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--cream); margin-left: -6px; display: grid; place-items: center; font-size: 0.6rem; font-weight: 700; background: var(--cream-deeper); color: var(--lb-ink-soft); }
-.ld-page .lb-face.ag { background: #0f1a2b; color: #f0c34e; border-color: color-mix(in srgb, #b68235 55%, transparent); }
-
-/* ---------- proof band ----------
-   Ground + hairlines only: the band is a beat between the hero and the steps,
-   so it borrows `--cream-deep` (the steps' own ground) and separates with the
-   same `--rule` hairline every other boundary uses. No new surface step.
-
-   The figure reuses `.lb-price-hero`'s idiom (Lora, superscript unit, tight
-   tracking) at a smaller size, so it reads as a sibling of the price without
-   competing with it. */
-.ld-page .lb-proof { background: var(--cream-deep); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: clamp(44px,4.8vw,72px) 0; }
-.ld-page .lb-proof-line {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-weight: 400; text-align: center; color: var(--lb-ink);
-  font-size: clamp(1.5rem, 2.3vw, 2.25rem); line-height: 1.22;
-  letter-spacing: -0.004em; margin: 0 auto; max-width: 30ch;
-}
-/* `white-space: nowrap` so the amount can never wrap away from its own $. */
-.ld-page .lb-proof-line b { font-weight: 500; letter-spacing: -0.012em; white-space: nowrap; }
-.ld-page .lb-proof-line b sup { font-size: 0.55em; line-height: 1; vertical-align: baseline; position: relative; top: -0.42em; font-weight: 400; margin-right: 0.02em; }
 
 /* ---------- how it works ---------- */
 .ld-page .lb-steps { background: var(--cream-deep); border-top: 1px solid var(--rule); padding: clamp(64px,7vw,108px) 0 clamp(70px,8vw,116px); }
@@ -275,9 +210,6 @@
 .ld-page .lb-card-b { padding: 1.35rem 1.3rem 1.55rem; text-align: center; }
 .ld-page .lb-card-b h3 { font-family: var(--font-lora-serif), Georgia, serif; font-weight: 500; font-size: 1.16rem; letter-spacing: -0.003em; margin: 0 0 0.45rem; }
 .ld-page .lb-card-b p { font-size: 0.9rem; line-height: 1.58; color: var(--lb-ink-mute); max-width: 34ch; margin: 0 auto; }
-.ld-page .lb-pill { position: absolute; background: var(--cream); border-radius: 999px; box-shadow: 0 14px 30px -12px rgba(4,8,22,0.7); border: 1px solid rgba(255,255,255,0.5); }
-.ld-page .lb-pill-in { left: 50%; top: 50%; transform: translate(-50%,-50%); display: flex; align-items: center; gap: 0.5rem; padding: 0.62rem 1.15rem; font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 0.88rem; color: var(--lb-ink); }
-.ld-page .lb-pill-in b { width: 19px; height: 19px; border-radius: 50%; background: var(--cream-deeper); display: grid; place-items: center; font-size: 0.72rem; color: var(--lb-ink-mute); font-weight: 700; }
 .ld-page .lb-rows { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 78%; display: flex; flex-direction: column; gap: 0.5rem; }
 .ld-page .lb-row3 { display: flex; align-items: center; gap: 0.6rem; background: var(--cream); border-radius: 11px; padding: 0.5rem 0.6rem; box-shadow: 0 14px 30px -14px rgba(4,8,22,0.7); border: 1px solid rgba(255,255,255,0.5); }
 .ld-page .lb-who3 { flex: 1; min-width: 0; }
@@ -293,37 +225,6 @@
 .ld-page .lb-compose-f { display: flex; align-items: center; gap: 0.45rem; padding-top: 0.5rem; }
 .ld-page .lb-compose-f i { width: 15px; height: 15px; border-radius: 3px; background: var(--cream-deeper); display: block; }
 .ld-page .lb-send { margin-left: auto; font-size: 0.74rem; font-weight: 700; background: var(--midnight); color: var(--cream); border-radius: 6px; padding: 0.26rem 0.7rem; }
-
-/* ---------- workspace band ---------- */
-.ld-page .lb-platform { background: var(--cream); padding: clamp(60px,7vw,104px) 0 clamp(64px,7vw,108px); position: relative; }
-.ld-page .lb-platform::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.5; background-image: radial-gradient(var(--rule) 1px, transparent 1px); background-size: 22px 22px; }
-.ld-page .lb-platform .lb-wrap { position: relative; }
-.ld-page .lb-platform-cta { display: flex; justify-content: center; margin-top: 1.9rem; padding-bottom: clamp(44px,5vw,76px); }
-/* the band carries the artwork's own 1158x998 ratio, so nothing crops, and it
-   never exceeds the file's native width, so nothing upscales */
-.ld-page .lb-band { position: relative; width: min(1158px, 88vw); margin: 0 auto; border-radius: 20px; overflow: hidden; aspect-ratio: 1158/998; display: flex; align-items: center; justify-content: center; background: #120e1c; box-shadow: 0 40px 80px -46px rgba(15,26,43,0.55); }
-.ld-page .lb-band > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.ld-page .lb-frame { position: relative; z-index: 2; width: min(808px, 86%); aspect-ratio: 16/10; border-radius: 14px; overflow: hidden; background: var(--cream); border: 1px solid rgba(255,255,255,0.35); box-shadow: 0 40px 80px -30px rgba(4,8,22,0.85); }
-.ld-page .lb-mock { position: absolute; inset: 0; display: grid; grid-template-columns: 170px 1fr 200px; grid-template-rows: minmax(0,1fr); font-size: 0.72rem; }
-@media (max-width: 900px) { .ld-page .lb-mock { grid-template-columns: 1fr; } .ld-page .lb-mock .lb-mrail, .ld-page .lb-mock .lb-mside { display: none; } }
-.ld-page .lb-mrail { background: var(--cream-deep); border-right: 1px solid var(--rule); padding: 0.7rem 0.5rem; overflow: hidden; }
-.ld-page .lb-mws { display: flex; align-items: center; gap: 0.45rem; padding: 0.3rem 0.4rem 0.7rem; }
-.ld-page .lb-mws i { width: 20px; height: 20px; border-radius: 6px; background: #0f1a2b; color: #f0c34e; display: grid; place-items: center; font-size: 0.6rem; font-weight: 700; }
-.ld-page .lb-mh2 { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--lb-ink-faint); padding: 0.6rem 0.4rem 0.25rem; margin: 0; }
-.ld-page .lb-mi { display: flex; align-items: center; gap: 0.42rem; padding: 0.24rem 0.4rem; border-radius: 5px; color: var(--lb-ink-mute); font-size: 0.79rem; }
-.ld-page .lb-mi.on { background: var(--cream-deeper); color: var(--lb-ink); font-weight: 600; }
-.ld-page .lb-mi .n { margin-left: auto; font-size: 0.64rem; font-weight: 700; background: var(--midnight); color: var(--cream); border-radius: 999px; padding: 0 0.3rem; }
-.ld-page .lb-mmain { display: flex; flex-direction: column; background: var(--cream); min-width: 0; min-height: 0; }
-.ld-page .lb-mtop { display: flex; align-items: center; gap: 0.45rem; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); }
-.ld-page .lb-mtop b { font-family: var(--font-lora-serif), Georgia, serif; font-size: 0.92rem; font-weight: 600; }
-.ld-page .lb-mfeed { flex: 1; min-height: 0; padding: 0.5rem 0.8rem; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
-.ld-page .lb-mcomp { margin: 0 0.8rem 0.7rem; border: 1px solid var(--rule); border-radius: 9px; background: var(--cream-deep); padding: 0.5rem 0.6rem; color: var(--lb-ink-faint); font-size: 0.78rem; }
-.ld-page .lb-mside { background: var(--cream-deep); border-left: 1px solid var(--rule); padding: 0.7rem 0.6rem; overflow: hidden; }
-.ld-page .lb-mcard { background: var(--cream); border: 1px solid var(--rule); border-radius: 9px; padding: 0.5rem 0.55rem; margin-bottom: 0.5rem; }
-.ld-page .lb-mcard b { display: block; font-size: 0.76rem; margin-bottom: 0.2rem; }
-.ld-page .lb-mcard p { font-size: 0.7rem; color: var(--lb-ink-mute); line-height: 1.45; margin: 0; }
-.ld-page .lb-mbar { height: 5px; border-radius: 3px; background: var(--cream-deeper); margin-top: 0.4rem; overflow: hidden; }
-.ld-page .lb-mbar i { display: block; height: 100%; background: var(--bulb); width: 62%; }
 
 /* ---------- pricing ---------- */
 .ld-page .lb-pricing { background: var(--cream-deep); border-top: 1px solid var(--rule); padding: clamp(64px,7vw,104px) 0 clamp(72px,8vw,116px); }
@@ -381,97 +282,52 @@
 .ld-page .lb-foot-col a:hover { color: #fff; }
 .ld-page .lb-foot-base { position: relative; display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-top: clamp(44px,5vw,72px); padding-top: 1.3rem; border-top: 1px solid rgba(255,255,255,0.16); font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.5); }
 
-/* ---------- ask ai ----------
-   The closer: copy left, provider tiles right. Sits on --cream because pricing
-   above it is --cream-deep and the footer below is the dark gradient.
-   NOTE the prefix is `lb-askai`, not `lb-ask` — `.lb-ask` is already the
-   approval card inside the fake workspace UI further up this file. */
-.ld-page .lb-askai { background: var(--cream); border-top: 1px solid var(--rule); padding: clamp(56px,6vw,92px) 0 clamp(44px,5vw,72px); }
-.ld-page .lb-askai-in { max-width: var(--lb-maxw); margin: 0 auto; padding: 0 var(--lb-edge); display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.08fr); gap: clamp(32px,5vw,84px); align-items: center; }
-/* .lb-eyebrow and .lb-h2 are centred where pricing and the steps use them;
-   this section is the left-aligned split, so it opts out for its own column. */
-.ld-page .lb-askai-copy { text-align: left; }
-.ld-page .lb-askai-copy .lb-eyebrow, .ld-page .lb-askai-copy .lb-h2 { text-align: left; }
-.ld-page .lb-askai-copy .lb-h2 { margin-top: 0.5rem; }
-.ld-page .lb-askai-sub { font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-mute); margin: 1rem 0 0; max-width: 46ch; }
-
-/* The 1px gap over a --rule ground is what draws the hairline grid: each tile
-   paints its own --cream back over it, leaving only the seams showing. */
-.ld-page .lb-askai-grid {
-  display: grid; grid-template-columns: repeat(3,1fr);
-  gap: 1px; background: var(--rule);
-  border: 1px solid var(--rule); border-radius: 14px; overflow: hidden;
-}
-.ld-page .lb-askai-tile {
-  appearance: none; font: inherit; border: 0; cursor: pointer; text-decoration: none;
-  background: var(--cream); color: var(--lb-ink);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 0.72rem; padding: clamp(22px,2.6vw,34px) 0.75rem; min-height: 118px;
-  font-size: 0.88rem; font-weight: 600; text-align: center; line-height: 1.3;
-  transition: background 0.16s ease, color 0.16s ease;
-}
-.ld-page .lb-askai-tile:hover { background: var(--cream-deep); }
-.ld-page .lb-askai-tile:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
-.ld-page .lb-askai-mark { display: block; color: var(--lb-ink-soft); transition: color 0.16s ease; }
-.ld-page .lb-askai-tile:hover .lb-askai-mark { color: var(--brass); }
-
-.ld-page .lb-askai-right { min-width: 0; }
-.ld-page .lb-askai-human { text-align: center; margin: clamp(22px,2.6vw,34px) 0 0; font-size: 0.88rem; }
-.ld-page .lb-askai-human a { color: var(--lb-ink-mute); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; transition: color 0.16s ease, border-color 0.16s ease; }
-.ld-page .lb-askai-human a:hover { color: var(--lb-ink); border-color: var(--brass); }
-
-@media (max-width: 980px) {
-  .ld-page .lb-askai-in { grid-template-columns: 1fr; gap: clamp(28px,5vw,44px); }
-  .ld-page .lb-askai-sub { max-width: none; }
-}
-@media (max-width: 560px) {
-  .ld-page .lb-askai-grid { grid-template-columns: repeat(2,1fr); }
-  .ld-page .lb-askai-tile { min-height: 104px; font-size: 0.82rem; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ld-page .lb-askai-tile, .ld-page .lb-askai-mark, .ld-page .lb-askai-human a { transition: none; }
-}
-
-/* ── Problem, proof stories, captions, founding teams, FAQ (10 Section A) ── */
-.ld-page .lb-problem, .ld-page .lb-stories, .ld-page .lb-founding, .ld-page .lb-faq { padding: clamp(56px, 8vw, 112px) 0; }
-.ld-page .lb-problem .lb-h2 { max-width: 30ch; }
-.ld-page .lb-problem-body, .ld-page .lb-founding-body { margin: 1.4rem auto 0; text-align: center; max-width: 62ch; font-size: 1.08rem; line-height: 1.7; color: var(--lb-ink-soft); }
-.ld-page .lb-stories-grid { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-.ld-page .lb-story { margin: 0; padding: 1.6rem 1.7rem; border: 1px solid var(--rule); border-radius: 14px; background: var(--cream-deep); }
-.ld-page .lb-story blockquote { margin: 0; font-family: var(--font-lora-serif), Georgia, serif; font-size: 1.18rem; line-height: 1.55; color: var(--lb-ink); }
-.ld-page .lb-story figcaption { margin-top: 1rem; font-size: 0.92rem; line-height: 1.5; color: var(--lb-ink-mute); }
-.ld-page .lb-captions { display: grid; gap: 1.2rem 2rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-top: 2.2rem; }
-.ld-page .lb-captions p { margin: 0; font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-soft); }
-.ld-page .lb-captions b { color: var(--lb-ink); }
-.ld-page .lb-founding .lb-wrap { text-align: center; }
-.ld-page .lb-founding-list { width: fit-content; text-align: left; margin: 1.4rem auto 0; padding-left: 1.2rem; display: grid; gap: 0.45rem; color: var(--lb-ink); }
-.ld-page .lb-founding-note { margin: 1rem auto 0; font-size: 0.95rem; color: var(--lb-ink-mute); max-width: 62ch; }
-.ld-page .lb-founding .lb-btn { margin-top: 1.8rem; }
+/* ── Problem and FAQ ── */
+.ld-page .lb-problem, .ld-page .lb-faq { padding: clamp(56px, 8vw, 112px) 0; }
+.ld-page .lb-problem .lb-h2 { max-width: 24ch; }
+.ld-page .lb-problem-body { margin: 1.4rem auto 0; text-align: center; max-width: 62ch; font-size: 1.08rem; line-height: 1.7; color: var(--lb-ink-soft); }
+.ld-page .lb-problem-src { margin: 1.2rem auto 0; text-align: center; font-size: 0.86rem; color: var(--lb-ink-mute); }
 .ld-page .lb-faq-list { margin: 1.8rem auto 0; display: grid; gap: 1.4rem; max-width: 72ch; }
 .ld-page .lb-faq-item dt { font-weight: 600; color: var(--lb-ink); }
 .ld-page .lb-faq-item dd { margin: 0.4rem 0 0; line-height: 1.65; color: var(--lb-ink-soft); }
 .ld-page .lb-faq-item dd a { text-decoration: underline; }
 
-/* ---- SPIKE: network band (27 Oct 2026) ---- */
-.ld-page .lb-install { margin: 1.6rem auto 0; max-width: 640px; }
-.ld-page .lb-install pre { background: var(--cream-deeper, #efe9da); border-color: var(--rule); white-space: pre-wrap; word-break: break-all; padding-right: 92px; text-align: left; }
-
-/* ---- SPIKE: direction A hero (27 Oct 2026) ---- */
 .ld-page .lb-hero h1 { text-wrap: balance; }
+.ld-page .lb-h2 { text-wrap: balance; }
 
-/* Two layers: the network card and the workspace card. */
-.ld-page .lb-layers { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(16px,1.6vw,26px); margin-top: clamp(36px,4vw,60px); text-align: left; }
-@media (max-width: 880px) { .ld-page .lb-layers { grid-template-columns: 1fr; max-width: 520px; margin-inline: auto; } }
-.ld-page .lb-layer { background: var(--cream); border: 1px solid var(--rule); border-radius: 16px; padding: 1.6rem 1.5rem 1.7rem; box-shadow: 0 18px 40px -32px rgba(15,26,43,0.5); display: flex; flex-direction: column; gap: 0.9rem; }
-.ld-page .lb-layer-k { margin: 0; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.02em; color: var(--lb-ink-faint); }
-.ld-page .lb-layer h3 { margin: 0; font-family: var(--font-lora-serif), Georgia, serif; font-weight: 500; font-size: 1.3rem; letter-spacing: -0.003em; }
-.ld-page .lb-layer ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.55rem; }
-.ld-page .lb-layer li { font-size: 0.95rem; line-height: 1.55; color: var(--lb-ink-soft); padding-left: 1rem; position: relative; }
-.ld-page .lb-layer li::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 5px; height: 5px; border-radius: 50%; background: var(--brass, #B68235); }
-.ld-page .lb-layer .lb-install { margin: 0; max-width: none; }
-.ld-page .lb-layer .lb-price-free { margin: 0; text-align: left; }
-.ld-page .lb-layer .lb-btn { align-self: flex-start; margin-top: auto; }
-.ld-page .lb-install pre { text-transform: none; letter-spacing: 0; font-size: 0.82rem; line-height: 1.6; }
-.ld-page .lb-install button { text-transform: none; letter-spacing: 0.04em; }
-.ld-page .lb-layer .lb-price-free a { display: inline-flex; align-items: center; gap: 0.4rem; }
-.ld-page .lb-layer-p { margin: 0; font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-soft); }
+/* ── The call, the voices, after the call, in charge ── */
+.ld-page .lb-sec { padding: clamp(56px,8vw,112px) 0; border-top: 1px solid var(--rule); }
+.ld-page .lb-sec.deep { background: var(--cream-deep); }
+.ld-page .lb-sec-sub { margin: 1.1rem auto 0; text-align: center; max-width: 60ch; font-size: 1.02rem; line-height: 1.65; color: var(--lb-ink-soft); }
+.ld-page .lb-steps .lb-sec-sub { margin-top: clamp(28px,3vw,44px); }
+.ld-page .lb-sec-sub a { color: var(--lb-ink); text-decoration: underline; text-underline-offset: 3px; }
+.ld-page .lb-does { list-style: none; margin: clamp(32px,4vw,56px) auto 0; padding: 0; max-width: 980px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1.8rem clamp(28px,4vw,64px); }
+@media (max-width: 760px) { .ld-page .lb-does { grid-template-columns: 1fr; } }
+.ld-page .lb-does li { border-top: 1px solid var(--rule); padding-top: 1rem; font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-soft); }
+.ld-page .lb-does b { display: block; font-family: var(--font-lora-serif), Georgia, serif; font-weight: 500; font-size: 1.16rem; color: var(--lb-ink); margin-bottom: 0.3rem; }
+
+.ld-page .lb-voices { margin: clamp(32px,4vw,56px) auto 0; max-width: 980px; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 1.8rem clamp(24px,3vw,48px); }
+@media (max-width: 760px) { .ld-page .lb-voices { grid-template-columns: 1fr; } }
+.ld-page .lb-voice { border-top: 1px solid var(--rule); padding-top: 1rem; }
+.ld-page .lb-voice h3 { margin: 0; font-family: var(--font-lora-serif), Georgia, serif; font-weight: 500; font-size: 1.16rem; }
+.ld-page .lb-voice figure { margin: 0.8rem 0 0; }
+.ld-page .lb-voice figcaption { font-size: 0.82rem; color: var(--lb-ink-mute); margin-bottom: 0.3rem; }
+.ld-page .lb-voice audio { display: block; width: 100%; height: 36px; }
+
+.ld-page .lb-split { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,0.9fr); gap: clamp(32px,5vw,84px); align-items: center; }
+@media (max-width: 900px) { .ld-page .lb-split { grid-template-columns: 1fr; } }
+.ld-page .lb-split .lb-h2 { text-align: left; margin: 0; max-width: 18ch; }
+.ld-page .lb-plain { margin: 1.5rem 0 0; padding-left: 1.1rem; display: grid; gap: 0.75rem; font-size: 1.02rem; line-height: 1.6; color: var(--lb-ink-soft); }
+.ld-page .lb-plain b { color: var(--lb-ink); }
+.ld-page .lb-needs { background: var(--cream); border: 1px solid var(--rule); border-radius: 14px; padding: 1.2rem 1.3rem 1.3rem; box-shadow: 0 22px 50px -36px rgba(15,26,43,0.5); }
+.ld-page .lb-needs-t { margin: 0.7rem 0 0.2rem; font-family: var(--font-lora-serif), Georgia, serif; font-size: 1.12rem; color: var(--lb-ink); }
+.ld-page .lb-needs-q { margin: 0 0 0.9rem; font-size: 0.9rem; color: var(--lb-ink-mute); }
+.ld-page .lb-needs .lb-compose-in { font-size: 0.88rem; }
+.ld-page .lb-needs .lb-ask-r { margin-top: 0.8rem; }
+
+/* The nav's sign-up button: phones get the short label so the bar fits. */
+.ld-page .landing-nav .nav-cta-short { display: none; }
+@media (max-width: 768px) {
+  .ld-page .landing-nav .nav-cta-long { display: none; }
+  .ld-page .landing-nav .nav-cta-short { display: inline; }
+}

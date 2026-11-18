@@ -20,10 +20,10 @@ interface VoicePlan {
 }
 
 const label = {
-  not_enrolled: "Choose the voice plan",
-  pending_payment: "Payment confirmation pending",
+  not_enrolled: "No plan yet",
+  pending_payment: "Waiting for payment to confirm",
   active: "Voice plan active",
-  past_due: "Payment needs attention",
+  past_due: "Your last payment didn’t go through",
   canceling: "Renewal canceled",
   cancellation_pending: "Confirming cancellation",
   canceled: "Voice plan ended",
@@ -77,7 +77,7 @@ export function VoicePlanCard() {
       }
       await mutate();
     } catch {
-      setProblem("Couldn’t confirm the update. Refresh the plan status before trying again.");
+      setProblem("We couldn’t confirm that change. Refresh the status to see where it stands before you try again.");
     } finally {
       setBusy(false);
     }
@@ -89,8 +89,8 @@ export function VoicePlanCard() {
     {error && <p role="alert">Couldn’t load your voice plan. <Button variant="ghost" onClick={() => void mutate()}>Retry</Button></p>}
     {current && <>
       <p className="vx-sub" role="status">{label[plan.status]}</p>
-      <p className="vx-sub">${plan.monthlyUsd}/month includes {plan.includedMinutes.toLocaleString()} voice minutes. Additional minutes cost ${plan.overageUsdPerMinute.toFixed(2)} each. It renews monthly; you can enter a promotion code at checkout.</p>
-      {plan.status === "not_enrolled" && !plan.available && <p className="vx-sub">Voice plan enrollment isn’t available yet.</p>}
+      <p className="vx-sub">${plan.monthlyUsd}/month includes {plan.includedMinutes.toLocaleString()} voice minutes. Additional minutes cost ${plan.overageUsdPerMinute.toFixed(2)} each. Month to month: you can cancel the renewal here at any time.</p>
+      {plan.status === "not_enrolled" && !plan.available && <p className="vx-sub">You can’t start a plan here yet. Contact support to get started.</p>}
       {plan.status === "not_enrolled" && plan.available && admin && <>
         <label className="vx-choice"><input type="checkbox" checked={accepted} onChange={(event) => setAcceptedFor(event.target.checked ? consentKey : null)} disabled={busy} />
           <span>I agree to ${plan.monthlyUsd}/month and ${plan.overageUsdPerMinute.toFixed(2)} per minute after {plan.includedMinutes.toLocaleString()} included minutes.</span>
@@ -98,6 +98,7 @@ export function VoicePlanCard() {
         <Button disabled={!enabled || !accepted} onClick={() => void update("checkout")}>{busy ? "Opening payment…" : "Continue to payment"}</Button>
       </>}
       {plan.status === "pending_payment" && <p className="vx-sub">Your plan becomes active after payment is confirmed.</p>}
+      {plan.status === "past_due" && <p className="vx-sub">Update your card in Manage billing.</p>}
       {plan.status !== "not_enrolled" && admin &&
         <Button variant="outline" disabled={!enabled} onClick={() => void update("portal")}>Manage billing</Button>}
       {plan.endsAt && <p className="vx-sub">{plan.status === "canceled" ? "Ended" : ["active", "canceling"].includes(plan.status) ? "Access continues through" : "Renewal ends"} {new Date(plan.endsAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}.{!["active", "canceling", "canceled"].includes(plan.status) && " Access requires confirmed payment."}</p>}
@@ -105,12 +106,12 @@ export function VoicePlanCard() {
       {plan.status === "cancellation_pending" && admin && <Button variant="outline" disabled={!enabled} onClick={() => void update("cancel")}>Retry cancellation</Button>}
       {["active", "pending_payment", "past_due"].includes(plan.status) && admin && <div style={{ marginTop: 16 }}>
         {confirmCancel ? <>
-          <p className="vx-sub">Cancel the next renewal? Your confirmed paid access continues until the end of its billing period.</p>
+          <p className="vx-sub">Cancel the next renewal? What you’ve already paid for stays on until the end of its billing period. The plan won’t renew after that.</p>
           <Button variant="outline" disabled={!enabled} onClick={() => void update("cancel")}>Confirm cancellation</Button>{" "}
           <Button variant="ghost" disabled={busy} onClick={() => setConfirmCancel(false)}>Keep plan</Button>
         </> : <Button variant="ghost" disabled={!enabled} onClick={() => setConfirmCancel(true)}>Cancel renewal</Button>}
       </div>}
-      {!admin && <p className="vx-sub">A workspace admin can manage the voice plan.</p>}
+      {!admin && <p className="vx-sub">Only an admin of this business can change the plan.</p>}
     </>}
     {problem && <p role="alert">{problem} <Button variant="ghost" onClick={() => void mutate()}>Refresh status</Button></p>}
   </section>;

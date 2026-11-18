@@ -2,19 +2,15 @@ import Link from "next/link";
 
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
-import { COMPARE_AUTHOR, ROWS, checkedOn, lightbulbColumn, pageFaq, type ComparePage } from "@/content/compare";
-import { getPricing } from "@/lib/pricing";
-import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
+import { VERTICALS } from "@/components/vertical/verticals";
+import { COMPARE_UPDATED, type ComparePage } from "@/content/compare";
+import { JsonLd, breadcrumbJsonLd, faqJsonLd, pageMetadata } from "@/lib/seo";
 
 export function compareMetadata(page: ComparePage) {
   return pageMetadata({ title: page.title, description: page.description, path: page.path });
 }
 
-export async function ComparePageView({ page }: { page: ComparePage }) {
-  const pricing = await getPricing();
-  const columns = [lightbulbColumn(pricing), ...page.columns];
-  const faq = pageFaq(page, pricing);
-  const source = `compare-${page.slug}`;
+export function ComparePageView({ page }: { page: ComparePage }) {
   return (
     <main className="ld-page min-h-screen">
       <JsonLd
@@ -24,57 +20,45 @@ export async function ComparePageView({ page }: { page: ComparePage }) {
           { name: page.h1, path: page.path },
         ])}
       />
-      <JsonLd
-        data={{
-          "@context": "https://schema.org",
-          "@type": "FAQPage",
-          mainEntity: faq.map(({ q, a }) => ({
-            "@type": "Question",
-            name: q,
-            acceptedAnswer: { "@type": "Answer", text: a },
-          })),
-        }}
-      />
+      <JsonLd data={faqJsonLd(page.faq)} />
       <Navbar />
-      <article className="mx-auto max-w-6xl px-6 py-20 md:py-28">
-        <p className="ld-mono text-xs uppercase tracking-[0.18em] text-[var(--midnight-muted)]">
-          Compare · By {COMPARE_AUTHOR}
-        </p>
+      <article className="mx-auto max-w-5xl px-6 py-20 md:py-28">
+        <p className="ld-mono text-xs uppercase tracking-[0.18em] text-[var(--midnight-muted)]">Compare</p>
         <h1 className="mt-5 font-editorial-serif text-4xl leading-tight text-[var(--midnight)] md:text-6xl">{page.h1}</h1>
         <p className="mt-6 max-w-3xl text-lg leading-8 text-[var(--midnight-soft)]">{page.intro}</p>
 
         <div className="mt-12 overflow-x-auto">
-          <table className="w-full min-w-[640px] border-collapse text-left text-sm leading-6">
+          <table className="w-full min-w-[560px] border-collapse text-left text-sm leading-6">
             <thead>
               <tr>
                 <th scope="col" className="border-b border-[var(--rule)] py-3 pr-4" />
-                {columns.map((col) => (
-                  <th key={col.name} scope="col" className="border-b border-[var(--rule)] py-3 pr-4 font-semibold text-[var(--midnight)]">
-                    {col.name}
-                  </th>
-                ))}
+                <th scope="col" className="border-b border-[var(--rule)] py-3 pr-4 font-semibold text-[var(--midnight)]">Lightbulb</th>
+                <th scope="col" className="border-b border-[var(--rule)] py-3 pr-4 font-semibold text-[var(--midnight)]">{page.other}</th>
               </tr>
             </thead>
             <tbody>
-              {ROWS.map((row) => (
-                <tr key={row.key}>
+              {page.rows.map((row) => (
+                <tr key={row.label}>
                   <th scope="row" className="border-b border-[var(--rule)] py-3 pr-4 align-top font-medium text-[var(--midnight)]">
                     {row.label}
                   </th>
-                  {columns.map((col) => (
-                    <td key={col.name} className="border-b border-[var(--rule)] py-3 pr-4 align-top text-[var(--midnight-soft)]">
-                      <a href={col.cells[row.key].source} rel="noopener" className="hover:underline">
-                        {col.cells[row.key].text}
+                  <td className="border-b border-[var(--rule)] py-3 pr-4 align-top text-[var(--midnight-soft)]">{row.ours}</td>
+                  <td className="border-b border-[var(--rule)] py-3 pr-4 align-top text-[var(--midnight-soft)]">
+                    {row.source ? (
+                      <a href={row.source} rel="noopener" className="underline">
+                        {row.other}
                       </a>
-                    </td>
-                  ))}
+                    ) : (
+                      row.other
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <p className="mt-3 text-sm text-[var(--midnight-muted)]">
-          Checked on {checkedOn(page)}. Every cell links to the page it came from.
+          Updated <time dateTime={COMPARE_UPDATED}>{COMPARE_UPDATED}</time>. Linked figures go to their source.
         </p>
 
         <section className="mt-14 max-w-3xl">
@@ -89,7 +73,7 @@ export async function ComparePageView({ page }: { page: ComparePage }) {
         <section className="mt-14 max-w-3xl">
           <h2 className="font-editorial-serif text-3xl text-[var(--midnight)]">Questions</h2>
           <dl className="mt-4 space-y-6">
-            {faq.map(({ q, a }) => (
+            {page.faq.map(({ q, a }) => (
               <div key={q}>
                 <dt className="font-semibold text-[var(--midnight)]">{q}</dt>
                 <dd className="mt-2 leading-7 text-[var(--midnight-soft)]">{a}</dd>
@@ -98,12 +82,25 @@ export async function ComparePageView({ page }: { page: ComparePage }) {
           </dl>
         </section>
 
-        <div className="mt-14 flex flex-wrap gap-4">
-          <Link href={`/request-setup?source=${source}`} className="lb-btn lb-btn-p lb-btn-xl">
-            Request a guided setup
+        <p className="mt-14 max-w-3xl text-lg leading-8 text-[var(--midnight-soft)]">
+          How it works for your trade:{" "}
+          {VERTICALS.map((v, i) => (
+            <span key={v.slug}>
+              {i > 0 && ", "}
+              <Link href={v.path} className="underline">
+                {v.linkLabel}
+              </Link>
+            </span>
+          ))}
+          .
+        </p>
+
+        <div className="mt-8 flex flex-wrap gap-4">
+          <Link href={`/sign-up?source=compare-${page.slug}`} className="lb-btn lb-btn-p lb-btn-xl">
+            Set up your assistant
           </Link>
-          <Link href={`/sign-up?source=${source}`} className="lb-btn lb-btn-s lb-btn-xl">
-            Start free
+          <Link href="/compare" className="lb-btn lb-btn-s lb-btn-xl">
+            All comparisons
           </Link>
         </div>
       </article>

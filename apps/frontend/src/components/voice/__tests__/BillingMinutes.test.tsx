@@ -18,18 +18,18 @@ beforeEach(() => { usage.paidAllowance = false; });
 
 it("shows historical usage without claiming an included allowance before paid access", () => {
   render(<BillingMinutes />);
-  expect(screen.getByText(/voice min used this month/)).toHaveTextContent("112 voice min used this month");
-  expect(screen.getByText(/Included minutes apply while/)).toBeInTheDocument();
+  expect(screen.getByText(/minutes used this month/)).toHaveTextContent("112 minutes used this month");
+  expect(screen.getByText(/included minutes show here once the plan is paid/)).toBeInTheDocument();
   expect(screen.queryByRole("meter")).not.toBeInTheDocument();
   expect(screen.queryByRole("radio")).not.toBeInTheDocument();
-  expect(screen.queryByText(/Your included allowance is/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Your plan includes/)).not.toBeInTheDocument();
 });
 
 it("shows the allowance and run-out choices when payment covers the current period", () => {
   usage.paidAllowance = true;
   render(<BillingMinutes />);
   expect(screen.getByRole("meter", { name: "Minutes used" })).toHaveAttribute("aria-valuenow", "112");
-  expect(screen.getByText(/Your included allowance is/)).toHaveTextContent("1,500 minutes");
+  expect(screen.getByText(/Your plan includes/)).toHaveTextContent("1,500 minutes");
   expect(screen.getByRole("radio", { name: /Keep answering/ })).toBeInTheDocument();
   expect(screen.getByRole("radio", { name: /Send calls to my phone/ })).toBeInTheDocument();
 });

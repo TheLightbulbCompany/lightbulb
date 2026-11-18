@@ -20,7 +20,7 @@ export const FORWARDING_CODES: Record<Carrier, CarrierCodes> = {
   tmobile: { label: "T-Mobile", modes: ["missed", "all"], codes: GSM },
   landline: { label: "Landline", modes: ["missed", "all"], note: "Ask your phone company to forward busy and unanswered calls to <n>." },
   voip: { label: "VoIP app (Zoom Phone, OpenPhone, RingCentral, OneTalk)", modes: ["missed", "all"], note: "In your admin portal, set forward to external number on busy or no answer, to <n>." },
-  google_voice: { label: "Google Voice", modes: ["all"], note: "In Google Voice settings, add <n> as a linked number for calls." },
+  google_voice: { label: "Google Voice", modes: ["all"], note: "In Google Voice settings, add <n> as a linked number for calls. We haven't tested forwarding from Google Voice yet, so make a test call to check it works." },
 };
 
 export const IPHONE_NOTE = "On an iPhone, turn off Live Voicemail, or calls go to voicemail first.";

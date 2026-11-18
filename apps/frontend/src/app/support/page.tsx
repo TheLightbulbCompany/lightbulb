@@ -91,8 +91,8 @@ export default function SupportPage() {
         <div className="support-direct" id="data-deletion">
           <h2>Deleting your data</h2>
           <p>
-            To delete your Lightbulb account and everything we hold for it &mdash; your workspace,
-            your agents, their history, and the credentials for any service you connected
+            To delete your Lightbulb account and everything we hold for it &mdash; your assistant,
+            its calls, transcripts and bookings, and the credentials for any service you connected
             &mdash; email <a
               href={`${SUPPORT_MAILTO}?subject=Delete%20my%20account`}
               onClick={() => capture("support_contact_clicked", { source: "support_page_data_deletion" })}

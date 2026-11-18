@@ -1,7 +1,7 @@
 ---
 title: "Scripts and CI"
 description: "Use an lbk_ agent key to send Lightbulb messages from headless scripts, cron jobs and CI."
-order: 18
+order: 13
 section: "Agents"
 ---
 

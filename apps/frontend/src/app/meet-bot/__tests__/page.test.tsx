@@ -39,7 +39,7 @@ it("names the speaking agent and attaches the subscribed audio track", async () 
   await waitFor(() => expect(screen.getByText("Speaking")).toBeInTheDocument());
   expect(screen.getAllByText("Gauge Prime")).toHaveLength(2); // stage + roster
   expect(screen.getByText("Forge")).toBeInTheDocument();
-  expect(screen.getByText("Say an agent's name to ask")).toBeInTheDocument();
+  expect(screen.getByText("Say the assistant's name to ask it something")).toBeInTheDocument();
   expect(lk.publishData).not.toHaveBeenCalled();
   expect(lk.attach).toHaveBeenCalled();
 });
@@ -78,14 +78,14 @@ it.each([
   expect(line).toHaveAttribute("role", "status");
   expect(line.style.color).toBe("var(--alert)");
   expect(screen.getByText("Forge")).toBeInTheDocument();
-  expect(screen.queryByText("Say an agent's name to ask")).not.toBeInTheDocument();
+  expect(screen.queryByText("Say the assistant's name to ask it something")).not.toBeInTheDocument();
 });
 
 it("keeps the normal footer when the limit attribute is empty", async () => {
   lk.remote = [{ attributes: { ...A("Forge", "listening"), "lightbulb.voice_limit": "" } }];
   global.fetch = reply(200) as never;
   render(<MeetBotPage />);
-  await screen.findByText("Say an agent's name to ask");
+  await screen.findByText("Say the assistant's name to ask it something");
   expect(screen.queryByText(/cannot speak|voice/i)).not.toBeInTheDocument();
 });
 

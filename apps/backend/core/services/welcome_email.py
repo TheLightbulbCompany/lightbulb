@@ -42,9 +42,9 @@ def owner_welcome(*, first_name: str | None, workspace: str, url: str) -> tuple[
         f"Your assistant for {workspace} is ready to set up",
         f"""{_greeting(first_name)}
 
-I'm Lightbulb. I answer your calls, book appointments and take messages.
+I'm Lightbulb, your new assistant. Once you're set up, I answer your calls, book appointments and take messages.
 
-To start, set up your assistant. Give me your website and I'll learn your hours, services and prices. Then pick where bookings go and how callers reach me, and try me out before you go live.
+Setup is five steps. Give me your website and I'll learn your hours, services and prices. Then choose where bookings go, keep your number or get a new one, and give me a name.
 
 Set up your assistant: {url}
 
@@ -62,9 +62,9 @@ def teammate_welcome(*, first_name: str | None, inviter: str | None, workspace: 
         f"You're in {workspace} on Lightbulb",
         f"""{_greeting(first_name)}
 
-{added} Lightbulb answers the business's calls, books appointments and takes messages.
+{added} {workspace} uses Lightbulb: an assistant answers its calls, books appointments and takes messages.
 
-Open Lightbulb to see who called and what's waiting on you: {url}
+See who called and what needs you: {url}
 
 Lightbulb, {workspace}
 """,
@@ -73,7 +73,7 @@ Lightbulb, {workspace}
 
 async def _workspace_name(owner_id: str) -> str:
     org = await clerk_admin.get_organization(owner_id) or {}
-    return " ".join((org.get("name") or "").split()) or "your workspace"
+    return " ".join((org.get("name") or "").split()) or "your business"
 
 
 async def send_owner_welcome(owner_id: str, owner_user_id: str) -> str:

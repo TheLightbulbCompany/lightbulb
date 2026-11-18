@@ -17,10 +17,10 @@ export function useDarkTheme() {
 
 // The bot's camera video: a fixed 1280x720 canvas that Meet shows as a small tile. Nobody can click it.
 export type TileAgent = { id: string; name: string; avatarUrl?: string | null };
-export type TileNotice = "Connecting…" | "Reconnecting…" | "This link has expired." | "Couldn't reach the agents." | null;
+export type TileNotice = "Connecting…" | "Reconnecting…" | "This link has expired." | "Couldn't reach the assistant." | null;
 
 const STATUS_RE = /^lightbulb\.agent\.(.+)\.status$/;
-const HINT = "Say an agent's name to ask";
+const HINT = "Say the assistant's name to ask it something";
 // The share of the canvas that holds content. Seen in a live Meet: a wide tile cut 5% off the top and bottom,
 // a tall one 3% off each side; a 4:3 grid tile cuts 12% off each side.
 const SAFE = 0.8;

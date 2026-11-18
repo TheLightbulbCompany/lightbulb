@@ -8,11 +8,13 @@ import { formatPostDate } from "@/content/blog/format";
 
 const TITLE = "Blog — Lightbulb";
 const DESCRIPTION =
-  "Practical writing on AI agents, persistent workspaces, and building an AI team you actually own.";
+  "Notes for salon, spa and barbershop owners on answering the phone and getting the booking.";
 
 export const metadata: Metadata = {
   title: TITLE,
   description: DESCRIPTION,
+  // An empty index is not worth a search result; it indexes again with its first post.
+  ...(getAllPosts().length ? {} : { robots: { index: false, follow: true } }),
   alternates: {
     canonical: "/blog",
     // Renders <link rel="alternate" type="application/rss+xml">, which is how
@@ -47,6 +49,8 @@ export default function BlogIndexPage() {
           <h1 className="blog-title">The Lightbulb blog</h1>
           <p className="blog-lede">{DESCRIPTION}</p>
         </header>
+
+        {posts.length === 0 && <p className="blog-lede">No posts yet.</p>}
 
         <ul className="blog-list">
           {posts.map((post) => (

@@ -1,17 +1,12 @@
 import type { Metadata } from "next";
 import { Navbar } from "@/components/landing/Navbar";
 import { Hero } from "@/components/landing/Hero";
-import { ProofBand } from "@/components/landing/ProofBand";
+import { ProblemBand } from "@/components/landing/ProblemBand";
 import { HowItWorks } from "@/components/landing/HowItWorks";
-import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
-import { NetworkBand } from "@/components/landing/NetworkBand";
+import { AfterTheCall, InCharge, OnTheCall, Voices } from "@/components/landing/HomeSections";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
 import { getPricing } from "@/lib/pricing";
-import { AskAI } from "@/components/landing/AskAI";
-import { FoundingTeams } from "@/components/landing/FoundingTeams";
 import { HomeFaq } from "@/components/landing/HomeFaq";
-import { ProblemBand } from "@/components/landing/ProblemBand";
-import { ProofStories } from "@/components/landing/ProofStories";
 import { Footer } from "@/components/landing/Footer";
 import {
   HOME_DESCRIPTION,
@@ -27,14 +22,9 @@ export const metadata: Metadata = pageMetadata({
   path: "/",
 });
 
-// The homepage in the plan's order (docs/marketing 10 Section A): hero, the
-// problem, how it works (team first), see the work, proof, price, founding
-// teams, FAQ, then Ask AI.
-//
-// NOTE: the previous funnel hero captured a brief to sessionStorage which
-// useLandingBriefReplay replayed after activation. That capture was removed
-// with the redesign (owner decision, 2026-09-11) — the hook still exists but
-// has no producer on this page.
+// The homepage for a salon, spa or barbershop owner: hero, the problem, setup,
+// the call, the voices, what you see afterwards, the controls you keep, price,
+// questions. The footer carries the final call to action.
 export default async function LandingPage() {
   const pricing = await getPricing();
   return (
@@ -43,15 +33,13 @@ export default async function LandingPage() {
       <Navbar />
       <Hero />
       <ProblemBand />
-      <NetworkBand />
       <HowItWorks />
-      <WorkspaceBand />
-      <ProofStories />
-      <ProofBand />
+      <OnTheCall />
+      <Voices />
+      <AfterTheCall />
+      <InCharge />
       <Pricing pricing={pricing} />
-      <FoundingTeams pricing={pricing} />
       <HomeFaq />
-      <AskAI />
       <Footer />
     </main>
   );

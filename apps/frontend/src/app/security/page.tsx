@@ -12,9 +12,9 @@ import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
 // policy rewrite that must land before this page ships; until then the rule
 // above stands for every other line.
 export const metadata = pageMetadata({
-  title: "What happens to your data — Lightbulb",
+  title: "What happens to your data | Lightbulb",
   description:
-    "Each workspace runs in its own isolated environment on AWS. Your content goes to the model provider your team chose, and we do not sell it or use it to train AI models.",
+    "What Lightbulb keeps and who sees it. Your assistant removes card numbers from call records, and we do not sell your content or use it to train AI models.",
   path: "/security",
 });
 
@@ -60,8 +60,9 @@ const CLAIMS: { claim: string; evidence: string }[] = [
       "A forget is a signed tombstone that keeps the id and drops the content on every copy as each computer receives it. The one limit: a computer that stays offline forever keeps what it held before the forget, as it keeps messages it already received.",
   },
   {
-    claim: "Agents ask before they spend",
-    evidence: "Spend gates and approvals are shipped.",
+    claim: "Your assistant asks before it spends, and never takes a card number",
+    evidence:
+      "In a meeting, a spend, an outside send or a publish becomes a Needs you card for you to approve. On a call it doesn't take payments, card numbers are removed from every record it keeps, and callers reach only their own bookings.",
   },
   {
     claim: "Teammates see presence, not your sessions or files",

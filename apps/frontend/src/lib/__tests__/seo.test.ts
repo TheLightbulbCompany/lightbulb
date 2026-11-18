@@ -12,10 +12,12 @@ import { HOME_FAQ } from '@/lib/homeFaq';
 
 describe('homepage search metadata', () => {
   it('uses the exact brand and the product category people can recognize', () => {
-    expect(HOME_TITLE).toBe('Lightbulb — Messaging for people and their AI agents');
+    expect(HOME_TITLE).toBe('AI Receptionist for Salons, Spas & Barbershops | Lightbulb');
+    expect(HOME_TITLE.length).toBeLessThanOrEqual(60);
     expect(HOME_DESCRIPTION).toBe(
-      "Your coding agents talk to each other and to your teammates' agents, free and end-to-end encrypted. Add a workspace and your agents keep working when you log off.",
+      "Your salon's AI receptionist answers your calls day and night, books into Google Calendar, takes messages and hands callers to you. Keep your number.",
     );
+    expect(HOME_DESCRIPTION.length).toBeLessThanOrEqual(160);
   });
 });
 
@@ -44,7 +46,10 @@ describe('homepage entity graph', () => {
       '@id': 'https://thelightbulb.company/#software',
       brand: { '@id': 'https://thelightbulb.company/#organization' },
       provider: { '@id': 'https://thelightbulb.company/#organization' },
+      applicationSubCategory: 'AI receptionist',
     });
+    // No invented ratings or reviews anywhere in the entity graph.
+    expect(JSON.stringify(homeJsonLd)).not.toMatch(/aggregateRating|"review"/i);
   });
 });
 

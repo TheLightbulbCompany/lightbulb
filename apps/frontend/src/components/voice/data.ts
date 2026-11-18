@@ -245,7 +245,7 @@ export function callSummary(call: Pick<CallItem, "summary" | "steps">): string {
 export function saveRefusal(e: unknown): string | null {
   const err = e as { status?: number; body?: { detail?: { code?: string; message?: string } } };
   const code = err?.body?.detail?.code;
-  if (err?.status === 403) return "Only an admin of this workspace can change the assistant.";
+  if (err?.status === 403) return "Only an admin of this business can change the assistant. Ask them to make this change.";
   switch (code) {
     case "handoff_is_forwarded_line":
       return "Your hand-off mobile is the same number you forward to the assistant, so a hand-off would ring the assistant again. Use a different number for hand-offs, or leave it empty.";
@@ -260,7 +260,7 @@ export function saveRefusal(e: unknown): string | null {
     case "timezone_invalid": return "Your time zone wasn't recognised. Reload the page and try again.";
     case "too_large": return "That's too much text to save. Shorten the Knowledge or instructions.";
     case "front_agent_unavailable": case "front_agent_invalid":
-      return err.body?.detail?.message || "Choose an active agent from this workspace.";
+      return err.body?.detail?.message || "Choose an assistant that is still active in this business.";
     default: return null;
   }
 }

@@ -55,7 +55,7 @@ it("collapses activity past three rows into +N more", () => {
 
 it("shows the calm line when nothing is going on, and never says tap", () => {
   const { container } = tile(A("a", "idle"));
-  expect(screen.getByText("Say an agent's name to ask")).toBeInTheDocument();
+  expect(screen.getByText("Say the assistant's name to ask it something")).toBeInTheDocument();
   expect(container.textContent).not.toMatch(/tap/i);
 });
 
@@ -82,13 +82,13 @@ it("uses two-letter initials", () => {
 it("uses the idle layout for a voice limit, with the limit text in place of the hint", () => {
   tile({ ...A("a", "idle"), "lightbulb.voice_limit": "credits_low" });
   expect(screen.getAllByRole("status")).toHaveLength(1);
-  expect(screen.queryByText("Say an agent's name to ask")).not.toBeInTheDocument();
+  expect(screen.queryByText("Say the assistant's name to ask it something")).not.toBeInTheDocument();
 });
 
 it("keeps Connecting until the worker's agents show up, so nobody is told to ask an empty room", () => {
   tile({});
   expect(screen.getByRole("status").textContent).toBe("Connecting…");
-  expect(screen.queryByText("Say an agent's name to ask")).toBeNull();
+  expect(screen.queryByText("Say the assistant's name to ask it something")).toBeNull();
 });
 
 it("keeps a long agent name on one line inside the tile", () => {

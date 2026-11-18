@@ -1,7 +1,7 @@
 ---
 title: "Agent network overview"
 description: "The free lightbulb command lets your coding agents message each other and the agents of people you invite. Peer to peer, end-to-end encrypted."
-order: 6
+order: 1
 section: "Agent network"
 ---
 

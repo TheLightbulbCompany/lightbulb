@@ -7,7 +7,8 @@ import { captureSignupCta } from "@/lib/signupFlow";
 import { Arrow } from "./Arrow";
 
 /**
- * Footer — shared by the landing, /docs, /blog and /compare.
+ * Footer, shared by the marketing pages. It carries the page's final call to
+ * action, so the homepage has no separate closing section.
  *
  * The backdrop is a CSS gradient rather than a photograph: the illustrations we
  * had were ~900px wide and visibly stretched when bled full width. A gradient
@@ -20,30 +21,32 @@ export function Footer() {
         <div className="lb-foot-top">
           <div className="lb-foot-cta">
             <h2>
-              Bring your team. <em>Your agents are already in the room.</em>
+              Get back to your client. <em>Your assistant has the phone.</em>
             </h2>
             <div className="lb-foot-btns">
               <Link
-                href="/request-setup"
+                href="/sign-up"
                 className="lb-btn"
+                onClick={() =>
+                  captureSignupCta({ ctaId: "footer_start_free", label: "Set up your assistant", surface: "footer" })
+                }
+              >
+                Set up your assistant
+                <Arrow />
+              </Link>
+              <Link
+                href="/request-setup"
+                className="lb-btn lb-btn-ghost"
                 onClick={() =>
                   captureSignupCta({
                     ctaId: "footer_setup",
-                    label: "Request a guided setup",
+                    label: "Talk to a founder",
                     surface: "footer",
                     destination: "/request-setup",
                   })
                 }
               >
-                Request a guided setup
-                <Arrow />
-              </Link>
-              <Link
-                href="/sign-up"
-                className="lb-btn lb-btn-ghost"
-                onClick={() => captureSignupCta({ ctaId: "footer_start_free", label: "Start free", surface: "footer" })}
-              >
-                Start free
+                Talk to a founder
               </Link>
             </div>
           </div>
@@ -51,27 +54,25 @@ export function Footer() {
           <div className="lb-foot-cols">
             <div className="lb-foot-col">
               <h4>Product</h4>
-              <Link href="/#workspace">The workspace</Link>
-              <Link href="/network">Free agent network</Link>
-              <Link href="/docs">Docs</Link>
-              <Link href="/compare">Compare</Link>
+              <Link href="/salons">For salons</Link>
+              <Link href="/spas">For spas</Link>
+              <Link href="/barbershops">For barbershops</Link>
               <Link href="/pricing">Pricing</Link>
-              {/* API route 302s to the DMG — must be a hard navigation, not a client <Link>. */}
-              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-              <a href="/api/download/desktop" title="macOS · Apple Silicon">
-                Download for Mac
-              </a>
+              <Link href="/compare">Compare</Link>
+              <Link href="/request-setup">Talk to a founder</Link>
             </div>
             <div className="lb-foot-col">
-              <h4>Company</h4>
-              <Link href="/blog">Blog</Link>
-              <Link href="/security">Your data</Link>
-              <Link href="/privacy">Privacy Policy</Link>
-              <Link href="/terms">Terms of Service</Link>
+              <h4>Help</h4>
               <Link href="/support">Support</Link>
+              <Link href="/security">Security and your data</Link>
+              <Link href="/sign-in">Log in</Link>
+              <Link href="/sign-up">Sign up</Link>
+              <Link href="/network">Developer network</Link>
             </div>
             <div className="lb-foot-col">
               <h4>Legal</h4>
+              <Link href="/privacy">Privacy Policy</Link>
+              <Link href="/terms">Terms of Service</Link>
               <Link href="/cookies">Cookies</Link>
               <Link href="/disclaimer">Disclaimer</Link>
               <Link href="/eula">EULA</Link>
@@ -85,7 +86,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>Messaging for people and their AI agents.</span>
+          <span>An AI receptionist for salons, spas and barbershops.</span>
         </div>
       </div>
     </footer>

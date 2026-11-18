@@ -50,7 +50,7 @@ export function joinErrorMessage(err: unknown): { message: string; canRetry: boo
         message:
           typeof detail === "string" && detail
             ? detail
-            : "This join link is no longer valid. Ask a workspace admin for a new one.",
+            : "This join link no longer works. Ask the business owner for a new one.",
         canRetry: false,
       };
     }
@@ -62,7 +62,7 @@ export function joinErrorMessage(err: unknown): { message: string; canRetry: boo
       return { message: detail, canRetry: false };
     }
     return {
-      message: "We couldn't add you to that workspace just now. Try again in a moment.",
+      message: "We couldn't add you just now. Try again in a moment.",
       canRetry: true,
     };
   }
@@ -186,7 +186,7 @@ export default function JoinWorkspacePage() {
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
         <h1 className="font-serif text-2xl text-midnight">Couldn&apos;t join</h1>
         <p className="text-ui text-midnight-muted" role="alert">
-          That join link is incomplete. Ask a workspace admin for a new one.
+          That join link is incomplete. Ask the business owner for a new one.
         </p>
       </main>
     );
@@ -206,7 +206,7 @@ export default function JoinWorkspacePage() {
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
         <h1 className="font-serif text-2xl text-midnight">Couldn&apos;t join</h1>
         <p className="text-ui text-midnight-muted" role="alert">
-          That join link is incomplete. Ask a workspace admin for a new one.
+          That join link is incomplete. Ask the business owner for a new one.
         </p>
       </main>
     );
@@ -215,9 +215,9 @@ export default function JoinWorkspacePage() {
   if (!isSignedIn) {
     return (
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
-        <h1 className="font-serif text-2xl text-midnight">You&apos;re invited to a team on Lightbulb</h1>
+        <h1 className="font-serif text-2xl text-midnight">You&apos;re invited to join a business on Lightbulb</h1>
         <p className="text-ui text-midnight-muted">
-          Sign in, or create a free account if you&apos;re new. We&apos;ll add you to the workspace right after.
+          Sign in, or create an account if you&apos;re new. We&apos;ll add you to the business right after.
         </p>
         {/* A brand-new Google/Apple account finishes its sign-up on /sign-in's
             SSO callback, whose default is /chat. Pin both redirects back here,
@@ -237,8 +237,8 @@ export default function JoinWorkspacePage() {
     <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
       {phase.kind === "working" && (
         <>
-          <div className="settings-spinner" role="status" aria-label="Joining workspace" />
-          <p className="text-ui text-midnight-muted">Adding you to the workspace…</p>
+          <div className="settings-spinner" role="status" aria-label="Joining" />
+          <p className="text-ui text-midnight-muted">Adding you…</p>
         </>
       )}
 
@@ -246,10 +246,10 @@ export default function JoinWorkspacePage() {
         <>
           <h1 className="font-serif text-2xl text-midnight">
             {phase.result.status === "already_member"
-              ? `You're already in ${phase.result.org_name || "this workspace"}`
-              : `Welcome to ${phase.result.org_name || "the workspace"}`}
+              ? `You're already in ${phase.result.org_name || "this business"}`
+              : `Welcome to ${phase.result.org_name || "the business"}`}
           </h1>
-          <p className="text-ui text-midnight-muted">Taking you to your workspace…</p>
+          <p className="text-ui text-midnight-muted">Taking you to Lightbulb…</p>
         </>
       )}
 

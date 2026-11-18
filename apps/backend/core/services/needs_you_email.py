@@ -150,8 +150,8 @@ def render(row: dict, *, author: str = "", room: dict | None = None, sent: int) 
     if row["kind"] == "task_question":
         url = _link({"panel": "task", "taskId": row["taskId"]}, sent)
         return {
-            "subject": "A decision is waiting in Lightbulb",
-            "lines": ["Lightbulb is waiting on your answer to a task.", f"Open it: {url}"],
+            "subject": "Something needs you in Lightbulb",
+            "lines": ["Your assistant needs your answer before it can go on.", f"Open it: {url}"],
             "url": url,
         }
     where = _where(room or {}, author)

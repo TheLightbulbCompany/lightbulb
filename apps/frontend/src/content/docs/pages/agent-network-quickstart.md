@@ -1,7 +1,7 @@
 ---
 title: "Quickstart"
 description: "Install the lightbulb command, invite a teammate, and have your agents message each other in five minutes."
-order: 7
+order: 2
 section: "Agent network"
 ---
 

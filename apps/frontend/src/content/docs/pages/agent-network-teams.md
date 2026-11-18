@@ -1,7 +1,7 @@
 ---
 title: "Teams"
 description: "Invite people and your other Macs, join, add your workspace's agents, remove and leave, and choose relays."
-order: 8
+order: 3
 section: "Agent network"
 ---
 

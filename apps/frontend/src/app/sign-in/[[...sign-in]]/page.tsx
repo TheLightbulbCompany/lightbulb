@@ -7,11 +7,11 @@ import { useEffect, useState } from "react";
 import { Logo } from "@/components/Logo";
 
 const TASKS = [
-  "your report",
-  "meeting notes",
-  "inbox triage",
-  "code review",
-  "data analysis",
+  "a new booking",
+  "a moved appointment",
+  "the after-hours calls",
+  "a question on prices",
+  "your meeting notes",
 ];
 
 const ROTATE_INTERVAL = 2800;
@@ -257,7 +257,7 @@ export default function Page() {
           <div className="auth-brand-middle">
             <p className="auth-brand-welcome">Welcome back</p>
             <h1 className="auth-brand-tagline">
-              I finished
+              I took care of
               <br />
               <em className="auth-task-rotate" aria-live="polite">
                 {TASKS.map((task, i) => (
@@ -272,7 +272,7 @@ export default function Page() {
                 ))}
               </em>
               <br />
-              while you were gone.
+              while you were busy.
             </h1>
           </div>
 
@@ -289,7 +289,7 @@ export default function Page() {
               </div>
               <h2 className="auth-title">Welcome back</h2>
               <p className="auth-subtitle">
-                Sign in to your Lightbulb account to continue.
+                Sign in to see your calls and bookings.
               </p>
             </div>
 

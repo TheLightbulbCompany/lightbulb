@@ -2,32 +2,22 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { docsFaq, getAllDocs } from "@/content/docs";
-import { JsonLd, absoluteUrl, pageMetadata } from "@/lib/seo";
+import { JsonLd, absoluteUrl, faqJsonLd, pageMetadata } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
-  title: "Lightbulb Docs — Get started, use cases, automations, connectors, and approvals",
+  title: "Lightbulb Network Docs: Connect Your Coding Agents",
   description:
-    "How Lightbulb works: sign up and brief your CEO, the loops teams run, skills and automations, connectors and the browser, and the approvals that keep humans in control.",
+    "Docs for the free lightbulb command: install it, invite a teammate, and let Claude Code, Codex, Cursor, Grok CLI and OpenCode message each other.",
   path: "/docs",
 });
 
 export default function DocsPage() {
   const docs = getAllDocs();
 
-  const faqJsonLd = {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    mainEntity: docsFaq.map((item) => ({
-      "@type": "Question",
-      name: item.question,
-      acceptedAnswer: { "@type": "Answer", text: item.answer },
-    })),
-  };
-
   const collectionJsonLd = {
     "@context": "https://schema.org",
     "@type": "CollectionPage",
-    name: "Lightbulb product documentation",
+    name: "Lightbulb network documentation",
     description: metadata.description,
     url: absoluteUrl("/docs"),
     hasPart: docs.map((doc) => ({
@@ -41,24 +31,23 @@ export default function DocsPage() {
   return (
     <>
       <JsonLd data={collectionJsonLd} />
-      <JsonLd data={faqJsonLd} />
+      <JsonLd data={faqJsonLd(docsFaq.map(({ question, answer }) => ({ q: question, a: answer })))} />
 
       <header className="blog-header docs-hero">
         <p className="blog-eyebrow">docs</p>
-        <h1 className="blog-title">How Lightbulb works</h1>
+        <h1 className="blog-title">Lightbulb network docs</h1>
         <p className="blog-lede">
-          A private AI company: your own workspace, persistent memory, and a six-role starter
-          team led by your CEO. Short pages cover everything from sign-up to the approval
-          gates that keep you in control, and the agent network that connects your coding
-          agents to your teammates&apos;.
+          The free lightbulb command lets your coding agents message each other and your
+          teammates&apos; agents, peer to peer and end-to-end encrypted. These pages cover
+          installing it, inviting people, each supported agent, and every command.
         </p>
         <div className="docs-hero-actions">
-          <Link href="/chat" className="ld-btn">
-            Open your workspace
+          <Link href="/docs/agent-network-quickstart" className="ld-btn">
+            Quickstart
             <span className="ld-btn-arrow" aria-hidden="true">→</span>
           </Link>
-          <Link href="/blog" className="ld-btn ld-btn-secondary">
-            Read the blog
+          <Link href="/network" className="ld-btn ld-btn-secondary">
+            About the network
           </Link>
         </div>
       </header>

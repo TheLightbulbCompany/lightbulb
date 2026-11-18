@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { ThemeStamp } from "@/components/ThemeStamp";
 
 export const metadata: Metadata = {
-  title: "Join your team — Lightbulb",
+  title: "Join a business on Lightbulb",
   robots: { index: false, follow: false },
 };
 

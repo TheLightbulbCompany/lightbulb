@@ -6,34 +6,34 @@ import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
-const TRUST = ["Open source network", "Any agent, any vendor", "30 days free, no card"] as const;
+const TRUST = ["Keep your number", "Month to month", "English and Spanish"] as const;
 
 /**
- * The hero's doors: self-serve is the one primary action, guided setup a quieter
- * second, and the trust row sits right under them.
+ * The hero's doors: sign-up is the one primary action; "Hear the voices" is a
+ * quieter second that scrolls to the stock samples. The trust row sits under them.
  */
 export function HeroCtas() {
-  const track = (ctaId: string, label: string, destination: string) => () =>
-    captureSignupCta({ ctaId, label, surface: "hero", destination });
-
   return (
     <>
       <div className="lb-hero-cta">
         <Link
           href="/sign-up"
           className="lb-btn lb-btn-p lb-btn-xl"
-          onClick={track("hero_start_free", "Start your workspace free", "/sign-up")}
+          onClick={() =>
+            captureSignupCta({
+              ctaId: "hero_start_free",
+              label: "Set up your assistant",
+              surface: "hero",
+              destination: "/sign-up",
+            })
+          }
         >
-          Start your workspace free
+          Set up your assistant
           <Arrow />
         </Link>
-        <Link
-          href="/request-setup"
-          className="lb-btn lb-btn-s lb-btn-xl"
-          onClick={track("hero_setup", "Request a guided setup", "/request-setup")}
-        >
-          Request a guided setup
-        </Link>
+        <a href="#voices" className="lb-btn lb-btn-s lb-btn-xl">
+          Hear the voices
+        </a>
       </div>
       <ul className="lb-ticks">
         {TRUST.map((t) => (

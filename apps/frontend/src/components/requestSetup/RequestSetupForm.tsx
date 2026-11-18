@@ -8,7 +8,7 @@ import { BACKEND_URL } from "@/lib/api";
 import { SUPPORT_EMAIL } from "@/lib/domain";
 import { attributionProperties, client as posthog, refreshAttribution } from "@/lib/analytics";
 
-import { AGENTS, SMALL_TEAMS, SOURCES, TEAM_SIZES } from "./options";
+import { BOOKING_TOOLS, SOURCES, TEAM_SIZES } from "./options";
 
 const field = "mt-2 w-full rounded-md border border-[var(--rule)] bg-[var(--cream)] px-3 py-2 text-base text-[var(--lb-ink)]";
 const label = "block text-sm font-medium text-[var(--lb-ink)]";
@@ -36,11 +36,16 @@ function anonymousId(): string {
   }
 }
 
+/**
+ * "Talk to a founder" for a salon, spa or barbershop owner. The payload keeps
+ * the shape of `POST /setup-requests` (schemas/setup_request.py): the booking
+ * tool rides in `agents_other` with `agents: ["other"]`, "what happens to your
+ * calls" in `first_handoff`, and the website in `thread_link`.
+ */
 export function RequestSetupForm() {
   const params = useSearchParams();
   const [state, setState] = useState<"idle" | "sending" | "error">("idle");
-  const [done, setDone] = useState<{ firstName: string; small: boolean } | null>(null);
-  const [agents, setAgents] = useState<string[]>([]);
+  const [done, setDone] = useState<string | null>(null);
   const [source, setSource] = useState("");
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -48,7 +53,6 @@ export function RequestSetupForm() {
     const form = new FormData(e.currentTarget);
     const text = (k: string) => String(form.get(k) ?? "").trim();
     const name = text("name");
-    const teamSize = text("team_size");
     setState("sending");
     try {
       const res = await fetch(`${BACKEND_URL}/setup-requests`, {
@@ -58,20 +62,20 @@ export function RequestSetupForm() {
           name,
           email: text("email"),
           company: text("company"),
-          team_size: teamSize,
-          agents,
-          agents_other: text("agents_other"),
+          team_size: text("team_size"),
+          agents: ["other"],
+          agents_other: `Bookings: ${text("bookings")}`,
           first_handoff: text("first_handoff"),
           source,
           source_other: text("source_other"),
-          thread_link: text("thread_link"),
+          thread_link: text("website"),
           attribution: readAttribution(),
           source_param: (params?.get("source") ?? "").slice(0, 100),
           anonymous_id: anonymousId(),
         }),
       });
       if (!res.ok) throw new Error(String(res.status));
-      setDone({ firstName: name.split(/\s+/)[0], small: SMALL_TEAMS.has(teamSize) });
+      setDone(name.split(/\s+/)[0]);
     } catch {
       setState("error");
     }
@@ -80,33 +84,24 @@ export function RequestSetupForm() {
   if (done) {
     return (
       <div role="status">
-        <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)]">Thanks, {done.firstName}.</h1>
-        {done.small ? (
-          <>
-            <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
-              The guided setups are for teams of three or more, but you can start your 30 days today and invite
-              people as you go.
-            </p>
-            <Link href="/sign-up" className="lb-btn lb-btn-p mt-8 inline-flex">
-              Start free
-            </Link>
-          </>
-        ) : (
-          <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
-            One of us will email you within a day to book 45 minutes. Bring the person you&rsquo;d hand work to
-            first.
-          </p>
-        )}
+        <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)]">Thanks, {done}.</h1>
+        <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
+          A founder reads every request and will email you to find a time. Rather start now? You can set up your
+          assistant yourself in the meantime.
+        </p>
+        <Link href="/sign-up" className="lb-btn lb-btn-p mt-8 inline-flex">
+          Set up your assistant
+        </Link>
       </div>
     );
   }
 
   return (
     <>
-      <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)] md:text-6xl">Request a guided setup</h1>
+      <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)] md:text-6xl">Talk to a founder</h1>
       <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
-        One of the founders sets your team up with you in 45 minutes: one real tool, one real workflow, your second
-        person in the room. Ten spots.
+        Rather not set it up alone? Tell us about your salon, spa or barbershop. One of the founders will get in touch
+        and set up your assistant with you.
       </p>
       <form className="mt-12 space-y-8" onSubmit={onSubmit}>
         <div>
@@ -114,17 +109,16 @@ export function RequestSetupForm() {
           <input id="rs-name" name="name" required autoComplete="name" className={field} />
         </div>
         <div>
-          <label className={label} htmlFor="rs-email">Work email</label>
+          <label className={label} htmlFor="rs-email">Email</label>
           <input id="rs-email" name="email" type="email" required autoComplete="email" className={field} />
-          <p className={helper}>We reply here within a day.</p>
+          <p className={helper}>We reply here.</p>
         </div>
         <div>
-          <label className={label} htmlFor="rs-company">Company</label>
+          <label className={label} htmlFor="rs-company">Business name</label>
           <input id="rs-company" name="company" required autoComplete="organization" className={field} />
         </div>
         <fieldset>
-          <legend className={label}>Team size</legend>
-          <p className={helper}>How many people would use it?</p>
+          <legend className={label}>How many people work there, including you?</legend>
           <div className="mt-3 flex flex-wrap gap-4">
             {TEAM_SIZES.map((o) => (
               <label key={o.value} className="flex items-center gap-2 text-[var(--lb-ink)]">
@@ -133,34 +127,29 @@ export function RequestSetupForm() {
             ))}
           </div>
         </fieldset>
-        <fieldset>
-          <legend className={label}>Agents you use today</legend>
-          <p className={helper}>Pick all you use for real work.</p>
-          <div className="mt-3 flex flex-wrap gap-4">
-            {AGENTS.map((o) => (
-              <label key={o.value} className="flex items-center gap-2 text-[var(--lb-ink)]">
-                <input
-                  type="checkbox"
-                  value={o.value}
-                  checked={agents.includes(o.value)}
-                  onChange={(e) =>
-                    setAgents((a) => (e.target.checked ? [...a, o.value] : a.filter((x) => x !== o.value)))
-                  }
-                />{" "}
-                {o.label}
-              </label>
-            ))}
-          </div>
-          {agents.includes("other") && (
-            <input name="agents_other" aria-label="Other agents" className={field} />
-          )}
-        </fieldset>
         <div>
-          <label className={label} htmlFor="rs-handoff">What would you hand off first?</label>
-          <textarea id="rs-handoff" name="first_handoff" required rows={3} className={field} />
+          <label className={label} htmlFor="rs-bookings">Where do your bookings live today?</label>
+          <select id="rs-bookings" name="bookings" required defaultValue="" className={field}>
+            <option value="" disabled>
+              Choose one
+            </option>
+            {BOOKING_TOOLS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className={label} htmlFor="rs-calls">What happens to your calls today?</label>
+          <textarea id="rs-calls" name="first_handoff" required rows={3} maxLength={2000} className={field} />
           <p className={helper}>
-            One job. For example: &ldquo;weekly investor update&rdquo; or &ldquo;triage new GitHub issues&rdquo;.
+            For example: &ldquo;I miss calls while I&rsquo;m with clients, and nobody answers after 7 pm.&rdquo;
           </p>
+        </div>
+        <div>
+          <label className={label} htmlFor="rs-website">Your website (optional)</label>
+          <input id="rs-website" name="website" inputMode="url" maxLength={500} autoComplete="url" className={field} />
         </div>
         <div>
           <label className={label} htmlFor="rs-source">How did you first hear about us?</label>
@@ -184,16 +173,8 @@ export function RequestSetupForm() {
           {source === "other" && <input name="source_other" required aria-label="Where did you hear about us?" className={field} />}
         </div>
         <div>
-          <label className={label} htmlFor="rs-thread">Link to the post or thread (optional)</label>
-          <input id="rs-thread" name="thread_link" type="url" className={field} />
-        </div>
-        <div>
-          <button
-            type="submit"
-            className="lb-btn lb-btn-p"
-            disabled={state === "sending" || agents.length === 0}
-          >
-            {state === "sending" ? "Sending…" : "Request my setup"}
+          <button type="submit" className="lb-btn lb-btn-p" disabled={state === "sending"}>
+            {state === "sending" ? "Sending…" : "Send to a founder"}
           </button>
           <p className={helper}>A founder reads every request.</p>
           {state === "error" && (

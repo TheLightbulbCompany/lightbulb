@@ -64,8 +64,8 @@ it("shows measured usage without allowance or run-out controls when paid access 
   hooks.useUsage.mockReturnValue({ data: { used: 38, included: 1500, overageRate: 0.35, runOut: "keep", paidAllowance: false } });
   render(<Page />);
   expect(screen.getByText("38")).toBeInTheDocument();
-  expect(screen.getByText(/voice min used this month/)).toBeInTheDocument();
-  expect(screen.getByText(/Included minutes apply while your voice plan has confirmed paid access/)).toBeInTheDocument();
+  expect(screen.getByText(/minutes used this month/)).toBeInTheDocument();
+  expect(screen.getByText(/included minutes show here once the plan is paid/)).toBeInTheDocument();
   expect(screen.queryByText(/of 1,500 min used/)).not.toBeInTheDocument();
   expect(screen.queryByRole("meter")).not.toBeInTheDocument();
   expect(screen.queryByRole("radio")).not.toBeInTheDocument();

@@ -33,7 +33,7 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
   useGoLiveAfterPayment();
   if (isLoaded && !organization) {
     // Clerk <OrganizationList> props: https://clerk.com/docs/components/organization/organization-list
-    return <main className="vx-page"><h1 className="vx-title">Choose your workspace</h1>
+    return <main className="vx-page"><h1 className="vx-title">Choose your business</h1>
       <div className="vx-orgs"><OrganizationList hidePersonal afterSelectOrganizationUrl="/voice" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen /></div></main>;
   }
   return (

@@ -4,9 +4,9 @@ import { ThemeStamp } from "@/components/ThemeStamp";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Create your team's workspace — Lightbulb",
+  title: "Set up your AI receptionist | Lightbulb",
   description:
-    "Bring your team. Create a workspace in a minute, or join the one your teammate set up. 30 days free.",
+    "Set up an AI receptionist for your salon, spa or barbershop in five steps. Keep your number. Month to month.",
   alternates: { canonical: absoluteUrl("/sign-up") },
 };
 

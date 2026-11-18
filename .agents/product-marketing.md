@@ -306,7 +306,7 @@ Confidence: **low.** No first-party salon interviews exist yet, and Reddit was b
 - **The CLI / agent network** is kept but is not the focus: `/network`, `/j`, `/join/*`, the Mac app download (`/api/download/desktop`) and the CLI install paths. Do not delete, do not feature on the voice homepage; a footer or nav link is fine.
 - **Texting is secondary, not deleted:** the Front desk texting add-on (`apps/backend/core/services/text_lines.py`, `apps/backend/routers/agent_text.py`, the `front_desk_price_usd` field) stays. Do not market it as part of the receptionist and do not remove it.
 - **Legal and account pages** (`/terms`, `/privacy`, `/security`, `/acceptable-use`, `/eula`, `/cookies`, `/disclaimer`, `/accessibility`, `/support`, `/sign-in`, `/sign-up`, `/onboarding`, `/welcome/*`, `/settings`, `/oauth`, `/auth`, `/checkout_redirect`) are live flows; edit copy only. The legal entity is "Isol8 Inc., doing business as Lightbulb AI"; write no other legal name.
-- Marketing agents change copy and page content. They delete no route, API or backend file.
+- Marketing agents change copy and page content. They delete no API or backend file. Retired old-product pages (the AI-workspace comparisons, posts and docs) were removed with 308 redirects in #5264 with the founder's approval; delete no other route.
 
 ## Goals
 

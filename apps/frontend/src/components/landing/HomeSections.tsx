@@ -143,7 +143,7 @@ export function InCharge() {
           ))}
         </ul>
         <p className="lb-sec-sub">
-          <Link href="/privacy">How we handle your data</Link>
+          <Link href="/security">How we handle your data</Link>
         </p>
       </div>
     </section>

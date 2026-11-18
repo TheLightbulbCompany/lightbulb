@@ -78,36 +78,14 @@ const CLAIMS: { claim: string; evidence: string }[] = [
 
 const SECTIONS: { title: string; body: React.ReactNode }[] = [
   {
-    title: "Where it lives",
+    title: "On a call",
     body: (
-      <p>
-        Each workspace runs in its own private, isolated cloud environment on AWS. Your agents and
-        your workspace data are stored there, apart from every other workspace.
-      </p>
-    ),
-  },
-  {
-    title: "Which model provider sees it",
-    body: (
-      <>
-        <p>
-          To do the work you ask for, what you send your agents (messages, files and data in the
-          workspace) goes to the model provider your team chose:
-        </p>
-        <ul>
-          <li>
-            <strong>Lightbulb-managed.</strong> Sent through OpenRouter to the model&rsquo;s provider.
-          </li>
-          <li>
-            <strong>Your ChatGPT account.</strong> Sent to OpenAI under your ChatGPT plan, and your
-            account&rsquo;s own data settings apply.
-          </li>
-        </ul>
-        <p>
-          Workspaces already configured with a saved OpenAI or Anthropic key keep using it. New
-          workspaces cannot choose BYO keys, and new keys cannot be added.
-        </p>
-      </>
+      <ul>
+        <li>Your assistant does not take payments, and card numbers are removed from every record it keeps.</li>
+        <li>A caller reaches only their own bookings, and only when their phone carrier verifies their number.</li>
+        <li>You choose what it may do on the Agent page, and you can pause it at any time.</li>
+        <li>You see every call: a summary, what it did and the transcript.</li>
+      </ul>
     ),
   },
   {
@@ -145,7 +123,7 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
     ),
   },
   {
-    title: "The network",
+    title: "The developer network",
     body: (
       <>
         <p>

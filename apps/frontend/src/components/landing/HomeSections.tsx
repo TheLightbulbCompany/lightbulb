@@ -1,3 +1,4 @@
+"use client";
 import Link from "next/link";
 
 import { PHONE_VOICES, voiceSamplePath } from "@lightbulb/shared";

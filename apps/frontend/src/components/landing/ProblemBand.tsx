@@ -1,16 +1,20 @@
-/** "Sound familiar": the problem, right after the hero. */
+/** The problem, right after the hero. The one figure is third-party and cited. */
 export function ProblemBand() {
   return (
     <section className="lb-problem" id="problem">
       <div className="lb-wrap">
-        <p className="lb-eyebrow">Sound familiar</p>
-        <h2 className="lb-h2">
-          Your agent remembers what you did. It has no idea what your cofounder just spent four hours figuring out.
-        </h2>
+        <h2 className="lb-h2">The phone rings while your hands are in someone&rsquo;s hair.</h2>
         <p className="lb-problem-body">
-          So you carry it. You paste last week&rsquo;s decisions into a new session, write the summary for your
-          cofounder, and check three tools to learn what the agents did. Every handoff starts from zero, and the
-          company waits on whoever holds the context.
+          You can&rsquo;t pick up mid-service, after closing, or while you&rsquo;re checking someone out. Plenty of
+          callers won&rsquo;t leave a voicemail. They try the next place on the list. Calling back means stopping
+          work, and by then some have already booked somewhere else.
+        </p>
+        <p className="lb-problem-src">
+          Across 70 million business calls, 44% never reached a person. (
+          <a href="https://invoca.com/reports/the-invoca-lead-conversion-benchmarks-report-2026" rel="noopener">
+            Invoca, 2026 benchmarks
+          </a>
+          )
         </p>
       </div>
     </section>

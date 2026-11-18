@@ -137,25 +137,25 @@ def _content(threshold: int, used_seconds: int) -> tuple[str, str, str]:
     rate = f"${voice_billing.OVERAGE_USD_PER_MINUTE:.2f}"
     url = f"{settings.FRONTEND_URL.rstrip('/')}/voice/settings"
     if threshold == 100:
-        subject = "Your included voice minutes are used up"
-        lead = f"Your voice assistant has used {used:,} of {included:,} included minutes this billing period."
+        subject = "You've used all your included minutes"
+        lead = f"Your assistant has used {used:,} of {included:,} included minutes this billing period."
         action = (
-            f"Calls continue at {rate} per minute unless you selected “Send calls to my phone” in Voice settings. "
-            "You can review that choice at any time."
+            f"Calls continue at {rate} per minute, unless you chose “Send calls to my phone” in Settings. "
+            "You can change that choice at any time."
         )
     else:
-        subject = "Your voice plan is at 80% of its included minutes"
-        lead = f"Your voice assistant has used {used:,} of {included:,} included minutes this billing period."
+        subject = "You've used 80% of your included minutes"
+        lead = f"Your assistant has used {used:,} of {included:,} included minutes this billing period."
         action = (
-            f"Additional voice time costs {rate} per minute after the included minutes. "
-            "Calls keep answering unless you choose “Send calls to my phone” in Voice settings."
+            f"Once they run out, each extra minute costs {rate}. "
+            "Your assistant keeps answering unless you choose “Send calls to my phone” in Settings."
         )
-    text = f"{lead}\n\n{action}\n\nReview Billing & minutes: {url}\n"
+    text = f"{lead}\n\n{action}\n\nCheck your minutes: {url}\n"
     e = html.escape
     body = (
         '<div style="font-family:sans-serif;max-width:560px">'
         f"<p>{e(lead)}</p><p>{e(action)}</p>"
-        f'<p><a href="{e(url)}">Review Billing &amp; minutes</a></p></div>'
+        f'<p><a href="{e(url)}">Check your minutes</a></p></div>'
     )
     return subject, text, body
 

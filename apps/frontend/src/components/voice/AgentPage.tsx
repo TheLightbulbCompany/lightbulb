@@ -61,9 +61,9 @@ export function AgentPage() {
           {c.number ? <> · answering {usPhone(c.number)}</> : <> · no number yet</>}</p>
         <p className="vx-save" role="status" data-err={saveState === "error"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? refusal ?? "Couldn't save the last change. Change it again to retry."
-            : saveState === "payment" ? "Your setup is saved. Activate your voice plan: once it is paid, your assistant goes live and gets its number by itself."
+            : saveState === "payment" ? "Your setup is saved. Start your plan in Settings. Once it's paid, your assistant gets its number and goes live on its own."
             : "Changes save as you make them."}</p>
-        {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Activate voice plan</Link></Button>}
+        {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Start your plan</Link></Button>}
       </div>
       <div className="vx-actions" style={{ marginTop: 0 }}>
         {c.number && <Button asChild variant="outline" size="sm"><a href={`tel:${c.number}`}>Test call</a></Button>}
@@ -83,7 +83,7 @@ export function AgentPage() {
 
     <Sec title="Voice & language"><PhoneVoiceSettings c={c} set={set} /></Sec>
 
-    <Sec title={`What ${name} may do for callers`} hint={`Anything unchecked, or anything it doesn't know: ${name} takes a message and puts it in Needs you.`}>
+    <Sec title={`What ${name} may do for callers`} hint={`For anything unchecked, or anything it doesn't know, ${name} takes a message and puts it in Needs you.`}>
       <div>
         <Check label="Book appointments" on={c.allow.book} set={(book) => set({ allow: { ...c.allow, book } })} />
         <Check label="Move and cancel appointments" on={c.allow.move} set={(move) => set({ allow: { ...c.allow, move } })} />
@@ -116,7 +116,7 @@ export function AgentPage() {
       </div>
     </Sec>
 
-    <Sec title="Calendar & booking system" hint={<>Connect Google Calendar in <Link className="vx-link" href="/voice/settings#connections">Settings › Connections</Link>.</>}>
+    <Sec title="Where bookings go" hint={<>To book into Google Calendar, connect it in <Link className="vx-link" href="/voice/settings#connections">Settings › Booking calendar</Link>.</>}>
       <label className="vx-label">Bookings go to
         <select className="vx-field" value={c.bookingsGo === "google" ? "google" : "own"} onChange={(e) => set({ bookingsGo: e.target.value as AgentConfig["bookingsGo"] })}>
           <option value="google">Google Calendar</option>
@@ -129,17 +129,17 @@ export function AgentPage() {
       <label className="vx-label">Your business line
         <input className="vx-field" type="tel" value={c.forwardFrom} placeholder="(415) 555-0199" onChange={(e) => set({ forwardFrom: e.target.value })} /></label>
       <p className="vx-hint" style={{ fontSize: "var(--text-caption)", color: "var(--fg-mute)" }}>
-        To forward it, dial <span className="vx-code">*72</span> then {name}&apos;s number from your business line. Dial <span className="vx-code">*73</span> to stop.</p>
+        To forward all calls from your business line: on Verizon, dial <span className="vx-code">*72</span> then {name}&apos;s number (<span className="vx-code">*73</span> stops it). On AT&amp;T or T-Mobile, dial <span className="vx-code">**21*</span>, {name}&apos;s number, then <span className="vx-code">#</span> (<span className="vx-code">##21#</span> stops it).</p>
       {c.number && (c.numberChoice ? c.numberChoice.path === "keep" : !!c.forwardFrom) && <ForwardCheck c={c} set={set} />}
     </Sec>
 
-    <Sec title="Hand-off to a person" hint="When a caller asks for a person. Otherwise it takes a message.">
+    <Sec title="Hand-off to a person" hint={`When a caller asks for a person, ${name} transfers the call to this number. With no number, it takes a message.`}>
       <label className="vx-label">Transfer to
         <input className="vx-field" type="tel" value={c.handoff.number} placeholder="Your cell" onChange={(e) => set({ handoff: { ...c.handoff, number: e.target.value } })} /></label>
       <Check label="Only during opening hours" on={c.handoff.onlyOpenHours} set={(onlyOpenHours) => set({ handoff: { ...c.handoff, onlyOpenHours } })} />
     </Sec>
 
-    <Sec title="Meetings" hint={<>Invite {invite ? <span className="vx-code">{invite}</span> : "the assistant's team address (Mail)"} to any Google Meet. {name} joins and listens. Say &ldquo;{name}&rdquo; to bring it into the conversation; while active, it responds naturally. Guests are told it&apos;s there; anyone can say &ldquo;{name}, don&apos;t transcribe me&rdquo;.</>}>
+    <Sec title="Meetings" hint={<>Add {invite ? <span className="vx-code">{invite}</span> : "your assistant's meeting address"} as a guest on a Google Calendar event with a Google Meet link. Invites only work from people in your business. {name} joins, tells everyone it&apos;s there and that the meeting is recorded, and speaks when someone says &ldquo;{name}&rdquo;. Anyone can say &ldquo;{name}, stop transcribing me&rdquo;.</>}>
       <div>
         <Check label="Turn action items into follow-ups" on={c.meetings.followUps} set={(followUps) => set({ meetings: { ...c.meetings, followUps } })} />
       </div>
@@ -176,7 +176,7 @@ export function Check({ label, on, set, disabled, note }: { label: string; on: b
 function WaitlistList({ name }: { name: string }) {
   const { entries, remove } = useWaitlist();
   if (!entries.length) return null;
-  return <Sec title="Waitlist" hint={`Callers ${name} put on the waitlist when the time they wanted was full. Nobody is texted yet: call them when a slot opens.`}><div>{entries.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+  return <Sec title="Waitlist" hint={`Callers ${name} put on the waitlist when the time they wanted was full. Lightbulb doesn't text them: call them yourself when a slot opens.`}><div>{entries.map((e) => <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
     <span style={{ flex: 1 }}><b>{e.name || "Caller"}</b> · <a className="vx-link" href={`tel:${e.phone}`}>{usPhone(e.phone)}</a> · {e.date}
       {e.service && <> · {e.service}</>}{e.note && <> · {e.note}</>}</span>
     <Button size="sm" variant="outline" aria-label={`Remove ${e.name || e.phone} from the waitlist`} onClick={() => void remove(e)}><X /></Button>
@@ -277,9 +277,9 @@ export function ToAdd({ c, set, name, why }: Edit & { name: string; why?: string
 
 /** What the server's refusals say; any other refusal reads as a missed call. */
 const REFUSED: Record<string, string> = {
-  outbound_not_configured: "Forwarding check isn't switched on yet",
-  check_in_progress: "A check is already running",
-  us_only: "Forwarding checks work for US and Canadian numbers for now",
+  outbound_not_configured: "The forwarding check isn't available right now. Call your business line from another phone to test it.",
+  check_in_progress: "A check is already running. Wait a minute, then try again.",
+  us_only: "The forwarding check works only for US and Canadian numbers.",
 };
 const POLL_MS = 3000, POLL_FOR_MS = 70_000;  // as long as the server counts a call as the probe (voice_outbound.WINDOW_S)
 

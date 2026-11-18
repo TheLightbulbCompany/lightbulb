@@ -26,7 +26,6 @@ it("readingMinutes never drops below 1", () => {
 
 it("every post and doc on disk has the fields the pages render", () => {
   const posts = getAllPosts();
-  expect(posts.length).toBeGreaterThan(0);
   const nonEmptyString = (v: unknown) => typeof v === "string" && v.trim().length > 0;
   for (const p of posts) {
     expect([p.title, p.description, p.author].every(nonEmptyString)).toBe(true);

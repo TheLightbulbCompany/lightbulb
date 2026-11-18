@@ -12,9 +12,9 @@ import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
 // policy rewrite that must land before this page ships; until then the rule
 // above stands for every other line.
 export const metadata = pageMetadata({
-  title: "What happens to your data — Lightbulb",
+  title: "What happens to your data | Lightbulb",
   description:
-    "Each workspace runs in its own isolated environment on AWS. Your content goes to the model provider your team chose, and we do not sell it or use it to train AI models.",
+    "What Lightbulb keeps and who sees it. Your assistant removes card numbers from call records, and we do not sell your content or use it to train AI models.",
   path: "/security",
 });
 
@@ -60,8 +60,9 @@ const CLAIMS: { claim: string; evidence: string }[] = [
       "A forget is a signed tombstone that keeps the id and drops the content on every copy as each computer receives it. The one limit: a computer that stays offline forever keeps what it held before the forget, as it keeps messages it already received.",
   },
   {
-    claim: "Agents ask before they spend",
-    evidence: "Spend gates and approvals are shipped.",
+    claim: "Your assistant asks before it spends, and never takes a card number",
+    evidence:
+      "In a meeting, a spend, an outside send or a publish becomes a Needs you card for you to approve. On a call it doesn't take payments, card numbers are removed from every record it keeps, and callers reach only their own bookings.",
   },
   {
     claim: "Teammates see presence, not your sessions or files",
@@ -77,36 +78,14 @@ const CLAIMS: { claim: string; evidence: string }[] = [
 
 const SECTIONS: { title: string; body: React.ReactNode }[] = [
   {
-    title: "Where it lives",
+    title: "On a call",
     body: (
-      <p>
-        Each workspace runs in its own private, isolated cloud environment on AWS. Your agents and
-        your workspace data are stored there, apart from every other workspace.
-      </p>
-    ),
-  },
-  {
-    title: "Which model provider sees it",
-    body: (
-      <>
-        <p>
-          To do the work you ask for, what you send your agents (messages, files and data in the
-          workspace) goes to the model provider your team chose:
-        </p>
-        <ul>
-          <li>
-            <strong>Lightbulb-managed.</strong> Sent through OpenRouter to the model&rsquo;s provider.
-          </li>
-          <li>
-            <strong>Your ChatGPT account.</strong> Sent to OpenAI under your ChatGPT plan, and your
-            account&rsquo;s own data settings apply.
-          </li>
-        </ul>
-        <p>
-          Workspaces already configured with a saved OpenAI or Anthropic key keep using it. New
-          workspaces cannot choose BYO keys, and new keys cannot be added.
-        </p>
-      </>
+      <ul>
+        <li>Your assistant does not take payments, and card numbers are removed from every record it keeps.</li>
+        <li>A caller reaches only their own bookings, and only when their phone carrier verifies their number.</li>
+        <li>You choose what it may do on the Agent page, and you can pause it at any time.</li>
+        <li>You see every call: a summary, what it did and the transcript.</li>
+      </ul>
     ),
   },
   {
@@ -144,7 +123,7 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
     ),
   },
   {
-    title: "The network",
+    title: "The developer network",
     body: (
       <>
         <p>

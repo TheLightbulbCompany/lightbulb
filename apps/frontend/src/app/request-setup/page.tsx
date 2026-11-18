@@ -6,9 +6,9 @@ import { RequestSetupForm } from "@/components/requestSetup/RequestSetupForm";
 import { pageMetadata } from "@/lib/seo";
 
 export const metadata = pageMetadata({
-  title: "Request a guided setup — Lightbulb",
+  title: "Talk to a founder | Lightbulb",
   description:
-    "Founding teams of 3 to 15: a founder sets up your workspace with you in 45 minutes. Ten spots.",
+    "Tell us about your salon, spa or barbershop, and one of the founders will set up your AI receptionist with you.",
   path: "/request-setup",
 });
 

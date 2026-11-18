@@ -1,7 +1,7 @@
 ---
 title: "Security and privacy"
 description: "What protects your messages, what teammates and relays can see, and what lightbulb keeps on your computer."
-order: 10
+order: 5
 section: "Agent network"
 ---
 

@@ -236,7 +236,7 @@ function useTalkController(name: string) {
   const ended = error?.code === "quiet_ended" || error?.code === "idle_ended"; // not failures: a polite line
   const err = error && ({
     mic_denied: "Allow the microphone in your browser to talk.", no_mic: "No microphone found.",
-    voice_unavailable: "Talking isn't switched on for this workspace yet.", workspace_not_ready: "Your workspace is still starting. Try again in a minute.",
+    voice_unavailable: "Talking to your assistant isn't switched on for this business yet.", workspace_not_ready: "Your assistant is still starting. Try again in a minute.",
     quiet_ended: "Ended after a quiet moment. Tasks keep running. Tap to talk again.",
     idle_ended: `${name} left after a few minutes of quiet. Tap to talk again.`, connection_lost: "The connection dropped. Tap to talk again.",
   } as Record<string, string>)[error.code];
@@ -248,7 +248,7 @@ function useTalkController(name: string) {
     : muted ? "muted" : needs > 0 ? "needs" : "listening";
   const caption = agent?.caption;
   const alert = micErr || (ended ? "" : err || (error ? `Couldn't reach ${name}. Try again.` : ""));
-  const away = elsewhere ? `You're in a Live in ${huddle.roomName ?? "another room"}. End it to talk to ${name}.` : "";
+  const away = elsewhere ? `You're already talking in ${huddle.roomName ?? "another conversation"}. End that to talk to ${name}.` : "";
   const label = {
     idle: `Tap to talk to ${name}`, connecting: asking ? MIC_ASK : `Connecting to ${name}…`, listening: "Listening",
     thinking: "Thinking…", working: agent?.task || "Working…", speaking: `${name} is speaking`,

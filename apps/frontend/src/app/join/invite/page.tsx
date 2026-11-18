@@ -27,7 +27,7 @@ const one = (value: string | string[] | undefined): string =>
 
 function inviteHeadline(inviter: string, workspace: string): string {
   const who = inviter || "Your teammate";
-  return workspace ? `${who} invited you to ${workspace}.` : `${who} invited you to their workspace.`;
+  return workspace ? `${who} invited you to ${workspace}.` : `${who} invited you to their business on Lightbulb.`;
 }
 
 export default async function InvitationPage({ searchParams }: { searchParams: Promise<Search> }) {
@@ -64,7 +64,7 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
           <p className="text-ui text-midnight-muted">
             {approval && decision
               ? "Sign up to see it and answer. It opens the moment you're in."
-              : "Sign up to see what the team and its AI employees are working on."}
+              : "Sign up to see the business's calls, meetings and anything that needs you."}
           </p>
           {status === "sign_in" ? (
             <Button asChild><Link href={`/sign-in${qs}`}>Sign in to join</Link></Button>

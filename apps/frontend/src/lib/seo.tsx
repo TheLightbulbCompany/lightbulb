@@ -7,9 +7,36 @@ import { SITE_URL, SUPPORT_EMAIL } from "./domain";
 export { SITE_URL };
 export const SITE_NAME = "Lightbulb";
 export const OG_IMAGE = "/og-lightbulb.png";
-export const HOME_TITLE = "Lightbulb — Messaging for people and their AI agents";
+export const HOME_TITLE = "AI Receptionist for Salons, Spas & Barbershops | Lightbulb";
 export const HOME_DESCRIPTION =
-  "Your coding agents talk to each other and to your teammates' agents, free and end-to-end encrypted. Add a workspace and your agents keep working when you log off.";
+  "Your salon's AI receptionist answers your calls day and night, books into Google Calendar, takes messages and hands callers to you. Keep your number.";
+
+/**
+ * The product in one paragraph and its key facts, for answer engines
+ * (/llms.txt, /llms-full.txt). Every line is VERIFIED in
+ * .agents/product-marketing.md; no price, minute count or trial is typed here.
+ */
+export const PRODUCT_SUMMARY =
+  "Lightbulb gives a salon, spa or barbershop an AI receptionist with the name the owner chooses. " +
+  "It answers the business's phone day and night, books, moves and cancels appointments, takes messages, " +
+  "and puts anything it can't decide in front of the owner.";
+
+export const PRODUCT_FACTS = [
+  "Who it's for: independent salons (hair, nails, lashes, brows), day spas, massage studios and barbershops in the US.",
+  "Answers calls 24/7, several at once (up to five live calls on one line), in English, or English and Spanish.",
+  "Books, moves and cancels appointments during the call, inside the business's opening hours, for a staff member who does that service, with the service length and buffer the owner set. Earlier bookings are found, moved or cancelled only when the caller's carrier verifies their number; otherwise it takes a message.",
+  "Bookings go into its own calendar, shown on the owner's Home, or into Google Calendar. It does not book into Square, Vagaro, Fresha, Boulevard, GlossGenius, Booksy, Mindbody or Acuity.",
+  "Answers questions from what the owner entered: hours, closures, services, prices, staff and the owner's own answers. It reads the business's website at setup to draft these, and the owner checks the draft.",
+  "When it doesn't know an answer or isn't allowed to act, it takes a message and a Needs you card goes to the owner. The owner answers once and it knows next time.",
+  "Transfers a caller to the owner's mobile when they ask for a person, optionally only during opening hours.",
+  "The owner sees every call: who called, when, a one-line summary, the steps it took and the transcript.",
+  "The owner picks its name, writes its greeting, chooses one of three voices and decides what it may do (book, move or cancel, greet returning callers by name, answer questions).",
+  "Keep your number by forwarding missed and busy calls, or all calls, from Verizon, AT&T, T-Mobile, a landline or a VoIP app; the app checks the forwarding works. Or get a new US local number.",
+  "It doesn't take payments and removes card numbers from every record it keeps. Callers reach only their own bookings.",
+  "Can join the owner's Google Meet when invited, speaks only when named, and keeps notes, decisions and follow-ups.",
+  "Billing: one monthly plan per business with minutes included, then a per-minute rate. Month to month, a live minutes meter, and the owner chooses what happens when minutes run out. Cancel the renewal yourself in Settings. There is no free trial: going live needs a paid plan. See " + SITE_URL + "/pricing.",
+  "Not a fit for: medical, dental or med-spa practices that handle health information, multi-location chains, businesses outside the US, outbound calling or text messaging.",
+];
 
 export function absoluteUrl(path = "/") {
   return new URL(path, SITE_URL).toString();
@@ -64,9 +91,9 @@ export const organizationJsonLd = {
   alternateName: ["Lightbulb", "The Lightbulb Company"],
   url: SITE_URL,
   logo: absoluteUrl("/icon.png"),
-  description: "Lightbulb makes messaging for people and their AI agents: a free, open-source network between the coding agents people already run, and a workspace where agents keep working when nobody is logged in.",
+  description: PRODUCT_SUMMARY,
   disambiguatingDescription:
-    "Lightbulb (thelightbulb.company) is messaging software for people and their AI agents. Not TheLightbulb.ai, the emotion-AI company, not The Light Bulb Company (UK), the lighting retailer, and not the lightbulb-mcp package.",
+    "Lightbulb (thelightbulb.company) makes an AI receptionist for salons, spas and barbershops. Not TheLightbulb.ai, the emotion-AI company, not The Light Bulb Company (UK), the lighting retailer, and not the lightbulb-mcp package.",
   email: SUPPORT_EMAIL,
   sameAs: [
     // Only profiles that resolve: the LinkedIn page 404'd. Add LinkedIn or
@@ -94,25 +121,29 @@ export const softwareApplicationJsonLd = {
   "@id": `${SITE_URL}/#software`,
   name: "Lightbulb",
   applicationCategory: "BusinessApplication",
-  applicationSubCategory: "Team communication",
-  operatingSystem: "macOS, Linux, Web, iOS",
+  applicationSubCategory: "AI receptionist",
+  operatingSystem: "Web",
   url: SITE_URL,
   brand: { "@id": `${SITE_URL}/#organization` },
   provider: { "@id": `${SITE_URL}/#organization` },
-  description:
-    "Messaging for people and their AI agents. A free, open-source network lets the coding agents people already run (Claude Code, Codex, Cursor, Grok CLI, OpenCode) message each other and teammates' agents, peer to peer and end-to-end encrypted, with no account. A workspace joins the network with agents that keep working when nobody is logged in, rooms the whole team can read, and approval cards for anything that spends, sends or deploys.",
+  areaServed: { "@type": "Country", name: "United States" },
+  audience: { "@type": "BusinessAudience", audienceType: "Salons, spas and barbershops" },
+  description: PRODUCT_SUMMARY,
+  // VERIFIED claims only (.agents/product-marketing.md).
   featureList: [
-    "A free, open-source network: your coding agents talk to each other and to the agents of people you invite, peer to peer, end-to-end encrypted, no account",
-    "Works with Claude Code, Codex, Cursor, Grok CLI and OpenCode on macOS and Linux",
-    "Workspace agents with their own runtime, memory, email and tools that keep working when every laptop is closed",
-    "Channels, direct messages and group chats shared by people and AI agents, with one record",
-    "Approval cards for plans, spending, sends, deploys and new hires",
-    "Shared Claude Code and Codex sessions a teammate can watch, and Claude Code sessions they can pick up",
-    "Lightbulb-managed inference or sign in with your ChatGPT account",
+    "Answers calls 24/7, several at once",
+    "Books, moves and cancels appointments during the call, inside your opening hours",
+    "Books into its own calendar or Google Calendar",
+    "Takes messages and sends anything it can't decide to you as a Needs you card",
+    "Transfers callers to your mobile when they want a person",
+    "Shows every call with a summary, the steps it took and the transcript",
+    "Your choice of name, greeting and one of three voices",
+    "English, or English and Spanish",
+    "Keep your number with call forwarding, or get a new US local number",
+    "Joins your Google Meet and answers when you say its name",
   ],
-  // No `offers` on the homepage graph (seo.test.ts): the workspace's paid offer
-  // lives on /pricing, and the free network is stated on /pricing.md, /llms.txt
-  // and the feature list above.
+  // No `offers` on the homepage graph (seo.test.ts): the price is read from
+  // the billing API on /pricing, never typed into markup.
 };
 
 function withoutContext(node: Record<string, unknown>) {
@@ -182,7 +213,7 @@ export function techArticleJsonLd({
     ...(section ? { articleSection: section } : {}),
     isPartOf: {
       "@type": "CollectionPage",
-      name: "Lightbulb product documentation",
+      name: "Lightbulb network documentation",
       url: absoluteUrl("/docs"),
     },
     author: { "@type": "Organization", name: SITE_NAME, url: SITE_URL },
@@ -204,6 +235,19 @@ export function breadcrumbJsonLd(items: { name: string; path: string }[]) {
       position: index + 1,
       name: item.name,
       item: absoluteUrl(item.path),
+    })),
+  };
+}
+
+/** `FAQPage` for a FAQ the page renders word for word. */
+export function faqJsonLd(faq: { q: string; a: string }[]) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faq.map(({ q, a }) => ({
+      "@type": "Question",
+      name: q,
+      acceptedAnswer: { "@type": "Answer", text: a },
     })),
   };
 }

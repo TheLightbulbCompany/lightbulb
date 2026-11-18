@@ -22,7 +22,7 @@ it("plays same-model static samples only by user gesture and stops replaced play
   rerender(<PhoneVoiceSettings c={{ voice: "willow", spanish: true }} set={set} />);
   expect(screen.queryByLabelText("Voice sample player")).toBeNull();
   expect(pause).toHaveBeenCalledTimes(3);
-  expect(screen.getByText(/End your Live conversation/)).toBeInTheDocument();
+  expect(screen.getByText(/End your conversation with your assistant/)).toBeInTheDocument();
   unmount(); pause.mockRestore();
 });
 

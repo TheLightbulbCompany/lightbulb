@@ -13,13 +13,13 @@ beforeEach(() => vi.clearAllMocks());
 
 const openJoinDoor = () => fireEvent.click(screen.getByRole("tab", { name: /Join your team/ }));
 
-it("sells the team, not a solo tool", () => {
+it("speaks to an owner setting up a phone assistant, with no free-trial promise", () => {
   render(<Page />);
-  expect(screen.getByRole("heading", { level: 1, hidden: true })).toHaveTextContent("Bring your team.");
-  for (const line of ["Your team in the same rooms", "Your own cloud", "Agents that ask first", "Free for 30 days"]) {
+  expect(screen.getByRole("heading", { level: 1, hidden: true })).toHaveTextContent("Your phone, answered and booked.");
+  for (const line of ["Answers day and night", "Set up in five steps", "You stay in charge", "Pay when you go live"]) {
     expect(screen.getByText(line)).toBeInTheDocument();
   }
-  expect(screen.queryByText(/No shared data/)).toBeNull();
+  expect(screen.queryByText(/Free for 30 days|Your team in the same rooms|Agents that ask first/)).toBeNull();
 });
 
 it("opens on the create door: the Clerk form, landing on the voice home", () => {

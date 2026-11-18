@@ -27,7 +27,7 @@ export function PhoneVoiceSettings({ c, set }: { c: Pick<AgentConfig, "voice" | 
         <option value="en">English</option><option value="es">Spanish</option>
       </select>
     </label>}
-    {blocked ? <p className="vx-hint" role="status">End your Live conversation to play a voice sample.</p>
+    {blocked ? <p className="vx-hint" role="status">End your conversation with your assistant to play a voice sample.</p>
       : <StockSample key={src} src={src} />}
   </div>;
 }

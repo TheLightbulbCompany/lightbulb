@@ -50,24 +50,24 @@ describe("workspace onboarding", () => {
     render(<OnboardingPage />);
     expect(clerk.replace).toHaveBeenCalledWith("/welcome/name?returnTo=%2Fonboarding");
     expect(clerk.replace).toHaveBeenCalledTimes(1);
-    expect(screen.queryByLabelText("Workspace name")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Business name")).not.toBeInTheDocument();
     expect(clerk.setActive).not.toHaveBeenCalled();
   });
   it("does not offer creation until membership and invitation lists are available", () => {
     clerk.listsPresent = false;
     render(<OnboardingPage />);
-    expect(screen.queryByLabelText("Workspace name")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Business name")).not.toBeInTheDocument();
     expect(clerk.replace).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Loading");
   });
   it("puts the create form first and the join option under it, without requiring a signup intent", () => {
     render(<OnboardingPage />);
-    expect(screen.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Create your workspace", "Joining a team instead?"]);
+    expect(screen.getByRole("heading", { level: 1, name: "Set up your business" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Set up your business", "Joining a team instead?"]);
     expect(screen.getByText("Invited by email? Open that email on this device and tap its link.")).toBeInTheDocument();
-    const name = screen.getByLabelText("Workspace name");
+    const name = screen.getByLabelText("Business name");
     expect(name.compareDocumentPosition(screen.getByLabelText("Paste a join link")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Create workspace" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
     expect(clerk.replace).not.toHaveBeenCalled();
   });
   it.each([
@@ -85,7 +85,7 @@ describe("workspace onboarding", () => {
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(screen.getByRole("alert")).toHaveTextContent("That doesn't look like a Lightbulb join link.");
     expect(clerk.replace).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Workspace name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Business name")).toBeInTheDocument();
   });
   it("previews the agents' address from the name, then holds the slug BEFORE creating the org", async () => {
     clerk.apiGet.mockImplementation(async (path: string) => ({
@@ -94,13 +94,13 @@ describe("workspace onboarding", () => {
     clerk.apiPost.mockResolvedValue({ slug: "bench-club" });
     clerk.createOrganization.mockResolvedValue({ id: "org_new" });
     render(<OnboardingPage />);
-    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Bench Club!" } });
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Bench Club!" } });
     // The address is one line with "Change", not a second field to fill in.
-    await waitFor(() => expect(screen.getByText("ceo@bench-club.dev.thelightbulb.company")).toBeInTheDocument());
-    expect(screen.queryByLabelText("Agent email address")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("agents@bench-club.dev.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.queryByLabelText("Meeting invite address")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/How did you first hear about us/), { target: { value: "reddit" } });
     fireEvent.change(screen.getByLabelText("Tell us more"), { target: { value: "r/startups" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_new" }));
     expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/hold", { slug: "bench-club" });
     // Where they came from is stashed before the org exists (the webhook adopts it).
@@ -121,25 +121,25 @@ describe("workspace onboarding", () => {
       return { slug, available: slug !== "acme", reason: slug === "acme" ? "taken" : null, domain: "thelightbulb.company" };
     });
     render(<OnboardingPage />);
-    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
     // A taken address opens the field by itself.
     await waitFor(() => expect(screen.getByText("That address is taken. Try another.")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Create workspace" })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Agent email address"), { target: { value: "acme-labs" } });
-    await waitFor(() => expect(screen.getByText("ceo@acme-labs.thelightbulb.company")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Create workspace" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Meeting invite address"), { target: { value: "acme-labs" } });
+    await waitFor(() => expect(screen.getByText("agents@acme-labs.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
     // Clearing the field goes back to the name's suggestion.
-    fireEvent.change(screen.getByLabelText("Agent email address"), { target: { value: "" } });
-    expect(screen.getByLabelText("Agent email address")).toHaveValue("acme");
+    fireEvent.change(screen.getByLabelText("Meeting invite address"), { target: { value: "" } });
+    expect(screen.getByLabelText("Meeting invite address")).toHaveValue("acme");
   });
   it("opens the address field on Change", async () => {
     clerk.apiGet.mockImplementation(async (path: string) => ({
       slug: new URLSearchParams(path.split("?")[1]).get("slug"), available: true, reason: null, domain: "thelightbulb.company",
     }));
     render(<OnboardingPage />);
-    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
     fireEvent.click(await screen.findByRole("button", { name: "Change" }));
-    expect(screen.getByLabelText("Agent email address")).toHaveValue("acme");
+    expect(screen.getByLabelText("Meeting invite address")).toHaveValue("acme");
   });
   it("ignores an availability answer for a slug the user has already typed past", async () => {
     let answerFirst: (v: unknown) => void = () => {};
@@ -149,29 +149,29 @@ describe("workspace onboarding", () => {
       return slug === "ab" ? new Promise((resolve) => { answerFirst = () => resolve(answer); }) : Promise.resolve(answer);
     });
     render(<OnboardingPage />);
-    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "ab" } });
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "ab" } });
     await waitFor(() => expect(clerk.apiGet).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "abc" } });
-    await waitFor(() => expect(screen.getByText("ceo@abc.thelightbulb.company")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "abc" } });
+    await waitFor(() => expect(screen.getByText("agents@abc.thelightbulb.company")).toBeInTheDocument());
     answerFirst(undefined);
     await new Promise((r) => setTimeout(r, 20));
-    expect(screen.getByText("ceo@abc.thelightbulb.company")).toBeInTheDocument();
+    expect(screen.getByText("agents@abc.thelightbulb.company")).toBeInTheDocument();
   });
   it("a lost race says so and never creates the org", async () => {
     const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
     clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
     clerk.apiPost.mockRejectedValue(new ApiError(409, { detail: "slug_taken" }, "slug_taken"));
     render(<OnboardingPage />);
-    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Acme" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Create workspace" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(screen.getByText("That address is taken. Try another.")).toBeInTheDocument());
     expect(clerk.createOrganization).not.toHaveBeenCalled();
   });
   it("offers Clerk selection instead of activating an arbitrary membership", () => {
     clerk.memberships = [{ organization: { id: "org_a" } }, { organization: { id: "org_b" } }];
     render(<OnboardingPage />);
-    expect(screen.getByRole("heading", { name: "Choose your workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose your business" })).toBeInTheDocument();
     expect(clerk.selectProps).toHaveBeenCalledWith(expect.objectContaining({ hidePersonal: true, afterSelectOrganizationUrl: "/onboarding" }));
     expect(clerk.setActive).not.toHaveBeenCalled();
   });
@@ -198,7 +198,7 @@ describe("workspace onboarding", () => {
     expect(accept).toHaveBeenCalledOnce();
     expect(clerk.revalidateInvitations).toHaveBeenCalled();
     expect(clerk.revalidateMemberships).toHaveBeenCalled();
-    expect(screen.queryByLabelText("Workspace name")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Business name")).not.toBeInTheDocument();
     expect(clerk.update).not.toHaveBeenCalled();
   });
   it("shows an actionable error when invitation acceptance fails", async () => {

@@ -27,7 +27,7 @@ const SLUG_PROBLEM: Record<NonNullable<SlugCheck["reason"]>, string> = {
   taken: "That address is taken. Try another.",
 };
 
-/** "Create your workspace": the name, plus the address its agents will email from. The slug
+/** "Set up your business": its name, plus the address its assistant gets Meet invites at. The slug
  *  is HELD before the Clerk org exists, so a lost race never leaves a workspace without one;
  *  the organization.created webhook then hands the hold to the workspace. */
 function CreateWorkspaceForm() {
@@ -84,7 +84,7 @@ function CreateWorkspaceForm() {
       if (e instanceof ApiError && e.status === 409) {
         setCheck({ slug, available: false, reason: "taken", domain: current?.domain ?? "" });
       } else {
-        setError("We couldn't create your workspace. Please try again.");
+        setError("We couldn't set up your business. Please try again.");
       }
       setBusy(false);
     }
@@ -93,17 +93,17 @@ function CreateWorkspaceForm() {
   return (
     <form onSubmit={create} className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-border bg-card p-6 shadow-sm">
       <label className="flex flex-col gap-1.5 text-sm font-medium">
-        Workspace name
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Workspace name" autoFocus maxLength={64} />
+        Business name
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your salon, spa or barbershop" autoFocus maxLength={64} />
       </label>
       {editingSlug || current?.reason ? (
         <>
           <label className="flex flex-col gap-1.5 text-sm font-medium">
-            Agent email address
+            Meeting invite address
             <Input
               value={slug}
               onChange={(e) => { setEditingSlug(true); setTypedSlug(e.target.value.toLowerCase()); }}
-              placeholder="your-team"
+              placeholder="your-business"
               maxLength={32}
               spellCheck={false}
               autoCapitalize="none"
@@ -111,16 +111,16 @@ function CreateWorkspaceForm() {
             />
           </label>
           <p id="slug-status" className="-mt-2 text-sm text-muted-foreground" aria-live="polite">
-            {!slug ? "Your agents' email address comes from this."
+            {!slug ? "Your assistant's meeting address comes from this."
               : current?.reason ? <span className="text-destructive">{SLUG_PROBLEM[current.reason]}</span>
-              : current ? <>Lightbulb will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></>
+              : current ? <>Invite <span className="font-mono text-foreground">agents@{slug}.{current.domain}</span> to a Google Meet and your assistant joins.</>
               : "Checking…"}
           </p>
         </>
       ) : (
         <p id="slug-status" className="-mt-2 flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
-          {!slug ? "Your agents' email address comes from the name."
-            : current ? <span>Lightbulb will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></span>
+          {!slug ? "Your assistant's meeting address comes from the name."
+            : current ? <span>Invite <span className="font-mono text-foreground">agents@{slug}.{current.domain}</span> to a Google Meet and your assistant joins.</span>
             : "Checking…"}
           {slug && (
             <button type="button" className="text-foreground underline underline-offset-2" onClick={() => setEditingSlug(true)}>
@@ -132,7 +132,7 @@ function CreateWorkspaceForm() {
       <SourceQuestion value={source} onChange={setSource} />
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <Button type="submit" disabled={!ready} className="self-end">
-        {busy ? "Creating…" : "Create workspace"}
+        {busy ? "Setting up…" : "Continue"}
       </Button>
     </form>
   );
@@ -161,7 +161,7 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (!soleOrgId || !setActive || error) return;
     void setActive({ organization: soleOrgId }).catch(() => {
-      setError("We couldn't activate your workspace. Please try again.");
+      setError("We couldn't open your business. Please try again.");
     });
   }, [soleOrgId, setActive, error]);
 
@@ -183,7 +183,7 @@ export default function OnboardingPage() {
     try {
       await activateJoinedWorkspace(joiningOrgId);
     } catch {
-      setError("We couldn't activate your workspace. Please try again.");
+      setError("We couldn't open your business. Please try again.");
     }
   }
 
@@ -198,7 +198,7 @@ export default function OnboardingPage() {
       await activateJoinedWorkspace(invitation.publicOrganizationData.id);
     } catch {
       if (!accepted) setJoiningOrgId(null);
-      setError("We couldn't join your workspace. Please try again.");
+      setError("We couldn't join that business. Please try again.");
     } finally {
       setAccepting(false);
     }
@@ -207,14 +207,14 @@ export default function OnboardingPage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-4">
       {error && <p role="alert">{error}</p>}
-      {!loaded ? <p role="status">Loading your workspaces…</p> : invitations.length > 0 ? (
+      {!loaded ? <p role="status">Loading…</p> : invitations.length > 0 ? (
         <>
           <h1 className="text-2xl font-bold">You have been invited</h1>
-          <p>Accept an invitation to join a workspace on Lightbulb.</p>
+          <p>Accept an invitation to join a business on Lightbulb.</p>
           <div className="flex w-full max-w-md flex-col gap-3">
             {invitations.map((invitation) => (
               <div key={invitation.id} className="flex items-center justify-between gap-4 rounded-lg border border-border bg-card p-4">
-                <span>{invitation.publicOrganizationData.name || "Workspace"}</span>
+                <span>{invitation.publicOrganizationData.name || "Business"}</span>
                 <Button onClick={() => acceptInvitation(invitation)} disabled={accepting}>
                   {accepting && joiningOrgId === invitation.publicOrganizationData.id ? "Accepting…" : "Accept"}
                 </Button>
@@ -224,18 +224,18 @@ export default function OnboardingPage() {
         </>
       ) : joiningOrgId || organization || count === 1 ? (
         <>
-          <p role="status">Activating your workspace…</p>
+          <p role="status">Opening your business…</p>
           {error && <Button onClick={retryActivation}>Try again</Button>}
         </>
       ) : count > 1 ? (
         <>
-          <h1 className="text-2xl font-bold">Choose your workspace</h1>
+          <h1 className="text-2xl font-bold">Choose your business</h1>
           <OrganizationList hidePersonal afterSelectOrganizationUrl="/onboarding" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
         </>
       ) : (
         <>
-          <h1 className="text-2xl font-bold">Create your workspace</h1>
-          <p>Your workspace brings your agents, work, and billing together.</p>
+          <h1 className="text-2xl font-bold">Set up your business</h1>
+          <p>Start with your business name. Then you&apos;ll tell your assistant your hours and services, set up its phone line, and pick its name.</p>
           <CreateWorkspaceForm />
           <JoinTeamBlock />
         </>

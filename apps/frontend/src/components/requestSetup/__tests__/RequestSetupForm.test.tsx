@@ -1,26 +1,29 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams("source=compare-slack"),
+  useSearchParams: () => new URLSearchParams("source=home"),
 }));
 vi.mock("@/lib/analytics", () => ({
   refreshAttribution: vi.fn(),
-  attributionProperties: () => ({ first_touch_utm_source: "hn", first_touch_landing_path: "/" }),
+  attributionProperties: () => ({ first_touch_utm_source: "google", first_touch_landing_path: "/" }),
   client: { get_distinct_id: () => "anon-1" },
 }));
 
 import { RequestSetupForm } from "../RequestSetupForm";
 
 function fill(teamSize: string) {
-  fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Mara Reyes" } });
-  fireEvent.change(screen.getByLabelText("Work email"), { target: { value: "mara@acme.test" } });
-  fireEvent.change(screen.getByLabelText("Company"), { target: { value: "Acme" } });
+  fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Rosa Diaz" } });
+  fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rosa@example.test" } });
+  fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Example Salon" } });
   fireEvent.click(screen.getByLabelText(teamSize));
-  fireEvent.click(screen.getByLabelText("Codex"));
-  fireEvent.change(screen.getByLabelText("What would you hand off first?"), { target: { value: "investor update" } });
-  fireEvent.change(screen.getByLabelText("How did you first hear about us?"), { target: { value: "reddit" } });
-  fireEvent.click(screen.getByRole("button", { name: "Request my setup" }));
+  fireEvent.change(screen.getByLabelText("Where do your bookings live today?"), { target: { value: "Square" } });
+  fireEvent.change(screen.getByLabelText("What happens to your calls today?"), {
+    target: { value: "I miss calls with clients in the chair" },
+  });
+  fireEvent.change(screen.getByLabelText("Your website (optional)"), { target: { value: "examplesalon.test" } });
+  fireEvent.change(screen.getByLabelText("How did you first hear about us?"), { target: { value: "search" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send to a founder" }));
 }
 
 describe("RequestSetupForm", () => {
@@ -34,28 +37,34 @@ describe("RequestSetupForm", () => {
     fetchMock.mockReset();
   });
 
-  it("posts the answers with source, ?source= and first-touch attribution", async () => {
+  it("posts a payload the setup-request schema accepts, with ?source= and first-touch attribution", async () => {
     render(<RequestSetupForm />);
     fill("3–5");
-    await screen.findByText("Thanks, Mara.");
+    await screen.findByText("Thanks, Rosa.");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toMatch(/\/setup-requests$/);
     const body = JSON.parse(init.body);
     expect(body).toMatchObject({
+      name: "Rosa Diaz",
+      company: "Example Salon",
       team_size: "3-5",
-      agents: ["codex"],
-      source: "reddit",
-      source_param: "compare-slack",
+      agents: ["other"],
+      agents_other: "Bookings: Square",
+      first_handoff: "I miss calls with clients in the chair",
+      thread_link: "examplesalon.test",
+      source: "search",
+      source_param: "home",
       anonymous_id: "anon-1",
-      attribution: { first_touch_utm_source: "hn", first_touch_landing_path: "/" },
+      attribution: { first_touch_utm_source: "google", first_touch_landing_path: "/" },
     });
-    expect(screen.getByText(/email you within a day/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Set up your assistant" })).toHaveAttribute("href", "/sign-up");
   });
 
-  it("sends a one- or two-person team to Start free", async () => {
+  it("thanks a one-person shop the same way", async () => {
     render(<RequestSetupForm />);
     fill("Just me");
-    await waitFor(() => expect(screen.getByRole("link", { name: "Start free" })).toHaveAttribute("href", "/sign-up"));
+    expect(await screen.findByText("Thanks, Rosa.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("A founder reads every request");
   });
 
   it("says so when the request fails", async () => {

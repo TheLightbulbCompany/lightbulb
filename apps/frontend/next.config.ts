@@ -106,8 +106,7 @@ const BUILD_ID = process.env.NEXT_DEPLOYMENT_ID
       .replace(/[^A-Za-z0-9-]/g, "").slice(0, 32)
     : undefined);
 
-// Retired thin landing pages (and one post about channels the product no longer
-// offers), each 308'd to the nearest real page so old links and crawls land.
+// Retired pages, each 308'd to the nearest real page so old links and crawls land.
 export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] = [
   ["/ai-agent-workspace", "/"],
   ["/ai-agent-marketplace", "/"],
@@ -118,12 +117,27 @@ export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] =
   ["/ai-chief-of-staff", "/"],
   ["/ai-operations-agent", "/"],
   ["/ai-customer-support-agent", "/"],
-  ["/blog/connect-ai-agent-slack-discord-telegram", "/blog"],
-  ["/blog/ai-native-company-operating-system", "/blog"],
-  // Said Lightbulb runs "behind the scenes" of Slack; the comparison page is the one Slack story.
-  ["/ai-agents-for-slack", "/compare/slack"],
+  ["/blog/connect-ai-agent-slack-discord-telegram", "/"],
+  ["/blog/ai-native-company-operating-system", "/"],
+  ["/ai-agents-for-slack", "/"],
   // Web session sharing went with the old chat app.
   ["/claude-code-session-sharing", "/"],
+  // The AI-workspace comparisons, posts and docs went with the 2026-11 move to
+  // the salon receptionist; /compare now compares ways to answer the phone.
+  ["/compare/slack", "/compare"],
+  ["/compare/slack-alternatives-for-ai-agents", "/compare"],
+  ["/compare/grok-bot", "/compare"],
+  ["/compare/microsoft-teams-copilot", "/compare"],
+  ["/compare/bloome", "/compare"],
+  ["/blog/persistent-ai-agent-workspace", "/network"],
+  ["/blog/human-in-the-loop-ai-agent-approvals", "/security"],
+  ["/blog/webhook-event-reference", "/docs"],
+  ["/blog/browser-automation-for-nonnative-integrations", "/docs"],
+  ["/docs/get-started", "/docs"],
+  ["/docs/use-cases", "/docs"],
+  ["/docs/skills-and-automations", "/docs"],
+  ["/docs/browser-and-apps", "/docs"],
+  ["/docs/approvals-security-privacy", "/security"],
 ].map(([source, destination]) => ({ source, destination }));
 
 // Only the production host may be indexed. Keyed on host, not VERCEL_ENV: the

@@ -51,7 +51,7 @@ export default function NamePage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-4">
       <h1 className="text-2xl font-bold">What should people call you?</h1>
-      <p>Your teammates and agents see this name next to everything you send.</p>
+      <p>This is the name on your account. Anyone you add to your business later sees it too.</p>
       <form onSubmit={save} className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-border bg-card p-6 shadow-sm">
         <label className="flex flex-col gap-1.5 text-sm font-medium">
           First name

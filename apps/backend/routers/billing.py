@@ -19,7 +19,7 @@ from core.auth import (
     require_org_admin,
 )
 from core.config import settings
-from core.billing import voice_plan, voice_plan_checkout
+from core.billing import voice_billing, voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.repositories.workspace_repo import customer_ops_agent_id
@@ -66,9 +66,9 @@ async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
         "action": "checkout" if status == "not_enrolled" and available else None,
         "billingTimeZone": "UTC",
         "planVersion": voice_plan.PLAN_VERSION,
-        "monthlyUsd": 250,
-        "includedMinutes": 1500,
-        "overageUsdPerMinute": 0.35,
+        "monthlyUsd": voice_billing.MONTHLY_USD,
+        "includedMinutes": voice_billing.INCLUDED_MINUTES,
+        "overageUsdPerMinute": voice_billing.OVERAGE_USD_PER_MINUTE,
     }
 
 
@@ -177,13 +177,19 @@ def _front_desk_price_usd() -> int | None:
     description=(
         "Unauthenticated. The one plan's price as checkout bills it: the workspace price, the "
         "members it covers, the per-member seat price past them, and the free-trial length. "
-        "The marketing site renders /pricing from this."
+        "The marketing site renders /pricing from this. The voice_* fields are the voice "
+        "receptionist plan (what /voice-plan bills), null while that plan cannot be bought."
     ),
     operation_id="get_public_prices",
 )
 async def get_public_prices(response: Response):
     response.headers["Cache-Control"] = "public, max-age=300"
+    # Nothing may advertise what checkout cannot bill: null until voice_plan.available().
+    voice = voice_plan.available()
     return {
+        "voice_plan_monthly_usd": voice_billing.MONTHLY_USD if voice else None,
+        "voice_included_minutes": voice_billing.INCLUDED_MINUTES if voice else None,
+        "voice_overage_usd_per_minute": voice_billing.OVERAGE_USD_PER_MINUTE if voice else None,
         "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
         "included_members": SEATS_INCLUDED,
         "seat_price_usd": settings.SEAT_PRICE_USD,

@@ -18,14 +18,11 @@ describe("blog posts", () => {
     }
   });
 
-  it("end with both doors, tagged with the post", async () => {
+  // No posts since the 2026-11 move to the receptionist; runs again with the first one.
+  it.skipIf(getAllPosts().length === 0)("end with the sign-up door, tagged with the post", async () => {
     const post = getAllPosts()[0];
     render(await BlogPostPage({ params: Promise.resolve({ slug: post.slug }) }));
-    expect(screen.getByRole("link", { name: /Request a guided setup/ })).toHaveAttribute(
-      "href",
-      `/request-setup?source=blog-${post.slug}`,
-    );
-    expect(screen.getByRole("link", { name: "Start free" })).toHaveAttribute("href", `/sign-up?source=blog-${post.slug}`);
+    expect(screen.getByRole("link", { name: /Set up your assistant/ })).toHaveAttribute("href", `/sign-up?source=blog-${post.slug}`);
     expect(screen.getByText(`By ${post.author}`)).toBeInTheDocument();
   });
 });

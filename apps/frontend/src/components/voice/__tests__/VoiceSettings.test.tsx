@@ -54,5 +54,5 @@ it("calendar card: reconnect_required offers Reconnect, and a 403 shows an admin
   conn.startOAuth.mockRejectedValue({ status: 403 });
   render(<VoiceSettings />);
   fireEvent.click(screen.getByRole("button", { name: "Reconnect Google" }));
-  await waitFor(() => expect(screen.getByText(/Ask a workspace admin/)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText(/Ask an admin of this business/)).toBeInTheDocument());
 });

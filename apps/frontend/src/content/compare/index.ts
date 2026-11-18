@@ -1,38 +1,16 @@
 /**
- * The comparison pages (docs/marketing 11). One data file, one route: every
- * competitor cell carries the vendor page it came from and the day it was
- * read, and a test fails on a cell without both. Leo signs off every edit.
- *
- * Update rule: a cell we cannot reopen on the vendor's page becomes "Not
- * published"; a page's `checkedOn` moves only when every cell was reopened.
+ * The comparison pages: Lightbulb next to the ways a salon, spa or barbershop
+ * already answers its phone. The Lightbulb column states only claims marked
+ * VERIFIED in .agents/product-marketing.md. The other column describes a kind
+ * of service, never a named vendor; a third-party figure carries its source.
  */
 
-import { teamMonthlyUsd, type Pricing } from "@/lib/pricing";
-
-export type RowKey = "who" | "where" | "sees" | "models" | "price" | "approvals" | "offline" | "work";
-
-export const ROWS: { key: RowKey; label: string }[] = [
-  { key: "who", label: "Who it's for" },
-  { key: "where", label: "Where the agent lives" },
-  { key: "sees", label: "Who sees the work" },
-  { key: "models", label: "Any model" },
-  { key: "price", label: "Price for 8 people" },
-  { key: "approvals", label: "Approvals and record" },
-  { key: "offline", label: "Works while nobody is online" },
-  { key: "work", label: "Code and non-code work" },
-];
-
-export interface Cell {
-  text: string;
-  /** The page the fact was read on. */
-  source: string;
-  /** ISO date the source was opened. */
-  checkedOn: string;
-}
-
-export interface Column {
-  name: string;
-  cells: Record<RowKey, Cell>;
+export interface CompareRow {
+  label: string;
+  ours: string;
+  other: string;
+  /** Where a third-party figure in `other` came from. */
+  source?: string;
 }
 
 export interface ComparePage {
@@ -43,320 +21,142 @@ export interface ComparePage {
   description: string;
   h1: string;
   intro: string;
-  /** Competitor columns; the Lightbulb column is added by the page. */
-  columns: Column[];
+  /** The other column's heading. */
+  other: string;
+  rows: CompareRow[];
   betterTitle: string;
   better: string[];
   faq: { q: string; a: string }[];
-  /** A price question, answered only when the billing API gave a price. */
-  priceFaq?: (p: Pricing) => { q: string; a: string };
 }
 
-export const COMPARE_AUTHOR = "Leo";
+/** The day every row was last checked against the product and its sources. */
+export const COMPARE_UPDATED = "2026-11-18";
 
-const CHECKED = "2026-10-13";
-const OURS = "2026-10-14";
-const c = (text: string, source: string, checkedOn = CHECKED): Cell => ({ text, source, checkedOn });
+const INVOCA = "https://invoca.com/reports/the-invoca-lead-conversion-benchmarks-report-2026";
+const BLS = "https://www.bls.gov/ooh/office-and-administrative-support/receptionists.htm";
 
-const SITE = "https://thelightbulb.company";
-
-/** The Lightbulb column: the same on every page. */
-export const LIGHTBULB: Column = {
-  name: "Lightbulb",
-  cells: {
-    who: c("Founder-led teams of 3–15 already running AI agents", `${SITE}/request-setup`, OURS),
-    where: c("A member of your channels, running in your workspace's own cloud", `${SITE}/security`, OURS),
-    sees: c("Everyone in the room; one shared record", `${SITE}/docs/get-started`, OURS),
-    models: c("Lightbulb-managed or your ChatGPT account", `${SITE}/security`, OURS),
-    // Filled from the billing API by lightbulbColumn(); this is the copy when the API cannot be read.
-    price: c("One price for the workspace; see pricing", `${SITE}/pricing`, OURS),
-    approvals: c("Approval cards for plans, spending and new hires; who did what and who approved it", `${SITE}/docs/approvals-security-privacy`, OURS),
-    offline: c("Yes: routines, email and a nightly CEO run", `${SITE}/docs/skills-and-automations`, OURS),
-    work: c("Both: shared Claude Code and Codex sessions, plus email, books and the task board", `${SITE}/docs/get-started`, OURS),
-  },
-};
-
-const SLACK_PRICING = "https://slack.com/pricing";
-const SLACKBOT = "https://slack.com/features/slackbot";
-const SLACK_AGENTS = "https://slack.com/ai-agents";
-const MS = "https://www.microsoft.com/en-us/microsoft-365/copilot/business";
-const GROK = "https://docs.x.ai/grok-bot";
-const GROK_TEAMS = "https://docs.x.ai/grok-bot/teams-and-enterprises";
-const GROK_FAQ = "https://docs.x.ai/grok-bot/faq";
-const GROK_SEC = "https://docs.x.ai/grok-bot/security-faq";
-const CURSOR_PRICING = "https://cursor.com/pricing";
-const BLOOME = "https://bloome.im";
-const AMP = "https://finviz.com/news/399638/atlassian-introduces-amp-the-agentic-multiplayer-protocol-to-power-human-ai-collaboration";
-
-const SLACK: Column = {
-  name: "Slack Business+ with Slackbot",
-  cells: {
-    who: c("Every company size", SLACK_PRICING),
-    where: c("Slackbot, a personal AI in Slack; third-party agent apps", SLACKBOT),
-    sees: c("The person who asked; answers can be shared to a channel", SLACKBOT),
-    models: c("Not published", SLACKBOT),
-    price: c("$120/month annual ($15 × 8); Agentforce price not published", SLACK_PRICING),
-    approvals: c("Not published for Slackbot", SLACKBOT),
-    offline: c("Not published", SLACKBOT),
-    work: c("Non-code, through connected apps", SLACKBOT),
-  },
-};
-
-const SLACK_SHORT: Column = {
-  name: "Slack + Slackbot",
-  cells: {
-    who: c("Every company", SLACK_PRICING),
-    where: c("Personal AI in Slack", SLACKBOT),
-    sees: c("The person who asked", SLACKBOT),
-    models: c("Not published", SLACKBOT),
-    price: c("See Slack's page", SLACK_PRICING),
-    approvals: c("Not published", SLACKBOT),
-    offline: c("Not published", SLACKBOT),
-    work: c("Non-code", SLACK_AGENTS),
-  },
-};
-
-const TEAMS_COPILOT: Column = {
-  name: "Microsoft 365 Business Standard with Copilot",
-  cells: {
-    who: c("Microsoft 365 customers, up to 300 users", MS),
-    where: c("Copilot in Microsoft 365 apps; agents via Copilot Studio", MS),
-    sees: c("Your Microsoft 365 tenant", MS),
-    models: c("“LLM model choice”", MS),
-    price: c("$188/month paid yearly ($23.50 × 8)", MS),
-    approvals: c("Not published on the pricing page", MS),
-    offline: c("Not published", MS),
-    work: c("Mostly documents, email and meetings", MS),
-  },
-};
-
-const GROK_BOT: Column = {
-  name: "Grok Bot",
-  cells: {
-    who: c("Individuals and Cursor Teams/Enterprise", GROK_TEAMS),
-    where: c("One cloud computer per person, shared by that person's Bots", GROK_TEAMS),
-    sees: c("That person; templates share setup, not history", GROK_FAQ),
-    models: c("Cursor manages model selection", GROK_TEAMS),
-    price: c("Included in Cursor Teams, $30+/user/month: $240+", CURSOR_PRICING),
-    approvals: c("Auto-review can ask first; audit logs are Enterprise only", GROK_SEC),
-    offline: c("Yes", GROK),
-    work: c("Both", GROK),
-  },
-};
-
-const BLOOME_COL: Column = {
-  name: "Bloome",
-  cells: {
-    who: c("Teams of people and agents", BLOOME),
-    where: c("Group chat; sandbox per task", BLOOME),
-    sees: c("Chat members", BLOOME),
-    models: c("Many models and coding agents", BLOOME),
-    price: c("“Free to try”; no tiers published", BLOOME),
-    approvals: c("Audit trail; per-tool permissions", BLOOME),
-    offline: c("Not published", BLOOME),
-    work: c("Both", BLOOME),
-  },
-};
+const AFTER_HOURS = "Answers 24/7, including nights, Sundays and days off.";
+const SEE_IT = "Who called, a one-line summary, the steps it took, and the transcript.";
+const COST = "One monthly plan with minutes included, then a per-minute rate. Month to month; cancel yourself in Settings.";
 
 export const COMPARE_PAGES: ComparePage[] = [
   {
-    slug: "slack",
-    path: "/compare/slack",
-    title: "Lightbulb vs Slack AI and Slackbot | Lightbulb",
+    slug: "voicemail",
+    path: "/compare/voicemail",
+    title: "AI Receptionist vs Voicemail for Salons | Lightbulb",
     description:
-      "How Lightbulb and Slack's Slackbot differ for small teams using AI agents: who sees the work, which models, approvals, and price for 8 people.",
-    h1: "Lightbulb vs Slack AI: an assistant for each person, or AI employees for the team",
+      "Voicemail takes a message and waits for your call back. An AI receptionist answers, books the appointment and shows you the transcript. Which fits your shop.",
+    h1: "AI receptionist vs voicemail",
     intro:
-      "Slack is where most teams already talk, and Slackbot now answers questions and takes actions across your connected apps. Lightbulb is a team workspace where AI employees are members of your channels, with their own tools, memory, email and approval rules. If you are choosing where your people and your agents should work together, this page compares the two plainly.",
-    columns: [SLACK],
-    betterTitle: "What Slack does better",
+      "When you're with a client, the phone goes to voicemail. The caller hears your greeting, then leaves a message or calls the next salon. An AI receptionist answers instead: it talks with the caller, answers from what you told it, and books the appointment while you keep working.",
+    other: "Voicemail",
+    rows: [
+      { label: "When the phone rings mid-service", ours: "Answers and talks with the caller.", other: "Plays your greeting and records a message, if the caller leaves one." },
+      { label: "After hours", ours: AFTER_HOURS, other: "Records messages until you open again." },
+      { label: "Booking", ours: "Books, moves and cancels appointments during the call, inside your opening hours.", other: "You call back and book it yourself." },
+      { label: "\"Are you open?\" \"How much is a cut?\"", ours: "Answers from the hours, services and prices you entered.", other: "Only what your greeting says." },
+      { label: "Calls that reach no one", ours: "Handles several calls at once.", other: "44% of business calls never reach a person (Invoca, 70 million calls, 2026).", source: INVOCA },
+      { label: "What you see afterwards", ours: SEE_IT, other: "A recording to listen to, then a call to return." },
+      { label: "Cost", ours: COST, other: "Usually included with your phone line." },
+    ],
+    betterTitle: "When voicemail is enough",
     better: [
-      "Slack is the place your team already talks, with thousands of apps, Slack Connect with other companies, huddles and years of polish. If your team is larger than 15 or works with many outside partners, Slack will serve the conversation better than we will today.",
-      "Slackbot is included in Business+ and knows your whole Slack history from day one. Lightbulb's agents know what happens in Lightbulb and in the tools you connect; they do not read your Slack.",
-      "Slack has enterprise controls, mobile apps in every store and a long security record. We are early: the iPhone app is in TestFlight and SSO is not shipped. Slack added agents to chat. Lightbulb built the company around them.",
+      "If your phone rarely rings while you're busy, and your callers are happy to wait for a call back, voicemail costs nothing extra and does the job.",
+      "Voicemail also needs no setup. An AI receptionist needs your hours, services and prices once (it drafts them from your website for you to check) and your line forwarded to it.",
     ],
     faq: [
       {
-        q: "Can we keep Slack?",
-        a: "Yes. Many teams keep Slack for talk and run their AI employees in Lightbulb. Your team joins the rooms where agents are working.",
+        q: "Can I keep my voicemail?",
+        a: "Yes. Forward only missed and busy calls to your assistant, and you still answer when you can. Or forward all calls. The app gives you your carrier's code and checks that forwarding works.",
       },
       {
-        q: "Is Slackbot an AI employee?",
-        a: "Slackbot is a personal assistant; its interactions are private to you. In Lightbulb the agents are shared members with their own email, tools and approval rules.",
-      },
-    ],
-    priceFaq: (p) => ({
-      q: "What does it cost for 8 people?",
-      a: `Slack Business+ is $120 a month billed yearly. Lightbulb is $${teamMonthlyUsd(p, 8)} a month for the workspace, plus AI usage.`,
-    }),
-  },
-  {
-    slug: "slack-alternatives-for-ai-agents",
-    path: "/compare/slack-alternatives-for-ai-agents",
-    title: "Slack alternatives for teams that use AI agents (2026) | Lightbulb",
-    description:
-      "Six options for a small team that wants AI agents in its chat: Slack itself, Microsoft Teams, Lightbulb, Bloome, Grok Bot and Atlassian. Who each fits.",
-    h1: "Alternatives to Slack for teams that use AI agents",
-    intro:
-      "If your team runs AI agents, the question is no longer only where people talk. It is where the agents work, who can see what they did, and who approves it. Here are six honest options, Slack included, with what each does well. We make Lightbulb, so we put it first and say where others fit better.",
-    columns: [
-      SLACK_SHORT,
-      {
-        name: "Teams + Copilot",
-        cells: {
-          who: c("Microsoft 365 customers", MS),
-          where: c("Microsoft 365 apps", MS),
-          sees: c("Your tenant", MS),
-          models: c("“LLM model choice”", MS),
-          price: c("$188", MS),
-          approvals: c("Not published", MS),
-          offline: c("Not published", MS),
-          work: c("Mostly non-code", MS),
-        },
-      },
-      { name: "Bloome", cells: { ...BLOOME_COL.cells, where: c("Group chat", BLOOME), models: c("Yes", BLOOME), price: c("Not published", BLOOME), approvals: c("Audit trail", BLOOME) } },
-      {
-        name: "Grok Bot",
-        cells: {
-          who: c("Cursor users", GROK_TEAMS),
-          where: c("One cloud computer per person", GROK_TEAMS),
-          sees: c("That person", GROK_FAQ),
-          models: c("Cursor picks", GROK_TEAMS),
-          price: c("$240+ (Cursor Teams)", CURSOR_PRICING),
-          approvals: c("Auto-review; audit logs on Enterprise", GROK_SEC),
-          offline: c("Yes", GROK),
-          work: c("Both", GROK),
-        },
+        q: "What if the assistant doesn't know the answer?",
+        a: "It says it will check and takes a message. The question lands in your Needs you list, and once you answer it, the assistant knows next time.",
       },
       {
-        name: "Atlassian AMP",
-        cells: {
-          who: c("Jira and Confluence companies", AMP),
-          where: c("Jira, Confluence, Loom", AMP),
-          sees: c("Your Atlassian workspace", AMP),
-          models: c("Not announced", AMP),
-          price: c("Not announced", AMP),
-          approvals: c("Full audit trail", AMP),
-          offline: c("Not announced", AMP),
-          work: c("Both", AMP),
-        },
+        q: "Will I still get messages?",
+        a: "Yes. It takes the caller's name and number, every message shows up as a Needs you card, and the call's transcript is on your Home.",
       },
-    ],
-    betterTitle: "What the others do better",
-    better: [
-      "Slack and Teams have the deepest app catalogues and the security reviews large customers ask for. If your company lives in Microsoft 365, Copilot sits in Word, Excel and Outlook, where Lightbulb does not. Atlassian's agents can run as a named user with a full audit trail, inside the tools Jira teams already use. Grok Bot gives each person a capable cloud computer that keeps working with the laptop closed.",
-    ],
-    faq: [
-      {
-        q: "What is the best Slack alternative for a small team with AI agents?",
-        a: "If the agents should be shared members of the team, Lightbulb or Bloome. If you only want a personal assistant in chat, Slackbot or Copilot.",
-      },
-      { q: "Do we have to leave Slack?", a: "No. Keep Slack for talk and add Lightbulb where agents work." },
-    ],
-    priceFaq: (p) => ({
-      q: "Which is cheapest for 8 people?",
-      a: `Compare the Price row. Lightbulb is $${teamMonthlyUsd(p, 8)} a month; Bloome has not published a price.`,
-    }),
-  },
-  {
-    slug: "grok-bot",
-    path: "/compare/grok-bot",
-    title: "Lightbulb vs Grok Bot: AI for each person, or for the team | Lightbulb",
-    description:
-      "Grok Bot gives each person a cloud computer and a set of Bots. Lightbulb gives the team one set of AI employees everyone can see. An honest comparison.",
-    h1: "Lightbulb vs Grok Bot",
-    intro:
-      "Grok Bot, from xAI and Cursor, gives each person their own Bots on a persistent cloud computer, with routines that keep running when the laptop is closed. Lightbulb gives a team one set of AI employees in shared channels, with one record and approval rules. Both do real work in real tools. The difference is who the agents belong to.",
-    columns: [GROK_BOT],
-    betterTitle: "What Grok Bot does better",
-    better: [
-      "Each person gets a full computer with a browser, terminal and files, on desktop and mobile apps, and it keeps working while they are away. Admin controls are deep: network policy, team rules, team secrets and SIEM export on Enterprise.",
-      "If your team already pays for Cursor, Grok Bot costs nothing extra. Routines that nobody reads pause themselves, a rule we took. Grok Bot gives each person a team of Bots. Lightbulb gives the team one set of AI employees everyone can see.",
-    ],
-    faq: [
-      {
-        q: "Can a teammate see my Grok Bot's work?",
-        a: "Its docs say users cannot reach each other's computers, and a shared template does not include conversation history. In Lightbulb the room sees the work.",
-      },
-      {
-        q: "Which models?",
-        a: "Grok Bot's docs say Cursor manages model selection. Lightbulb runs Lightbulb-managed models or uses your ChatGPT account.",
-      },
-      { q: "Can we use both?", a: "Yes. Many teams use a personal agent and a shared workspace." },
     ],
   },
   {
-    slug: "microsoft-teams-copilot",
-    path: "/compare/microsoft-teams-copilot",
-    title: "Lightbulb vs Microsoft Teams with Copilot | Lightbulb",
+    slug: "receptionist",
+    path: "/compare/receptionist",
+    title: "AI Receptionist vs a Front Desk Receptionist | Lightbulb",
     description:
-      "Microsoft 365 with Copilot vs Lightbulb for a small team using AI agents: where agents live, who sees their work, approvals, and price for 8 people.",
-    h1: "Lightbulb vs Microsoft Teams with Copilot",
+      "A front desk person greets walk-ins and checks clients out. An AI receptionist answers the phone 24/7 and books. What each does well and how they work together.",
+    h1: "AI receptionist vs a front desk receptionist",
     intro:
-      "Microsoft Teams with Copilot brings AI into Word, Excel, Outlook and Teams, with prebuilt agents and Copilot Studio for building your own. Lightbulb is a team workspace where AI employees are members of your channels and do work the whole team can see and approve. If your company does not live in Microsoft 365, the choice is simpler than it looks.",
-    columns: [TEAMS_COPILOT],
-    betterTitle: "What Microsoft does better",
+      "A good front desk person knows your regulars, greets walk-ins, checks clients out and answers the phone between all of that. An AI receptionist only does the phone, but it does it at any hour, and it can take several calls while your desk is busy with the client in front of them.",
+    other: "Front desk receptionist",
+    rows: [
+      { label: "Hours", ours: AFTER_HOURS, other: "Their shift." },
+      { label: "Two lines ringing at once", ours: "Handles several calls at once.", other: "One call at a time, between clients at the desk." },
+      { label: "Booking", ours: "Books, moves and cancels appointments during the call, with a staff member who does that service.", other: "Books, moves and cancels, in whatever system you use." },
+      { label: "Your regulars", ours: "Remembers returning callers and can greet them by name when their carrier verifies their number.", other: "Knows them by face and voice." },
+      { label: "Walk-ins, checkout, payments", ours: "Phone only. It doesn't take payments.", other: "Yes." },
+      { label: "Languages", ours: "English, or English and Spanish.", other: "Whatever they speak." },
+      { label: "Cost", ours: COST, other: "US median pay for receptionists: $18.27 an hour, $38,010 a year (BLS, May 2025), before taxes and benefits.", source: BLS },
+    ],
+    betterTitle: "When a receptionist is the better choice",
     better: [
-      "Copilot works inside the documents, spreadsheets and email your team already uses, and the price includes Office apps, email hosting and 1 TB of storage per person. For a company on Microsoft 365, nothing else is that close to the work.",
-      "Microsoft has the identity, compliance and admin tooling large buyers require. Lightbulb does not have SSO yet.",
+      "If your shop is busy enough that someone needs to be at the desk all day, greeting walk-ins, checking clients out and selling retail, a person does things an AI receptionist can't.",
+      "You can have both. Forward only missed and busy calls, and the assistant picks up when your desk is already on the phone, before opening and after closing.",
     ],
     faq: [
       {
-        q: "Does Copilot work outside Microsoft 365?",
-        a: "Copilot Business requires an eligible Microsoft 365 plan. Lightbulb connects to the tools you use, Google or Microsoft.",
+        q: "Will it replace my front desk?",
+        a: "It answers the phone. It doesn't greet walk-ins, check clients out or take payments. You can use it only for the calls your desk misses and for after-hours calls.",
       },
-      { q: "Can we use both?", a: "Yes. Lightbulb agents can work alongside a Microsoft 365 company." },
+      {
+        q: "Can a caller still talk to a person?",
+        a: "Yes. When a caller asks for a person, it transfers the call to your mobile, only during opening hours if you choose. If the transfer doesn't go through, you get a Needs you card.",
+      },
+      {
+        q: "Does it know which stylist does what?",
+        a: "Yes. You list your staff and the services each one does, and it books someone who does that service. It doesn't keep each person's own schedule or days off.",
+      },
     ],
-    priceFaq: (p) => ({
-      q: "What does it cost for 8 people?",
-      a: `$188 a month for Business Standard with Copilot, paid yearly. Lightbulb is $${teamMonthlyUsd(p, 8)} a month plus AI usage.`,
-    }),
   },
   {
-    slug: "bloome",
-    path: "/compare/bloome",
-    title: "Lightbulb vs Bloome | Lightbulb",
+    slug: "answering-service",
+    path: "/compare/answering-service",
+    title: "AI Receptionist vs a Human Answering Service | Lightbulb",
     description:
-      "Bloome and Lightbulb both put people and AI agents in one chat. Where each fits, with every cell sourced and dated.",
-    h1: "Lightbulb vs Bloome",
+      "Answering services bill by the minute or the call, and many only take messages. Lightbulb's AI receptionist books into your calendar and shows every transcript.",
+    h1: "AI receptionist vs a human answering service",
     intro:
-      "Bloome is a group chat “where people and agents work together”, with @mentions, many models and coding agents, and an audit trail. Lightbulb is close in shape. This page says where each fits.",
-    columns: [BLOOME_COL],
-    betterTitle: "What Bloome does better",
+      "A human answering service puts a trained person on your line. Many take messages; some book appointments, sometimes for an added fee. Lightbulb's AI receptionist answers in the name and voice you choose, books into your calendar during the call, and shows you exactly what it said and did.",
+    other: "Human answering service",
+    rows: [
+      { label: "Who answers", ours: "Your assistant, with the name, greeting and voice you choose.", other: "A person on the service's team." },
+      { label: "Booking", ours: "Books, moves and cancels during the call, into its own calendar or Google Calendar.", other: "Varies: many take messages, some book for an added fee." },
+      { label: "Hours", ours: AFTER_HOURS, other: "Varies by plan." },
+      { label: "What you see afterwards", ours: SEE_IT, other: "Usually a message summary." },
+      { label: "Languages", ours: "English, or English and Spanish.", other: "Varies by service." },
+      { label: "How you're billed", ours: COST, other: "Usually per minute or per call." },
+    ],
+    betterTitle: "When a human service is the better choice",
     better: [
-      "Bloome runs many models and coding agents, including Claude Code, Codex, Gemini CLI and OpenCode, in one group chat, and it is free to try. If you want the widest choice of coding agents in a chat, start there.",
-      "Lightbulb fits when the agents are shared employees of the company, with their own email, tools and approval rules, and when the same team also hands off email, books and approvals.",
+      "If your callers need a real person every time, or your calls are often long and unusual, a human service handles that better.",
+      "If you need a language other than English or Spanish, or your bookings must go into Square, Vagaro, Fresha or another salon platform, ask a human service what they support. Lightbulb books only into its own calendar or Google Calendar today.",
     ],
     faq: [
       {
-        q: "Are Bloome and Lightbulb the same kind of product?",
-        a: "Close. Both put people and agents in one chat with @mentions. Lightbulb's agents are members of the company with their own email, tools and approval rules.",
+        q: "Does it say it's an AI?",
+        a: "The default greeting says it's an AI assistant, and if a caller sincerely asks whether it's a person, it tells the truth. You can write your own greeting instead.",
       },
-      { q: "What does Bloome cost?", a: "Bloome says “Free to try” and has not published tiers." },
+      {
+        q: "How do I avoid surprise charges?",
+        a: "A meter in Settings shows the minutes you've used. When they run out, you choose: keep answering at the per-minute rate, or send calls to your phone. It's month to month, and you cancel the renewal yourself in Settings.",
+      },
+      {
+        q: "Can I check what it told my callers?",
+        a: "Yes. Every call shows a one-line summary, the steps it took and the full transcript.",
+      },
     ],
   },
 ];
-
-/** The Lightbulb column with its price cell read from the billing API (null: neutral copy). */
-export function lightbulbColumn(p: Pricing | null): Column {
-  if (!p) return LIGHTBULB;
-  const text =
-    `$${teamMonthlyUsd(p, 8)} a month ($${p.teamPriceUsd} for up to ${p.includedMembers} people, ` +
-    `$${p.seatPriceUsd} each after), plus AI usage`;
-  return { ...LIGHTBULB, cells: { ...LIGHTBULB.cells, price: { ...LIGHTBULB.cells.price, text } } };
-}
-
-/** The page's questions, with its price question when the price is known. */
-export function pageFaq(page: ComparePage, p: Pricing | null): { q: string; a: string }[] {
-  return p && page.priceFaq ? [...page.faq, page.priceFaq(p)] : page.faq;
-}
-
-/** The oldest date any competitor cell was read: what "Checked on" may claim. */
-export function checkedOn(page: ComparePage): string {
-  return page.columns
-    .flatMap((col) => Object.values(col.cells).map((cell) => cell.checkedOn))
-    .sort()[0];
-}
 
 export function getComparePage(slug: string): ComparePage | undefined {
   return COMPARE_PAGES.find((p) => p.slug === slug);

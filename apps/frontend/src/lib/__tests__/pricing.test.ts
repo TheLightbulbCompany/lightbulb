@@ -1,22 +1,42 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getPricing, markupPercent, ordinal, pricingFaq, teamMonthlyUsd } from "../pricing";
+import { VOICE_PLAN_NEUTRAL, getPricing, pricingFaq, voicePlanLine } from "../pricing";
 
 const json = (body: unknown) => new Response(JSON.stringify(body));
-const API = { workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2", front_desk_price_usd: 250 };
-const P = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2", frontDeskPriceUsd: 250 };
+const API = {
+  workspace_price_usd: 50,
+  included_members: 5,
+  seat_price_usd: 20,
+  trial_days: 30,
+  managed_markup: "1.2",
+  front_desk_price_usd: 250,
+  voice_plan_monthly_usd: 250,
+  voice_included_minutes: 1500,
+  voice_overage_usd_per_minute: 0.35,
+};
+const P = {
+  teamPriceUsd: 50,
+  includedMembers: 5,
+  seatPriceUsd: 20,
+  trialDays: 30,
+  managedMarkup: "1.2",
+  frontDeskPriceUsd: 250,
+  voiceMonthlyUsd: 250,
+  voiceIncludedMinutes: 1500,
+  voiceOverageUsd: 0.35,
+};
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("one plan pricing", () => {
-  it("reads the price from the billing API", async () => {
+describe("pricing from the billing API", () => {
+  it("reads the prices from the billing API", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(API)));
     expect(await getPricing()).toEqual(P);
   });
 
-  it("keeps the other prices when the API has no front desk price yet", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, front_desk_price_usd: undefined })));
-    expect(await getPricing()).toEqual({ ...P, frontDeskPriceUsd: null });
+  it("keeps the other prices when the API has no front desk or voice price", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, front_desk_price_usd: undefined, voice_plan_monthly_usd: null })));
+    expect(await getPricing()).toEqual({ ...P, frontDeskPriceUsd: null, voiceMonthlyUsd: null });
   });
 
   it("returns null, never a guessed number, when the API is unreachable or malformed", async () => {
@@ -26,13 +46,16 @@ describe("one plan pricing", () => {
     expect(await getPricing()).toBeNull();
   });
 
-  it("bills the flat price up to the allowance and the seat price after", () => {
-    expect([1, 5, 6, 8].map((n) => teamMonthlyUsd(P, n))).toEqual([50, 50, 70, 110]);
-    expect(pricingFaq(P)[0].a).toContain("An eight-person team pays $110 a month.");
-    expect(ordinal(6)).toBe("6th");
-    expect(ordinal(21)).toBe("21st");
-    expect(ordinal(12)).toBe("12th");
-    expect(markupPercent("1.2")).toBe(20);
-    expect(markupPercent("1.025")).toBe(2.5);
+  it("states the voice plan from the API numbers, and stays neutral without them", () => {
+    expect(voicePlanLine(P)).toBe("$250 a month includes 1,500 minutes, then $0.35 a minute.");
+    expect(voicePlanLine({ ...P, voiceOverageUsd: null })).toBeNull();
+    expect(voicePlanLine(null)).toBeNull();
+    const faq = pricingFaq(P).map(({ a }) => a).join(" ");
+    expect(faq).toContain("$250 a month includes 1,500 minutes");
+    expect(faq).toContain("keep answering at $0.35 a minute");
+    const neutral = pricingFaq(null).map(({ a }) => a).join(" ");
+    expect(neutral).toContain(VOICE_PLAN_NEUTRAL);
+    expect(neutral).toContain("the per-minute rate");
+    expect(neutral).not.toMatch(/\$\d+ a month|\$0\./);
   });
 });

@@ -116,20 +116,17 @@ export default async function BlogPostPage({
         <BlogArticleBody source={post.content} />
 
         <footer className="blog-article-footer">
-          <h2>Bring your team. Your AI employees are already in the room.</h2>
+          <h2>Your phone, answered and booked while your hands are busy.</h2>
           <p>
-            Setting up a team of 3 to 15? A founder sets it up with you in 45 minutes. Or start
-            free: 30 days, no card.
+            Your assistant answers day and night, books into your calendar, takes messages and hands
+            callers to you when they want a person.
           </p>
           <div className="flex flex-wrap gap-3">
-            <Link href={`/request-setup?source=blog-${post.slug}`} className="ld-btn">
-              Request a guided setup
+            <Link href={`/sign-up?source=blog-${post.slug}`} className="ld-btn">
+              Set up your assistant
               <span className="ld-btn-arrow" aria-hidden="true">
                 →
               </span>
-            </Link>
-            <Link href={`/sign-up?source=blog-${post.slug}`} className="ld-btn">
-              Start free
             </Link>
           </div>
         </footer>

@@ -34,6 +34,7 @@ VOICE_PROVIDER_USD_PER_MINUTE = Decimal("0.05")
 _NANODOLLARS_PER_USD = Decimal(10**9)
 _LIVE_STATUSES = {"active", "trialing", "trial_local"}
 #: The voice-agents plan: $250 a month per business with these minutes, then this much a minute.
+MONTHLY_USD = 250
 INCLUDED_MINUTES = 1500
 OVERAGE_USD_PER_MINUTE = 0.35
 

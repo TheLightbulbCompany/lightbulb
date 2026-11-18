@@ -127,14 +127,14 @@ def render_email(push: dict, unsubscribe: str) -> tuple[str, str, dict[str, str]
     """``(text, html, headers)`` for one digest email."""
     url = push["data"]["url"]
     text = (
-        f"{push['title']}\n\n{push['body']}\n\nOpen Activity: {url}\n\n"
+        f"{push['title']}\n\n{push['body']}\n\nSee what needs you: {url}\n\n"
         f"You get this once a day when something is waiting on you.\nUnsubscribe: {unsubscribe}\n"
     )
     e = html.escape
     body = (
         f'<div style="font-family:sans-serif;max-width:520px">'
         f"<h2>{e(push['title'])}</h2><p>{e(push['body'])}</p>"
-        f'<p><a href="{e(url)}">Open Activity</a></p>'
+        f'<p><a href="{e(url)}">See what needs you</a></p>'
         f'<p style="color:#888;font-size:12px">You get this once a day when something is waiting on you. '
         f'<a href="{e(unsubscribe)}">Unsubscribe</a></p></div>'
     )

@@ -1,12 +1,5 @@
 import { SITE_URL } from "@/lib/domain";
-import {
-  PRICING_FOUNDING,
-  PRICING_TRIAL,
-  getPricing,
-  ordinal,
-  pricingFaq,
-  teamIncludes,
-} from "@/lib/pricing";
+import { VOICE_PLAN_INCLUDES, VOICE_PLAN_NEUTRAL, getPricing, perMinute, pricingFaq, voicePlanLine } from "@/lib/pricing";
 
 /** `/pricing.md`: the /pricing page as Markdown, for answer engines. Prices from the billing API. */
 export const revalidate = 300;
@@ -17,24 +10,22 @@ export async function GET() {
   const body = [
     "# Lightbulb pricing",
     "",
-    `The network is free. One price for the workspace, and the first ${p.includedMembers} people are free.`,
+    "Lightbulb is an AI receptionist for salons, spas and barbershops in the US. One plan per business.",
     "",
-    "| Plan | Price | Includes |",
-    "|---|---|---|",
-    `| Network | $0 | Your coding agents message each other and the agents of people you invite; peer to peer, end-to-end encrypted; open source (Apache-2.0); no account. ${SITE_URL}/network |`,
-    `| Team | $${p.teamPriceUsd} a month, flat | ${teamIncludes(p)} |`,
-    `| Each person from the ${ordinal(p.includedMembers + 1)} | +$${p.seatPriceUsd} a month | The same workspace, one more person |`,
-    "| Enterprise | Talk to us | Custom pricing for special cases |",
+    `**${voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL}**`,
     "",
-      "",
-    `**${p.trialDays} days free.** ${PRICING_TRIAL}`,
+    "## What's included",
     "",
-    `**Founding teams: ten spots.** ${PRICING_FOUNDING} Request a guided setup: ${SITE_URL}/request-setup`,
+    ...VOICE_PLAN_INCLUDES.map((line) => `- ${line}`),
+    "",
+    `When the minutes run out, you decide: keep answering at ${perMinute(p) ?? "the per-minute rate"}, or send calls to your phone. A meter in Settings shows what you've used.`,
+    "",
+    "Month to month. No setup fee, no contract. Cancel yourself in Settings. There's no free trial: you set everything up first and pay when you go live.",
     "",
     "## Questions",
     "",
     ...pricingFaq(p).flatMap(({ q, a }) => [`**${q}** ${a}`, ""]),
-    `Start free: ${SITE_URL}/sign-up`,
+    `Set up your assistant: ${SITE_URL}/sign-up`,
     "",
   ].join("\n");
   return new Response(body, {

@@ -1,7 +1,7 @@
 ---
 title: "Codex"
 description: "Connect Codex with lightbulb setup; it sends through the lightbulb tools and gets messages through codex queue or at its next step."
-order: 12
+order: 7
 section: "Agents"
 ---
 

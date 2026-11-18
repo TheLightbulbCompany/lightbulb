@@ -83,7 +83,7 @@ export function VoiceHome() {
             {label}{n > 0 && <span>{n}</span>}</button>;
         })}
       </div>
-      {error && <p className="vx-empty" role="alert">Couldn&apos;t load the calls. They&apos;ll show when the connection is back.</p>}
+      {error && <p className="vx-empty" role="alert">Couldn&apos;t load your calls. Check your connection, then reload the page.</p>}
       {!error && isLoading && <p className="vx-empty">Loading calls and meetings…</p>}
       {filter === "yours" && <section aria-label="Chats">
         <h2 className="vx-day vx-chats-h">Chats <NewChatButton /></h2>
@@ -93,10 +93,10 @@ export function VoiceHome() {
         </Link>)}
       </section>}
       {!error && !isLoading && shown.length === 0 && !(filter === "yours" && chats.length > 0) && <p className="vx-empty">{filter === "all"
-        ? `No calls or meetings yet. When ${name} answers your line or joins a Meet, every conversation shows here with what it did.`
-        : filter === "meetings" ? `No meetings yet. Invite ${name} to a Google Meet; the address is on the Agent page.`
-        : filter === "yours" ? `Nothing yet. Conversations you start with ${name} show here.`
-        : filter === "needs" ? "No calls need you."
+        ? `No calls or meetings yet. Each call shows here with what your assistant did and the transcript. ${config?.number ? "To see one now, make a test call from the Agent page." : "Once you go live, make a test call from the Agent page."}`
+        : filter === "meetings" ? `No meetings yet. Add your assistant's meeting address (it's on the Agent page) to a Google Calendar event with a Meet link.`
+        : filter === "yours" ? `Nothing yet. Tap the orb or start a chat, and your conversations with your assistant show here.`
+        : filter === "needs" ? "No calls need you right now."
         : "No calls yet."}</p>}
       {groups.map(([day, rows]) => <section key={day} aria-label={day}>
         <h2 className="vx-day">{day}</h2>

@@ -48,7 +48,7 @@ it("requires explicit terms acceptance and binds checkout to the displayed works
   await waitFor(() => expect(state.post).toHaveBeenCalledWith("/billing/voice-plan/checkout", {
     expectedOwnerId: "org-1", planVersion: "voice-agents-v1", acceptMonthlyUsd: 250, acceptIncludedMinutes: 1500, acceptOverageUsdPerMinute: 0.35,
   }));
-  expect(await screen.findByText("Payment confirmation pending")).toBeInTheDocument();
+  expect(await screen.findByText("Waiting for payment to confirm")).toBeInTheDocument();
   expect(screen.queryByText("Voice plan active")).not.toBeInTheDocument();
 });
 
@@ -65,7 +65,7 @@ it("opens hosted card setup only after the accepted checkout request returns it"
 it("shows inactive enrollment without a purchase action", async () => {
   state.plan.available = false;
   render(tree());
-  expect(await screen.findByText("Voice plan enrollment isn’t available yet.")).toBeInTheDocument();
+  expect(await screen.findByText("You can’t start a plan here yet. Contact support to get started.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Continue to payment" })).not.toBeInTheDocument();
   expect(state.post).not.toHaveBeenCalled();
 });
@@ -73,7 +73,7 @@ it("shows inactive enrollment without a purchase action", async () => {
 it("does not expose billing mutations to a member or a mismatched workspace", async () => {
   state.admin = false;
   const view = render(tree());
-  expect(await screen.findByText("A workspace admin can manage the voice plan.")).toBeInTheDocument();
+  expect(await screen.findByText("Only an admin of this business can change the plan.")).toBeInTheDocument();
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   state.admin = true;
   state.orgId = "org-2";
@@ -117,6 +117,6 @@ it("does not claim success for an unconfirmed provider write", async () => {
   await screen.findByRole("button", { name: "Continue to payment" });
   fireEvent.click(screen.getByRole("checkbox", { name: /I agree/ }));
   fireEvent.click(screen.getByRole("button", { name: "Continue to payment" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t confirm the update");
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn’t confirm that change");
   expect(screen.queryByText("Voice plan active")).not.toBeInTheDocument();
 });

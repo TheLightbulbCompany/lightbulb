@@ -21,12 +21,12 @@ const noSubscribe = () => () => {};
 export function BillingMinutes() {
   const { data: u, error, mutate } = useUsage();
   const { data: config, save } = useAgentConfig();
-  if (error) return <section className="vx-card" role="alert"><h2 className="vx-h">Billing &amp; minutes</h2><p>Couldn&apos;t load measured usage. <button type="button" onClick={() => void mutate()}>Retry</button></p></section>;
+  if (error) return <section className="vx-card" role="alert"><h2 className="vx-h">Billing &amp; minutes</h2><p>Couldn&apos;t load your minutes. <button type="button" onClick={() => void mutate()}>Retry</button></p></section>;
   if (!u) return null;
   if (!u.paidAllowance) return <section className="vx-card vx-billing" aria-labelledby="vx-billing-h">
     <h2 className="vx-h" id="vx-billing-h">Billing &amp; minutes</h2>
-    <p className="vx-minutes"><span className="vx-number">{Math.round(u.used).toLocaleString()}</span> voice min used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
-    <p className="vx-sub">Included minutes apply while your voice plan has confirmed paid access. Check your plan status above.</p>
+    <p className="vx-minutes"><span className="vx-number">{Math.round(u.used).toLocaleString()}</span> minutes used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
+    <p className="vx-sub">Your plan&apos;s included minutes show here once the plan is paid. See Voice plan above.</p>
   </section>;
   const pct = Math.min(100, Math.round((u.used / u.included) * 100));
   const rate = `$${u.overageRate.toFixed(2)}`;
@@ -41,11 +41,11 @@ export function BillingMinutes() {
     {u.periodStart && u.periodEnd && <p className="vx-sub">Billing period: {new Date(u.periodStart).toLocaleDateString(undefined, { timeZone: "UTC" })} – {new Date(u.periodEnd).toLocaleDateString(undefined, { timeZone: "UTC" })} (UTC).</p>}
     <div className="vx-meter" role="meter" aria-label="Minutes used" aria-valuemin={0} aria-valuemax={u.included} aria-valuenow={Math.min(u.used, u.included)}>
       <span style={{ width: `${pct}%` }} /></div>
-    <p className="vx-sub">Your included allowance is {u.included.toLocaleString()} minutes. Your voice plan above shows its current billing status.</p>
+    <p className="vx-sub">Your plan includes {u.included.toLocaleString()} minutes. Calls and meetings both count.</p>
     <fieldset className="vx-grid vx-runout" disabled={!config}>
       <legend className="vx-label">When the minutes run out</legend>
-      {choice("keep", `Keep answering at ${rate}/min`, "No caller is ever turned away.")}
-      {choice("forward", "Send calls to my phone", "The assistant stops answering and calls ring you.")}
+      {choice("keep", `Keep answering at ${rate}/min`, "Your assistant keeps answering. Extra minutes are added to your bill.")}
+      {choice("forward", "Send calls to my phone", "Your assistant stops answering and calls ring your hand-off number.")}
     </fieldset>
   </section>;
 }
@@ -71,7 +71,7 @@ function CalendarCard() {
         onClick={async () => {
           setBusy(true); setErr("");
           try { await startOAuth("google"); }
-          catch (e) { setErr((e as { status?: number })?.status === 403 ? "Ask a workspace admin to connect the calendar." : "Couldn't open Google. Try again."); }
+          catch (e) { setErr((e as { status?: number })?.status === 403 ? "Ask an admin of this business to connect the calendar." : "Couldn't open Google. Try again."); }
           finally { setBusy(false); }
         }}>
         {isLoading ? "Loading…" : busy ? "Opening Google…" : google?.status === "reconnect_required" ? "Reconnect Google" : "Connect Google Calendar"}</Button>}

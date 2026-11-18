@@ -2,7 +2,7 @@ import { ThemeStamp } from "@/components/ThemeStamp";
 
 export const metadata = {
   title: 'Settings - Lightbulb',
-  description: 'Manage your agent settings and preferences',
+  description: 'Your plan, minutes, booking calendar and members',
 }
 
 // /settings only forwards to /voice/settings now (OAuth, Stripe and billing returns still land here).

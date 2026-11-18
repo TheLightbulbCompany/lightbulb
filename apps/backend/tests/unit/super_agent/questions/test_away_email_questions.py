@@ -101,7 +101,7 @@ async def test_away_email_for_unseen_question_after_5min(world):
     await _open()
     assert await away.check_one(_row(), NOW) is True
     kw = world.send.await_args.kwargs
-    assert kw["subject"] == "A decision is waiting in Lightbulb"
+    assert kw["subject"] == "Something needs you in Lightbulb"
     assert "invoice" not in kw["text"] and "acme" not in kw["html"]  # where, never what
     assert f"panel=task&taskId={TASK}&from=away_email" in kw["text"]
 

@@ -592,7 +592,36 @@ async def test_public_prices_need_no_sign_in_and_match_checkout(async_client, mo
         "trial_days": 30,
         "managed_markup": settings.OPENROUTER_MARKUP or None,
         "front_desk_price_usd": settings.FRONT_DESK_PRICE_USD,
+        "voice_plan_monthly_usd": None,
+        "voice_included_minutes": None,
+        "voice_overage_usd_per_minute": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_public_prices_advertise_the_voice_plan_only_when_it_can_be_bought(async_client, monkeypatch):
+    from core.billing import voice_plan
+
+    monkeypatch.setattr(voice_plan, "available", lambda: True)
+    body = (await async_client.get("/api/v1/billing/prices")).json()
+    # The same numbers /voice-plan bills and the checkout acceptance pins.
+    assert (body["voice_plan_monthly_usd"], body["voice_included_minutes"], body["voice_overage_usd_per_minute"]) == (
+        250,
+        1500,
+        0.35,
+    )
+
+
+def test_checkout_acceptance_pins_the_billed_constants():
+    from typing import get_args
+
+    from core.billing import voice_billing
+    from routers.billing import VoicePlanEnrollment
+
+    f = VoicePlanEnrollment.model_fields
+    assert get_args(f["acceptMonthlyUsd"].annotation) == (voice_billing.MONTHLY_USD,)
+    assert get_args(f["acceptIncludedMinutes"].annotation) == (voice_billing.INCLUDED_MINUTES,)
+    assert get_args(f["acceptOverageUsdPerMinute"].annotation) == (voice_billing.OVERAGE_USD_PER_MINUTE,)
 
 
 @pytest.mark.asyncio

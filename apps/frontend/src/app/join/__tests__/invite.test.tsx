@@ -11,7 +11,7 @@ describe("/join/invite", () => {
   it.each([
     [{ inviter: "Sam", workspace: "Acme" }, "Sam invited you to Acme."],
     [{ workspace: "Acme" }, "Your teammate invited you to Acme."],
-    [{ inviter: "Sam" }, "Sam invited you to their workspace."],
+    [{ inviter: "Sam" }, "Sam invited you to their business on Lightbulb."],
   ])("names the inviter and the workspace (%o)", async (search, headline) => {
     await renderPage(search);
     expect(screen.getByRole("heading")).toHaveTextContent(headline);

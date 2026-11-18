@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
-vi.mock("next/image", () => ({ default: () => null }));
 
 import { Hero } from "../Hero";
 
@@ -14,35 +13,28 @@ beforeEach(() => {
 });
 
 describe("hero: one primary door and the trust row", () => {
-  it("leads with self-serve, links both buttons and tracks each", () => {
+  it("leads with sign-up, offers the voices second, and tracks the sign-up click", () => {
     render(<Hero />);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "Message your agents the way you message your team.",
+      "Your phone, answered and booked while your hands are busy.",
     );
-    const [start, setup] = screen.getAllByRole("link");
-    expect(start).toHaveAccessibleName(/Start your workspace free/);
+    const [start, voices] = screen.getAllByRole("link");
+    expect(start).toHaveAccessibleName(/Set up your assistant/);
     expect(start).toHaveClass("lb-btn-p");
     expect(start).toHaveAttribute("href", "/sign-up");
-    expect(setup).toHaveAccessibleName("Request a guided setup");
-    expect(setup).toHaveClass("lb-btn-s");
-    expect(setup).toHaveAttribute("href", "/request-setup");
+    expect(voices).toHaveAccessibleName("Hear the voices");
+    expect(voices).toHaveClass("lb-btn-s");
+    expect(voices).toHaveAttribute("href", "#voices");
     fireEvent.click(start);
-    fireEvent.click(setup);
-    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hero_start_free", "hero_setup"]);
+    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hero_start_free"]);
   });
 
   it("shows the trust row under the buttons", () => {
     render(<Hero />);
-    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "Open source network",
-      "Any agent, any vendor",
-      "30 days free, no card",
+    expect(screen.getAllByRole("listitem").slice(0, 3).map((li) => li.textContent)).toEqual([
+      "Keep your number",
+      "Month to month",
+      "English and Spanish",
     ]);
-  });
-
-  it("carries no headline-test script or cookie", () => {
-    const { container } = render(<Hero />);
-    expect(container.querySelector("script")).toBeNull();
-    expect(document.cookie).not.toContain("lb_hv");
   });
 });

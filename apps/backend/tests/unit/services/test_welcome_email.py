@@ -12,7 +12,8 @@ URL = "https://app.example.com/voice/setup"
 def test_owner_version_is_lightbulb_speaking_and_promises_nothing_false():
     subject, text = welcome_email.owner_welcome(first_name="Ada", workspace="Acme", url=URL)
     assert subject == "Your assistant for Acme is ready to set up"
-    assert text.startswith("Hi Ada,\n\nI'm Lightbulb. I answer your calls, book appointments and take messages.")
+    assert text.startswith("Hi Ada,\n\nI'm Lightbulb, your new assistant. Once you're set up, I answer your calls")
+    assert "try me" not in text and "before you go live" not in text  # a test call needs a paid plan
     assert f"Set up your assistant: {URL}" in text
     assert text.rstrip().endswith("Lightbulb, Acme")
     for old_product in ("CEO", "specialist", "#general", "Engineering", "container", "marketplace", "overnight"):
@@ -77,4 +78,4 @@ async def test_teammate_welcome_goes_to_the_member():
         await welcome_email.send_teammate_welcome("org_1", user_id="user_2", email="sam@x.com", first_name="Sam")
     kwargs = send.call_args.kwargs
     assert kwargs["email"] == "sam@x.com"
-    assert kwargs["subject"] == "You're in your workspace on Lightbulb"
+    assert kwargs["subject"] == "You're in your business on Lightbulb"

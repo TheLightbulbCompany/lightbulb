@@ -31,7 +31,7 @@ export function PhonePinCard() {
 
   return <section className="vx-card" aria-labelledby="vx-phone-pin-h">
     <h2 className="vx-h" id="vx-phone-pin-h">Phone PIN</h2>
-    <p className="vx-sub">Call your business number from this mobile, type your PIN and then #, and you talk to the assistant as yourself. {data?.set ? "A PIN is set." : "No PIN is set."}</p>
+    <p className="vx-sub">Call your business number from the mobile below, type your PIN and then #, and you talk to your assistant as the owner. {data?.set ? "A PIN is set." : "No PIN is set."}</p>
     <form onSubmit={save} style={{ display: "grid", gap: 12 }}>
       <label className="vx-label">Your mobile number
         <input className="vx-field" type="tel" autoComplete="tel" value={shown} onChange={(e) => setMobile(e.target.value)} />

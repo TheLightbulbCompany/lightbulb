@@ -1,19 +1,17 @@
-import Link from "next/link";
-
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
-import { PricingCtas } from "@/components/pricing/PricingCtas";
 import {
-  PRICING_FOUNDING,
-  PRICING_TRIAL,
+  VOICE_PLAN_INCLUDES,
+  VOICE_PLAN_NEUTRAL,
   getPricing,
-  pricingInference,
-  ordinal,
+  perMinute,
   pricingFaq,
-  teamIncludes,
+  voicePlanLine,
   type Pricing,
 } from "@/lib/pricing";
-import { JsonLd, absoluteUrl, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
+import { JsonLd, absoluteUrl, breadcrumbJsonLd, faqJsonLd, pageMetadata } from "@/lib/seo";
+
+import { PricingCta } from "./PricingCta";
 
 /** Prices come from the billing API (lib/pricing); re-read every 5 minutes. */
 export const revalidate = 300;
@@ -21,78 +19,42 @@ export const revalidate = 300;
 export async function generateMetadata() {
   const p = await getPricing();
   return pageMetadata({
-    title: "Pricing — Lightbulb",
-    description: p
-      ? `$${p.teamPriceUsd} a month for your workspace, up to ${p.includedMembers} people, then $${p.seatPriceUsd} a person. ` +
-        `Lightbulb-managed AI at provider price × ${p.managedMarkup}, or sign in with ChatGPT. ${p.trialDays} days free.`
-      : "One price for the workspace and your first people, then a per-person price. Choose Lightbulb-managed AI or sign in with ChatGPT.",
+    title: "AI Receptionist Pricing for Salons & Spas | Lightbulb",
+    description: `One monthly plan for your AI receptionist. ${voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL} Month to month, no setup fee.`,
     path: "/pricing",
   });
 }
 
-function jsonLd(p: Pricing) {
-  const monthly = (price: number) => ({
-    "@type": "UnitPriceSpecification",
-    price,
-    priceCurrency: "USD",
-    unitText: "MONTH",
-  });
+// A Product with no offers is a Rich Results error, so it is emitted only with a price.
+function jsonLd(p: Pricing | null) {
+  const monthly = p?.voiceMonthlyUsd ?? null;
+  const faq = faqJsonLd(pricingFaq(p));
+  if (monthly === null) return [faq];
   return [
     {
       "@context": "https://schema.org",
       "@type": "Product",
-      name: "Lightbulb Team",
+      name: "Lightbulb AI receptionist",
       url: absoluteUrl("/pricing"),
-      offers: [
-        {
-          "@type": "Offer",
-          name: `Team, up to ${p.includedMembers} people`,
-          price: String(p.teamPriceUsd),
-          priceCurrency: "USD",
-          priceSpecification: monthly(p.teamPriceUsd),
-        },
-        {
-          "@type": "Offer",
-          name: `Each person from the ${ordinal(p.includedMembers + 1)}`,
-          price: String(p.seatPriceUsd),
-          priceCurrency: "USD",
-          priceSpecification: monthly(p.seatPriceUsd),
-        },
-      ],
+      offers: {
+        "@type": "Offer",
+        name: "Monthly plan, minutes included",
+        price: String(monthly),
+        priceCurrency: "USD",
+        priceSpecification: { "@type": "UnitPriceSpecification", price: monthly, priceCurrency: "USD", unitText: "MONTH" },
+      },
     },
-    {
-      "@context": "https://schema.org",
-      "@type": "FAQPage",
-      mainEntity: pricingFaq(p).map(({ q, a }) => ({ "@type": "Question", name: q, acceptedAnswer: { "@type": "Answer", text: a } })),
-    },
+    faq,
   ];
 }
 
 export default async function PricingPage() {
   const p = await getPricing();
-  const network = {
-    name: "Network",
-    price: "$0",
-    note: "free, open source",
-    includes:
-      "Your coding agents message each other and the agents of people you invite. Peer to peer, end-to-end encrypted, no account.",
-  };
-  const plans = p
-    ? [
-        network,
-        { name: "Team", price: `$${p.teamPriceUsd} a month`, note: "flat", includes: teamIncludes(p) },
-        {
-          name: `Each person from the ${ordinal(p.includedMembers + 1)}`,
-          price: `+$${p.seatPriceUsd} a month`,
-          note: "",
-          includes: "The same workspace, one more person",
-        },
-        { name: "Enterprise", price: "Talk to us", note: "", includes: "Custom pricing for special cases" },
-      ]
-    : [network];
   return (
     <main className="ld-page min-h-screen">
-      {p && jsonLd(p).map((data, i) => <JsonLd key={i} data={data} />)}
+      {jsonLd(p).map((data, i) => (
+        <JsonLd key={i} data={data} />
+      ))}
       <JsonLd
         data={breadcrumbJsonLd([
           { name: "Home", path: "/" },
@@ -102,58 +64,40 @@ export default async function PricingPage() {
       <Navbar />
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
         <h1 className="font-editorial-serif text-5xl leading-[0.98] text-[var(--midnight)] md:text-7xl">
-          One price for the workspace. The first {p ? p.includedMembers : "few"} people are free.
+          One plan. Your phone answered and booked.
         </h1>
         <p className="mt-6 max-w-3xl text-lg leading-8 text-[var(--midnight-soft)]">
-          Your team pays for the workspace and the work its agents do, not for each seat.
+          {voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL}
         </p>
 
-        {p ? (
-          <div className="mt-10 grid gap-4 md:grid-cols-3">
-            {plans.map((plan) => (
-              <div key={plan.name} className="editorial-card p-5 text-sm leading-6 text-[var(--midnight-soft)]">
-                <p className="ld-mono text-xs uppercase tracking-[0.18em] text-[var(--midnight-muted)]">{plan.name}</p>
-                <p className="mt-2 font-editorial-serif text-3xl text-[var(--midnight)]">
-                  {plan.price}
-                  {plan.note && <span className="text-base text-[var(--midnight-muted)]">, {plan.note}</span>}
-                </p>
-                <p className="mt-3">{plan.includes}</p>
-              </div>
+        <div className="editorial-card mt-10 max-w-3xl p-6 text-base leading-7 text-[var(--midnight-soft)]">
+          <p className="ld-mono text-xs uppercase tracking-[0.18em] text-[var(--midnight-muted)]">What&apos;s included</p>
+          <ul className="mt-4 list-disc space-y-1 pl-5">
+            {VOICE_PLAN_INCLUDES.map((line) => (
+              <li key={line}>{line}</li>
             ))}
-          </div>
-        ) : (
-          <p className="mt-10 text-[var(--midnight-soft)]">Prices are loading. Please refresh in a moment.</p>
-        )}
-
-        <div className="mt-10 space-y-4 text-base leading-7 text-[var(--midnight-soft)]">
-          <p>{pricingInference(p)}</p>
-          <p>
-            <strong className="text-[var(--midnight)]">{p ? `${p.trialDays} days free.` : "A free month."}</strong>{" "}
-            {PRICING_TRIAL}
+          </ul>
+          <p className="mt-6">
+            <strong className="text-[var(--midnight)]">When the minutes run out, you decide.</strong> Keep answering at{" "}
+            {perMinute(p) ?? "the per-minute rate"}, or send calls to your phone. A meter in Settings shows what you&apos;ve used.
           </p>
-          <p>
-            <strong className="text-[var(--midnight)]">Founding teams: ten spots.</strong> {PRICING_FOUNDING}{" "}
-            <Link href="/request-setup" className="underline">
-              Request a guided setup
-            </Link>
+          <p className="mt-4">
+            <strong className="text-[var(--midnight)]">Month to month.</strong> No setup fee, no contract. Cancel yourself in
+            Settings. There&apos;s no free trial: you set everything up first and pay when you go live.
           </p>
         </div>
 
-        <PricingCtas />
+        <PricingCta />
 
-        {p && (
-          <>
-            <h2 className="mt-20 font-editorial-serif text-3xl text-[var(--midnight)]">Questions</h2>
-            <dl className="mt-6 space-y-6">
-              {pricingFaq(p).map(({ q, a }) => (
-                <div key={q}>
-                  <dt className="font-medium text-[var(--midnight)]">{q}</dt>
-                  <dd className="mt-1 text-[var(--midnight-soft)]">{a}</dd>
-                </div>
-              ))}
-            </dl>
-          </>
-        )}
+        <h2 className="mt-20 font-editorial-serif text-3xl text-[var(--midnight)]">Questions</h2>
+        <dl className="mt-6 max-w-3xl space-y-6">
+          {pricingFaq(p).map(({ q, a }) => (
+            <div key={q}>
+              <dt className="font-medium text-[var(--midnight)]">{q}</dt>
+              <dd className="mt-1 text-[var(--midnight-soft)]">{a}</dd>
+            </div>
+          ))}
+        </dl>
       </section>
       <Footer />
     </main>

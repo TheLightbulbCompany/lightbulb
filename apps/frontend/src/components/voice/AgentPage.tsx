@@ -11,6 +11,7 @@ import { useApi } from "@/lib/api";
 import { DAYS, nameOf, saveRefusal, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
+import { VoicePlanCard } from "./VoicePlanCard";
 
 type Save = "idle" | "saving" | "saved" | "error" | "payment";
 
@@ -61,9 +62,8 @@ export function AgentPage() {
           {c.number ? <> · answering {usPhone(c.number)}</> : <> · no number yet</>}</p>
         <p className="vx-save" role="status" data-err={saveState === "error"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? refusal ?? "Couldn't save the last change. Change it again to retry."
-            : saveState === "payment" ? "Your setup is saved. Start your plan in Settings. Once it's paid, your assistant gets its number and goes live on its own."
+            : saveState === "payment" ? "Your setup is saved. Start your plan to go live. Once it's paid, your assistant gets its number and goes live on its own."
             : "Changes save as you make them."}</p>
-        {saveState === "payment" && <Button asChild variant="outline" size="sm"><Link href="/voice/settings#voice-plan-heading">Start your plan</Link></Button>}
       </div>
       <div className="vx-actions" style={{ marginTop: 0 }}>
         {c.number && <Button asChild variant="outline" size="sm"><a href={`tel:${c.number}`}>Test call</a></Button>}
@@ -71,6 +71,7 @@ export function AgentPage() {
           : <Button size="sm" variant="outline" onClick={() => set({ paused: !c.paused })}>{c.paused ? "Resume" : "Pause"}</Button>}
       </div>
     </header>
+    {saveState === "payment" && <VoicePlanCard />}
 
     <Sec title="Name & greeting">
       <label className="vx-label">Name (callers hear it; in a meeting you say &ldquo;{name}, …&rdquo;)

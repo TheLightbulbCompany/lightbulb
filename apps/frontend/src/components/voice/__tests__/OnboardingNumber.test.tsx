@@ -5,6 +5,7 @@ const post = vi.hoisted(() => vi.fn());
 const get = vi.hoisted(() => vi.fn());
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({}) }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get }) }));
+vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => <section aria-label="Voice plan" /> }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: [], startOAuth: vi.fn() }) }));
 
 import { Onboarding } from "../Onboarding";
@@ -54,11 +55,12 @@ it("go live 409 shows retry message", async () => {
   expect(await screen.findByText(/Try Go live again from the Agent page/)).toBeInTheDocument();
 });
 
-it("unpaid Go live preserves setup and links to explicit payment without claiming a number", async () => {
+it("unpaid Go live preserves setup and shows the plan checkout inline, not an error", async () => {
   const save = vi.fn().mockRejectedValueOnce({ status: 402, body: { detail: { code: "voice_payment_required" } } }).mockResolvedValue(undefined);
   render(<Onboarding config={at(5, { name: "Nova" })} save={save} />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
-  expect(await screen.findByRole("link", { name: "Start your plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
+  expect(await screen.findByRole("region", { name: "Voice plan" })).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ name: "Nova", live: false, onboardingStep: 5 }));
   expect(screen.getByText(/Your setup is saved/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Go live" })).toBeEnabled();

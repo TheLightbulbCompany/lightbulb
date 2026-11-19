@@ -6,7 +6,6 @@
 // Every step after the first saves the Agent page document with `onboardingStep`, so leaving (e.g. for the Google
 // consent screen) resumes where the owner was. Shapes: routers/voice.py, core/services/voice_onboarding.py.
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useOrganization } from "@clerk/nextjs";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +16,7 @@ import { FORWARDING_CODES, IPHONE_NOTE, CHARGES_NOTE, forwardingCodes, type Carr
 import { DAYS, DEFAULT_CONFIG, nameOf, saveRefusal, usPhone, type AgentConfig } from "./data";
 
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
+import { VoicePlanCard } from "./VoicePlanCard";
 
 const NAMES = ["Lightbulb", "Nova", "Sol", "Remy"];
 
@@ -54,7 +54,7 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
   const [step, setStep] = useState(config.onboardingStep || 1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [paymentRequired, setPaymentRequired] = useState(false);
+  const [paymentRequired, setPaymentRequired] = useState(!!config.goLiveRequested);
   const set = (patch: Partial<AgentConfig>) => setC((x) => ({ ...x, ...patch }));
   useEffect(() => { if (!c.business && organization?.name) set({ business: organization.name }); }, [organization?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -73,7 +73,6 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
           const pending = { ...withTimezone(next), live: false, onboardingStep: 5, goLiveRequested: true };
           await save(pending); setC(pending);
           setPaymentRequired(true);
-          setErr("Your setup is saved. Start your plan in Settings. Once it's paid, your assistant gets its number and goes live on its own.");
         } catch { setErr("Couldn't save your setup. Try again before opening payment."); }
         return;
       }
@@ -93,7 +92,10 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
     {step === 4 && <NumberStep {...props} />}
     {step === 5 && <NameStep {...props} />}
     {err && <p className="vx-save" data-err="true" role="alert" style={{ marginTop: 12 }}>{err}</p>}
-    {paymentRequired && <Button asChild variant="outline"><Link href="/voice/settings#voice-plan-heading">Start your plan</Link></Button>}
+    {paymentRequired && step === 5 && <>
+      <p className="vx-save" role="status" style={{ marginTop: 12 }}>Your setup is saved. Start your plan to go live. Once it&apos;s paid, your assistant gets its number and goes live on its own.</p>
+      <VoicePlanCard />
+    </>}
   </div>;
 }
 

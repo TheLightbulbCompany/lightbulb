@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { name: "Salon" } }) }));
+vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => <section aria-label="Voice plan" /> }));
 vi.mock("next/link", () => ({ default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a> }));
 const post = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get: vi.fn() }) }));
@@ -36,7 +37,7 @@ it("unpaid Go live keeps the assistant off and offers the existing payment flow"
   render(<AgentPage />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
   await act(async () => { await vi.advanceTimersByTimeAsync(700); });
-  expect(screen.getByRole("link", { name: "Start your plan" })).toHaveAttribute("href", "/voice/settings#voice-plan-heading");
+  expect(screen.getByRole("region", { name: "Voice plan" })).toBeInTheDocument();
   expect(screen.getByText("Not live yet")).toBeInTheDocument();
   expect(cfg.save).toHaveBeenLastCalledWith(expect.objectContaining({ live: false, goLiveRequested: true }));
   expect(screen.getByRole("button", { name: "Go live" })).toBeInTheDocument();

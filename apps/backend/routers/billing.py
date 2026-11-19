@@ -175,10 +175,10 @@ def _front_desk_price_usd() -> int | None:
     "/prices",
     summary="The public plan price",
     description=(
-        "Unauthenticated. The one plan's price as checkout bills it: the workspace price, the "
-        "members it covers, the per-member seat price past them, and the free-trial length. "
-        "The marketing site renders /pricing from this. The voice_* fields are the voice "
-        "receptionist plan (what /voice-plan bills), null while that plan cannot be bought."
+        "Unauthenticated. What a new business can buy, as checkout bills it. The marketing site "
+        "renders /pricing from this. The voice_* fields are the voice receptionist plan (what "
+        "/voice-plan bills), null while that plan cannot be bought. The retired team plan and "
+        "its trial are not advertised here."
     ),
     operation_id="get_public_prices",
 )
@@ -190,13 +190,7 @@ async def get_public_prices(response: Response):
         "voice_plan_monthly_usd": voice_billing.MONTHLY_USD if voice else None,
         "voice_included_minutes": voice_billing.INCLUDED_MINUTES if voice else None,
         "voice_overage_usd_per_minute": voice_billing.OVERAGE_USD_PER_MINUTE if voice else None,
-        "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
-        "included_members": SEATS_INCLUDED,
-        "seat_price_usd": settings.SEAT_PRICE_USD,
         "front_desk_price_usd": _front_desk_price_usd(),
-        "trial_days": billing_repo._TRIAL_LOCAL_DURATION_SECONDS // 86400,
-        # The one billed copy is repo-root openrouter-pricing.json, fed in by CDK.
-        "managed_markup": settings.OPENROUTER_MARKUP or None,
     }
 
 

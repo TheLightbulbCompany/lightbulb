@@ -8,12 +8,6 @@ import { VOICE_PLAN_NEUTRAL } from "@/lib/pricing";
 import { PricingThreeCard } from "../PricingThreeCard";
 
 const P = {
-  teamPriceUsd: 50,
-  includedMembers: 5,
-  seatPriceUsd: 20,
-  trialDays: 30,
-  frontDeskPriceUsd: null,
-  managedMarkup: "1.2",
   voiceMonthlyUsd: 250,
   voiceIncludedMinutes: 1500,
   voiceOverageUsd: 0.35,

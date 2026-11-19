@@ -4,7 +4,6 @@ import localFont from "next/font/local";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DeployRefresh } from "@/components/DeployRefresh";
-import { DesktopAuthListener } from "@/components/DesktopAuthListener";
 import { InAppNavTracker } from "@/components/legal/BackButton";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
@@ -102,7 +101,6 @@ export default function RootLayout({
           <ErrorBoundary>
             <SwrProvider>
               <PostHogProvider>
-                <DesktopAuthListener />
                 <DeployRefresh />
                 <SupportProvider>
                   {/* One provider for the whole app so the tooltip skip-delay

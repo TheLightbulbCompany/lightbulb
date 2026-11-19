@@ -119,15 +119,6 @@ export type AnalyticsEvent =
   | "first_run_failed_notice_shown"
   | "update_applied"
   | "update_scheduled"
-  // Desktop app
-  | "desktop_update_check_clicked"
-  | "desktop_update_install_clicked"
-  | "desktop_file_access_added"
-  | "desktop_file_access_removed"
-  | "desktop_permissions_saved"
-  // MCP servers running on the user's own Mac (Tauri local_mcp_* commands)
-  | "local_mcp_server_removed"
-  | "local_mcp_servers_saved"
   // Cron
   | "cron_job_created"
   | "cron_job_deleted"

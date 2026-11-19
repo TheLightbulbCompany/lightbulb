@@ -284,19 +284,6 @@ it("after the agent left for quiet, the pre-connect does not rejoin; the next ta
   expect(huddle.join).toHaveBeenCalledTimes(2);
 });
 
-it("in the desktop app it pre-connects without asking and tells the app when the mic is live", async () => {
-  const invoke = vi.fn(async () => {});
-  (window as Window & { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
-  try {
-    const { rerender } = render(<TalkOrb name="Nova" compact />);
-    await waitFor(() => expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova", false));
-    listening();
-    rerender(<TalkOrb name="Nova" compact />);
-    tap();
-    expect(invoke).toHaveBeenLastCalledWith("voice_mic_live", { live: true });
-  } finally { delete (window as Window & { __TAURI__?: unknown }).__TAURI__; }
-});
-
 it("unmounted before the permission check answers, it does not join", async () => {
   perm.state = "granted";
   const { unmount } = render(<TalkOrb name="Nova" compact />);

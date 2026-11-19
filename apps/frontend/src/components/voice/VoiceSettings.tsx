@@ -2,7 +2,7 @@
 
 // Settings, the fourth place (spec 2026-11-07 §5). The chat shell's Settings panels, rendered here beside the rail
 // (SettingsPlace itself needs the chat shell's panel router), with Billing & minutes first.
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import "@/app/settings/settings.css";
 import "@/components/settings/settings-place.css";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
@@ -13,10 +13,6 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useAgentConfig, useUsage } from "./data";
 import { VoicePlanCard } from "./VoicePlanCard";
 import { PhonePinCard } from "./PhonePinCard";
-import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
-import { isDesktopApp } from "@/lib/desktopNotify";
-
-const noSubscribe = () => () => {};
 
 export function BillingMinutes() {
   const { data: u, error, mutate } = useUsage();
@@ -80,7 +76,6 @@ function CalendarCard() {
 }
 
 export function VoiceSettings() {
-  const desktop = useSyncExternalStore(noSubscribe, isDesktopApp, () => false);
   return <div className="vx-page vx-settings">
     <h1 className="vx-title">Settings</h1>
     <Section name="Voice plan"><VoicePlanCard /></Section>
@@ -96,9 +91,5 @@ export function VoiceSettings() {
       <h2 className="settings-page-title">Notifications</h2>
       <div className="settings-rows"><DailySummaryCard /></div>
     </div></Section>
-    {desktop && <Section name="Desktop updates"><section className="vx-card" aria-labelledby="vx-desktop-updates-h">
-      <h2 className="vx-h" id="vx-desktop-updates-h">Desktop updates</h2>
-      <DesktopUpdater />
-    </section></Section>}
   </div>;
 }

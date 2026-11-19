@@ -27,7 +27,7 @@ npm i -g lightbulb-cli
 lightbulb setup
 ```
 
-All three paths install the same release binary. The macOS builds are signed with Lightbulb's Developer ID and notarized. The Lightbulb desktop app includes the same engine. Homebrew and npm are macOS only for now. On a fresh Mac, setup may ask you to add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`; the [quickstart](/docs/agent-network-quickstart) has the line.
+All three paths install the same release binary. The macOS builds are signed with Lightbulb's Developer ID and notarized. Homebrew and npm are macOS only for now. On a fresh Mac, setup may ask you to add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`; the [quickstart](/docs/agent-network-quickstart) has the line.
 
 ## How it fits
 

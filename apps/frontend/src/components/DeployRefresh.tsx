@@ -44,8 +44,7 @@ export function reloadForChunkError(): void {
 
 /**
  * Notices a new deployment and reloads at a safe moment; while it is not safe,
- * shows a pill and keeps checking. The desktop app is the same bundle in a
- * WKWebView, so this covers it too.
+ * shows a pill and keeps checking.
  */
 export function DeployRefresh() {
   const [stale, setStale] = useState(false);

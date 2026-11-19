@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useAuth, useUser } from "@clerk/nextjs";
+import { useAuth } from "@clerk/nextjs";
 import useSWR, { mutate, preload } from "swr";
 import {
   ApiError,
@@ -32,8 +32,6 @@ import {
 } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
-import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
 
 export interface ActiveRoomSubscription {
   roomId: string;
@@ -46,10 +44,6 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   httpReady: boolean;
   liveConnected: boolean;
   liveChannels: readonly string[];
-  nodeConnected: boolean;
-  nodeStatus: string;
-  /** Why the node is in its current status, when the desktop said (e.g. a pair refusal). */
-  nodeStatusReason: string;
   messaging: ReturnType<typeof createMessagingClient>;
   /** The super-agent task routes. */
   tasks: TasksClient;
@@ -74,7 +68,6 @@ const LiveEventsContext = createContext<LiveEventsContextValue | null>(null);
 /** `preloadRooms`: start the room list here (the chat surface only; Settings has no room list). */
 export function LiveEventsProvider({ children, preloadRooms = false }: { children: ReactNode; preloadRooms?: boolean }) {
   const { getToken, isLoaded, userId, orgId } = useAuth();
-  const { user } = useUser();
   const api = useApi();
   const messaging = useMemo(() => createMessagingClient(api), [api]);
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
@@ -118,9 +111,6 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
   const [frameClaims, setFrameClaims] = useState(0);
   const sessionFrameClaims = useRef(new Set<{ channel: string; onRefused: () => void }>());
   const [sessionFramesChannels, setSessionFramesChannels] = useState<string[]>([]);
-  const [nodeStatus, setNodeStatus] = useState("disconnected");
-  const [nodeStatusReason, setNodeStatusReason] = useState("");
-  const [desktopPermissionRevision, setDesktopPermissionRevision] = useState(0);
   const eventHandlers = useRef(new Set<(event: LiveEvent) => void>());
   const chatHandlers = useRef(new Set<(frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void>());
 
@@ -223,72 +213,10 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
     [workspaceId],
   );
 
-  useEffect(() => subscribeDesktopPermissions(() => {
-    setDesktopPermissionRevision((revision) => revision + 1);
-  }), []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tauri = (window as any).__TAURI__;
-    if (!tauri?.event?.listen) return;
-    let unlisten: (() => void) | null = null;
-    let unlistenReason: (() => void) | null = null;
-    void tauri.event.listen("node:status", (event: { payload: string }) => {
-      setNodeStatus(event.payload);
-      setNodeStatusReason("");
-    }).then((stop: () => void) => {
-      unlisten = stop;
-    });
-    // Emitted right after a status it explains (e.g. why pairing was refused).
-    void tauri.event.listen("node:status_reason", (event: { payload: string }) => {
-      setNodeStatusReason(event.payload);
-    }).then((stop: () => void) => {
-      unlistenReason = stop;
-    });
-    return () => {
-      unlisten?.();
-      unlistenReason?.();
-    };
-  }, []);
-
-  // For the desktop's `lightbulb claude` line: "Shared with <workspace>".
-  const workspaceName = user?.organizationMemberships?.find((m) => m.organization.id === orgId)?.organization.name ?? null;
-  useEffect(() => {
-    if (typeof window === "undefined" || !user?.id) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tauri = (window as any).__TAURI__;
-    const grant = readDesktopPermissionGrant();
-    if (!tauri?.core?.invoke || !grant) return;
-    let cancelled = false;
-    const sendAuth = async () => {
-      const token = await getToken().catch(() => null);
-      if (cancelled || !token) return;
-      await tauri.core.invoke("send_auth_token", {
-        token,
-        displayName: user.fullName || user.firstName || "User",
-        userId: user.id,
-        permissions: grant.permissions,
-        // The id lets the app name this workspace only when it is the one this Mac shares to.
-        workspaceId: orgId ?? null,
-        workspaceName,
-      }).catch(() => {});
-    };
-    void sendAuth();
-    const refresh = window.setInterval(() => void sendAuth(), 45_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(refresh);
-    };
-  }, [user?.id, user?.fullName, user?.firstName, orgId, workspaceName, getToken, desktopPermissionRevision, nodeStatus]);
-
   const value = useMemo<LiveEventsContextValue>(() => ({
     httpReady,
     liveConnected: live.liveConnected,
     liveChannels: live.liveChannels,
-    nodeConnected: nodeStatus === "connected",
-    nodeStatus,
-    nodeStatusReason,
     messaging,
     tasks,
     agentNames,
@@ -307,8 +235,6 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
     live.liveConnected,
     live.liveChannels,
     live.connectionRevision,
-    nodeStatus,
-    nodeStatusReason,
     messaging,
     tasks,
     agentNames,

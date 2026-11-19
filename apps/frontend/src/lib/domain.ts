@@ -3,8 +3,7 @@
  *
  * Everything host-shaped in the web app derives from here: canonical URLs and
  * JSON-LD, the admin host allowlist (`src/middleware.ts`), the
- * CSP own-origins (`next.config.ts`), and the
- * desktop-updater host echo. Moving domains is an edit to this file — or to
+ * CSP own-origins (`next.config.ts`). Moving domains is an edit to this file — or to
  * `NEXT_PUBLIC_APP_URL` — not a grep.
  *
  * `NEXT_PUBLIC_APP_URL` is deliberately OPTIONAL: it is set in no Vercel
@@ -28,10 +27,9 @@ export const ROOT_DOMAIN = SITE_URL.replace(/^https?:\/\//, "").replace(
 );
 
 /**
- * Custom URL scheme the desktop app registers for deep links
- * (`flickmeon://auth`, `flickmeon://checkout_redirect/...`). Mirrored by the mobile app's own config and
- * by `apps/desktop/src-tauri/tauri.conf.json`; those are separate registries,
- * so a change here is not a change there.
+ * Custom URL scheme for native deep links
+ * (`flickmeon://auth`, `flickmeon://checkout_redirect/...`). Mirrored by the mobile app's own config;
+ * that is a separate registry, so a change here is not a change there.
  *
  * NOT the `isol8:*` localStorage prefixes — they are not a domain and are not
  * OS-registered.

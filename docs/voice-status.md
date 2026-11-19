@@ -141,7 +141,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 
 | # | Promise | Built | Prod | Machine | 1st | Owner | Note |
 |---|---|---|---|---|---|---|---|
-| 4.1 | Voice Home is where sign-in lands; `/chat` redirects | yes | yes | no | 1st | Product | Sign-in, sign-up and the Mac app all open `/voice`. A signed-in person who types `/` stays on the marketing page |
+| 4.1 | Voice Home is where sign-in lands; `/chat` redirects | yes | yes | no | 1st | Product | Sign-in and sign-up open `/voice`. A signed-in person who types `/` stays on the marketing page |
 | 4.2 | Home timeline by day, filter chips, footer counts | yes | yes | no | 1st | Product | |
 | 4.3 | Needs you: four card kinds with labels and fix links ("Reconnect Google") | yes | yes | no | 1st | Product | |
 | 4.4 | Agent page: one page, saves as you type, Pause, greeting style, Knowledge with "questions to add", instructions, hours, services, calendar status, number panel | yes | yes | no | 1st | Product | |
@@ -152,7 +152,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 4.9 | Provider choice: managed credits or Sign in with ChatGPT, open to every workspace | yes | no | no | | Platform | #5162 and #5168. Founder 10 Nov: keep ChatGPT open (the internal-only allowlist #5187 was reverted in #5194 before reaching prod). Ships with the next prod train |
 | 4.10 | The orb: connecting, listening, thinking, speaking, with a caption; each talk kept as a "Yours" row | yes | yes | part | | Product | |
 | 4.11 | The orb does the general agent work the old product did | yes | yes | no | | Product | Founder ruling: the orb is a full third use case |
-| 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | yes | yes | part | | Product | v0.4.1031 installed. Physical Fn test pending |
+| 4.12 | Mac app opens voice Home; mic works; Fn hold-to-talk; signed update | n/a | n/a | n/a | | Product | Withdrawn 19 Nov: the founder ruled business products web only, and Eve (a separate app, not in this repo) is the only Mac app. The cut-mac-app PR deletes `apps/desktop`, its build workflow, the download and updater routes and the web app's Tauri branches. Installed copies get no more updates |
 | 4.13 | Mobile: four tabs, voice Home | yes | yes | no | | Product | Shipped by OTA. The old chat app (rooms list, sessions, tasks, Control, workspaces, invites) is removed by the mobile-voice-tabs PR: Home is the orb, New chat and recent calls, meetings and text chats; Needs you answers `/needs-you` Questions on the card; a text chat is a plain timeline and composer. Not yet seen on a device |
 | 4.14 | Mobile: voice settings, billing and onboarding match the web; old purchase screens gone | no | no | no | | Product | |
 | 4.15 | Push: Needs-you cards, and the first three calls after Go live | yes | no | no | | Product | Card pushes already existed (one per card, retry-safe). #5188 trims their text to the kind and a first name (no caller number or question) and adds a push for the owner's first three answered calls. Not seen on a device. A tap opens the task, not the Needs-you list |
@@ -250,6 +250,7 @@ Individual PRs were reviewed. No whole-phase review has been run.
 | Notes emailed to the organiser | Notes in the app only | 7 and 9 Nov |
 | Every action item becomes a task | Only work clearly given to the agent | 9 Nov |
 | Delete the Mac app | It stays | 7 Nov |
+| The Mac app (row 4.12) | Deleted; business products are web only, and Eve is the only Mac app | 19 Nov |
 | Delete the chat UI entirely | A conversation page stays at `/voice/lightbulb` | 8 Nov |
 | Always-open Meet voice | May sleep and wake on its name | 8 Nov |
 | Code rules for when the agent speaks (3 s pause, 20 s stale drop, wake gates, canned lines) | The model owns conversation; code enforces permissions and safety only | 8 Nov |

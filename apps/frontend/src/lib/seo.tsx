@@ -140,7 +140,6 @@ export const softwareApplicationJsonLd = {
     "Your choice of name, greeting and one of three voices",
     "English, or English and Spanish",
     "Keep your number with call forwarding, or get a new US local number",
-    "Joins your Google Meet and answers when you say its name",
   ],
   // No `offers` on the homepage graph (seo.test.ts): the price is read from
   // the billing API on /pricing, never typed into markup.

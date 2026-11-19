@@ -84,6 +84,7 @@ export default async function PricingPage() {
           <p className="mt-4">
             <strong className="text-[var(--midnight)]">Month to month.</strong> No setup fee, no contract. Cancel yourself in
             Settings. There&apos;s no free trial: you set everything up first and pay when you go live.
+            {" "}Not right for you? Tell us in your first 30 days and we refund the month.
           </p>
         </div>
 

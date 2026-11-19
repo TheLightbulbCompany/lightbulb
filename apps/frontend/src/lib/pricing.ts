@@ -85,7 +85,6 @@ export const VOICE_PLAN_INCLUDES = [
   "Shows you every call: a summary, what it did and the transcript",
   "Speaks English, or English and Spanish",
   "Keep your number with call forwarding, or get a new local number",
-  "Joins your Google Meet when you invite it",
 ] as const;
 
 /** /pricing FAQ: the price objections, shared by the page, /pricing.md and the FAQ JSON-LD. Neutral when `p` is null. */
@@ -109,7 +108,8 @@ export function pricingFaq(p: Pricing | null): { q: string; a: string }[] {
       q: "Is there a free trial?",
       a:
         "No. You can set everything up first: your business info, how bookings work, your phone and your " +
-        "assistant's name. You pay when you go live, and that's when its line turns on.",
+        "assistant's name. You pay when you go live, and that's when its line turns on. " +
+        "If it isn't right for you, tell us in your first 30 days and we refund the month.",
     },
     {
       q: "Can I cancel?",

@@ -11,11 +11,11 @@ export function SignUpDoors({ createForm }: { createForm: ReactNode }) {
     <>
       <div className="auth-doors" role="tablist" aria-label="How are you getting started?">
         <button type="button" role="tab" aria-selected={door === "create"} className="auth-door" onClick={() => setDoor("create")}>
-          <span className="auth-door-title">Create a workspace</span>
-          <span className="auth-door-body">For the person setting up the team. 30 days free, no card.</span>
+          <span className="auth-door-title">Set up my shop</span>
+          <span className="auth-door-body">For the owner. Set it up free, pay when you go live.</span>
         </button>
         <button type="button" role="tab" aria-selected={door === "join"} className="auth-door" onClick={() => setDoor("join")}>
-          <span className="auth-door-title">Join your team</span>
+          <span className="auth-door-title">I was invited</span>
           <span className="auth-door-body">Got an invite? Open the email on this device. Have a join link? Paste it here.</span>
         </button>
       </div>

@@ -62,7 +62,6 @@ async def test_stores_emails_and_captures(unauthenticated_async_client):
 @pytest.mark.parametrize(
     "over",
     [
-        {"source": None},
         {"source": "tiktok"},
         {"email": "not-an-email"},
         {"email": "a@b.co\r\nBcc: x@y.z"},
@@ -70,7 +69,7 @@ async def test_stores_emails_and_captures(unauthenticated_async_client):
         {"agents": []},
         {"name": "   "},
         {"company": "Acme\r\nBcc: x@y.z"},
-        {"first_handoff": ""},
+        {"phone": "555\r\nBcc: x@y.z"},
     ],
 )
 async def test_rejects_a_bad_body(unauthenticated_async_client, over):
@@ -79,6 +78,26 @@ async def test_rejects_a_bad_body(unauthenticated_async_client, over):
         r = await unauthenticated_async_client.post("/api/v1/setup-requests", json=body)
     assert r.status_code == 422
     put.assert_not_awaited()
+
+
+async def test_accepts_the_four_field_salon_form(unauthenticated_async_client):
+    body = {
+        "name": "Rosa",
+        "email": "rosa@example.test",
+        "phone": "555 0100",
+        "company": "Example Salon",
+        "agents": ["other"],
+    }
+    send = AsyncMock(return_value="msg-1")
+    with (
+        patch.object(setup_requests.setup_requests_repo, "put", AsyncMock()),
+        patch.object(setup_requests.email_service, "send_email", send),
+        patch.object(setup_requests, "capture_product_event", MagicMock()),
+    ):
+        r = await unauthenticated_async_client.post("/api/v1/setup-requests", json=body)
+    assert r.status_code == 201, r.text
+    assert "Phone: 555 0100" in send.await_args.kwargs["text"]
+    assert send.await_args.kwargs["subject"] == "Setup request: Example Salon"
 
 
 async def test_rate_limited_per_ip(unauthenticated_async_client):

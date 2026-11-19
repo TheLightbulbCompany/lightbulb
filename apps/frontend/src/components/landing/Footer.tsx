@@ -64,7 +64,6 @@ export function Footer() {
               <Link href="/security">Security and your data</Link>
               <Link href="/sign-in">Log in</Link>
               <Link href="/sign-up">Sign up</Link>
-              <Link href="/network">Developer network</Link>
             </div>
             <div className="lb-foot-col">
               <h4>Legal</h4>

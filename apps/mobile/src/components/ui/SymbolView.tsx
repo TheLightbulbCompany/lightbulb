@@ -1,4 +1,3 @@
-// iOS (and the default for tests/typecheck): the real SF Symbols view. Android
-// resolves SymbolView.android.tsx instead, which maps SF names to Material ones.
+// The real SF Symbols view (the app ships on iOS only).
 export { SymbolView } from "expo-symbols";
 export type { SFSymbol } from "expo-symbols";

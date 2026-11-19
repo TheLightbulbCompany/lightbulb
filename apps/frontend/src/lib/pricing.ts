@@ -1,19 +1,10 @@
 /**
  * Public prices, read from the backend that bills them (`GET /billing/prices`),
- * so the site never carries a second copy of a price. The voice* fields are the
- * receptionist plan the site sells; the team fields belong to the retired plan.
+ * so the site never carries a second copy of a price: the receptionist plan the site sells.
  * Server side only, cached 5 minutes. `null` when the API cannot be read: callers
  * show neutral copy rather than present a number as current terms.
  */
 export type Pricing = {
-  teamPriceUsd: number;
-  includedMembers: number;
-  seatPriceUsd: number;
-  trialDays: number;
-  /** The Front desk add-on (a texting number), a month. null while the backend rolls and has not sent it yet. */
-  frontDeskPriceUsd: number | null;
-  /** Managed AI is billed at the model provider's price times this (openrouter-pricing.json). */
-  managedMarkup: string;
   /** The voice receptionist plan: a month, the minutes it includes, the rate past them. null while it can't be bought. */
   voiceMonthlyUsd: number | null;
   voiceIncludedMinutes: number | null;
@@ -36,22 +27,7 @@ export async function getPricing(): Promise<Pricing | null> {
     if (!res.ok) return null;
     const body = (await res.json()) as Record<string, unknown>;
     const n = (k: string) => (typeof body[k] === "number" && Number.isFinite(body[k]) ? (body[k] as number) : null);
-    const [team, included, seat, trial, frontDesk] = [
-      n("workspace_price_usd"),
-      n("included_members"),
-      n("seat_price_usd"),
-      n("trial_days"),
-      n("front_desk_price_usd"),
-    ];
-    const markup = typeof body.managed_markup === "string" ? body.managed_markup : null;
-    if (team === null || included === null || seat === null || trial === null || markup === null) return null;
     return {
-      teamPriceUsd: team,
-      includedMembers: included,
-      seatPriceUsd: seat,
-      trialDays: trial,
-      frontDeskPriceUsd: frontDesk,
-      managedMarkup: markup,
       voiceMonthlyUsd: n("voice_plan_monthly_usd"),
       voiceIncludedMinutes: n("voice_included_minutes"),
       voiceOverageUsd: n("voice_overage_usd_per_minute"),

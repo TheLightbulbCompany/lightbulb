@@ -4,23 +4,11 @@ import { VOICE_PLAN_NEUTRAL, getPricing, pricingFaq, voicePlanLine } from "../pr
 
 const json = (body: unknown) => new Response(JSON.stringify(body));
 const API = {
-  workspace_price_usd: 50,
-  included_members: 5,
-  seat_price_usd: 20,
-  trial_days: 30,
-  managed_markup: "1.2",
-  front_desk_price_usd: 250,
   voice_plan_monthly_usd: 250,
   voice_included_minutes: 1500,
   voice_overage_usd_per_minute: 0.35,
 };
 const P = {
-  teamPriceUsd: 50,
-  includedMembers: 5,
-  seatPriceUsd: 20,
-  trialDays: 30,
-  managedMarkup: "1.2",
-  frontDeskPriceUsd: 250,
   voiceMonthlyUsd: 250,
   voiceIncludedMinutes: 1500,
   voiceOverageUsd: 0.35,
@@ -34,15 +22,13 @@ describe("pricing from the billing API", () => {
     expect(await getPricing()).toEqual(P);
   });
 
-  it("keeps the other prices when the API has no front desk or voice price", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, front_desk_price_usd: undefined, voice_plan_monthly_usd: null })));
-    expect(await getPricing()).toEqual({ ...P, frontDeskPriceUsd: null, voiceMonthlyUsd: null });
+  it("reads a missing voice price as null", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, voice_plan_monthly_usd: null })));
+    expect(await getPricing()).toEqual({ ...P, voiceMonthlyUsd: null });
   });
 
-  it("returns null, never a guessed number, when the API is unreachable or malformed", async () => {
+  it("returns null, never a guessed number, when the API is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 503 })));
-    expect(await getPricing()).toBeNull();
-    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, managed_markup: null })));
     expect(await getPricing()).toBeNull();
   });
 

@@ -61,7 +61,6 @@ apps/frontend/package-lock.json
 .impeccable/
 .hypothesis/
 .tmp-*/
-apps/desktop/src-tauri/.sidecar-tmp/
 
 # Read-only upstream reference clones (mirror the ~/Desktop/openclaw pattern;
 # see CLAUDE.md). Cloned locally for greppable reference, never committed.

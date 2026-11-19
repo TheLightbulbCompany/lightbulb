@@ -8,10 +8,8 @@ const auth = {
   orgId: "org-a" as string | null,
   getToken: vi.fn(async () => "session-token" as string | null),
 };
-const user = { id: "user-a", fullName: "Alice Example", firstName: "Alice", organizationMemberships: [{ organization: { id: "org-a", name: "Acme" } }] };
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ userId: auth.userId, orgId: auth.orgId, isLoaded: true, isSignedIn: !!auth.userId, getToken: auth.getToken }),
-  useUser: () => ({ user }),
 }));
 
 const WORKSPACE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -28,10 +26,6 @@ const post = vi.fn(async () => ({}));
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ get, post, put: vi.fn(), patch: vi.fn(), del: vi.fn() }),
 }));
-vi.mock("@/lib/desktopPermissions", () => ({
-  readDesktopPermissionGrant: () => ({ permissions: ["screen"] }),
-}));
-vi.mock("@/lib/desktopPermissionsSubscribe", () => ({ subscribeDesktopPermissions: () => () => {} }));
 
 const shared = vi.hoisted(() => ({
   liveConnected: false,
@@ -77,7 +71,7 @@ function render(ui: ReactElement) {
 
 function Probe() {
   const live = useLiveEvents();
-  return <div>{live.httpReady ? "http-ready" : "http-off"}:{live.liveConnected ? "live" : "reconnecting"}:{live.nodeStatus}</div>;
+  return <div>{live.httpReady ? "http-ready" : "http-off"}:{live.liveConnected ? "live" : "reconnecting"}</div>;
 }
 
 let releaseFirstRoom: (() => void) | null = null;
@@ -208,23 +202,4 @@ describe("LiveEventsProvider", () => {
     await waitFor(() => expect(get.mock.calls.map(([path]) => path)).toEqual(["/messaging/live-config", "/teams/agents"]));
   });
 
-  it("pushes Tauri auth while AppSync is disconnected and again on native node status", async () => {
-    const invoke = vi.fn(async () => undefined);
-    const listen = vi.fn(async (_name: string, callback: (event: { payload: string }) => void) => {
-      callback({ payload: "reconnecting" });
-      return () => {};
-    });
-    Object.assign(window, { __TAURI__: { core: { invoke }, event: { listen } } });
-    render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("send_auth_token", expect.objectContaining({
-      token: "session-token",
-      userId: "user-a",
-      displayName: "Alice Example",
-      workspaceId: "org-a",
-      workspaceName: "Acme",
-    })));
-    expect(shared.liveConnected).toBe(false);
-    expect(listen).toHaveBeenCalledWith("node:status", expect.any(Function));
-    delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
-  });
 });

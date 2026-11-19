@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Disk budget for the self-hosted Mac runner (label macos-desktop). See desktop-build.yml.
+# Disk budget for the self-hosted Mac runner (label macos-desktop).
 #   mac-runner-disk.sh prune       end-of-job: bound the caches, drop rebuilt-anyway outputs
 #   mac-runner-disk.sh preflight   start-of-job: prune if < 10 GB free, fail if still < 6 GB
 # Touches ONLY ~/.cache/lightbulb-desktop, the job's $GITHUB_WORKSPACE and $RUNNER_TEMP.

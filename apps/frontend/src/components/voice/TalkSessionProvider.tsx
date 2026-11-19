@@ -6,7 +6,6 @@ import type { Participant } from "livekit-client";
 import { agentLiveStatus, statusKey } from "@lightbulb/shared";
 import { CEO_IDENTITY, useHuddle } from "@/components/huddle/HuddleProvider";
 import { useAssistantDm } from "@/components/huddle/useAssistantDm";
-import { isTauri } from "@/lib/externalAuth";
 import { useQuestions } from "./data";
 
 export const HOLD_MS = 350;
@@ -44,26 +43,16 @@ function chime() {
   } catch { /* no audio output: the label says Listening */ }
 }
 
-/** The Mac app shows a floating "Mic on" pill while its window is behind (apps/desktop voice_key.rs). Older builds
- *  lack the command: ignored. */
-function tellDesktop(live: boolean) {
-  const invoke = (window as Window & { __TAURI__?: { core?: { invoke?: (c: string, a: object) => Promise<unknown> } } }).__TAURI__?.core?.invoke;
-  void invoke?.("voice_mic_live", { live })?.catch(() => {});
-}
-
 /** The browser already lets this site use the mic. Pre-connecting with anything less would prompt (or fail with
- *  mic_denied) on page load; the first press stays the one that asks. No Permissions API: treated as not yet.
- *  The desktop app's webview (wry/WebKit) has no Permissions API for the mic and grants getUserMedia without a
- *  prompt (#5040), so there the answer is yes. */
+ *  mic_denied) on page load; the first press stays the one that asks. No Permissions API: treated as not yet. */
 async function micGranted(): Promise<boolean> {
-  if (isTauri()) return true;
   try { return (await navigator.permissions.query({ name: "microphone" as PermissionName })).state === "granted"; }
   catch { return false; }
 }
 
 /** Asks for the mic on the tap itself, so the browser's prompt shows now and a refusal is known before any join.
- *  No getUserMedia (the desktop webview, tests): nothing to ask, the join does its own. */
-const canAsk = () => !isTauri() && !!navigator.mediaDevices?.getUserMedia;
+ *  No getUserMedia (tests): nothing to ask, the join does its own. */
+const canAsk = () => !!navigator.mediaDevices?.getUserMedia;
 async function askMic(): Promise<"ok" | "denied" | "none" | "busy"> {
   try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); return "ok"; }
   catch (e) {
@@ -193,7 +182,6 @@ function useTalkController(name: string) {
       down.current = null;
       // Place changes keep this owner. A true scope/unmount closes only its assistant mic.
       void Promise.resolve(ownedRoom.current?.localParticipant.setMicrophoneEnabled(false)).catch(() => {});
-      if (isTauri()) tellDesktop(false);
     };
   }, []);
   const dmId = room?.roomId, { roomId: liveId, joining, join } = huddle;
@@ -228,7 +216,6 @@ function useTalkController(name: string) {
     if (live && mine) void setMic(false).catch(() => {});
   }, [code, live, mine, setMic]);
   const micLive = live && talk && !muted;
-  useEffect(() => { if (isTauri()) tellDesktop(micLive); }, [micLive]);
 
   const needs = useQuestions().data?.length ?? 0;
   const tile = room?.members?.find((m) => m.kind === "agent")?.id ?? "assistant"; // the tile owner.py speaks as

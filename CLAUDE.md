@@ -35,7 +35,7 @@ record; S3 holds each agent's Hermes profile. Approvals are authenticated card t
   `docs/superpowers/plans/2026-11-07-voice-agents-master-plan.md`. Where they differ from Part 1, Part 1 wins.
 
 The stack: FastAPI on ARM Fargate (ECS), Temporal Cloud, DynamoDB and S3, Bedrock AgentCore, OpenAI GPT-Live via
-LiveKit Cloud, Twilio, Recall.ai (Meet bots), Next.js 16 on Vercel, a Tauri Mac app, an Expo iOS app, Clerk,
+LiveKit Cloud, Twilio, Recall.ai (Meet bots), Next.js 16 on Vercel, an Expo iOS app, Clerk,
 Stripe and Metronome. Infrastructure is AWS CDK in `apps/infra/` (the single source of IaC truth).
 
 ## Standing decisions
@@ -173,7 +173,7 @@ deleted once they have run; re-runnable ops tools stay in `apps/backend/scripts/
 
 ### Monorepo
 
-Turborepo with **pnpm** for JS and **uv** for Python. Apps: `backend`, `frontend`, `desktop`, `mobile`,
+Turborepo with **pnpm** for JS and **uv** for Python. Apps: `backend`, `frontend`, `mobile`,
 `huddle-agent`, `infra`, `company`; plus `packages/shared` (see Frontend).
 
 ```bash
@@ -237,7 +237,6 @@ A PR runs these, all on GitHub-hosted Linux (`vars.CI_RUNNER`):
 - `backend-arm64.yml`: builds the ARM64 backend image and smoke-tests it. Path-filtered to `apps/backend/**`,
   `service-stack.ts` and `app.ts`. **It does not run the backend unit tests or lint.**
 - `huddle-agent.yml`: the voice worker's tests, path-filtered to `apps/huddle-agent/**`.
-- `desktop-build.yml` (Rust tests and clippy), path-filtered to `apps/desktop/**`.
 - `roll-hermes-runtime.yml`, path-filtered to its own script and bootstrap files.
 
 Let the PR's run be the test; do not run whole suites locally. If you run a file, check the exit code, never
@@ -299,11 +298,9 @@ gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status --inter
   the pin and rolls. See "Hermes image and rollout".
 - **Phone trunks:** `phone-telephony.yml` (manual) reconciles the Twilio trunks and the production telephony
   secret. It buys no numbers and places no calls.
-- **Desktop:** `desktop-build.yml` on a manual dispatch builds the signed prod DMG on the self-hosted Mac
-  (`macos-desktop`) and publishes a `desktop-v0.4.*` release for the Tauri updater. There is no dev desktop build.
 - **Mobile:** `mobile-ota.yml` (merge to `main` → `eas update --channel production`, Linux) and
   `mobile-release.yml` (`mobile-v*` tag → `eas build --local` + `eas submit`, self-hosted Mac). PRs run `mobile-ci.yml`.
-- The self-hosted Mac runs only the native lanes (`desktop-build.yml`, `mobile-release.yml`). Anything JS-only
+- The self-hosted Mac (label `macos-desktop`) runs only the native lane (`mobile-release.yml`). Anything JS-only
   belongs on `vars.CI_RUNNER`.
 
 ## Architecture
@@ -574,17 +571,12 @@ mail), `HERMES_SHARED_RUNTIME_ARN`, `VOICE_BUY_NUMBERS`, `VOICE_INBOUND_TRUNK_ID
 `/api/v1` (`http://localhost:8000/api/v1`, `https://api-dev.thelightbulb.company/api/v1`,
 `https://api.thelightbulb.company/api/v1`).
 
-## Desktop app (Tauri)
+## No Mac app here
 
-Tauri 2 at `apps/desktop/`, bundle id `company.thelightbulb.desktop`. It opens voice Home with the mic and Fn
-hold-to-talk (F18). Prod is the default flavor (`tauri.conf.json`, `capabilities/default.json`); dev is opt-in
-(`pnpm build:dev`, `tauri.dev.conf.json`), and each flavor grants only its own origin to local commands.
-It is a voice shell only: the window, the 🌐 talk key (`voice_key.rs`), the tray, native notifications
-(`notify.rs`), sign-in through Safari and the `flickmeon://auth` ticket, and the updater. It calls no backend
-route itself (the callback page calls `/auth/desktop/sign-in-token`). There is no pairing, node, session sharing or
-network engine; `legacy.rs` keeps the hooks, launch agent and shell block older releases installed from opening
-a window, and removes the last two at launch. Never ship a script under `Contents/MacOS` (xattr signatures
-break the updater's seal).
+Business products are web only (founder, 19 Nov 2026). The Tauri app that lived at `apps/desktop/` is deleted;
+Eve, a separate app outside this repo, is the only Mac app. It reuses the native sign-in bridge that stays here:
+`/auth/desktop-callback` calls `POST /auth/desktop/sign-in-token` (`routers/desktop_auth.py`) and hands the ticket
+to `flickmeon://auth`.
 
 ## Mobile app (Expo)
 

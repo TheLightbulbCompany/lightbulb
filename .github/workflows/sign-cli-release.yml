@@ -15,8 +15,7 @@
 # Runbook: docs/runbooks/sign-cli-release.md.
 #
 # GitHub-hosted macos-latest on purpose: the self-hosted `macos-desktop` Mac is reserved for
-# desktop-build.yml and mobile-release.yml. The keychain and notarization-key steps are
-# desktop-build.yml's, verbatim apart from the self-hosted-only comments.
+# mobile-release.yml.
 name: sign-cli-release
 'on':
   workflow_dispatch:
@@ -33,7 +32,7 @@ concurrency:
   group: sign-cli
   cancel-in-progress: false
 env:
-  # Same App Store Connect key as desktop-build.yml / the iOS release; IDs are public metadata.
+  # Same App Store Connect key as the iOS release; IDs are public metadata.
   APPLE_API_KEY: SZ68D5WBR2
   APPLE_API_ISSUER: 7c5f3df2-6cda-46fb-b3d5-2ebbceb1dd0e
   SIGN_ID: 'Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)'

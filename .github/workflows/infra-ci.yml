@@ -24,7 +24,6 @@ on:
       - 'apps/infra/**'
       - '.github/workflows/infra-ci.yml'
       - '.github/workflows/deploy.yml'
-      - '.github/workflows/desktop-build.yml'
       - 'hermes-version.json'
       - 'openrouter-pricing.json'
       - 'pnpm-lock.yaml'

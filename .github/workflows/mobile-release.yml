@@ -3,9 +3,9 @@
 #
 # Fires on a `mobile-v*` tag (a deliberate release) or manual dispatch. Builds
 # the production .ipa LOCALLY on the self-hosted macOS runner (label
-# `macos-desktop` — the same box that signs the desktop DMG): $0, and it never
+# `macos-desktop`): $0, and it never
 # touches the EAS free-plan cloud-build quota. iOS signing certs live in EAS
-# (fetched via EXPO_TOKEN), so unlike desktop-build.yml this needs no keychain /
+# (fetched via EXPO_TOKEN), so this needs no keychain /
 # cert-import dance — the ONLY Apple secret it materializes is the App Store
 # Connect API key (.p8), decoded from repo secret EXPO_ASC_API_KEY_BASE64 to the
 # path eas.json's submit block expects.
@@ -52,7 +52,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Disk budget for this Mac: see .github/scripts/mac-runner-disk.sh and desktop-build.yml.
+      # Disk budget for this Mac: see .github/scripts/mac-runner-disk.sh.
       - name: Disk pre-flight
         working-directory: .
         run: bash .github/scripts/mac-runner-disk.sh preflight

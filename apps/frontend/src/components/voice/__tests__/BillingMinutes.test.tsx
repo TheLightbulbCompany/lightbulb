@@ -9,8 +9,6 @@ vi.mock("../data", () => ({
 }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => null }));
 vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => null }));
-vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => null }));
-vi.mock("@/lib/desktopNotify", () => ({ isDesktopApp: () => false }));
 
 import { BillingMinutes } from "../VoiceSettings";
 

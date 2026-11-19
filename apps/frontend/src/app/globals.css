@@ -344,8 +344,7 @@
 :root {
   --radius: 0.5rem;
 
-  /* The live session terminal: always dark, in both themes, matching the desktop app's own
-     terminal page (apps/desktop/src-tauri/terminal). */
+  /* The live session terminal: always dark, in both themes. */
   --terminal-bg: #16161a;
   --terminal-fg: #e6e6e9;
 

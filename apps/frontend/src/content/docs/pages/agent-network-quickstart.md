@@ -15,7 +15,7 @@ You run (your teammate can skip this: the line `invite` prints installs it for t
 curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh
 ```
 
-It downloads the latest release, checks its checksum, installs `~/.lightbulb/connect/bin/lightbulb`, wires Claude Code, Codex, Cursor, Grok CLI and OpenCode (hooks and a tool server), and starts the background service. Run the same line again to upgrade. The macOS builds are signed with Lightbulb's Developer ID and notarized. If you have the Lightbulb desktop app, it already includes the engine.
+It downloads the latest release, checks its checksum, installs `~/.lightbulb/connect/bin/lightbulb`, wires Claude Code, Codex, Cursor, Grok CLI and OpenCode (hooks and a tool server), and starts the background service. Run the same line again to upgrade. The macOS builds are signed with Lightbulb's Developer ID and notarized.
 
 Or with Homebrew, or npm (Node 18 or newer), then run the setup yourself:
 

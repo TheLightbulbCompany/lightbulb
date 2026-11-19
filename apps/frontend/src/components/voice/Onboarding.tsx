@@ -7,7 +7,7 @@
 // consent screen) resumes where the owner was. Shapes: routers/voice.py, core/services/voice_onboarding.py.
 import { useEffect, useState } from "react";
 import { useOrganization } from "@clerk/nextjs";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
@@ -151,10 +151,11 @@ function Learned({ c, set, go, busy, back }: StepProps) {
   const fromSite = c.knowledge.some((k) => k.source === "from site") || c.services.length > 0;
   return <>
     <h1 className="vx-title">Check what your assistant learned</h1>
-    <p className="vx-sub">{fromSite ? `From ${c.website}. Fix what's wrong and skip the rest.` : "Add what callers ask about most. Skip anything you're not sure of."} This is the Agent page; you can change it any time.</p>
+    <p className="vx-sub">{fromSite ? `From ${c.website}. Fix what's wrong and skip the rest.` : "Add what callers ask about most. Skip anything you're not sure of."} You can change all of this later on the Agent page.</p>
     <div className="vx-body">
       <Sec title="Hours" hint="It answers around the clock and books only inside these hours."><HoursEditor c={c} set={set} /></Sec>
-      <Sec title="Services" hint={guessed ? "Outlined durations are guesses; the site doesn't say. Check them." : undefined}><ServicesEditor c={c} set={set} /></Sec>
+      <Sec title="Services" hint={guessed ? "Outlined durations are guesses; the site doesn't say. Check them." : undefined}><ServicesEditor c={c} set={set} />
+        <Button size="sm" variant="outline" onClick={() => set({ services: [...c.services, { name: "", minutes: 45, price: "", staff: "" }] })}><Plus /> Add a service</Button></Sec>
       <Sec title="Answers"><KnowledgeList c={c} set={set} />
         <ToAdd c={c} set={set} name={name} why="Callers usually ask these and your site doesn't say." /></Sec>
     </div>

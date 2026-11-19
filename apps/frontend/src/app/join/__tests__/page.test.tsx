@@ -78,7 +78,7 @@ describe("JoinWorkspacePage", () => {
     expect(post.mock.calls[0][0]).not.toContain("s3cr3t-token");
 
     await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_1" }));
-    await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/chat"));
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/voice"));
     expect(await screen.findByText(/welcome to acme/i)).toBeInTheDocument();
   });
 
@@ -104,7 +104,7 @@ describe("JoinWorkspacePage", () => {
     render(<JoinWorkspacePage />);
 
     expect(await screen.findByText(/already in acme/i)).toBeInTheDocument();
-    await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/chat"));
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/voice"));
   });
 
   it("shows the backend's sentence for a dead link, with no retry", async () => {

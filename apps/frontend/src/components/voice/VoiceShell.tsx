@@ -32,13 +32,14 @@ const OPEN_DURING_SETUP = new Set(["/voice", "/voice/settings", "/voice/setup"])
 
 export function VoiceShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  const { userId } = useAuth();
+  const { userId, orgRole } = useAuth();
   const { organization, isLoaded } = useOrganization();
   const needs = useNeedsYouTotal();
   useGoLiveAfterPayment();
   const router = useRouter();
   const { data: config, isNew } = useAgentConfig();
-  const setupFirst = needsOnboarding(config, isNew) && !OPEN_DURING_SETUP.has(path);
+  // Admins only: setup saves need an admin (PUT /voice/agent), so a member is never held on steps they cannot finish.
+  const setupFirst = orgRole === "org:admin" && needsOnboarding(config, isNew) && !OPEN_DURING_SETUP.has(path);
   useEffect(() => { if (setupFirst) router.replace("/voice"); }, [setupFirst, router]);
   // Stripe returns here with ?voice= (core/billing/voice_plan_checkout.py success_url / cancel_url).
   useEffect(() => {

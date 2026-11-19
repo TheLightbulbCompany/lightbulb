@@ -5,10 +5,10 @@ const nav = vi.hoisted(() => ({ path: "/voice/settings", replace: vi.fn() }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useRouter: () => ({ replace: nav.replace }) }));
 const toast = vi.hoisted(() => ({ notify: vi.fn(), notifySuccess: vi.fn() }));
 vi.mock("@/lib/notify", () => toast);
-const org = vi.hoisted(() => ({ current: { id: "o" } as { id: string } | null, userId: "u", list: vi.fn() }));
+const org = vi.hoisted(() => ({ current: { id: "o" } as { id: string } | null, userId: "u", role: "org:admin", list: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({
   UserButton: () => null,
-  useAuth: () => ({ userId: org.userId }),
+  useAuth: () => ({ userId: org.userId, orgRole: org.role }),
   OrganizationList: (p: object) => { org.list(p); return <p>org-list</p>; },
   useOrganization: () => ({ organization: org.current, isLoaded: true }),
 }));
@@ -89,4 +89,12 @@ it("reads Stripe's return flag and says what happened", () => {
   render(<VoiceShell><div /></VoiceShell>);
   expect(toast.notify).toHaveBeenCalledWith("Checkout cancelled. You have not been charged.", expect.anything());
   window.history.replaceState(null, "", "/");
+});
+
+it("with setup unfinished, a member who is not an admin keeps every page", () => {
+  agent.setup = true; nav.path = "/voice/needs-you"; nav.replace.mockClear(); org.role = "org:member";
+  render(<VoiceShell>member-page</VoiceShell>);
+  expect(nav.replace).not.toHaveBeenCalled();
+  expect(screen.getByText("member-page")).toBeInTheDocument();
+  org.role = "org:admin"; agent.setup = false;
 });

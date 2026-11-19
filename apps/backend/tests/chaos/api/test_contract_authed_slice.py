@@ -7,8 +7,7 @@ with valid auth. Asserts not_a_server_error.
 
 ALLOWLIST is intentionally minimal and explicit — only endpoints confirmed to
 touch nothing beyond the moto-provisioned tables for a personal auth context
-(e.g. billing usage reads skip the org member-enrich Clerk call when there's no
-org). Grow it as more safe endpoints are confirmed."""
+(e.g. the voice-plan read is one billing-accounts get). Grow it as more safe endpoints are confirmed."""
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -20,7 +19,7 @@ from tests.chaos.api.conftest import schema
 # Operation labels of pure-DDB endpoints safe to fuzz with a personal auth
 # context. Keyed on the stable label (schemathesis mutates case.method).
 ALLOWLIST: set[str] = {
-    "GET /api/v1/billing/usage",  # get_usage_summary — usage-counters only (no-org skips Clerk enrich)
+    "GET /api/v1/billing/voice-plan",  # one billing-accounts read, no outside call
 }
 
 

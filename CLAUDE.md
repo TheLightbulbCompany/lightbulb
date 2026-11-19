@@ -108,7 +108,7 @@ The `isol8` brand is retired. A naive `s/isol8/lightbulb/` sweep breaks each of 
 | `isol8` reserved in slug and handle allowlists | Nobody can claim the retired brand. |
 | `ISOL8_OWNER_ID`, `ISOL8_API_URL` | Read by the Hermes bridge and the bundled skills. A rename is a backend change plus an image rebuild plus a roll. |
 | `isol8.hire_suggestion` | `HIRE_KIND` in the Hermes `lightbulb` plugin. Do not "finish" it. |
-| `ISOL8_CURATOR_EMAIL` | Human-gated mail (`core/constants.py`, read by `curator.py`). |
+| `ISOL8_CURATOR_EMAIL` | Human-gated mail (`core/constants.py`; its reader `curator.py` is deleted). |
 | `"isol8 top-up …"` in `metronome_funding.py` | Part of an idempotent Metronome request body: changing it 409s a retried top-up on the money path. |
 | CloudWatch namespaces `LightbulbAI*`, dimension `lightbulb-backend` | Renamed 2026-08-27; history before that is orphaned. Not related to the GitHub org name. |
 

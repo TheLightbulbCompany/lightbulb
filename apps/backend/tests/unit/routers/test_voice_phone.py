@@ -201,8 +201,6 @@ async def test_the_agent_pages_checkboxes_gate_the_tools(client):
     paused = await _start(client, room="phone-dev-_p", paused=True)
     pbase = f"/api/v1/internal/voice/calls/{paused['callId']}"
     assert client.post(f"{pbase}/availability", json={"date": _tomorrow()}, headers=W).status_code == 403
-    work = {"title": "Quote", "brief": "x"}
-    assert client.post(f"{pbase}/start-work", json=work, headers=W).status_code == 403
     assert client.post(f"{pbase}/message", json={"text": "call me back"}, headers=W).json() == {"taken": True}
     end = client.post(f"{pbase}/end", json={"durationSec": 20}, headers=W).json()
     assert end["outcome"] == "message"
@@ -382,19 +380,6 @@ async def test_to_add_is_capped_oldest_first(client):
     assert all(len(t) == voice_phone.TO_ADD_CHARS for t in to_add)
 
 
-async def test_start_work_runs_as_the_owner_and_is_marked_a_contacts(client):
-    call = await _start(client)
-    base = f"/api/v1/internal/voice/calls/{call['callId']}"
-    work = client.post(f"{base}/start-work", json={"title": "Bridal quote", "brief": "Six people, June."}, headers=W)
-    assert work.status_code == 202
-    args, kwargs = client.start_work.await_args.args, client.start_work.await_args.kwargs
-    assert args[1].room_id == call["callId"] and voice_phone.CONTACT_NOTE in args[1].brief
-    assert kwargs["origin"] == "phone_contact"
-    run = await messaging_repo.get_voice_run("org_1", args[1].run_id)
-    assert run["requesterUserId"] == "user_owner"  # from the line row, never the model
-    assert client.post(f"{base}/end", json={"durationSec": 9}, headers=W).json()["outcome"] == "needs_you"
-
-
 async def test_a_caller_cannot_touch_another_callers_booking(client):
     first = await _start(client)
     day = _tomorrow()
@@ -421,7 +406,6 @@ async def test_an_unattested_caller_books_and_leaves_messages_but_gets_nothing_b
     day = _tomorrow()
     base = f"/api/v1/internal/voice/calls/{victim['callId']}"
     client.post(f"{base}/book", json={"start": f"{day}T11:00", "service": "gel", "name": "Priya"}, headers=W)
-    assert (await _remember(client, victim, "Prefers Saturdays")).status_code == 200
     client.post(f"{base}/end", json={"durationSec": 20}, headers=W)
 
     spoof = await _start(client, room="phone-dev-_s_1", verstat=verstat)  # the same number, not attested
@@ -434,14 +418,12 @@ async def test_an_unattested_caller_books_and_leaves_messages_but_gets_nothing_b
                        ("change", {"start": f"{day}T11:00", "newStart": f"{day}T12:00"})):  # fmt: skip
         r = client.post(f"{s}/{path}", json=body, headers=W)
         assert r.status_code == 403 and r.json()["detail"]["code"] == "caller_not_verified", (path, r.text)
-    assert (await _remember(client, spoof, "Call me Bob")).status_code == 403  # never onto the victim's row
-    assert (await _remember(client, spoof, "Parking is tight", kind="business")).status_code == 200
     booked = client.post(f"{s}/book", json={"start": f"{day}T15:00", "service": "gel", "name": "Bob"}, headers=W)
     assert booked.status_code == 200, booked.text
     assert client.post(f"{s}/message", json={"text": "call me back"}, headers=W).status_code == 200
     client.post(f"{s}/end", json={"durationSec": 20}, headers=W)
     row = await voice_phone._seen("org_1", "+14155550133")
-    assert row["facts"] == ["Prefers Saturdays"] and row["name"] == "Priya" and row["visits"] == 1
+    assert row["name"] == "Priya" and row["visits"] == 1
     trigger = {"ref": {"origin": "phone_contact", "callId": spoof["callId"]}}
     assert await business_profile.caller_of(trigger) is None  # no "This caller's upcoming bookings"
     assert await business_profile.caller_of({"ref": {**trigger["ref"], "callId": victim["callId"]}}) == "+14155550133"
@@ -509,48 +491,8 @@ async def test_start_returns_every_static_fact_whole_and_the_instructions(client
     assert call["instructions"] == "Do not state a street number."
 
 
-async def _remember(client, call, fact, **extra):
-    return client.post(
-        f"/api/v1/internal/voice/calls/{call['callId']}/remember", json={"fact": fact, **extra}, headers=W
-    )
-
-
-async def test_returning_caller_memory(client):
-    call = await _start(client)
-    assert call["callerMemory"] == []
-    assert (await _remember(client, call, "Prefers Saturdays")).json() == {"remembered": True}
-    client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 20}, headers=W)
-    again = await _start(client, room="phone-dev-_x_2")
-    assert again["callerMemory"] == ["Prefers Saturdays"]
-    row = await voice_phone._seen("org_1", "+14155550133")
-    assert row["visits"] == 1
-    off = await _start(client, room="phone-dev-_x_3", allow={"greetByName": False})
-    assert off["callerMemory"] == []
-
-
-async def test_remember_limits_and_business_facts(client):
-    call = await _start(client)
-    assert (await _remember(client, call, "Card 4111 1111 1111 1111")).status_code == 400
-    assert (await _remember(client, call, "Card 4111.1111.1111.1111")).status_code == 400
-    assert (await _remember(client, call, "x" * 121)).status_code == 400
-    for fact in ("Parking is behind the building", "Parking is behind the building"):
-        assert (await _remember(client, call, fact, kind="business")).status_code == 200
-    assert (await messaging_repo.get_voice_agent("org_1"))["toAdd"] == ["Parking is behind the building"]
-    for i in range(12):
-        await _remember(client, call, f"Likes {i}")
-    client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 20}, headers=W)
-    facts = (await voice_phone._seen("org_1", "+14155550133"))["facts"]
-    assert len(facts) == 10 and facts[0] == "Likes 11"
-
-
-async def test_remember_refused_on_a_message_only_line(client):
-    paused = await _start(client, room="phone-dev-_p", paused=True)
-    assert (await _remember(client, paused, "Prefers Saturdays")).status_code == 403
-
-
 async def test_forget_during_call_survives_end(client):
     call = await _start(client)
-    await _remember(client, call, "Prefers Saturdays")
     from core.dynamodb import run_in_thread, utc_now_iso
 
     await run_in_thread(
@@ -560,15 +502,6 @@ async def test_forget_during_call_survives_end(client):
     client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 5}, headers=W)
     row = await voice_phone._seen("org_1", "+14155550133")
     assert row["facts"] == [] and "name" not in row
-
-
-async def test_caller_writable_lists_are_capped(client):
-    call = await _start(client)
-    for i in range(25):
-        await _remember(client, call, f"Parking {i}", kind="business")
-        await _remember(client, call, f"Likes {i}")
-    assert (await messaging_repo.get_voice_agent("org_1"))["toAdd"][0] == "Parking 5"
-    assert len((await voice_phone._call(call["callId"]))[1]["remembered"]) == 10
 
 
 async def test_hours_in_business_timezone(client):
@@ -1415,7 +1348,6 @@ async def test_withheld_callers_share_no_identity(client, withheld):
     day = _tomorrow()
     booked = client.post(f"{base}/book", json={"start": f"{day}T11:00", "service": "gel", "name": "Ana"}, headers=W)
     assert booked.status_code == 200 and booked.json()["booked"] is True
-    client.post(f"{base}/remember", json={"fact": "likes the window seat"}, headers=W)
     assert client.post(f"{base}/message", json={"text": "call me"}, headers=W).status_code == 200
     client.post(f"{base}/end", json={"durationSec": 20}, headers=W)
     assert await messaging_repo._get(messaging_repo.owner_pk("org_1"), "VOICECALLER#") is None
@@ -1446,9 +1378,8 @@ async def test_every_per_call_route_needs_that_calls_token(client):
     base = f"/api/v1/internal/voice/calls/{a['callId']}"
     routes = {"turn": {"n": 0, "text": "hi"}, "book": {"start": f"{_tomorrow()}T11:00", "service": "g", "name": "A"},
               "change": {"start": f"{_tomorrow()}T11:00"}, "my-bookings": {}, "message": {"text": "x"},
-              "transfer": {}, "events": {"after": 0}, "end": {"durationSec": 1}, "remember": {"fact": "x"},
-              "availability": {"date": _tomorrow()}, "unknown": {"question": "x"},
-              "start-work": {"title": "t", "brief": "b"}}  # fmt: skip
+              "transfer": {}, "events": {"after": 0}, "end": {"durationSec": 1},
+              "availability": {"date": _tomorrow()}, "unknown": {"question": "x"}}  # fmt: skip
     for route, body in routes.items():
         for token in ("", "wrong", b["callToken"]):
             headers = {**W, voice_phone.CALL_TOKEN_HEADER: token}

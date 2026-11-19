@@ -10,7 +10,7 @@ import { openAuthUrl } from "@/lib/externalAuth";
 
 interface VoicePlan {
   ownerId: string;
-  status: "not_enrolled" | "pending_payment" | "active" | "past_due" | "canceling" | "cancellation_pending" | "canceled";
+  status: "not_enrolled" | "pending_payment" | "active" | "past_due" | "canceling" | "canceled";
   available: boolean;
   planVersion: "voice-agents-v1";
   monthlyUsd: number;
@@ -25,7 +25,6 @@ const label = {
   active: "Voice plan active",
   past_due: "Your last payment didn’t go through",
   canceling: "Renewal canceled",
-  cancellation_pending: "Confirming cancellation",
   canceled: "Voice plan ended",
 };
 
@@ -103,7 +102,6 @@ export function VoicePlanCard() {
         <Button variant="outline" disabled={!enabled} onClick={() => void update("portal")}>Manage billing</Button>}
       {plan.endsAt && <p className="vx-sub">{plan.status === "canceled" ? "Ended" : ["active", "canceling"].includes(plan.status) ? "Access continues through" : "Renewal ends"} {new Date(plan.endsAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}.{!["active", "canceling", "canceled"].includes(plan.status) && " Access requires confirmed payment."}</p>}
       {plan.status === "canceled" && <p className="vx-sub">Contact support to start a new plan.</p>}
-      {plan.status === "cancellation_pending" && admin && <Button variant="outline" disabled={!enabled} onClick={() => void update("cancel")}>Retry cancellation</Button>}
       {["active", "pending_payment", "past_due"].includes(plan.status) && admin && <div style={{ marginTop: 16 }}>
         {confirmCancel ? <>
           <p className="vx-sub">Cancel the next renewal? What you’ve already paid for stays on until the end of its billing period. The plan won’t renew after that.</p>

@@ -16,7 +16,6 @@ paths = [
   '''^apps/backend/tests/unit/routers/test_paperclip_proxy\.py$''',
   '''^apps/backend/tests/unit/services/test_account_wipe\.py$''',
   '''^apps/backend/tests/unit/services/test_agent_export\.py$''',
-  '''^apps/backend/tests/unit/services/test_catalog_slice\.py$''',
   '''^apps/backend/tests/unit/services/test_hermes_profiles\.py$''',
   '''^apps/backend/tests/unit/services/test_hermes_profiles_mcp\.py$''',
   '''^apps/backend/tests/unit/services/test_marketplace_safety\.py$''',

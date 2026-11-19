@@ -82,7 +82,6 @@ async def test_a_new_workspace_gets_no_runtime_role_or_boot_secret(shared, monke
     monkeypatch.setattr(hp, "write_profiles", AsyncMock())
     nothing = AsyncMock(side_effect=AssertionError("per-owner infra on the shared runtime"))
     monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", nothing)
-    monkeypatch.setattr(hp, "_create_runtime", lambda req: pytest.fail("CreateAgentRuntime"))
     assert await hp.provision_hermes_runtime("org_new") == SHARED
     hp.write_profiles.assert_awaited_once_with("org_new")
     assert writes == [{"runtime_host": "agentcore", "agentcore_shared_runtime_arn": SHARED, "status": "running"}]

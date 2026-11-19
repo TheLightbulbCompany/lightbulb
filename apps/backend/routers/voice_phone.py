@@ -867,30 +867,6 @@ def _to_add(cfg: dict, item: str) -> list[str]:
     return list(dict.fromkeys([*(cfg.get("toAdd") or []), item[:TO_ADD_CHARS]]))[-TO_ADD_MAX:]
 
 
-class RememberIn(BaseModel):
-    fact: Annotated[str, Field(min_length=1, max_length=120)]
-    kind: Literal["caller", "business"] = "caller"
-
-
-@router.post("/internal/voice/calls/{call_id}/remember")
-async def remember(call_id: str, body: RememberIn) -> dict:
-    """A caller's own preference (kept on their row at the end of the call) or a fact about the business (cfg toAdd)."""
-    meta, call = await _call(call_id)
-    if call_mode(await agent_config(meta["ownerId"]), call) != "live":
-        raise _err(403, "not_allowed")
-    if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
-        raise _err(400, "looks_like_a_card")
-    if body.kind == "caller":
-        _require_verified(call)
-    if body.kind == "business":
-        await messaging_repo.modify_voice_agent(
-            meta["ownerId"], lambda cfg: {**cfg, "toAdd": _to_add(cfg, body.fact)}, "voice"
-        )
-    else:
-        await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact][-MAX_FACTS:]})
-    return {"remembered": True}
-
-
 async def resolve_call(owner_id: str, call_id: str, by: str) -> None:
     """A call's Question was answered: the call is handled (`resolvedAt`), so Home's
     "Needs you" stops listing it. ponytail: the first answered Question resolves a call that had several."""
@@ -1541,11 +1517,10 @@ class WorkIn(BaseModel):
     brief: Annotated[str, Field(min_length=1, max_length=8000)]
 
 
-@router.post("/internal/voice/calls/{call_id}/start-work", status_code=202)
 async def start_work(call_id: str, body: WorkIn) -> dict:
     """Open-ended work becomes a Worker task (the existing voice-start path), marked `origin: phone_contact` so
-    effect_check asks the owner before any outside action. The requester is the line's owner user, written by the
-    backend; the same title in one call is the same task (a retried tool call)."""
+    effect_check asks the owner before any outside action. Called by voice_booking's line problem; no HTTP route
+    (the worker never called `/start-work`). The same title in one call is the same task (a retried call)."""
     meta, call = await _call(call_id)
     if call_mode(await agent_config(meta["ownerId"]), call) != "live":
         raise _err(403, "not_allowed")

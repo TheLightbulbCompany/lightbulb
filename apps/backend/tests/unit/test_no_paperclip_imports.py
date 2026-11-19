@@ -64,7 +64,6 @@ MENTIONS = {
     "core/services/agent_provenance.py",
     "core/services/automation_hooks.py",
     "core/services/clerk_admin.py",
-    "core/services/company_package.py",
     "core/services/connection_service.py",
     "core/services/credentials/providers.yaml",
     "core/services/credentials/registry.py",

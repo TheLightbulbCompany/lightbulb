@@ -1,7 +1,5 @@
 """Pydantic schemas for billing API endpoints."""
 
-from typing import Literal
-
 from pydantic import BaseModel
 
 
@@ -79,35 +77,3 @@ class BillingAccountResponse(BaseModel):
 
 class PortalResponse(BaseModel):
     portal_url: str
-
-
-class MemberUsage(BaseModel):
-    user_id: str
-    display_name: str | None = None
-    email: str | None = None
-    total_spend: float
-    total_input_tokens: int
-    total_output_tokens: int
-    request_count: int
-    capture_prompt_tokens: int = 0
-    capture_completion_tokens: int = 0
-
-
-class UsageSummary(BaseModel):
-    period: str
-    total_spend: float
-    total_input_tokens: int
-    total_output_tokens: int
-    total_cache_read_tokens: int
-    total_cache_write_tokens: int
-    request_count: int
-    lifetime_spend: float
-    by_member: list[MemberUsage] = []
-
-
-class SpendResponse(BaseModel):
-    """Spend summary. Always ``tokens_only`` now: the panel keeps its token grid. The Bedrock
-    billed-dollars card and ChatGPT's plan-quota windows (the Hermes bridge never returned
-    them) are both gone."""
-
-    mode: Literal["tokens_only"]

@@ -6,7 +6,6 @@ Provisioning dispatch itself lives in core.services.provision_dispatch
 tests/unit/services/test_provision_dispatch.py and
 tests/unit/scripts/test_provision_runner.py for that behavior."""
 
-from typing import get_args
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -60,31 +59,11 @@ async def test_resolve_provider_choice_reads_strongly_consistent():
     repo.get_by_owner_id.assert_awaited_once_with("user_x", consistent_read=True)
 
 
-def _literal_values(annotation) -> set[str]:
-    """Flatten the string values out of a (possibly optional) Literal."""
-    values: set[str] = set()
-    for arg in get_args(annotation):
-        if isinstance(arg, str):
-            values.add(arg)
-        else:
-            values |= _literal_values(arg)
-    return values
-
-
-def test_change_provider_refuses_retired_bedrock_choices():
-    """The change-provider API is the live door: it must refuse both retired
-    Bedrock choices, and so must the repository write every other path uses."""
+def test_retired_bedrock_choices_are_refused():
+    """The repository write every path uses refuses both retired Bedrock choices."""
     from core.repositories.billing_repo import _VALID_PROVIDER_CHOICES
-    from routers.billing import ChangeProviderRequest
 
-    allowed = _literal_values(ChangeProviderRequest.model_fields["provider_choice"].annotation)
-    assert allowed == {"chatgpt_oauth", "openrouter_managed"}
-    assert _VALID_PROVIDER_CHOICES == allowed | {"byo_key"}  # existing saved keys remain valid
-    with pytest.raises(ValueError):
-        ChangeProviderRequest(provider_choice="byo_key")
-    for retired in ("bedrock_claude", "bedrock_trial"):
-        with pytest.raises(ValueError):
-            ChangeProviderRequest(provider_choice=retired)
+    assert _VALID_PROVIDER_CHOICES == {"chatgpt_oauth", "openrouter_managed", "byo_key"}
 
 
 @pytest.mark.asyncio

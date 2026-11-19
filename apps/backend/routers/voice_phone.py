@@ -1512,6 +1512,24 @@ async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: s
     )
 
 
+class WorkIn(BaseModel):
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    brief: Annotated[str, Field(min_length=1, max_length=8000)]
+
+
+async def start_work(call_id: str, body: WorkIn) -> dict:
+    """Open-ended work becomes a Worker task (the existing voice-start path), marked `origin: phone_contact` so
+    effect_check asks the owner before any outside action. Called by voice_booking's line problem; no HTTP route
+    (the worker never called `/start-work`). The same title in one call is the same task (a retried call)."""
+    meta, call = await _call(call_id)
+    if call_mode(await agent_config(meta["ownerId"]), call) != "live":
+        raise _err(403, "not_allowed")
+    out = await _start_task(call_id, meta, call, body.title, body.brief)
+    await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
+                                          "steps": _step(c, f"Handed to the team: {body.title}")})  # fmt: skip
+    return out
+
+
 # --- the caller's lines go to the Router (one-brain plan, "Phone, too", founder 8 Nov 2026) ------------------
 #: Said to the Router with each line: who is speaking, and that the reply is spoken on the phone.
 CALLER_HINT = (

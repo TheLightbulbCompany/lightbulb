@@ -15,8 +15,9 @@ export function Hero() {
         <div>
           <h1>Your phone, answered and booked while your hands are busy.</h1>
           <p className="lb-sub">
-            Lightbulb gives your salon, spa or barbershop an AI receptionist with the name you choose. It answers
-            day and night, books appointments, takes messages, and brings you anything it can&rsquo;t decide.
+            Lightbulb gives your salon, spa, barbershop or any appointment business a receptionist with the name you
+            choose. It answers day and night, books your clients into your calendar, takes messages, and brings you
+            anything it can&rsquo;t decide.
           </p>
           <HeroCtas />
         </div>

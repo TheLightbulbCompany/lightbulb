@@ -86,7 +86,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>An AI receptionist for salons, spas and barbershops.</span>
+          <span>Calls answered and appointments booked for salons, spas and barbershops.</span>
         </div>
       </div>
     </footer>

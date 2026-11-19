@@ -127,7 +127,7 @@ export function VerticalPage({ v }: { v: Vertical }) {
             {others.map((o) => (
               <li key={o.slug}>
                 <Link href={o.path} className="underline">
-                  An AI receptionist for {o.linkLabel}
+                  Calls answered and booked for {o.linkLabel}
                 </Link>
               </li>
             ))}

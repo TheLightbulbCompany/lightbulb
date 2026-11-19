@@ -22,7 +22,7 @@ export default function CompareHub() {
           Ways to answer your salon&rsquo;s phone
         </h1>
         <p className="mt-6 text-lg leading-8 text-[var(--midnight-soft)]">
-          Your hands are busy, and the phone keeps ringing. Here is how an AI receptionist compares with the other ways
+          Your hands are busy, and the phone keeps ringing. Here is how Lightbulb compares with the other ways
           shops handle it, including where the other option is the better fit.
         </p>
         <ul className="mt-10 space-y-6">

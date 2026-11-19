@@ -46,9 +46,9 @@ export const COMPARE_PAGES: ComparePage[] = [
     title: "AI Receptionist vs Voicemail for Salons | Lightbulb",
     description:
       "Voicemail takes a message and waits for your call back. An AI receptionist answers, books the appointment and shows you the transcript. Which fits your shop.",
-    h1: "AI receptionist vs voicemail",
+    h1: "Lightbulb vs voicemail",
     intro:
-      "When you're with a client, the phone goes to voicemail. The caller hears your greeting, then leaves a message or calls the next salon. An AI receptionist answers instead: it talks with the caller, answers from what you told it, and books the appointment while you keep working.",
+      "When you're with a client, the phone goes to voicemail. The caller hears your greeting, then leaves a message or calls the next salon. Lightbulb answers instead: it talks with the caller, answers from what you told it, and books the appointment while you keep working.",
     other: "Voicemail",
     rows: [
       { label: "When the phone rings mid-service", ours: "Answers and talks with the caller.", other: "Plays your greeting and records a message, if the caller leaves one." },
@@ -85,9 +85,9 @@ export const COMPARE_PAGES: ComparePage[] = [
     title: "AI Receptionist vs a Front Desk Receptionist | Lightbulb",
     description:
       "A front desk person greets walk-ins and checks clients out. An AI receptionist answers the phone 24/7 and books. What each does well and how they work together.",
-    h1: "AI receptionist vs a front desk receptionist",
+    h1: "Lightbulb vs a front desk receptionist",
     intro:
-      "A good front desk person knows your regulars, greets walk-ins, checks clients out and answers the phone between all of that. An AI receptionist only does the phone, but it does it at any hour, and it can take several calls while your desk is busy with the client in front of them.",
+      "A good front desk person knows your regulars, greets walk-ins, checks clients out and answers the phone between all of that. Lightbulb only does the phone, but it does it at any hour, and it can take several calls while your desk is busy with the client in front of them.",
     other: "Front desk receptionist",
     rows: [
       { label: "Hours", ours: AFTER_HOURS, other: "Their shift." },
@@ -124,9 +124,9 @@ export const COMPARE_PAGES: ComparePage[] = [
     title: "AI Receptionist vs a Human Answering Service | Lightbulb",
     description:
       "Answering services bill by the minute or the call, and many only take messages. Lightbulb's AI receptionist books into your calendar and shows every transcript.",
-    h1: "AI receptionist vs a human answering service",
+    h1: "Lightbulb vs a human answering service",
     intro:
-      "A human answering service puts a trained person on your line. Many take messages; some book appointments, sometimes for an added fee. Lightbulb's AI receptionist answers in the name and voice you choose, books into your calendar during the call, and shows you exactly what it said and did.",
+      "A human answering service puts a trained person on your line. Many take messages; some book appointments, sometimes for an added fee. Lightbulb answers in the name and voice you choose, books into your calendar during the call, and shows you exactly what it said and did.",
     other: "Human answering service",
     rows: [
       { label: "Who answers", ours: "Your assistant, with the name, greeting and voice you choose.", other: "A person on the service's team." },

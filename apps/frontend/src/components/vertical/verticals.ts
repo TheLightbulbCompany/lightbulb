@@ -32,7 +32,7 @@ export const VERTICALS: Vertical[] = [
     title: "AI Receptionist for Hair & Nail Salons | Lightbulb",
     description:
       "An AI receptionist for your salon. It answers while your hands are in color, books cuts, color, nails and lashes with the right stylist, and takes messages.",
-    h1: "An AI receptionist for your salon",
+    h1: "Calls answered and booked while your hands are in color",
     intro:
       "You're halfway through a balayage and the phone rings again. Your assistant picks up, answers the question, and books the appointment with a stylist who does that service. Your hands stay where they are.",
     calls: [
@@ -93,7 +93,7 @@ export const VERTICALS: Vertical[] = [
     title: "AI Receptionist for Day Spas & Massage Studios | Lightbulb",
     description:
       "An AI receptionist for your spa. It answers while you're in a session, explains your treatments, and books times that fit each treatment and your room turnover.",
-    h1: "An AI receptionist for your spa",
+    h1: "Calls answered and booked while you're in a session",
     intro:
       "Nobody wants a phone ringing in the treatment room. While you're an hour into a massage, your assistant answers the line, tells the caller what's on your menu, and books a time that fits the treatment and the turnover after it.",
     calls: [
@@ -151,7 +151,7 @@ export const VERTICALS: Vertical[] = [
     title: "AI Receptionist for Barbershops | Lightbulb",
     description:
       "An AI receptionist for your barbershop. It answers while the clippers run, books cuts with a barber who does them, and answers walk-in questions your way.",
-    h1: "An AI receptionist for your barbershop",
+    h1: "Calls answered and booked while the clippers run",
     intro:
       "Clippers in one hand, the phone buzzing on the counter. Your assistant picks up, answers the quick questions a barbershop gets all day, and books the cut with a barber who does it. The chair keeps moving.",
     calls: [

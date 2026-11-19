@@ -12,8 +12,8 @@ type UserPrefs = { timezone: string; dailySummary: boolean; awayEmail?: boolean 
 // (push + email at 08:00 local). Per human, default on; the email's one-click
 // unsubscribe flips the same pref. Beside it, "Email me when I'm away" (awayEmail): a DM,
 // @mention or approval still unseen five minutes later, while away, gets one email.
-// `rows` (super-agent Profile): the two switches in the row pattern, not a card each (W13-10).
-export function DailySummaryCard({ rows = false }: { rows?: boolean }) {
+// Both switches use the row pattern (W13-10).
+export function DailySummaryCard() {
   const api = useApi();
   const [prefs, setPrefs] = useState<UserPrefs | null>(null);
   const [busy, setBusy] = useState(false);
@@ -47,7 +47,7 @@ export function DailySummaryCard({ rows = false }: { rows?: boolean }) {
     }
   };
 
-  if (rows) return (
+  return (
     <>
       <SettingRow label="Daily summary" htmlFor="pref-daily-summary"
         line={`A notification and email at 8am (${prefs.timezone}) when approvals, threads or mentions are waiting on you.`}>
@@ -57,42 +57,6 @@ export function DailySummaryCard({ rows = false }: { rows?: boolean }) {
         line="One email when a message, a mention or an approval waits five minutes while you're away. Never 10pm to 8am.">
         <Switch id="pref-away-email" checked={prefs.awayEmail !== false} disabled={busy} onCheckedChange={(on) => void toggle("awayEmail", on)} />
       </SettingRow>
-    </>
-  );
-  return (
-    <>
-      <div className="settings-card">
-        <label className="settings-card-header" style={{ cursor: "pointer" }}>
-          <div>
-            <div className="settings-card-title">Daily summary</div>
-            <div className="settings-card-desc">
-              A notification and email at 8am ({prefs.timezone}) when approvals, threads or mentions are
-              waiting on you.
-            </div>
-          </div>
-          <Switch
-            aria-label="Daily summary"
-            checked={prefs.dailySummary}
-            disabled={busy}
-            onCheckedChange={(on) => void toggle("dailySummary", on)} />
-        </label>
-      </div>
-      <div className="settings-card">
-        <label className="settings-card-header" style={{ cursor: "pointer" }}>
-          <div>
-            <div className="settings-card-title">Email me when I&apos;m away</div>
-            <div className="settings-card-desc">
-              One email when a direct message, a mention or an approval waits five minutes and you are not in
-              Lightbulb. Never between 10pm and 8am.
-            </div>
-          </div>
-          <Switch
-            aria-label="Email me when I'm away"
-            checked={prefs.awayEmail !== false}
-            disabled={busy}
-            onCheckedChange={(on) => void toggle("awayEmail", on)} />
-        </label>
-      </div>
     </>
   );
 }

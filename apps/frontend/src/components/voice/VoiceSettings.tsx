@@ -94,7 +94,7 @@ export function VoiceSettings() {
     </div></Section>
     <Section name="Notifications"><div className="settings-panel" id="panel-notifications">
       <h2 className="settings-page-title">Notifications</h2>
-      <div className="settings-rows"><DailySummaryCard rows /></div>
+      <div className="settings-rows"><DailySummaryCard /></div>
     </div></Section>
     {desktop && <Section name="Desktop updates"><section className="vx-card" aria-labelledby="vx-desktop-updates-h">
       <h2 className="vx-h" id="vx-desktop-updates-h">Desktop updates</h2>

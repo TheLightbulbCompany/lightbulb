@@ -11,7 +11,6 @@ import { paperclipLinkTarget } from "@/lib/paperclipLinks";
 // `/voice` and its pages only: `/voice(.*)` also matched the public stock samples
 // under `/voice-samples/`, which the iPhone app plays without a web session.
 export const PROTECTED_ROUTES = [
-  "/auth/connect-machine(.*)",
   "/chat(.*)",
   "/voice",
   "/voice/(.*)",

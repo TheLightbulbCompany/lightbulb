@@ -50,7 +50,7 @@ describe("/welcome/name", () => {
     clerk.user = { firstName: "Ada", update: vi.fn() };
     at(target ? `?returnTo=${encodeURIComponent(target)}` : "");
     render(<NamePage />);
-    expect(clerk.replace).toHaveBeenCalledWith("/chat");
+    expect(clerk.replace).toHaveBeenCalledWith("/voice");
   });
 
   it.each([{ firstName: "Ada" }, { firstName: null, username: "ada" }])("sends a person who already has a name straight on: %j", (named) => {

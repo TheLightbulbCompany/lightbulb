@@ -16,5 +16,5 @@ it("renders Clerk's native organization task and completes at chat", () => {
   render(<ChooseOrganizationTaskPage />);
 
   expect(screen.getByText("Native choose workspace task")).toBeInTheDocument();
-  expect(taskProps).toHaveBeenCalledWith({ redirectUrlComplete: "/chat" });
+  expect(taskProps).toHaveBeenCalledWith({ redirectUrlComplete: "/voice" });
 });

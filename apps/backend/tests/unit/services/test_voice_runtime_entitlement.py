@@ -95,14 +95,6 @@ def test_pending_voice_invoice_does_not_allow_a_second_workspace_subscription():
     assert not gate.is_paid_subscription(account)
 
 
-async def test_paid_voice_gets_no_free_trial_expiry_or_deletion_notice():
-    from core.services import trial_lifecycle
-
-    with patch.object(trial_lifecycle, "_send_once", AsyncMock()) as send:
-        await trial_lifecycle.notices("org_voice", _voice(), now=2_000_000_000)
-    send.assert_not_awaited()
-
-
 async def test_voice_plan_cannot_be_misrepresented_as_paused_by_extending_leftover_trial():
     from core.services import trial_lifecycle
 

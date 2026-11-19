@@ -183,7 +183,7 @@ describe("workspace onboarding", () => {
     clerk.organization = { id: "org_a" }; rerender(<OnboardingPage />);
     expect(clerk.replace).not.toHaveBeenCalled();
     clerk.orgId = "org_a"; rerender(<OnboardingPage />);
-    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/chat"));
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
     expect(clerk.update).not.toHaveBeenCalled();
   });
   it("accepts invitations before any existing workspace and activates the invited workspace", async () => {

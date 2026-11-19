@@ -133,13 +133,13 @@ export default function JoinWorkspacePage() {
         if (cancelled) return;
         const result = raw as RedeemResult;
         setPhase({ kind: "done", result });
-        // Make the workspace the active org so /chat opens inside it. If Clerk
+        // Make the workspace the active org so /voice opens inside it. If Clerk
         // can't activate it yet (the membership is seconds old), /onboarding is
         // the surface that resolves memberships, so fall through to it.
         try {
           await setActive({ organization: result.org_id });
           settled.current = true;
-          router.push("/chat");
+          router.push("/voice");
         } catch {
           settled.current = true;
           router.push("/onboarding");
@@ -151,7 +151,7 @@ export default function JoinWorkspacePage() {
         // Leaving through this page abandons the link (dropped on unmount). A
         // dead link can never succeed, so drop it now too: nothing may route
         // the tab back to it. A retryable one stays on purpose: a full page
-        // load to /chat brings an org-less tab back here to retry, not to
+        // load to /voice brings an org-less tab back here to retry, not to
         // /onboarding.
         settled.current = true;
         if (!canRetry) window.sessionStorage.removeItem(tokenStorageKey);
@@ -265,7 +265,7 @@ export default function JoinWorkspacePage() {
                 Try again
               </Button>
             )}
-            <Button type="button" variant="outline" onClick={() => router.push("/chat")}>
+            <Button type="button" variant="outline" onClick={() => router.push("/voice")}>
               Go to Lightbulb
             </Button>
           </div>

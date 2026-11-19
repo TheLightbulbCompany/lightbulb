@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from datetime import datetime
 
@@ -11,8 +10,6 @@ from core.dynamodb import plain
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.connection_service import ConnectionService
-
-logger = logging.getLogger(__name__)
 
 TRIAL_IDLE_SECONDS = 180
 _IDLE_CLAIM_LEASE_SECONDS = 300
@@ -62,12 +59,6 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
         if not account or account.get("subscription_status") != "trial_local" or has_voice_plan(account):
             continue
-        try:
-            from core.services.trial_lifecycle import notices
-
-            await notices(owner_id, account, now)
-        except Exception:
-            logger.exception("trial lifecycle notice failed for %s", owner_id)
         activity = _activity_epoch(row)
         if activity > now - TRIAL_IDLE_SECONDS:
             continue

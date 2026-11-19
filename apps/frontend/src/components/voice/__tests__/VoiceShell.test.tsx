@@ -1,18 +1,25 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/voice/settings" }));
-const org = vi.hoisted(() => ({ current: { id: "o" } as { id: string } | null, userId: "u", list: vi.fn() }));
+const nav = vi.hoisted(() => ({ path: "/voice/settings", replace: vi.fn() }));
+vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useRouter: () => ({ replace: nav.replace }) }));
+const toast = vi.hoisted(() => ({ notify: vi.fn(), notifySuccess: vi.fn() }));
+vi.mock("@/lib/notify", () => toast);
+const org = vi.hoisted(() => ({ current: { id: "o" } as { id: string } | null, userId: "u", role: "org:admin", list: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({
   UserButton: () => null,
-  useAuth: () => ({ userId: org.userId }),
+  useAuth: () => ({ userId: org.userId, orgRole: org.role }),
   OrganizationList: (p: object) => { org.list(p); return <p>org-list</p>; },
   useOrganization: () => ({ organization: org.current, isLoaded: true }),
 }));
 vi.mock("../TalkSessionProvider", () => ({ TalkSessionProvider: ({ children }: { children: React.ReactNode }) => <div data-testid="talk-owner">{children}</div> }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ HuddleProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 const questions = vi.hoisted(() => ({ list: [] as { id: string }[] }));
-vi.mock("../data", () => ({ LIGHTBULB: "Lightbulb", useQuestions: () => ({ data: questions.list }), useGoLiveAfterPayment: () => {} }));
+const agent = vi.hoisted(() => ({ setup: false }));
+vi.mock("../data", () => ({
+  LIGHTBULB: "Lightbulb", useQuestions: () => ({ data: questions.list }), useGoLiveAfterPayment: () => {},
+  useAgentConfig: () => ({ data: {}, isNew: false }), needsOnboarding: () => agent.setup,
+}));
 
 import { VoiceShell } from "../VoiceShell";
 
@@ -63,4 +70,31 @@ it("a workspace or user change creates a fresh talk and huddle owner", () => {
   rerender(<VoiceShell><h1>Agent</h1></VoiceShell>);
   expect(screen.getByTestId("talk-owner")).not.toBe(second);
   org.current = { id: "o" }; org.userId = "u";
+});
+
+it.each([["/voice/agent", true], ["/voice/lightbulb", true], ["/voice/settings", false], ["/voice", false]])(
+  "with setup unfinished, %s sends the owner to Home: %s", (path, sent) => {
+    agent.setup = true; nav.path = path; nav.replace.mockClear();
+    render(<VoiceShell><p>page</p></VoiceShell>);
+    expect(nav.replace.mock.calls).toEqual(sent ? [["/voice"]] : []);
+    expect(screen.queryByText("page") === null).toBe(sent);
+    agent.setup = false; nav.path = "/voice/settings";
+  });
+
+it("reads Stripe's return flag and says what happened", () => {
+  window.history.replaceState(null, "", "/voice/agent?voice=checkout_complete");
+  render(<VoiceShell><div /></VoiceShell>);
+  expect(toast.notifySuccess).toHaveBeenCalledWith("Payment received. Your assistant is going live.", expect.anything());
+  window.history.replaceState(null, "", "/voice/settings?voice=checkout_canceled");
+  render(<VoiceShell><div /></VoiceShell>);
+  expect(toast.notify).toHaveBeenCalledWith("Checkout cancelled. You have not been charged.", expect.anything());
+  window.history.replaceState(null, "", "/");
+});
+
+it("with setup unfinished, a member who is not an admin keeps every page", () => {
+  agent.setup = true; nav.path = "/voice/needs-you"; nav.replace.mockClear(); org.role = "org:member";
+  render(<VoiceShell>member-page</VoiceShell>);
+  expect(nav.replace).not.toHaveBeenCalled();
+  expect(screen.getByText("member-page")).toBeInTheDocument();
+  org.role = "org:admin"; agent.setup = false;
 });

@@ -48,11 +48,12 @@ it("numberChoice survives the next save", async () => {
   await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ numberChoice: choice, live: true })));
 });
 
-it("go live 409 shows retry message", async () => {
-  const save = vi.fn().mockRejectedValue({ status: 409, body: { detail: { code: "number_unavailable" } } });
-  render(<Onboarding config={at(5)} save={save} />);
+it("go live 409 keeps what step 5 set and shows a retry message", async () => {
+  const save = vi.fn().mockRejectedValueOnce({ status: 409, body: { detail: { code: "number_unavailable" } } }).mockResolvedValue(undefined);
+  render(<Onboarding config={at(5, { name: "Nova" })} save={save} />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
-  expect(await screen.findByText(/Try Go live again from the Agent page/)).toBeInTheDocument();
+  expect(await screen.findByText(/Your setup is saved. Try Go live again in a moment/)).toBeInTheDocument();
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ name: "Nova", live: false, onboardingStep: 5 }));
 });
 
 it("unpaid Go live preserves setup and shows the plan checkout inline, not an error", async () => {

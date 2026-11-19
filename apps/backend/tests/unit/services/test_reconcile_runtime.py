@@ -275,8 +275,6 @@ async def test_a_first_provision_on_chatgpt_billing_writes_codex_profiles_with_n
         billing=BILLING["chatgpt_oauth"],
         row={"agentcore_runtime_arn": None, "status": "provisioning"},
     )
-    monkeypatch.setattr(hp, "_find_existing_runtime_arn", lambda name: None)
-    monkeypatch.setattr(hp, "_create_runtime", lambda request: ARN)
     writes = []
     monkeypatch.setattr(hp.container_repo, "update_fields", AsyncMock(side_effect=lambda o, f, **kw: writes.append(f)))
 

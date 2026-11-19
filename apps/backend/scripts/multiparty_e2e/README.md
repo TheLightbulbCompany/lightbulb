@@ -1,6 +1,6 @@
 # Multi-party end-to-end runner (dev only)
 
-Layers 2 and 3 of the multi-party suite. Layer 1, routing alone, is `scripts/speak_gate_bench/multiparty.py`.
+Layers 2 and 3 of the multi-party suite.
 This runner plays a scripted conversation into a real dev room as two or three test humans. It
 waits for the agents and records who answered and what they said. It then scores each step with
 hard checks and an LLM judge. The conditions are the six from Addlesee et al. 2023 (A–F), plus

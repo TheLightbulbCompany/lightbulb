@@ -265,8 +265,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/messaging/StartSessionDialog.tsx;
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md.
   - Session resume .......... references/surfaces.md ("Resume" paragraph)
-                              <- apps/backend/core/services/session_resume.py (who may resume, plan mode, 24 h, revoke);
-                                 apps/desktop/src-tauri/src/local_sessions/resume.rs (same folder, approved now; refusal codes);
+                              <- apps/desktop/src-tauri/src/local_sessions/resume.rs (same folder, approved now; refusal codes);
                                  packages/shared/src/messaging/sessionControls.ts (RESUME_REFUSED, "Not resumed: …").
   - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
                               <- apps/frontend/src/components/messaging/SessionPickup.tsx (Ask to pick up / Requested / declined / Preparing… / Pick up;

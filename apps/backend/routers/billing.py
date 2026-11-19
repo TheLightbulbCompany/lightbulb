@@ -1,6 +1,5 @@
 """Billing API endpoints — flat-fee subscription + Metronome-backed credits."""
 
-import asyncio
 import logging
 import time
 from typing import Literal
@@ -14,14 +13,13 @@ from pydantic import BaseModel, Field
 from core.auth import (
     AuthContext,
     get_current_user,
-    get_owner_type,
     resolve_owner_id,
     require_org_admin,
 )
 from core.config import settings
 from core.billing import voice_billing, voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, usage_repo
+from core.repositories import billing_repo
 from core.repositories.workspace_repo import customer_ops_agent_id
 from core.services import apple_iap, billing_service, openrouter_keys, photon, text_lines, trial_cap
 from core.services.billing_service import SEATS_INCLUDED, BillingService
@@ -34,9 +32,6 @@ from core.services.usage_service import get_usage_summary
 from schemas.billing import (
     BillingAccountResponse,
     PortalResponse,
-    UsageSummary,
-    MemberUsage,
-    SpendResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,28 +98,6 @@ async def cancel_voice_plan(
     except (httpx.HTTPError, stripe.error.StripeError) as exc:
         logger.warning("voice cancellation provider failure", exc_info=True)
         raise HTTPException(status_code=502, detail={"code": "voice_plan_provider_error"}) from exc
-
-
-async def _resolve_clerk_user(user_id: str) -> dict:
-    """Resolve a Clerk user ID to display name and email."""
-    if not settings.CLERK_SECRET_KEY:
-        return {}
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://api.clerk.com/v1/users/{user_id}",
-                headers={"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"},
-                timeout=5.0,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "display_name": f"{data.get('first_name', '')} {data.get('last_name', '')}".strip() or None,
-                    "email": (data.get("email_addresses") or [{}])[0].get("email_address"),
-                }
-    except Exception:
-        pass
-    return {}
 
 
 async def _get_billing_account(auth: AuthContext) -> dict | None:
@@ -265,73 +238,6 @@ async def get_billing_account(
 
 def _future_epoch(value) -> int | None:
     return int(value) if value is not None and int(value) > time.time() else None
-
-
-@router.get(
-    "/usage",
-    response_model=UsageSummary,
-    summary="Get usage summary",
-    description="Returns current period usage breakdown. Org admins see per-member usage.",
-    operation_id="get_usage",
-)
-async def get_usage(
-    auth: AuthContext = Depends(get_current_user),
-):
-    owner_id = resolve_owner_id(auth)
-    summary = await get_usage_summary(owner_id)
-
-    by_member: list[MemberUsage] = []
-
-    # Org admins can see per-member breakdown
-    if auth.is_org_context:
-        require_org_admin(auth)
-        members_raw = await usage_repo.get_member_usage(owner_id, summary["period"])
-
-        # Resolve Clerk names in parallel
-        async def _enrich(m: dict) -> MemberUsage:
-            # Usage with no human behind it (agent runs, routines, webhooks) is attributed to the
-            # owner id itself; Clerk has no user by that id, so name it instead of leaking org_….
-            owned = m["user_id"] == owner_id
-            clerk_info = {} if owned else await _resolve_clerk_user(m["user_id"])
-            return MemberUsage(
-                user_id=m["user_id"],
-                display_name="Workspace agents & automations" if owned else clerk_info.get("display_name"),
-                email=clerk_info.get("email"),
-                total_spend=m["total_spend_microdollars"] / 1_000_000,
-                total_input_tokens=m["total_input_tokens"],
-                total_output_tokens=m["total_output_tokens"],
-                request_count=m["request_count"],
-                capture_prompt_tokens=m["capture_prompt_tokens"],
-                capture_completion_tokens=m["capture_completion_tokens"],
-            )
-
-        by_member = await asyncio.gather(*[_enrich(m) for m in members_raw])
-
-    return UsageSummary(
-        period=summary["period"],
-        total_spend=summary["total_spend"],
-        total_input_tokens=summary["total_input_tokens"],
-        total_output_tokens=summary["total_output_tokens"],
-        total_cache_read_tokens=summary["total_cache_read_tokens"],
-        total_cache_write_tokens=summary["total_cache_write_tokens"],
-        request_count=summary["request_count"],
-        lifetime_spend=summary["lifetime_spend"],
-        by_member=list(by_member),
-    )
-
-
-@router.get(
-    "/spend",
-    response_model=SpendResponse,
-    summary="Spend summary",
-    description="Always tokens_only: the panel keeps its token grid. Kept for the web/mobile callers.",
-    operation_id="get_spend",
-)
-async def get_spend(auth: AuthContext = Depends(get_current_user)):
-    # Same org-member gating as GET /billing/usage.
-    if auth.is_org_context:
-        require_org_admin(auth)
-    return SpendResponse(mode="tokens_only")
 
 
 @router.post(
@@ -482,64 +388,6 @@ async def create_front_desk(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     return {"status": "checkout", "url": result["checkout_url"]}
-
-
-# ---------------------------------------------------------------------------
-# Post-onboarding provider switch (POST /billing/provider)
-# ---------------------------------------------------------------------------
-
-
-class ChangeProviderRequest(BaseModel):
-    provider_choice: Literal["chatgpt_oauth", "openrouter_managed"] = Field(
-        ...,
-        description="Choose OpenRouter managed inference or Sign in with ChatGPT.",
-    )
-
-
-@router.post(
-    "/provider",
-    summary="Change the owner's LLM provider mid-flight",
-    description=(
-        "Post-onboarding provider switch. Requires an active subscription "
-        "(subscribers only; workspace subscription is started at /billing/checkout). "
-        "Flips provider_choice on the billing row, clears the old provider's "
-        "side-effect state (OAuth tokens / BYOK Secrets Manager secrets), and "
-        "re-provisions the user's container with the new provider. The "
-        "container restart ends the current chat session — the frontend "
-        "surfaces this as a cutover warning before posting."
-    ),
-    operation_id="change_provider",
-)
-async def change_provider(
-    body: ChangeProviderRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    from core.services.billing_service import (
-        ChangeProviderError,
-        change_provider as change_provider_service,
-    )
-
-    # Org admins only — mirrors /trial-checkout. A non-admin member can't
-    # blow away the org's container by clicking "Change provider".
-    if auth.is_org_context:
-        require_org_admin(auth)
-
-    owner_id = resolve_owner_id(auth)
-    owner_type = get_owner_type(auth)
-
-    try:
-        return await change_provider_service(
-            owner_id=owner_id,
-            clerk_user_id=auth.user_id,
-            owner_type=owner_type,
-            provider_choice=body.provider_choice,
-            byo_provider=None,
-        )
-    except ChangeProviderError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail={"code": e.code, "message": e.message},
-        ) from e
 
 
 # ---------------------------------------------------------------------------

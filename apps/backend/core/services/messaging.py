@@ -3809,7 +3809,7 @@ PART_INSTRUCTIONS = (
     "or is said to a person in the room is asked of nobody."
 )
 #: Conversation understanding §4.2: what one part of a spoken line is. The keys are the contract with
-#: voice_calls.route_live_line; the descriptions are tuned on scripts/speak_gate_bench/understand.py.
+#: voice_calls.route_live_line.
 KIND_INSTRUCTIONS = (
     "The latest message was spoken on a voice call that people share with a team of AI teammates. It was "
     "cut into parts. For the one part given, decide what it is, reading it in the whole message and the "
@@ -3840,8 +3840,7 @@ KINDS = {
         "('Uber is a business, right?' to a colleague beside them), or people settling something among "
         "themselves; not for the AI team"
     ),
-    # A stop is one of two things, and only the first ends work. Not yet run on
-    # scripts/speak_gate_bench/understand.py: a new choice moves the others' probabilities.
+    # A stop is one of two things, and only the first ends work. A new choice moves the others' probabilities.
     "cancel": (
         "Withdraws something the team was asked earlier: the work is no longer wanted, or not now ('forget "
         "the deck', 'never mind', 'cancel that', 'don't bother', 'hold off on that')"
@@ -3850,8 +3849,8 @@ KINDS = {
         "Tells a teammate to stop talking, be quiet or wait its turn, and withdraws nothing it was asked "
         "('stop', 'that's enough', 'not now', 'okay okay', 'stop talking about the deck')"
     ),
-    # Driven voice: "Friday, go ahead" read as a plain instruction and became a run of its own. Not yet
-    # run on scripts/speak_gate_bench/understand.py: a new choice moves the others' probabilities.
+    # Driven voice: "Friday, go ahead" read as a plain instruction and became a run of its own. A new choice
+    # moves the others' probabilities.
     "nudge": (
         "Only calls on a teammate, checks that it is there, or tells it to go on with or report on what it "
         "was ALREADY asked ('Friday?', 'go ahead', 'are you there', 'so, what did you find', 'any update'); "

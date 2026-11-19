@@ -124,10 +124,6 @@ export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] =
   ["/claude-code-session-sharing", "/"],
   // The AI-workspace comparisons, posts and docs went with the 2026-11 move to
   // the salon receptionist; /compare now compares ways to answer the phone.
-  // One site, one headline: the trade pages folded into the home page.
-  ["/salons", "/"],
-  ["/spas", "/"],
-  ["/barbershops", "/"],
   ["/compare/slack", "/compare"],
   ["/compare/slack-alternatives-for-ai-agents", "/compare"],
   ["/compare/grok-bot", "/compare"],

@@ -45,7 +45,6 @@ from routers import (
     container,
     debug,
     desktop_auth,
-    desktop_pair,
     devices,
     gateway_relay,
     hooks,
@@ -590,9 +589,6 @@ app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
 app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
-# Desktop two-node pair / revoke (two-node architecture). Pair is idempotent;
-# revoke force-closes the live WS session keyed by deviceId.
-app.include_router(desktop_pair.router, prefix="/api/v1", tags=["desktop"])
 
 # ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
 app.include_router(oauth.router, prefix="/api/v1")

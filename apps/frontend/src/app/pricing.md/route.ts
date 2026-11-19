@@ -20,7 +20,7 @@ export async function GET() {
     "",
     `When the minutes run out, you decide: keep answering at ${perMinute(p) ?? "the per-minute rate"}, or send calls to your phone. A meter in Settings shows what you've used.`,
     "",
-    "Month to month. No setup fee, no contract. Cancel yourself in Settings. There's no free trial: you set everything up first and pay when you go live.",
+    "Month to month. No setup fee, no contract. Cancel yourself in Settings. There's no free trial: you set everything up first and pay when you go live. Not right for you? Tell us in your first 30 days and we refund the month.",
     "",
     "## Questions",
     "",

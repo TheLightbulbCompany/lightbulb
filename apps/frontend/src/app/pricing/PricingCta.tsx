@@ -7,6 +7,7 @@ import { captureSignupCta } from "@/lib/signupFlow";
 /** The /pricing page's one button, tracked like every other sign-up door. */
 export function PricingCta() {
   return (
+    <>
     <Link
       href="/sign-up"
       className="editorial-btn editorial-btn--primary mt-10 h-11 px-6"
@@ -21,5 +22,7 @@ export function PricingCta() {
     >
       Set up your assistant
     </Link>
+    <p className="mt-3 text-sm text-[var(--midnight-soft)]">Set it up free. Pay only when you turn the line on.</p>
+    </>
   );
 }

@@ -11,7 +11,7 @@ vi.mock("@clerk/nextjs", () => ({
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 beforeEach(() => vi.clearAllMocks());
 
-const openJoinDoor = () => fireEvent.click(screen.getByRole("tab", { name: /Join your team/ }));
+const openJoinDoor = () => fireEvent.click(screen.getByRole("tab", { name: /I was invited/ }));
 
 it("speaks to an owner setting up a phone assistant, with no free-trial promise", () => {
   render(<Page />);
@@ -24,7 +24,7 @@ it("speaks to an owner setting up a phone assistant, with no free-trial promise"
 
 it("opens on the create door: the Clerk form, landing on the voice home", () => {
   render(<Page />);
-  expect(screen.getByRole("tab", { name: /Create a workspace/ })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tab", { name: /Set up my shop/ })).toHaveAttribute("aria-selected", "true");
   expect(signUpProps).toHaveBeenCalledWith(expect.objectContaining({
     fallbackRedirectUrl: "/voice", signInFallbackRedirectUrl: "/voice",
   }));

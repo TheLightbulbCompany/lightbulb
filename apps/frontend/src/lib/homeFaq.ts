@@ -31,6 +31,6 @@ export const HOME_FAQ: { q: string; a: string }[] = [
   },
   {
     q: "Who is it not for yet?",
-    a: "Medical, dental and med spa practices that handle health information, businesses with several locations, and businesses outside the US. Its meeting helper joins Google Meet only, not Zoom or Microsoft Teams.",
+    a: "Medical, dental and med spa practices that handle health information, businesses with several locations, and businesses outside the US.",
   },
 ];

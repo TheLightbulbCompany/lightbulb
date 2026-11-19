@@ -1,14 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
 import { BACKEND_URL } from "@/lib/api";
 import { SUPPORT_EMAIL } from "@/lib/domain";
 import { attributionProperties, client as posthog, refreshAttribution } from "@/lib/analytics";
-
-import { BOOKING_TOOLS, SOURCES, TEAM_SIZES } from "./options";
 
 const field = "mt-2 w-full rounded-md border border-[var(--rule)] bg-[var(--cream)] px-3 py-2 text-base text-[var(--lb-ink)]";
 const label = "block text-sm font-medium text-[var(--lb-ink)]";
@@ -37,16 +34,13 @@ function anonymousId(): string {
 }
 
 /**
- * "Talk to a founder" for a salon, spa or barbershop owner. The payload keeps
- * the shape of `POST /setup-requests` (schemas/setup_request.py): the booking
- * tool rides in `agents_other` with `agents: ["other"]`, "what happens to your
- * calls" in `first_handoff`, and the website in `thread_link`.
+ * "Talk to a founder" for a salon, spa or barbershop owner: four fields, then
+ * a founder calls. The payload is `POST /setup-requests` (schemas/setup_request.py);
+ * `agents: ["other"]` is the one value that schema still requires.
  */
 export function RequestSetupForm() {
-  const params = useSearchParams();
   const [state, setState] = useState<"idle" | "sending" | "error">("idle");
   const [done, setDone] = useState<string | null>(null);
-  const [source, setSource] = useState("");
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -61,16 +55,12 @@ export function RequestSetupForm() {
         body: JSON.stringify({
           name,
           email: text("email"),
+          phone: text("phone"),
           company: text("company"),
-          team_size: text("team_size"),
           agents: ["other"],
-          agents_other: `Bookings: ${text("bookings")}`,
-          first_handoff: text("first_handoff"),
-          source,
-          source_other: text("source_other"),
-          thread_link: text("website"),
           attribution: readAttribution(),
-          source_param: (params?.get("source") ?? "").slice(0, 100),
+          // Read at submit, not with useSearchParams, so the page renders on the server with its headline.
+          source_param: (new URLSearchParams(window.location.search).get("source") ?? "").slice(0, 100),
           anonymous_id: anonymousId(),
         }),
       });
@@ -86,7 +76,7 @@ export function RequestSetupForm() {
       <div role="status">
         <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)]">Thanks, {done}.</h1>
         <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
-          A founder reads every request and will email you to find a time. Rather start now? You can set up your
+          A founder reads every request and will call or email you. Rather start now? You can set up your
           assistant yourself in the meantime.
         </p>
         <Link href="/sign-up" className="lb-btn lb-btn-p mt-8 inline-flex">
@@ -111,66 +101,15 @@ export function RequestSetupForm() {
         <div>
           <label className={label} htmlFor="rs-email">Email</label>
           <input id="rs-email" name="email" type="email" required autoComplete="email" className={field} />
-          <p className={helper}>We reply here.</p>
+        </div>
+        <div>
+          <label className={label} htmlFor="rs-phone">Mobile number</label>
+          <input id="rs-phone" name="phone" type="tel" required autoComplete="tel" maxLength={40} className={field} />
+          <p className={helper}>A founder will call or text you here.</p>
         </div>
         <div>
           <label className={label} htmlFor="rs-company">Business name</label>
           <input id="rs-company" name="company" required autoComplete="organization" className={field} />
-        </div>
-        <fieldset>
-          <legend className={label}>How many people work there, including you?</legend>
-          <div className="mt-3 flex flex-wrap gap-4">
-            {TEAM_SIZES.map((o) => (
-              <label key={o.value} className="flex items-center gap-2 text-[var(--lb-ink)]">
-                <input type="radio" name="team_size" value={o.value} required /> {o.label}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <div>
-          <label className={label} htmlFor="rs-bookings">Where do your bookings live today?</label>
-          <select id="rs-bookings" name="bookings" required defaultValue="" className={field}>
-            <option value="" disabled>
-              Choose one
-            </option>
-            {BOOKING_TOOLS.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className={label} htmlFor="rs-calls">What happens to your calls today?</label>
-          <textarea id="rs-calls" name="first_handoff" required rows={3} maxLength={2000} className={field} />
-          <p className={helper}>
-            For example: &ldquo;I miss calls while I&rsquo;m with clients, and nobody answers after 7 pm.&rdquo;
-          </p>
-        </div>
-        <div>
-          <label className={label} htmlFor="rs-website">Your website (optional)</label>
-          <input id="rs-website" name="website" inputMode="url" maxLength={500} autoComplete="url" className={field} />
-        </div>
-        <div>
-          <label className={label} htmlFor="rs-source">How did you first hear about us?</label>
-          <select
-            id="rs-source"
-            name="source"
-            required
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-            className={field}
-          >
-            <option value="" disabled>
-              Choose one
-            </option>
-            {SOURCES.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          {source === "other" && <input name="source_other" required aria-label="Where did you hear about us?" className={field} />}
         </div>
         <div>
           <button type="submit" className="lb-btn lb-btn-p" disabled={state === "sending"}>

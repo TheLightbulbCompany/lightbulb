@@ -57,6 +57,7 @@ async def _email_aden(request_id: str, req: SetupRequest) -> None:
     rows = [
         ("Name", req.name),
         ("Email", req.email),
+        ("Phone", req.phone),
         ("Company", req.company),
         ("Team size", req.team_size),
         ("Agents", ", ".join(req.agents) + (f" ({req.agents_other})" if req.agents_other else "")),
@@ -72,7 +73,7 @@ async def _email_aden(request_id: str, req: SetupRequest) -> None:
     body_text = "".join(f"{k}: {v}\n" for k, v in rows)
     await email_service.send_email(
         to=SETUP_REQUEST_TO,
-        subject=f"Setup request: {req.company} ({req.team_size})",
+        subject=f"Setup request: {req.company}" + (f" ({req.team_size})" if req.team_size else ""),
         html=f"<div>{body_html}</div>",
         text=body_text,
         from_addr=settings.EMAIL_FROM_TICKETS,

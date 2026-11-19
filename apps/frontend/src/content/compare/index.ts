@@ -37,7 +37,7 @@ const BLS = "https://www.bls.gov/ooh/office-and-administrative-support/reception
 
 const AFTER_HOURS = "Answers 24/7, including nights, Sundays and days off.";
 const SEE_IT = "Who called, a one-line summary, the steps it took, and the transcript.";
-const COST = "One monthly plan with minutes included, then a per-minute rate. Month to month; cancel yourself in Settings.";
+export const COST = "One monthly plan with minutes included, then a per-minute rate. Month to month; cancel yourself in Settings.";
 
 export const COMPARE_PAGES: ComparePage[] = [
   {

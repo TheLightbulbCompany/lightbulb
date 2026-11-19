@@ -151,6 +151,24 @@ export default function Page() {
           display: none;
           margin-bottom: 32px;
         }
+        .auth-mobile-head {
+          display: none;
+          width: 100%;
+          margin-bottom: 20px;
+          font-family: var(--font-sans), system-ui, sans-serif;
+          font-size: 14px;
+          line-height: 1.5;
+          color: var(--midnight-muted);
+        }
+        .auth-mobile-head strong {
+          display: block;
+          font-family: var(--font-serif), 'Lora', serif;
+          font-size: 26px;
+          font-weight: 400;
+          line-height: 1.2;
+          color: var(--midnight);
+          margin-bottom: 6px;
+        }
 
         .auth-footer-links {
           margin-top: 24px;
@@ -230,7 +248,8 @@ export default function Page() {
             padding-top: 64px;
           }
           .auth-card { max-width: 380px; }
-          .auth-mobile-logo { display: flex; }
+          .auth-mobile-logo { display: flex; margin-bottom: 20px; }
+          .auth-mobile-head { display: block; }
         }
 
         /* ── REDUCED MOTION ── */
@@ -316,6 +335,12 @@ export default function Page() {
             <div className="auth-mobile-logo">
               <Logo size="md" withMark />
             </div>
+
+            {/* The brand panel is hidden on a phone: say what this is before the form. */}
+            <p className="auth-mobile-head">
+              <strong>Your phone, answered and booked.</strong>
+              Set it up in about 15 minutes. Pay when you go live.
+            </p>
 
             <SignUpDoors createForm={<SignUp fallbackRedirectUrl="/voice" signInFallbackRedirectUrl="/voice" />} />
 

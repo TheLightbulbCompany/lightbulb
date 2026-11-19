@@ -24,12 +24,14 @@ SOURCES = (
 class SetupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    phone: str = Field(default="", max_length=40)
     company: str = Field(min_length=1, max_length=120)
-    team_size: Literal[TEAM_SIZES]  # type: ignore[valid-type]
+    # The salon form asks four things (name, email, mobile, business); the rest are optional.
+    team_size: Literal[("", *TEAM_SIZES)] = ""  # type: ignore[valid-type]
     agents: list[Literal[AGENTS]] = Field(min_length=1, max_length=len(AGENTS))  # type: ignore[valid-type]
     agents_other: str = Field(default="", max_length=200)
-    first_handoff: str = Field(min_length=1, max_length=2000)
-    source: Literal[SOURCES]  # type: ignore[valid-type]
+    first_handoff: str = Field(default="", max_length=2000)
+    source: Literal[("", *SOURCES)] = ""  # type: ignore[valid-type]
     source_other: str = Field(default="", max_length=200)
     thread_link: str = Field(default="", max_length=500)
     # Attribution the page read in the browser: first-touch UTM / referrer /
@@ -40,13 +42,21 @@ class SetupRequest(BaseModel):
     headline_variant: str = Field(default="", max_length=20)
 
     @field_validator(
-        "name", "email", "company", "agents_other", "first_handoff", "source_other", "thread_link", mode="before"
+        "name",
+        "email",
+        "phone",
+        "company",
+        "agents_other",
+        "first_handoff",
+        "source_other",
+        "thread_link",
+        mode="before",
     )
     @classmethod
     def _strip(cls, v):
         return v.strip() if isinstance(v, str) else v
 
-    @field_validator("name", "email", "company", "agents_other", "source_other", "thread_link")
+    @field_validator("name", "email", "phone", "company", "agents_other", "source_other", "thread_link")
     @classmethod
     def _one_line(cls, v: str) -> str:
         # Single-line fields reach mail headers (the subject carries the

@@ -9,15 +9,13 @@ import { COMPARE_PAGES, getComparePage } from "@/content/compare";
 import { ComparePageView } from "../ComparePageView";
 
 describe("ComparePageView", () => {
-  it.each(COMPARE_PAGES.map((p) => [p.slug, p] as const))("%s: table, dated, tagged sign-up, trade links", (slug, page) => {
+  it.each(COMPARE_PAGES.map((p) => [p.slug, p] as const))("%s: table, dated, tagged sign-up, home link", (slug, page) => {
     const { container, unmount } = render(<ComparePageView page={page} />);
     expect(screen.getByRole("heading", { level: 1, name: page.h1 })).toBeInTheDocument();
     expect(screen.getAllByRole("row")).toHaveLength(page.rows.length + 1);
     expect(screen.getByText(/Updated/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Set up your assistant" })).toHaveAttribute("href", `/sign-up?source=compare-${slug}`);
-    for (const path of ["/salons", "/spas", "/barbershops"]) {
-      expect(container.querySelector(`a[href="${path}"]`)).not.toBeNull();
-    }
+    expect(container.querySelector('a[href="/"]')).not.toBeNull();
     unmount();
   });
 

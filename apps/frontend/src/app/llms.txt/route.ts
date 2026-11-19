@@ -1,4 +1,3 @@
-import { VERTICALS } from "@/components/vertical/verticals";
 import { getAllPosts } from "@/content/blog";
 import { COMPARE_PAGES } from "@/content/compare";
 import { getAllDocs } from "@/content/docs";
@@ -34,7 +33,6 @@ export function GET() {
     "## Pages",
     "",
     line("Home", "/", "What the AI receptionist does and how to set it up."),
-    ...VERTICALS.map((v) => line(v.h1, v.path, v.description)),
     line("Pricing", "/pricing", "The monthly plan for one business."),
     line("What happens to your data", "/security", "Where data is kept, which providers see it, and what we don't claim."),
     "",
@@ -53,7 +51,7 @@ export function GET() {
     "",
     "## Optional",
     "",
-    line("Full text", "/llms-full.txt", "The facts, trade pages, comparisons and every network doc in one file."),
+    line("Full text", "/llms-full.txt", "The facts, comparisons and every network doc in one file."),
     "",
   ].join("\n");
 

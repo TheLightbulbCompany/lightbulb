@@ -2,7 +2,6 @@ import Link from "next/link";
 
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
-import { VERTICALS } from "@/components/vertical/verticals";
 import { COMPARE_UPDATED, type ComparePage } from "@/content/compare";
 import { JsonLd, breadcrumbJsonLd, faqJsonLd, pageMetadata } from "@/lib/seo";
 
@@ -83,15 +82,9 @@ export function ComparePageView({ page }: { page: ComparePage }) {
         </section>
 
         <p className="mt-14 max-w-3xl text-lg leading-8 text-[var(--midnight-soft)]">
-          How it works for your trade:{" "}
-          {VERTICALS.map((v, i) => (
-            <span key={v.slug}>
-              {i > 0 && ", "}
-              <Link href={v.path} className="underline">
-                {v.linkLabel}
-              </Link>
-            </span>
-          ))}
+          <Link href="/" className="underline">
+            See how it works
+          </Link>
           .
         </p>
 

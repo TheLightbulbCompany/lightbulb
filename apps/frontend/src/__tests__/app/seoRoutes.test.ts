@@ -7,7 +7,6 @@ import { getAllPosts } from "@/content/blog";
 import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
 import { COMPARE_PAGES } from "@/content/compare";
-import { VERTICALS } from "@/components/vertical/verticals";
 import sitemap from "@/app/sitemap";
 import { BANNED } from "@/content/__tests__/bannedCopy";
 
@@ -48,7 +47,6 @@ describe("/llms.txt", () => {
     const text = await body(llms());
     const product = text.slice(0, text.indexOf("## Developer network"));
     expect(product).toContain("AI receptionist");
-    for (const v of VERTICALS) expect(product).toContain(`${SITE_URL}${v.path}`);
     expect(product).toContain("There is no free trial");
     // Only the developer section may say "agents"; no price is ever typed.
     expect(product.replace("There is no free trial", "").match(BANNED)?.[0]).toBeUndefined();
@@ -57,9 +55,8 @@ describe("/llms.txt", () => {
 });
 
 describe("/llms-full.txt", () => {
-  it("carries every trade page, comparison, and the full markdown of every doc and post", async () => {
+  it("carries every comparison and the full markdown of every doc and post", async () => {
     const text = await body(llmsFull());
-    for (const v of VERTICALS) for (const f of v.faq) expect(text).toContain(f.a);
     for (const p of COMPARE_PAGES) expect(text).toContain(p.intro);
     for (const doc of getAllDocs()) {
       expect(text).toContain(doc.content.trim().slice(0, 60));
@@ -71,14 +68,13 @@ describe("/llms-full.txt", () => {
 });
 
 describe("/sitemap.xml", () => {
-  it("lists the trade pages and comparisons, and none of the retired pages", () => {
+  it("lists the comparisons, and none of the retired pages", () => {
     const urls = sitemap().map((e) => e.url);
-    for (const v of VERTICALS) expect(urls).toContain(`${SITE_URL}${v.path}`);
     for (const p of COMPARE_PAGES) expect(urls).toContain(`${SITE_URL}${p.path}`);
     expect(urls).toContain(`${SITE_URL}/network`);
     expect(urls).toContain(`${SITE_URL}/docs`);
     expect(urls).toContain(`${SITE_URL}/request-setup`);
-    for (const gone of ["/compare/slack", "/docs/get-started"]) {
+    for (const gone of ["/compare/slack", "/docs/get-started", "/salons", "/spas", "/barbershops"]) {
       expect(urls).not.toContain(`${SITE_URL}${gone}`);
     }
     expect(new Set(urls).size).toBe(urls.length);

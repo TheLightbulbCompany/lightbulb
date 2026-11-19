@@ -76,8 +76,13 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
         } catch { setErr("Couldn't save your setup. Try again before opening payment."); }
         return;
       }
-      setErr(status === 409 && code === "number_unavailable" ? "We couldn't get a number just now. Your setup is saved. Try Go live again from the Agent page."
-        : saveRefusal(e) ?? "Couldn't save. Try again.");
+      if (status === 409 && code === "number_unavailable") {
+        // Keep what step 5 just set (name, greeting, voice): the refused Go live saved nothing.
+        try { const kept = { ...withTimezone(next), live: false, onboardingStep: 5 }; await save(kept); setC(kept); } catch { /* the message below still tells the owner to retry */ }
+        setErr("We couldn't get a number just now. Your setup is saved. Try Go live again in a moment.");
+        return;
+      }
+      setErr(saveRefusal(e) ?? "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };
 

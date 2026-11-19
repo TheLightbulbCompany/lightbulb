@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 
 const nav = vi.hoisted(() => ({ path: "/voice/settings", replace: vi.fn() }));
@@ -81,13 +81,14 @@ it.each([["/voice/agent", true], ["/voice/lightbulb", true], ["/voice/settings",
     agent.setup = false; nav.path = "/voice/settings";
   });
 
-it("reads Stripe's return flag and says what happened", () => {
+it("reads Stripe's return flag and says what happened, a tick after mount so the Toaster has subscribed", async () => {
   window.history.replaceState(null, "", "/voice/agent?voice=checkout_complete");
   render(<VoiceShell><div /></VoiceShell>);
-  expect(toast.notifySuccess).toHaveBeenCalledWith("Payment received. Your assistant is going live.", expect.anything());
+  expect(toast.notifySuccess).not.toHaveBeenCalled();
+  await waitFor(() => expect(toast.notifySuccess).toHaveBeenCalledWith("Payment received. Your assistant is going live.", expect.anything()));
   window.history.replaceState(null, "", "/voice/settings?voice=checkout_canceled");
   render(<VoiceShell><div /></VoiceShell>);
-  expect(toast.notify).toHaveBeenCalledWith("Checkout cancelled. You have not been charged.", expect.anything());
+  await waitFor(() => expect(toast.notify).toHaveBeenCalledWith("Checkout cancelled. You have not been charged.", expect.anything()));
   window.history.replaceState(null, "", "/");
 });
 

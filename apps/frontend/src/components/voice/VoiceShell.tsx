@@ -44,8 +44,13 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
   // Stripe returns here with ?voice= (core/billing/voice_plan_checkout.py success_url / cancel_url).
   useEffect(() => {
     const flag = new URLSearchParams(window.location.search).get("voice");
-    if (flag === "checkout_complete") notifySuccess("Payment received. Your assistant is going live.", { dedupeKey: "voice-checkout" });
-    else if (flag === "checkout_canceled") notify("Checkout cancelled. You have not been charged.", { dedupeKey: "voice-checkout" });
+    // After this tick: a Stripe return is a full page load, and the root Toaster (a later sibling) has not
+    // subscribed yet when this effect runs. sonner drops a toast fired before its Toaster subscribes.
+    const later = setTimeout(() => {
+      if (flag === "checkout_complete") notifySuccess("Payment received. Your assistant is going live.", { dedupeKey: "voice-checkout" });
+      else if (flag === "checkout_canceled") notify("Checkout cancelled. You have not been charged.", { dedupeKey: "voice-checkout" });
+    });
+    return () => clearTimeout(later);
   }, []);
   if (isLoaded && !organization) {
     // Clerk <OrganizationList> props: https://clerk.com/docs/components/organization/organization-list

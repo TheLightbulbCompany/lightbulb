@@ -636,14 +636,19 @@ async def set_metronome_ids(
     )
 
 
-async def set_voice_plan(owner_id: str, *, customer_id: str, contract_id: str, usage_key: str, started_at: str) -> None:
-    """Record the usage-only Metronome contract; the Stripe subscription status carries the entitlement."""
+async def set_voice_plan(
+    owner_id: str, *, customer_id: str, contract_id: str, usage_key: str, started_at: str, billing_anchor: str
+) -> None:
+    """Record the usage-only Metronome contract; the Stripe subscription status carries the entitlement.
+
+    ``billing_anchor`` is the contract's own usage-statement anchor, which ``voice_plan.period`` follows."""
     await run_in_thread(
         _get_table().update_item,
         Key={"owner_id": owner_id},
         UpdateExpression=(
             "SET metronome_customer_id = :m, metronome_voice_contract_id = :c, "
-            "voice_plan_status = :s, voice_plan_usage_key = :k, voice_plan_started_at = :a, updated_at = :t"
+            "voice_plan_status = :s, voice_plan_usage_key = :k, voice_plan_started_at = :a, "
+            "voice_plan_billing_anchor = :b, updated_at = :t"
         ),
         ExpressionAttributeValues={
             ":m": customer_id,
@@ -651,6 +656,7 @@ async def set_voice_plan(owner_id: str, *, customer_id: str, contract_id: str, u
             ":s": "active",
             ":k": usage_key,
             ":a": started_at,
+            ":b": billing_anchor,
             ":t": utc_now_iso(),
         },
         ConditionExpression="attribute_exists(owner_id)",

@@ -50,6 +50,8 @@ async def test_voice_contract_is_usage_only_and_scopes_usage_to_one_enrollment(m
         "delivery_method_id": "delivery-1",
     }
     assert "subscriptions" not in payload  # the flat fee is a Stripe subscription
+    # The free 1,500 minutes reset on the sign-up day each month, not Metronome's default 1st.
+    assert payload["usage_statement_schedule"] == {"frequency": "MONTHLY", "day": "CONTRACT_START"}
 
 
 async def test_voice_contract_cancellation_normalizes_python_microseconds_for_provider():

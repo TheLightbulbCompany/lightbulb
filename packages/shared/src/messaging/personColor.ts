@@ -1,6 +1,6 @@
 /**
  * One colour per person, the same in the terminal and in the session's chat. A port of the desktop
- * mod's `colorFor` (packages/claude-plugin/lightbulb/hooks/rules.ts): FNV-1a over the
+ * mod's `colorFor` (the Claude plugin's hooks/rules.ts, now in TheLightbulbCompany/lightbulb-plugin): FNV-1a over the
  * Clerk user id, mod the same ANSI palette in the same order. The session's own person is the mod's
  * OWNER_COLOR (gray), here "owner". Keep the two in step.
  */

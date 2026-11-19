@@ -5,28 +5,13 @@
  * and platform-parameterized data hooks.
  *
  * This barrel is the package's public surface: every line here is imported by
- * `apps/frontend`, `apps/mobile` or both — with one deliberate exception that
- * has no consumer yet and must NOT be pruned: everything originating in
- * `messaging/{useRooms,timeline,mentions}.ts`, held for the mobile port onto the
- * shared room machine. Internals stay internal — import them relatively from
+ * `apps/frontend`, `apps/mobile` or both. Internals stay internal — import them relatively from
  * inside the package instead of re-exporting them here.
  */
 export type { PlatformAdapter } from "./adapter";
-export { NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type ScreenOrder } from "./live/sessionScreen";
-export { chunkInput, createInputQueue, dropMouseReports, dropProbeReplies, inputRefused, MAX_INPUT_BYTES, SHIFT_ENTER, toBase64 } from "./live/sessionInput";
 
 export { useRuntimeRpc, useRuntimeRpcMutation } from "./hooks/useRuntimeRpc";
 export type { RuntimeRpcSource, RpcResult } from "./hooks/useRuntimeRpc";
-export {
-  agentDisplayName,
-  getAgentModelString,
-} from "./hooks/agents";
-export { useAgents } from "./hooks/useAgents";
-export type {
-  Agent,
-  AgentModelRef,
-  AgentsListResponse,
-} from "./hooks/agents";
 export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
 export type { OAuthState } from "./hooks/useChatGPTOAuth";
 export { useStatusLoaded } from "./hooks/containerStatus";
@@ -36,13 +21,6 @@ export type {
 } from "./hooks/containerStatus";
 export { deriveUIPhase } from "./hooks/statusContract";
 export type { StatusContract, UIPhase } from "./hooks/statusContract";
-export {
-  PROVISION_IDEAS,
-  PROVISION_IDEA_ROTATION_MS,
-  PROVISION_TIMEOUT_MS,
-  PROVISION_STUCK_MS,
-  formatProvisionElapsed,
-} from "./hooks/provisioningCopy";
 export { refreshOnboardingStatus, resetSwrCache, useOnboardingStatus, useResetSwrOnUserChange } from "./hooks/useOnboardingStatus";
 export type { VisibilityAdapter } from "./hooks/useOnboardingStatus";
 
@@ -54,34 +32,10 @@ export { accumulateStreamText } from "./live/streamText";
 export { AppSyncEventsClient, framesChannelFor } from "./live/appsyncEvents";
 export { useLiveEvents } from "./live/useLiveEvents";
 export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, TaskChanged, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, RoomSubagentEvent, SessionAttention, SessionBrowserFrame, SessionScreen, SessionTyping } from "./live/types";
-export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
-export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
-export { useSubagentTail } from "./messaging/useSubagentTail";
 export { PERSON_COLORS, personColor } from "./messaging/personColor";
 export type { PersonColor } from "./messaging/personColor";
 export type { MessagingClient, RoomAttachmentInput, SubagentTail } from "./messaging/client";
-export { wrapSelection } from "./messaging/composerText";
-export type { MarkdownStyle } from "./messaging/composerText";
-export { canChangeListenMode, LISTEN_MODE_LABELS, listenModeOptions, respondHint, soleChannelOwner } from "./messaging/respondHint";
-export {
-  buildSetupSteps,
-  isBandComplete,
-  isConnectorStep,
-  setupProgress,
-  ENDOWED_STEPS,
-  CONNECTOR_STEPS,
-  STARTER_AGENT_DEFAULT_NAMES,
-} from "./messaging/onboardingSteps";
-export type {
-  SetupStep,
-  SetupStepId,
-  SetupStepInputs,
-  SetupParticipant,
-  SetupConnection,
-  SetupBilling,
-} from "./messaging/onboardingSteps";
-export type { RespondTarget } from "./messaging/respondHint";
 export {
   GROUP_WINDOW_MS,
   browsingSite,
@@ -109,33 +63,6 @@ export {
   toolRowLabel,
 } from "./messaging/toolDisplay";
 export type { ToolDisplay, ToolKind } from "./messaging/toolDisplay";
-export {
-  MENTION_SCHEME,
-  activeTrigger,
-  applyCompletion,
-  linkifyMentions,
-  linkifySessionMentions,
-  displaySessionMentions,
-  parseMentionHref,
-  resolveTypedMentions,
-  resolveTypedSessionMentions,
-  sessionMentionCandidates,
-  sessionMentionHandle,
-} from "./messaging/mentions";
-export type { CompletionTrigger, MentionTarget, SessionMentionCandidate, TriggerKind } from "./messaging/mentions";
-export { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji } from "./messaging/emoji";
-export type { EmojiEntry } from "./messaging/emoji";
-export { MAX_LINK_PREVIEWS, extractPreviewUrls, linkDomain, linkPreviewPath, useLinkPreview } from "./messaging/linkPreview";
-export type { LinkPreview } from "./messaging/linkPreview";
-export {
-  DOCUMENT_LINK_RE,
-  MAX_DOCUMENT_CARDS,
-  documentPreviewText,
-  extractDocumentLinks,
-  isDocumentLink,
-  useDocumentPreview,
-} from "./messaging/documentLinks";
-export type { DocumentLink, DocumentPreview } from "./messaging/documentLinks";
 export { ROOMS_SNAPSHOT_VERSION, roomsListKey, useRooms } from "./messaging/useRooms";
 export type {
   MessageDelegations,
@@ -150,36 +77,6 @@ export type {
   UseRoomsOptions,
   UseRoomsResult,
 } from "./messaging/useRooms";
-export {
-  activityActionRequest,
-  attentionActivityCount,
-  flattenActivityPages,
-  newestActivityAt,
-  replaceActivityItem,
-  unseenActivityCount,
-  useActivity,
-} from "./messaging/useActivity";
-export type { ActivityClient, ActivityPlatform, UseActivityOptions, UseActivityResult } from "./messaging/useActivity";
-export {
-  ACTIVITY_EMPTY_COPY,
-  ACTIVITY_FILTERS,
-  activityRowParts,
-  approvalActivityId,
-  interactionActivityId,
-  approvalNotificationCopy,
-  filterActivity,
-  groupActivity,
-  isNeedsYou,
-} from "./messaging/activityView";
-export type { ActivityFilter, ActivityRowParts, ActivitySection } from "./messaging/activityView";
-export {
-  NOTIFICATION_LINE_CHARS,
-  notificationLine,
-  notificationTitle,
-  roomWhere,
-  runFailureLine,
-  sentenceCase,
-} from "./messaging/notificationCopy";
 export {
   GLYPH,
   sessionGlyph,
@@ -232,20 +129,6 @@ export type {
 } from "./messaging/localSessionTranscript";
 export { sessionChanges, sessionPlan } from "./messaging/localSessionOverview";
 export type { FileChange, PlanStatus, PlanStep } from "./messaging/localSessionOverview";
-export { accessLost, useHistorySource, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
-export type { SessionSource } from "./messaging/useLocalSessionHistory";
-export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
-export { canSendToSession, endedWhy, markSessionRead, markSessionsSeen, markSessionUnread, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionArchivedByViewer, groupByDay, sessionEndable, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionState, sessionStateAction, sessionStateLabel, sessionStatus, sessionTitle, sessionWaitingLine, sessionsNeedingYou, sidebarSessionList, SESSION_NOTIFICATION_DEFAULTS, type NotifyLevel, type SessionNotifications, sessionToolName, changesLabel, sessionAgentsLabel, sessionPrLabel, sessionSignalsLine, sessionAgentName, SESSION_AGENTS, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
-export type { SessionDayGroup, SessionMarks, SessionSeen, SessionState, WorkspaceSection } from "./messaging/localSessionLabels";
-export { CLI_ONLY, conversationOnly, sessionScreenNotice } from "./messaging/sessionStates";
-export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState, unescapeTyped } from "./messaging/chatList";
-export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatList";
-export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
-export type { ReadState } from "./messaging/readState";
-export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, useSessionOutbox, type SessionReceiptChip } from "./messaging/useSessionCommand";
-export { APPROVAL_MODE_LABEL, approvalAgent, approvalModeAction, ASK_AGAIN_AFTER_MS, audienceLine, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupRequestLine, watchOnlyLine, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionQuestion, useSessionAudit, useSessionJoinRequest, useSessionResume, useShownInputMatches, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
-export type { ApprovalAnswer, SessionControlClient, SessionResumeFlow } from "./messaging/sessionControls";
-export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {
   LocalSession,
   SessionChanges,
@@ -336,7 +219,6 @@ export {
   resolveToolUseId,
 } from "./chat/history";
 export type { ContentBlock, HistoryMessage } from "./chat/history";
-export { sessionIdFromKey } from "./chat/sessionKey";
 export * from "./voice/words";
 export {
   EMPTY_ROOM_SUBAGENTS,

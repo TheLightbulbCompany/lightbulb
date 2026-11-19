@@ -188,7 +188,6 @@ cd apps/frontend && pnpm run dev               # localhost:3000
 cd apps/backend && uv run pytest tests/ -v     # backend tests
 cd apps/frontend && pnpm test                  # frontend unit tests
 cd apps/huddle-agent && uv run pytest tests -q # voice worker tests
-tla/check.sh                                   # TLA+ model checks, see tla/README.md
 ```
 
 ### Dev testing

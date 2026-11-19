@@ -1087,8 +1087,6 @@ def register(ctx) -> None:
                       description=START_WORK_SCHEMA["description"], emoji="🚀")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
                       description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
-    from . import desktop, router
+    from . import router
 
     router.register(ctx)
-    ctx.register_tool("lightbulb_desktop", "lightbulb", desktop.SCHEMA, desktop.handle,
-                      description=desktop.SCHEMA["description"], emoji="🖥️")

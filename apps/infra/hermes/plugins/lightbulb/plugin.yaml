@@ -10,7 +10,6 @@ provides_tools:
   - ask_person
   - task_note
   - lightbulb_local_sessions
-  - lightbulb_desktop
   - start_work
   - watch
   - unwatch

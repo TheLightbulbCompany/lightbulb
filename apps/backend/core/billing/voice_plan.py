@@ -195,15 +195,14 @@ def _boundary(year: int, month: int, day: int) -> datetime:
 def period(account: dict, at: datetime | None = None) -> tuple[datetime, datetime]:
     """The usage-statement window holding ``at``: monthly from the contract's billing anchor day.
 
-    Rows enrolled before ``voice_plan_billing_anchor`` was stored are on Metronome's default
-    schedule (the 1st of each month), so they keep calendar months.
+    ``voice_plan_billing_anchor`` is what Metronome reports for the contract, stored at enrollment;
+    every enrolled row carries it.
     """
     now = (at or datetime.now(UTC)).astimezone(UTC)
     ending_at = datetime.fromisoformat(account["voice_plan_ending_at"]) if account.get("voice_plan_ending_at") else None
     if ending_at and ending_at <= now:
         now = ending_at - timedelta(microseconds=1)
-    anchor = account.get("voice_plan_billing_anchor")
-    day = datetime.fromisoformat(anchor.replace("Z", "+00:00")).astimezone(UTC).day if anchor else 1
+    day = datetime.fromisoformat(account["voice_plan_billing_anchor"].replace("Z", "+00:00")).astimezone(UTC).day
     month = now.month if _boundary(now.year, now.month, day) <= now else now.month - 1
     start, end = _boundary(now.year, month, day), _boundary(now.year, month + 1, day)
     if account.get("voice_plan_started_at"):

@@ -22,6 +22,7 @@ def _account():
         "voice_plan_usage_key": "voice-usage-a",
         "voice_plan_status": "active",
         "voice_plan_started_at": start.isoformat(),
+        "voice_plan_billing_anchor": start.isoformat(),
         "voice_plan_stripe_status": "active",
     }
 

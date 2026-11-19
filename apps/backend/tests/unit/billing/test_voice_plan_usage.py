@@ -61,8 +61,12 @@ def test_first_period_starts_on_the_contract_and_a_cancelled_plan_ends_on_its_en
     assert voice_plan.period(mid, _d(2027, 2, 1)) == (_d(2026, 12, 19), _d(2027, 1, 5, 10))
 
 
-def test_rows_enrolled_before_the_anchor_was_stored_keep_calendar_months():
-    account = {"voice_plan_started_at": "2026-11-08T00:00:00Z"}
+def test_the_window_follows_the_anchor_metronome_reports_not_the_start_day():
+    # A contract on Metronome's default schedule reports the 1st, whatever day it started.
+    account = {
+        "voice_plan_started_at": "2026-11-08T00:00:00Z",
+        "voice_plan_billing_anchor": "2026-11-01T00:00:00+00:00",
+    }
     start, end = voice_plan.period(account, datetime(2026, 11, 30, 23, 59, tzinfo=UTC))
     assert start == datetime(2026, 11, 8, tzinfo=UTC) and end == datetime(2026, 12, 1, tzinfo=UTC)
     start, end = voice_plan.period(account, datetime(2026, 12, 1, 0, 1, tzinfo=UTC))
@@ -76,7 +80,11 @@ def test_rows_enrolled_before_the_anchor_was_stored_keep_calendar_months():
 async def test_paid_usage_preserves_fractional_minutes_and_filters_one_enrollment(monkeypatch):
     monkeypatch.setattr(voice_plan.settings, "METRONOME_VOICE_METRIC_ID", "metric")
     client = MagicMock(scoped_voice_seconds=AsyncMock(return_value=61))
-    account = {"metronome_customer_id": "mc", "voice_plan_usage_key": "exact-enrollment"}
+    account = {
+        "metronome_customer_id": "mc",
+        "voice_plan_usage_key": "exact-enrollment",
+        "voice_plan_billing_anchor": "2026-11-19T00:00:00+00:00",
+    }
     result = await voice_plan.usage(account, client=client)
     assert result["usedSeconds"] == 61 and result["used"] == 61 / 60 and result["timeZone"] == "UTC"
     args = client.scoped_voice_seconds.await_args.kwargs

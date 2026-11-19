@@ -283,8 +283,8 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
 // The product app, not the site. Every other path (/, /pricing, /request-setup, /docs, /blog,
 // comparison and legal pages, the [seoSlug] pages) is a marketing route for landing_viewed.
 const APP_ROUTE_PREFIXES = [
-  "/chat", "/s", "/settings", "/onboarding", "/sign-in", "/sign-up", "/admin", "/join", "/welcome",
-  "/auth", "/oauth", "/checkout_redirect", "/session-tasks", "/marketplace", "/meet-bot", "/api",
+  "/voice", "/chat", "/settings", "/onboarding", "/sign-in", "/sign-up", "/admin", "/join", "/welcome",
+  "/auth", "/oauth", "/checkout_redirect", "/session-tasks", "/meet-bot", "/api",
 ];
 
 /** A page of the website (T23): where a visit lands, as opposed to the signed-in app. */

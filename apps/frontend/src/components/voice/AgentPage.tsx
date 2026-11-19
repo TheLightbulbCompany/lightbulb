@@ -10,8 +10,12 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { DAYS, nameOf, saveRefusal, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
 
+import { FORWARDING_CODES } from "./forwarding";
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
 import { VoicePlanCard } from "./VoicePlanCard";
+
+const VZ = FORWARDING_CODES.verizon.codes!.all!, GSM = FORWARDING_CODES.att.codes!.all!;
+const [GSM_ON, GSM_END] = GSM.on[0].split("<n>");
 
 type Save = "idle" | "saving" | "saved" | "error" | "payment";
 
@@ -130,7 +134,7 @@ export function AgentPage() {
       <label className="vx-label">Your business line
         <input className="vx-field" type="tel" value={c.forwardFrom} placeholder="(415) 555-0199" onChange={(e) => set({ forwardFrom: e.target.value })} /></label>
       <p className="vx-hint" style={{ fontSize: "var(--text-caption)", color: "var(--fg-mute)" }}>
-        To forward all calls from your business line: on Verizon, dial <span className="vx-code">*72</span> then {name}&apos;s number (<span className="vx-code">*73</span> stops it). On AT&amp;T or T-Mobile, dial <span className="vx-code">**21*</span>, {name}&apos;s number, then <span className="vx-code">#</span> (<span className="vx-code">##21#</span> stops it).</p>
+        To forward all calls from your business line: on Verizon, dial <span className="vx-code">{VZ.on[0].split("<n>")[0]}</span> then {name}&apos;s number (<span className="vx-code">{VZ.off[0]}</span> stops it). On AT&amp;T or T-Mobile, dial <span className="vx-code">{GSM_ON}</span>, {name}&apos;s number, then <span className="vx-code">{GSM_END}</span> (<span className="vx-code">{GSM.off[0]}</span> stops it).</p>
       {c.number && (c.numberChoice ? c.numberChoice.path === "keep" : !!c.forwardFrom) && <ForwardCheck c={c} set={set} />}
     </Sec>
 

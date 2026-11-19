@@ -1,6 +1,5 @@
 import type { MetadataRoute } from "next";
 
-import { VERTICALS } from "@/components/vertical/verticals";
 import { getAllPosts } from "@/content/blog";
 import { COMPARE_PAGES, COMPARE_UPDATED } from "@/content/compare";
 import { getAllDocs } from "@/content/docs";
@@ -17,7 +16,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   const product: MetadataRoute.Sitemap = [
     { url: `${SITE_URL}/`, changeFrequency: "weekly", priority: 1 },
-    ...VERTICALS.map((v) => ({ url: `${SITE_URL}${v.path}`, changeFrequency: "monthly" as const, priority: 0.9 })),
     { url: `${SITE_URL}/pricing`, changeFrequency: "monthly", priority: 0.9 },
     { url: `${SITE_URL}/request-setup`, changeFrequency: "monthly", priority: 0.7 },
     { url: `${SITE_URL}/compare`, lastModified: compareDate, changeFrequency: "monthly", priority: 0.7 },

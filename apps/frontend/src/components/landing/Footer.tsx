@@ -54,9 +54,6 @@ export function Footer() {
           <div className="lb-foot-cols">
             <div className="lb-foot-col">
               <h4>Product</h4>
-              <Link href="/salons">For salons</Link>
-              <Link href="/spas">For spas</Link>
-              <Link href="/barbershops">For barbershops</Link>
               <Link href="/pricing">Pricing</Link>
               <Link href="/compare">Compare</Link>
               <Link href="/request-setup">Talk to a founder</Link>
@@ -86,7 +83,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>An AI receptionist for salons, spas and barbershops.</span>
+          <span>Calls answered and appointments booked for salons, spas and barbershops.</span>
         </div>
       </div>
     </footer>

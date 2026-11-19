@@ -10,9 +10,6 @@ import { hydrateFromStorage, strike, useLampTheme } from "@/components/landing/H
 import { captureSignupCta } from "@/lib/signupFlow";
 
 const LINKS = [
-  { href: "/salons", label: "Salons" },
-  { href: "/spas", label: "Spas" },
-  { href: "/barbershops", label: "Barbershops" },
   { href: "/pricing", label: "Pricing" },
 ] as const;
 

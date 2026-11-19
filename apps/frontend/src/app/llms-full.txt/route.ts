@@ -1,4 +1,3 @@
-import { VERTICALS } from "@/components/vertical/verticals";
 import { getAllPosts } from "@/content/blog";
 import { COMPARE_PAGES } from "@/content/compare";
 import { getAllDocs } from "@/content/docs";
@@ -6,8 +5,8 @@ import { SITE_URL } from "@/lib/domain";
 import { PRODUCT_FACTS, PRODUCT_SUMMARY } from "@/lib/seo";
 
 /**
- * `/llms-full.txt` — the companion to `/llms.txt`: the product facts, each
- * trade page's calls and questions, the comparisons, and the full Markdown of
+ * `/llms-full.txt` — the companion to `/llms.txt`: the product facts,
+ * the comparisons, and the full Markdown of
  * every network doc and blog post. Same sources as `sitemap.ts`.
  */
 export const dynamic = "force-static";
@@ -16,12 +15,6 @@ const qa = (faq: { q: string; a: string }[]) => faq.flatMap(({ q, a }) => [`**${
 
 export function GET() {
   const s: string[] = ["# Lightbulb", "", `> ${PRODUCT_SUMMARY}`, "", "## Key facts", "", ...PRODUCT_FACTS.map((f) => `- ${f}`), ""];
-
-  for (const v of VERTICALS) {
-    s.push(`## ${v.h1}`, "", `Source: ${SITE_URL}${v.path}`, "", v.intro, "");
-    for (const c of v.calls) s.push(`- ${c.ask} ${c.does}`);
-    s.push("", v.servicesIntro, "", ...qa(v.faq));
-  }
 
   for (const p of COMPARE_PAGES) {
     s.push(`## ${p.h1}`, "", `Source: ${SITE_URL}${p.path}`, "", p.intro, "");

@@ -1501,6 +1501,27 @@ async def test_a_turn_queued_before_a_pause_starts_nothing(world, monkeypatch):
     assert world["posts"] == []
 
 
+@pytest.mark.parametrize("notes", [True, False])
+async def test_paused_room_drop_in_router_marks_notes_not_started(world, monkeypatch, notes):
+    """A notes trigger queued before its output room was paused ends the meeting with no notes; any other trigger
+    dropped there touches nothing. A failing mark never fails the turn."""
+    from core.voice.meetings import meeting_invites, meeting_notes
+
+    async def paused_room(room_id):
+        return {"roomId": room_id, "kind": "channel", "pausedAt": "2026-11-06T10:00:00Z"}
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", paused_room)
+    request = AsyncMock(return_value={"roomId": ROOM, "occurrence": 1})
+    patch = AsyncMock(side_effect=RuntimeError("ddb down"))
+    monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", request)
+    monkeypatch.setattr(meeting_invites, "_patch_meeting", patch)
+    tid = f"meeting-notes:{ROOM}:1" if notes else "chat:p1"
+    t1 = await _trig(tid, source="webhook" if notes else "chat", ref={"deliverRoomId": ROOM, "roomId": ROOM})
+    out = await _run([t1])
+    assert world["runs"] == [] and out.started_task_ids == [] and world["posts"] == []
+    assert patch.await_count == (1 if notes else 0) and request.await_count == (1 if notes else 0)
+
+
 async def test_project_instructions_skip_the_feed_and_are_fenced(monkeypatch):
     from core.services import messaging
 

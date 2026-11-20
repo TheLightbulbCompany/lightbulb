@@ -1591,10 +1591,12 @@ async def _drop_paused(ws: str, triggers: dict[str, dict]) -> None:
     """A turn queued before its project was paused starts nothing (UX slice 6), and says nothing in the room: the
     paused bar tells the sender (W18-8). Dropped quietly, as admission drops them."""
     from core.services import admission  # lazy: admission imports the temporal client
+    from core.voice.meetings import meeting_notes
 
     for tid, trig in list(triggers.items()):
         if await admission.paused_room(ts.trigger_room(trig)):
             del triggers[tid]
+            await meeting_notes.on_not_started(ws, trig)  # a notes trigger: "no notes", not "pending" for ever
 
 
 async def _project_instructions(room_id: str | None) -> str | None:

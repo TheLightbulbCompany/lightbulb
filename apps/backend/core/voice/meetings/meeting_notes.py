@@ -423,8 +423,8 @@ async def _mark_no_notes(request: dict) -> None:
 
 
 async def on_not_started(owner_id: str, trigger: dict) -> None:
-    """The Router took a notes trigger and started no task (the credit gate, or a batch that failed past its
-    retries: activities._apply / apply_fallback): the meeting ends with no notes, as a failed task does, instead of
+    """A notes trigger started no task (the credit gate, a batch that failed past its retries, or a paused output
+    room: activities._apply / apply_fallback / _drop_paused, admission._admit_trigger): the meeting ends with no notes, as a failed task does, instead of
     reading "pending" for ever. Never raises."""
     request_id = str(trigger.get("triggerId") or "")
     if not request_id.startswith(NOTES_PREFIX):

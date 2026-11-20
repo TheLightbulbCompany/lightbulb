@@ -385,7 +385,10 @@ async def entrypoint(ctx: JobContext) -> None:
         n = next(turn_n)
         q, at = question  # owner mode: the Worker question just said is answered by this line (owner.py's rule)
         answers = q if q and time.monotonic() - at <= ANSWER_WITHIN_S else None
-        out = await backend.post("turn", {"n": n, "text": body, **({"answers": answers} if answers else {})})
+        turn = {"n": n, "text": body, **({"answers": answers} if answers else {})}
+        out = await backend.post("turn", turn)
+        if str(out.get("error", "")).startswith("http_5"):  # once, same body: (call, n) keys it, so the same line
+            out = await backend.post("turn", turn)
         if answers is not None and question[0] is q:
             question[:] = [None, 0.0]
         if out.get("ownerModeEnded"):  # /turn found the member removed before any poll did

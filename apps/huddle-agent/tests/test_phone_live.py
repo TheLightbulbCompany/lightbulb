@@ -212,6 +212,16 @@ async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlat
     assert posted == phone.live.Posted("followup", ("existing-task",))
 
 
+async def test_turn_retries_once_on_5xx(monkeypatch):
+    """A 5xx on `/turn` is retried once with the same body ((call, n) keys it: the retry is the same line)."""
+    call = await Call(
+        monkeypatch, replies={"turn": [{"error": "http_503"}, {"messageId": "m1"}]}
+    ).answer()
+    assert await call.started["post"]("Book me in", []) == "m1"
+    turns = [b for p, b in call.backend.calls if p == "turn"]
+    assert len(turns) == 2 and turns[0] == turns[1]
+
+
 async def test_phone_person_and_message_are_delegations_with_kind(monkeypatch):
     """ "Talk to a person" and "leave a message" are GPT-Live delegations like any other: posted to the caller's
     `/turn` (the Router, then the call's open thread), never matched in our code. The backend decides the kind:

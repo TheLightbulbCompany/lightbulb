@@ -18,6 +18,7 @@ Temporal down ⇒ `WorkRetry` (the FIFO redelivers).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -35,6 +36,9 @@ from core.temporal.types import TaskInputRef, TriggerRef
 logger = logging.getLogger(__name__)
 
 _HISTORY = 20
+# The inline admit's bound: the Temporal SDK retries an unreachable server with no end, and a live call's line waits
+# on this. Past it the outbox row delivers the trigger.
+INLINE_ADMIT_S = 2.0
 # Lightbulb spoken to (a vocative at the start: "Hi Lightbulb, …", "Lightbulb, can you…", "lightbulb?"), not the
 # company's name mid-sentence ("the Lightbulb app is down"), which goes to Jev like any unaddressed message.
 _LIGHTBULB_NAME = re.compile(r"^\W*(?:(?:hey|hi|hello|yo|ok|okay)\s+)?lightbulb\b\s*[,:?!]", re.IGNORECASE)
@@ -86,7 +90,19 @@ async def enqueue_trigger(ws: str, trigger: ts.Trigger, *, room_id: str | None =
     # Unconditional: a crash between the two puts would otherwise strand the TRIG row for ever. A re-put
     # of the identical row is a MODIFY, which the outbox Pipe's INSERT filter ignores.
     await messaging_repo.put_admit_trigger(ws, trigger.trigger_id)
+    await admit_inline(_admit_trigger(ws, trigger.trigger_id), trigger.trigger_id)
     return created
+
+
+async def admit_inline(admit, key: object) -> None:
+    """Signal the Router now, after the write committed. The outbox row stays the retry path: a failure here is
+    logged and the queue delivers it; the duplicate signal is harmless (a deterministic trigger id the Router
+    dedupes, `RouterWorkflow.trigger`)."""
+    try:
+        async with asyncio.timeout(INLINE_ADMIT_S):
+            await admit
+    except Exception as exc:  # noqa: BLE001 -- TimeoutError, Temporal down (WorkRetry) or anything else: the queue redelivers
+        logger.warning("inline admit %s failed (%s); the queue will deliver it", key, type(exc).__name__, exc_info=True)
 
 
 async def admit_pointer(pointer: dict) -> None:

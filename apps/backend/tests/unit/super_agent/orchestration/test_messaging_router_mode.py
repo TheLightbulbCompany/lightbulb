@@ -12,6 +12,7 @@ from core.repositories import messaging_repo as repo
 
 from core.services import messaging
 from core.services.messaging import ApiProblem
+from core.services.openclaw_work import WorkRetry
 from core.services import task_conversation as tc
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401 -- moto messaging table
 
@@ -125,10 +126,12 @@ def world(monkeypatch):
     monkeypatch.setattr("core.services.onboarding_brief.capture_first_workspace_message", AsyncMock())
     monkeypatch.setattr(tc, "forward_card_reply", forward)
     monkeypatch.setattr("core.repositories.tasks_repo.get_task", get_task)
+    w["admit_inline"] = AsyncMock()
+    monkeypatch.setattr("core.services.admission._admit_message", w["admit_inline"])
     return w
 
 
-async def _send(text="pay acme", *, mentions=(), reply_to=None, room=ROOM):
+async def _send(text="pay acme", *, mentions=(), reply_to=None, room=ROOM, via=None):
     return await messaging.create_human_message(
         AuthContext(user_id=SAM, org_id=OWNER),
         room,
@@ -139,6 +142,7 @@ async def _send(text="pay acme", *, mentions=(), reply_to=None, room=ROOM):
             reply_to_message_id=uuid.UUID(reply_to) if reply_to else None,
             thread_root_message_id=None,
         ),
+        **({"via": via} if via else {}),
     )
 
 
@@ -173,6 +177,33 @@ async def test_flag_off_mid_flight_takes_legacy_path(world):
     assert kw["admit"] is False  # today's WORK#MESSAGE# rows, no admit row, no Router signal
     assert kw["dispatch_targets"] == [{"agentId": CEO, "eventKind": "user_request"}]
     assert world["forwarded"] == []
+    world["admit_inline"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_human_message_signals_inline_and_keeps_outbox_row(world):
+    """Speed: a Router room's spoken line is admitted at write time, after the commit; the admit row stays the
+    retry."""
+    await _send(mentions=[CEO], via="voice")
+    assert world["created"][-1]["admit"] is True
+    world["admit_inline"].assert_awaited_once_with(ROOM, 4)
+
+
+@pytest.mark.asyncio
+async def test_typed_message_does_not_admit_inline(world):
+    """A typed line keeps the outbox row alone: Jev stays off the request path and is asked once."""
+    await _send(mentions=[CEO])
+    assert world["created"][-1]["admit"] is True
+    world["admit_inline"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_human_message_swallows_inline_failure(world):
+    """Temporal down at write time: the send still lands; the admit row delivers it later."""
+    world["admit_inline"].side_effect = WorkRetry("TemporalUnavailable")
+    await _send(mentions=[CEO], via="voice")
+    assert world["created"][-1]["admit"] is True
+    world["admit_inline"].assert_awaited_once_with(ROOM, 4)
 
 
 @pytest.mark.asyncio

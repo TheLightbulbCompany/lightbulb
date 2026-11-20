@@ -37,7 +37,6 @@ from core.services import (
     link_preview,
     local_sessions,
     openclaw_work,
-    session_browser,
     subagents,
     task_board,
 )
@@ -131,19 +130,6 @@ class DeviceTaskUpdate(BaseModel):
 @router.patch("/local-sessions/device/tasks/{task}")
 async def device_update_task(task: str, body: DeviceTaskUpdate, auth: AuthContext = Depends(computer_human)):
     return await task_board.update_task(auth, task, body.status, body.priority, body.append_note)
-
-
-class DeviceBrowserPlace(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    where: Literal["mac", "cloud"]
-    native_id: str = Field(min_length=1, max_length=128)
-
-
-@router.post("/local-sessions/device/sessions/browser-place")
-async def device_use_browser(body: DeviceBrowserPlace, auth: AuthContext = Depends(computer_human)):
-    """`use_browser` from the engine: the person's shared session whose native id (the engine
-    resolved the caller's own Claude session or Codex thread) moves its next browser connection."""
-    return await session_browser.place_by_native(resolve_owner_id(auth), auth.user_id, body.native_id, body.where)
 
 
 async def person_or_computer(

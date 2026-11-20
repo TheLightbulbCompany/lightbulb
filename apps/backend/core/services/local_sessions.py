@@ -776,14 +776,6 @@ def screen_available(row: dict, now: int | None = None) -> bool:
     return int(row.get("screenUntil") or 0) > (int(time.time()) if now is None else now)
 
 
-def browser_open(row: dict, now: int | None = None) -> Literal["mac", "cloud"] | None:
-    """Where the session's browser connection is open, while session_browser keeps renewing it."""
-    opened = row.get("browserOpen") or {}
-    if int(opened.get("until") or 0) <= (int(time.time()) if now is None else now):
-        return None
-    return opened.get("where") if opened.get("where") in ("mac", "cloud") else None
-
-
 def session_activity(old_status: str | None, new_status: str, old_turn: str | None, new_turn: str | None) -> bool:
     """Whether a change of status is the session doing something: a turn starting or ending. Not
     the Mac becoming unsure ("unknown", after every restart) or losing it ("offline"), and not the
@@ -892,7 +884,6 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     reason = public.pop("terminalReason", None)
     # A session inside an app never had a terminal: ended or offline, its panel is still its conversation.
     live = public["status"] not in ("ended", "offline")
-    public["browser"] = browser_open(row) if live else None
     if not live:
         for key in ("done", "waitingFor", "note", "changes", "agents", "pr"):
             public.pop(key, None)
@@ -1084,9 +1075,6 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
                     "pickupEpoch",
                     "pickedUpFrom",
                     "displayTitle",
-                    # The session's open browser connection and its chosen place (session_browser).
-                    "browserOpen",
-                    "browserPlace",
                 )
                 if previous and key in previous
             },

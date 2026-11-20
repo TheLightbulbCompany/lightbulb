@@ -106,8 +106,8 @@ _TOKEN_QS_RE = re.compile(r"token=[^&\s]*")
 class RedactTokenFilter(logging.Filter):
     """Strips `token=<value>` out of a log record's message/args in place.
 
-    The gateway relay's upgrade URL carries the machine credential as
-    `?token=<jwt>` in the query string (routers/gateway_relay.py). Uvicorn's
+    A raw-WS door's upgrade URL can carry a machine credential as
+    `?token=<jwt>` in the query string (the `/api/v1/gateway/*` doors). Uvicorn's
     own WebSocket handshake log (the `uvicorn.error` logger, INFO
     `... "GET /api/v1/gateway/ws?token=..." [accepted]`/`403` lines) writes
     the full request line independent of `--no-access-log` and independent of

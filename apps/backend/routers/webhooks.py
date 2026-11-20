@@ -446,7 +446,7 @@ async def _handle_organization_membership_deleted(
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
     from core.services import agent_keys
-    from core.services.mac_browser import revoke_member_soon
+    from core.services.desktop_pair import revoke_member_soon
     from core.services.messaging import revoke_human_membership
     from core.services.text_lines import unlink_member
 
@@ -461,8 +461,7 @@ async def _handle_organization_membership_deleted(
         await unlink_member(org_id, user_id)  # their texts to the business's number are a customer's now
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         # Only once the revocation landed and this delete is still the current lifecycle event:
-        # their paired Macs are refused at once, cleared of the workspace's sign-ins if
-        # reachable within a deadline, then unpaired and disconnected. In the background, so it
+        # their paired devices are refused at once, then unpaired and disconnected. In the background, so it
         # never delays or fails this webhook; it re-checks the lifecycle epoch (the lease is
         # gone once this webhook completes) once, before touching any device; after that the conditional
         # device writes spare a re-pair.

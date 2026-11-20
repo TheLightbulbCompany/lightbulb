@@ -10,6 +10,7 @@ command surface. Backend derives these sets here — clients do NOT submit
 them on /desktop/pair.
 """
 
+import asyncio
 import base64
 import hashlib
 import logging
@@ -47,16 +48,9 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     # the Mac approves each start natively and launches only its fixed CLI.
     "session.options.v1",
     "session.start.v1",
-    # Raw CDP to the Mac's own Chrome over the node socket (node_broker.cdp_open). Rides Browser.
-    "browser.cdp.v1",
-    # Mac live view: the agent tab's screencast + viewer input (mac_live). Rides Browser.
-    "browser.cast.v1",
     # Quit the agent Chrome and delete its profile. Always granted: it only removes data.
     "browser.wipe.v1",
 )
-
-#: The Mac commands the Browser grant carries.
-_MAC_BROWSER_COMMANDS = frozenset({"browser.cdp.v1", "browser.cast.v1"})
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
     "desktop.operation.approve.v1",
@@ -98,7 +92,7 @@ DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
 )
 
 # The pair's stored Browser grant: the CLI node entry carries this literal when Browser was
-# on at pairing, and granted_commands() derives the Mac app's browser.cdp.v1 from it. The CLI
+# on at pairing. The CLI
 # node no longer serves it (the old node-host browser proxy is gone), so at the relay it
 # grants nothing; it is only the marker. Renaming it strands every existing pair's grant.
 BROWSER_GRANT_MARKER = "browser.proxy"
@@ -204,8 +198,6 @@ class DesktopPermissionGrant:
             allowed |= {"system.run.approve.v1", "session.options.v1", "session.start.v1"}
         if self.files:
             allowed.add("file.access.policy.v1")
-        if self.browser:
-            allowed |= _MAC_BROWSER_COMMANDS
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:
@@ -256,31 +248,12 @@ async def declared_commands_for(owner_id: str, device_id: str) -> set[str]:
     return granted_commands(devices, entry) if isinstance(commands, list) else set()
 
 
-def _browser_granted(devices: dict, entry: dict) -> bool:
-    """The pair's Browser grant, read off the reciprocal CLI node's stored
-    ``BROWSER_GRANT_MARKER`` (same pairing group, same member)."""
-    group = entry.get("pairingGroupId")
-    return bool(group) and any(
-        isinstance(peer, dict)
-        and peer.get("clientId") == "node-host"
-        and peer.get("pairingGroupId") == group
-        and peer.get("userId") == entry.get("userId")
-        and BROWSER_GRANT_MARKER in (peer.get("commands") or [])
-        for peer in devices.values()
-    )
-
-
 def granted_commands(devices: dict, entry: dict) -> set[str]:
-    """A paired device's granted commands. The Mac app's browser commands are DERIVED so a Mac
-    paired before they existed gets them with no re-pair and no second consent (consent is
-    given once, at pairing): ``browser.wipe.v1`` always, and ``browser.cdp.v1`` /
-    ``browser.cast.v1`` from the pair's Browser grant. The Mac still refuses them locally while
-    Browser is switched off."""
+    """A paired device's granted commands; a paired Mac also gets ``browser.wipe.v1``, derived so
+    a Mac paired before it existed needs no re-pair."""
     granted = set(entry.get("commands") or [])
     if entry.get("clientId") == "openclaw-macos" and entry.get("pairingGroupId"):
         granted.add("browser.wipe.v1")
-        if _browser_granted(devices, entry):
-            granted |= _MAC_BROWSER_COMMANDS
     return granted
 
 
@@ -516,3 +489,56 @@ async def revoke_desktop_device(
     await container_repo.remove_paired_device(owner_id, device_id)
     await force_close_device(device_id)
     return existed
+
+
+_revocations: set = set()
+
+
+def revoke_member_soon(owner: str, member_id: str, still_current=None) -> None:
+    """A removed member's paired devices, in the background (the webhook never waits): mark every
+    device they paired to this workspace REVOKING (refused from then on), then unpair and
+    disconnect them.
+
+    Every device write is conditional on the entry still being this member's (and, for the
+    removal, still REVOKING), so a re-add and re-pair meanwhile survives. ``still_current``
+    (async, True while this delete is still the member's lifecycle epoch) is checked before
+    touching anything: a superseded delete does nothing."""
+
+    async def current() -> bool:
+        if still_current is None:
+            return True
+        try:
+            if await still_current():
+                return True
+            logger.info("device revocation superseded owner=%s", owner)
+        except Exception as exc:  # noqa: BLE001 -- unknown: stop; REVOKING is not set, nothing changed
+            logger.warning("device revocation lifecycle unreadable owner=%s: %s", owner, type(exc).__name__)
+        return False
+
+    async def run() -> None:
+        from core.services.connection_service import ConnectionService  # it imports this module
+
+        if not await current():
+            return
+        try:
+            row = await container_repo.get_by_owner_id(owner, consistent=True) or {}
+            devices = [
+                device_id
+                for device_id, entry in (row.get("paired_devices") or {}).items()
+                if isinstance(entry, dict)
+                and entry.get("userId") == member_id
+                and await container_repo.mark_paired_device_revoking(owner, device_id, user_id=member_id)
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("device revocation could not list devices owner=%s: %s", owner, type(exc).__name__)
+            return
+        for device_id in devices:
+            try:
+                if await container_repo.remove_revoked_paired_device(owner, device_id, member_id):
+                    await ConnectionService().delete_relay_rows_for_device(owner, device_id)
+            except Exception as exc:  # noqa: BLE001 -- REVOKING already refuses it
+                logger.warning("device pairing not removed owner=%s: %s", owner, type(exc).__name__)
+
+    task = asyncio.create_task(run())
+    _revocations.add(task)
+    task.add_done_callback(_revocations.discard)

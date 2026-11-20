@@ -890,3 +890,71 @@ async def test_open_attempt_is_reused_after_task_specialist_is_reassigned(world,
     assert len(attempts) == 1
     assert attempts[0]["agentId"] == CEO and attempts[0]["inputTriggerIds"] == ["chat:original"]
     roster.assert_not_awaited()
+
+
+async def test_a_meeting_notes_worker_gets_the_transcript(monkeypatch):
+    """Task 7: the notes task's trigger names the transcript by reference; the Worker input carries it."""
+    from core.services import meeting_notes, room_memory
+
+    monkeypatch.setattr(acts, "_local_now", AsyncMock(return_value="now"))
+    monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(repo, "get_trigger", AsyncMock(return_value={"ref": {}}))
+    block = AsyncMock(
+        side_effect=lambda _w, t: "## Transcript\n[10:00] Pat: hi\n" if t.startswith("meeting-notes:") else None
+    )
+    monkeypatch.setattr(meeting_notes, "worker_transcript", block)
+    task = {"taskId": ts.new_task_id(), "title": "Meeting notes: Sync", "description": "Write the meeting notes",
+            "triggerId": f"meeting-notes:{ROOM}:1", "audience": {"kind": "room", "roomId": ROOM}, "lane": "shared"}  # fmt: skip
+    att, tree = {"n": 1, "inputTriggerIds": []}, {"attempts": []}
+    notes = await acts._request(WS, task, att, tree)
+    assert notes.input.endswith("## Transcript\n[10:00] Pat: hi\n")
+    assert notes.memory["sync"] == "none"  # raw meeting speech never reaches team memory
+    other = await acts._request(WS, task | {"triggerId": "chat:m1"}, att, tree)
+    assert "## Transcript" not in other.input and other.memory["sync"] != "none"
+    block.assert_awaited_once()  # only a notes task reads one
+
+
+@pytest.mark.parametrize(("to", "reason"), [("idle", None), ("failed", "failed"), ("resolved", "stopped")])
+async def test_every_end_of_a_task_reaches_the_meeting_notes_keep(monkeypatch, to, reason):
+    """Task 7: a person's Stop returns before task_moved; the notes keep still hears it."""
+    from core.services import meeting_notes
+
+    task = {"taskId": "t1", "status": to, "triggerId": "meeting-notes:r:1"}
+    monkeypatch.setattr(repo, "get_task_tree", AsyncMock(return_value={"task": task, "attempts": []}))
+    keep = AsyncMock()
+    monkeypatch.setattr(meeting_notes, "on_task_moved", keep)
+    await acts._announce(WS, "t1", to, reason)
+    keep.assert_awaited_once_with(task, to)
+
+
+async def test_a_notes_trigger_the_router_could_not_answer_marks_the_meeting(monkeypatch):
+    """Task 7 review: a batch that failed past its retries started no notes task; the meeting must not stay pending."""
+    from core.services import meeting_notes
+
+    trig = {"triggerId": f"meeting-notes:{ROOM}:1", "admission": "respond", "ref": {"deliverRoomId": ROOM}}
+    monkeypatch.setattr(repo, "get_trigger", AsyncMock(return_value=trig))
+    monkeypatch.setattr(acts, "_deliver", AsyncMock(return_value=None))
+    marked = AsyncMock()
+    monkeypatch.setattr(meeting_notes, "on_not_started", marked)
+    await acts.apply_fallback(WS, [trig["triggerId"]])
+    marked.assert_awaited_once_with(WS, trig)
+    marked.reset_mock()
+    trig["routedTo"] = {"taskId": "t1"}  # its task did start: that task's end marks the meeting
+    await acts.apply_fallback(WS, [trig["triggerId"]])
+    marked.assert_not_awaited()
+
+
+async def test_retry_without_notes_request_fails_without_running_worker(world, monkeypatch):
+    """Codex P2 on #5288: a Retry after the notes request expired (2 days) ran a Worker with no transcript."""
+    from core.services import meeting_notes, room_memory
+
+    monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))
+    tid = await _task(triggerId=f"meeting-notes:{ROOM}:1")
+    ref = await _attempt(tid)
+    out = await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    assert (out.outcome, out.error) == ("failed", "TranscriptUnavailable")
+    assert world["runs"] == []  # no Worker run: no model call
+    assert any(p["text"] == meeting_notes.TRANSCRIPT_GONE for p in world["posts"])  # the owner reads why
+    await acts.end_attempt(WS, tid, 1, out.outcome, out.error)
+    assert (await repo.get_task(WS, tid))["status"] == "failed"

@@ -747,7 +747,10 @@ def test_an_ended_meeting_the_agents_never_entered_shows_as_not_admitted(meeting
         ({"status": "in_call", "inCallAt": 1}, None),  # not over yet
         ({"status": "ended", "inCallAt": 1, "endedAt": 9}, "pending"),
         ({"status": "bot_failed", "inCallAt": 1, "endedAt": 9}, "pending"),  # died mid-call: notes still owed
-        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesRunId": "run-1"}, "posted"),
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesRunId": "t1", "notes": "Notes."}, "posted"),
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesRunId": "t1"}, "pending"),  # the task is writing
+        # the notes task failed or was stopped: no notes will come, never "posted"
+        ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesRunId": "t1", "notesMailedAt": 10}, "skipped"),
         ({"status": "ended", "inCallAt": 1, "endedAt": 9, "notesSkipped": "no_agent"}, "skipped"),
         ({"status": "ended", "endedAt": 9}, None),  # never admitted: no call, no notes
     ],
@@ -813,7 +816,14 @@ def test_each_transcript_row_reads_its_own_occurrence():
     meeting = {
         "status": "scheduled",
         "history": [
-            {"startAt": 200, "transcriptId": "t2", "endedAt": 260, "notesRunId": "run-2", "unsaid": unsaid},
+            {
+                "startAt": 200,
+                "transcriptId": "t2",
+                "endedAt": 260,
+                "notesRunId": "t-2",
+                "notes": "N.",
+                "unsaid": unsaid,
+            },
             {"startAt": 100, "transcriptId": "t1", "endedAt": 160, "notesSkipped": "no_agent"},
             {"startAt": 50, "transcriptId": "t0"},
         ],

@@ -310,11 +310,12 @@ def _unsaid(occurrence: dict) -> list[dict]:
 
 
 def _notes(meeting: dict) -> str | None:
-    """The current occurrence's notes: posted (a run was asked for), skipped, pending once a call
-    the bot was in is over, else None (no call, or not over yet)."""
-    if meeting.get("notesRunId"):
+    """The current occurrence's notes: posted (kept on the meeting), skipped (none will come: skipped,
+    or the notes task ended without them), pending once a call the bot was in is over, else None (no
+    call, or not over yet)."""
+    if meeting.get("notes"):
         return "posted"
-    if meeting.get("notesSkipped"):
+    if meeting.get("notesSkipped") or meeting.get("notesMailedAt"):
         return "skipped"
     if meeting.get("status") in ("ended", "bot_failed") and meeting.get("inCallAt"):
         return "pending"
@@ -327,7 +328,9 @@ def _occurrence_notes(meeting: dict, occurrence: dict) -> str | None:
     series advanced) its state is unknown, never "pending" for ever."""
     if occurrence is meeting:
         return _notes(meeting)
-    return "posted" if occurrence.get("notesRunId") else "skipped" if occurrence.get("notesSkipped") else None
+    if occurrence.get("notes"):
+        return "posted"
+    return "skipped" if occurrence.get("notesSkipped") or occurrence.get("notesMailedAt") else None
 
 
 def _meeting_view(room_id: str, meeting: dict, default_room: str | None = None) -> dict:

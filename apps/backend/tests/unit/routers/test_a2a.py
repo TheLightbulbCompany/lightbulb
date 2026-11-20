@@ -205,7 +205,6 @@ def test_agent_reply_route_links_only_final_replies_and_survives_a_hook_failure(
     receipt = SimpleNamespace(message_id=mid, room_id=room, created_at=datetime.now(timezone.utc))
     monkeypatch.setattr("routers.messaging._require_hook_token", AsyncMock(return_value={}))
     monkeypatch.setattr("routers.messaging.service.create_agent_message", AsyncMock(return_value=receipt))
-    monkeypatch.setattr("core.services.meeting_notes.on_agent_reply", AsyncMock())
     hook = AsyncMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr("core.services.a2a_tasks.on_agent_reply", hook)
     body = {"eventId": "e1", "roomId": str(room), "agentId": str(agent), "text": "hi back", "progress": progress}

@@ -1687,7 +1687,7 @@ async def test_sync_bot_books_nothing_into_a_slot_that_is_over(room, bots):
 async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_notes_agent(monkeypatch):
     """10-09: the founder workspace has no default room, so its meeting notes sat in the hidden
     meeting room. They go to the organizer's DM with the agent that writes them."""
-    from core.services import openclaw_work
+    from core.services import task_conversation
 
     created = []
 
@@ -1702,9 +1702,11 @@ async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_not
     ]
     monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(return_value=None))  # no default
     monkeypatch.setattr(meeting_invites.messaging_repo, "list_members", AsyncMock(return_value=members))
-    monkeypatch.setattr(openclaw_work, "_fallback_single", AsyncMock(return_value="ceo-agent"))
+    front = AsyncMock(return_value="ceo-agent")
+    monkeypatch.setattr(task_conversation, "front_agent_id", front)
     monkeypatch.setattr(meeting_invites.messaging, "create_room", create_room)
     assert await meeting_invites.output_room("org_1", "meeting-room") == "dm-1"
+    front.assert_awaited_with("org_1", room_id="meeting-room")  # the meeting's own front agent writes its notes
     ((auth, request),) = created
     assert (auth.user_id, auth.org_id) == ("user_org", "org_1")
     assert request.kind == "dm" and [(m.kind, m.id) for m in request.members] == [("agent", "ceo-agent")]

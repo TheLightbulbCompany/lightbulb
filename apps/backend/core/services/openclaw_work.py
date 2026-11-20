@@ -760,11 +760,7 @@ class OpenClawWorkWorker:
             if response.status_code == 409:
                 # Permanent synchronous refusal (loop guard, non-member): the ledger
                 # closes here because the plugin will never call back for it.
-                ended = await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
-                if ended is not None:
-                    from core.services import meeting_notes  # meeting_notes imports this module
-
-                    await meeting_notes.on_notes_run_ended(owner_id, ended)
+                await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
                 put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
                 return False
             if 400 <= response.status_code < 500 and response.status_code not in (408, 429):

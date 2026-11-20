@@ -26,7 +26,7 @@ from livekit.agents import JobContext, room_io
 
 from huddle_agent import live
 from huddle_agent.backend import Backend, BackendError
-from huddle_agent.phone import clean_transcript
+from huddle_agent.live import clean_transcript
 
 logger = logging.getLogger("owner")
 OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 55 * 60))  # cost cap on one Live

@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("LIGHTBULB_API_URL", "http://x")
 os.environ.setdefault("LIGHTBULB_HUDDLE_SECRET", "x")
 
-from huddle_agent import mouth, phone  # noqa: E402
+from huddle_agent import live, mouth, phone  # noqa: E402
 
 
 def test_dialed_numbers_become_e164():
@@ -106,7 +106,7 @@ def test_the_transcript_keeps_final_lines_in_spoken_order_once():
         },
         {"role": "system", "text": "x", "t": 0.5},
     ]
-    assert phone.clean_transcript(items) == [
+    assert live.clean_transcript(items) == [
         {"who": "assistant", "text": GREETING, "t": 1.1},
         {"who": "caller", "text": "I didn't hear you respond.", "t": 14.0},
         {"who": "caller", "text": "Hey, how are you?", "t": 29.0},
@@ -127,7 +127,7 @@ def test_a_talked_over_answer_stays_and_a_bare_backchannel_goes():
         {"role": "assistant", "text": "We open at 9 tomorrow and close at", "t": 7.0, "interrupted": True},
         {"role": "user", "text": "Mhm.", "t": 8.0},  # the caller's own words are never dropped
     ]
-    assert phone.clean_transcript(items) == [
+    assert live.clean_transcript(items) == [
         {"who": "caller", "text": "What time do you open tomorrow?", "t": 3.0},
         {"who": "assistant", "text": "We open at 9 tomorrow and close at", "t": 7.0},
         {"who": "caller", "text": "Mhm.", "t": 8.0},

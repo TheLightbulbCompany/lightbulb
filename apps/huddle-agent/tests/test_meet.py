@@ -271,7 +271,7 @@ async def test_explicit_older_ack_chain_wins_over_a_newer_question_on_the_same_t
 
 
 async def test_meet_link_result_reaches_chat():
-    """A thread's line with its link (the backend also posts it in the Meet chat, voice_meet.with_link): GPT-Live gets
+    """A thread's line with its link (the backend also posts it in the Meet chat, records.with_link): GPT-Live gets
     it once, as the team's message, without the URL, even while people talk; the model decides when to speak.
     The notes keep the link."""
     line = "Drafted the holiday-hours post: [holiday-hours-post.md](https://app.x/chat?panel=task&taskId=k9)"

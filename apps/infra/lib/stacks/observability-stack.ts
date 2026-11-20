@@ -53,8 +53,6 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   // TargetGroup); an alarm scoped to LoadBalancer alone never gets datapoints.
   // Concrete type (not the interface) so `targetGroupFullName` is available.
   targetGroup: elbv2.ApplicationTargetGroup;
-  // API Gateway
-  wsApiId: string;
   // Container stack references
   cluster: ecs.ICluster;
   // Database table NAMES (for DynamoDB alarms).
@@ -1579,7 +1577,7 @@ def handler(event, context):
     });
 
     // W30-W32 (API Gateway WebSocket) and W33-W35 (its ws-authorizer Lambda)
-    // DELETED: see P10. The dashboard still charts the WebSocket API until it goes.
+    // DELETED: see P10. The API itself is gone too.
 
     // -- ECS (W36-W39) --
 
@@ -2910,7 +2908,7 @@ def handler(event, context):
       }),
     );
 
-    // ----- Row 6: Infrastructure ALB + API GW (4 widgets) -----
+    // ----- Row 6: Infrastructure ALB (2 widgets) -----
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: "ALB 5xx / request count",
@@ -2939,47 +2937,6 @@ def handler(event, context):
             metricName: "TargetResponseTime",
             statistic: "p99",
             dimensionsMap: { LoadBalancer: albFullName },
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        // WS APIs publish ClientError/ExecutionError/IntegrationError — NOT the
-        // REST-API 5XXError/4XXError this widget used to plot (a permanently
-        // empty graph, same nonexistent metrics removed from P10/W30).
-        title: "API GW WebSocket errors",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "AWS/ApiGateway",
-            metricName: "ClientError",
-            statistic: "Sum",
-            dimensionsMap: { ApiId: props.wsApiId },
-          }),
-          new cloudwatch.Metric({
-            namespace: "AWS/ApiGateway",
-            metricName: "ExecutionError",
-            statistic: "Sum",
-            dimensionsMap: { ApiId: props.wsApiId },
-          }),
-          new cloudwatch.Metric({
-            namespace: "AWS/ApiGateway",
-            metricName: "IntegrationError",
-            statistic: "Sum",
-            dimensionsMap: { ApiId: props.wsApiId },
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "API GW WebSocket latency",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "AWS/ApiGateway",
-            metricName: "IntegrationLatency",
-            statistic: "p99",
-            dimensionsMap: { ApiId: props.wsApiId },
           }),
         ],
         width: 6,

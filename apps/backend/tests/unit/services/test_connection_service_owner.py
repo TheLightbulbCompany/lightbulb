@@ -40,11 +40,9 @@ def ddb_table_with_owner_gsi():
 
 
 def _admit(table: str, connection_id: str, user_id: str, org_id: str | None, connection_type: str) -> None:
-    """Write an admission row the way the ``ws-connect`` Lambda does.
+    """Write an admission row the way the (now deleted) ``ws-connect`` Lambda did.
 
-    That Lambda (``apps/infra/lambda/ws-connect/index.py``) is the only writer
-    of this table, so these tests stand rows up the same way rather than through
-    the service, which only reads them.
+    The service only reads these rows, so these tests stand them up directly.
     """
     boto3.client("dynamodb", region_name="us-east-1").put_item(
         TableName=table,

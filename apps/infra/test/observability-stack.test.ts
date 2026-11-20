@@ -82,7 +82,6 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       backendLogGroupName: `/ecs/isol8-${envName}`,
       alb,
       targetGroup: tg,
-      wsApiId: "test-ws-api-id",
       cluster,
       databaseTables: {
         usersTable: `${tablePrefix(envName)}users`,

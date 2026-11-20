@@ -162,17 +162,11 @@ export interface ServiceStackProps extends cdk.StackProps {
     /** The env's workspace browser id (ContainerStack.workspaceBrowser, VPC mode). */
     workspaceBrowserId: string;
   };
-  managementApiUrl: string;
-  /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
-   * know where to connect. Sourced from ApiStack.webSocketUrl. */
-  webSocketUrl: string;
   /** Public wss:// machine relay endpoint (desktop node hosts + Paperclip
    * operators) returned by /api/v1/desktop/pair's relayUrl field. Sourced
    * from ApiStack.gatewayRelayUrl. */
   gatewayRelayUrl: string;
   connectionsTableName: string;
-  wsApiId: string;
-  wsStage: string;
   messagingTableName: string;
   openClawWorkQueueUrl: string;
   openClawWorkQueueArn: string;
@@ -1305,17 +1299,6 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // WebSocket push (execute-api:ManageConnections)
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "WebSocketManageConnections",
-        actions: ["execute-api:ManageConnections"],
-        resources: [
-          `arn:aws:execute-api:${this.region}:${this.account}:${props.wsApiId}/${props.wsStage}/*`,
-        ],
-      }),
-    );
-
     // -------------------------------------------------------------------------
     // CFN Templates S3 Bucket (public-read of the connector template only)
     //
@@ -1616,8 +1599,6 @@ export class ServiceStack extends cdk.Stack {
       // built-in one. Per env, and only once every runtime there runs a bridge that accepts a
       // custom browser's CDP URL (#4391): an older bridge refuses it and the browser fails.
       ...(VPC_BROWSER_ENVS.has(env) ? { AGENTCORE_BROWSER_ID: props.container.workspaceBrowserId } : {}),
-      WS_MANAGEMENT_API_URL: props.managementApiUrl,
-      WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
       MESSAGING_TABLE: props.messagingTableName,

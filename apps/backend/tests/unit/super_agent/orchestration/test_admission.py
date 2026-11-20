@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from boto3.dynamodb.types import TypeSerializer
@@ -488,6 +489,50 @@ async def test_enqueue_trigger_dedup(world, monkeypatch):
     assert world["router"][-1] == admission.TriggerRef(WS, "sched:s1:100", "shared", "respond", ROOM)
 
 
+def _sched(tid="sched:s1:200"):
+    return ts.Trigger(
+        ws=WS,
+        trigger_id=tid,
+        source="schedule",
+        admission="respond",
+        lane="shared",
+        received_at="2026-11-04T10:00:00Z",
+        created_at="x",
+        updated_at="x",
+    )
+
+
+async def test_enqueue_trigger_signals_inline_and_keeps_outbox_row(world, monkeypatch):
+    """Speed: the Router is signalled at write time; the outbox row stays as the retry path."""
+    put_admit = AsyncMock()
+    inline = AsyncMock()
+    monkeypatch.setattr(messaging_repo, "put_admit_trigger", put_admit)
+    monkeypatch.setattr(admission, "_admit_trigger", inline)
+    await admission.enqueue_trigger(WS, _sched(), room_id=ROOM)
+    put_admit.assert_awaited_once_with(WS, "sched:s1:200")
+    inline.assert_awaited_once_with(WS, "sched:s1:200")
+
+
+async def test_enqueue_trigger_swallows_inline_failure(world, monkeypatch):
+    """Temporal down at write time: no error to the caller, the outbox row delivers it later."""
+    put_admit = AsyncMock()
+    monkeypatch.setattr(messaging_repo, "put_admit_trigger", put_admit)
+    down = AsyncMock(side_effect=temporal.TemporalUnavailable("down"))
+    monkeypatch.setattr(temporal, "signal_router", down)
+    assert await admission.enqueue_trigger(WS, _sched(), room_id=ROOM) is True  # WorkRetry swallowed
+    put_admit.assert_awaited_once_with(WS, "sched:s1:200")
+    down.assert_awaited_once()
+
+
+async def test_admit_twice_same_trigger_id(world):
+    """Inline + queue deliver one message twice: both signals carry one deterministic id (the Router dedupes it)."""
+    msg = _msg(targets=[{"agentId": CEO, "eventKind": "user_request"}])
+    await _admit(world, msg)
+    await _admit(world, msg)
+    first, second = world["router"]
+    assert first.trigger_id == second.trigger_id == ts.trigger_id("chat", msg["messageId"])
+
+
 def _stream_body(payload: dict) -> str:
     ser = TypeSerializer()
     return json.dumps({"dynamodb": {"NewImage": {"payload": {"M": {k: ser.serialize(v) for k, v in payload.items()}}}}})
@@ -525,8 +570,7 @@ async def test_no_room_triggers_batch_per_conversation(world, monkeypatch):
         )
 
     for tid, session in (("mail:a1", "mail:thread-a"), ("mail:b1", "mail:thread-b"), ("mail:a2", "mail:thread-a")):
-        await admission.enqueue_trigger(WS, mail(tid, session))
-        await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": tid})
+        await admission.enqueue_trigger(WS, mail(tid, session))  # signals inline
     a1, b1, a2 = (r.room_id for r in world["router"][-3:])
     assert a1 and b1 and a1 != b1 and a1 == a2
     assert "thread-a" not in a1  # hashed: no sender id in the workflow payload

@@ -4851,6 +4851,13 @@ async def create_human_message(
                         logger.warning(
                             "card reply %s not forwarded to task %s", item["messageId"], ref["taskId"], exc_info=True
                         )
+    if router and wake:
+        from core.services import admission  # lazy: admission imports this module
+
+        # After the commit and the live publish, on a replay too (a retried line re-signals). The admit row
+        # written in the transaction stays the retry path.
+        seq = int(item["messageSeq"])
+        await admission.admit_inline(admission._admit_message(room_id, seq), f"{room_id}#{seq}")
     # Neither of these is part of the response. `touch_last_interactive` writes
     # to the containers table purely to feed the idle/park clock, and it was
     # being awaited after the message was already durable -- a whole round trip

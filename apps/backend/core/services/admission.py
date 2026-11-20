@@ -86,7 +86,18 @@ async def enqueue_trigger(ws: str, trigger: ts.Trigger, *, room_id: str | None =
     # Unconditional: a crash between the two puts would otherwise strand the TRIG row for ever. A re-put
     # of the identical row is a MODIFY, which the outbox Pipe's INSERT filter ignores.
     await messaging_repo.put_admit_trigger(ws, trigger.trigger_id)
+    await admit_inline(_admit_trigger(ws, trigger.trigger_id), trigger.trigger_id)
     return created
+
+
+async def admit_inline(admit, key: object) -> None:
+    """Signal the Router now, after the write committed. The outbox row stays the retry path: a failure here is
+    logged and the queue delivers it; the duplicate signal is harmless (a deterministic trigger id the Router
+    dedupes, `RouterWorkflow.trigger`)."""
+    try:
+        await admit
+    except Exception:  # noqa: BLE001 -- Temporal down (WorkRetry) or anything else: the queue redelivers
+        logger.warning("inline admit failed %s; the queue will deliver it", key, exc_info=True)
 
 
 async def admit_pointer(pointer: dict) -> None:

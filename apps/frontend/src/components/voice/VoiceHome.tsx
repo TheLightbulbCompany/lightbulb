@@ -93,8 +93,8 @@ export function VoiceHome() {
         </Link>)}
       </section>}
       {!error && !isLoading && shown.length === 0 && !(filter === "yours" && chats.length > 0) && <p className="vx-empty">{filter === "all"
-        ? `No calls or meetings yet. Each call shows here with what your assistant did and the transcript. ${config?.number ? "To see one now, make a test call from the Agent page." : "Once you go live, make a test call from the Agent page."}`
-        : filter === "meetings" ? `No meetings yet. Add your assistant's meeting address (it's on the Agent page) to a Google Calendar event with a Meet link.`
+        ? `No calls or meetings yet. Each call shows here with what your assistant did and the transcript. ${config?.number ? "To see one now, make a test call from the Phone page." : "Once you go live, make a test call from the Phone page."}`
+        : filter === "meetings" ? `No meetings yet. Add your assistant's meeting address (it's on the Meetings page) to a Google Calendar event with a Meet link.`
         : filter === "yours" ? `Nothing yet. Tap the orb or start a chat, and your conversations with your assistant show here.`
         : filter === "needs" ? "No calls need you right now."
         : "No calls yet."}</p>}

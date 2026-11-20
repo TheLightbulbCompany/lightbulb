@@ -77,7 +77,7 @@ export function joinLinkErrorMessage(err: unknown): string {
       ? (err.body as { detail?: unknown }).detail
       : undefined;
 
-  if (err.status === 403) return "Only a workspace admin can manage the join link.";
+  if (err.status === 403) return "Only a business admin can manage the join link.";
   if (err.status === 503) return "That service is unavailable right now. Please try again in a moment.";
   return typeof detail === "string" && detail ? detail : generic;
 }
@@ -91,7 +91,7 @@ function initialsOf(member: CompanyMember): string {
   return labelFor(member).trim().charAt(0).toUpperCase() || "?";
 }
 
-export function WorkspaceMembersSection({ blurb = "Everyone here shares the same agents, rooms, and subscription." }: { blurb?: string } = {}) {
+export function WorkspaceMembersSection() {
   // `isLoaded` is load-bearing: Clerk resolves the active org independently of
   // the session, so an unset `organization` during that window is "not known
   // yet", not "personal". Reading it as personal would flash the create-a-
@@ -183,7 +183,7 @@ export function WorkspaceMembersSection({ blurb = "Everyone here shares the same
   if (!isLoaded) {
     return (
       <div style={{ display: "flex", justifyContent: "center", padding: "60px 0" }}>
-        <div className="settings-spinner" role="status" aria-label="Loading workspace" />
+        <div className="settings-spinner" role="status" aria-label="Loading members" />
       </div>
     );
   }
@@ -216,7 +216,7 @@ export function WorkspaceMembersSection({ blurb = "Everyone here shares the same
       <div className="settings-card" data-testid="members-restricted">
         <div className="settings-card-title">Members restricted</div>
         <div className="settings-card-desc">
-          Only a workspace admin can manage who joins {organization.name || "this workspace"}.
+          Only a business admin can manage who joins {organization.name || "this business"}.
         </div>
       </div>
     );
@@ -229,7 +229,7 @@ export function WorkspaceMembersSection({ blurb = "Everyone here shares the same
       <div className="settings-card" data-testid="members-roster">
         <div className="settings-card-title">In this workspace</div>
         <div className="settings-card-desc">
-          {blurb} To make someone an
+          Everyone here can sign in to this business and see its calls and meetings. To make someone an
           admin or remove them, use Manage members.
         </div>
 
@@ -314,7 +314,7 @@ export function WorkspaceMembersSection({ blurb = "Everyone here shares the same
         <div className="settings-card-title">Join link</div>
         <div className="settings-card-desc">
           One link for the whole workspace — send it however you like. Anyone who opens it
-          and signs in joins {organization.name || "this workspace"} as a member. Treat it
+          and signs in joins {organization.name || "this business"} as a member. Treat it
           like a password: whoever has it gets in.
         </div>
 

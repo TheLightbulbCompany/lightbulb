@@ -245,3 +245,10 @@ it("shows a US caller as (415) 555-0100 and the call's summary at the top of its
   expect(within(pane).getByText("Booked a manicure for Friday")).toBeInTheDocument();
   expect(within(pane).getByText("Fri 2:00 PM")).toBeInTheDocument();
 });
+
+it("the empty lists point at the Phone page and the Meetings page", () => {
+  render(<VoiceHome />);
+  expect(screen.getByText(/make a test call from the Phone page/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /^Meetings/ }));
+  expect(screen.getByText(/\(it's on the Meetings page\)/)).toBeInTheDocument();
+});

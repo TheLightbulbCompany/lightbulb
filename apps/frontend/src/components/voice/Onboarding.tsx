@@ -142,7 +142,7 @@ function Business({ c, set, go, busy }: StepProps) {
         <input className="vx-field" type="text" inputMode="url" maxLength={300} value={c.website ?? ""} placeholder="mayasnails.com" autoComplete="url" onChange={(e) => set({ website: e.target.value })} /></label>
       <label className="vx-label">Your mobile, for callers who want a person
         <input className="vx-field" type="tel" maxLength={30} value={c.handoff.number} placeholder="(415) 555-0147" autoComplete="tel" onChange={(e) => set({ handoff: { ...c.handoff, number: e.target.value } })} /></label>
-      <p className="vx-hint">When a caller asks for you, your assistant transfers the call here. Leave it empty and it takes a message instead. You can add it later on the Agent page.</p>
+      <p className="vx-hint">When a caller asks for you, your assistant transfers the call here. Leave it empty and it takes a message instead. You can add it later on the Phone page.</p>
       {reading ? <p className="vx-reading" role="status">Reading {c.website}. This takes about a minute.</p>
         : note && <p className="vx-save" role="status">{note}</p>}
       <Foot back={null}><Button type="submit" disabled={busy || reading}>{c.website?.trim() ? "Read my site" : "Continue"}</Button></Foot>
@@ -156,7 +156,7 @@ function Learned({ c, set, go, busy, back }: StepProps) {
   const fromSite = c.knowledge.some((k) => k.source === "from site") || c.services.length > 0;
   return <>
     <h1 className="vx-title">Check what your assistant learned</h1>
-    <p className="vx-sub">{fromSite ? `From ${c.website}. Fix what's wrong and skip the rest.` : "Add what callers ask about most. Skip anything you're not sure of."} You can change all of this later on the Agent page.</p>
+    <p className="vx-sub">{fromSite ? `From ${c.website}. Fix what's wrong and skip the rest.` : "Add what callers ask about most. Skip anything you're not sure of."} You can change all of this later on the Phone page.</p>
     <div className="vx-body">
       <Sec title="Hours" hint="It answers around the clock and books only inside these hours."><HoursEditor c={c} set={set} /></Sec>
       <Sec title="Services" hint={guessed ? "Outlined durations are guesses; the site doesn't say. Check them." : undefined}><ServicesEditor c={c} set={set} />

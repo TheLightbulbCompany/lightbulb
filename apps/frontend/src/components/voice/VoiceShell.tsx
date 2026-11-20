@@ -1,14 +1,15 @@
 "use client";
 
 // The one rail on web (bottom tabs on a phone), top to bottom (founder, 8 Nov 2026): the Lightbulb logo → the orb and
-// the assistant's room (/voice/lightbulb, where /chat lands now) · Home · Agent · Needs you · Settings.
+// the assistant's room (/voice/lightbulb, where /chat lands now) · Home · Phone (the receptionist's settings, /voice/agent) ·
+// Meetings · Needs you · Settings.
 // Settings is /voice/settings: the existing Settings panels, rendered here beside the rail.
 import "./voice.css";
 import Link from "next/link";
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { OrganizationList, UserButton, useAuth, useOrganization } from "@clerk/nextjs";
-import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
+import { CircleAlert, Home, PhoneCall, Settings, Video } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
 import { notify, notifySuccess } from "@/lib/notify";
@@ -22,7 +23,8 @@ export function useNeedsYouTotal(): number {
 const LIGHTBULB = "/voice/lightbulb";
 const PLACES = [
   { href: "/voice", label: "Home", Icon: Home },
-  { href: "/voice/agent", label: "Agent", Icon: PhoneCall },
+  { href: "/voice/agent", label: "Phone", Icon: PhoneCall },
+  { href: "/voice/meetings", label: "Meetings", Icon: Video },
   { href: "/voice/needs-you", label: "Needs you", Icon: CircleAlert },
   { href: "/voice/settings", label: "Settings", Icon: Settings },
 ] as const;

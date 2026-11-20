@@ -8,7 +8,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, saveRefusal, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
+import { DAYS, nameOf, saveRefusal, useAgentConfig, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
 
 import { FORWARDING_CODES } from "./forwarding";
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
@@ -21,7 +21,6 @@ type Save = "idle" | "saving" | "saved" | "error" | "payment";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
-  const invite = useInviteAddress();
   const { organization } = useOrganization();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [saveState, setSaveState] = useState<Save>("idle");
@@ -142,12 +141,6 @@ export function AgentPage() {
       <label className="vx-label">Transfer to
         <input className="vx-field" type="tel" value={c.handoff.number} placeholder="Your cell" onChange={(e) => set({ handoff: { ...c.handoff, number: e.target.value } })} /></label>
       <Check label="Only during opening hours" on={c.handoff.onlyOpenHours} set={(onlyOpenHours) => set({ handoff: { ...c.handoff, onlyOpenHours } })} />
-    </Sec>
-
-    <Sec title="Meetings" hint={<>Add {invite ? <span className="vx-code">{invite}</span> : "your assistant's meeting address"} as a guest on a Google Calendar event with a Google Meet link. Invites only work from people in your business. {name} joins, tells everyone it&apos;s there and that the meeting is recorded, and speaks when someone says &ldquo;{name}&rdquo;. Anyone can say &ldquo;{name}, stop transcribing me&rdquo;.</>}>
-      <div>
-        <Check label="Turn action items into follow-ups" on={c.meetings.followUps} set={(followUps) => set({ meetings: { ...c.meetings, followUps } })} />
-      </div>
     </Sec>
   </div>;
 }

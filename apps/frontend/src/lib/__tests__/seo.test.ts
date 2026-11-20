@@ -3,19 +3,31 @@ import { describe, expect, it } from 'vitest';
 import {
   HOME_DESCRIPTION,
   HOME_TITLE,
-  homeJsonLd,
+  PHONE_DESCRIPTION,
+  PHONE_TITLE,
+  hubJsonLd,
   organizationJsonLd,
+  phoneJsonLd,
   softwareApplicationJsonLd,
   websiteJsonLd,
 } from '@/lib/seo';
 import { HOME_FAQ } from '@/lib/homeFaq';
 
-describe('homepage search metadata', () => {
-  it('uses the exact brand and the product category people can recognize', () => {
-    expect(HOME_TITLE).toBe('AI Receptionist for Salons, Spas & Barbershops | Lightbulb');
+describe('search metadata', () => {
+  it('gives /phone the receptionist title people can recognize', () => {
+    expect(PHONE_TITLE).toBe('AI Receptionist for Salons, Spas & Barbershops | Lightbulb');
+    expect(PHONE_TITLE.length).toBeLessThanOrEqual(60);
+    expect(PHONE_DESCRIPTION).toBe(
+      "Your salon's AI receptionist answers your calls day and night, books into Google Calendar, takes messages and hands callers to you. Keep your number.",
+    );
+    expect(PHONE_DESCRIPTION.length).toBeLessThanOrEqual(160);
+  });
+
+  it('gives / the company title and names the three products', () => {
+    expect(HOME_TITLE).toBe('The Number One Voice AI Application Company | Lightbulb');
     expect(HOME_TITLE.length).toBeLessThanOrEqual(60);
     expect(HOME_DESCRIPTION).toBe(
-      "Your salon's AI receptionist answers your calls day and night, books into Google Calendar, takes messages and hands callers to you. Keep your number.",
+      'Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Lightbulb OS is a voice app for the Mac.',
     );
     expect(HOME_DESCRIPTION.length).toBeLessThanOrEqual(160);
   });
@@ -43,22 +55,36 @@ describe('homepage entity graph', () => {
     });
 
     expect(softwareApplicationJsonLd).toMatchObject({
-      '@id': 'https://thelightbulb.company/#software',
+      '@id': 'https://thelightbulb.company/phone#software',
+      name: 'Lightbulb Phone',
+      url: 'https://thelightbulb.company/phone',
       brand: { '@id': 'https://thelightbulb.company/#organization' },
       provider: { '@id': 'https://thelightbulb.company/#organization' },
       applicationSubCategory: 'AI receptionist',
     });
     // No invented ratings or reviews anywhere in the entity graph.
-    expect(JSON.stringify(homeJsonLd)).not.toMatch(/aggregateRating|"review"/i);
+    expect(JSON.stringify([phoneJsonLd, hubJsonLd])).not.toMatch(/aggregateRating|"review"/i);
   });
 });
 
-describe('homepage @graph', () => {
+describe('/phone @graph', () => {
   it('carries the visible FAQ word for word and no price before /pricing', () => {
-    const graph = homeJsonLd['@graph'] as Record<string, unknown>[];
-    const faq = graph.find((n) => n['@type'] === 'FAQPage') as { mainEntity: { name: string; acceptedAnswer: { text: string } }[] };
+    const graph = phoneJsonLd['@graph'] as Record<string, unknown>[];
+    const faq = graph.find((n) => n['@type'] === 'FAQPage') as { '@id': string; mainEntity: { name: string; acceptedAnswer: { text: string } }[] };
+    expect(faq['@id']).toBe('https://thelightbulb.company/phone#faq');
+    expect(graph.find((n) => n['@type'] === 'WebPage')?.['@id']).toBe('https://thelightbulb.company/phone#webpage');
     expect(faq.mainEntity.map((q) => [q.name, q.acceptedAnswer.text])).toEqual(HOME_FAQ.map(({ q, a }) => [q, a]));
-    expect(JSON.stringify(homeJsonLd)).not.toMatch(/"offers"|"price"/);
+    expect(JSON.stringify(phoneJsonLd)).not.toMatch(/"offers"|"price"/);
+    expect(graph.every((n) => !('@context' in n))).toBe(true);
+  });
+});
+
+describe('/ @graph', () => {
+  it('is the organization, the website and a page about the organization: no FAQ, product or offers', () => {
+    const graph = hubJsonLd['@graph'] as Record<string, unknown>[];
+    expect(graph.map((n) => n['@type'])).toEqual(['Organization', 'WebSite', 'WebPage']);
+    expect(graph[2]).toMatchObject({ about: { '@id': 'https://thelightbulb.company/#organization' } });
+    expect(JSON.stringify(hubJsonLd)).not.toMatch(/FAQPage|SoftwareApplication|"offers"/);
     expect(graph.every((n) => !('@context' in n))).toBe(true);
   });
 });

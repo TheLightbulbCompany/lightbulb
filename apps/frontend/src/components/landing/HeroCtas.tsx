@@ -49,6 +49,32 @@ export function HeroCtas() {
   );
 }
 
+/** The company home's doors: set up Phone, or talk to a founder. */
+export function HubCtas() {
+  return (
+    <div className="lb-hero-cta">
+      <Link
+        href="/sign-up"
+        className="lb-btn lb-btn-p lb-btn-xl"
+        onClick={() =>
+          captureSignupCta({
+            ctaId: "hub_sign_up",
+            label: "Set up Lightbulb Phone",
+            surface: "hero",
+            destination: "/sign-up",
+          })
+        }
+      >
+        Set up Lightbulb Phone
+        <Arrow />
+      </Link>
+      <Link href="/request-setup" className="lb-btn lb-btn-s lb-btn-xl">
+        Talk to a founder
+      </Link>
+    </div>
+  );
+}
+
 function Tick() {
   return (
     <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">

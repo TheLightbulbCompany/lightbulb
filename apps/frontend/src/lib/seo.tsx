@@ -7,8 +7,11 @@ import { SITE_URL, SUPPORT_EMAIL } from "./domain";
 export { SITE_URL };
 export const SITE_NAME = "Lightbulb";
 export const OG_IMAGE = "/og-lightbulb.png";
-export const HOME_TITLE = "AI Receptionist for Salons, Spas & Barbershops | Lightbulb";
+export const HOME_TITLE = "The Number One Voice AI Application Company | Lightbulb";
 export const HOME_DESCRIPTION =
+  "Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Lightbulb OS is a voice app for the Mac.";
+export const PHONE_TITLE = "AI Receptionist for Salons, Spas & Barbershops | Lightbulb";
+export const PHONE_DESCRIPTION =
   "Your salon's AI receptionist answers your calls day and night, books into Google Calendar, takes messages and hands callers to you. Keep your number.";
 
 /**
@@ -118,12 +121,12 @@ export const websiteJsonLd = {
 export const softwareApplicationJsonLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "@id": `${SITE_URL}/#software`,
-  name: "Lightbulb",
+  "@id": `${SITE_URL}/phone#software`,
+  name: "Lightbulb Phone",
   applicationCategory: "BusinessApplication",
   applicationSubCategory: "AI receptionist",
   operatingSystem: "Web",
-  url: SITE_URL,
+  url: `${SITE_URL}/phone`,
   brand: { "@id": `${SITE_URL}/#organization` },
   provider: { "@id": `${SITE_URL}/#organization` },
   areaServed: { "@type": "Country", name: "United States" },
@@ -141,7 +144,7 @@ export const softwareApplicationJsonLd = {
     "English, or English and Spanish",
     "Keep your number with call forwarding, or get a new US local number",
   ],
-  // No `offers` on the homepage graph (seo.test.ts): the price is read from
+  // No `offers` on the /phone graph (seo.test.ts): the price is read from
   // the billing API on /pricing, never typed into markup.
 };
 
@@ -151,8 +154,25 @@ function withoutContext(node: Record<string, unknown>) {
   return rest;
 }
 
-/** The homepage's one `@graph` (05 Part B): its FAQ is the visible HomeFaq, word for word. */
-export const homeJsonLd = {
+/** The company home's `@graph`: who we are, no product, FAQ or offers. */
+export const hubJsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    withoutContext(organizationJsonLd),
+    withoutContext(websiteJsonLd),
+    {
+      "@type": "WebPage",
+      "@id": `${SITE_URL}/#webpage`,
+      url: SITE_URL,
+      name: HOME_TITLE,
+      isPartOf: { "@id": `${SITE_URL}/#website` },
+      about: { "@id": `${SITE_URL}/#organization` },
+    },
+  ],
+};
+
+/** /phone's one `@graph` (05 Part B): its FAQ is the visible HomeFaq, word for word. */
+export const phoneJsonLd = {
   "@context": "https://schema.org",
   "@graph": [
     withoutContext(organizationJsonLd),
@@ -160,15 +180,15 @@ export const homeJsonLd = {
     withoutContext(softwareApplicationJsonLd),
     {
       "@type": "WebPage",
-      "@id": `${SITE_URL}/#webpage`,
-      url: SITE_URL,
-      name: HOME_TITLE,
+      "@id": `${SITE_URL}/phone#webpage`,
+      url: `${SITE_URL}/phone`,
+      name: PHONE_TITLE,
       isPartOf: { "@id": `${SITE_URL}/#website` },
-      about: { "@id": `${SITE_URL}/#software` },
+      about: { "@id": `${SITE_URL}/phone#software` },
     },
     {
       "@type": "FAQPage",
-      "@id": `${SITE_URL}/#faq`,
+      "@id": `${SITE_URL}/phone#faq`,
       mainEntity: HOME_FAQ.map(({ q, a }) => ({
         "@type": "Question",
         name: q,

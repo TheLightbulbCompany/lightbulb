@@ -40,7 +40,7 @@ function page() {
   );
 }
 
-describe("homepage voice", () => {
+describe("Phone page voice", () => {
   it("uses none of the banned words and types no price", () => {
     const { container } = page();
     const text = `${container.textContent} ${HOME_FAQ.map(({ q, a }) => `${q} ${a}`).join(" ")}`;
@@ -59,6 +59,14 @@ describe("homepage voice", () => {
     expect(flat).toContain("What your assistant does on a call");
     expect(flat).toContain("After every call, you see exactly what happened.");
     expect(flat).toContain("You stay in charge");
+  });
+
+  it("keeps AI out of every bold headline", () => {
+    const { container } = page();
+    const bold = [...container.querySelectorAll("h1, h2, b")].map((el) => el.textContent ?? "");
+    expect(bold.filter((t) => /\bAI\b/.test(t))).toEqual([]);
+    expect(container.textContent).not.toContain("honest about being an AI");
+    expect(container.textContent).toContain("It never pretends to be a person");
   });
 
   it("links only to pages that exist after the pivot", () => {

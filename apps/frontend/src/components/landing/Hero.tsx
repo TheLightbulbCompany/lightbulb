@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { HeroCtas } from "./HeroCtas";
 
 /**
@@ -8,18 +10,22 @@ import { HeroCtas } from "./HeroCtas";
  * and the transcript. Names and calls are made up; "Nova" is an example name.
  * Keep the labels in step with VoiceHome when they change.
  */
-export function Hero() {
+export function Hero({
+  title = "Your phone, answered and booked while your hands are busy.",
+  sub = "Lightbulb Phone gives your salon, spa, barbershop or any appointment business a receptionist with the name you choose. It answers day and night, books your clients into your calendar, takes messages, and brings you anything it can\u2019t decide.",
+  ctas = <HeroCtas />,
+}: {
+  title?: string;
+  sub?: string;
+  ctas?: ReactNode;
+}) {
   return (
     <header className="lb-hero">
       <div className="lb-hero-copy">
         <div>
-          <h1>Your phone, answered and booked while your hands are busy.</h1>
-          <p className="lb-sub">
-            Lightbulb gives your salon, spa, barbershop or any appointment business a receptionist with the name you
-            choose. It answers day and night, books your clients into your calendar, takes messages, and brings you
-            anything it can&rsquo;t decide.
-          </p>
-          <HeroCtas />
+          <h1>{title}</h1>
+          <p className="lb-sub">{sub}</p>
+          {ctas}
         </div>
       </div>
 

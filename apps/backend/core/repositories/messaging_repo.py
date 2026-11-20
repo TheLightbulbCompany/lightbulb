@@ -2928,8 +2928,9 @@ def voice_run_may_post(owner_id: str, run_id: str) -> dict:
 #: A meeting's "write the notes" request message -> everything its after-meeting mail needs (the
 #: meeting room, occurrence, where the request sits, and a snapshot of the meeting), so the mail no
 #: longer depends on the live meeting record, which a recurring series rewrites when it advances.
-#: Its own once-only markers live here too. Kept a day longer than any notes run.
-MEETING_NOTES_TTL_S = 2 * 86400
+#: Its own once-only markers live here too. Kept past the notes task's quiet resolve (QUIET_AFTER, 7 days), its
+#: second keep pass (meeting_notes.on_task_moved).
+MEETING_NOTES_TTL_S = 9 * 86400
 
 
 def meeting_notes_sk(message_id: str) -> str:

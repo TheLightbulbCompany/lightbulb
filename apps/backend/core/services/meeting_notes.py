@@ -331,32 +331,67 @@ _ENDS = frozenset({"idle", "failed", "resolved"})
 
 async def on_task_moved(task: dict, to: str) -> None:
     """Keep a notes task's result in the app when it ends (activities._announce, every status change, before its
-    person-reason check). Done: the last completed attempt's output is the notes. Failed, stopped, closed or
-    dismissed: the meeting is marked done with no notes, as a failed notes run was. Never raises."""
+    person-reason check). The notes are the last completed attempt's output, kept with ``_KEEP_BACKOFF_S`` retries.
+    Done (`idle`) is the first pass: a keep that fails every try leaves the meeting pending. The task's later end
+    (the workflow's quiet resolve after ``QUIET_AFTER``, or a person's Close) is the second pass, with the same
+    tries; past it the meeting is marked "no notes" and an error logged. With no output (failed, stopped,
+    dismissed) the meeting is marked "no notes". Never raises."""
     request_id = str(task.get("triggerId") or "")
     owner_id = str(task.get("pk") or "").removeprefix("WS#")
     if not request_id.startswith(NOTES_PREFIX) or to not in _ENDS or not owner_id:
         return
     try:
         request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
-        if request is None or request.get("taskId") != task.get("taskId"):
+        if request is None or request.get("taskId") != task.get("taskId") or request.get("mailAttemptedAt"):
+            return  # not this task's, or its notes are kept (the claim is spent only then)
+        tree = await tasks_repo.get_task_tree(owner_id, task["taskId"])
+        done = [
+            a for a in tree.get("attempts") or []
+            if a.get("outcome") == "completed" and (a.get("output") or "").strip()
+        ]  # fmt: skip
+        if not done:
+            await _mark_no_notes(request)
             return
-        notes = None
-        if to == "idle":
-            tree = await tasks_repo.get_task_tree(owner_id, task["taskId"])
-            done = [
-                a for a in tree.get("attempts") or []
-                if a.get("outcome") == "completed" and (a.get("output") or "").strip()
-            ]  # fmt: skip
-            notes = max(done, key=lambda a: a["n"])["output"] if done else None
-        if request.get("mailAttemptedAt") and not notes:
-            return  # already ended; only a later attempt's notes (a Retry after a failure) still land
-        if notes and await _was_cut(owner_id, request):
+        notes = max(done, key=lambda a: a["n"])["output"]
+        if await _was_cut(owner_id, request):
             notes = f"{CUT_LINE}\n\n{notes}"
-        await _keep_notes(owner_id, request_id, request, notes=notes)  # writes the notes once, whatever repeats
+        if await _keep_with_retries(owner_id, request_id, request, notes):
+            return
+        put_metric("meeting.notes.keep_failed", dimensions={"pass": "first" if to == "idle" else "second"})
+        if to == "idle":
+            logger.warning("meeting room %s task %s: notes not kept yet; the task's end retries", request["roomId"], task["taskId"])  # fmt: skip
+            return
+        logger.error("meeting room %s task %s: notes not kept after the second pass", request["roomId"], task["taskId"])  # fmt: skip
+        await _mark_no_notes(request)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
         logger.warning("meeting notes keep failed for %s", request_id, exc_info=True)
+
+
+#: The pauses between a notes keep's tries (three tries in all).
+_KEEP_BACKOFF_S = (0.5, 1.0)
+
+
+async def _keep_with_retries(owner_id: str, request_id: str, request: dict, notes: str) -> bool:
+    """``_keep_notes`` until it completes (True) or the tries run out (False). Each of its steps is safe to repeat."""
+    for n in range(len(_KEEP_BACKOFF_S) + 1):
+        try:
+            if await _keep_notes(owner_id, request_id, request, notes=notes):
+                return True
+        except Exception:  # noqa: BLE001 -- retried; the caller decides what a last failure means
+            logger.warning("meeting notes keep try %d failed for %s", n + 1, request_id, exc_info=True)
+        if n < len(_KEEP_BACKOFF_S):
+            await asyncio.sleep(_KEEP_BACKOFF_S[n])
+    return False
+
+
+async def _mark_no_notes(request: dict) -> None:
+    """The occurrence's notes are over with none kept ("skipped" in the meeting view). The request's claim stays
+    unspent, so a Retry that succeeds still keeps the notes and admits their follow-ups."""
+    occurrence = request.get("occurrence")
+    await meeting_invites._patch_meeting(
+        request["roomId"], {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
+    )
 
 
 async def on_not_started(owner_id: str, trigger: dict) -> None:
@@ -369,7 +404,7 @@ async def on_not_started(owner_id: str, trigger: dict) -> None:
     try:
         request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
         if request is not None and not request.get("mailAttemptedAt"):
-            await _keep_notes(owner_id, request_id, request, notes=None)
+            await _mark_no_notes(request)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
         logger.warning("meeting notes not-started mark failed for %s", request_id, exc_info=True)
@@ -500,7 +535,7 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
         await meeting_invites._patch_meeting(room_id, lay)
 
 
-async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
+async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> bool:
     """The notes task's result is kept on the meeting record (the app's timeline); nothing is mailed. A recurring
     series has advanced by the time the reply lands: the notes go into that occurrence's history entry. The
     write is idempotent, so the once-only claim is spent only after it lands. Without notes it only marks the
@@ -535,10 +570,11 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
             put_metric("meeting.notes.actions_failed")
             logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)
         if not await _remember_decisions(owner_id, request, entry):
-            return  # the completion claim stays unspent: the task's next status change writes the rest
+            return False  # incomplete: the claim stays unspent and the caller retries (each step is repeat-safe)
         # Spent only with notes kept: a failed or stopped task leaves it unspent (the meeting's notesMailedAt says
         # "no notes"), so a Retry that succeeds still admits the follow-ups (meeting_followups.enqueue reads it).
         await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
+    return True
 
 
 async def _remember_decisions(owner_id: str, request: dict, entry: dict) -> bool:

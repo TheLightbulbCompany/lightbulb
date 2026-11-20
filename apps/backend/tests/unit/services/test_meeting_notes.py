@@ -32,6 +32,9 @@ def env(monkeypatch):
     }
 
     async def patch_meeting(room_id, fields, drop=(), when=None):
+        if m.patch_failures:  # a transient DynamoDB failure on the next N writes
+            m.patch_failures -= 1
+            raise RuntimeError("ddb")
         if when is not None and not when(meta["meeting"]):
             return None
         meta["meeting"] = {**meta["meeting"], **(fields(meta["meeting"]) if callable(fields) else fields)}
@@ -50,6 +53,7 @@ def env(monkeypatch):
         front=AsyncMock(return_value=CEO),
         enqueue=AsyncMock(return_value=True),
         attempts=[],
+        patch_failures=0,
         advance=AsyncMock(),
         metric=MagicMock(),
         requests={},
@@ -644,18 +648,16 @@ async def test_decisions_go_into_team_memory_once_tagged_with_the_meeting_and_da
     assert env.requests[TRIG]["mailAttemptedAt"]
 
 
-async def test_a_failed_memory_write_is_retried_by_the_run_end_without_rewriting_the_others(env, remember):
-    """Codex P2 on #5186: a transient remember error spent the completion claim, so the run end skipped it."""
+async def test_a_failed_memory_write_is_retried_without_rewriting_the_others(env, remember):
+    """Codex P2 on #5186 and #5288: a transient remember error is a failed keep, retried in place."""
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     remember.side_effect = [{"queued": False}, RuntimeError("member rpc"), {"queued": False}]
     await ended_and_noted(env, DECIDED)
-    assert env.meta["meeting"]["decisionsRemembered"] == [0]
-    assert not env.requests[TRIG].get("mailAttemptedAt")  # a retried task end still visits it
-    await task_done(env, DECIDED)
     facts = [c.kwargs["fact"] for c in remember.await_args_list]
     assert len(facts) == 3 and facts[1] == facts[2] and facts[0] != facts[2]  # the failed one, once more
     assert env.meta["meeting"]["decisionsRemembered"] == [0, 1]
     assert env.requests[TRIG]["mailAttemptedAt"]
+    env.sleep.assert_awaited_once_with(0.5)
 
 
 async def test_a_secret_shaped_decision_is_not_retried(env, remember):
@@ -760,3 +762,74 @@ async def test_retry_after_failure_admits_followups(env, monkeypatch):
     enqueue.assert_awaited_once()
     assert not seen[0].get("mailAttemptedAt")  # admitted as a fresh completion
     assert env.requests[TRIG]["mailAttemptedAt"]  # spent once the notes landed
+
+
+def _record_followups(monkeypatch):
+    from core.services import meeting_followups
+
+    seen = []
+    enqueue = AsyncMock(side_effect=lambda _o, rid, request: seen.append((rid, dict(request))) or True)
+    monkeypatch.setattr(meeting_followups, "enqueue", enqueue)
+    return enqueue, seen
+
+
+async def test_keep_retries_then_succeeds(env, monkeypatch):
+    enqueue, _ = _record_followups(monkeypatch)
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    enqueue.side_effect = [OSError("admission unavailable"), True]
+    await task_done(env)
+    assert env.meta["meeting"]["notes"] == NOTES and env.requests[TRIG]["mailAttemptedAt"]
+    assert enqueue.await_count == 2
+    env.sleep.assert_awaited_once_with(0.5)
+
+
+async def test_keep_failure_recovered_at_quiet_resolve(env, monkeypatch, remember):
+    enqueue, seen = _record_followups(monkeypatch)
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    env.patch_failures = 3  # every first-pass try fails to write the meeting
+    await task_done(env, DECIDED)
+    meeting = env.meta["meeting"]
+    assert "notes" not in meeting and "notesMailedAt" not in meeting  # still pending, not failed
+    assert not env.requests[TRIG].get("mailAttemptedAt")
+    assert [c.args for c in env.sleep.await_args_list] == [(0.5,), (1.0,)]
+    enqueue.assert_not_awaited()
+    env.metric.assert_any_call("meeting.notes.keep_failed", dimensions={"pass": "first"})
+    # QUIET_AFTER later the workflow resolves the idle task: the stored output is kept then.
+    await mod.on_task_moved(notes_task(status="resolved"), "resolved")
+    assert env.meta["meeting"]["notes"] == DECIDED and len(env.meta["meeting"]["decisions"]) == 2
+    assert env.requests[TRIG]["mailAttemptedAt"]
+    assert len(seen) == 1 and not seen[0][1].get("mailAttemptedAt")  # follow-ups admitted once
+    await mod.on_task_moved(notes_task(status="resolved"), "resolved")  # a retried Activity
+    assert enqueue.await_count == 1
+
+
+async def test_keep_is_safe_to_repeat(env, monkeypatch, remember):
+    """Every step of a keep repeats harmlessly: one notes record, one follow-up trigger id, no duplicate action
+    items, each decision remembered once."""
+    enqueue, seen = _record_followups(monkeypatch)
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    request = dict(env.requests[TRIG])  # the request as read before either keep
+    assert await mod._keep_notes("org_1", TRIG, request, DECIDED)
+    assert await mod._keep_notes("org_1", TRIG, request, DECIDED + "\n- Nova: one more")
+    meeting = env.meta["meeting"]
+    assert meeting["notes"] == DECIDED
+    assert [f["text"] for f in meeting["followUps"]] == ["Pat: post the holiday hours"]
+    assert {rid for rid, _ in seen} == {TRIG}  # one request: meeting_followups' trigger id is derived from it
+    assert remember.await_count == 2 and meeting["decisionsRemembered"] == [0, 1]
+
+
+async def test_keep_failure_at_quiet_marks_no_notes(env, caplog):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    env.patch_failures = 6  # both passes fail every try
+    await task_done(env)
+    with caplog.at_level("ERROR", logger=mod.logger.name):
+        await mod.on_task_moved(notes_task(status="resolved"), "resolved")
+    meeting = env.meta["meeting"]
+    assert meeting["notesMailedAt"] and "notes" not in meeting  # no longer pending
+    error = next(r for r in caplog.records if r.levelname == "ERROR")
+    assert ROOM in error.getMessage() and TASK in error.getMessage() and "Decisions" not in error.getMessage()
+    env.metric.assert_any_call("meeting.notes.keep_failed", dimensions={"pass": "second"})

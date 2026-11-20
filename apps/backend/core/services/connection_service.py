@@ -188,9 +188,8 @@ class ConnectionService:
         active connection owned by ``owner_id``.
 
         ``owner_id`` is the org id for org members and the user id for personal
-        accounts (written by the ``ws-connect`` Lambda as ``ownerId`` —
-        ``apps/infra/lambda/ws-connect/index.py``, the only writer of this
-        table's admission rows). Uses the
+        accounts (written as ``ownerId`` by the
+        ``ws-connect`` Lambda, now deleted with the dead WebSocket API). Uses the
         ``by-owner-id`` GSI added in ``apps/infra/lib/stacks/api-stack.ts``,
         whose INCLUDE projection carries ``userId`` + ``connectionType`` so the
         gateway fan-out can demux per member and filter by connection type.

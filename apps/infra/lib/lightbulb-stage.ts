@@ -185,7 +185,6 @@ export class LightbulbStage extends cdk.Stage {
       vpc: network.vpc,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
-      alb: network.albV2,
       albHttpListenerArn: network.albHttpListenerArnV2,
       albV2: network.albV2,
       albSecurityGroup: network.albSecurityGroup,
@@ -195,12 +194,8 @@ export class LightbulbStage extends cdk.Stage {
       // the resource changes for some other reason. Dev is a Clerk dev instance
       // whose issuer is not on our domain, so it stays on the secret.
       clerkIssuerUrl: env === "prod" ? `https://clerk.${CLERK_DOMAIN}` : undefined,
-      // Pass KMS key ARN (not Key object) so ApiStack can grant kms:Decrypt
-      // on the WS Lambdas' roles without triggering CDK's auto-grant cycle.
+      // KMS key ARN (not Key object) to avoid CDK's cross-stack auto-grant cycle.
       paperclipKmsKeyArn: auth.kmsKey.keyArn,
-      wsInternalSecretSecretName: auth.wsInternalSecret.secretName,
-      // Authorizer reads paired_devices[deviceId].publicKey for device-key auth.
-      containersTableName: tableName(env, "containers"),
     });
 
     // ServiceStack replaces ComputeStack
@@ -250,12 +245,8 @@ export class LightbulbStage extends cdk.Stage {
         sessionsMemoryId: container.sessionsMemory.attrMemoryId,
         workspaceBrowserId: container.workspaceBrowser.attrBrowserId,
       },
-      managementApiUrl: api.managementApiUrl,
-      webSocketUrl: api.webSocketUrl,
       gatewayRelayUrl: api.gatewayRelayUrl,
       connectionsTableName: api.connectionsTableName,
-      wsApiId: api.wsApiId,
-      wsStage: api.wsStage,
       messagingTableName: api.messagingTableName,
       openClawWorkQueueUrl: api.openClawWorkQueueUrl,
       openClawWorkQueueArn: api.openClawWorkQueueArn,
@@ -309,7 +300,6 @@ export class LightbulbStage extends cdk.Stage {
         backendLogGroupName: `/ecs/lightbulb-${env}`,
         alb: network.albV2,
         targetGroup: network.targetGroupV2,
-        wsApiId: api.wsApiId,
         cluster: container.cluster,
         databaseTables: {
           usersTable: tableName(env, "users"),

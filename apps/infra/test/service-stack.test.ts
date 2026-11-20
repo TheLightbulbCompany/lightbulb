@@ -82,12 +82,8 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
       sessionsMemoryId: container.sessionsMemory.attrMemoryId,
       workspaceBrowserId: container.workspaceBrowser.attrBrowserId,
     },
-    managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
-    webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
     gatewayRelayUrl: "wss://bv-dev.thelightbulb.company/api/v1/gateway/ws",
     connectionsTableName: `${tablePrefix(environment)}ws-connections`,
-    wsApiId: "test-ws-api-id",
-    wsStage: "prod",
     messagingTableName: `lightbulb-${environment}-messaging`,
     openClawWorkQueueUrl: `https://sqs.us-east-1.amazonaws.com/877352799272/lightbulb-${environment}-openclaw-work.fifo`,
     openClawWorkQueueArn: `arn:aws:sqs:us-east-1:877352799272:lightbulb-${environment}-openclaw-work.fifo`,
@@ -1304,29 +1300,12 @@ describe("ServiceStack — messaging environment and least privilege", () => {
     });
   });
 
-  test("machine WebSocket environment and ManageConnections permission remain", () => {
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-backend",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "WS_MANAGEMENT_API_URL" }),
-            Match.objectLike({ Name: "WS_GATEWAY_URL" }),
-            Match.objectLike({ Name: "WS_CONNECTIONS_TABLE" }),
-          ]),
-        }),
-      ]),
-    });
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Sid: "WebSocketManageConnections",
-            Action: "execute-api:ManageConnections",
-          }),
-        ]),
-      }),
-    });
+  test("connections table env remains; the dead WebSocket API wiring is gone", () => {
+    const json = JSON.stringify(SERVICE_TEMPLATE_DEV.toJSON());
+    expect(json).toContain("WS_CONNECTIONS_TABLE");
+    expect(json).not.toContain("WS_MANAGEMENT_API_URL");
+    expect(json).not.toContain("WS_GATEWAY_URL");
+    expect(json).not.toContain("execute-api:ManageConnections");
   });
 
   test("backend role can manage per-workspace AgentCore runtimes, scoped to this account", () => {

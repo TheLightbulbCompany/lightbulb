@@ -85,7 +85,7 @@ From plan Part 1 (F-numbers). Each constrains code; do not reopen them.
 
 ## Product domain
 
-The product runs on **`thelightbulb.company`** in both environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`,
+The product runs on **`thelightbulb.company`** in both environments (`api.`/`api-dev.`,
 `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, Clerk's `clerk.`/`accounts.`/`clkmail.`), the same domain that
 carries mail. `flickmeon.ai` is retired: Vercel only, every path 308s to the product domain, no API hosts, no
 mail. `apps/infra/lib/domains.ts` is the per-environment truth; read it rather than any doc when a hostname
@@ -474,9 +474,7 @@ this file keeps the why, not inventories.
 - `/admin` resolves only on admin hosts, but the host gate is cosmetic: `require_platform_admin` admits only the
   Clerk user ids in `PLATFORM_ADMIN_USER_IDS`.
 
-**Machine doors.** No browser opens a WebSocket. Two machine doors remain: `wss://ws[-env]` (API Gateway WebSocket,
-Lambda integrations, device-JWT-only authorizer, the desktop local-session relay through
-`routers/websocket_chat.py`, gated by the `x-lightbulb-ws-internal` header), and `wss://bv[-env]` (CloudFront
+**Machine doors.** No browser opens a WebSocket. One machine door remains: `wss://bv[-env]` (CloudFront
 VpcOrigin to an ALB listener path-capped to `/api/v1/gateway/*`: the CLI network daemon's
 `routers/network_route.py` and Recall's Meet audio in `routers/meet_audio.py`). The `BrowserView*` construct ids stay because a rename replaces the
 distribution.
@@ -546,7 +544,7 @@ only, no staging. Eleven stacks in `apps/infra/lib/stacks/`:
 | `database-stack.ts` | The core DynamoDB tables. No relational database. |
 | `container-stack.ts` | The platform ECS cluster, the owner-state bucket, the per-owner base policy and permissions boundary, Hermes ECR grants, `ContainerSecurityGroup`. No per-user container. |
 | `service-stack.ts` | The ARM64 backend service, the Temporal worker service, the watchdog, the shared Hermes pool and its roles, the provision state machine and its Lambda. |
-| `api-stack.ts` | The HTTP API (VPC Link V2 → ALB), the machine WebSocket API, the `bv-` CloudFront door, and the messaging plane (table and stream, AppSync Event API, projector Lambda, `openclaw-work.fifo` and its Pipe). |
+| `api-stack.ts` | The HTTP API (VPC Link V2 → ALB), the `bv-` CloudFront door, and the messaging plane (table and stream, AppSync Event API, projector Lambda, `openclaw-work.fifo` and its Pipe). |
 | `openrouter-gate-stack.ts` | The openrouter-gate and the settlement Lambda. |
 | `ses-inbound-stack.ts` | Inbound agent mail (SES → Lambda → backend); meeting invites arrive this way. |
 | `agent-mail-outbound-stack.ts` | Outbound agent-mail configuration set and complaint events. |

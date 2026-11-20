@@ -5,9 +5,7 @@ import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
-import { WebSocketApi, WebSocketStage } from "aws-cdk-lib/aws-apigatewayv2";
-import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import { WebSocketApi } from "aws-cdk-lib/aws-apigatewayv2";
 import * as appsync from "aws-cdk-lib/aws-appsync";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
@@ -40,10 +38,9 @@ import { Construct } from "constructs";
 import { ROOT_DOMAIN } from "../domains";
 
 // =============================================================================
-// ApiStack — HTTP API Gateway + WebSocket API Gateway
+// ApiStack — HTTP API Gateway, AppSync Event API, bv- CloudFront door
 // =============================================================================
 // HTTP API:  Vercel → API Gateway v2 (HTTP) → VPC Link v2 → ALB → Fargate
-// WebSocket: Paired nodes / Paperclip operators → API Gateway v2 → Lambda + ALB
 // =============================================================================
 
 export interface ApiStackProps extends cdk.StackProps {
@@ -53,7 +50,6 @@ export interface ApiStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
   certificate?: acm.ICertificate;
   hostedZone?: route53.IHostedZone;
-  alb: elbv2.IApplicationLoadBalancer;
   albHttpListenerArn: string;
   /**
    * TRANSITIONAL (ALB rename step 1): the named ALB. A CloudFront VPC origin
@@ -72,35 +68,9 @@ export interface ApiStackProps extends cdk.StackProps {
   clerkIssuerSecretName: string;
   /** Literal issuer URL. When set it wins over the secret (see lightbulb-stage.ts). */
   clerkIssuerUrl?: string;
-  /**
-   * AuthStack KMS key ARN (NOT a Key object) of the CMK that encrypts the WS
-   * internal shared secret. The WebSocket Lambdas need `kms:Decrypt` on it for
-   * `secretsmanager:GetSecretValue` to succeed at cold-start. Passed as a
-   * string to avoid cross-stack KMS auto-grant cycles (see service-stack.ts).
-   */
+  /** AuthStack KMS key ARN (NOT a Key object) of the CMK that encrypts the messaging table.
+   * Passed as a string to avoid cross-stack KMS auto-grant cycles (see service-stack.ts). */
   paperclipKmsKeyArn: string;
-  /**
-   * Secrets Manager name (NOT ISecret) of the WS internal shared secret. The
-   * three WebSocket Lambdas fetch it at cold-start and attach it as the
-   * `x-lightbulb-ws-internal` header so the backend `/ws/*` endpoints can tell them
-   * apart from forged callers arriving via the public HTTP API Gateway. Passed
-   * as a plain string for the same cross-stack reason;
-   * encrypted under the same CMK (`paperclipKmsKeyArn`).
-   */
-  wsInternalSecretSecretName: string;
-  /**
-   * Containers DynamoDB table. The WebSocket Lambda Authorizer reads
-   * `paired_devices[deviceId].publicKey` off the owner row to verify desktop
-   * device-key WS-upgrade tokens (EdDSA proof-of-possession). Read-only grant.
-   */
-  /**
-   * Containers table NAME, not the construct. Taking the ITable creates a
-   * cross-stack Export from the database stack, and CloudFormation cannot
-   * change an exported value while anything imports it — the deadlock that
-   * blocked the table rename. The authorizer only needs the name and a
-   * by-name grant.
-   */
-  containersTableName: string;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -225,8 +195,6 @@ export const onPublish = {
 
 export class ApiStack extends cdk.Stack {
   public readonly httpApiUrl: string;
-  public readonly webSocketUrl: string;
-  public readonly managementApiUrl: string;
   public readonly connectionsTableName: string;
   public readonly messagingTableName: string;
   public readonly openClawWorkQueueUrl: string;
@@ -261,8 +229,6 @@ export class ApiStack extends cdk.Stack {
    * replacing the API, then putting the widgets back.
    */
   public readonly appsyncEventApiId: string;
-  public readonly wsApiId: string;
-  public readonly wsStage: string;
   /** Machine relay (desktop node hosts + Paperclip operators) WS endpoint on
    * the bv- door: wss://{browserViewDomain}/api/v1/gateway/ws. Falls back to a
    * fixed dev URL on the no-cert/no-zone synth path (unit tests, unknown envs)
@@ -1156,280 +1122,21 @@ def handler(event, context):
       "AppSync Event API is returning 5xx to clients.",
     );
 
-    // =========================================================================
-    // Lambda Authorizer (machine credentials only for WebSocket $connect)
-    // =========================================================================
-
-    const authorizerFn = new lambda.Function(this, "WsAuthorizer", {
-      functionName: `${resourcePrefix(env)}ws-authorizer`,
-      runtime: lambda.Runtime.PYTHON_3_12,
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "..", "..", "lambda", "websocket-authorizer"),
-        {
-          bundling: {
-            image: lambda.Runtime.PYTHON_3_12.bundlingImage,
-            command: [
-              "bash",
-              "-c",
-              // Same target pins as the local bundler below; the flags are
-              // redundant inside the 3.12 image but they are part of the
-              // bundling cache key, so changing them is what invalidates a
-              // stale cached bundle on a persistent runner.
-              "pip install -r requirements.txt -t /asset-output --only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.12 && cp -au . /asset-output",
-            ],
-            local: {
-              tryBundle(outputDir: string): boolean {
-                try {
-                  const srcDir = path.join(__dirname, "..", "..", "lambda", "websocket-authorizer");
-                  // Target the LAMBDA's interpreter, not the host's. A bare
-                  // `pip3 install -t` resolves wheels for whatever Python the
-                  // runner has (3.14 on the self-hosted box), which shipped a
-                  // _cffi_backend.cpython-314 .so into a python3.12 function:
-                  // Runtime.ImportModuleError on every WebSocket connect. With
-                  // an explicit version/platform pip fetches manylinux cp312
-                  // binary wheels from any host, matching the Docker path.
-                  execSync(
-                    `pip3 install -r ${srcDir}/requirements.txt -t ${outputDir} -q ` +
-                      "--only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.12",
-                    { stdio: "inherit" },
-                  );
-                  for (const f of fs.readdirSync(srcDir)) {
-                    // Files only: backend pytest imports index.py in place
-                    // (tests/unit/test_ws_authorizer_*.py) and leaves a
-                    // __pycache__/ dir behind; copyFileSync throws EISDIR on
-                    // it, silently demoting every synth to the docker path.
-                    const src = path.join(srcDir, f);
-                    if (fs.statSync(src).isFile()) {
-                      fs.copyFileSync(src, path.join(outputDir, f));
-                    }
-                  }
-                  return true;
-                } catch {
-                  return false;
-                }
-              },
-            },
-          },
-        },
-      ),
-      timeout: cdk.Duration.seconds(10),
-      environment: {
-        // Owner row holding paired_devices[deviceId].publicKey for device-key
-        // WS-upgrade auth. Clerk browser sessions are intentionally not an
-        // authorization provider for this machine-only API Gateway socket.
-        CONTAINERS_TABLE: props.containersTableName,
-      },
-      logGroup: new logs.LogGroup(this, "WsAuthorizerLogs", {
-        logGroupName: logGroupPath(env, "ws-authorizer"),
-        retention: logs.RetentionDays.ONE_MONTH,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    });
-
-    // Read-only access to the containers row for device-token pubkey lookup.
-    authorizerFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: "ContainersTableRead",
-        actions: ["dynamodb:GetItem"],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.containersTableName}`,
-        ],
-      }),
-    );
-
-    // =========================================================================
-    // WebSocket Lambda Functions
-    // =========================================================================
-
     // DynamoDB Gateway Endpoint — free, avoids NAT for DynamoDB traffic
     new ec2.GatewayVpcEndpoint(this, "DynamoDbEndpoint", {
       service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
       vpc: props.vpc,
     });
 
-    // Shared security group for WebSocket Lambdas — allows outbound to ALB + DynamoDB
-    const wsLambdaSg = new ec2.SecurityGroup(this, "WsLambdaSg", {
-      vpc: props.vpc,
-      description: "Security group for WebSocket Lambda functions",
-      allowAllOutbound: false,
-    });
-
-    wsLambdaSg.addEgressRule(
-      props.albSecurityGroup,
-      ec2.Port.tcp(80),
-      "Allow Lambda to reach ALB on port 80",
-    );
-
-    wsLambdaSg.addEgressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.tcp(443),
-      "Allow HTTPS for DynamoDB and AWS APIs",
-    );
-
-    const lambdaDefaults: Omit<lambda.FunctionProps, "functionName" | "code" | "handler"> = {
-      runtime: lambda.Runtime.PYTHON_3_12,
-      timeout: cdk.Duration.seconds(10),
-      memorySize: 128,
-      vpc: props.vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-      securityGroups: [wsLambdaSg],
-      environment: {
-        ALB_DNS_NAME: props.alb.loadBalancerDnsName,
-        CONNECTIONS_TABLE: connectionsTable.tableName,
-      },
-    };
-
-    // Explicit lightbulb-named log groups (replaces the per-stack LogRetention
-    // singleton Lambda the old logRetention prop shipped).
-    const wsLogGroup = (id: string, name: string) =>
-      new logs.LogGroup(this, id, {
-        logGroupName: logGroupPath(env, name),
-        retention: logs.RetentionDays.ONE_MONTH,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      });
-
-    // --- ws-connect Lambda ---
-    const connectFn = new lambda.Function(this, "WsConnectFn", {
-      ...lambdaDefaults,
-      functionName: `${resourcePrefix(env)}ws-connect`,
-      logGroup: wsLogGroup("WsConnectFnLogs", "ws-connect"),
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "..", "..", "lambda", "ws-connect"),
-      ),
-    });
-    connectionsTable.grantReadWriteData(connectFn);
-
-    // --- ws-disconnect Lambda ---
-    const disconnectFn = new lambda.Function(this, "WsDisconnectFn", {
-      ...lambdaDefaults,
-      functionName: `${resourcePrefix(env)}ws-disconnect`,
-      logGroup: wsLogGroup("WsDisconnectFnLogs", "ws-disconnect"),
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "..", "..", "lambda", "ws-disconnect"),
-      ),
-    });
-    connectionsTable.grantReadWriteData(disconnectFn);
-
-    // --- ws-message Lambda ---
-    const messageFn = new lambda.Function(this, "WsMessageFn", {
-      ...lambdaDefaults,
-      functionName: `${resourcePrefix(env)}ws-message`,
-      logGroup: wsLogGroup("WsMessageFnLogs", "ws-message"),
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "..", "..", "lambda", "ws-message"),
-      ),
-    });
-
-    // --- WS internal shared secret for the three Lambdas ---
-    // The backend /api/v1/ws/* endpoints derive identity from request headers
-    // and are reachable both via these trusted Lambdas AND via the public HTTP
-    // API Gateway $default route (which has no authorizer). Each Lambda fetches
-    // this secret at cold-start (via boto3, mirroring the authorizer's
-    // service-token handling) and attaches it as the `x-lightbulb-ws-internal`
-    // header that the public route cannot supply; the backend's
-    // require_ws_internal_caller dependency rejects callers that lack it. ARN
-    // (not value) goes in the env so the secret never lands in CFN/deploy logs.
-    const wsInternalSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      "WsInternalSecretForLambdas",
-      props.wsInternalSecretSecretName,
-    );
-    for (const fn of [connectFn, disconnectFn, messageFn]) {
-      wsInternalSecret.grantRead(fn);
-      // grantRead adds only secretsmanager:GetSecretValue — KMS-encrypted
-      // secrets also need kms:Decrypt on the CMK (same as the authorizer).
-      fn.addToRolePolicy(
-        new iam.PolicyStatement({
-          sid: "KmsDecryptForWsInternalSecret",
-          effect: iam.Effect.ALLOW,
-          actions: ["kms:Decrypt"],
-          resources: [props.paperclipKmsKeyArn],
-        }),
-      );
-      fn.addEnvironment("WS_INTERNAL_SECRET_SECRET_ARN", wsInternalSecret.secretArn);
-    }
-
-    // =========================================================================
-    // WebSocket API Gateway (L2)
-    // =========================================================================
-
-    const wsDomain = isProd ? `ws.${rootDomain}` : `ws-${env}.${rootDomain}`;
-
-    const wsAuthorizer = new WebSocketLambdaAuthorizer("MachineAuthorizer", authorizerFn, {
-      identitySource: ["route.request.querystring.token"],
-    });
-
+    // The WebSocket API is dead (its backend /api/v1/ws/* routes are gone). Only the bare
+    // API stays, with no routes, stage or domain, because the service and observability
+    // stacks still import its id this deploy; CloudFormation refuses to drop an export in use.
+    // ponytail: remove pin after one deploy (delete this API and the exportValue with it)
     const wsApi = new WebSocketApi(this, "WebSocketApi", {
       apiName: `lightbulb-${env}-websocket`,
       routeSelectionExpression: "$request.body.action",
-      connectRouteOptions: {
-        integration: new WebSocketLambdaIntegration("ConnectIntegration", connectFn),
-        authorizer: wsAuthorizer,
-      },
-      disconnectRouteOptions: {
-        integration: new WebSocketLambdaIntegration("DisconnectIntegration", disconnectFn),
-      },
-      defaultRouteOptions: {
-        integration: new WebSocketLambdaIntegration("DefaultIntegration", messageFn),
-      },
     });
-
-    // --- WebSocket API Log Group ---
-    const wsApiLogGroup = new logs.LogGroup(this, "WsApiLogs", {
-      logGroupName: `/aws/api-gateway/lightbulb-${env}-websocket`,
-      retention: logs.RetentionDays.ONE_MONTH,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // --- WebSocket Stage ---
-    const wsStageResource = new WebSocketStage(this, "WsStage", {
-      webSocketApi: wsApi,
-      stageName: env,
-      autoDeploy: true,
-    });
-
-    // Wire access logs + execution-log settings to the underlying CfnStage.
-    // The L2 WebSocketStage doesn't expose these, but they're required to
-    // surface API Gateway integration errors that are otherwise invisible —
-    // notably Management API @connections POST failures (PayloadTooLargeException,
-    // LimitExceededException) where boto3 returns an empty Error.Message field
-    // to the caller.
-    //
-    // dataTraceEnabled is intentionally false: it logs full message bodies,
-    // which contain user chat content. INFO-level logs without dataTrace
-    // capture status codes + integrationErrorMessage but not payload bodies.
-    const wsCfnStage = wsStageResource.node.defaultChild as apigatewayv2.CfnStage;
-    wsCfnStage.accessLogSettings = {
-      destinationArn: wsApiLogGroup.logGroupArn,
-      format: JSON.stringify({
-        requestId: "$context.requestId",
-        connectionId: "$context.connectionId",
-        eventType: "$context.eventType",
-        routeKey: "$context.routeKey",
-        status: "$context.status",
-        requestTime: "$context.requestTime",
-        integrationLatency: "$context.integrationLatency",
-        integrationError: "$context.integrationErrorMessage",
-        error: "$context.error.message",
-        messageId: "$context.messageId",
-      }),
-    };
-    // ERROR, not INFO: INFO wrote ~1.8 GB/mo of execution logs into API Gateway's own
-    // `/aws/apigateway/<id>/<stage>` group, which CloudFormation does not own and so has no
-    // retention. Integration errors still log at ERROR, and the access log keeps
-    // integrationError for every request.
-    wsCfnStage.defaultRouteSettings = {
-      loggingLevel: "ERROR",
-      dataTraceEnabled: false,
-      detailedMetricsEnabled: true,
-    };
-
-    this.wsApiId = wsApi.apiId;
-    this.wsStage = env;
+    this.exportValue(wsApi.apiId);
 
     // =========================================================================
     // API Gateway account-level CloudWatch role (ACCOUNT singleton)
@@ -1458,62 +1165,6 @@ def handler(event, context):
     }
 
     // =========================================================================
-    // WebSocket Custom Domain
-    // =========================================================================
-    // L2 does not yet support custom domains for WebSocket APIs,
-    // so we continue using CfnDomainName + CfnApiMapping.
-
-    if (props.certificate && props.hostedZone) {
-      const wsDomainName = new apigatewayv2.CfnDomainName(
-        this,
-        "WsDomain",
-        {
-          domainName: wsDomain,
-          domainNameConfigurations: [
-            {
-              certificateArn: props.certificate.certificateArn,
-              endpointType: "REGIONAL",
-              securityPolicy: "TLS_1_2",
-            },
-          ],
-        },
-      );
-
-      const wsMapping = new apigatewayv2.CfnApiMapping(this, "WsApiMapping", {
-        apiId: wsApi.apiId,
-        domainName: wsDomainName.ref,
-        stage: env,
-      });
-      // `stage` is a literal, so nothing ties the mapping to the Stage
-      // resource and CloudFormation creates them concurrently. On a fresh
-      // stack the mapping then races the stage and fails with "Invalid stage
-      // identifier" (prod api recreate, 2026-08-29, twice at the same second).
-      // The HTTP mapping above already carries this edge.
-      wsMapping.addDependency(wsStageResource.node.defaultChild as apigatewayv2.CfnStage);
-
-      // --- Route53 A record for WebSocket API ---
-      new route53.ARecord(this, "WsApiDnsRecord", {
-        zone: props.hostedZone,
-        recordName: wsDomain,
-        target: route53.RecordTarget.fromAlias({
-          bind: () => ({
-            dnsName: cdk.Fn.getAtt(wsDomainName.logicalId, "RegionalDomainName").toString(),
-            hostedZoneId: cdk.Fn.getAtt(wsDomainName.logicalId, "RegionalHostedZoneId").toString(),
-          }),
-        }),
-      });
-
-      this.webSocketUrl = `wss://${wsDomain}`;
-    } else {
-      this.webSocketUrl = `wss://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${env}`;
-    }
-
-    // =========================================================================
-    // Management API URL
-    // =========================================================================
-    this.managementApiUrl = `https://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${env}`;
-
-    // =========================================================================
     // CloudFormation Outputs
     // =========================================================================
 
@@ -1521,18 +1172,6 @@ def handler(event, context):
       value: this.httpApiUrl,
       description: "HTTP API Gateway URL",
       exportName: `lightbulb-${env}-http-api-url`,
-    });
-
-    new cdk.CfnOutput(this, "WebSocketUrlOutput", {
-      value: this.webSocketUrl,
-      description: "WebSocket API Gateway URL",
-      exportName: `lightbulb-${env}-websocket-url`,
-    });
-
-    new cdk.CfnOutput(this, "ManagementApiUrlOutput", {
-      value: this.managementApiUrl,
-      description: "WebSocket Management API URL (for pushing messages)",
-      exportName: `lightbulb-${env}-management-api-url`,
     });
 
     new cdk.CfnOutput(this, "ConnectionsTableOutput", {
@@ -1583,13 +1222,6 @@ def handler(event, context):
       exportName: `lightbulb-${env}-appsync-events-api-arn`,
     });
 
-    new cdk.CfnOutput(this, "WsApiIdOutput", {
-      value: this.wsApiId,
-      description: "WebSocket API ID (for IAM ManageConnections ARN)",
-      exportName: `lightbulb-${env}-ws-api-id`,
-    });
-
-    // =========================================================================
     // bv- door: CloudFront → VPC origin → internal ALB :8081
     //
     // The machine gateway relay (routers/gateway_relay.py) is a raw binary

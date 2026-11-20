@@ -58,37 +58,22 @@ describe("ApiStack — ws-connections owner-keyed fan-out", () => {
   });
 });
 
-describe("ApiStack — machine-only WebSocket authorizer", () => {
-  test.each(["dev", "prod"] as const)(
-    "%s authorizer has no Clerk browser configuration",
-    (envName) => {
-      const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
-      const functions = Object.values(
-        template.findResources("AWS::Lambda::Function"),
-      ) as any[];
-      const authorizer = functions.find(
-        (resource) =>
-          resource.Properties?.FunctionName ===
-          `lightbulb-${envName}-ws-authorizer`,
-      );
-      expect(authorizer).toBeDefined();
-      const variables = authorizer.Properties?.Environment?.Variables ?? {};
-      expect(variables.CONTAINERS_TABLE).toBeDefined();
-      expect(
-        Object.keys(variables).filter((key) => key.startsWith("CLERK_")),
-      ).toEqual([]);
-      const roleId = authorizer.Properties.Role["Fn::GetAtt"][0];
-      const tableRead = statementsForRole(template, roleId).find(
-        (statement) => statement.Sid === "ContainersTableRead",
-      );
-      expect(tableRead).toBeDefined();
-      expect(actions(tableRead!)).toEqual(["dynamodb:GetItem"]);
-      expect(JSON.stringify(tableRead!.Resource)).not.toContain("/index/");
-      expect(JSON.stringify(tableRead!.Resource)).not.toContain('"*"');
-    },
-  );
+describe("ApiStack — dead WebSocket API removed", () => {
+  test("no WebSocket Lambdas, stage or domain; the bare API id stays exported one deploy", () => {
+    const names = Object.values(API_TEMPLATE.findResources("AWS::Lambda::Function")).map(
+      (r: any) => JSON.stringify(r.Properties?.FunctionName ?? ""),
+    );
+    expect(names.filter((n) => /ws-(authorizer|connect|disconnect|message)/.test(n))).toEqual([]);
+    const onWsApi = Object.values(API_TEMPLATE.toJSON().Resources).filter(
+      (r: any) => r.Type !== "AWS::ApiGatewayV2::Api" && JSON.stringify(r).includes('"WebSocketApi'),
+    );
+    expect(onWsApi).toEqual([]); // no route, integration, stage, authorizer or mapping
+    const pinned = Object.values(API_TEMPLATE.toJSON().Outputs ?? {}).some(
+      (o: any) => JSON.stringify(o.Value).includes("WebSocketApi"),
+    );
+    expect(pinned).toBe(true);
+  });
 });
-
 
 describe("ApiStack — production browser CORS origins", () => {
   test("prod API Gateway CORS accepts apex and www frontend origins", () => {
@@ -151,15 +136,11 @@ describe("ApiStack — browser-view CloudFront door", () => {
     const env = { account: "877352799272", region: "us-east-1" };
     const network = new NetworkStack(app, `Network-${environment}`, { env, environment });
     const support = new cdk.Stack(app, `Support-${environment}`, { env });
-    const containersTable = new dynamodb.Table(support, "Containers", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
     const api = new ApiStack(app, `Api-${environment}`, {
       env,
       environment,
       vpc: network.vpc,
-      alb: network.alb,
-      albV2: network.albV2,
+        albV2: network.albV2,
       albHttpListenerArn: network.albHttpListenerArn,
       albSecurityGroup: network.albSecurityGroup,
       certificate: acm.Certificate.fromCertificateArn(
@@ -173,9 +154,7 @@ describe("ApiStack — browser-view CloudFront door", () => {
       }),
       clerkIssuerSecretName: `lightbulb/${environment}/clerk_issuer`,
       paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
-      wsInternalSecretSecretName: `isol8/${environment}/ws_internal_secret`,
-      containersTableName: containersTable.tableName,
-    });
+        });
     return Template.fromStack(api);
   }
 

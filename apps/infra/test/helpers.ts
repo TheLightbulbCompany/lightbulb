@@ -1,6 +1,5 @@
 import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { ApiStack } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import {
@@ -92,18 +91,10 @@ export function buildApiStack(
     environment,
   });
 
-  // Throwaway containers table (owner_id PK, matching DatabaseStack) so the
-  // authorizer's device-key registry read is granted + env-wired as-deployed.
-  const support = new cdk.Stack(app, `Support-${environment}`, { env });
-  const containersTable = new dynamodb.Table(support, "Containers", {
-    partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-  });
-
   const api = new ApiStack(app, `Api-${environment}`, {
     env,
     environment,
     vpc: network.vpc,
-    alb: network.alb,
     albV2: network.albV2,
     albHttpListenerArn: network.albHttpListenerArn,
     albSecurityGroup: network.albSecurityGroup,
@@ -111,8 +102,6 @@ export function buildApiStack(
     // Pass secret name + KMS key ARN as plain strings — same cross-stack
     // pattern as lightbulb-stage.ts (avoids KMS auto-grant cycles).
     paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
-    wsInternalSecretSecretName: `isol8/${environment}/ws_internal_secret`,
-    containersTableName: containersTable.tableName,
   });
 
   return api;

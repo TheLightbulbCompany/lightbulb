@@ -2885,9 +2885,7 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         new_owner_id=_channel_heir(meta, members, member_id),
     )
     if meta["roomId"] == default_room_id(meta["ownerId"]) or is_feed_room(meta):
-        # A removal (or leave) must stick: the autojoin never re-seats a marked user. For the
-        # feed (only a workspace removal reaches here) revoke_human_membership frees it again
-        # once the stream is off, so a real rejoin re-seats them.
+        # A removal (or leave) must stick: the autojoin never re-seats a marked user.
         await _mark_removed(meta, member_id)
     # The same revocation for the room's huddle: best effort, never raises.
     await livekit_huddles.remove_participant(meta["roomId"], member_id)

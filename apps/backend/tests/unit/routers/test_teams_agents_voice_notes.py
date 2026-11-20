@@ -1,6 +1,5 @@
 """C9: GET/PUT /teams/agents/{agentId}/voice-notes (agent settings)."""
 
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,7 +7,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://test.execute-api.us-east-1.amazonaws.com/test")
 
 from core.services import hermes_profiles  # noqa: E402
 from routers.teams import agents as agents_mod  # noqa: E402

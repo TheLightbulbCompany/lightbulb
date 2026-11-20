@@ -855,3 +855,21 @@ async def test_an_unreadable_transcript_says_try_again(env, monkeypatch):
     monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(side_effect=gone))
     with pytest.raises(mod.TranscriptUnavailable, match="no longer available"):
         await mod.worker_transcript("org_1", TRIG)
+    wrapped = mod.messaging.ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.")
+    wrapped.__cause__ = OSError("connection reset")  # load_attachment maps a failed read to "not found"
+    monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(side_effect=wrapped))
+    with pytest.raises(mod.TranscriptUnavailable, match="couldn't be read just now"):
+        await mod.worker_transcript("org_1", TRIG)
+
+
+async def test_the_no_notes_mark_is_bounded_and_never_raises(monkeypatch, caplog):
+    import asyncio
+
+    async def hang(*_a, **_k):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(mod, "_MARK_S", 0.01)
+    for patch in (AsyncMock(side_effect=RuntimeError("ddb")), hang):
+        monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", patch)
+        await mod._mark_no_notes({"roomId": ROOM, "occurrence": 1})  # returns: no raise, no hang
+    assert sum("no-notes mark failed" in r.getMessage() for r in caplog.records) == 2

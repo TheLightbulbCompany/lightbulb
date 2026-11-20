@@ -177,14 +177,8 @@ class Settings(BaseSettings):
     # attribute_not_exists drops replays at the edge. Wired via CDK service-stack.
     WEBHOOK_DEDUP_TABLE: str = ""
 
-    # WebSocket Configuration (API Gateway Management API)
+    # WebSocket Configuration
     WS_CONNECTIONS_TABLE: str = "lightbulb-dev-ws-connections"
-    WS_MANAGEMENT_API_URL: str = ""  # Set by Terraform
-    # Public WSS endpoint returned by POST /api/v1/desktop/pair so the desktop
-    # local-session relay knows which API Gateway door to connect to (it needs
-    # the Management API, so it stays there). Wired by CDK service-stack from
-    # api-stack's WebSocket stage URL.
-    WS_GATEWAY_URL: str = "wss://ws-dev.thelightbulb.company"
     # Raw WebSocket relay for machine clients (desktop node hosts): one backend task pipes both sockets for the connection's
     # life instead of the API Gateway relay above. Same `bv-` CloudFront/ALB
     # door as the browser-view live view, path-capped to /api/v1/gateway/*.

@@ -300,7 +300,8 @@ async def worker_transcript(owner_id: str, request_id: str) -> str | None:
     try:
         _, raw = await run_in_thread(messaging.load_attachment, owner_id, _transcript_room(request), attachment)
     except messaging.ApiProblem as exc:
-        gone = exc.error.code == "MESSAGE_NOT_FOUND"
+        # load_attachment says "not found" for a failed read too; its cause (an OSError) tells the two apart.
+        gone = exc.error.code == "MESSAGE_NOT_FOUND" and not isinstance(exc.__cause__, OSError)
         raise TranscriptUnavailable(TRANSCRIPT_GONE if gone else TRANSCRIPT_UNREAD) from exc
     except Exception as exc:  # an S3 or network error: the transcript is there, the read failed for now
         raise TranscriptUnavailable(TRANSCRIPT_UNREAD) from exc
@@ -415,11 +416,21 @@ async def _keep_with_retries(owner_id: str, request_id: str, request: dict, note
 
 async def _mark_no_notes(request: dict) -> None:
     """The occurrence's notes are over with none kept ("skipped" in the meeting view). The request's claim stays
-    unspent, so a Retry that succeeds still keeps the notes and admits their follow-ups."""
+    unspent, so a Retry that succeeds still keeps the notes and admits their follow-ups. Bounded, logged on
+    failure, never raises."""
     occurrence = request.get("occurrence")
-    await meeting_invites._patch_meeting(
-        request["roomId"], {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
-    )
+    try:
+        async with asyncio.timeout(_MARK_S):
+            await meeting_invites._patch_meeting(
+                request["roomId"], {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
+            )
+    except Exception:  # noqa: BLE001 -- TimeoutError or a failed write: the meeting reads "pending", nothing breaks
+        put_metric("meeting.notes.mail_failed")
+        logger.warning("meeting room %s: no-notes mark failed", request.get("roomId"), exc_info=True)
+
+
+#: The no-notes mark's bound: it runs inside the keep's activity and the Router's apply path.
+_MARK_S = 5
 
 
 async def on_not_started(owner_id: str, trigger: dict) -> None:

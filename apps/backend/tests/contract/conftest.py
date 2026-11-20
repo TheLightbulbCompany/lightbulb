@@ -139,16 +139,6 @@ def _mock_oauth_external_deps(monkeypatch):
         )
         monkeypatch.setenv("OAUTH_TOKENS_TABLE", "contract-test-oauth-tokens")
         monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
-        # The device-revoke path force-closes the live WS session, which builds a
-        # ManagementApiClient — and its constructor RAISES when
-        # WS_MANAGEMENT_API_URL is unset rather than degrading. Neither the CI
-        # workflow nor tests/conftest.py sets it, so give it a syntactically
-        # valid endpoint; moto intercepts the apigatewaymanagementapi calls, so
-        # nothing leaves the process.
-        monkeypatch.setenv(
-            "WS_MANAGEMENT_API_URL",
-            "https://contract-test.execute-api.us-east-1.amazonaws.com/test",
-        )
 
         # Repos resolve tables through core.dynamodb.get_table, which prepends
         # DYNAMODB_TABLE_PREFIX (default "isol8-dev-"), so moto must create them

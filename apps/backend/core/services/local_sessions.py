@@ -1841,7 +1841,6 @@ async def decide_join(
             _capture_growth(row, "session_join_decided", auth.user_id, decision=decision)
         if decision == "allow" or not answered.get("outsider"):  # 06 §2: a decline to an outsider is not announced
             await _notify_join_answer(row, user_id, action, answered["requestId"])
-        await _push_presence(row)
     return _session_public(row, auth.user_id)
 
 
@@ -1929,7 +1928,6 @@ async def decide_pickup_request(
     row, audit = await _change_session(auth, session_id, change, "pickup_request_declined", user_id, allow_ended=True)
     if audit is not None:
         await _notify_join_answer(row, user_id, "join_declined", current["requestId"], kind="pickup")
-        await _push_presence(row)
     return _session_public(row, auth.user_id)
 
 
@@ -1954,12 +1952,6 @@ def pickup_request_title(name: str, row: dict, *, again: bool = False) -> str:
 
 def join_request_title(name: str, row: dict, *, again: bool = False) -> str:
     return _request_title(name, row, "join", again)
-
-
-async def _push_presence(row: dict) -> None:
-    from core.services import session_presence  # imports this module
-
-    await session_presence.push(row)
 
 
 async def _session_notice(
@@ -2170,9 +2162,6 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        if bool(public_id(new, updated)) != bool(public_id(link, row)):
-            # The band's "via link" count follows the audience at once.
-            await _push_presence(updated)
         if not link:
             _capture_growth(row, "share_link_created", auth.user_id, audience=new["audience"])
         await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])

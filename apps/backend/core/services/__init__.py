@@ -9,16 +9,9 @@ from .connection_service import (
     ConnectionService,
     ConnectionServiceError,
 )
-from .management_api_client import (
-    ManagementApiClient,
-    ManagementApiClientError,
-)
 
 __all__ = [
     # Connection Service (WebSocket state)
     "ConnectionService",
     "ConnectionServiceError",
-    # Management API Client (WebSocket push)
-    "ManagementApiClient",
-    "ManagementApiClientError",
 ]

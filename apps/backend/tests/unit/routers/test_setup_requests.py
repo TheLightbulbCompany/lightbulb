@@ -140,10 +140,17 @@ async def test_setup_request_without_company_is_422(unauthenticated_async_client
     put.assert_not_awaited()
 
 
-@pytest.mark.parametrize("over", [{"waitlist": "zoom"}, {"email": "not-an-email"}])
-async def test_waitlist_bad_body_is_422(unauthenticated_async_client, over):
+@pytest.mark.parametrize(
+    ("over", "field"),
+    [
+        ({"waitlist": "zoom", "company": "Acme"}, "waitlist"),
+        ({"email": "not-an-email"}, "email"),
+    ],
+)
+async def test_waitlist_bad_body_is_422(unauthenticated_async_client, over, field):
     r, put, _, _ = await _post_waitlist(unauthenticated_async_client, {**WAITLIST, **over})
     assert r.status_code == 422
+    assert [e["loc"][-1] for e in r.json()["detail"]] == [field]
     put.assert_not_awaited()
 
 

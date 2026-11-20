@@ -121,15 +121,15 @@ export function RequestSetupForm({ waitlist }: { waitlist?: "meetings" | "os" } 
         </div>
         {!waitlist && (
           <>
-        <div>
-          <label className={label} htmlFor="rs-phone">Mobile number</label>
-          <input id="rs-phone" name="phone" type="tel" required autoComplete="tel" maxLength={40} className={field} />
-          <p className={helper}>A founder will call or text you here.</p>
-        </div>
-        <div>
-          <label className={label} htmlFor="rs-company">Business name</label>
-          <input id="rs-company" name="company" required autoComplete="organization" className={field} />
-        </div>
+            <div>
+              <label className={label} htmlFor="rs-phone">Mobile number</label>
+              <input id="rs-phone" name="phone" type="tel" required autoComplete="tel" maxLength={40} className={field} />
+              <p className={helper}>A founder will call or text you here.</p>
+            </div>
+            <div>
+              <label className={label} htmlFor="rs-company">Business name</label>
+              <input id="rs-company" name="company" required autoComplete="organization" className={field} />
+            </div>
           </>
         )}
         <div>

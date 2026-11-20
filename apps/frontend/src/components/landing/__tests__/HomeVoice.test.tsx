@@ -72,7 +72,7 @@ describe("Phone page voice", () => {
   it("links only to pages that exist after the pivot", () => {
     const { container } = page();
     const allowed = new Set([
-      "/", "/pricing", "/compare", "/request-setup", "/security", "/support",
+      "/", "/phone", "/meetings", "/os", "/pricing", "/compare", "/request-setup", "/security", "/support",
       "/sign-in", "/sign-up", "/network", "/privacy", "/terms", "/cookies", "/disclaimer", "/eula",
       "/acceptable-use", "/accessibility", "#voices",
       "https://invoca.com/reports/the-invoca-lead-conversion-benchmarks-report-2026",
@@ -93,9 +93,17 @@ describe("Phone page voice", () => {
   it("tracks both footer doors", () => {
     captureSignupCta.mockClear();
     render(<Footer />);
-    fireEvent.click(screen.getByRole("link", { name: /Set up your assistant/ }));
+    fireEvent.click(screen.getByRole("link", { name: /Set up Lightbulb Phone/ }));
     fireEvent.click(screen.getAllByRole("link", { name: "Talk to a founder" })[0]);
     expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["footer_start_free", "footer_setup"]);
+  });
+
+  it("names the three products and pricing in the nav, in order", () => {
+    const { container } = render(<Navbar />);
+    const links = [...container.querySelectorAll(".nav-links a:not(.nav-mobile-login)")].map((a) => a.textContent);
+    expect(links).toEqual(["Phone", "Meetings", "OS", "Pricing"]);
+    expect(container.textContent).toContain("Set up Lightbulb Phone");
+    expect(container.textContent).not.toContain("Set up your assistant");
   });
 
   it("tracks the nav's sign-up and founder doors", () => {

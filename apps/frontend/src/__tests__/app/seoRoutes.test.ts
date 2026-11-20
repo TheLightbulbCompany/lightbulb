@@ -8,6 +8,7 @@ import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
 import { COMPARE_PAGES } from "@/content/compare";
 import sitemap from "@/app/sitemap";
+import robots from "@/app/robots";
 import { BANNED } from "@/content/__tests__/bannedCopy";
 
 /**
@@ -52,6 +53,12 @@ describe("/llms.txt", () => {
     expect(product.replace("There is no free trial", "").match(BANNED)?.[0]).toBeUndefined();
     expect(text).not.toMatch(/six|AI employees|CEO|seat/i);
   });
+
+  it("names the three products and their pages", async () => {
+    const text = await body(llms());
+    for (const path of ["/phone", "/meetings", "/os"]) expect(text).toContain(`${SITE_URL}${path})`);
+    expect(text).toContain("Lightbulb OS");
+  });
 });
 
 describe("/llms-full.txt", () => {
@@ -74,10 +81,21 @@ describe("/sitemap.xml", () => {
     expect(urls).toContain(`${SITE_URL}/network`);
     expect(urls).toContain(`${SITE_URL}/docs`);
     expect(urls).toContain(`${SITE_URL}/request-setup`);
+    for (const path of ["/phone", "/meetings", "/os"]) expect(urls).toContain(`${SITE_URL}${path}`);
     for (const gone of ["/compare/slack", "/docs/get-started", "/salons", "/spas", "/barbershops"]) {
       expect(urls).not.toContain(`${SITE_URL}${gone}`);
     }
     expect(new Set(urls).size).toBe(urls.length);
+  });
+});
+
+describe("/robots.txt", () => {
+  it("keeps the signed-in app and the meeting bot out, and the voice samples in", () => {
+    const rules = robots().rules;
+    const disallow = (Array.isArray(rules) ? rules[0] : rules).disallow as string[];
+    expect(disallow).toEqual(expect.arrayContaining(["/voice/", "/meet-bot"]));
+    expect(disallow).not.toContain("/voice");
+    expect(disallow.some((d) => "/voice-samples/gpt-live-1-marin-en.wav".startsWith(d))).toBe(false);
   });
 });
 

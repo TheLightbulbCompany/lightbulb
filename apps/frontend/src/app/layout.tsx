@@ -17,7 +17,7 @@ import {
   clerkTaskUrls,
 } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
-import { SITE_DESCRIPTION, SITE_TITLE } from "@/lib/seo";
+import { OG_IMAGE, SITE_DESCRIPTION, SITE_TITLE } from "@/lib/seo";
 import "./globals.css";
 
 const geistMono = Geist_Mono({
@@ -35,8 +35,6 @@ const satoshi = localFont({
 });
 
 
-const SOCIAL_IMAGE = "/og-lightbulb-v2.png";
-
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: SITE_TITLE,
@@ -47,13 +45,13 @@ export const metadata: Metadata = {
     url: SITE_URL,
     siteName: "Lightbulb",
     type: "website",
-    images: [{ url: SOCIAL_IMAGE, width: 1200, height: 630, alt: "Lightbulb" }]
+    images: [{ url: OG_IMAGE, width: 1200, height: 630, alt: "Lightbulb" }]
   },
   twitter: {
     card: "summary_large_image",
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
-    images: [SOCIAL_IMAGE]
+    images: [OG_IMAGE]
   },
 };
 

@@ -10,6 +10,9 @@ import { hydrateFromStorage, strike, useLampTheme } from "@/components/landing/H
 import { captureSignupCta } from "@/lib/signupFlow";
 
 const LINKS = [
+  { href: "/phone", label: "Phone" },
+  { href: "/meetings", label: "Meetings" },
+  { href: "/os", label: "OS" },
   { href: "/pricing", label: "Pricing" },
 ] as const;
 
@@ -56,10 +59,10 @@ export function Navbar() {
               href="/sign-up"
               className="nav-mobile-login"
               onClick={() =>
-                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: "Set up your assistant", surface: "landing_nav_mobile" })
+                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: "Set up Lightbulb Phone", surface: "landing_nav_mobile" })
               }
             >
-              Set up your assistant
+              Set up Lightbulb Phone
             </Link>
           </>
         )}
@@ -122,13 +125,13 @@ export function Navbar() {
               onClick={() =>
                 captureSignupCta({
                   ctaId: "nav_sign_up",
-                  label: "Set up your assistant",
+                  label: "Set up Lightbulb Phone",
                   surface: "landing_nav",
                 })
               }
             >
               {/* The long label would push the bar past a phone's width; phones get the short one. */}
-              <span className="nav-cta-long">Set up your assistant</span>
+              <span className="nav-cta-long">Set up Lightbulb Phone</span>
               <span className="nav-cta-short">Set up</span>
             </Link>
           </>

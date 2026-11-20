@@ -17,6 +17,9 @@ export default function robots(): MetadataRoute.Robots {
         "/onboarding",
         "/admin",
         "/api",
+        // The signed-in owner app; "/voice" alone would also block /voice-samples/.
+        "/voice/",
+        "/meet-bot",
       ],
     },
     sitemap: `${SITE_URL}/sitemap.xml`,

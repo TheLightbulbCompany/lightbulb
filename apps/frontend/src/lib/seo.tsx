@@ -24,12 +24,15 @@ export const PHONE_DESCRIPTION =
  * .agents/product-marketing.md; no price, minute count or trial is typed here.
  */
 export const PRODUCT_SUMMARY =
-  "Lightbulb gives a salon, spa or barbershop an AI receptionist with the name the owner chooses. " +
+  "Lightbulb makes voice assistants. " +
+  "Lightbulb Phone gives a salon, spa or barbershop an AI receptionist with the name the owner chooses. " +
   "It answers the business's phone day and night, books, moves and cancels appointments, takes messages, " +
-  "and puts anything it can't decide in front of the owner.";
+  "and puts anything it can't decide in front of the owner. " +
+  "Lightbulb Meetings joins a business's Google Meet when invited. " +
+  "Lightbulb OS is a voice app for the Mac, not yet released.";
 
 export const PRODUCT_FACTS = [
-  "Who it's for: independent salons (hair, nails, lashes, brows), day spas, massage studios and barbershops in the US.",
+  "Who Lightbulb Phone is for: independent salons (hair, nails, lashes, brows), day spas, massage studios and barbershops in the US.",
   "Answers calls 24/7, several at once (up to five live calls on one line), in English, or English and Spanish.",
   "Books, moves and cancels appointments during the call, inside the business's opening hours, for a staff member who does that service, with the service length and buffer the owner set. Earlier bookings are found, moved or cancelled only when the caller's carrier verifies their number; otherwise it takes a message.",
   "Bookings go into its own calendar, shown on the owner's Home, or into Google Calendar. It does not book into Square, Vagaro, Fresha, Boulevard, GlossGenius, Booksy, Mindbody or Acuity.",
@@ -40,9 +43,10 @@ export const PRODUCT_FACTS = [
   "The owner picks its name, writes its greeting, chooses one of three voices and decides what it may do (book, move or cancel, greet returning callers by name, answer questions).",
   "Keep your number by forwarding missed and busy calls, or all calls, from Verizon, AT&T, T-Mobile, a landline or a VoIP app; the app checks the forwarding works. Or get a new US local number.",
   "It doesn't take payments and removes card numbers from every record it keeps. Callers reach only their own bookings.",
-  "Can join the owner's Google Meet when invited, speaks only when named, and keeps notes, decisions and follow-ups.",
+  "Lightbulb Meetings, for any business on Google Meet: joins when a member invites it, speaks only when named, and keeps notes, decisions and follow-ups. Google Meet only. The site offers it by waitlist at " + SITE_URL + "/meetings.",
   "Billing: one monthly plan per business with minutes included, then a per-minute rate. Month to month, a live minutes meter, and the owner chooses what happens when minutes run out. Cancel the renewal yourself in Settings. There is no free trial: going live needs a paid plan. See " + SITE_URL + "/pricing.",
   "Not a fit for: medical, dental or med-spa practices that handle health information, multi-location chains, businesses outside the US, outbound calling or text messaging.",
+  "Lightbulb OS: a voice app for the Mac, not released. Waitlist at " + SITE_URL + "/os.",
 ];
 
 export function absoluteUrl(path = "/") {
@@ -100,7 +104,7 @@ export const organizationJsonLd = {
   logo: absoluteUrl("/icon.png"),
   description: PRODUCT_SUMMARY,
   disambiguatingDescription:
-    "Lightbulb (thelightbulb.company) makes an AI receptionist for salons, spas and barbershops. Not TheLightbulb.ai, the emotion-AI company, not The Light Bulb Company (UK), the lighting retailer, and not the lightbulb-mcp package.",
+    "Lightbulb (thelightbulb.company) makes Lightbulb Phone, an AI receptionist for salons, spas and barbershops, Lightbulb Meetings for Google Meet, and Lightbulb OS for the Mac. Not TheLightbulb.ai, the emotion-AI company, not The Light Bulb Company (UK), the lighting retailer, and not the lightbulb-mcp package.",
   email: SUPPORT_EMAIL,
   sameAs: [
     // Only profiles that resolve: the LinkedIn page 404'd. Add LinkedIn or

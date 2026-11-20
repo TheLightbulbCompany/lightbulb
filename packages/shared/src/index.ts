@@ -34,7 +34,7 @@ export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, TaskChanged, LiveEv
 export { createMessagingClient } from "./messaging/client";
 export { PERSON_COLORS, personColor } from "./messaging/personColor";
 export type { PersonColor } from "./messaging/personColor";
-export type { MessagingClient, RoomAttachmentInput, SubagentTail } from "./messaging/client";
+export type { MessagingClient, RoomAttachmentInput } from "./messaging/client";
 export {
   GROUP_WINDOW_MS,
   browsingSite,
@@ -80,7 +80,6 @@ export type {
   CanonicalRoomMessage,
   CreateMessageRequest,
   CreateRoomRequest,
-  UpdateMessageRequest,
   MessageAttachment,
   MessageAttachmentContentType,
   ListenMode,
@@ -91,8 +90,6 @@ export type {
   MessagePage,
   ActiveRoomRun,
   RoomDetail,
-  NotedFact,
-  RoomMemoryResponse,
   RoomKind,
   RoomListResponse,
   RoomMember,

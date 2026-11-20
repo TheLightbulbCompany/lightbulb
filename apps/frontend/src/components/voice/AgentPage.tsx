@@ -165,9 +165,9 @@ export function Closures({ c, set }: Edit) {
   </div>;
 }
 
-export function Check({ label, on, set, disabled, note }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean; note?: string }) {
+export function Check({ label, on, set, disabled, busy, note }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean; busy?: boolean; note?: string }) {
   return <label className="vx-check" data-off={disabled}>
-    <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set?.(e.target.checked)} />{label}{note && <small className="vx-muted">{note}</small>}</label>;
+    <input type="checkbox" checked={on} disabled={disabled} aria-busy={busy || undefined} onChange={(e) => set?.(e.target.checked)} />{label}{note && <small className="vx-muted">{note}</small>}</label>;
 }
 
 /** Shown only while someone is waiting: the toggle is hidden (10 Nov demo ruling), but a caller already waiting must not be lost. */

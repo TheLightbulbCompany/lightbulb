@@ -49,10 +49,26 @@ it("after a save the switch follows the stored config again", async () => {
   expect(screen.getByText("Saved")).toBeInTheDocument();
 });
 
+it("a second click while saving sends no second request", async () => {
+  let finish!: () => void;
+  cfg.save.mockReturnValueOnce(new Promise<void>((r) => { finish = r; }));
+  render(<Page />);
+  const box = screen.getByLabelText("Turn action items into follow-ups");
+  fireEvent.click(box);
+  expect(box).toBeDisabled();
+  expect(box).toHaveAttribute("aria-busy", "true");
+  fireEvent.click(box);
+  expect(cfg.save).toHaveBeenCalledTimes(1);
+  finish();
+  await waitFor(() => expect(box).toBeEnabled());
+  expect(screen.getByText("Saved")).toBeInTheDocument();
+});
+
 it("a member who cannot edit sees why it did not save", async () => {
   cfg.save.mockRejectedValueOnce({ status: 403 });
   render(<Page />);
   fireEvent.click(screen.getByLabelText("Turn action items into follow-ups"));
   await waitFor(() => expect(screen.getByText("Only an admin of this business can change the assistant. Ask them to make this change.")).toBeInTheDocument());
   expect(screen.queryByText("Saved")).toBeNull();
+  expect(screen.getByLabelText("Turn action items into follow-ups")).toBeEnabled();
 });

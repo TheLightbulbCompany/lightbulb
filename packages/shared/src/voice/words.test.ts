@@ -1,25 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentA11yName, agentLine, agentLiveStatus, agentWorking, errorText, floorChange, floorHolder,
-  liveAgents, liveErrorText, liveHappening, liveHint, liveJoinErrorCode, liveMarker, liveQueue,
-  agentHand, agentStateLine, handKey, meetVoiceLimitText, voiceLimit, nameCollides, orderAgentSlots, parseLiveNotice, queuePosition, renamedText, voiceFailedText, voiceNoteText, wakingText,
+  agentLine, agentLiveStatus, agentWorking, floorHolder, liveJoinErrorCode, liveMarker,
+  agentHand, agentStateLine, handKey, meetVoiceLimitText, voiceLimit, parseLiveNotice, renamedText, voiceNoteText,
 } from "./words";
 
 describe("voice words", () => {
-  it("falls back for unknown and prototype keys", () => {
-    expect(errorText("connection_lost", "x")).toBe("The call dropped.");
-    expect(errorText("__proto__", "x")).toBe("x");
-    expect(errorText(undefined, "x")).toBe("x");
-  });
-
-  it("reads voice_limit's reason", () => {
-    expect(liveErrorText({ code: "voice_limit", reason: "credits_low" })).toBe("Add credits to keep talking to agents.");
-    expect(errorText("free_minutes_used", "x")).toBe("You've used today's free voice minutes. People can keep talking.");
-    expect(errorText("agents_absent", "x")).toBe("Agents couldn't join this Live.");
-    expect(errorText("lightbulb_unreachable", "x")).toBe("Couldn't reach the agent — try again.");
-    expect(liveErrorText({ code: "nope" })).toBe("Live couldn't start.");
-  });
-
   it("names who is live", () => {
     expect(liveMarker(["Aden"])).toBe("Live — Aden");
     expect(liveMarker(["Aden", "Leo"])).toBe("Live — Aden and Leo");
@@ -36,8 +21,6 @@ describe("voice words", () => {
 });
 
 const st = (id: string) => `lightbulb.agent.${id}.status`;
-const names: Record<string, string> = { g: "Gauge", f: "Forge", n: "Nova", gauge: "Gauge", forge: "Forge" };
-const nameOf = (id: string) => names[id] ?? id;
 
 describe("Meet voice limit", () => {
   it("reads the attribute, trimmed; empty or absent is null", () => {
@@ -65,25 +48,6 @@ describe("per-agent Live readers", () => {
     expect(agentWorking({ "lightbulb.agent.g.working": `  ${"x".repeat(80)} ` }, "g")).toHaveLength(60);
   });
 
-  it("reads the queue", () => {
-    expect(liveQueue({ "lightbulb.queue": "f, g,,f" })).toEqual(["f", "g"]);
-    const a = { "lightbulb.queue": "forge,gauge", "lightbulb.speaking_agent": "forge", [st("forge")]: "joining" };
-    expect(queuePosition(a, "gauge")).toBe(2);
-    expect(queuePosition(a, "forge")).toBeNull();
-    expect(queuePosition(a, "nova")).toBeNull();
-  });
-
-  it("orders slots", () => {
-    const a = { [st("c")]: "speaking", [st("d")]: "joining", "lightbulb.queue": "c,b" };
-    expect(orderAgentSlots(["a", "b", "c", "d"], a)).toEqual(["c", "d", "b", "a"]);
-  });
-
-  it("tiles every agent whatever its listen mode and drops humans", () => {
-    const m = (id: string, kind: string, listenMode: string | null) => ({ id, kind, displayName: id, listenMode });
-    const tiles = liveAgents([m("a", "agent", "active"), m("h", "user", null), m("o", "agent", "observe"), m("b", "agent", "mentions")]);
-    expect(tiles.map((t) => t.id)).toEqual(["a", "o", "b"]);
-  });
-
   it.each([
     ["speaking", {}, "Gauge — speaking"],
     ["joining", {}, "Gauge is joining…"],
@@ -93,40 +57,6 @@ describe("per-agent Live readers", () => {
     ["idle", {}, "Gauge"],
   ] as const)("agentLine(%s)", (status, x, text) => {
     expect(agentLine("Gauge", status, x)).toBe(text);
-  });
-
-  it("builds a11y names", () => {
-    expect(agentA11yName("Gauge", "speaking")).toBe("Gauge, agent, speaking");
-    expect(agentA11yName("Forge", "working", { queuePos: 2, working: "drafting the launch post" }))
-      .toBe("Forge, agent, next, working: drafting the launch post");
-  });
-
-  it("says what's happening", () => {
-    const a = { "lightbulb.queue": "gauge,forge", "lightbulb.speaking_agent": "gauge", [st("gauge")]: "speaking" };
-    expect(liveHappening(a, nameOf)).toBe("Gauge is speaking · Next: Forge");
-    expect(liveHappening({ ...a, [st("n")]: "working", [st("x")]: "working" }, nameOf)).toBe("Gauge is speaking · Next: Forge · 2 working");
-    expect(liveHappening({ [st("g")]: "idle" }, nameOf)).toBe("");
-  });
-
-  it("announces floor changes only", () => {
-    const prev = { "lightbulb.speaking_agent": "f", [st("f")]: "speaking" };
-    const next = { "lightbulb.speaking_agent": "g", [st("g")]: "speaking" };
-    expect(floorChange(prev, next, ["f", "g"], ["f", "g"], nameOf)).toBe("Gauge is speaking");
-    expect(floorChange(prev, { ...next, [st("g")]: "joining" }, ["f", "g"], ["f", "g"], nameOf)).toBe("Gauge is joining");
-    expect(floorChange(prev, { ...prev, "lightbulb.agent.f.working": "x" }, ["f"], ["f"], nameOf)).toBeNull();
-    expect(floorChange(prev, prev, ["f", "n"], ["f"], nameOf)).toBe("Nova left");
-    const joiningG = { ...next, [st("g")]: "joining" };
-    expect(floorChange(joiningG, { ...next, [st("g")]: "listening" }, ["g"], ["g"], nameOf)).toBe("Gauge is listening");
-  });
-
-  it("hints how to talk", () => {
-    expect(liveHint([{ name: "Gauge", collides: false }])).toBe('Say "Gauge, …" or tap Gauge to talk.');
-    expect(liveHint([{ name: "Nova", collides: true }])).toBe('Say "hey Nova, …" or tap Nova to talk.');
-    expect(liveHint([{ name: "Gauge", collides: false }, { name: "Forge", collides: false }, { name: "Nova", collides: false }]))
-      .toBe('Say an agent\'s name — "Gauge, …" — or tap them. "Lightbulb, …" asks the team.');
-    expect(liveHint([])).toBeNull();
-    expect(nameCollides("Nova", [{ displayName: "Nova Smith" }])).toBe(true);
-    expect(nameCollides("nova", [{ displayName: "Novak" }])).toBe(false);
   });
 
   it("parses live notices", () => {
@@ -145,8 +75,6 @@ describe("per-agent Live readers", () => {
   });
 
   it("words notices", () => {
-    expect(wakingText("Nova")).toBe("Nova is waking up — this can take a minute the first time.");
-    expect(voiceFailedText("Nova")).toBe("Nova couldn't join. Try again.");
     expect(renamedText("CEO", "Nova")).toBe("CEO is now Nova");
     expect(voiceNoteText("Nova", "be more blunt")).toBe("Nova will remember: be more blunt");
   });

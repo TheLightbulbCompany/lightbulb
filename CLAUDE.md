@@ -14,7 +14,7 @@ three surfaces:
 3. **The orb.** A member talks to the assistant in the web app and the Mac app (`/voice/lightbulb`). The orb
    does the general agent work the old product did.
 
-Typed messages (web, Mac, mobile) still exist and take the same path as speech.
+Typed messages (web, Mac) still exist and take the same path as speech.
 
 **The engine** is the same for every surface. **GPT-Live** (OpenAI, through LiveKit) is the voice. It has no
 tools. On the phone it holds the owner's Agent page facts and answers what they state; every other business request
@@ -35,7 +35,7 @@ record; S3 holds each agent's Hermes profile. Approvals are authenticated card t
   `docs/superpowers/plans/2026-11-07-voice-agents-master-plan.md`. Where they differ from Part 1, Part 1 wins.
 
 The stack: FastAPI on ARM Fargate (ECS), Temporal Cloud, DynamoDB and S3, Bedrock AgentCore, OpenAI GPT-Live via
-LiveKit Cloud, Twilio, Recall.ai (Meet bots), Next.js 16 on Vercel, an Expo iOS app, Clerk,
+LiveKit Cloud, Twilio, Recall.ai (Meet bots), Next.js 16 on Vercel, Clerk,
 Stripe and Metronome. Infrastructure is AWS CDK in `apps/infra/` (the single source of IaC truth).
 
 ## Standing decisions
@@ -172,7 +172,7 @@ deleted once they have run; re-runnable ops tools stay in `apps/backend/scripts/
 
 ### Monorepo
 
-Turborepo with **pnpm** for JS and **uv** for Python. Apps: `backend`, `frontend`, `mobile`,
+Turborepo with **pnpm** for JS and **uv** for Python. Apps: `backend`, `frontend`,
 `huddle-agent`, `infra`, `company`; plus `packages/shared` (see Frontend).
 
 ```bash
@@ -229,7 +229,6 @@ A PR runs these, all on GitHub-hosted Linux (`vars.CI_RUNNER`):
 
 - `backend.yml`: ruff + pytest in 4 shards x xdist, plus the Python Lambda suites; `apps/backend/**`.
 - `frontend-ci.yml`: lint, tsc, vitest in 4 shards, `next build`; `apps/frontend/**`, `packages/shared/**`.
-- `mobile-ci.yml`: shared + mobile typecheck, lint, tests, `expo export` Metro gate; `apps/mobile/**`, `packages/shared/**`.
 - `infra-ci.yml`: tsc, vitest, the `deploy.yml` drift guard, Hermes bridge tests and image smokes, gate tests; `apps/infra/**`.
 
 - `secret-scan.yml` (every PR and every push to `main`).
@@ -297,10 +296,8 @@ gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status --inter
   the pin and rolls. See "Hermes image and rollout".
 - **Phone trunks:** `phone-telephony.yml` (manual) reconciles the Twilio trunks and the production telephony
   secret. It buys no numbers and places no calls.
-- **Mobile:** `mobile-ota.yml` (merge to `main` → `eas update --channel production`, Linux) and
-  `mobile-release.yml` (`mobile-v*` tag → `eas build --local` + `eas submit`, self-hosted Mac). PRs run `mobile-ci.yml`.
-- The self-hosted Mac (label `macos-desktop`) runs only the native lane (`mobile-release.yml`). Anything JS-only
-  belongs on `vars.CI_RUNNER`.
+- The self-hosted Mac (label `macos-desktop`) runs only `sign-cli-release.yml` (the release key lives on it);
+  `mobile-release.yml` went with the iPhone app. Anything JS-only belongs on `vars.CI_RUNNER`.
 
 ## Architecture
 
@@ -352,7 +349,7 @@ Nothing on the voice side reads, approves or starts work. Today the orb is the o
 ```
 Client --HTTP (Clerk)--> routers/messaging.py --> lightbulb-{env}-messaging (DynamoDB, seq-ordered)
    one conditional transaction: bump META.lastSeq, put MSG, put IDEMP receipt, put WORK#ADMIT# outbox row
-   DDB Stream ──> messaging-projector λ ──> AppSync Events ──> browser / Mac / mobile (subscribe-only)
+   DDB Stream ──> messaging-projector λ ──> AppSync Events ──> browser / Mac (subscribe-only)
               └─> EventBridge Pipe (WORK#) ──> openclaw-work.fifo ──> work Lambda ──> openclaw_work
                     ──> admission.admit_pointer ──> Router workflow (router:{ws})
                     ──> start_task | pass_through | reply | ask | note | ignore | meeting_chat | transfer_call …
@@ -512,8 +509,7 @@ fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client re
   ChatGPT OAuth tokens; rotating it orphans every stored token.
 - **Apple IAP** (StoreKit 2) is built and live in dev; `APPLE_IAP_SELLING` is off in prod until the Paid Apps
   Agreement is active. `/billing/apple/link` and `/webhooks/apple-iap` stay live in prod so a charged purchase is
-  always linkable. Sandbox transactions verify in prod by design (App Review), bounded by `apple_lapsed`. See
-  `docs/runbooks/ios-iap-local-storekit-testing.md`.
+  always linkable. Sandbox transactions verify in prod by design (App Review), bounded by `apple_lapsed`.
 
 ## Frontend (Next.js 16)
 
@@ -524,8 +520,8 @@ orb and the conversation), `/voice/agent`, `/voice/needs-you`, `/voice/settings`
 protects `/voice` and the other app routes and runs the admin-host gate (`/admin` 404s off admin hosts).
 
 - **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the API client, the AppSync live-events client and
-  `useLiveEvents` hook, the messaging and runtime clients and shared hooks, used verbatim by web and mobile with
-  platform specifics injected through a `PlatformAdapter`. No `next/*`, React Native or DOM globals in it.
+  `useLiveEvents` hook, the messaging and runtime clients and shared hooks, used by the web app, with
+  platform specifics injected through a `PlatformAdapter`. No `next/*` or DOM globals in it.
 - Clients do not derive a socket URL: `GET /messaging/live-config` returns the AppSync endpoints and the caller's
   opaque user-channel key.
 - **Colour:** read `src/app/globals.css` (token ladder `--plane-*`, `--fg*`) before describing a colour; no colour
@@ -577,14 +573,11 @@ Eve, a separate app outside this repo, is the only Mac app. It reuses the native
 `/auth/desktop-callback` calls `POST /auth/desktop/sign-in-token` (`routers/desktop_auth.py`) and hands the ticket
 to `flickmeon://auth`.
 
-## Mobile app (Expo)
+## iPhone app
 
-Expo iOS app at `apps/mobile/`, expo-router, four tabs: Home (`chats.tsx`), Agent (`teams.tsx`), Needs you
-(`activity.tsx`), Settings. It shares the web protocol through `@lightbulb/shared`. Bundle id `co.isol8.mobile` and
-slug `isol8-mobile` stay. `runtimeVersion.policy: "fingerprint"` blocks an OTA whose native fingerprint does not
-match the binary. Metro inlines `EXPO_PUBLIC_*` at bundle time and `eas update` does not read `eas.json` env (a
-no-env export once shipped an empty Clerk key). The paywall's web-pay link is allowed only because the app is sold
-on the US App Store alone; nothing gates it on the storefront yet, so add that before widening availability.
+The Expo iPhone app (`apps/mobile/`) was removed from the repo on 2026-11-20 and lives in git history. App Store
+record 6788944100 with bundle id `co.isol8.mobile` still exists and is untouched. Installed copies keep running
+against the unchanged backend (push, Apple IAP, app-return pages) but get no more over-the-air updates.
 
 ## Knowledge graph (graphify)
 

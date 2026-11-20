@@ -42,8 +42,7 @@ jobs:
       - name: Type check
         run: pnpm --filter @lightbulb/frontend exec tsc --noEmit
 
-      # No secrets (PRs from forks get none): the dev Clerk publishable key is public by design
-      # and already checked in (apps/mobile/package.json start:dev).
+      # No secrets (PRs from forks get none): the dev Clerk publishable key is public by design.
       - name: Build
         env:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk

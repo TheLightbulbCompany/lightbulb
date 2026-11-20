@@ -53,7 +53,6 @@ IMPORTERS: set[str] = set()
 MENTIONS = {
     "core/config.py",
     "core/repositories/integrations_repo.py",
-    "core/repositories/update_repo.py",
     "core/repositories/user_repo.py",
     "core/repositories/workspace_repo.py",
     "core/services/account_wipe.py",

@@ -10,7 +10,7 @@ codebase: the owner's own typed-confirmation route.
 import inspect
 import os
 import re
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -44,10 +44,7 @@ _TEARDOWN_MODULES = (
     connections,
 )
 
-# The modules that CAN deprovision, and the three call names that do it.
-# `provisioning_workflow_repo` is deliberately absent: the wipe closes the
-# owner's open rows with a conditional DDB write, and the repo cannot reach
-# Stripe at all. Everything else on the rail can.
+# The modules that CAN deprovision, and the call names that do it.
 _FORBIDDEN = (
     "stripe_provisioning",
     "provisioning_workflow",
@@ -70,10 +67,7 @@ def test_no_teardown_module_can_reach_a_provider():
     here, that is a design decision to argue for — not something to slip past
     by deleting this test."""
     for module in _TEARDOWN_MODULES:
-        # Blank the ONE allowed name before matching, so the
-        # `provisioning_workflow` entry above still bites on the state
-        # machine (of which it is a prefix) rather than being defeated by it.
-        source = inspect.getsource(module).replace("provisioning_workflow_repo", "«allowed: the repo»")
+        source = inspect.getsource(module)
         for name in _FORBIDDEN:
             assert name not in source, f"{module.__name__} can now reach {name}"
         assert "projects remove" not in source
@@ -105,9 +99,8 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     """Behavioural half of the two guards above: run the REAL ``wipe_account``
     against an owner who provisioned a Stripe Projects resource (spec §3.6 --
     an ``integrations`` row with ``actor="projects"`` + ``provider_resources``,
-    the shape ``provisioning_landing.land_credentials`` writes), a Secrets
-    Manager blob under `projects/posthog` holding the provider's token, and an
-    OPEN ``provisioning-workflows`` row that already carries a ``resource_id``.
+    the shape ``provisioning_landing.land_credentials`` writes), and a Secrets
+    Manager blob under `projects/posthog` holding the provider's token.
 
     Every function on the rail that could deprovision is patched as a spy --
     none of them is reachable from teardown, so this proves at RUNTIME what
@@ -126,14 +119,6 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     # -- being what got deleted.
     wipe_mocks.integrations_delete.return_value = [integrations_repo.projects_key("posthog")]
     wipe_mocks.owner_secrets_delete.return_value = [_PROJECTS_SECRET_NAME]
-    # An open row mid-`provisioning`, with the resource already created. This
-    # is deliberately a row `provisioning_workflow.cancel` would REFUSE (it
-    # guards on `resource_id` so an owner's withdrawal can never orphan a
-    # live resource) -- the wipe is the one caller that must close it anyway,
-    # which is why it goes through the repo's conditional write instead.
-    wipe_mocks.workflows_list.return_value = [
-        {"workflow_id": "pwf_1", "owner_id": OWNER_ID, "state": "provisioning", "resource_id": "prv_res_1"}
-    ]
     # Escape wipe_mocks' default full stub for just this one collaborator so
     # the real function body runs and can be caught reaching for more than
     # the P0a deauthorize.
@@ -161,11 +146,6 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     assert integrations_repo.projects_key("posthog") in details["integrations"]
     assert "1 owner secret(s)" in details["owner_secrets"]
 
-    # And our MEMORY of the ask goes: the open row is closed, so no later read
-    # of it ever touches Stripe for this owner again. A pure DDB write — `to_state="cancelled"`, no fields, no Stripe.
-    wipe_mocks.workflows_transition.assert_awaited_once_with("pwf_1", from_state="provisioning", to_state="cancelled")
-    assert "cancelled 1 of 1" in details["provisioning"]
-
     # The provider is never reached: no shell-out, and the ONLY
     # Stripe SDK call made anywhere in the wipe is the P0a Connect
     # deauthorize -- exact-calls, not just "not this one call", so a stray
@@ -176,22 +156,3 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     assert deauth_call[0] == "OAuth.deauthorize"
     # The literal, not `settings.…`: the patch above is out of scope by now.
     assert deauth_call.kwargs == {"client_id": "ca_test", "stripe_user_id": "acct_xyz789"}
-
-
-@pytest.mark.asyncio
-async def test_wipe_leaves_a_row_another_writer_already_closed(wipe_mocks):  # noqa: F811
-    """A terminal row is not re-closed, and a row a concurrent reader moved out
-    from under us (``transition`` returns None) is not an error — the wipe
-    reports what it actually closed and carries on."""
-    wipe_mocks.workflows_list.return_value = [
-        {"workflow_id": "pwf_done", "owner_id": OWNER_ID, "state": "active"},
-        {"workflow_id": "pwf_raced", "owner_id": OWNER_ID, "state": "binding"},
-    ]
-    wipe_mocks.workflows_transition.return_value = None
-
-    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    detail = {s.system: s for s in report.steps}["provisioning"]
-    assert detail.status == "ok"
-    assert "cancelled 0 of 1" in detail.detail
-    wipe_mocks.workflows_transition.assert_awaited_once_with("pwf_raced", from_state="binding", to_state=ANY)

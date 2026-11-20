@@ -132,7 +132,6 @@ Names from deleted systems that still carry load. Prove nothing reads a resource
 - **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs session shares, digests and Needs-you links.
 - **The bridge's `/internal/paperclip/v1/runs` route** (`apps/infra/hermes/bridge/server.py`): creates, polls
   and stops a real Hermes turn.
-- **`provisioning-workflows` table**: still read by `owner_facts` and the wipes.
 - **`ECS_SUBNETS`, `ECS_SECURITY_GROUP_ID`**: the AgentCore `networkModeConfig` that
   `hermes_provisioning` builds into a runtime spec. Removing them does not fail loudly: it hands a runtime an
   empty VPC config. `ContainerSecurityGroup` in `container-stack.ts` is the security group they name.

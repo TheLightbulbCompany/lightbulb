@@ -407,12 +407,11 @@ async def test_membership_deleted_fence_failure_redelivers(lifecycle_io, remove_
 
 @pytest.mark.asyncio
 async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
-    """``user.deleted`` sweeps channel_links AND deletes the user's stored
+    """``user.deleted`` deletes the user's stored
     identity row (their memberships leave with each org's ``organizationMembership.deleted``).
     """
     _bypass_svix(monkeypatch)
 
-    sweep = AsyncMock(return_value=0)
     repo_delete = AsyncMock(return_value=None)
 
     payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
@@ -421,10 +420,6 @@ async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
     with (
         patch("core.services.workspace_memory.delete_person_memory", new=person_wipe),
         patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=repo_delete),
-        patch(
-            "core.repositories.channel_link_repo.sweep_by_member",
-            new=sweep,
-        ),
     ):
         resp = await async_client.post(
             "/api/v1/webhooks/clerk",
@@ -433,7 +428,6 @@ async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
         )
 
     assert resp.status_code == 200
-    sweep.assert_awaited_once_with("user_x")
     repo_delete.assert_awaited_once_with("user_x")
     person_wipe.assert_awaited_once_with("user_x")  # their sessions, drafts, episodes and keys
 
@@ -805,7 +799,6 @@ async def test_user_deleted_fails_the_event_when_the_person_wipe_fails(async_cli
     with (
         patch("core.services.workspace_memory.delete_person_memory", new=AsyncMock(side_effect=RuntimeError("down"))),
         patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=AsyncMock()),
-        patch("core.repositories.channel_link_repo.sweep_by_member", new=AsyncMock(return_value=0)),
         pytest.raises(RuntimeError, match="down"),  # the app error reaches the client: no 200 to ack
     ):
         await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())

@@ -37,7 +37,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, channel_link_repo
+from core.repositories import billing_repo
 from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import network_member
 from core.services.webhook_dedup import MembershipLifecycleSuperseded
@@ -63,8 +63,8 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     design (Clerk has no bearer token to present), so the signature IS the
     authentication. A misconfigured secret previously fell through to
     "accept everything", which let anyone who knew the URL forge events —
-    a forged ``user.deleted`` sweeps channel_link rows and disables
-    Paperclip for that user id. Unverifiable mail is now rejected instead.
+    a forged ``user.deleted`` disables Paperclip and deletes the
+    memory data for that user id. Unverifiable mail is now rejected instead.
 
     The skip survives only for local dev (ENVIRONMENT unset), where there is
     no Clerk instance to sign anything.
@@ -814,12 +814,6 @@ async def handle_clerk_webhook(request: Request):
         if not user_id:
             raise HTTPException(status_code=400, detail="Clerk user deletion target unavailable")
 
-        count = await channel_link_repo.sweep_by_member(user_id)
-        logger.info(
-            "Clerk user.deleted webhook: swept %d channel_link rows for %s",
-            count,
-            user_id,
-        )
         # Disable Paperclip for this user (account-level deletion). Org
         # membership cleanup is handled via the organizationMembership
         # event stream — we don't enumerate orgs here.

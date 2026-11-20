@@ -5,8 +5,7 @@ reservation a *conditional put*, the only atomic "claim this name" primitive
 DynamoDB offers. Read-then-write would let two owners race onto the same
 slug. A ``by-owner`` GSI answers the reverse question.
 
-Prefix-convention table (``core.dynamodb.get_table``), matching
-``channel_link_repo``.
+Prefix-convention table (``core.dynamodb.get_table``).
 """
 
 import time

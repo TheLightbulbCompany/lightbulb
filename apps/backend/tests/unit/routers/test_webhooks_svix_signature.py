@@ -4,8 +4,8 @@ Clerk has no bearer token to present, so the svix signature is the whole
 security boundary. These tests pin the fail-CLOSED behaviour: a deployed env
 with a missing or malformed secret must reject, not wave traffic through. The
 regression they guard against is real — prod ran with no secret configured at
-all, so every forged POST was accepted, and a forged `user.deleted` sweeps
-channel_link rows and disables Paperclip for an arbitrary user id.
+all, so every forged POST was accepted, and a forged `user.deleted` disables
+Paperclip and deletes the memory data for an arbitrary user id.
 """
 
 import base64

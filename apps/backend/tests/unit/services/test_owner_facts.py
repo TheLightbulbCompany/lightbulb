@@ -436,7 +436,6 @@ async def test_write_owner_facts_writes_the_manifest_to_every_profile():
     with (
         patch.object(owner_facts.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
         patch.object(owner_facts, "_lookup_email_address", AsyncMock(return_value=None)),
-        patch.object(owner_facts, "_lookup_provisioning", AsyncMock(return_value=[])),
         patch.object(owner_facts, "_lookup_owner_timezone", AsyncMock(return_value="UTC")),
         patch.object(
             owner_facts,

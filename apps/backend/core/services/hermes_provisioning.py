@@ -603,8 +603,7 @@ async def delete_workspace_runtime(
          image -- the row was the only handle on it. Raises on a partial reap rather than
          reporting success: the runtime is already gone, so a raise honestly means
          "teardown incomplete, retry me", and every step is idempotent.
-      4. Sweep the owner's ``channel_links`` rows (non-fatal).
-      5. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure. Its
+      4. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure. Its
          network half runs first, before step 1: the cloud member forgets the entries it signed
          (``workspace_memory.forget_workspace_authored``), which needs the live runtime. A parked
          member owes it: step 1 then runs in a background task (``_forget_then_teardown``) after
@@ -656,15 +655,6 @@ async def delete_workspace_runtime(
             await run_in_thread(_delete_profile_prefix_objects, owner_id)
     reaped = await reap_owner_bedrock_resources(owner_id, deleted, delete_browser_profile=delete_profiles)
     logger.info("Bedrock reap for owner %s: %s", owner_id, reaped)
-
-    try:
-        from core.repositories import channel_link_repo
-
-        link_count = await channel_link_repo.sweep_by_owner(owner_id)
-        if link_count:
-            logger.info("Swept %d channel_link rows for deleted workspace (owner=%s)", link_count, owner_id)
-    except Exception:  # noqa: BLE001 — the runtime is already gone; orphan link rows are cheap
-        logger.exception("Failed to sweep channel_link rows for owner %s after teardown", owner_id)
 
     if delete_profiles:
         # Workspace memory is the owner's data like the profiles are. LAST and not swallowed: its
@@ -1641,7 +1631,6 @@ async def _stage_owner_facts(
         _lookup_email_address,
         _lookup_owner_timezone,
         _lookup_teammates,
-        _lookup_provisioning,
         build_owner_facts,
     )
 
@@ -1658,7 +1647,6 @@ async def _stage_owner_facts(
             owner_id,
             account,
             email_address=await _lookup_email_address(owner_id),
-            provisioning=await _lookup_provisioning(owner_id),
             owner_timezone=await _lookup_owner_timezone(owner_id),
             teammates=await _lookup_teammates(owner_id, roster),
             connected_integrations=await _lookup_connected_integrations(owner_id),

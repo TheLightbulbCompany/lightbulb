@@ -22,8 +22,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly containersTable: dynamodb.Table;
   public readonly billingTable: dynamodb.Table;
   public readonly usageCountersTable: dynamodb.Table;
-  public readonly pendingUpdatesTable: dynamodb.Table;
-  public readonly channelLinksTable: dynamodb.Table;
   public readonly companySlugsTable: dynamodb.Table;
   public readonly agentEmailAddressesTable: dynamodb.Table;
   public readonly slackInstallsTable: dynamodb.Table;
@@ -36,7 +34,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly oauthStateTable: dynamodb.Table;
   public readonly integrationsTable: dynamodb.Table;
-  public readonly provisioningWorkflowsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
   public readonly workspaceJoinLinksTable: dynamodb.Table;
 
@@ -144,27 +141,6 @@ export class DatabaseStack extends cdk.Stack {
     this.usageCountersTable = createTable("UsageCountersTable", "usage-counters", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "period", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.pendingUpdatesTable = createTable("PendingUpdatesTable", "pending-updates", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "update_id", type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: "ttl",
-    });
-    this.pendingUpdatesTable.addGlobalSecondaryIndex({
-      indexName: "status-index",
-      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "scheduled_at", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.channelLinksTable = createTable("ChannelLinksTable", "channel-links", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
-    });
-    this.channelLinksTable.addGlobalSecondaryIndex({
-      indexName: "by-member",
-      partitionKey: { name: "member_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "owner_provider_agent", type: dynamodb.AttributeType.STRING },
     });
 
     this.companySlugsTable = createTable("CompanySlugsTable", "company-slugs", {
@@ -301,23 +277,6 @@ export class DatabaseStack extends cdk.Stack {
     this.integrationsTable = createTable("IntegrationsTable", "integrations", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
-    });
-
-    // The provisioning rail's durable workflow record. Stripe's Provisioning
-    // API has no webhooks and no idempotency contract, so a browser session,
-    // provider redirect, backend restart or deploy must never lose an account
-    // request id, a resource id, or an uncertain write (spec §3.5).
-    this.provisioningWorkflowsTable = createTable(
-      "ProvisioningWorkflowsTable",
-      "provisioning-workflows",
-      { partitionKey: { name: "workflow_id", type: dynamodb.AttributeType.STRING } },
-    );
-    // The owner's list, newest first within a state.
-    this.provisioningWorkflowsTable.addGlobalSecondaryIndex({
-      indexName: "owner-state-index",
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // Workspace join links — ONE row per Clerk org (PK org_id), holding the

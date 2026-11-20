@@ -122,8 +122,6 @@ def ws_mocks():
     slack_delete = AsyncMock(return_value=["T1"])
     slug_get = AsyncMock(return_value={"owner_id": ORG_ID, "slug": "acme"})
     slug_delete = AsyncMock(return_value="acme")
-    workflows_list = AsyncMock(return_value=[{"workflow_id": "pwf_1", "owner_id": ORG_ID, "state": "provisioning"}])
-    workflows_transition = AsyncMock(return_value={"workflow_id": "pwf_1", "state": "cancelled"})
     usage_delete = AsyncMock(return_value=5)
     gate_tokens_delete = AsyncMock(return_value=2)
 
@@ -169,8 +167,6 @@ def ws_mocks():
         ("core.services.workspace_wipe.slack_installs_repo.delete_all_for_owner", slack_delete),
         ("core.services.workspace_wipe.company_slug_repo.get_by_owner", slug_get),
         ("core.services.workspace_wipe.company_slug_repo.delete_for_owner", slug_delete),
-        ("core.services.workspace_wipe.provisioning_workflow_repo.list_for_owner", workflows_list),
-        ("core.services.workspace_wipe.provisioning_workflow_repo.transition", workflows_transition),
         ("core.services.workspace_wipe.usage_repo.delete_all_for_owner", usage_delete),
         ("core.services.workspace_wipe.delete_gate_token_rows", gate_tokens_delete),
         ("core.services.workspace_wipe.delete_workspace_runtime", delete_runtime_fn),
@@ -211,7 +207,6 @@ def ws_mocks():
             agent_email_delete=agent_email_delete,
             slack_delete=slack_delete,
             slug_delete=slug_delete,
-            workflows_transition=workflows_transition,
             usage_delete=usage_delete,
             gate_tokens_delete=gate_tokens_delete,
             delete_runtime=delete_runtime_fn,
@@ -280,7 +275,6 @@ async def test_preview_writes_nothing(ws_mocks):
     ws_mocks.billing_delete.assert_not_awaited()
     ws_mocks.clerk_delete_user.assert_not_awaited()
     ws_mocks.clerk_delete_org.assert_not_awaited()
-    ws_mocks.workflows_transition.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -718,9 +712,6 @@ async def test_user_wipe_names_workspace_when_container_missing():
             _patch.object(_mod.clerk_admin, "get_organization", new=_AsyncMock(return_value={"name": "Acme"}))
         )
         stack.enter_context(_patch.object(_mod.messaging_repo, "list_owner_room_ids", new=_AsyncMock(return_value=[])))
-        stack.enter_context(
-            _patch.object(_mod.provisioning_workflow_repo, "list_for_owner", new=_AsyncMock(return_value=[]))
-        )
         stack.enter_context(_patch.object(_mod, "list_owner_secret_names", new=_AsyncMock(return_value=[])))
         stack.enter_context(_patch.object(_mod.integrations_repo, "list_for_owner", new=_AsyncMock(return_value=[])))
         stack.enter_context(_patch.object(_mod.agent_email_repo, "query_by_owner", new=_AsyncMock(return_value=[])))

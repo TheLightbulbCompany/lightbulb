@@ -92,18 +92,14 @@ class TestDeleteUserData:
     @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     async def test_full_teardown_returns_summary(
         self,
         mock_conn_svc,
         mock_user_repo,
-        mock_chan_repo,
         mock_usage_repo,
-        mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
         mock_paperclip_repo_cls,
@@ -119,9 +115,7 @@ class TestDeleteUserData:
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=mock_container)
         mock_container_repo.delete = AsyncMock()
         mock_billing_repo.delete = AsyncMock()
-        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=1)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=4)
-        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=3)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
@@ -137,8 +131,6 @@ class TestDeleteUserData:
         assert "billing-accounts" in body["deleted"]["ddb"]
         assert "byo-llm-keys" in body["deleted"]["ddb"]
         assert "usage-counters" in body["deleted"]["ddb"]
-        assert "pending-updates" in body["deleted"]["ddb"]
-        assert "channel-links" in body["deleted"]["ddb"]
         assert "integrations" in body["deleted"]["ddb"]
         assert "person-memory" in body["deleted"]["ddb"]
         person_memory.assert_awaited_once_with("user_test_123")  # the caller's user id
@@ -169,9 +161,7 @@ class TestDeleteUserData:
     @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     @patch("routers.debug.integration_secret_store")
@@ -182,9 +172,7 @@ class TestDeleteUserData:
         mock_secret_store,
         mock_conn_svc,
         mock_user_repo,
-        mock_chan_repo,
         mock_usage_repo,
-        mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
         mock_paperclip_repo_cls,
@@ -206,9 +194,7 @@ class TestDeleteUserData:
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_container_repo.delete = AsyncMock()
         mock_billing_repo.delete = AsyncMock()
-        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
-        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
@@ -237,18 +223,14 @@ class TestDeleteUserData:
     @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     async def test_org_context_uses_user_id_for_user_scoped_tables(
         self,
         mock_conn_svc,
         mock_user_repo,
-        mock_chan_repo,
         mock_usage_repo,
-        mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
         mock_paperclip_repo_cls,
@@ -264,9 +246,7 @@ class TestDeleteUserData:
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_container_repo.delete = AsyncMock()
         mock_billing_repo.delete = AsyncMock()
-        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
-        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
@@ -294,18 +274,14 @@ class TestDeleteUserData:
     @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     async def test_returns_500_when_destructive_step_fails(
         self,
         mock_conn_svc,
         mock_user_repo,
-        mock_chan_repo,
         mock_usage_repo,
-        mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
         mock_paperclip_repo_cls,
@@ -323,9 +299,7 @@ class TestDeleteUserData:
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=mock_container)
         mock_container_repo.delete = AsyncMock()
         mock_billing_repo.delete = AsyncMock()
-        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
-        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
@@ -350,18 +324,14 @@ class TestDeleteUserData:
     @patch("routers.debug.WorkspaceRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
-    @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
     async def test_attempts_runtime_teardown_when_ddb_row_already_gone(
         self,
         mock_conn_svc,
         mock_user_repo,
-        mock_chan_repo,
         mock_usage_repo,
-        mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
         mock_paperclip_repo_cls,
@@ -376,9 +346,7 @@ class TestDeleteUserData:
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_container_repo.delete = AsyncMock()
         mock_billing_repo.delete = AsyncMock()
-        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
-        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
@@ -416,8 +384,6 @@ class TestDdbRows:
 
     @pytest.mark.asyncio
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.channel_link_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.user_repo")
@@ -428,8 +394,6 @@ class TestDdbRows:
         mock_user,
         mock_billing,
         mock_usage,
-        mock_update,
-        mock_chan,
         mock_conn,
         async_client,
     ):
@@ -439,8 +403,6 @@ class TestDdbRows:
         mock_container.get_by_owner_id = AsyncMock(return_value=None)
         mock_billing.get_by_owner_id = AsyncMock(return_value=None)
         mock_usage.count_for_owner = AsyncMock(return_value=0)
-        mock_update.count_for_owner = AsyncMock(return_value=0)
-        mock_chan.count_for_owner = AsyncMock(return_value=0)
         mock_conn.count_for_user = AsyncMock(return_value=0)
 
         res = await async_client.get(
@@ -455,8 +417,6 @@ class TestDdbRows:
             "containers",
             "billing-accounts",
             "usage-counters",
-            "pending-updates",
-            "channel-links",
             "ws-connections",
         ):
             assert tbl in body["tables"]
@@ -465,8 +425,6 @@ class TestDdbRows:
 
     @pytest.mark.asyncio
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.channel_link_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.user_repo")
@@ -477,8 +435,6 @@ class TestDdbRows:
         mock_user,
         mock_billing,
         mock_usage,
-        mock_update,
-        mock_chan,
         mock_conn,
         async_client,
     ):
@@ -487,8 +443,6 @@ class TestDdbRows:
         mock_container.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_test_456"})
         mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_test_456"})
         mock_usage.count_for_owner = AsyncMock(return_value=4)
-        mock_update.count_for_owner = AsyncMock(return_value=1)
-        mock_chan.count_for_owner = AsyncMock(return_value=3)
         mock_conn.count_for_user = AsyncMock(return_value=5)
 
         res = await async_client.get(
@@ -502,8 +456,6 @@ class TestDdbRows:
         assert body["billing-accounts"] == 1
         assert "api-keys" not in body
         assert body["usage-counters"] == 4
-        assert body["pending-updates"] == 1
-        assert body["channel-links"] == 3
         assert body["ws-connections"] == 5
 
     @pytest.mark.asyncio
@@ -519,8 +471,6 @@ class TestDdbRows:
 
     @pytest.mark.asyncio
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.channel_link_repo")
-    @patch("routers.debug.update_repo")
     @patch("routers.debug.usage_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.user_repo")
@@ -531,8 +481,6 @@ class TestDdbRows:
         mock_user,
         mock_billing,
         mock_usage,
-        mock_update,
-        mock_chan,
         mock_conn,
         app,
         mock_org_admin_user,
@@ -547,8 +495,6 @@ class TestDdbRows:
         mock_container.get_by_owner_id = AsyncMock(return_value=None)
         mock_billing.get_by_owner_id = AsyncMock(return_value=None)
         mock_usage.count_for_owner = AsyncMock(return_value=0)
-        mock_update.count_for_owner = AsyncMock(return_value=0)
-        mock_chan.count_for_owner = AsyncMock(return_value=0)
         mock_conn.count_for_user = AsyncMock(return_value=0)
 
         app.dependency_overrides[get_current_user] = mock_org_admin_user

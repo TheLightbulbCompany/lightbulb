@@ -7,8 +7,7 @@ also has an ALIAS row keyed by it: ``{address: <public>, alias_of: <routing>,
 owner_id}``. It holds no settings; ``resolve`` follows it, the wipes delete it
 with the owner's other rows, and ``agent_email.strictest`` skips it.
 
-Prefix-convention table (``core.dynamodb.get_table``), matching
-``channel_link_repo``.
+Prefix-convention table (``core.dynamodb.get_table``).
 """
 
 import logging

@@ -237,7 +237,7 @@ async def _registry_agent(owner_id: str, agent_id: str) -> dict:
 
 
 def _tool_names(config: dict, facts: dict) -> list[str]:
-    """NAMES only: mcp_servers keys, listed skills, connected integrations. Never a value."""
+    """NAMES only: mcp_servers keys, listed skills, a connected company Stripe. Never a value."""
     names = set()
     servers = config.get("mcp_servers")
     if isinstance(servers, dict):
@@ -248,9 +248,6 @@ def _tool_names(config: dict, facts: dict) -> list[str]:
         names.update(str(k) for k in listed if isinstance(k, str))
     if facts.get("company_stripe") == "connected":
         names.add("stripe")
-    for row in facts.get("provisioning") or []:
-        if isinstance(row, dict) and row.get("state") == "active" and row.get("provider"):
-            names.add(str(row["provider"]))
     return sorted(names)
 
 

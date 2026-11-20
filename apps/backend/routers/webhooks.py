@@ -332,9 +332,7 @@ async def _handle_organization_membership_created(
     """Record a membership lifecycle event, then join the org's workspace.
 
     Room admission remains explicit; the member receives an opaque user stream
-    when they first request messaging live-config or are added to a room. The
-    one exception is the vendor shared channel, which ``on_org_member_joined``
-    keeps in step with org membership.
+    when they first request messaging live-config or are added to a room.
 
     The join itself is delegated to
     ``core.services.user_provision._ensure_workspace_member`` — the same
@@ -392,29 +390,15 @@ async def _handle_organization_membership_created(
         logger.exception("membership.created: user stream rejoin failed org=%s user=%s", org_id, user_id)
         put_metric("messaging.user_stream.rejoin_error")
 
-    from core.services.messaging import on_org_member_joined
-
-    try:
-        await on_org_member_joined(org_id, user_id)
-    except Exception:
-        logger.exception("membership.created: vendor room add failed org=%s user=%s", org_id, user_id)
-        put_metric("messaging.vendor_room.error")
-
     # The #general seat for a new teammate (idempotent: one-time AUTOJOIN marker). A
     # member who joins before the room exists is seated by the provision executor.
-    from core.services.messaging import join_default_room, join_feed_room
+    from core.services.messaging import join_default_room
 
     try:
         await join_default_room(org_id, user_id)
     except Exception:
         logger.exception("membership.created: default room join failed org=%s user=%s", org_id, user_id)
         put_metric("messaging.default_room.error")
-    # The feed seat, the same way (a workspace without a feed yet seats them when it is made).
-    try:
-        await join_feed_room(org_id, user_id)
-    except Exception:
-        logger.exception("membership.created: feed join failed org=%s user=%s", org_id, user_id)
-        put_metric("messaging.feed_room.error")
 
     from core.services import join_analytics
 

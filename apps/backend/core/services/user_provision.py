@@ -142,22 +142,18 @@ async def _ensure_workspace_for_org(*, org_id: str, user_id: str, is_admin: bool
 
 async def _ensure_owner_workspace(*, owner_id: str, owner_user_id: str) -> None:
     """Provision the workspace with ``owner_user_id`` as provisioner, then, the first time it
-    goes active, create ``#general`` and the feed room and send the owner's welcome."""
+    goes active, create ``#general`` and send the owner's welcome."""
     before = await workspace_provisioning._repo().get_workspace(owner_id, consistent_read=True)
     await workspace_provisioning.provision_org(owner_id, provisioner=owner_user_id)
     if before is not None and before.status == "active":
         return
-    from core.services.messaging import ensure_default_room, ensure_feed_room
+    from core.services.messaging import ensure_default_room
 
     try:
         room_id = await ensure_default_room(owner_id, owner_user_id)
     except Exception:  # noqa: BLE001 — partial retries reconcile again
         room_id = None
         logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
-    try:
-        await ensure_feed_room(owner_id, owner_user_id)
-    except Exception:  # noqa: BLE001 -- the Activity page's first read creates it
-        logger.exception("ensure_user_ready: feed room creation failed for owner=%s", owner_id)
     if room_id:
         # The owner's welcome, from the CEO, now that #general exists. Once-only via
         # send_to_owner's first-contact claim, so a re-run here sends nothing.

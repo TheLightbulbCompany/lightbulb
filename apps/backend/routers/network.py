@@ -221,9 +221,9 @@ class HoldNotice(BaseModel):
 
 @internal_router.post("/holds/{owner_id}", status_code=204)
 async def network_hold_notice(owner_id: str, body: HoldNotice, request: Request):
-    from routers.messaging import _require_hook_token
+    from core.services.hook_grants import require_hook_token
 
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     await network_member.hold_notice(owner_id, body.model_dump())
     return Response(status_code=204)
 

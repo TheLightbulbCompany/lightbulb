@@ -95,14 +95,9 @@ def test_repair_warning_once_per_message(caplog):
     assert sum("repaired fields" in r.message for r in caplog.records) == 1
 
 
-async def test_list_and_feed_survive_malformed_dispatch_targets(monkeypatch):
+async def test_a_list_survives_malformed_dispatch_targets():
     rows = [
         _row(1, dispatchTargets=["junk", {"agentId": "a1", "eventKind": "user_request"}]),
         _row(2, dispatchTargets=5),
     ]
     assert [m.addressed_agent_ids for m in messaging._listable(rows)] == [["a1"]]  # 2 is skipped, not a failed room
-    monkeypatch.setattr(messaging, "ensure_feed_room", AsyncMock(return_value=ROOM))
-    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value={"lastSeq": 2}))
-    monkeypatch.setattr(messaging.messaging_repo, "list_messages_before", AsyncMock(return_value=rows))
-    feed = await messaging.agent_feed("org_1")
-    assert [p["text"] for p in feed["posts"]] == ["hi"]

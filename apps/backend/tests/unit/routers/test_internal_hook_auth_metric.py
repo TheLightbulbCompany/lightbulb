@@ -8,7 +8,7 @@ from main import app
 
 
 def test_rejected_hook_token_is_counted():
-    with patch("routers.messaging.put_metric") as metric:
+    with patch("core.services.hook_grants.put_metric") as metric:
         res = TestClient(app).get(
             "/api/v1/internal/messaging/attachments/org_1/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222"
         )

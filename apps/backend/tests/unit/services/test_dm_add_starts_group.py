@@ -52,11 +52,8 @@ async def test_the_new_member_cannot_read_the_old_dm_and_the_dm_is_unchanged(wir
     assert after["kind"] == "dm" and after["revision"] == before["revision"]
     assert {(m["kind"], m["id"]) for m in await repo.list_members(dm_id)} == {("human", USER_A), ("agent", FRIDAY)}
     assert len(await repo.list_noted(dm_id)) == 1
-    bob = AuthContext(user_id=USER_B, org_id=OWNER)
     with pytest.raises(messaging.ApiProblem):
         await messaging.require_room_member(OWNER, USER_B, dm_id)
-    with pytest.raises(messaging.ApiProblem):
-        await messaging.list_room_memory(bob, dm_id)
 
     # A retried add opens the same group chat, not a second one.
     again = await messaging.upsert_member(

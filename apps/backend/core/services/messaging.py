@@ -35,7 +35,6 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
@@ -120,26 +119,12 @@ ProjectIcon = Literal[
 ProjectColor = Literal["project-1", "project-2", "project-3", "project-4", "project-5", "project-6"]
 PAUSED_ROOM_TEXT = "Lightbulb is paused here. Resume it to get a reply."
 MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
-MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
 DEFAULT_ROOM_NAME = "general"
-# The workspace feed (Activity, spec 2026-10-14 §4.2): one hidden channel whose topic is the
-# team's brief. Identified by id (``is_feed_room``), never by this name.
-FEED_ROOM_NAME = "feed"
-FEED_DEFAULT_TOPIC = "Keep us posted on customers, money and what the team finished. Skip engineering details."
+# A feed post's "Why I created this post" line. The workspace feed (an existing hidden channel, ``is_feed_room``)
+# is no longer seeded; its rows keep their rules.
 FEED_POST_REASON_MAX_CHARS = 280
-# Only people sit in the feed; agents are its AUTHORS (roster-checked, never seated), so the room's
-# 32-seat cap is the workspace's people alone. See ``room_agent``.
-#: The CEO's one welcome post in the feed (idempotent, like #general's).
-FEED_WELCOME = (
-    "**This is our feed.** When something here matters to you (money in or out, a customer, "
-    "a blocker, finished work), one of us posts it here, one thing per post, and only when it is worth your time.\n\n"
-    "The brief at the top says what you want to hear about. Edit it any time. "
-    "Press Discuss on a post to talk it through with whoever wrote it.\n\n"
-    "Home shows your company today: Needs you for what is waiting on you, Ideas for what we could do next "
-    "(Do it starts it, Not now puts it away), and this feed."
-)
 # Seeded ONCE per workspace as a message from the front agent (``ensure_default_room``
 # returns early on any room that already has messages): the first thing a new
 # user reads. It speaks as Lightbulb, the coordinator; specialists do the tasks (founder, 6 Nov 2026).
@@ -443,17 +428,6 @@ class RoomSection(ContractModel):
         return cleaned
 
 
-class SectionsRequest(ContractModel):
-    sections: list[RoomSection] = Field(max_length=MAX_SECTIONS)
-
-    @model_validator(mode="after")
-    def validate_unique_ids(self) -> "SectionsRequest":
-        ids = [section.id for section in self.sections]
-        if len(ids) != len(set(ids)):
-            raise ValueError("section ids must be unique")
-        return self
-
-
 class RoomListResponse(ContractModel):
     rooms: list[RoomSummary]
     sections: list[RoomSection] = []
@@ -540,24 +514,6 @@ class MemberPrefsRequest(ContractModel):
 
 
 UpsertRoomMemberRequest = CreateRoomMember
-
-
-class SetReactionRequest(ContractModel):
-    emoji: Literal["👍", "❤️", "😂", "🎉", "👀", "✅"]
-    active: bool
-
-
-class UpdateMessageRequest(ContractModel):
-    operation_id: uuid.UUID
-    expected_revision: int = Field(ge=0)
-    text: str | None
-
-    @field_validator("text")
-    @classmethod
-    def validate_text(cls, value: str | None) -> str | None:
-        if value is not None and len(value.encode("utf-8")) > MESSAGE_TEXT_MAX_BYTES:
-            raise ValueError(f"text exceeds {MESSAGE_TEXT_MAX_BYTES} UTF-8 bytes")
-        return value
 
 
 class TaskRef(ContractModel):
@@ -831,16 +787,6 @@ class MessagePage(ContractModel):
 
 class ReadCursorRequest(ContractModel):
     last_read_seq: int = Field(ge=0)
-
-
-class NotedFact(ContractModel):
-    message_id: str
-    fact: str
-    noted_at: str
-
-
-class RoomMemoryResponse(ContractModel):
-    items: list[NotedFact]
 
 
 class ReadCursorResponse(ContractModel):
@@ -2209,20 +2155,6 @@ async def list_rooms(auth: AuthContext) -> RoomListResponse:
     return RoomListResponse(rooms=summaries, sections=await _user_sections(owner_id, auth.user_id))
 
 
-async def put_sections(auth: AuthContext, request: SectionsRequest) -> RoomListResponse:
-    """Replace the caller's ordered section list. Sections are per-user view
-    state; a room's ``sectionId`` is not validated against them, so a deleted
-    section simply drops its rooms back into their default group."""
-    owner_id = resolve_owner_id(auth)
-    stored = await messaging_repo.put_user_sections(
-        owner_id,
-        auth.user_id,
-        [{"id": str(section.id), "name": section.name} for section in request.sections],
-    )
-    summaries = await _room_summaries(owner_id, auth.user_id)
-    return RoomListResponse(rooms=summaries, sections=[RoomSection(id=row["id"], name=row["name"]) for row in stored])
-
-
 def default_room_id(owner_id: str) -> str:
     """Stable identity for the one fresh-workspace general room. Mirrored by the Hermes bridge
     (apps/infra/hermes/bridge/turn.py default_room_id) for the first-run prompt: edit both together."""
@@ -2297,11 +2229,6 @@ async def join_default_room(owner_id: str, user_id: str) -> bool:
     return await _autojoin(owner_id, default_room_id(owner_id), user_id)
 
 
-async def join_feed_room(owner_id: str, user_id: str) -> bool:
-    """``join_default_room`` for the workspace feed: the same one-time ``AUTOJOIN#`` marker."""
-    return await _autojoin(owner_id, messaging_repo.feed_room_id(owner_id), user_id)
-
-
 async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     if await messaging_repo.get_member(room_id, "human", user_id) is not None:
         return False
@@ -2318,32 +2245,17 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
             return False  # a removed member: only the membership webhook's rejoin turns them back on
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
     except messaging_repo.MemberLimitExceeded:
-        # Keep the marker: a full room must not turn every poll into a retry. Not for the feed: a
-        # person always belongs there, and get_feed fails loudly until a seat frees.
-        if room_id == messaging_repo.feed_room_id(owner_id):
-            await messaging_repo.release_autojoin(room_id, user_id)
+        # Keep the marker: a full room must not turn every poll into a retry.
         logger.warning("room %s full; %s not added for owner %s", room_id, user_id, owner_id)
         return False
     except Exception:
         await messaging_repo.release_autojoin(room_id, user_id)
         raise
     # A workspace removal that finished while we seated them (session_chat's re-check): undo the
-    # seat, which rotates the key they may have seen. The feed marker is freed for a later rejoin.
+    # seat, which rotates the key they may have seen.
     stream = await messaging_repo.get_user_stream(owner_id, user_id)
     if not (stream and stream.get("active")):
-        try:
-            await _remove_human_seat(owner_id, room_id, user_id)
-        except Exception:
-            # Free the feed marker even so: the stream is off, so no read can re-seat them, and
-            # revoke's second pass still removes the seat. Logged, never hiding the undo's error.
-            if is_feed_room(meta):
-                try:
-                    await messaging_repo.release_autojoin(room_id, user_id)
-                except Exception:
-                    logger.exception("feed autojoin release failed owner=%s user=%s", owner_id, user_id)
-            raise
-        if is_feed_room(meta):
-            await messaging_repo.release_autojoin(room_id, user_id)
+        await _remove_human_seat(owner_id, room_id, user_id)
         return False
     _emit_member_added(owner_id, user_id, "human", by="system")
     await _publish_room_metadata(meta)
@@ -2475,182 +2387,6 @@ async def _post_first_run_welcome(owner_id: str, owner_user_id: str, front: str,
     return room_id
 
 
-async def _feed_owner(owner_id: str, company, people: list[dict], requester: str | None) -> str | None:
-    """The feed's owner: the FIRST ACTIVE workspace member among the company's provisioner, the
-    Clerk org's ``created_by``, any org admin, then the requester. Active = in the Clerk org
-    and no deactivated stream (``revoke_human_membership`` turns it off before Clerk may catch
-    up). Never a departed user: the human guard would make them unremovable."""
-    present = {row["user_id"] for row in people}
-    org = await clerk_admin.get_organization(owner_id) or {}
-    candidates = [
-        getattr(company, "provisioner_user_id", ""),
-        org.get("created_by"),
-        *(row["user_id"] for row in people if row.get("role") in ("org:admin", "admin")),
-        requester,
-    ]
-    for user_id in candidates:
-        if user_id and user_id in present:
-            stream = await messaging_repo.get_user_stream(owner_id, user_id)
-            if stream is None or stream.get("active"):
-                return user_id
-    return None
-
-
-async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) -> str | None:
-    """Create the workspace feed once, with the CEO's welcome post (spec 2026-10-14 §4.2).
-
-    Modelled on ``ensure_default_room``: a room with a message returns at once (one consistent
-    ``get_room``), so the Activity page can call it on every read and a workspace that predates
-    the feed gets it lazily, with no backfill. Only people sit in it: every workspace human is
-    seated through the ``AUTOJOIN#`` marker, so a later teammate joins the same way. Agents are its
-    authors, never members (``room_agent``). Its owner is chosen by ``_feed_owner`` (the requester only
-    as a last resort): the create receipt is per creator, so one identity lets racing callers
-    converge. Returns None until the company is active; raises ``ROOM_NOT_FOUND`` (404) for a
-    workspace with no active human, and a retryable 503 while Clerk cannot be read."""
-    from core.repositories.workspace_repo import WorkspaceRepo
-    from core.services.user_provision import ceo_agent_id
-
-    room_id = messaging_repo.feed_room_id(owner_id)
-    existing_room = await messaging_repo.get_room(room_id)
-    if existing_room is not None and int(existing_room.get("lastSeq") or 0) > 0:
-        return room_id
-
-    company = await WorkspaceRepo().resolve_owner_row(owner_id, consistent_read=True)
-    if getattr(company, "status", None) != "active":
-        return None
-    ceo_id = ceo_agent_id(company)
-    roster = await load_agent_roster(owner_id)
-    agents = {row["id"]: row for row in roster}
-    if ceo_id not in agents:
-        return None
-    client_room_id = f"workspace-feed-v1:{owner_id}"
-    try:
-        people = await clerk_admin.list_organization_members(owner_id, strict=True)
-    except Exception as exc:
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE", "Workspace members are unavailable.", retryable=True, retry_after=3
-        ) from exc
-    if existing_room is None:
-        owner_user_id = await _feed_owner(owner_id, company, people, requester_user_id)
-        if not owner_user_id:
-            raise ApiProblem("ROOM_NOT_FOUND", "This workspace has no active member to own a feed.")
-        members = [
-            {
-                "kind": "human",
-                "id": owner_user_id,
-                "displayName": await human_display_name(owner_user_id),
-                "mentionHandle": None,
-                "role": "owner",
-                "listenMode": None,
-            }
-        ]
-        await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
-        normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
-        try:
-            await messaging_repo.create_room(
-                owner_id=owner_id,
-                room_id=room_id,
-                client_room_id=client_room_id,
-                creator_user_id=owner_user_id,
-                name=FEED_ROOM_NAME,
-                kind="channel",
-                members=members,
-                req_hash=messaging_repo.request_hash(FEED_ROOM_NAME, "channel", normalized),
-                extra={"topic": FEED_DEFAULT_TOPIC},
-            )
-            _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
-        except messaging_repo.MessagingRepoError:
-            # A racing create won (another roster, or a create from before this rule): same room.
-            if await messaging_repo.get_room(room_id) is None:
-                raise
-    # Every current teammate, before the welcome: a room with a message is the "done" signal. Read
-    # again now the room exists: one who joined after the read above found no room to join.
-    try:
-        people = await clerk_admin.list_organization_members(owner_id, strict=True)
-    except Exception as exc:
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE", "Workspace members are unavailable.", retryable=True, retry_after=3
-        ) from exc
-    for row in people:
-        try:
-            await join_feed_room(owner_id, row["user_id"])
-        except Exception:  # noqa: BLE001 -- one teammate never blocks the feed
-            logger.exception("feed seat failed owner=%s user=%s", owner_id, row.get("user_id"))
-    await messaging_repo.create_message(
-        room_id=room_id,
-        owner_id=owner_id,
-        idemp_pk=messaging_repo.room_pk(room_id),
-        idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
-        req_hash=messaging_repo.request_hash(FEED_WELCOME, ceo_id),
-        author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
-        text=FEED_WELCOME,
-        mentions=[],
-        reply_to_message_id=None,
-        thread_root_message_id=None,
-        run_id=None,
-        dispatch_targets=[],
-        source_agent_id=ceo_id,
-        client_message_id=None,
-        author_member_check=False,  # the CEO writes the feed as an author, never a member
-        attrs={"kind": "welcome"},  # clients recognise the welcome by kind, never by its text
-    )
-    return room_id
-
-
-class FeedResponse(ContractModel):
-    room_id: uuid.UUID
-    topic: str | None
-
-
-async def get_feed(auth: AuthContext) -> FeedResponse:
-    """The Activity page's read: ensure the feed, seat the caller, return its id and brief."""
-    owner_id = resolve_owner_id(auth)
-    room_id = await ensure_feed_room(owner_id, auth.user_id)
-    if room_id is None:
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "The feed is not ready yet.", retryable=True, retry_after=3)
-    await join_feed_room(owner_id, auth.user_id)
-    if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
-        # Never report a feed the reader is not in (a full room, or a removal racing this read).
-        logger.error("feed seat missing owner=%s user=%s", owner_id, auth.user_id)
-        put_metric("messaging.feed.human_unseated")
-        raise ApiProblem("MEMBER_LIMIT", "You could not be added to this workspace's feed.")
-    meta = await messaging_repo.get_room(room_id) or {}
-    return FeedResponse(room_id=room_id, topic=meta.get("topic"))
-
-
-#: How many recent feed posts an agent reads before it writes one.
-FEED_AGENT_READ_LIMIT = 20
-
-
-async def agent_feed(owner_id: str) -> dict[str, Any]:
-    """The feed's brief and latest posts for an agent outside a room turn (a scheduled run has
-    no signed-in person, so ``lightbulb_read_rooms`` reads nothing). Every workspace human is in
-    the feed, so this widens nobody's view."""
-    room_id = await ensure_feed_room(owner_id)
-    if room_id is None:
-        raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no feed yet.")
-    meta = await messaging_repo.get_room(room_id) or {}
-    # ponytail: the newest 100 rows, top-level kept; a Discuss thread longer than ~80 replies in
-    # that window shortens the list. A top-level index if that is ever seen.
-    rows = await messaging_repo.list_messages_before(room_id, int(meta.get("lastSeq") or 0) + 1, 100)
-    posts = _listable([row for row in rows if not row.get("deletedAt") and not row.get("threadRootMessageId")])[
-        -FEED_AGENT_READ_LIMIT:
-    ]
-    return {
-        "roomId": room_id,
-        "topic": meta.get("topic"),
-        "posts": [
-            {
-                "author": post.author.display_name,
-                "text": post.text,
-                "postReason": post.post_reason,
-                "createdAt": post.created_at.isoformat(),
-            }
-            for post in posts
-        ],
-    }
-
-
 async def room_agent(room_id: str, agent_id: str, meta: dict | None = None) -> dict | None:
     """The agent's MEMBER row in this room -- or, in the feed, a roster-backed stand-in.
 
@@ -2701,172 +2437,6 @@ def _display_name_from_membership(row: dict) -> str:
     if name:
         return name[:256]
     return (email_label(row.get("email")) or row["user_id"])[:256]
-
-
-def _vendor_room_human(row: dict, home_owner_id: str, *, role: str = "member") -> dict:
-    return {
-        "kind": "human",
-        "id": row["user_id"],
-        "displayName": _display_name_from_membership(row),
-        "mentionHandle": None,
-        "role": role,
-        "listenMode": None,
-        "homeOwnerId": home_owner_id,
-    }
-
-
-async def ensure_vendor_room(owner_id: str) -> str | None:
-    """Create the customer's channel shared with the vendor org, once (spec §4).
-
-    Runs on every org-context poll; the steady-state cost is one consistent
-    ``get_room``. Creation waits for an ACTIVE Paperclip company so a
-    fresh workspace gets its CEO in the room. Returns the room id when it exists."""
-    vendor = settings.VENDOR_ORG_ID
-    if not vendor or owner_id == vendor or not is_org_owner_id(owner_id):
-        return None
-    room_id = messaging_repo.vendor_room_id(owner_id)
-    if await messaging_repo.get_room(room_id) is not None:
-        return room_id
-
-    from core.repositories.workspace_repo import WorkspaceRepo
-    from core.services.clerk_admin import get_organization, list_organization_members
-
-    company = await WorkspaceRepo().resolve_owner_row(owner_id, consistent_read=True)
-    if getattr(company, "status", None) != "active":
-        return None
-    org = await get_organization(owner_id)
-    customer_humans = await list_organization_members(owner_id)
-    vendor_humans = await list_organization_members(vendor)
-    # list_organization_members returns [] on any Clerk failure; a half roster must never seed.
-    if org is None or not customer_humans or not vendor_humans:
-        return None
-    by_id = {row["user_id"]: row for row in customer_humans}
-    owner_user_id = (
-        org.get("created_by")
-        if org.get("created_by") in by_id
-        else next((uid for uid in sorted(by_id) if by_id[uid].get("role") == "org:admin"), None)
-    )
-    if owner_user_id is None:
-        return None
-    # The platform's own company slug (company hosts, agent mail) is the readable one;
-    # Clerk org slugs here carry a timestamp suffix ("acme-1789347059550170402").
-    from core.repositories import company_slug_repo
-
-    slug_row = await company_slug_repo.get_by_owner(owner_id)
-    slug = (slug_row or {}).get("slug") or re.sub(r"-\d{10,}$", "", org.get("slug") or "")
-    try:
-        name = validate_room_name(f"lightbulb-{slug}".rstrip("-"))
-    except ValueError:
-        name = "lightbulb"
-
-    members = [_vendor_room_human(by_id[owner_user_id], owner_id, role="owner")]
-    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
-    if ceo_id:
-        roster = await load_agent_roster(owner_id)
-        agents = {row["id"]: row for row in roster}
-        if ceo_id in agents:
-            members.append(
-                {
-                    "kind": "agent",
-                    "id": ceo_id,
-                    "displayName": agents[ceo_id]["name"],
-                    "mentionHandle": (await _handles_for(owner_id, roster))[ceo_id],
-                    "role": "member",
-                    "listenMode": "mentions",
-                }
-            )
-    members.extend(_vendor_room_human(by_id[uid], owner_id) for uid in sorted(by_id) if uid != owner_user_id)
-    seen = {m["id"] for m in members}
-    members.extend(
-        _vendor_room_human(row, vendor)
-        for row in sorted(vendor_humans, key=lambda r: r["user_id"])
-        if row["user_id"] not in seen
-    )
-    if len(members) > messaging_repo.MAX_ROOM_MEMBERS:
-        # ponytail: 32-member cap; raise MAX_ROOM_MEMBERS when a customer org exceeds ~25 humans
-        put_metric("messaging.vendor_room.capped")
-        logger.warning("vendor room capped at %d members for owner %s", messaging_repo.MAX_ROOM_MEMBERS, owner_id)
-        members = members[: messaging_repo.MAX_ROOM_MEMBERS]
-    removed = {
-        m["id"]
-        for m in members
-        if m["kind"] == "human" and await messaging_repo.ensure_user_stream(m["homeOwnerId"], m["id"]) is None
-    }
-    if owner_user_id in removed:
-        return None  # the room's owner is a removed member: no owner, no room yet
-    members = [m for m in members if m["id"] not in removed]  # a removed member is not seated
-    try:
-        await messaging_repo.create_room(
-            owner_id=owner_id,
-            room_id=room_id,
-            client_room_id=f"vendor-room-v1:{owner_id}",
-            creator_user_id=owner_user_id,
-            name=name,
-            kind="channel",
-            members=members,
-            req_hash=messaging_repo.request_hash(name, "channel", [(m["kind"], m["id"]) for m in members]),
-        )
-    except messaging_repo.IdempotencyConflict:
-        return room_id  # a concurrent poll created it with a different roster; it exists
-    _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
-    return room_id
-
-
-async def add_vendor_room_member(owner_id: str, user_id: str, *, home_owner_id: str) -> bool:
-    """Add one human to a customer's vendor room, keyed on THEIR home. Idempotent.
-
-    Retries up to 3 attempts on a lost compare-and-swap race on the room's
-    revision (``upsert_member`` raises ``ClientError`` on a cancelled
-    transaction): each attempt re-reads room + member fresh, so a concurrent
-    add that already landed is a clean no-op rather than a dropped join."""
-    room_id = messaging_repo.vendor_room_id(owner_id)
-    if await messaging_repo.ensure_user_stream(home_owner_id, user_id) is None:
-        return False  # a removed member
-    for attempt in range(3):
-        meta = await messaging_repo.get_room(room_id)
-        if meta is None or await messaging_repo.get_member(room_id, "human", user_id) is not None:
-            return False
-        member = {
-            "kind": "human",
-            "id": user_id,
-            "displayName": await human_display_name(user_id),
-            "mentionHandle": None,
-            "role": "member",
-            "listenMode": None,
-            "homeOwnerId": home_owner_id,
-        }
-        try:
-            meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
-        except messaging_repo.MemberLimitExceeded:
-            put_metric("messaging.vendor_room.capped")
-            logger.warning("vendor room full; %s not added to owner %s", user_id, owner_id)
-            return False
-        except ClientError as exc:
-            if messaging_repo._is_cancelled(exc) and attempt < 2:
-                continue
-            raise
-        await _publish_room_metadata(meta)
-        return True
-    return False  # pragma: no cover — loop always returns or raises within 3 attempts
-
-
-async def on_org_member_joined(org_id: str, user_id: str) -> None:
-    """Clerk ``organizationMembership.created``: keep 'everyone in both workspaces' true."""
-    vendor = settings.VENDOR_ORG_ID
-    if not vendor:
-        return
-    if org_id != vendor:
-        await add_vendor_room_member(org_id, user_id, home_owner_id=org_id)
-        return
-    # ponytail: full containers scan per vendor join; add a VENDORROOM# catalog row when org count makes this slow
-    for row in await container_repo.scan_all(consistent=True):
-        customer = row.get("owner_id")
-        if isinstance(customer, str) and is_org_owner_id(customer) and customer != vendor:
-            try:
-                await add_vendor_room_member(customer, user_id, home_owner_id=vendor)
-            except Exception:
-                logger.exception("vendor room add failed for owner %s user %s", customer, user_id)
-                put_metric("messaging.vendor_room.error")
 
 
 async def _find_existing_dm(owner_id: str, user_id: str, counterpart: CreateRoomMember) -> dict | None:
@@ -3442,19 +3012,14 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
     except Exception:
         logger.warning("workspace.access.removed notice failed")
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
-    # Second pass, stream off: a first seat (#general, the feed) that landed after the list above
+    # Second pass, stream off: a first seat (#general) that landed after the list above
     # held no marker and passed its own re-check while the stream was still on.
     # The list reads an eventually consistent GSI that can miss a seat committed just now, so the
-    # two auto-seated rooms are swept by id as well (consistent reads; a no-op without a seat).
+    # auto-seated #general and an existing feed are swept by id as well (consistent reads; a no-op without a seat).
     swept = {row["meta"]["roomId"] for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)}
     swept |= {default_room_id(owner_id), messaging_repo.feed_room_id(owner_id)}
     for room_id in swept:
         await _remove_human_seat(owner_id, room_id, user_id)
-    # Only now, with the stream off: a feed read in the window above found the marker held.
-    try:
-        await messaging_repo.release_autojoin(messaging_repo.feed_room_id(owner_id), user_id)
-    except Exception:
-        logger.exception("feed autojoin release failed owner=%s user=%s", owner_id, user_id)
     if own_session_chats:
         # Their sessions' chats go silent for everyone: the person they were about is gone. After
         # the stream is off, which the chat door reads once it has seated someone: a seat that
@@ -3493,72 +3058,6 @@ def _listable(rows: list[dict]) -> list[CanonicalMessage]:
     return out
 
 
-async def update_message(
-    auth: AuthContext, room_id: str, message_id: str, request: UpdateMessageRequest
-) -> CanonicalMessage:
-    meta, _ = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
-    item = await messaging_repo.get_message_by_id(room_id, validate_uuid(message_id, label="message ID"))
-    if item is None:
-        raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
-    if request.text is not None and not request.text.strip() and not item.get("attachments"):
-        raise ApiProblem("INVALID_REQUEST", "A message needs text or an attachment.")
-    try:
-        updated = await messaging_repo.update_message(
-            owner_id,
-            room_id,
-            item["messageSeq"],
-            auth.user_id,
-            str(request.operation_id),
-            request.expected_revision,
-            request.text,
-        )
-    except messaging_repo.MessageForbidden as exc:
-        raise ApiProblem("ROOM_FORBIDDEN", str(exc)) from exc
-    except messaging_repo.MessageConflict as exc:
-        raise ApiProblem("MESSAGE_CONFLICT", str(exc)) from exc
-    except messaging_repo.IdempotencyConflict as exc:
-        raise ApiProblem("IDEMPOTENCY_CONFLICT", str(exc)) from exc
-    return canonical_message(updated)
-
-
-async def set_reaction(
-    auth: AuthContext, room_id: str, message_id: str, request: SetReactionRequest
-) -> CanonicalMessage:
-    from core.services.live_events import get_live_event_publisher
-
-    meta, _ = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
-    message_id = validate_uuid(message_id, label="message ID")
-    item = await messaging_repo.get_message_by_id(room_id, message_id)
-    if item is None:
-        raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
-    try:
-        updated = await messaging_repo.set_reaction(
-            owner_id, room_id, item["messageSeq"], auth.user_id, request.emoji, request.active
-        )
-    except messaging_repo.MessagingRepoError as exc:
-        raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
-    message = canonical_message(updated)
-    if request.active:
-        _product_event(
-            distinct_id=auth.user_id,
-            event="reaction_added",
-            owner_id=owner_id,
-            props={"room_kind": _room_kind(meta)},
-        )
-    event = make_live_event(
-        "room.message.reactions.changed", message.model_dump(mode="json", by_alias=True), room_id=room_id
-    )
-    try:
-        await get_live_event_publisher().publish_room(room_id, event)
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception("Could not publish message reactions for room %s", room_id)
-    return message
-
-
 async def set_pin(auth: AuthContext, room_id: str, message_id: str, pinned: bool) -> RoomDetail:
     """Pin or unpin a message. Any member may do either (spec)."""
     owner_id = resolve_owner_id(auth)
@@ -3578,43 +3077,6 @@ async def set_pin(auth: AuthContext, room_id: str, message_id: str, pinned: bool
     if int(meta["revision"]) != previous_revision:
         await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id, member)
-
-
-def _noted_shown(meta: dict, member: dict, rows: list[dict]) -> list[dict]:
-    """The noted rows this member may read. A channel's are everyone's. In a DM or group chat only what was noted since
-    they joined: a DM someone was added to keeps its private notes from them (founder ruling, 6 Nov 2026)."""
-    joined = member.get("joinedAt")
-    if meta.get("kind") == "channel" or not joined:
-        return rows
-    since = datetime.fromisoformat(joined)
-    return [r for r in rows if datetime.fromisoformat(r["notedAt"]) >= since]
-
-
-async def list_room_memory(auth: AuthContext, room_id: str) -> RoomMemoryResponse:
-    """What Lightbulb noted in this room (the Router's `note` decisions): any member reads it (W15-5)."""
-    meta, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    rows = _noted_shown(meta, member, await messaging_repo.list_noted(room_id))
-    return RoomMemoryResponse(
-        items=[NotedFact(message_id=r["messageId"], fact=r["fact"], noted_at=r["notedAt"]) for r in rows]
-    )
-
-
-async def forget_room_memory(auth: AuthContext, room_id: str, message_id: str) -> None:
-    """Drop a noted fact from the list: a channel's owner or admin, like Instructions; any member of a DM or group chat
-    (founder ruling, 6 Nov 2026), and only a fact they can see. Idempotent."""
-    owner_id = resolve_owner_id(auth)
-    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
-    message_id = validate_uuid(message_id, label="message ID")
-    room_admin = member.get("role") in {"owner", "admin"}
-    # A chat's members forget only while it is a chat with Lightbulb (as Pause and Instructions): once Lightbulb is
-    # removed it is a people-only chat again, back to its owner's say.
-    if not room_admin and (meta.get("kind") == "channel" or not await _router_room(meta, owner_id)):
-        raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
-    if meta.get("kind") != "channel":
-        shown = _noted_shown(meta, member, await messaging_repo.list_noted(room_id))
-        if not any(r["messageId"] == message_id for r in shown):
-            return  # gone, or noted before they joined: nothing of theirs to forget
-    await messaging_repo.delete_noted(room_id, message_id)
 
 
 async def _validate_message_links(
@@ -5981,8 +5443,7 @@ class AgentPostRequest(ContractModel):
     """An agent posting OUTSIDE a room turn (``lightbulb-post.sh``).
 
     Target, first that applies: ``roomId`` → that room (membership checked, never
-    auto-joined); ``feed`` → the workspace feed (ensured, the agent seated on ``mentions``);
-    ``roomName`` → the one channel of that name the agent is in;
+    auto-joined); ``roomName`` → the one channel of that name the agent is in;
     ``userId``/``handle`` → that workspace member's DM with the agent; otherwise the
     workspace's #general. ``issueId`` is accepted and ignored (an older script's ``--issue``).
     ``postReason`` is the post's "Why I created this post" line (any target)."""
@@ -5995,7 +5456,6 @@ class AgentPostRequest(ContractModel):
     user_id: str | None = Field(default=None, min_length=1, max_length=256)
     handle: str | None = Field(default=None, min_length=1, max_length=64)
     issue_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9-]+$")
-    feed: bool = False
     post_reason: str | None = None
 
     @field_validator("post_reason")
@@ -6015,10 +5475,8 @@ class AgentPostRequest(ContractModel):
 
     @model_validator(mode="after")
     def one_target(self) -> "AgentPostRequest":
-        if sum(x is not None for x in (self.room_id, self.room_name, self.user_id, self.handle)) + self.feed > 1:
-            raise ValueError("name at most one of feed, roomId, roomName, userId, handle")
-        if self.feed and self.post_reason is None:
-            raise ValueError("a feed post needs postReason: why it matters")
+        if sum(x is not None for x in (self.room_id, self.room_name, self.user_id, self.handle)) > 1:
+            raise ValueError("name at most one of roomId, roomName, userId, handle")
         return self
 
 
@@ -6083,11 +5541,6 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
     agent_id = str(request.agent_id)
     if request.room_id is not None:
         return str(request.room_id)
-    if request.feed:
-        room_id = await ensure_feed_room(owner_id)
-        if room_id is None:
-            raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no feed yet.")
-        return room_id  # the agent writes as an author; create_agent_message checks the roster
     if request.room_name is not None:
         # Routine descriptions name a channel ("Post results to: #sales"); only channels the
         # agent is already in qualify -- a post never joins a room.

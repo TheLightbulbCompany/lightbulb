@@ -189,27 +189,3 @@ async def test_tweet_falls_back_to_oembed_text_only(monkeypatch):
     assert "<" not in preview.description
     assert preview.handle == "jack"
     assert preview.published_at.startswith("2006-03-21")
-
-
-def test_route_returns_camelcase_card_or_404(monkeypatch):
-    from unittest.mock import MagicMock
-
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from core.auth import get_current_user
-    from routers import messaging
-
-    app = FastAPI()
-    app.include_router(messaging.router, prefix="/api/v1")
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(org_id="org_1", user_id="user_1")
-    monkeypatch.setattr(messaging, "resolve_owner_id", lambda auth: "org_1")
-
-    async def fake(url):
-        return lp.LinkPreview(url=url, kind="link", title="T", site_name="s.com") if "ok" in url else None
-
-    monkeypatch.setattr(lp, "get_preview", fake)
-    client = TestClient(app)
-    body = client.get("/api/v1/messaging/link-preview", params={"url": "https://ok.example/"}).json()
-    assert body["siteName"] == "s.com" and body["imageUrl"] is None
-    assert client.get("/api/v1/messaging/link-preview", params={"url": "https://no.example/"}).status_code == 404

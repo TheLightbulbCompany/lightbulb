@@ -1899,10 +1899,6 @@ async def list_noted(room_id: str) -> list[dict]:
     return sorted(await _query(room_pk(room_id), begins_with="NOTED#"), key=lambda r: r["notedAt"], reverse=True)
 
 
-async def delete_noted(room_id: str, message_id: str) -> None:
-    await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": f"NOTED#{message_id}"})
-
-
 async def release_autojoin(room_id: str, user_id: str) -> None:
     await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": autojoin_sk(user_id)})
 
@@ -2673,30 +2669,6 @@ async def get_user_prefs(owner_id: str, user_id: str) -> dict | None:
     rotation and be dropped on revocation.
     """
     return await _get(owner_pk(owner_id), pref_sk(user_id))
-
-
-async def put_user_sections(owner_id: str, user_id: str, sections: list[dict]) -> list[dict]:
-    """Replace the ordered section list wholesale (the client owns the order).
-
-    An ``update_item`` on just the ``sections``/``ownerId``/``userId``/``updatedAt``
-    attributes, never ``put_item`` -- the ``PREF#`` row is the caller's general
-    preferences, not a sections-only row, and a wholesale put would clobber any
-    other attribute a later feature stores on it. No ``ConditionExpression``:
-    the row may not exist yet, and ``update_item`` upserts.
-    """
-    stored = [{"id": str(section["id"]), "name": str(section["name"])} for section in sections]
-    await run_in_thread(
-        _table().update_item,
-        Key={"pk": owner_pk(owner_id), "sk": pref_sk(user_id)},
-        UpdateExpression="SET sections = :s, ownerId = :o, userId = :u, updatedAt = :t",
-        ExpressionAttributeValues={
-            ":s": _ddb_safe(stored),
-            ":o": owner_id,
-            ":u": user_id,
-            ":t": utc_now_iso(),
-        },
-    )
-    return stored
 
 
 # ---------------------------------------------------------------------------

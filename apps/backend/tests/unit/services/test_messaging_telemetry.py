@@ -606,32 +606,6 @@ async def test_adding_a_member_reports_the_adders_role(monkeypatch, telemetry):
 
 
 @pytest.mark.asyncio
-async def test_a_reaction_is_reported_only_when_added(monkeypatch, telemetry):
-    _, capture = telemetry
-    item = _message(3, {"kind": "human", "id": USER, "displayName": "Owner"})
-    monkeypatch.setattr(
-        messaging, "require_room_member", AsyncMock(return_value=({"kind": "dm", "ownerId": OWNER}, _human_member()))
-    )
-    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=item))
-    monkeypatch.setattr(messaging.messaging_repo, "set_reaction", AsyncMock(return_value=item))
-    publisher = MagicMock()
-    publisher.publish_room = AsyncMock()
-    monkeypatch.setattr("core.services.live_events.get_live_event_publisher", lambda: publisher)
-
-    for active in (True, False):
-        await messaging.set_reaction(
-            AuthContext(user_id=USER, org_id=OWNER),
-            ROOM,
-            item["messageId"],
-            messaging.SetReactionRequest(emoji="👍", active=active),
-        )
-
-    assert [event["properties"] for event in _events(capture, "reaction_added")] == [
-        {"workspace_id": OWNER, "room_kind": "dm"}
-    ]
-
-
-@pytest.mark.asyncio
 async def test_a_posthog_outage_never_fails_a_room_write(monkeypatch, telemetry):
     _, capture = telemetry
     capture.side_effect = RuntimeError("posthog down")

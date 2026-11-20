@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import UploadFile
 from core.services import messaging
+from core.voice import livekit_huddles
 from routers.messaging import get_room_attachment, upload_room_attachment
 
 from core.auth import AuthContext
@@ -739,7 +740,7 @@ async def test_removing_a_channel_owner_hands_it_on_or_still_removes_them_alone(
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
     monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock(return_value="key"))
     monkeypatch.setattr(messaging.messaging_repo, "remove_member", remove)
-    monkeypatch.setattr(messaging.livekit_huddles, "remove_participant", AsyncMock())
+    monkeypatch.setattr(livekit_huddles, "remove_participant", AsyncMock())
 
     await messaging._remove_member_with_notices(meta, "human", "owner")
 
@@ -886,7 +887,7 @@ async def test_archiving_a_channel_ends_its_huddle(monkeypatch):
     meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
     _archive_fixture(monkeypatch, meta)
     closed = AsyncMock()
-    monkeypatch.setattr(messaging.livekit_huddles, "close_room", closed)
+    monkeypatch.setattr(livekit_huddles, "close_room", closed)
     await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=True))
     closed.assert_awaited_once_with("chan")
     meta["archivedAt"] = "x"

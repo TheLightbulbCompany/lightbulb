@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 
 from core import tasks_schema as ts
+from core.engine.contract import GRANT_HEADER
 from core.repositories import tasks_repo as repo
 from routers import runtime_internal as ri
 
@@ -555,7 +556,7 @@ async def test_meeting_context_authenticates_hook_before_access_and_bounds_curso
     assert (await api.post(url, json=body)).status_code in (401, 403)
     assert (await api.post(url, json={**body, "cursor": "x" * 513}, headers=H)).status_code == 422
     source.assert_not_awaited()
-    response = await api.post(url, json=body, headers={**H, meeting_context.GRANT_HEADER: "private-grant"})
+    response = await api.post(url, json=body, headers={**H, GRANT_HEADER: "private-grant"})
     assert response.status_code == 200 and response.json()["quotedSource"] is True
     source.assert_awaited_once_with(WS, body["runId"], body["triggerId"], "transcript", None, grant="private-grant")
 

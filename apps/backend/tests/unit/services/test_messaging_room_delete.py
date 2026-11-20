@@ -8,6 +8,7 @@ import pytest
 
 from core.auth import AuthContext
 from core.services import messaging
+from core.voice import livekit_huddles
 from core.services.messaging import ApiProblem
 from core.services.openclaw_work import OpenClawWorkWorker
 from tests.unit.repositories.test_messaging_repo import (  # noqa: F401
@@ -184,8 +185,8 @@ async def test_removal_and_delete_revoke_the_rooms_huddle(table, monkeypatch):
     """Member removal is a security boundary: the removed member leaves the LiveKit room too,
     and a deleted channel's huddle ends for everyone."""
     removed, closed = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(messaging.livekit_huddles, "remove_participant", removed)
-    monkeypatch.setattr(messaging.livekit_huddles, "close_room", closed)
+    monkeypatch.setattr(livekit_huddles, "remove_participant", removed)
+    monkeypatch.setattr(livekit_huddles, "close_room", closed)
     room_id, _ = await _channel()
 
     await messaging.remove_member(_auth(USER_A), room_id, "human", USER_C)

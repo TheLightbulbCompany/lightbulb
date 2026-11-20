@@ -219,3 +219,49 @@ async def test_button_context_never_overwrites_authentic_free_text_answer(initia
         AnswerRef(question["qid"], "option-0", trigger_id, "original-user", "typed-answer"),
     )
     assert await activities._input_text("org_a", trigger_id) == "Weekly, starting next Monday"
+
+
+async def test_initial_question_binding_uses_stored_qid(world, table, monkeypatch):  # noqa: F811
+    """The product builds the qid and passes it in the ask; the engine binds the Task to the qid stored on it (and
+    the ask trigger that qid names), not to a product's prefix."""
+    room_id = ts.new_task_id()
+    world["trigger"]["ref"]["roomId"] = room_id
+    monkeypatch.setattr(messaging_repo, "ensure_workspace_id", AsyncMock(return_value="test-workspace-channel"))
+    await tasks_repo.put_trigger("org_a", {**world["trigger"], "receivedAt": utc_now_iso()})
+    monkeypatch.setattr(tasks_repo, "get_trigger", REAL_GET_TRIGGER)
+    task_id = ts.new_task_id()
+    question = {
+        "qid": "q-chosen-by-the-product",
+        "kind": "question",
+        "subkind": "question",
+        "title": "Which report?",
+        "text": "Which report?",
+        "options": [{"id": "option-0", "label": "Weekly"}],
+        "blocking": True,
+        "before_attempt": True,
+        "attempt": None,
+        "run_id": None,
+    }
+    ref = await task_asks.prepare_initial_question("org_a", task_id, "original-user", "shared", question)
+    assert ref["qid"] == "q-chosen-by-the-product"
+    task, _ = await tasks_repo.create_task(
+        "org_a",
+        {
+            "taskId": task_id,
+            "identifier": "LB-1",
+            "title": "Clarify",
+            "status": "queued",
+            "audience": {"kind": "person", "userIds": ["original-user"], "roomId": room_id},
+            "lane": "shared",
+            "ownerUserId": "original-user",
+            "triggerId": world["trigger"]["triggerId"],
+            "origin": "meeting",
+            "initialQuestion": ref,
+        },
+    )
+    assert task_asks._initial_binding(task).qid == "q-chosen-by-the-product"
+    elsewhere = {**task, "initialQuestion": {**ref, "triggerId": ts.trigger_id("ask", "another-qid")}}
+    with pytest.raises(task_asks.AskRefused, match="binding"):
+        task_asks._initial_binding(elsewhere)
+    with pytest.raises(task_asks.AskRefused, match="invalid_initial_question"):
+        await task_asks.prepare_initial_question("org_a", task_id, "original-user", "shared", {**question, "qid": ""})

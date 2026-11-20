@@ -93,8 +93,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               Scopes + review: DM = private to that person (phase 1), other rooms = team;
                                  "Confirmed by a person:" <- core/services/workspace_memory.CONFIRMED_PREFIX;
                                  people review/delete/Share <- routers/memory.py, frontend AgentMemoryTab
-                                 (Inspect agent -> Memory tab, references/surfaces.md "Agent inspector" row), mobile
-                                 MemoriesCard; the agent cannot delete (no tool), MEMORY.md is editable in
+                                 (Inspect agent -> Memory tab, references/surfaces.md "Agent inspector" row); the agent cannot delete (no tool), MEMORY.md is editable in
                                  AgentInstructionsTab.
   - Website sign-ins .......... references/boundaries.md ("Type a website password" row; names the web AND iPhone doors) + references/surfaces.md (Browser row)
                               <- apps/infra/hermes/bridge/website_logins.py (vault store + ask callbacks);
@@ -128,7 +127,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - New session (small form with Start, no first message, web and desktop only; iPhone still asks) ... references/surfaces.md ("New session" paragraph)
                               <- apps/frontend/src/components/messaging/NewSessionButton.tsx;
                                  apps/desktop/src-tauri/src/session_start.rs;
-                                 apps/mobile/src/app/(app)/session/new.tsx (still has the first message)
   - Open saved CLI conversation (owner desktop restores automatically; search hits stay on history) ... references/surfaces.md ("Opening your saved CLI conversation" paragraph)
                               <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx + SessionResume.tsx;
                                  packages/shared/src/messaging/sessionControls.ts;
@@ -200,7 +198,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               answer in the chat, never into the session)
                               <- apps/backend/core/services/session_chat.py; apps/backend/routers/messaging.py (POST .../chat);
                                  apps/frontend/src/components/messaging/{SessionChat,SessionFocus}.tsx;
-                                 apps/mobile/src/app/(app)/session/[sessionId].tsx (Chat button)
   - Session links + Continue  references/surfaces.md ("Session links" paragraph)
                               <- apps/frontend/src/app/s/page.tsx (the /s page: the one signed-out refusal that leads with sign in, the
                                  live terminal for an "anyone" link, the member redirect, Continue, the

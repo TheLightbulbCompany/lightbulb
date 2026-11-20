@@ -296,8 +296,8 @@ gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status --inter
   the pin and rolls. See "Hermes image and rollout".
 - **Phone trunks:** `phone-telephony.yml` (manual) reconciles the Twilio trunks and the production telephony
   secret. It buys no numbers and places no calls.
-- No workflow in this repo targets the self-hosted Mac (label `macos-desktop`) any more: its last lane,
-  `mobile-release.yml`, went with the iPhone app. Anything JS-only belongs on `vars.CI_RUNNER`.
+- The self-hosted Mac (label `macos-desktop`) runs only `sign-cli-release.yml` (the release key lives on it);
+  `mobile-release.yml` went with the iPhone app. Anything JS-only belongs on `vars.CI_RUNNER`.
 
 ## Architecture
 

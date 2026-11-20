@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from core.config import settings
 from core.repositories import messaging_repo
-from core.voice import livekit_huddles, voice_calls
+from core.voice import livekit_huddles, rooms
 
 router = APIRouter()
 
@@ -32,6 +32,6 @@ async def session(body: SessionBody):
         "serverUrl": settings.LIVEKIT_URL,
         "roomName": livekit_huddles.meet_room_name(room_id),
         "token": livekit_huddles.mint_meet_token(room_id, mixed=mixed),
-        "agents": await voice_calls.room_agents(room_id),
+        "agents": await rooms.room_agents(room_id),
         "mixedAudio": mixed,
     }

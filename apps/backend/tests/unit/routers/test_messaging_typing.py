@@ -38,7 +38,7 @@ async def _type(is_typing: bool, *, publish_room=None, activity=None, prewake=No
             router.service, "require_room_member", AsyncMock(return_value=(meta or {"ownerId": "org_host"}, {}))
         ),
         patch.object(router.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
-        patch.object(router.voice_calls, "prewake_owner", prewake or MagicMock()),
+        patch("core.voice.rooms.prewake_owner", prewake or MagicMock()),
         patch.object(router.service, "human_display_name", AsyncMock(return_value="Ann")),
         patch("routers.messaging.get_live_event_publisher", return_value=publisher),
         patch("routers.messaging.publish_room_activity", activity),

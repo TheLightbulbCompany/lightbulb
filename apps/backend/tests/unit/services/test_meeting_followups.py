@@ -122,7 +122,7 @@ async def test_clarification_keeps_original_source_bounded_and_inviter_policy(wo
 @pytest.mark.parametrize("to,expected", [("working", "working"), ("waiting", "needs_you"), ("idle", "done")])
 async def test_personal_completion_task_status_updates_original_meeting_history(world, monkeypatch, to, expected):  # noqa: F811
     from core.voice.meetings import meeting_invites
-    from routers import voice_meet
+    from core.voice.meetings import records
 
     async def patch(room_id, fields):
         assert room_id == "meeting-room"
@@ -132,7 +132,7 @@ async def test_personal_completion_task_status_updates_original_meeting_history(
 
     monkeypatch.setattr(meeting_invites, "_patch_meeting", patch)
     provider = AsyncMock()
-    monkeypatch.setattr(voice_meet.meeting_bots, "say", provider)
+    monkeypatch.setattr(records.meeting_bots, "say", provider)
     task = {
         "pk": "WS#org_a",
         "taskId": "personal-followup",
@@ -144,7 +144,7 @@ async def test_personal_completion_task_status_updates_original_meeting_history(
         "audience": {"kind": "person", "userIds": ["original-user"], "roomId": "meeting-room"},
     }
     await mod.record_task("org_a", task)
-    await voice_meet.task_moved(task, to)
+    await records.task_moved(task, to)
     linked = world["meta"]["meeting"]["history"][0]["followUps"]
     assert linked[0]["taskId"] == task["taskId"] and linked[0]["status"] == expected
     assert not world["meta"]["meeting"].get("followUps")

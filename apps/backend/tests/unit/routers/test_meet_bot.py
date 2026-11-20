@@ -28,7 +28,7 @@ def env():
         patch.object(
             mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: {"meeting": meeting} if r == ROOM else None)
         ),
-        patch.object(mod.voice_calls, "room_agents", AsyncMock(return_value=AGENTS)),
+        patch.object(mod.rooms, "room_agents", AsyncMock(return_value=AGENTS)),
     ):
         yield TestClient(app), meeting
 

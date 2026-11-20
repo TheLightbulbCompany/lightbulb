@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from moto import mock_aws
 
 from core.repositories import messaging_repo
+from core.voice.phone import calls as phone_calls
 from routers import voice_phone
 
 SECRET = "s3cret"
@@ -461,7 +462,7 @@ async def test_not_live_line_answers_owner_test_call(client):
 
 
 def test_next_time_note_reaches_facts():
-    cfg = {**voice_phone.DEFAULTS, "knowledge": [{"q": "", "a": "Parking is behind the building"}]}
+    cfg = {**phone_calls.DEFAULTS, "knowledge": [{"q": "", "a": "Parking is behind the building"}]}
     assert "Note: Parking is behind the building" in voice_phone._facts(cfg)
 
 
@@ -484,7 +485,7 @@ async def test_start_returns_every_static_fact_whole_and_the_instructions(client
     profile reads, never cut mid-item; the owner's Instructions verbatim beside it."""
     call = await _start(client, **SALON)
     facts = call["facts"]
-    assert facts == voice_phone._facts({**voice_phone.DEFAULTS, **CONFIG, **SALON})
+    assert facts == voice_phone._facts({**phone_calls.DEFAULTS, **CONFIG, **SALON})
     assert len(facts) > 1200  # larger than the old cap
     assert "Service number 17 $57 (115 min)" in facts and "The owner's saved answer 14, in a full sentence." in facts
     assert "City: Austin" in facts and "Staff: Ana, Maya" in facts and "Closed: 2026-12-24 to 2026-12-26" in facts
@@ -511,7 +512,7 @@ async def test_hours_in_business_timezone(client):
             return datetime(2026, 11, 10, 17, 30, tzinfo=timezone.utc).astimezone(tz)
 
     call = await _start(client, timezone="America/Los_Angeles")
-    with patch.object(voice_phone, "datetime", Frozen):
+    with patch.object(phone_calls, "datetime", Frozen):
         r = client.post(
             f"/api/v1/internal/voice/calls/{call['callId']}/availability",
             json={"date": "2026-11-10", "service": "gel"},
@@ -732,12 +733,12 @@ async def test_a_concurrent_double_book_on_the_last_person_lets_exactly_one_win(
         # Both callers saw Mei free; the other caller's write lands between this one's choice and its write.
         if not raced:
             raced.append(True)
-            await voice_phone._book("org_1", b["callId"], {"caller": "+14155550182"}, cfg, at, "pedicure", "Bo")
+            await phone_calls._book("org_1", b["callId"], {"caller": "+14155550182"}, cfg, at, "pedicure", "Bo")
         return await real(items)
 
     with patch.object(messaging_repo, "_transact", interleaved):
         with pytest.raises(voice_phone.HTTPException) as lost:
-            await voice_phone._book("org_1", a["callId"], {"caller": "+14155550181"}, cfg, at, "pedicure", "Al")
+            await phone_calls._book("org_1", a["callId"], {"caller": "+14155550181"}, cfg, at, "pedicure", "Al")
     assert lost.value.status_code == 409 and lost.value.detail["code"] == "slot_taken"
     assert (await _row(at, "#m1"))["name"] == "Bo" and await _row(at) is None
 
@@ -754,12 +755,12 @@ async def test_concurrent_bookings_beside_an_old_booking_never_exceed_capacity(c
     async def interleaved(items):
         if not raced:
             raced.append(True)
-            await voice_phone._book("org_1", calls[2]["callId"], {"caller": "+14155550212"}, cfg, at, "gel", "Bo")
+            await phone_calls._book("org_1", calls[2]["callId"], {"caller": "+14155550212"}, cfg, at, "gel", "Bo")
         return await real(items)
 
     with patch.object(messaging_repo, "_transact", interleaved):
         with pytest.raises(voice_phone.HTTPException) as lost:
-            await voice_phone._book("org_1", calls[1]["callId"], {"caller": "+14155550211"}, cfg, at, "gel", "Al")
+            await phone_calls._book("org_1", calls[1]["callId"], {"caller": "+14155550211"}, cfg, at, "gel", "Al")
     assert lost.value.detail["code"] == "slot_taken"
     held = [await _row(at, lane) for lane in ("#a1", "#m1")]
     assert sum(r is not None for r in held) == 1
@@ -809,11 +810,11 @@ async def test_a_booking_that_lands_first_does_not_refuse_a_free_person(client):
     async def interleaved(items):
         if not raced:
             raced.append(True)
-            await voice_phone._book("org_1", b["callId"], {"caller": "+14155550272"}, cfg, at, "pedicure", "Bo")
+            await phone_calls._book("org_1", b["callId"], {"caller": "+14155550272"}, cfg, at, "pedicure", "Bo")
         return await real(items)
 
     with patch.object(messaging_repo, "_transact", interleaved):
-        row = await voice_phone._book("org_1", a["callId"], {"caller": "+14155550271"}, cfg, at, "gel", "Al")
+        row = await phone_calls._book("org_1", a["callId"], {"caller": "+14155550271"}, cfg, at, "gel", "Al")
     assert row["staff"] == "Ana" and (await _row(at, "#m1"))["name"] == "Bo"
 
 
@@ -828,11 +829,11 @@ async def test_two_identical_books_at_once_make_one_booking(client):
     async def interleaved(items):
         if not raced:
             raced.append(True)
-            inner.append(await voice_phone._book(*args))
+            inner.append(await phone_calls._book(*args))
         return await real(items)
 
     with patch.object(messaging_repo, "_transact", interleaved):
-        outer = await voice_phone._book(*args)
+        outer = await phone_calls._book(*args)
     assert inner[0]["staff"] == outer["staff"] == "Ana" and outer["_repeat"]
     assert outer["bookingId"] == inner[0]["bookingId"] and await _row(at, "#m1") is None
     # Once that booking is cancelled, the same booking can be made again.
@@ -848,16 +849,16 @@ async def test_with_google_one_shared_calendar_holds_one_booking_at_a_time(clien
     a = await _start(client, caller="+14155550251", room="phone-dev-_g1", **STAFFED, bookingsGo="google")
     cfg = await voice_phone.agent_config("org_1")
     at = f"{_tomorrow()}T11:00"
-    assert voice_phone._capacity(cfg) == 1 and voice_phone._capacity({**cfg, "bookingsGo": "own"}) == 2
-    held = await voice_phone._book("org_1", a["callId"], {"caller": "+14155550251"}, cfg, at, "gel", "Al")
+    assert phone_calls._capacity(cfg) == 1 and phone_calls._capacity({**cfg, "bookingsGo": "own"}) == 2
+    held = await phone_calls._book("org_1", a["callId"], {"caller": "+14155550251"}, cfg, at, "gel", "Al")
     assert held["bookingState"] == "held"
     with pytest.raises(voice_phone.HTTPException) as refused:
-        await voice_phone._book("org_1", "other-call", {"caller": "+14155550252"}, cfg, at, "gel", "Bo")
+        await phone_calls._book("org_1", "other-call", {"caller": "+14155550252"}, cfg, at, "gel", "Bo")
     assert refused.value.detail["code"] == "slot_taken"
-    assert at not in voice_phone.open_starts(
+    assert at not in phone_calls.open_starts(
         cfg,
         at[:10],
-        await voice_phone._taken("org_1", at[:10]),
+        await phone_calls._taken("org_1", at[:10]),
         voice_phone._now(cfg),
         60,
         voice_phone._lanes(cfg, "gel"),
@@ -1042,7 +1043,7 @@ FRONT = {"kind": "agent", "id": "agent_front", "displayName": "Lightbulb", "ment
 def router_seat():
     with (
         patch.object(voice_phone.task_conversation, "_front_agent", AsyncMock(return_value=FRONT)),
-        patch.object(voice_phone.voice_calls, "prewake_owner") as wake,
+        patch.object(voice_phone.rooms, "prewake_owner") as wake,
         patch.object(voice_phone.admission, "enqueue_trigger", AsyncMock(return_value=True)) as enq,
     ):
         yield wake, enq
@@ -1307,11 +1308,11 @@ async def test_an_answer_after_hang_up_is_kept_on_the_record_home_reads(client):
     call = await _start(client)
     cid = call["callId"]
     late = {"messageId": "m5", "text": "There's no deposit to pay. You'll securely put a card on file at setup."}
-    await voice_phone.after_call(cid, late)  # during the call: nothing (the voice says it)
+    await phone_calls.after_call(cid, late)  # during the call: nothing (the voice says it)
     assert "afterCall" not in (await messaging_repo.get_room(cid))["call"]
     client.post(f"/api/v1/internal/voice/calls/{cid}/end", json={"durationSec": 56}, headers=W)
-    await voice_phone.after_call(cid, {"messageId": "m6", "text": "x", "progress": True})  # progress: not an answer
-    await voice_phone.after_call(cid, late)
+    await phone_calls.after_call(cid, {"messageId": "m6", "text": "x", "progress": True})  # progress: not an answer
+    await phone_calls.after_call(cid, late)
     rec = (await messaging_repo.get_room(cid))["call"]
     assert rec["afterCall"] == [{"messageId": "m5", "text": late["text"]}]
     assert rec["steps"][-1]["text"].startswith("After the call, not heard by the caller: There's no deposit")

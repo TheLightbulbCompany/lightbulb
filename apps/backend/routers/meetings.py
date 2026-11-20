@@ -18,10 +18,10 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, billing_repo
 from core.services import clerk_admin, messaging
-from core.voice import livekit_huddles, voice_calls
+from core.voice import livekit_huddles, rooms
 from core.voice.meetings import meeting_bots, meeting_invites, meeting_notes
 from core.services.live_events import get_live_event_publisher
-from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
+from core.voice.worker_api import RoomBody, _problem, _require_room_token, _room_id, _Worker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -122,7 +122,7 @@ async def _finish(
         ("minutes", lambda: _count_minutes(room_id, presence, in_call_at) if presence else None),
         (
             "notes",
-            lambda: voice_calls._fire(meeting_notes.on_ended(room_id) if notes else meeting_invites.advance(room_id)),
+            lambda: rooms._fire(meeting_notes.on_ended(room_id) if notes else meeting_invites.advance(room_id)),
         ),
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
@@ -184,9 +184,9 @@ async def _on_status(
                 if seconds:
                     await _report_minutes(room_id, seconds, int(meeting["inCallAt"]))
             if meeting_notes.owed(meeting):
-                voice_calls._fire(meeting_notes.on_ended(room_id))
+                rooms._fire(meeting_notes.on_ended(room_id))
             elif meeting.get("recurrence"):
-                voice_calls._fire(meeting_invites.advance(room_id))
+                rooms._fire(meeting_invites.advance(room_id))
             return
         if code in ("joining_call", "in_waiting_room"):
             observed_at = int((at or time.time()) * 1000)
@@ -244,7 +244,7 @@ async def _on_status(
                 room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
             )
             # ponytail: warms the room's agents (the default Worker); add the `office` specialist once Task 4 seeds it
-            voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id), room_id=room_id)
+            rooms.prewake_owner(owner_id, team=await rooms.room_agents(room_id), room_id=room_id)
             await _publish(room_id, "in_call")
         elif target == "ended":
             # endedAt is written once (a terminal status returns above on every later webhook), from
@@ -381,7 +381,7 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
     import uuid
 
     from core.auth import AuthContext
-    from routers.voice_meet import inviting_member
+    from core.voice.meetings.records import inviting_member
 
     who, content = data.get("participant") or {}, data.get("data") or {}
     name, text = str(who.get("name") or "Someone"), content.get("text")

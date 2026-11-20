@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from core.repositories import messaging_repo
 from core.voice.phone import voice_booking as booking
+from core.voice.phone import calls
 from routers import voice_phone as vp
 from tests.unit.routers import test_voice_phone
 from tests.unit.routers.test_voice_phone import W, _start, _tomorrow
@@ -323,7 +324,7 @@ def test_release_still_refuses_a_cell_another_booking_holds():
         "cells": ["VOICECELL#x"],
     }
     for row_ in (booked, {k: v for k, v in booked.items() if k != "bookingId"}):
-        [_, cell] = vp._release("t", "OWNER#org_1", row_)
+        [_, cell] = calls._release("t", "OWNER#org_1", row_)
         condition = cell["Delete"]["ConditionExpression"]
         assert condition.startswith("attribute_not_exists(sk) OR (")
         assert "booking = :booking" in condition
@@ -361,7 +362,7 @@ async def test_a_crash_before_provider_binding_is_prepared_on_the_same_callers_r
     call, base = await begin(client)
     start = f"{_tomorrow()}T14:00"
     cfg = await vp.agent_config("org_1")
-    await vp._book("org_1", call["callId"], {"caller": "+14155550133"}, cfg, start, "gel", "Priya")
+    await calls._book("org_1", call["callId"], {"caller": "+14155550133"}, cfg, start, "gel", "Priya")
     held = await row(start)
     assert create(client, base, start).json()["booked"] is True
     assert (await row(start))["bookingId"] == held["bookingId"] and len(google.events) == 1
@@ -439,7 +440,7 @@ async def test_concurrent_moves_send_at_most_one_provider_write_and_reserve_only
     assert len([r for r in google.calls if r.method == "PATCH"]) == 1
     rows = [await row(target) for target in targets]
     assert sum(r is not None for r in rows) == 1 and await row(old) is None
-    assert await vp._booking_rows("org_1", "VOICEHOLD#") == []
+    assert await calls._booking_rows("org_1", "VOICEHOLD#") == []
 
 
 async def test_legacy_google_binding_is_explicitly_unverified_without_data_mutation(client, google):
@@ -539,7 +540,7 @@ async def test_move_or_cancel_google_never_applied_releases_after_the_window(cli
     assert result["state"] == "rejected"
     kept = await row(old)
     assert "pending" not in kept and kept["eventId"] in google.events
-    assert await vp._booking_rows("org_1", "VOICEHOLD#") == []
+    assert await calls._booking_rows("org_1", "VOICEHOLD#") == []
     if new:
         other = await _start(client, caller="+14155550144", room="phone-other", bookingsGo="google")
         assert create(client, f"/api/v1/internal/voice/calls/{other['callId']}", new).json()["booked"] is True
@@ -588,7 +589,7 @@ async def test_google_hold_without_a_prepared_operation_can_be_cancelled(client,
     call, base = await begin(client)
     start = f"{_tomorrow()}T14:00"
     cfg = await vp.agent_config("org_1")
-    await vp._book("org_1", call["callId"], {"caller": "+14155550133"}, cfg, start, "gel", "Priya")
+    await calls._book("org_1", call["callId"], {"caller": "+14155550133"}, cfg, start, "gel", "Priya")
     cells = (await row(start))["cells"]
     assert change(client, base, start).json()["cancelled"] is True
     assert await row(start) is None and not google.calls

@@ -29,7 +29,7 @@ WINDOW_S = 70  # how long after the dial an arriving call counts as the probe
 
 
 async def forward_check(ws: str, cfg: dict) -> dict:
-    from routers.voice import _e164, us_number  # the page's number parsers; routers.voice imports this module
+    from core.voice.phone.numbers import _e164, us_number  # the page's number parsers
 
     if not (settings.VOICE_OUTBOUND_TRUNK_ID and livekit_huddles.configured()):
         return {"ok": False, "reason": "outbound_not_configured"}

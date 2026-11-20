@@ -751,9 +751,9 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             return
         if to == "idle" and task.get("watchUntil"):  # still working: it wakes itself (watches.py)
             return
-        from routers import voice_meet  # a meeting's follow-up and its Meet chat line (Task 21)
+        from core.voice.meetings import records  # a meeting's follow-up and its Meet chat line (Task 21)
 
-        await voice_meet.task_moved(task, to)
+        await records.task_moved(task, to)
         n = int(task.get("attemptCount") or 0)
         await task_conversation.ensure_task_room(ws, task)
         await task_conversation.post_as_lightbulb(
@@ -780,7 +780,7 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             if to == "failed" and await tasks_repo.from_contact(ws, task):  # read out on the call: offer a message
                 line = CALLER_FAILED_LINE
             if to == "idle":  # a meeting's thread that made something: its link here and in the Meet's chat
-                line = await voice_meet.with_link(room, task, line)
+                line = await records.with_link(room, task, line)
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,

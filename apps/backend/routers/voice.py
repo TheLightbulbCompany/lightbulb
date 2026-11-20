@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import httpx
 import json
-import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import datetime
 from typing import Any, Literal
@@ -33,6 +32,7 @@ from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
 from core.services import agent_registry, task_conversation
 from core.voice.phone import phone_pin, voice_onboarding, voice_outbound, voice_preferences
+from core.voice.phone.numbers import _e164, us_number
 
 router = APIRouter()
 
@@ -41,36 +41,6 @@ router = APIRouter()
 TIMELINE_ROOMS = 300
 MAX_CONFIG_BYTES = 64_000
 #: What a live greeting must say (the frontend's `isLawful`): an empty greeting is the page's default, which says both.
-_E164 = re.compile(r"\+[1-9]\d{6,14}")  # routers/agent_text._valid_phone
-
-
-def _e164(raw: str) -> str | None:
-    """The handoff number as the worker dials it (tel:+…), from what the page's field takes ("(415) 555-0147").
-    ponytail: a number without + is read as US (+1); other countries type the +."""
-    digits = re.sub(r"\D", "", raw)
-    if not raw.strip().startswith("+"):
-        digits = "1" + digits if len(digits) == 10 else digits if len(digits) == 11 and digits[0] == "1" else ""
-    number = f"+{digits}"
-    return number if _E164.fullmatch(number) else None
-
-
-#: NANP area codes that are not the US or Canada (Caribbean and Atlantic countries, billed as international), and the
-#: premium ones. The assistant only ever dials out (hand-off, run-out forward, forwarding check) to a +1 US/CA number.
-NON_US_CA_AREA_CODES = frozenset(
-    "242 246 264 268 284 345 441 473 649 658 664 721 758 767 784 809 829 849 868 869 876".split()
-)
-PREMIUM_AREA_CODES = frozenset({"900", "976"})
-_NANP = re.compile(r"\+1([2-9]\d{2})[2-9]\d{6}")
-
-
-def us_number(raw: str) -> str | None:
-    """`_e164`, kept only for a +1 US or Canadian number (not premium, not another NANP country): the one check for
-    every number we dial out to."""
-    number = _e164(raw)
-    m = _NANP.fullmatch(number or "")
-    if not m or m.group(1) in NON_US_CA_AREA_CODES | PREMIUM_AREA_CODES:
-        return None
-    return number
 
 
 #: Meeting fields the page shows. Never the ticket nonce or the Recall bot id.

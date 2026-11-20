@@ -11,21 +11,20 @@ the host member when there is none); the line is theirs, naming who said it. A t
 ``confirmAll`` (admission's ``origin: meeting``): a spend, an outside send or a publish always gets a Needs-you card.
 """
 
-import asyncio
 import logging
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from core.auth import AuthContext
-from core.config import settings
-from core.repositories import messaging_repo, tasks_repo
+from core.repositories import messaging_repo
 from core.services import messaging
-from core.voice import livekit_huddles
 from core.voice.meetings import meeting_bots, meeting_invites
-from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
+from core.voice.meetings.records import inviting_member, record_transcription
+from core.voice.room_lines import QuestionRef, _question_ref, agent_lines, assistant_name, latest_seq
+from core.voice.worker_api import RoomBody, _problem, _require_room_token, _room_id, _Worker
 
 router = APIRouter(dependencies=[_Worker])
 logger = logging.getLogger(__name__)
@@ -49,59 +48,6 @@ async def _meeting(room_id: str, body: RoomBody) -> tuple[str, dict, dict]:
     if not meta or meta.get("ownerId") != body.ownerId or not meta.get("meeting"):
         raise _problem(404, "meeting_not_found")
     return room_id, meta, meta["meeting"]
-
-
-async def assistant_name(owner_id: str) -> str:
-    name = (((await messaging_repo.get_voice_agent(owner_id)) or {}).get("name") or "").strip()
-    return name or "Lightbulb"
-
-
-async def latest_seq(room_id: str) -> int:
-    """The room's newest message seq: the first `/events` cursor, so a talk says only what comes after it."""
-    rows = await messaging_repo.list_messages_before(room_id, 10**19, 1)
-    return int(rows[-1]["messageSeq"]) if rows else 0
-
-
-def _question_ref(row: dict) -> dict | None:
-    """{taskId, qid} of a Worker's question line (task_questions.relay_question posts it in the origin thread)."""
-    if row.get("kind") != "question":
-        return None
-    ref = next((t for t in row.get("taskRefs") or [] if t.get("qid") and t.get("taskId")), None)
-    return {"taskId": ref["taskId"], "qid": ref["qid"]} if ref else None
-
-
-async def agent_lines(room_id: str, after: int) -> dict:
-    """The agent messages in the room's main chat after seq `after`, oldest first, and the next cursor. A thread's
-    lines and progress lines are not said, except a Worker's question in a thread this room started (with its
-    `question` ref: the next line said to the voice answers it, `answer_said_question`); the meeting never heard
-    one and the task waited on it (8 Nov prod Meet). The voice says these word for word (huddle-agent mouth.py).
-    `inReplyTo`: the human message a line answers (the voice matches it to that spoken ask); `action`: what the voice
-    does with it (the phone's "transfer")."""
-    from core.repositories import questions_repo
-
-    rows, _ = await messaging_repo.list_messages(room_id, after, 100)
-    said, owner = [], None
-    for r in rows:
-        text, question = r.get("editedText") or r.get("text") or "", _question_ref(r)
-        if (r.get("author") or {}).get("kind") != "agent" or r.get("progress") or r.get("deletedAt"):
-            continue
-        if question:  # answered or closed (on its card, or by voice) before the voice got to it: never said
-            owner = owner or ((await messaging_repo.get_room(room_id)) or {}).get("ownerId")
-            q = await questions_repo.get_question(owner, question["taskId"], question["qid"]) if owner else None
-            if (q or {}).get("state") != "open":
-                continue
-        if text.strip() and (question or not r.get("threadRootMessageId")):
-            said.append({"id": r["messageId"], "seq": int(r["messageSeq"]), "text": text,
-                         "waiting": bool(r.get("voiceWaiting", r.get("taskRefs") and r.get("kind") != "task_line")) if not question else False,
-                         **({"taskIds": r.get("voiceTaskIds") or [ref["taskId"] for ref in r["taskRefs"]]} if r.get("voiceTaskIds") or r.get("taskRefs") else {}),
-                         **({"question": question} if question else {}),
-                         **{k: r[k] for k in ("inReplyTo", "action", "voiceDelivery") if r.get(k)}})  # fmt: skip
-    return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
-
-
-class QuestionRef(BaseModel):
-    taskId: str = Field(min_length=1, max_length=64)
-    qid: str = Field(min_length=1, max_length=64)
 
 
 async def answer_said_question(owner_id: str, room_id: str, member: str, ref: QuestionRef | None, text: str,
@@ -152,14 +98,6 @@ async def start(room_id: str, body: StartIn) -> dict:
         "after": await latest_seq(room_id),
         "notTranscribed": meeting.get("notTranscribed") or [],
     }
-
-
-def inviting_member(meeting: dict, members: list[dict]) -> str | None:
-    """The member whose authority the whole meeting acts under: the inviter, else the host member."""
-    host = any(p.get("host") for p in (meeting.get("roster") or {}).values())
-    if not (meeting.get("invitedBy") or host):
-        return None
-    return next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
 
 
 class AskIn(RoomBody):
@@ -234,193 +172,10 @@ async def end(room_id: str, body: EndIn) -> dict:
     return {"ok": True}
 
 
-_FOLLOW_UP = {"working": "working", "waiting": "needs_you", "failed": "needs_you", "idle": "done", "resolved": "done"}
-
-
-_clears: dict[str, asyncio.Task] = {}
-
-
-async def _tile_phase(room_id: str, phase: str) -> None:
-    """Drafting while the task works; page_ready for 60 s once its link is posted. A newer phase cancels the clear."""
-    if old := _clears.pop(room_id, None):
-        old.cancel()
-    await livekit_huddles.set_meet_phase(room_id, phase)
-    if phase == "page_ready":
-
-        async def clear() -> None:
-            await asyncio.sleep(60)
-            _clears.pop(room_id, None)
-            await livekit_huddles.set_meet_phase(room_id, "")
-
-        _clears[room_id] = asyncio.create_task(clear())  # ponytail: lost on a restart; the next phase overwrites it
-
-
-async def task_moved(task: dict, to: str) -> None:
-    """A voice task changed status (activities._announce). When it is a meeting's follow-up, the follow-up tracks
-    it; a newly done one is said in the Meet's chat with its link while the bot is still in the call. The canonical
-    meeting origin and room audience identify it; the task workspace must own that room.
-    Best-effort: a status change never fails over this."""
-    audience, status = task.get("audience") or {}, _FOLLOW_UP.get(to)
-    room_id = audience.get("roomId")
-    owner_id = str(task.get("pk") or "").removeprefix("WS#")
-    if (
-        task.get("origin") != "meeting"
-        or not str(task.get("pk") or "").startswith("WS#")
-        or not owner_id
-        or status is None
-    ):
-        return
-    mine = lambda f: f.get("taskId") == task["taskId"]  # noqa: E731
-
-    def updated(entry: dict) -> dict:
-        return {**entry, "followUps": [{**f, "status": status} if mine(f) else f for f in entry.get("followUps") or []]}
-
-    def changed(m: dict) -> bool:
-        return any(
-            mine(f) and f.get("status") != status
-            for entry in [m, *(m.get("history") or [])]
-            for f in entry.get("followUps") or []
-        )
-
-    try:
-        from core.voice.meetings import meeting_followups
-
-        if await meeting_followups.record_task(owner_id, {**task, "status": to}):
-            return  # completion work belongs to its original notes, never a newly active Meet
-        if audience.get("kind") != "room" or not room_id:
-            return  # live provider delivery remains room-only
-        meta = (await messaging_repo.get_room(room_id)) or {}
-        if meta.get("ownerId") != owner_id or not meta.get("meeting"):
-            return
-        current_changed = False
-
-        def lay(m: dict) -> dict:
-            nonlocal current_changed
-            current_changed = any(mine(f) and f.get("status") != status for f in m.get("followUps") or [])
-            return {"followUps": updated(m)["followUps"], "history": [updated(h) for h in m.get("history") or []]}
-
-        meeting = await meeting_invites._patch_meeting(
-            room_id,
-            lay,
-            when=changed,
-        )  # a retried Activity changes nothing and says nothing twice
-        if (
-            meeting
-            and current_changed
-            and status == "done"
-            and meeting.get("status") == "in_call"
-            and meeting.get("recallBotId")
-            and await _result_occurrence(task, room_id, {**meta, "meeting": meeting})
-        ):
-            link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task['taskId']}"
-            await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
-            await _tile_phase(room_id, "page_ready")
-        elif (
-            meeting
-            and current_changed
-            and status != "done"
-            and meeting.get("status") == "in_call"
-            and await _result_occurrence(task, room_id, {**meta, "meeting": meeting})
-        ):
-            await _tile_phase(room_id, "drafting" if status == "working" else "")
-    except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
-        logger.warning("meet follow-up not updated task=%s to=%s", task.get("taskId"), to, exc_info=True)
-
-
-def task_link(task_id: str) -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task_id}"
-
-
-async def _result_occurrence(task: dict, room_id: str, meta: dict) -> tuple[str, int | float] | None:
-    """Provider delivery needs positive canonical provenance; an app result needs no live bot."""
-    owner_id = str(task.get("pk") or "").removeprefix("WS#")
-    if (
-        task.get("origin") != "meeting"
-        or not str(task.get("pk") or "").startswith("WS#")
-        or meta.get("ownerId") != owner_id
-    ):
-        return None
-    trigger = await tasks_repo.get_trigger(owner_id, task.get("triggerId")) if task.get("triggerId") else None
-    ref = (trigger or {}).get("ref") or {}
-    if ref.get("roomId") != room_id or ref.get("origin") != "meeting" or ref.get("meetingFollowups"):
-        return None
-    meeting = meta.get("meeting") or {}
-    bot, started = ref.get("meetingBotId"), ref.get("meetingInCallAt")
-    return (
-        (bot, started)
-        if bot and started and bot == meeting.get("recallBotId") and started == meeting.get("inCallAt")
-        else None
-    )
-
-
-async def with_link(room_id: str, task: dict, line: str) -> str:
-    """A finished thread that made something (an output: a document, a page) and came from a meeting's room: its
-    result line in that room carries the link, and the line goes to the Meet's chat while the bot is in the call, once
-    a task (8 Nov prod Meet re-run: "put the link in chat" was never delivered: the result line had only a task card,
-    and `task_moved` says a link only for `followUps`, which nothing writes since the one-Router design). Any other
-    room, or a thread with no output (an answer): the line as it is."""
-    if not task.get("outputs"):
-        return line
-    tid, linked = task["taskId"], f"{line} {task_link(task['taskId'])}"
-    try:
-        meta = (await messaging_repo.get_room(room_id)) or {}
-        meeting = meta.get("meeting")
-    except Exception:  # noqa: BLE001 -- the line must still post
-        logger.warning("meet room %s: room not read for the result link task=%s", room_id, tid, exc_info=True)
-        return line
-    if not meeting:
-        return line
-    try:
-        occurrence = await _result_occurrence(task, room_id, meta)
-        if occurrence is None:
-            return linked
-        bot, started = occurrence
-        fresh = await meeting_invites._patch_meeting(
-            room_id,
-            lambda m: {"linksSaid": [*(m.get("linksSaid") or []), tid]},
-            when=lambda m: (
-                m.get("status") == "in_call"
-                and m.get("recallBotId") == bot
-                and m.get("inCallAt") == started
-                and tid not in (m.get("linksSaid") or [])
-            ),
-        )  # None: not in the call, or already said (a retried Activity)
-        if fresh is not None:
-            await meeting_bots.say(fresh["recallBotId"], linked)
-            await _tile_phase(room_id, "page_ready")
-    except Exception:  # noqa: BLE001 -- a lost read, CAS race or RecallError: the room line still posts
-        logger.warning("meet room %s: result link not said task=%s", room_id, tid, exc_info=True)
-    return linked
-
-
 class TranscriptionIn(RoomBody):
     participantId: str = Field(default="", max_length=128)
     name: str = Field(default="", max_length=200)
     optOut: bool = True
-
-
-def _same(entry: dict, pid: str, name: str) -> bool:
-    return bool((pid and entry.get("id") == pid) or (name and entry.get("name", "").lower() == name.lower()))
-
-
-async def record_transcription(room_id: str, meeting: dict, pid: str, name: str, opt_out: bool = True) -> dict:
-    """Keep (or lift) one person's exclusion on the meeting; the Meet chat gets one line saying so (best-effort).
-    The one writer: the worker route below and the Router's `meeting_stop_transcribing` both come here."""
-
-    def change(m: dict) -> dict:
-        rest = [e for e in m.get("notTranscribed") or [] if not _same(e, pid, name)]
-        return {"notTranscribed": [*rest, {"id": pid, "name": name}] if opt_out else rest}
-
-    meeting = await meeting_invites._patch_meeting(room_id, change) or meeting
-    if bot := meeting.get("recallBotId"):
-        who = name or "you"
-        line = (f"OK {who}: your voice is excluded from the assistant and its transcript. The meeting recording continues." if opt_out
-                else f"OK {who}: you are transcribed again.")  # fmt: skip
-        try:
-            await meeting_bots.say(bot, line)
-        except Exception as e:  # noqa: BLE001 -- the opt-out stands without the chat line
-            logger.warning("meet room %s: opt-out chat failed %s", room_id, getattr(e, "code", type(e).__name__))
-    return {"notTranscribed": meeting.get("notTranscribed") or []}
 
 
 @router.post("/internal/voice/meet/{room_id}/transcription")

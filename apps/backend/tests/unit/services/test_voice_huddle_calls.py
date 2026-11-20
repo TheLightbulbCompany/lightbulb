@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from core.voice import rooms
 from core.voice import voice_calls as vc
 
 TEAM = [{"id": "ceo-1", "name": "Ada"}, {"id": "fin-1", "name": "Finance"}]
@@ -13,7 +14,7 @@ async def test_huddle_start_guest_is_404():
     """The real _room_team: a shared-channel guest (room owned by another workspace) 404s."""
     with patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_other"}, {}))):
         with pytest.raises(HTTPException) as exc:
-            await vc._room_team("org_a", "user_b", "room-1")
+            await rooms._room_team("org_a", "user_b", "room-1")
     assert exc.value.status_code == 404 and exc.value.detail["code"] == "room_not_found"
 
 
@@ -23,9 +24,9 @@ async def test_room_team_people_only_room():
         patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": "u"}])),
     ):
-        assert (await vc._room_team("org_a", "u", "room-1", need_team=False))[1] == []
+        assert (await rooms._room_team("org_a", "u", "room-1", need_team=False))[1] == []
         with pytest.raises(HTTPException) as exc:
-            await vc._room_team("org_a", "u", "room-1")
+            await rooms._room_team("org_a", "u", "room-1")
     assert exc.value.status_code == 409 and exc.value.detail["code"] == "no_agents"
 
 
@@ -81,7 +82,7 @@ async def test_close_window_bills_capped_usage_and_releases_the_claim():
         p.start()
     try:
         assert await vc.close_call("call-h", now=1100, usage_seconds=900) is True
-        await asyncio.gather(*vc._background)
+        await asyncio.gather(*rooms._background)
         items = table.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
         assert items[0]["Update"]["ExpressionAttributeValues"][":s"] == 600  # min(900, deadline - startedAt)
         assert items[1]["Delete"]["Key"] == {"owner_id": "__call__#call-h"}
@@ -104,7 +105,7 @@ async def test_sweeper_closes_an_orphan_window():
             patch.object(vc, "_publish_huddle_presence", AsyncMock()),
         ):
             assert await vc.sweep_calls_once(now=1200) == 1
-            await asyncio.gather(*vc._background)
+            await asyncio.gather(*rooms._background)
     finally:
         patch.stopall()
 
@@ -184,9 +185,9 @@ async def test_prewake_warms_every_room_agents_profile_after_the_health_wake(mon
         return {"ok": True}
 
     tasks = []
-    monkeypatch.setattr(vc.container_rpc, "call", fake_call)
-    monkeypatch.setattr(vc, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
-    vc.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}, {"id": "a2", "name": "Friday"}])
+    monkeypatch.setattr(rooms.container_rpc, "call", fake_call)
+    monkeypatch.setattr(rooms, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
+    rooms.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}, {"id": "a2", "name": "Friday"}])
     await asyncio.gather(*tasks)
     assert calls == [
         ("org_a", "health", None),
@@ -205,8 +206,8 @@ async def test_prewake_names_the_room_so_its_sessions_compact_before_the_first_q
         return {"ok": True}
 
     tasks = []
-    monkeypatch.setattr(vc.container_rpc, "call", fake_call)
-    monkeypatch.setattr(vc, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
-    vc.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}], "room-1")
+    monkeypatch.setattr(rooms.container_rpc, "call", fake_call)
+    monkeypatch.setattr(rooms, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
+    rooms.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}], "room-1")
     await asyncio.gather(*tasks)
     assert calls[1] == ("profile.warm", {"agentId": "a1", "roomId": "room-1"}, 10.0)

@@ -1499,7 +1499,7 @@ async def test_paused_ask_keeps_the_latest_and_pops_once(table):
 async def test_a_transfer_line_keeps_its_action_on_the_row_and_in_voice_events(table):
     """transfer_call's line (runtime_internal.transfer_call: post_as_lightbulb attrs={"action": "transfer"}) is
     stored with `action` on the message row, and agent_lines (/calls/{id}/events) hands it to the phone worker."""
-    from routers.voice_meet import agent_lines
+    from core.voice.room_lines import agent_lines
 
     room_id, _ = await _room()
     await repo.create_message(

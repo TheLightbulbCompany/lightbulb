@@ -49,9 +49,9 @@ async def warm_google(ws: str) -> None:
 
 
 def _vp():
-    from routers import voice_phone  # lazy: the router imports this module
+    from core.voice.phone import calls  # lazy: calls imports this module
 
-    return voice_phone
+    return calls
 
 
 def _google(cfg: dict) -> bool:
@@ -124,7 +124,10 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
         f"{title}. External booking outcomes may be unknown; preserve holds and verify the provider before changing them. Ask the owner "
         "to check Google in Settings and reconcile the recorded booking operation. Do not assume sign-in expired."
     )
-    out = await vp.start_work(call_id, vp.WorkIn(title=title, brief=brief))
+    # start_work stays in the router: its task starts through routers.internal_automations.
+    from routers import voice_phone
+
+    out = await voice_phone.start_work(call_id, voice_phone.WorkIn(title=title, brief=brief))
     await run_in_thread(table.put_item, Item={"pk": pk, "sk": _PROBLEM_SK, "taskId": out["taskId"]})
 
 

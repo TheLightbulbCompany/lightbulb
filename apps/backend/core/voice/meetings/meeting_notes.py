@@ -196,7 +196,7 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 room_id, {"notesSkipped": "no_agent"}, when=this_occurrence
             ) or {**meeting, "notesSkipped": "no_agent"}
         else:
-            from routers.voice_meet import inviting_member
+            from core.voice.meetings.records import inviting_member
 
             principal = (
                 inviting_member(meeting, await messaging_repo.list_members(room_id))

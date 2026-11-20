@@ -2,8 +2,8 @@
 because only the phone code could read them). A caller's Router batch and its Front desk thread get this block;
 owner and member chat, the orb and Meet never do (founder, 8 Nov).
 
-It reuses the phone's readers: the Agent page (`voice_phone.agent_config`, `_facts`: services, prices, durations,
-hours, the Knowledge answers that hold the policies), open slots (`voice_phone.free_slots`) and the caller's own
+It reuses the phone's readers: the Agent page (`calls.agent_config`, `_facts`: services, prices, durations,
+hours, the Knowledge answers that hold the policies), open slots (`calls.free_slots`) and the caller's own
 bookings (`VOICEBOOK#` rows with their number). Best-effort: bounded to ~5k characters, cached 60 s, 2 s at most.
 
 Business facts and optional availability return independently: provider failures or
@@ -54,7 +54,7 @@ async def facts_text(ws: str, cfg: dict | None = None, *, max_chars: int | None 
     only the caller profile requests an excerpt."""
     from core.repositories import messaging_repo
     from core.services import clerk_admin
-    from routers import voice_phone as vp
+    from core.voice.phone import calls as vp
 
     if cfg is None:
         if not await messaging_repo.get_voice_agent(ws):
@@ -92,7 +92,7 @@ async def _open_days(ws: str, cfg: dict, now: datetime, minutes: int) -> str:
     """The week's open start times: the hours minus Nova's own bookings (all days at once), less Google's busy
     blocks after a verified bounded freeBusy; provider failure marks the section unknown."""
     from core.voice.phone import voice_booking
-    from routers import voice_phone as vp
+    from core.voice.phone import calls as vp
 
     dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(DAYS)]
     *taken, busy = await asyncio.gather(
@@ -106,7 +106,7 @@ async def _open_days(ws: str, cfg: dict, now: datetime, minutes: int) -> str:
 
 
 async def _callers_bookings(ws: str, caller: str, now: datetime) -> str:
-    from routers import voice_phone as vp
+    from core.voice.phone import calls as vp
 
     mine = [b for b in await _upcoming(ws, f"{now:%Y-%m-%dT%H:%M}") if b.get("phone") == caller]
 
@@ -126,7 +126,7 @@ async def _callers_bookings(ws: str, caller: str, now: datetime) -> str:
 
 async def _build(ws: str, caller: str | None) -> str:
     from core.repositories import messaging_repo
-    from routers import voice_phone as vp
+    from core.voice.phone import calls as vp
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TIMEOUT_S

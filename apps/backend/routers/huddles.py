@@ -5,11 +5,10 @@ Two auth models: Clerk for people (`/huddles/*`) and the worker secret for the v
 """
 
 import contextlib
-import hmac
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -17,43 +16,14 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
 from core.services import messaging
-from core.voice import livekit_huddles, voice_calls
+from core.voice import livekit_huddles, rooms
 from core.voice.meetings import meeting_invites, meeting_notes
+from core.voice.worker_api import _Id, _problem, _require_room_token, _room_id, _Worker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_Id = Annotated[str, Field(min_length=1, max_length=128)]
 DISPATCH_DEDUPE_S = 40
-
-
-def _problem(status: int, code: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code})
-
-
-def _require_worker(x_lightbulb_huddle_secret: Annotated[str, Header()] = "") -> None:
-    expected = settings.HUDDLE_WORKER_SECRET
-    # An unset secret must never match an empty header.
-    if not expected or not hmac.compare_digest(x_lightbulb_huddle_secret.encode(), expected.encode()):
-        raise HTTPException(status_code=401, detail="invalid huddle worker secret")
-
-
-_Worker = Depends(_require_worker)
-
-
-def _require_room_token(presented: str, room_id: str, owner_id: str) -> None:
-    if not hmac.compare_digest(presented.encode(), livekit_huddles.room_token(room_id, owner_id).encode()):
-        raise HTTPException(status_code=401, detail="invalid huddle room token")
-
-
-def _room_id(room_id: str) -> str:
-    # One canonical (lowercase) id per channel: an uppercase path must not open a second LiveKit room.
-    return messaging.validate_uuid(room_id, label="room ID")
-
-
-class RoomBody(BaseModel):
-    ownerId: _Id
-    roomToken: _Id
 
 
 class TranscriptLine(BaseModel):
@@ -88,7 +58,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     owner_id = resolve_owner_id(auth)
     # Member of the owner's own room (guests 404), not archived. Any room kind; with no agent
     # member it is a people-only voice room: no worker dispatch, no runtime wake.
-    meta, team = await voice_calls._room_team(owner_id, auth.user_id, room_id, need_team=False)
+    meta, team = await rooms._room_team(owner_id, auth.user_id, room_id, need_team=False)
     in_call = HTTPException(
         status_code=409,
         detail={"code": "meeting_in_call", "message": "This room's meeting is live. Join it in Google Meet."},
@@ -111,7 +81,7 @@ async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict], *, 
     # Agent voice lives only in a DM with the assistant (owner mode, routers/voice_owner.py): the worker's
     # multi-voice huddle engine for other rooms is gone (task 9a). A people-only room still joins.
     if team and not owner_mode:
-        from routers.voice_meet import assistant_name  # voice_meet imports this module
+        from core.voice.room_lines import assistant_name
 
         raise HTTPException(
             status_code=409,
@@ -125,7 +95,7 @@ async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict], *, 
     out = {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
     if not team:
         return {**out, "lightbulb": False}
-    await voice_calls._gate(owner_id)  # the plan and free-minutes check /summon makes: 402 voice_limit
+    await rooms._gate(owner_id)  # the plan and free-minutes check /summon makes: 402 voice_limit
     try:
         # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch
         # another, which would evict the first. The window is shorter than the web's 45 s give-up, so
@@ -157,7 +127,7 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
     if meta.get("ownerId") != owner_id:  # join's gate: a shared-channel guest sees no huddle
         raise _problem(404, "room_not_found")
     # False: a people-only room; the web hides Lightbulb's visualizer and status.
-    lightbulb = bool(await voice_calls.room_agents(room_id))
+    lightbulb = bool(await rooms.room_agents(room_id))
     if not livekit_huddles.configured():
         return {"userIds": [], "available": False, "lightbulb": lightbulb}  # dark: the client hides Go live
     try:

@@ -40,7 +40,7 @@ async def send(owner_id: str, trigger_ids: list[str], text: str) -> dict:
             or any(r.get("meetingBotId") != bot_id or r.get("meetingInCallAt") != occurrence for r in refs)
         ):
             raise NotCurrentMeeting("not_current_meeting")
-        from routers.voice_meet import inviting_member
+        from core.voice.meetings.records import inviting_member
 
         member = inviting_member(meeting, await messaging_repo.list_members(room_id))
         if not member or any(t.get("actorUserId") != member for t in triggers):
@@ -110,7 +110,7 @@ async def stop_transcribing(owner_id: str, trigger_ids: list[str], participant_i
         speakers = {(meeting.get("askSpeakers") or {}).get(row.get("clientMessageId")) for row in rows}
         if len(speakers) != 1 or not (pid := next(iter(speakers))) or participant_id not in ("", pid):
             raise NotCurrentMeeting("not_the_speaker")
-        from routers.voice_meet import record_transcription
+        from core.voice.meetings.records import record_transcription
 
         name = ((meeting.get("roster") or {}).get(pid) or {}).get("name") or ""
         return await record_transcription(room_id, meeting, pid, name)

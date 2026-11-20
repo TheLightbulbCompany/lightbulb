@@ -12,7 +12,7 @@ from core.services import clerk_admin
 from core.voice.phone import voice_booking
 from core.temporal import activities as acts
 from core.temporal import router_prompt
-from routers import voice_phone as vp
+from core.voice.phone import calls as vp
 
 CFG = {
     "services": [{"name": "Pedicure", "price": "$45", "minutes": 45}, {"name": "Gel manicure", "price": "$40"}],

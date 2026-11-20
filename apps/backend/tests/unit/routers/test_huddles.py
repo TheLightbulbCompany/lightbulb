@@ -12,7 +12,7 @@ from main import app  # noqa: E402
 from routers import huddles as mod  # noqa: E402
 
 lk = mod.livekit_huddles
-vc = mod.voice_calls
+vc = mod.rooms
 ROOM = "11111111-1111-4111-8111-111111111111"
 SECRET = "worker-secret"
 W = {"X-Lightbulb-Huddle-Secret": SECRET}

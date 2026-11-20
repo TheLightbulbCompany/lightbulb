@@ -112,7 +112,7 @@ def optout(world, monkeypatch):
     world["meta"]["meeting"]["roster"] = {"12": {"name": "Sam"}, "11": {"name": "Maya"}}
     monkeypatch.setattr(mod.messaging_repo, "get_message_by_id", AsyncMock(return_value={"clientMessageId": "cm"}))
     rec = AsyncMock(return_value={"notTranscribed": [{"id": "12", "name": "Sam"}]})
-    monkeypatch.setattr("routers.voice_meet.record_transcription", rec)
+    monkeypatch.setattr("core.voice.meetings.records.record_transcription", rec)
     return rec
 
 

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from core.repositories import messaging_repo
+from core.voice.phone import calls as phone_calls
 from routers import voice_phone
 from tests.unit.routers.test_voice_phone import W, _start, _tomorrow, client  # noqa: F401
 from tests.unit.services.conftest import repos  # noqa: F401
@@ -20,7 +21,7 @@ async def test_a_caller_joins_the_waitlist_keyed_to_their_number(client):  # noq
     body = {"date": day, "service": "Gel manicure", "name": "Priya", "note": "after 1pm", "phone": "+19998887777"}
     r = client.post(_url(call), json=body, headers=W)  # a phone the model supplies is ignored
     assert r.status_code == 200 and r.json()["waitlisted"] is True
-    rows = await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")
+    rows = await phone_calls._booking_rows("org_1", f"VOICEWAIT#{day}#")
     assert len(rows) == 1 and rows[0]["sk"] == f"VOICEWAIT#{day}#{call['callId']}"
     assert rows[0]["phone"] == "+14155550133" and rows[0]["name"] == "Priya"
     assert rows[0]["note"] == "after 1pm" and rows[0]["service"] == "Gel manicure"
@@ -34,7 +35,7 @@ async def test_asking_again_on_the_same_call_is_one_entry(client):  # noqa: F811
     day = _tomorrow()
     for note in ("after 1pm", "after 2pm"):
         assert client.post(_url(call), json={"date": day, "note": note}, headers=W).status_code == 200
-    rows = await voice_phone._booking_rows("org_1", f"VOICEWAIT#{day}#")
+    rows = await phone_calls._booking_rows("org_1", f"VOICEWAIT#{day}#")
     assert len(rows) == 1 and rows[0]["note"] == "after 2pm"
 
 
@@ -42,14 +43,14 @@ async def test_a_withheld_caller_cannot_join_the_waitlist(client):  # noqa: F811
     call = await _start(client, caller="")
     r = client.post(_url(call), json={"date": _tomorrow()}, headers=W)
     assert r.status_code == 400 and r.json()["detail"]["code"] == "caller_number_required"
-    assert await voice_phone._booking_rows("org_1", "VOICEWAIT#") == []
+    assert await phone_calls._booking_rows("org_1", "VOICEWAIT#") == []
 
 
 async def test_waitlist_off_refuses_server_side(client):  # noqa: F811
     call = await _start(client, allow={"waitlist": False})
     r = client.post(_url(call), json={"date": _tomorrow()}, headers=W)
     assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
-    assert await voice_phone._booking_rows("org_1", "VOICEWAIT#") == []
+    assert await phone_calls._booking_rows("org_1", "VOICEWAIT#") == []
 
 
 async def test_waitlist_refuses_a_past_date(client):  # noqa: F811

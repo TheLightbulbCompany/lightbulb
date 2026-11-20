@@ -320,7 +320,7 @@ def _rostered(roster: dict | None, kind: str, pid: str, name: str, at: int, host
         return roster
     if kind == "leave":
         roster[pid] = {**seen, "at": at, "in": False}
-    elif name and not name.endswith(meeting_bots._BOT_SUFFIX):
+    elif name and not meeting_bots.is_own_bot(name):
         # host: Recall's is_host, what the meeting agent checks a member's own speech by (voice_meet)
         roster[pid] = {"name": name[:_ROSTER_NAME_CHARS], "at": at, "in": True, **({"host": True} if host else {})}
     # Bounded: it rides on the room's META item. The oldest leavers go first (enough recent ones
@@ -388,7 +388,7 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
     # Loop prevention only: participant names/optional bot flags never grant authority.
     if (
         who.get("is_bot")
-        or name.endswith(meeting_bots._BOT_SUFFIX.strip())
+        or meeting_bots.is_own_bot(name)
         or not isinstance(text, str)
         or not text.strip()
         or len(text) > 10000

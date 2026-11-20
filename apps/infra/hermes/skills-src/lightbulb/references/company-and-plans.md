@@ -78,15 +78,13 @@ asked, once.
 
 ## Plans, providers, and this owner's current state
 
-Lightbulb has one paid plan, **Team, $50/month** (Base and Ultra are retired
-and no longer sold; a workspace still on one keeps it until it switches; this
-owner's current plan is in the facts file). It allows unlimited agent
-identities; agent identity count is not a plan entitlement. The plan covers 5 people; each member from the 6th adds a $20/month
-seat to the subscription, prorated from the day they join and removed when they
-leave (a trial is not charged for members). Runtime capacity remains finite. Upgrade lives in
-thelightbulb.company/settings. Changing the plan of a workspace that already
-pays needs the owner to confirm it there; nothing is charged at that moment, and
-the prorated difference for the rest of the period goes on the next invoice. There is also a **free trial** (no card, 30 days; an admin may add a card
+The plan sold today is the **Lightbulb Phone plan** (price, included minutes and
+overage are under "Voice calls" below). Base, Ultra and Team are older plans
+that are no longer sold; a workspace still on one keeps it until it switches.
+Read this owner's current plan from the facts file; never quote a price from
+memory. Agent identity count is not a plan entitlement. Runtime capacity remains
+finite. Changing the plan lives in thelightbulb.company/settings, and nothing is
+charged until the owner confirms it there. There is also a **free trial** (no card, 30 days; an admin may add a card
 early, and the first charge is still on the trial's last day) on
 Lightbulb-managed DeepSeek within a daily allowance.
 
@@ -116,7 +114,7 @@ cannot be added. Do not suggest API-key setup as a current option.
 
 ```json
 {
-  "plan": "Team ($50/mo for up to 5 people, $20/mo per member from the 6th)",
+  "plan": "An older plan that is no longer sold (not the Lightbulb Phone plan)",
   "subscription_status": "active",
   "provider": "Lightbulb-managed credits",
   "provider_choice": "openrouter_managed",

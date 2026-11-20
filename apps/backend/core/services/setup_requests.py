@@ -34,11 +34,13 @@ async def submit(req: SetupRequest) -> dict:
     }
     await setup_requests_repo.put(item)
 
+    event = "waitlist_joined" if req.waitlist else "setup_requested"
     capture_product_event(
         distinct_id=req.anonymous_id or f"setup_request:{request_id}",
-        event="setup_requested",
-        event_uuid=str(uuid.uuid5(uuid.NAMESPACE_URL, f"setup_requested:{request_id}")),
+        event=event,
+        event_uuid=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{event}:{request_id}")),
         properties={
+            **({"waitlist": req.waitlist} if req.waitlist else {}),
             "team_size": req.team_size,
             "agents": req.agents,
             "source": req.source,
@@ -57,6 +59,7 @@ async def _email_aden(request_id: str, req: SetupRequest) -> None:
     rows = [
         ("Name", req.name),
         ("Email", req.email),
+        ("Waitlist", req.waitlist),
         ("Phone", req.phone),
         ("Company", req.company),
         ("Team size", req.team_size),
@@ -71,9 +74,14 @@ async def _email_aden(request_id: str, req: SetupRequest) -> None:
     rows = [(k, v) for k, v in rows if v]
     body_html = "".join(f"<p><strong>{html.escape(k)}:</strong> {html.escape(v, quote=False)}</p>" for k, v in rows)
     body_text = "".join(f"{k}: {v}\n" for k, v in rows)
+    subject = (
+        f"Waitlist ({req.waitlist}): {req.email}"
+        if req.waitlist
+        else f"Setup request: {req.company}" + (f" ({req.team_size})" if req.team_size else "")
+    )
     await email_service.send_email(
         to=SETUP_REQUEST_TO,
-        subject=f"Setup request: {req.company}" + (f" ({req.team_size})" if req.team_size else ""),
+        subject=subject,
         html=f"<div>{body_html}</div>",
         text=body_text,
         from_addr=settings.EMAIL_FROM_TICKETS,

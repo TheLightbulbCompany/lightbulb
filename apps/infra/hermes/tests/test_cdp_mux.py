@@ -412,36 +412,10 @@ def test_cast_never_reaches_a_named_upstream(chrome, named_chrome):
     assert not named_chrome.inputs  # a named upstream never sees viewer input
 
 
-def test_drop_closes_named_clients_and_forgets_upstream(named_chrome):
-    a = Client("run-a", NAMED)
-    a.call("Target.getTargets")
-    cdp_mux.drop(NAMED)
-    with pytest.raises(ConnectionClosed):
-        a.call("Target.getTargets")
-    assert NAMED not in cdp_mux._UPS
-
-
-def test_drop_refuses_cloud():
-    with pytest.raises(ValueError):
-        cdp_mux.drop(cdp_mux.CLOUD)
-
-
-def test_mux_swallows_and_records_lightbulb_human_input(named_chrome):
+def test_mux_swallows_lightbulb_human_input(named_chrome):
     mac = Client("run-a", NAMED)
-    before = time.time()
     _reply, events = mac.call("Test.emit", {"method": "Lightbulb.humanInput", "params": {"at": 1234.5}})
     assert events == []  # never forwarded to a client
-    assert before <= cdp_mux.human_input_at(NAMED) <= time.time()  # our receive time, not the Mac's clock
-    assert cdp_mux.human_input_at("mac:nobody:run") == 0.0
-
-
-def test_named_upstream_records_the_doors_close_once(named_chrome):
-    mac = Client("run-a", NAMED)
-    mac.call("Target.getTargets")
-    mac.ws.send(json.dumps({"id": 99, "method": "Test.close", "params": {"code": 4503, "reason": "CAPACITY"}}))
-    assert _wait(lambda: cdp_mux._UPS[NAMED].closed is not None)
-    assert cdp_mux.last_close(NAMED) == (4503, "CAPACITY")
-    assert cdp_mux.last_close(NAMED) is None  # read once
 
 
 def test_named_upstream_reconnect_reuses_the_runs_existing_tab(named_chrome):
@@ -458,14 +432,6 @@ def test_named_upstream_reconnect_creates_tab_when_gone(named_chrome):
     named_chrome.targets.remove(tab)  # Chrome closed it while the pipe was down
     again = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
     assert again != tab and named_chrome.seen.count("Target.createTarget") == 2
-
-
-def test_show_sends_lightbulb_show_on_the_runs_first_tab(named_chrome):
-    tab = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
-    assert cdp_mux.show("run-a", NAMED) is True
-    assert _wait(lambda: "Lightbulb.show" in named_chrome.seen)
-    assert named_chrome.shown == [tab]
-    assert cdp_mux.show("run-z", NAMED) is False  # no tab yet: nothing to raise
 
 
 def test_origins_a_run_navigated_away_from_or_closed_stay_visited_until_a_save_forgets_them(chrome):

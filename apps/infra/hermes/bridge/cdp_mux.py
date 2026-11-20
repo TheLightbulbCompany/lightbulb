@@ -19,12 +19,10 @@ upstreams the same way -- each with its own automation connection and tabs, comp
 from the cloud one and from each other (``url_for``/``set_upstream``/``close_run`` take an
 ``upstream`` name; ``CLOUD`` is the default). ``cast`` always targets CLOUD: the desktop app casts
 a Mac's own live view itself, so the bridge never screencasts a named upstream's tab. A paired
-Mac's raw CDP door is ``mac:<device>:<runId>``, one per (Mac, run); ``drop`` forgets one entirely
-once it is done with.
-A named upstream differs in three ways: its door's ``Lightbulb.humanInput`` events are swallowed
-and recorded (``human_input_at``, the person typing in the Mac's agent window), its close code is
-kept for the bridge (``last_close``), and a reconnect (the Mac slept) keeps each run's tabs, which
-Chrome still has: the run's next client re-attaches to them when they still exist.
+Mac's raw CDP door was ``mac:<device>:<runId>``, one per (Mac, run); no caller opens one now.
+A named upstream differs in three ways: its door's ``Lightbulb.humanInput`` events are swallowed,
+its close code is kept, and a reconnect (the Mac slept) keeps each run's tabs, which Chrome still
+has: the run's next client re-attaches to them when they still exist.
 
 Nothing else is filtered: agents may send any method to any tab (owner ruling 2026-09-27).
 One command is rewritten, on a named upstream only: ``DOM.setFileInputFiles`` naming files that
@@ -140,7 +138,7 @@ class _Cast:
 
 
 #: One automation connection + its run/tab/cast bookkeeping per upstream name. CLOUD always exists;
-#: named (Mac) upstreams are created on first ``url_for``/``set_upstream`` and forgotten by ``drop``.
+#: named (Mac) upstreams are created on first ``url_for``/``set_upstream``.
 _UPS: dict[str, _State] = {}
 #: run key -> the upstream name it was registered on, so ``_serve_client`` can route a connection
 #: to the right ``_State`` from the path alone.
@@ -291,35 +289,6 @@ def disconnect(upstream: str = CLOUD) -> None:
         _run(_disconnect_upstream(upstream))
 
 
-def human_input_at(upstream: str) -> float:
-    """When (the bridge's epoch clock) a person last used the named upstream's window (0: never)."""
-    state = _UPS.get(upstream)
-    return state.human_at if state is not None else 0.0
-
-
-def last_close(upstream: str) -> tuple[int, str] | None:
-    """How the named upstream's door last closed the pipe, (code, reason), once: reading forgets it."""
-    state = _UPS.get(upstream)
-    if state is None:
-        return None
-    closed, state.closed = state.closed, None  # ponytail: unlocked; one reader (the run's own turn)
-    return closed
-
-
-def show(run_id: str, upstream: str) -> bool:
-    """Ask the Mac to raise its window on the run's first tab (a takeover ask). False: no tab yet."""
-    return _run(_show(upstream, _key_for(run_id, upstream))) if _loop is not None else False
-
-
-def drop(upstream: str) -> None:
-    """Close and forget a non-cloud upstream entirely: its connection, clients, tabs and casts, and
-    every run key routed to it. Refuses CLOUD -- that one lives for the process."""
-    if upstream == CLOUD:
-        raise ValueError("cannot drop the cloud upstream")
-    if _loop is not None:
-        _run(_drop(upstream))
-
-
 # ---- loop-side ---------------------------------------------------------------------------------
 
 
@@ -338,28 +307,10 @@ async def _set_upstream(url: str, generation, upstream: str) -> None:
         await _drop_upstream(state)
 
 
-async def _show(upstream: str, key: str) -> bool:
-    state = _UPS.get(upstream)
-    tabs = state.tabs.get(key) if state is not None else None
-    if not tabs or state.up is None:
-        return False
-    await _send(state, "Lightbulb.show", {"targetId": tabs[0]})
-    return True
-
-
 async def _disconnect_upstream(upstream: str) -> None:
     state = _UPS.get(upstream)
     if state is not None:
         await _drop_upstream(state)
-
-
-async def _drop(upstream: str) -> None:
-    state = _UPS.pop(upstream, None)
-    if state is None:
-        return
-    await _drop_upstream(state)
-    for key in [k for k, v in _KEYS.items() if v == upstream]:
-        _KEYS.pop(key, None)
 
 
 async def _drop_upstream(state: _State) -> None:

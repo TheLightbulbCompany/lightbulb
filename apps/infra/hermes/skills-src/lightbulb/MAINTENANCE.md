@@ -101,7 +101,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
                                  Codes/CAPTCHA are browser-only (owner ruling 2026-10-07): the bridge's
                                  _code_prompt posts the line and watches the page; there is no code form.
-  - Background subagents .... references/surfaces.md ("Background subagents" row) <- core/services/subagents.py + packages/shared/src/messaging/subagents.ts
   - Members / join link ..... references/surfaces.md ("Members & join link" row)
                               <- routers/orgs.py (one link per workspace; any member invites + copies, admin-only
                                  replace/revoke + pending list; open join as org:member); app/join/invite
@@ -252,7 +251,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  rendered first); components/messaging/roomCommands.ts (useRoomCommandResults — rooms then
                                  people, degrades to [] via useMessagingWorkspaceOptional when no messaging provider is mounted,
                                  e.g. InlineTeamsPanel.tsx)
-  - Workspace rail + Activity references/surfaces.md ("Workspace rail" and "Activity" rows)
+  - Workspace rail + Activity references/surfaces.md ("Workspace rail" row)
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (DESTINATIONS: rail order and labels);
                                  apps/frontend/src/components/workspace/panelRegistry.ts (teams-dashboard, teams-inbox,
                                  teams-approvals, teams-activity → activity aliases);
@@ -284,8 +283,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Move to section); roomSections.ts (groupRooms — Starred · custom · Channels · Direct);
                                  sidebarPrefs.ts (per-browser collapse + sort)
   - Lightbulb channel ....... references/surfaces.md
-                              <- apps/backend/core/services/messaging.py (ensure_vendor_room, on_org_member_joined,
-                                 is_vendor_room / _deny_vendor_human_change); core/config.py VENDOR_ORG_ID;
+                              <- apps/backend/core/services/messaging.py (is_vendor_room / _deny_vendor_human_change); core/config.py VENDOR_ORG_ID;
                                  apps/frontend/src/components/messaging/{RoomDirectoryRow,RoomHeader,RoomPanel}.tsx (Shared marker, gates)
   - Composer ................ references/surfaces.md
                               <- apps/frontend/src/components/messaging/RoomComposer.tsx (typeaheads, formatting toolbar,

@@ -10,6 +10,7 @@ command surface. Backend derives these sets here — clients do NOT submit
 them on /desktop/pair.
 """
 
+import asyncio
 import base64
 import hashlib
 import logging
@@ -47,16 +48,9 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     # the Mac approves each start natively and launches only its fixed CLI.
     "session.options.v1",
     "session.start.v1",
-    # Raw CDP to the Mac's own Chrome over the node socket. Rides Browser.
-    "browser.cdp.v1",
-    # Mac live view: the agent tab's screencast + viewer input. Rides Browser.
-    "browser.cast.v1",
     # Quit the agent Chrome and delete its profile. Always granted: it only removes data.
     "browser.wipe.v1",
 )
-
-#: The Mac commands the Browser grant carries.
-_MAC_BROWSER_COMMANDS = frozenset({"browser.cdp.v1", "browser.cast.v1"})
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
     "desktop.operation.approve.v1",
@@ -98,7 +92,7 @@ DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
 )
 
 # The pair's stored Browser grant: the CLI node entry carries this literal when Browser was
-# on at pairing, and granted_commands() derives the Mac app's browser.cdp.v1 from it. The CLI
+# on at pairing. The CLI
 # node no longer serves it (the old node-host browser proxy is gone), so at the relay it
 # grants nothing; it is only the marker. Renaming it strands every existing pair's grant.
 BROWSER_GRANT_MARKER = "browser.proxy"
@@ -204,8 +198,6 @@ class DesktopPermissionGrant:
             allowed |= {"system.run.approve.v1", "session.options.v1", "session.start.v1"}
         if self.files:
             allowed.add("file.access.policy.v1")
-        if self.browser:
-            allowed |= _MAC_BROWSER_COMMANDS
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:
@@ -256,31 +248,12 @@ async def declared_commands_for(owner_id: str, device_id: str) -> set[str]:
     return granted_commands(devices, entry) if isinstance(commands, list) else set()
 
 
-def _browser_granted(devices: dict, entry: dict) -> bool:
-    """The pair's Browser grant, read off the reciprocal CLI node's stored
-    ``BROWSER_GRANT_MARKER`` (same pairing group, same member)."""
-    group = entry.get("pairingGroupId")
-    return bool(group) and any(
-        isinstance(peer, dict)
-        and peer.get("clientId") == "node-host"
-        and peer.get("pairingGroupId") == group
-        and peer.get("userId") == entry.get("userId")
-        and BROWSER_GRANT_MARKER in (peer.get("commands") or [])
-        for peer in devices.values()
-    )
-
-
 def granted_commands(devices: dict, entry: dict) -> set[str]:
-    """A paired device's granted commands. The Mac app's browser commands are DERIVED so a Mac
-    paired before they existed gets them with no re-pair and no second consent (consent is
-    given once, at pairing): ``browser.wipe.v1`` always, and ``browser.cdp.v1`` /
-    ``browser.cast.v1`` from the pair's Browser grant. The Mac still refuses them locally while
-    Browser is switched off."""
+    """A paired device's granted commands; a paired Mac also gets ``browser.wipe.v1``, derived so
+    a Mac paired before it existed needs no re-pair."""
     granted = set(entry.get("commands") or [])
     if entry.get("clientId") == "openclaw-macos" and entry.get("pairingGroupId"):
         granted.add("browser.wipe.v1")
-        if _browser_granted(devices, entry):
-            granted |= _MAC_BROWSER_COMMANDS
     return granted
 
 
@@ -530,7 +503,6 @@ def revoke_member_soon(owner: str, member_id: str, still_current=None) -> None:
     removal, still REVOKING), so a re-add and re-pair meanwhile survives. ``still_current``
     (async, True while this delete is still the member's lifecycle epoch) is checked before
     touching anything: a superseded delete does nothing."""
-    import asyncio
 
     async def current() -> bool:
         if still_current is None:

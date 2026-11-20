@@ -157,7 +157,6 @@ def test_only_listed_routes_accept_computer_person():
         ("GET", "/local-sessions/device/tasks"),
         ("GET", "/local-sessions/device/tasks/{task}"),
         ("PATCH", "/local-sessions/device/tasks/{task}"),
-        ("POST", "/local-sessions/device/sessions/browser-place"),
         ("POST", "/messaging/rooms"),
         ("POST", "/messaging/rooms/{room_id}/messages"),
     ]
@@ -196,17 +195,6 @@ def test_room_post_from_a_computer_carries_the_session_label(env, monkeypatch):
     body = json.dumps({"clientRoomId": ROOM, "kind": "channel", "name": "x", "members": []}).encode()
     response = client.post(f"/api/v1{path}", content=body, headers=signed(computer, proof, "POST", path, body))
     assert response.status_code in (403, 422)
-
-
-def test_browser_place_by_native_id(env, monkeypatch):
-    client, computer, proof, _ = env
-    place = AsyncMock(return_value={"where": "cloud"})
-    monkeypatch.setattr(router.session_browser, "place_by_native", place)
-    path = "/local-sessions/device/sessions/browser-place"
-    body = json.dumps({"where": "cloud", "native_id": "c1a2"}).encode()
-    response = client.post(f"/api/v1{path}", content=body, headers=signed(computer, proof, "POST", path, body))
-    assert response.status_code == 200, response.text
-    place.assert_awaited_once_with("org_1", "user_ada", "c1a2", "cloud")
 
 
 def test_a_computer_reply_lands_in_its_parents_thread(env, monkeypatch):

@@ -96,39 +96,12 @@ def _pair(browser: bool, *, mac_commands=("device.info",)) -> dict:
     }
 
 
-def test_browser_grant_adds_cdp_command():
-    for command in ("browser.cdp.v1", "browser.cast.v1"):
-        assert command in DesktopPermissionGrant(browser=True).mac_commands()
-        assert command not in DesktopPermissionGrant().mac_commands()
-    assert "browser.wipe.v1" in DesktopPermissionGrant().mac_commands()
-
-
-def test_pre_task1_pair_still_derives_cdp_and_wipe():
-    devices = _pair(browser=True)
-    granted = granted_commands(devices, devices["mac-1"])
-    assert {"browser.cdp.v1", "browser.cast.v1", "browser.wipe.v1"} <= granted and "browser.state.v1" not in granted
-
-
-def test_browser_grant_is_cdp_and_cast_only():
-    # The Browser switch grants the Mac's raw-CDP and cast channels and nothing on the CLI node but
-    # the stored marker the derivation reads; the old proxy/upload/state commands are gone.
+def test_the_browser_grant_adds_no_mac_command_and_only_the_cli_marker():
     grant = DesktopPermissionGrant(browser=True)
-    assert set(grant.mac_commands()) - set(DesktopPermissionGrant().mac_commands()) == {
-        "browser.cdp.v1",
-        "browser.cast.v1",
-    }
+    assert set(grant.mac_commands()) == set(DesktopPermissionGrant().mac_commands())
+    assert "browser.wipe.v1" in grant.mac_commands()
     assert DESKTOP_CLI_BROWSER_COMMANDS == (BROWSER_GRANT_MARKER,)
     assert "browser" not in grant.cli_caps()
-
-
-def test_existing_pair_without_browser_gets_no_cdp():
-    devices = _pair(browser=False)
-    granted = granted_commands(devices, devices["mac-1"])
-    assert not granted & {"browser.cdp.v1", "browser.cast.v1"}
-    # a peer in another group or of another member does not lend its Browser grant
-    other = _pair(browser=True)
-    other["cli-1"]["userId"] = "u2"
-    assert "browser.cdp.v1" not in granted_commands(other, other["mac-1"])
 
 
 def test_wipe_is_derived_for_every_native_entry():
@@ -144,7 +117,7 @@ async def test_declared_commands_for_includes_derived_commands():
     row = {"paired_devices": _pair(browser=True)}
     with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row)):
         declared = await declared_commands_for("org_1", "mac-1")
-    assert declared == {"device.info", "browser.cdp.v1", "browser.cast.v1", "browser.wipe.v1"}
+    assert declared == {"device.info", "browser.wipe.v1"}
 
 
 # ---------------------------------------------------------------------------

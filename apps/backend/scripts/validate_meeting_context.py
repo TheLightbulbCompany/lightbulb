@@ -26,6 +26,7 @@ from temporalio.testing import ActivityEnvironment
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.engine.contract import GRANT_HEADER
 from core.repositories import messaging_repo, tasks_repo
 from core.services import memory_tags, runtime_runs, runtime_transport
 from core.voice.meetings import meeting_context
@@ -282,7 +283,7 @@ async def validate(receipt_path: Path, expected_image_tag: str = "h-2026.11.9-a2
             "otherPrivateSourceAbsent": forbidden["marker"] not in reply,
         }
         container = await runtime_runs._container(ctx.ws)
-        headers = {"Authorization": "Bearer " + container["hook_token"], meeting_context.GRANT_HEADER: grant}
+        headers = {"Authorization": "Bearer " + container["hook_token"], GRANT_HEADER: grant}
         url = f"{API_ROOT}/api/v1/internal/runtime/{ctx.ws}/meeting-context"
         async with httpx.AsyncClient(timeout=20) as client:
             for name, run_id, trigger_id, hdrs in (

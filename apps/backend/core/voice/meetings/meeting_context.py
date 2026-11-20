@@ -18,7 +18,6 @@ from core.dynamodb import run_in_thread
 from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
 from core.repositories import messaging_repo, tasks_repo
 from core.services import clerk_admin, messaging
-from core.engine.contract import GRANT_HEADER  # noqa: F401 -- the grant header the runtime_internal route reads
 from core.services.service_token import _signing_key
 
 PAGE_CHARS = 8192

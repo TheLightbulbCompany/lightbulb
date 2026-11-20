@@ -33,6 +33,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.engine.contract import GRANT_HEADER
 from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
 from core.services import (
     purchases,
@@ -624,7 +625,7 @@ async def meeting_context(owner_id: str, body: MeetingContextBody, request: Requ
             body.trigger_id,
             body.section,
             body.cursor,
-            grant=request.headers.get(source.GRANT_HEADER),
+            grant=request.headers.get(GRANT_HEADER),
         )
     except source.NotAuthorized as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

@@ -139,10 +139,6 @@ class MessageForbidden(MessagingRepoError):
     pass
 
 
-class ExtraConditionFailed(MessageForbidden):
-    """One of the caller's own ``extra_conditions`` did not hold when the message committed."""
-
-
 class MemberLimitExceeded(MessagingRepoError):
     pass
 
@@ -1189,7 +1185,6 @@ async def create_message(
     silent: bool = False,
     expected_room_revision: int | None = None,
     acting_human_id: str | None = None,
-    extra_conditions: list[dict] | None = None,
     via: str | None = None,
     text_reply_key: str | None = None,
     session_mentions: list[str] | None = None,
@@ -1360,8 +1355,6 @@ async def create_message(
             ]
             if not checked:
                 del items[1]  # the author MEMBER check
-            source_condition_start = len(items)
-            items.extend(extra_conditions or [])
             if admit:  # a Router room: one admission row; the targets stay on the MSG row for reference
                 items.append(_work_admit_item(table_name, owner_id, room_id, message_id, seq))
             else:
@@ -1465,11 +1458,6 @@ async def create_message(
                 if checked and len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
                     # The author's own MEMBER row is gone: not a sequence race, don't retry.
                     raise MessageForbidden("Only a current room member can send this message.") from exc
-                if any(
-                    len(reasons) > i and reasons[i].get("Code") == "ConditionalCheckFailed"
-                    for i in range(source_condition_start, source_condition_start + len(extra_conditions or []))
-                ):
-                    raise ExtraConditionFailed("Native session source is no longer authorized.") from exc
                 if (
                     root_index is not None
                     and len(reasons) > root_index

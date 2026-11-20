@@ -1,5 +1,6 @@
 """Explicit voice-plan enrollment. Never invoked by workspace provisioning or existing subscriptions."""
 
+import calendar
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 import httpx
@@ -170,20 +171,40 @@ async def _enroll(owner_id: str, account: dict, client) -> None:
     contract = await client.get_contract(customer_id=customer_id, contract_id=contract_id)
     contract = contract.get("contract") or contract
     started_at = contract.get("starting_at")
-    if not started_at:
+    schedule = contract.get("usage_statement_schedule") or {}
+    # Store the anchor Metronome reports, not the one we asked for: period() must follow the real invoices.
+    anchor = schedule.get("billing_anchor_date")
+    if not started_at or not anchor or str(schedule.get("frequency", "")).upper() != "MONTHLY":
         raise VoicePlanError("voice_contract_incomplete")
     await billing_repo.set_voice_plan(
-        owner_id, customer_id=customer_id, contract_id=contract_id, usage_key=key, started_at=started_at
+        owner_id,
+        customer_id=customer_id,
+        contract_id=contract_id,
+        usage_key=key,
+        started_at=started_at,
+        billing_anchor=anchor,
     )
 
 
+def _boundary(year: int, month: int, day: int) -> datetime:
+    """Midnight UTC on ``day`` of the month, or the month's last day when it is shorter (31 -> 28 Feb -> 31 Mar)."""
+    year, month = year + (month - 1) // 12, (month - 1) % 12 + 1
+    return datetime(year, month, min(day, calendar.monthrange(year, month)[1]), tzinfo=UTC)
+
+
 def period(account: dict, at: datetime | None = None) -> tuple[datetime, datetime]:
+    """The usage-statement window holding ``at``: monthly from the contract's billing anchor day.
+
+    ``voice_plan_billing_anchor`` is what Metronome reports for the contract, stored at enrollment;
+    every enrolled row carries it.
+    """
     now = (at or datetime.now(UTC)).astimezone(UTC)
     ending_at = datetime.fromisoformat(account["voice_plan_ending_at"]) if account.get("voice_plan_ending_at") else None
     if ending_at and ending_at <= now:
         now = ending_at - timedelta(microseconds=1)
-    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    end = start.replace(year=start.year + (start.month == 12), month=start.month % 12 + 1)
+    day = datetime.fromisoformat(account["voice_plan_billing_anchor"].replace("Z", "+00:00")).astimezone(UTC).day
+    month = now.month if _boundary(now.year, now.month, day) <= now else now.month - 1
+    start, end = _boundary(now.year, month, day), _boundary(now.year, month + 1, day)
     if account.get("voice_plan_started_at"):
         start = max(start, datetime.fromisoformat(account["voice_plan_started_at"]))
     return start, min(end, ending_at) if ending_at else end

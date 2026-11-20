@@ -180,6 +180,8 @@ class MetronomeClient:
 
         Usage only: the flat fee is a Stripe subscription. usage_filter's key must be a group key
         on the voice metric. The dedicated card prices only voice_minutes (1,500 free, then $0.35).
+        Usage statements renew monthly on the contract start day (Metronome's default is the 1st),
+        so the free tier resets on the sign-up day each month, the same cycle as the Stripe charge.
         """
         body = await self._post(
             "/contracts/create",
@@ -190,6 +192,7 @@ class MetronomeClient:
                 "uniqueness_key": uniqueness_key,
                 "billing_provider_configuration": {"billing_provider": "stripe", **_stripe_delivery()},
                 "usage_filter": {"group_key": "voice_plan", "group_values": [uniqueness_key]},
+                "usage_statement_schedule": {"frequency": "MONTHLY", "day": "CONTRACT_START"},
             },
         )
         contract_id = (body.get("data") or {}).get("id")

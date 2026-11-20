@@ -25,6 +25,9 @@ PRODUCT_REF_KEYS: frozenset[str] = frozenset(
     {"callId", "from", "meetingBotId", "meetingFollowups", "meetingInCallAt", "meetingNotes", "utteranceId"}
 )
 
+#: The header that carries a run's `authorize` grant (`ContextAnswer.grant`) to the agent's product tools.
+GRANT_HEADER = "X-Lightbulb-Meeting-Context-Grant"
+
 
 def product_ref(trigger: dict | None) -> bool:
     """The trigger carries a product's `ref` keys."""

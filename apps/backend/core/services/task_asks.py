@@ -118,11 +118,10 @@ async def open_ask(
 
 
 def _initial_binding(task: dict) -> ts.InitialQuestion:
-    from core.services import questions
-
+    """The Task's own stored reference: its qid (the product chose it), the ask trigger that qid names, its principal."""
     ref = ts.InitialQuestion.model_validate(task["initialQuestion"])
     if (
-        ref.qid != questions.qid_for("meeting-clarification:" + task["taskId"])
+        not ref.qid
         or ref.trigger_id != ts.trigger_id("ask", ref.qid)
         or ref.principal_user_id != task.get("ownerUserId")
         or task.get("origin") != "meeting"
@@ -132,12 +131,11 @@ def _initial_binding(task: dict) -> ts.InitialQuestion:
 
 
 async def prepare_initial_question(ws: str, task_id: str, principal: str, lane: str, question: dict) -> dict:
-    """Store its bounded payload first; the immutable reference is written WITH the Task row."""
-    from core.services import questions
-
+    """Store its bounded payload first; the immutable reference is written WITH the Task row. The qid is the
+    product's (passed in the ask); the Task's binding is checked against it from then on."""
     if (
         not principal
-        or question.get("qid") != questions.qid_for("meeting-clarification:" + task_id)
+        or not question.get("qid")
         or question.get("kind") != "question"
         or question.get("subkind") != "question"
         or not question.get("blocking")

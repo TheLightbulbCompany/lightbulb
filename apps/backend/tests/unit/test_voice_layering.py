@@ -107,12 +107,7 @@ PRODUCT = [
 #: Engine modules that still import product code, as `file: function: module`. Each later task of the engine-service
 #: plan moves call sites onto `core.engine.hooks` and deletes their entries; never add one.
 KNOWN_ENGINE_TO_PRODUCT = [
-    "core/services/messaging.py: <module>: core.voice.livekit_huddles",
-    "core/services/messaging.py: create_agent_message: core.voice.meetings.meeting_invites",
-    "core/services/messaging.py: create_agent_message: core.voice.phone.calls",
-    "core/services/runtime_runs.py: _call: core.voice.meetings.meeting_context",
     "routers/messaging.py: <module>: core.voice.voice_calls",
-    "routers/questions.py: _remember: core.voice.phone.calls",
     "routers/runtime_internal.py: business_facts: core.voice.phone.business_profile",
     "routers/runtime_internal.py: front_desk: core.voice.phone.business_profile",
     "routers/runtime_internal.py: front_desk: routers.voice_phone",

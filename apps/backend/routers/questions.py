@@ -22,6 +22,8 @@ from core import tasks_schema as ts
 from core.constants import SYSTEM_ACTOR_ID
 from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id, security_optional
 from core.dynamodb import utc_now_iso
+from core.engine import hooks
+from core.engine.hooks import EngineEvent
 from core.repositories import effects_repo, questions_repo, tasks_repo
 from core.services import questions, tasks_access
 from core.services.messaging import human_display_name
@@ -262,14 +264,9 @@ async def submit_answer(ws: str, task_id: str, qid: str, me: str, body: AnswerBo
 
 
 async def _remember(ws: str, q: dict, body: AnswerBody, me: str) -> None:
-    """A phone call's Question (calls.call_ask) answered: the call is handled, and a "didn't know" answered with
-    text goes into the Agent page's Knowledge."""
-    from core.voice.phone import calls
-
-    room = (q.get("preview") or {}).get("roomId")
-    if q.get("subkind") not in calls.CALL_OPTIONS or not room:
+    """A Question that names a conversation (only a phone call's does: calls.call_ask) answered: its product hears
+    it. Every other Question tells the products nothing."""
+    if not (q.get("preview") or {}).get("roomId"):
         return
-    if q["subkind"] == "didnt_know" and body.option_id == "answer" and (body.text or "").strip():
-        question = q["preview"].get("question") or q["title"]
-        await calls.remember_answer(ws, question, body.text.strip(), me)
-    await calls.resolve_call(ws, room, me)
+    answer = {"optionId": body.option_id, "text": body.text}
+    await hooks.event(EngineEvent(type="question.answered", tenant_id=ws, question=q, answer=answer, actor_user_id=me))

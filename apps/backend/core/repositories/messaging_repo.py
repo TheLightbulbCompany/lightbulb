@@ -2866,8 +2866,8 @@ async def put_voice_run(
     owner_id: str, run_id: str, fields: dict[str, Any], once: frozenset[str] = frozenset()
 ) -> dict[str, Any]:
     """Create the run row, or set ``fields`` on it, and return the row. One atomic SET, never a whole-row
-    put: a /turns retry writes the same fields again and cannot drop what another writer set in between
-    (``noPost``). A field in ``once`` is written only if the row has none yet (a lowered ``None`` counts),
+    put: a /turns retry writes the same fields again and cannot drop what another writer set in between.
+    A field in ``once`` is written only if the row has none yet (a lowered ``None`` counts),
     so a retry can never undo what a steer lowered."""
     fields = {"runId": run_id, **fields, "expiresAt": int(time.time()) + VOICE_RUN_TTL_S}
     response = await run_in_thread(
@@ -2882,19 +2882,6 @@ async def put_voice_run(
         ReturnValues="ALL_NEW",
     )
     return response.get("Attributes") or {}
-
-
-def voice_run_may_post(owner_id: str, run_id: str) -> dict:
-    """A transaction ``ConditionCheck``: the run was not told "don't post that". It rides the message's own
-    transaction, so a mark that lands any time before the commit refuses the post. A run with no row
-    (expired, or never a voice run) may post."""
-    return {
-        "ConditionCheck": {
-            "TableName": _table().name,
-            "Key": {"pk": owner_pk(owner_id), "sk": voice_run_sk(run_id)},
-            "ConditionExpression": "attribute_not_exists(noPost)",
-        }
-    }
 
 
 #: A meeting's "write the notes" request message -> everything its after-meeting mail needs (the

@@ -176,3 +176,41 @@ async def test_unauthorized_followup_dropped(seen, monkeypatch):
     assert [(a.purpose, a.trigger["triggerId"]) for a in seen["asks"]] == [("authorize", trig["triggerId"])]
     with pytest.raises(meeting_context.NotAuthorized, match="revoked"):
         await acts._ensure_task(WS, "t1", trig, "shared", "queued")
+
+
+async def test_answer_emits_question_answered_once_on_replay(seen, monkeypatch):
+    """The same press again on an answered call Question finishes what a failed first press left: one
+    `question.answered`, before the view, and the product keeps the answer and resolves the call."""
+    from core.voice.phone import calls
+    from routers import questions as qr
+
+    q = {
+        "qid": "q1",
+        "state": "answered",
+        "clientAnswerId": "c1",
+        "answeredBy": "user_sam",
+        "subkind": "didnt_know",
+        "title": "Answer Priya: Parking?",
+        "preview": {"kind": "didnt_know", "roomId": "call-1", "question": "Parking?"},
+    }
+    rows = {"q": q}
+    monkeypatch.setattr(qr.tasks_repo, "get_task", AsyncMock(return_value={"taskId": "t1"}))
+    monkeypatch.setattr(qr.tasks_access, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(qr.questions_repo, "get_question", AsyncMock(side_effect=lambda *a: rows["q"]))
+    monkeypatch.setattr(qr, "_answered_view", AsyncMock(return_value={"question": {}}))
+    remember, resolve = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(calls, "remember_answer", remember)
+    monkeypatch.setattr(calls, "resolve_call", resolve)
+    body = qr.AnswerBody(option_id="answer", text="Yes, out back.", client_answer_id="c1")
+
+    await qr.submit_answer(WS, "t1", "q1", "user_sam", body)
+
+    [e] = seen["events"]
+    assert (e.type, e.tenant_id, e.question, e.actor_user_id) == ("question.answered", WS, q, "user_sam")
+    assert e.answer == {"optionId": "answer", "text": "Yes, out back."}
+    remember.assert_awaited_once_with(WS, "Parking?", "Yes, out back.", "user_sam")
+    resolve.assert_awaited_once_with(WS, "call-1", "user_sam")
+
+    rows["q"] = {**q, "subkind": "purchase", "preview": {"kind": "purchase", "item": "acme.dev"}}
+    await qr.submit_answer(WS, "t1", "q1", "user_sam", body)
+    assert len(seen["events"]) == 1  # a Question that names no conversation tells the products nothing

@@ -13,6 +13,7 @@ from typing import Literal
 import httpx
 
 from core.config import settings
+from core.engine.contract import GRANT_HEADER
 from core.repositories import container_repo
 from core.services import local_session_grants, runtime_transport
 from core.services.messaging import ApiProblem
@@ -191,8 +192,6 @@ async def _call(
     if grant is not None:
         headers["X-Lightbulb-Local-Session-Token"] = grant
     if context_grant is not None:
-        from core.voice.meetings.meeting_context import GRANT_HEADER
-
         headers[GRANT_HEADER] = context_grant
     # The workspace path calls the transport exactly as before; only a task session names its task.
     session = {"task_id": task_id} if task_id is not None else {}

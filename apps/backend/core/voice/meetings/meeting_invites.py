@@ -238,6 +238,14 @@ async def output_room(owner_id: str, room_id: str) -> str:
     return await _organizer_dm(owner_id, room_id) or room_id
 
 
+async def post_target(owner_id: str, room_id: str, agent_id: str | None, meeting: dict) -> str | None:
+    """Where an agent's post in the meeting's hidden room goes: nowhere else while the call is on and the poster is
+    the meeting's front agent (its Router answers in its room, where the voice says it); else `output_room`."""
+    if meeting.get("status") == "in_call" and agent_id == await messaging._front_agent_id(owner_id, room_id=room_id):
+        return None
+    return await output_room(owner_id, room_id)
+
+
 async def _organizer_dm(owner_id: str, room_id: str) -> str | None:
     """The DM between the meeting's organizer (the member whose invite made its room, seated as its
     owner) and the agent that writes its notes (the meeting's front agent, as the notes writer is

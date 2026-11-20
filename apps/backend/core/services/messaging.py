@@ -44,8 +44,9 @@ from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.person_label import email_label, is_relay_email
 from core.services.push_service import send_push_to_user
 from core.services import clerk_admin, hermes_profiles, run_analytics
-from core.engine.contract import MessageVia
-from core.voice import livekit_huddles
+from core.engine import hooks
+from core.engine.contract import PRODUCT_META_FIELDS, MessageVia
+from core.engine.hooks import ContextAsk, EngineEvent
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
 from core.services.workspace_provisioning import STARTER_ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
@@ -2643,7 +2644,7 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
             auth.user_id, owner_id, "project.paused" if paused else "project.resumed", {"roomId": room_id}
         )
     if updates.get("archivedAt"):
-        await livekit_huddles.close_room(room_id)  # an archived channel holds no huddle; never raises
+        await _tell_products(EngineEvent(type="conversation.archived", tenant_id=owner_id, conversation_id=room_id))
     await _publish_room_metadata(meta)
     if paused is False:  # W18-8: the question asked while paused is answered now
         from core.services import admission  # lazy: admission imports this module
@@ -2652,6 +2653,15 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     elif paused:  # a new pause window starts empty
         await messaging_repo.pop_paused_ask(room_id)
     return await _room_detail(meta, auth.user_id)
+
+
+async def _tell_products(e: EngineEvent) -> None:
+    """A room's lifecycle event (its huddle ends, a removed member leaves it): best effort, never raises into the
+    caller, because the change already committed."""
+    try:
+        await hooks.event(e)
+    except Exception:  # noqa: BLE001 -- the products' side effect never undoes the room change
+        logger.warning("engine event %s failed room=%s", e.type, e.conversation_id, exc_info=True)
 
 
 def _require_archivable(meta: dict) -> None:
@@ -2886,7 +2896,11 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         # A removal (or leave) must stick: the autojoin never re-seats a marked user.
         await _mark_removed(meta, member_id)
     # The same revocation for the room's huddle: best effort, never raises.
-    await livekit_huddles.remove_participant(meta["roomId"], member_id)
+    await _tell_products(
+        EngineEvent(
+            type="member.removed", tenant_id=meta["ownerId"], conversation_id=meta["roomId"], member_id=member_id
+        )
+    )
     return new_meta
 
 
@@ -2972,7 +2986,10 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
             await messaging_repo.delete_room(
                 meta=meta, deleted_by=auth.user_id, new_delivery_key=new_key, live_events=notices
             )
-            await livekit_huddles.close_room(meta["roomId"])  # everyone leaves its huddle; never raises
+            # everyone leaves its huddle; never raises
+            await _tell_products(
+                EngineEvent(type="conversation.archived", tenant_id=owner_id, conversation_id=meta["roomId"])
+            )
             return
         except messaging_repo.RoomNotFound:
             # Lost the revision CAS (or a concurrent delete): re-read. The next
@@ -4972,16 +4989,6 @@ async def create_agent_message(
     (`task_conversation.post_as_lightbulb`); never part of the runtime's request body. ``in_reply_to``: the human
     message this answers when no run names its trigger (the Router's reply, a thread's answer line): the voice
     matches a spoken ask's answer by it (`agent_lines`' `inReplyTo`)."""
-    late_run = request.event_id.removeprefix("live-late:") if request.event_id.startswith("live-late:") else None
-    if late_run:
-        # Conversation engine §3.6: "don't post that". Both late-answer doors (the worker's /late-answer
-        # and the bridge's undelivered-answer POST) arrive here with live-late:<runId>. This read refuses
-        # early; the same condition rides the message's transaction below, so a mark that lands while the
-        # checks and attachment work in between run is still honoured.
-        voice_run = await messaging_repo.get_voice_run(owner_id, late_run)
-        if voice_run and voice_run.get("noPost"):
-            put_metric("voice.huddle.late_answer_suppressed")
-            raise ApiProblem("ACTION_UNAVAILABLE", "The Live call asked not to post this answer.")
     if attrs and attrs.get("taskRefs") is not None:
         # Strict on write: a ref the read model does not know is a bug here, not a stored surprise later.
         attrs = {**attrs, "taskRefs": [TaskRef.model_validate(r).model_dump() for r in attrs["taskRefs"]]}
@@ -4991,35 +4998,34 @@ async def create_agent_message(
     if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     bound = request.run_id or request.reply_to_message_id or request.thread_root_message_id
-    if (
-        meta.get("hidden")
-        and meta.get("meeting")
-        and not (bound or request.uploaded_attachments)
-        # while the call is on, the meeting's Router answers in its room, where the voice says it
-        and not (
-            meta["meeting"].get("status") == "in_call" and agent_id == await _front_agent_id(owner_id, room_id=room_id)
+    annotations = {k: meta[k] for k in PRODUCT_META_FIELDS if k in meta}
+    if meta.get("hidden") and annotations and not (bound or request.uploaded_attachments):
+        # A product's hidden room (a Google Meet's) can be read by nobody: the product names the room an agent's
+        # post goes to instead (none: it stays). A session's chat is hidden too, but carries no product field, so it
+        # keeps its posts. Every door resolves the same room, so a replay hashes the same and stays idempotent. A
+        # post bound to the hidden room (a run, a reply, a thread, a runtime-uploaded attachment) stays there: those
+        # are checked against it.
+        target = await hooks.context(
+            ContextAsk(
+                tenant_id=owner_id,
+                purpose="post_target",
+                conversation_id=room_id,
+                agent_id=agent_id,
+                annotations=annotations,
+            )
         )
-    ):
-        # A Google Meet's room (hidden, with a meeting record) is read by nobody: what an agent posts
-        # there (a late Live answer) goes to the meeting's output room when it sits there. A session's
-        # chat is hidden too, but people read it, so it keeps its posts. Every door resolves the same room,
-        # so a replay hashes the same and stays idempotent. A post bound to the hidden room (a run,
-        # a reply, a thread, a runtime-uploaded attachment) stays there: those are checked against it.
-        from core.voice.meetings.meeting_invites import _post_line, output_room
-
-        target = await output_room(owner_id, room_id)
-        if target != room_id and await messaging_repo.get_member(target, "agent", agent_id):
-            room_id, meta = target, await messaging_repo.get_room(target)
-        elif target != room_id and await messaging_repo.get_member(room_id, "agent", agent_id):
-            # Not seated in the output room: the answer goes there as a system line naming the agent,
-            # keyed by the event id so a replay returns the same line. A gone room falls through.
+        to = target.conversation_id or room_id
+        if to != room_id and await messaging_repo.get_member(to, "agent", agent_id):
+            room_id, meta = to, await messaging_repo.get_room(to)
+        elif to != room_id and await messaging_repo.get_member(room_id, "agent", agent_id):
+            # Not seated in that room: the answer goes there as a system line naming the agent (`target.text` says
+            # what it answers), keyed by the event id so a replay returns the same line. A gone room falls through.
             agent = next((a for a in await load_agent_roster(owner_id) if a["id"] == agent_id), None)
-            title = (meta.get("meeting") or {}).get("title") or "Meeting"
-            line = agent and await _post_line(
+            line = agent and await _post_redirected_line(
                 owner_id,
-                room_id,
+                to,
                 f"meeting-answer:{request.event_id}",
-                f"**{agent['name']}**, after **{title}**:\n\n{request.text}",
+                f"**{agent['name']}**, {target.text}:\n\n{request.text}",
             )
             if line:
                 return AgentMessageReceiptResponse(
@@ -5155,7 +5161,6 @@ async def create_agent_message(
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             agent_hop=hop,
             in_reply_to=(trigger or {}).get("messageId") or in_reply_to,
-            extra_conditions=[messaging_repo.voice_run_may_post(owner_id, late_run)] if late_run else None,
             # The projector files no Activity and sends no push for a silent row: the reply
             # that ends the run is the one that notifies.
             silent=request.progress,
@@ -5164,9 +5169,6 @@ async def create_agent_message(
             attrs=attrs or None,
             author_member_check=not member.get("standIn"),  # a roster stand-in (feed, task room) has no seat
         )
-    except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit
-        put_metric("voice.huddle.late_answer_suppressed")
-        raise ApiProblem("ACTION_UNAVAILABLE", "The Live call asked not to post this answer.") from exc
     except messaging_repo.RoomArchived as exc:
         # Deliberate: a reply to a turn that began before the archive is refused too, so an
         # archived channel's history ends where the archive did. The bridge drops a 4xx.
@@ -5212,10 +5214,10 @@ async def create_agent_message(
         if trigger and (run or {}).get("eventKind") == "room_event":
             await _emit_reply_after_human_answer(room_id, meta, trigger, item, room_kind)
         if meta.get("kind") == "call" and not request.progress:
-            from core.voice.phone import calls
-
             try:  # best-effort: the answer is posted either way
-                await calls.after_call(room_id, item)
+                await hooks.event(
+                    EngineEvent(type="line.posted", tenant_id=owner_id, conversation_id=room_id, message=item)
+                )
             except Exception:
                 logger.warning("call %s: late answer not kept on the record", room_id, exc_info=True)
         if capped:
@@ -5230,6 +5232,32 @@ async def create_agent_message(
         if await text_relay.relay_reply(owner_id, trigger, request.text) not in text_relay.RELAY_DONE:
             raise ApiProblem("TEXT_RELAY_UNAVAILABLE", "The reply is posted; texting it back failed. Retry.")
     return AgentMessageReceiptResponse(message_id=item["messageId"], room_id=room_id, created_at=item["createdAt"])
+
+
+async def _post_redirected_line(owner_id: str, room_id: str, key: str, text: str) -> dict | None:
+    """One system line in ``room_id``, returned (None when that room is gone). The key is the receipt: a retried
+    post replays it instead of doubling it."""
+    try:
+        message, _ = await messaging_repo.create_message(
+            room_id=room_id,
+            owner_id=owner_id,
+            idemp_pk=messaging_repo.room_pk(room_id),
+            idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
+            req_hash=messaging_repo.request_hash(key),
+            author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+            text=text,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=None,
+            client_message_id=None,
+            attachments=None,
+        )
+        return message
+    except (messaging_repo.IdempotencyConflict, messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
+        return None  # replayed, or the room was archived or deleted since
 
 
 async def _post_chain_paused_notice(owner_id: str, item: dict, agent_name: str, trigger_author: dict | None) -> None:

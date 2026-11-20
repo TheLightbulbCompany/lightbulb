@@ -187,12 +187,12 @@ async def test_newer_admission_stops_old_delete_during_membership_cleanup(monkey
 
 
 @pytest.mark.asyncio
-async def test_a_failed_membership_revocation_schedules_no_mac_revocation(monkeypatch):
-    from core.services import mac_browser
+async def test_a_failed_membership_revocation_schedules_no_device_revocation(monkeypatch):
+    from core.services import desktop_pair
     from routers import webhooks
 
     scheduled = []
-    monkeypatch.setattr(mac_browser, "revoke_member_soon", lambda *a: scheduled.append(a))
+    monkeypatch.setattr(desktop_pair, "revoke_member_soon", lambda *a: scheduled.append(a))
     monkeypatch.setattr(
         "core.services.messaging.revoke_human_membership", AsyncMock(side_effect=RuntimeError("ddb down"))
     )
@@ -204,10 +204,10 @@ async def test_a_failed_membership_revocation_schedules_no_mac_revocation(monkey
 
 
 @pytest.mark.asyncio
-async def test_member_deleted_then_re_added_and_re_paired_keeps_the_pairing_and_the_mac(monkeypatch):
-    """Delete, then re-add + re-pair before the background Mac revocation runs: it reads the
-    lifecycle epoch, sees the re-add, and touches neither the pairing nor the Mac."""
-    from core.services import mac_browser
+async def test_member_deleted_then_re_added_and_re_paired_keeps_the_pairing(monkeypatch):
+    """Delete, then re-add + re-pair before the background device revocation runs: it reads the
+    lifecycle epoch, sees the re-add, and leaves the pairing alone."""
+    from core.services import desktop_pair
     from routers import webhooks
 
     lifecycle = {"lifecycle_event_id": "evt_delete", "access_state": "revoked", "lifecycle_status": "completed"}
@@ -216,10 +216,8 @@ async def test_member_deleted_then_re_added_and_re_paired_keeps_the_pairing_and_
     pairing = {"dev_1": {"userId": "member", "clientId": "node-host"}}
     get_row = AsyncMock(return_value={"paired_devices": pairing})
     mark = AsyncMock()
-    clear = AsyncMock()
-    monkeypatch.setattr(mac_browser.container_repo, "get_by_owner_id", get_row)
-    monkeypatch.setattr(mac_browser.container_repo, "mark_paired_device_revoking", mark)
-    monkeypatch.setattr(mac_browser, "clear_member", clear)
+    monkeypatch.setattr(desktop_pair.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", mark)
 
     await webhooks._handle_organization_membership_deleted(
         {"organization": {"id": "org_acme"}, "user_id": "member"},
@@ -228,10 +226,9 @@ async def test_member_deleted_then_re_added_and_re_paired_keeps_the_pairing_and_
     )
     lifecycle.update(lifecycle_event_id="evt_readd", access_state="allowed")  # re-added (+ re-paired)
     loop = asyncio.get_running_loop()
-    await asyncio.gather(*[t for t in mac_browser._clears if t.get_loop() is loop])
+    await asyncio.gather(*[t for t in desktop_pair._revocations if t.get_loop() is loop])
     get_row.assert_not_awaited()
     mark.assert_not_awaited()
-    clear.assert_not_awaited()
     assert pairing == {"dev_1": {"userId": "member", "clientId": "node-host"}}
 
 
@@ -758,37 +755,6 @@ async def test_lookup_owner_email_returns_none_when_clerk_fails():
     assert email is None
 
 
-async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on_them(lifecycle_io, monkeypatch):
-    import asyncio
-
-    from core.services import mac_browser
-    from routers import webhooks
-
-    events = []
-    lifecycle_io.side_effect = lambda owner_id, user_id: events.append("canonical-revoked")
-
-    async def slow_clear(owner, member):
-        events.append("mac-clear-started")
-        await asyncio.sleep(30)  # a slow Mac
-
-    monkeypatch.setattr(mac_browser, "clear_member", slow_clear)
-    monkeypatch.setattr(mac_browser.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
-
-    await asyncio.wait_for(
-        webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"}),
-        2,
-    )
-    # The clear runs in the background under one budget, a few loop turns in.
-    for _ in range(20):
-        if "mac-clear-started" in events:
-            break
-        await asyncio.sleep(0)
-    assert events[0] == "canonical-revoked" and "mac-clear-started" in events
-    loop = asyncio.get_running_loop()
-    for task in [t for t in mac_browser._clears if t.get_loop() is loop]:
-        task.cancel()
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event", ["organizationMembership.created", "organizationMembership.deleted"])
 async def test_membership_events_republish_the_network_member_list(lifecycle_io, monkeypatch, event):
@@ -857,9 +823,9 @@ async def test_last_member_leaving_a_parked_workspace_still_reaches_the_teardown
     from routers import webhooks
 
     monkeypatch.setattr(memory_api, "forget_on_behalf_of", AsyncMock(side_effect=RuntimeError("member is parked")))
-    from core.services import mac_browser
+    from core.services import desktop_pair
 
-    monkeypatch.setattr(mac_browser, "revoke_member_soon", lambda *a: None)  # no background task left pending
+    monkeypatch.setattr(desktop_pair, "revoke_member_soon", lambda *a: None)  # no background task left pending
     table = MagicMock()
     monkeypatch.setattr("core.repositories.messaging_repo._table", lambda: table)
     wake = AsyncMock(return_value=True)

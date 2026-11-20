@@ -35,26 +35,6 @@ def feed_world(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("agent", "allowed"), [(AUTHOR, True), (STRANGER, False)])
-async def test_mac_execution_admits_a_feed_author(monkeypatch, agent, allowed):
-    from core.services import clerk_admin, desktop_execution
-
-    run = {"ownerId": OWNER, "runId": RUN, "agentId": agent, "roomId": FEED, "status": "started"}
-    run |= {"eventKind": "user_request", "triggerMessageId": "m1"}
-    monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=run))
-    monkeypatch.setattr(
-        messaging_repo, "get_message_by_id", AsyncMock(return_value={"author": {"kind": "human", "id": USER}})
-    )
-    monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": USER}]))
-    call = desktop_execution.authorize_run(OWNER, RUN, agent, "room", active=True)
-    if allowed:
-        assert (await call)["memberId"] == USER
-    else:
-        with pytest.raises(desktop_execution.DesktopError):
-            await call
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("agent", "allowed"), [(AUTHOR, True), (STRANGER, False)])
 async def test_subagents_admit_a_feed_author(agent, allowed):
     from core.services import subagents
 
@@ -219,7 +199,7 @@ async def test_every_gate_refuses_another_workspaces_feed(monkeypatch, foreign_f
     import time
 
     from core.auth import AuthContext
-    from core.services import desktop_execution, local_sessions, subagents
+    from core.services import local_sessions, subagents
     from core.services.local_session_grants import AgentInvocation
     from routers import messaging as router
 
@@ -236,8 +216,6 @@ async def test_every_gate_refuses_another_workspaces_feed(monkeypatch, foreign_f
         )
     run = {**_run(AUTHOR, OTHER_FEED), "eventKind": "user_request", "triggerMessageId": "m1"}
     monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=run))
-    with pytest.raises(desktop_execution.DesktopError):
-        await desktop_execution.authorize_run(OWNER, RUN, AUTHOR, "room", active=True)
     with pytest.raises(ApiProblem):  # our human is not a member of their room
         await router._resolved_run(AuthContext(user_id=USER, org_id=OWNER), RUN)
     with pytest.raises(ApiProblem) as exc:

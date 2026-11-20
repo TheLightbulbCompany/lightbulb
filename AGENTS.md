@@ -477,8 +477,8 @@ this file keeps the why, not inventories.
 **Machine doors.** No browser opens a WebSocket. Two machine doors remain: `wss://ws[-env]` (API Gateway WebSocket,
 Lambda integrations, device-JWT-only authorizer, the desktop local-session relay through
 `routers/websocket_chat.py`, gated by the `x-lightbulb-ws-internal` header), and `wss://bv[-env]` (CloudFront
-VpcOrigin to an ALB listener path-capped to `/api/v1/gateway/*`, `routers/gateway_relay.py`, where the backend
-terminates the desktop node protocol itself). The `BrowserView*` construct ids stay because a rename replaces the
+VpcOrigin to an ALB listener path-capped to `/api/v1/gateway/*`: the CLI network daemon's
+`routers/network_route.py` and Recall's Meet audio in `routers/meet_audio.py`). The `BrowserView*` construct ids stay because a rename replaces the
 distribution.
 
 ## Billing

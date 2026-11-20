@@ -449,8 +449,6 @@ export interface LocalSession {
   terminalReason?: "plain" | "no-daemon" | "app" | "sdk" | "unknown";
   /** An ended held session whose final screen its owner's Mac still shows; `terminal` stays set while it is. */
   screenAvailable?: boolean;
-  /** Where this running session's browser connection is open; absent or null: none. */
-  browser?: "mac" | "cloud" | null;
   /** An ended session that was held: its kept screen may still be on its way from the Mac. */
   wasHeld?: boolean;
   /** Its person ended it on purpose (End, the tool's own exit): no list shows it; a read by id still does. */

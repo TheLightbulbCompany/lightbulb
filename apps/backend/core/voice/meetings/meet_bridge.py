@@ -20,7 +20,8 @@ from livekit import rtc
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.services import livekit_huddles, meeting_bots
+from core.voice import livekit_huddles
+from core.voice.meetings import meeting_bots
 
 logger = logging.getLogger(__name__)
 MAX_SEATS = 16  # Recall separates the 16 loudest concurrent speakers on Meet

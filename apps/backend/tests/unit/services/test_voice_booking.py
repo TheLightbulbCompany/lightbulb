@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from core.repositories import messaging_repo
-from core.services import voice_booking as booking
+from core.voice.phone import voice_booking as booking
 from routers import voice_phone as vp
 from tests.unit.routers import test_voice_phone
 from tests.unit.routers.test_voice_phone import W, _start, _tomorrow
@@ -343,7 +343,7 @@ async def test_unknown_cross_day_move_keeps_target_out_of_availability(client, g
 
 
 async def test_unknown_create_is_reported_as_pending_to_caller_lookup_and_profile(client, google):
-    from core.services import business_profile
+    from core.voice.phone import business_profile
 
     call, base = await begin(client)
     start = f"{_tomorrow()}T14:00"

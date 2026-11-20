@@ -8,7 +8,8 @@ from temporalio.testing import ActivityEnvironment
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo, questions_repo, tasks_repo
-from core.services import meeting_followups, task_asks
+from core.services import task_asks
+from core.voice.meetings import meeting_followups
 from core.temporal import activities, task_questions
 from core.temporal.task_questions import AnswerRef, AskRef
 from .test_meeting_context import world  # noqa: F401

@@ -43,7 +43,8 @@ from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.person_label import email_label, is_relay_email
 from core.services.push_service import send_push_to_user
-from core.services import clerk_admin, hermes_profiles, livekit_huddles, run_analytics
+from core.services import clerk_admin, hermes_profiles, run_analytics
+from core.voice import livekit_huddles
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
 from core.services.workspace_provisioning import STARTER_ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
@@ -5008,7 +5009,7 @@ async def create_agent_message(
         # chat is hidden too, but people read it, so it keeps its posts. Every door resolves the same room,
         # so a replay hashes the same and stays idempotent. A post bound to the hidden room (a run,
         # a reply, a thread, a runtime-uploaded attachment) stays there: those are checked against it.
-        from core.services.meeting_invites import _post_line, output_room
+        from core.voice.meetings.meeting_invites import _post_line, output_room
 
         target = await output_room(owner_id, room_id)
         if target != room_id and await messaging_repo.get_member(target, "agent", agent_id):

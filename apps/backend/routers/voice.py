@@ -11,7 +11,7 @@ writes). The page owns the defaults; an unset workspace reads `{"config": null}`
 
 Onboarding (admin): `POST /voice/onboarding/draft` drafts the Agent page from the business's website;
 `POST /voice/number` stores the number choice (keep and forward, or new); `PUT /voice/agent` with `live: true` gives the
-number at Go live (core/services/voice_onboarding.py).
+number at Go live (core/voice/phone/voice_onboarding.py).
 """
 
 from __future__ import annotations
@@ -31,14 +31,8 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
-from core.services import (
-    phone_pin,
-    voice_onboarding,
-    voice_outbound,
-    voice_preferences,
-    agent_registry,
-    task_conversation,
-)
+from core.services import agent_registry, task_conversation
+from core.voice.phone import phone_pin, voice_onboarding, voice_outbound, voice_preferences
 
 router = APIRouter()
 
@@ -257,7 +251,7 @@ async def get_phone_pin(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 @router.put("/voice/phone-pin")
 async def put_phone_pin(body: PhonePinIn, auth: AuthContext = Depends(get_current_user)) -> dict:
-    """Set or change the member's own phone PIN and mobile (core/services/phone_pin: stored hashed)."""
+    """Set or change the member's own phone PIN and mobile (core/voice/phone/phone_pin: stored hashed)."""
     mobile = _e164(body.mobile)
     if not mobile:
         raise HTTPException(status_code=400, detail={"code": "bad_mobile"})

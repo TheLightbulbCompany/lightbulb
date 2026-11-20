@@ -11,7 +11,8 @@ import hashlib
 
 from core.dynamodb import run_in_thread
 from core.repositories import messaging_repo, tasks_repo
-from core.services import meeting_bots, meeting_invites, task_conversation, webhook_dedup
+from core.services import task_conversation, webhook_dedup
+from core.voice.meetings import meeting_bots, meeting_invites
 
 
 class NotCurrentMeeting(ValueError):

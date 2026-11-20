@@ -5,7 +5,7 @@ import jwt
 import pytest
 from livekit import api
 
-from core.services import livekit_huddles as lh
+from core.voice import livekit_huddles as lh
 
 
 class FakeAPI:

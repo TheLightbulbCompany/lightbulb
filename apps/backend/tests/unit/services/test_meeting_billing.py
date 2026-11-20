@@ -8,7 +8,7 @@ import pytest
 from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
-from core.services import voice_calls as vc  # noqa: E402
+from core.voice import voice_calls as vc  # noqa: E402
 from routers import meetings  # noqa: E402
 
 ROOM = "11111111-1111-4111-8111-111111111111"

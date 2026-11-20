@@ -21,12 +21,8 @@ from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
-from core.services import (
-    container_rpc,
-    hermes_profiles,
-    livekit_huddles,
-    messaging,
-)
+from core.services import container_rpc, hermes_profiles, messaging
+from core.voice import livekit_huddles
 from core.services.live_events import get_live_event_publisher
 
 logger = logging.getLogger(__name__)
@@ -557,7 +553,7 @@ async def voice_call_sweeper(stop: asyncio.Event) -> None:
                 await sweep_calls_once()
                 await sweep_phone_calls(int(time.time()))
             if await admitted("voice_number_release", interval_s=24 * 3600):
-                from core.services import voice_onboarding
+                from core.voice.phone import voice_onboarding
 
                 await voice_onboarding.release_lapsed_numbers()
         except Exception:  # noqa: BLE001

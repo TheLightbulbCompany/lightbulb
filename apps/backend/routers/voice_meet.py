@@ -22,7 +22,9 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext
 from core.config import settings
 from core.repositories import messaging_repo, tasks_repo
-from core.services import livekit_huddles, meeting_bots, meeting_invites, messaging
+from core.services import messaging
+from core.voice import livekit_huddles
+from core.voice.meetings import meeting_bots, meeting_invites
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 
 router = APIRouter(dependencies=[_Worker])
@@ -281,7 +283,7 @@ async def task_moved(task: dict, to: str) -> None:
         )
 
     try:
-        from core.services import meeting_followups
+        from core.voice.meetings import meeting_followups
 
         if await meeting_followups.record_task(owner_id, {**task, "status": to}):
             return  # completion work belongs to its original notes, never a newly active Meet

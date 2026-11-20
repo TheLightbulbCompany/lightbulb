@@ -103,7 +103,8 @@ from core.repositories import (
     workspace_join_repo,
 )
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import clerk_admin, company_stripe, voice_onboarding
+from core.services import clerk_admin, company_stripe
+from core.voice.phone import voice_onboarding
 from core.services.account_wipe import (
     release_text_lines,
     text_release_note,
@@ -118,7 +119,7 @@ from core.services.account_wipe import (
 from core.services.billing_service import delete_stripe_customer
 from core.services.credentials import integration_secret_store
 from core.services.hermes_provisioning import delete_workspace_runtime
-from core.services.voice_calls import wipe_owner_voice
+from core.voice.voice_calls import wipe_owner_voice
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
     _list_names_with_prefix,

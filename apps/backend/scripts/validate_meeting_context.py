@@ -27,7 +27,8 @@ from temporalio.testing import ActivityEnvironment
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo, tasks_repo
-from core.services import meeting_context, memory_tags, runtime_runs, runtime_transport
+from core.services import memory_tags, runtime_runs, runtime_transport
+from core.voice.meetings import meeting_context
 from core.temporal import activities
 from core.temporal.types import RouterTurnIn
 from scripts.multiparty_e2e.runner import Clerk, _secret

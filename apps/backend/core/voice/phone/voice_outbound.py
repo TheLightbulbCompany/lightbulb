@@ -20,7 +20,7 @@ from livekit import api
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import livekit_huddles
+from core.voice import livekit_huddles
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,8 @@ from core import tasks_schema as ts
 from core.repositories import agent_registry_repo, automations_repo
 from core.repositories import messaging_repo as repo
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import admission, agent_registry, meeting_invites, messaging
+from core.services import admission, agent_registry, messaging
+from core.voice.meetings import meeting_invites
 from core.services import task_conversation as tc
 from core.temporal import activities
 from core.temporal.types import RouterTurnIn

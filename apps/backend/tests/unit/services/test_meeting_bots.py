@@ -11,7 +11,8 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from core.services import livekit_huddles, meeting_bots
+from core.voice import livekit_huddles
+from core.voice.meetings import meeting_bots
 
 KEY = "rk_live_SECRET_KEY_VALUE"
 URL = "https://meet.google.com/abc-defg-hij"

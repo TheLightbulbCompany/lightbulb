@@ -13,7 +13,7 @@ Rows in the messaging table:
                                           with an Agent-page `staff` list, the first person's; another person's is
                                           VOICEBOOK#<local>#<name> (and its cells VOICECELL#<utc>#<name>): see _lanes
                                           with bookingsGo "google" it is the hold, eventId its Google event
-                                          (core/services/voice_booking)
+                                          (core/voice/phone/voice_booking)
     OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
     OWNER#<owner>   VOICELIVE#<line>#<i>  a live-call slot (LIVE_CALLS_PER_LINE), held by a call id until its end
 """
@@ -42,19 +42,9 @@ from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
 from core.repositories import agent_registry_repo, messaging_repo, tasks_repo, billing_repo
 from core import tasks_schema as ts
-from core.services import (
-    push_service,
-    admission,
-    clerk_admin,
-    messaging,
-    phone_pin,
-    questions,
-    task_conversation,
-    voice_booking,
-    voice_calls,
-    voice_outbound,
-    voice_preferences,
-)
+from core.services import push_service, admission, clerk_admin, messaging, questions, task_conversation
+from core.voice import voice_calls
+from core.voice.phone import phone_pin, voice_booking, voice_outbound, voice_preferences
 from routers.huddles import _Worker
 from routers.voice import _E164, _e164, month_seconds, us_number
 from routers.voice_meet import QuestionRef, agent_lines, answer_said_question, latest_seq
@@ -1801,7 +1791,7 @@ async def _has_upcoming(ws: str, caller: str) -> bool:
     """The caller has a booking from now on (the one `business_profile` lists for them)."""
     if not caller:
         return False
-    from core.services import business_profile, voice_booking
+    from core.voice.phone import business_profile, voice_booking
 
     now = f"{_now(await agent_config(ws)):%Y-%m-%dT%H:%M}"
     return any(

@@ -400,7 +400,7 @@ async def test_a_passthrough_a_attestation_is_verified(client):
 async def test_an_unattested_caller_books_and_leaves_messages_but_gets_nothing_by_number(client, verstat):
     """Founder 9 Nov (option a): only an A-attested number is the caller's own. A spoofed number without A gets no
     name, no memory and none of the victim's bookings, and cannot move or cancel them; booking and messages stay."""
-    from core.services import business_profile
+    from core.voice.phone import business_profile
 
     victim = await _start(client)  # A: the real owner of the number
     day = _tomorrow()
@@ -919,7 +919,7 @@ async def test_end_emits_outcome_metric(client, monkeypatch):
 async def test_inbound_probe_marks_forwarding_ok_and_ends(client):
     """Our own forwarding probe arriving back on the line: marked ok, both legs ended, no greeting, no call record."""
     from core.dynamodb import utc_now_iso
-    from core.services import voice_outbound
+    from core.voice.phone import voice_outbound
 
     probe = {"forwardFrom": "(415) 555-0177", "forwardingCheck": {"startedAt": utc_now_iso(), "callId": "abc"}}
     await voice_phone.put_line(NUMBER, LINE)
@@ -1481,7 +1481,7 @@ async def test_a_retried_end_counts_one_visit(client):
 async def test_the_sweep_ends_a_call_left_live_past_the_cap(client):
     import time
 
-    from core.services import voice_calls
+    from core.voice import voice_calls
 
     call = await _start(client)
     await voice_calls.sweep_phone_calls(int(time.time()))  # fresh: left alone

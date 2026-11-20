@@ -40,7 +40,8 @@ from core.billing import voice_billing
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
-from core.services import link_preview, livekit_huddles
+from core.services import link_preview
+from core.voice import livekit_huddles
 from livekit import api
 
 logger = logging.getLogger(__name__)

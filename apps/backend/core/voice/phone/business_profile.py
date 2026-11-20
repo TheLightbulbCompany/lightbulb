@@ -91,7 +91,7 @@ async def _org_name(ws: str, clerk_admin) -> str:
 async def _open_days(ws: str, cfg: dict, now: datetime, minutes: int) -> str:
     """The week's open start times: the hours minus Nova's own bookings (all days at once), less Google's busy
     blocks after a verified bounded freeBusy; provider failure marks the section unknown."""
-    from core.services import voice_booking
+    from core.voice.phone import voice_booking
     from routers import voice_phone as vp
 
     dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(DAYS)]

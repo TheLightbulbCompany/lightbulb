@@ -24,7 +24,8 @@ from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo, messaging_repo
-from core.services import agent_email, clerk_admin, meeting_bots, meeting_rsvp, messaging
+from core.services import agent_email, clerk_admin, messaging
+from core.voice.meetings import meeting_bots, meeting_rsvp
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
 logger = logging.getLogger(__name__)

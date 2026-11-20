@@ -330,11 +330,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  explicit workspace-bound admin terms/card setup, collected bounded entitlement,
                                  UTC scoped periods, confirmed period-end cancellation; provider/runtime gates share coverage)
                               <- apps/backend/core/billing/voice_billing.py (free 10 min/UTC day, credits mode, MIN_CALL_SECONDS);
-                                 core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);
+                                 core/voice/voice_calls.py (30 min cap, one free call at a time, no transcript);
                                  core/services/{voice_routing,voice_persona}.py (room-call routing; each agent speaks as itself in its own voice)
-                                 routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; agents join only where one listens; addressed by name, "Lightbulb" or a tile)
+                                 routers/huddles.py, core/voice/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; agents join only where one listens; addressed by name, "Lightbulb" or a tile)
   - Phone voice / Spanish / stock samples ... references/voice.md ("Phone voice and Spanish")
-                              <- backend routers/{voice,voice_phone}.py + core/services/voice_preferences.py;
+                              <- backend routers/{voice,voice_phone}.py + core/voice/phone/voice_preferences.py;
                                  apps/huddle-agent/src/huddle_agent/{phone,live}.py;
                                  frontend components/voice/PhoneVoiceSettings.tsx + native counterpart;
                                  packages/shared/src/voicePreferences.ts + frontend public/voice-samples/
@@ -421,10 +421,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- backend core/services/welcome_email.py (owner: user_provision after #general;
                                  teammate: routers/webhooks.py membership.created) + agent_mail_owner_send.send_to_member
   - Meetings (invite the team address) references/email.md ("Meetings")
-                              <- backend core/services/meeting_invites.py (handle_team_mail: member's Meet invite -> hidden room with every agent, RSVP, bot; output_room; advance for series),
+                              <- backend core/voice/meetings/meeting_invites.py (handle_team_mail: member's Meet invite -> hidden room with every agent, RSVP, bot; output_room; advance for series),
                                  meeting_bots.py (bot_name + chat event subscription), routers/meetings.py (Recall status, endedAt, roster relay + signed chat),
-                                 core/services/meeting_chat.py + plugins/lightbulb/router.py (meeting_chat tool; occurrence-scoped receipts);
-                                 core/services/meeting_context.py + routers/runtime_internal.py (read-only meeting_context pages; immutable original principal and occurrence), meeting_notes.py (transcript + notes run to the
+                                 core/voice/meetings/meeting_chat.py + plugins/lightbulb/router.py (meeting_chat tool; occurrence-scoped receipts);
+                                 core/voice/meetings/meeting_context.py + routers/runtime_internal.py (read-only meeting_context pages; immutable original principal and occurrence), meeting_notes.py (transcript + notes run to the
                                  default room by the CEO or a fallback agent in it, notesSkipped, app-only notes and occurrence history), voice_calls.post_late_answer (a Meet's unheard
                                  answers -> meeting.unsaid); who an agent answers in a Meet: apps/huddle-agent huddle.py (_mine, MEET_FOLLOWUP_S)
   - Teammates in a room ..... references/platform-primitives.md ("Teammates in a room") + SKILL.md non-negotiable + routing row

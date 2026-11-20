@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from core.billing import voice_billing
 from core.repositories import messaging_repo
-from core.services import voice_calls
+from core.voice import voice_calls
 
 
 async def test_retry_freezes_original_seconds_and_start_but_new_job_is_separate(repos):

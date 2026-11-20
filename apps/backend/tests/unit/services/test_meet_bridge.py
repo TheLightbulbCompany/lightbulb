@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import jwt
 import pytest
 
-from core.services import meet_bridge
+from core.voice.meetings import meet_bridge
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 BOT = "Acme" + meet_bridge.meeting_bots._BOT_SUFFIX

@@ -16,7 +16,9 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import livekit_huddles, meeting_invites, meeting_notes, messaging, voice_calls
+from core.services import messaging
+from core.voice import livekit_huddles, voice_calls
+from core.voice.meetings import meeting_invites, meeting_notes
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

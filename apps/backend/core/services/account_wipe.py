@@ -90,7 +90,7 @@ from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
 from core.services.hermes_provisioning import delete_workspace_runtime
-from core.services.voice_calls import wipe_owner_voice
+from core.voice.voice_calls import wipe_owner_voice
 from core.repositories import (
     agent_email_repo,
     billing_repo,
@@ -103,7 +103,8 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.workspace_repo import Identity, WorkspaceRepo
-from core.services import clerk_admin, company_stripe, text_lines, voice_onboarding
+from core.services import clerk_admin, company_stripe, text_lines
+from core.voice.phone import voice_onboarding
 from core.services.billing_service import delete_stripe_customer
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (

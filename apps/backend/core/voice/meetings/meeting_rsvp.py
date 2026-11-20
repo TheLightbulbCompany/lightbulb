@@ -14,7 +14,7 @@ from core.services import agent_email, agent_mail_send, agent_mail_tenant, ses_e
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 
 if TYPE_CHECKING:
-    from core.services.meeting_invites import Invite
+    from core.voice.meetings.meeting_invites import Invite
 
 logger = logging.getLogger(__name__)
 

@@ -244,7 +244,7 @@ async def deliver_usage_event(owner_id: str, transaction_id: str) -> str:
 
 async def report_owner_minutes(owner_id: str, transaction_id: str, started_at: str, seconds: int) -> None:
     """Freeze one room/job receipt before ingest; retries reuse its original start and provider seconds."""
-    from core.services import voice_calls
+    from core.voice import voice_calls
 
     key = {"pk": messaging_repo.owner_pk(owner_id), "sk": f"VOICEUSAGE#{transaction_id}"}
     account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}

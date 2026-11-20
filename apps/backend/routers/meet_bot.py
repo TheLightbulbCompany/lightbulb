@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from core.config import settings
 from core.repositories import messaging_repo
-from core.services import livekit_huddles, voice_calls
+from core.voice import livekit_huddles, voice_calls
 
 router = APIRouter()
 

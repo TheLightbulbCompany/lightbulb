@@ -894,7 +894,8 @@ async def test_open_attempt_is_reused_after_task_specialist_is_reassigned(world,
 
 async def test_a_meeting_notes_worker_gets_the_transcript(monkeypatch):
     """Task 7: the notes task's trigger names the transcript by reference; the Worker input carries it."""
-    from core.services import meeting_notes, room_memory
+    from core.services import room_memory
+    from core.voice.meetings import meeting_notes
 
     monkeypatch.setattr(acts, "_local_now", AsyncMock(return_value="now"))
     monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
@@ -917,7 +918,7 @@ async def test_a_meeting_notes_worker_gets_the_transcript(monkeypatch):
 @pytest.mark.parametrize(("to", "reason"), [("idle", None), ("failed", "failed"), ("resolved", "stopped")])
 async def test_every_end_of_a_task_reaches_the_meeting_notes_keep(monkeypatch, to, reason):
     """Task 7: a person's Stop returns before task_moved; the notes keep still hears it."""
-    from core.services import meeting_notes
+    from core.voice.meetings import meeting_notes
 
     task = {"taskId": "t1", "status": to, "triggerId": "meeting-notes:r:1"}
     monkeypatch.setattr(repo, "get_task_tree", AsyncMock(return_value={"task": task, "attempts": []}))
@@ -929,7 +930,7 @@ async def test_every_end_of_a_task_reaches_the_meeting_notes_keep(monkeypatch, t
 
 async def test_a_notes_trigger_the_router_could_not_answer_marks_the_meeting(monkeypatch):
     """Task 7 review: a batch that failed past its retries started no notes task; the meeting must not stay pending."""
-    from core.services import meeting_notes
+    from core.voice.meetings import meeting_notes
 
     trig = {"triggerId": f"meeting-notes:{ROOM}:1", "admission": "respond", "ref": {"deliverRoomId": ROOM}}
     monkeypatch.setattr(repo, "get_trigger", AsyncMock(return_value=trig))
@@ -946,7 +947,8 @@ async def test_a_notes_trigger_the_router_could_not_answer_marks_the_meeting(mon
 
 async def test_retry_without_notes_request_fails_without_running_worker(world, monkeypatch):
     """Codex P2 on #5288: a Retry after the notes request expired (2 days) ran a Worker with no transcript."""
-    from core.services import meeting_notes, room_memory
+    from core.services import room_memory
+    from core.voice.meetings import meeting_notes
 
     monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
     monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))

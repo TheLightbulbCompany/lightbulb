@@ -8,7 +8,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from core.services import meeting_chat as mod
+from core.voice.meetings import meeting_chat as mod
 
 
 @pytest.fixture

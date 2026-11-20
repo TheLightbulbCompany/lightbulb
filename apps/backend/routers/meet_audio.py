@@ -14,7 +14,8 @@ from fastapi import APIRouter, WebSocket
 
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import livekit_huddles, meet_bridge
+from core.voice import livekit_huddles
+from core.voice.meetings import meet_bridge
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

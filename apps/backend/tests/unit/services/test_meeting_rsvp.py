@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from core.services import meeting_invites, meeting_rsvp
+from core.voice.meetings import meeting_invites, meeting_rsvp
 
 ADDRESS = "agents@acme.thelightbulb.company"
 INVITE = meeting_invites.Invite(

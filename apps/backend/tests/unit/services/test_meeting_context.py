@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.services import admission, meeting_context as mod, meeting_notes
+from core.services import admission
+from core.voice.meetings import meeting_context as mod, meeting_notes
 
 
 @pytest.fixture

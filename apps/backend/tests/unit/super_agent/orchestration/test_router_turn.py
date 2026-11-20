@@ -1934,7 +1934,7 @@ async def test_meeting_chat_tool_receipt_covers_trigger_without_spoken_fallback(
 
 
 async def test_meeting_reader_grant_names_only_actual_authorized_completion_batch(world, monkeypatch):
-    from core.services import meeting_context
+    from core.voice.meetings import meeting_context
 
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "x" * 32)
     completion = await _trig(
@@ -1961,7 +1961,7 @@ async def test_meeting_reader_grant_names_only_actual_authorized_completion_batc
 
 
 async def test_meeting_context_revocation_prevents_router_launch(world, monkeypatch):
-    from core.services import meeting_context
+    from core.voice.meetings import meeting_context
 
     completion = await _trig("completion:revoked", ref={"roomId": ROOM, "meetingFollowups": {"requestId": "notes:1"}})
     monkeypatch.setattr(meeting_context, "authorize", AsyncMock(side_effect=meeting_context.NotAuthorized("revoked")))
@@ -1982,7 +1982,8 @@ async def test_ceo_frontdoor_remains_a_worker_that_can_receive_tasks(world):
 
 
 async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or_plain_reply(world, monkeypatch):
-    from core.services import meeting_context, meeting_followups, questions
+    from core.services import questions
+    from core.voice.meetings import meeting_context, meeting_followups
 
     tid = await _trig(
         "completion:clarify",

@@ -163,7 +163,7 @@ async def _admit_trigger(ws: str, trigger_id: str) -> None:
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
         return
     if "meetingFollowups" in (trig.get("ref") or {}):
-        from core.services import meeting_context
+        from core.voice.meetings import meeting_context
 
         try:
             await meeting_context.authorize(ws, trig)

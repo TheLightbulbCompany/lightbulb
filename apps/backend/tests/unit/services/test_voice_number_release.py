@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from core.repositories import messaging_repo
-from core.services import voice_onboarding as vo
+from core.voice.phone import voice_onboarding as vo
 from tests.unit.services.conftest import repos  # noqa: F401
 
 WS = "org_lapsed"

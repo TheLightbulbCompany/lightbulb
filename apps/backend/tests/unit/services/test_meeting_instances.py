@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from core.services import meeting_invites as mi
+from core.voice.meetings import meeting_invites as mi
 from tests.unit.services import test_meeting_invites as fixtures
 
 TEAM, UID, SERIES = fixtures.TEAM, fixtures.UID, fixtures.SERIES

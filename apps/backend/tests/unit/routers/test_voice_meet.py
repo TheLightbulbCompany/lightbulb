@@ -169,7 +169,7 @@ async def test_task_updates_the_archived_occurrence_without_announcing_in_the_ne
 
 async def test_single_announcement(m):
     """The Recall join chat is gone (test_meeting_bots), so the chat gets only voice_meet's line, including its per-person opt-out."""
-    from core.services import meeting_bots
+    from core.voice.meetings import meeting_bots
 
     assert not hasattr(meeting_bots, "CONSENT_LINE")
     assert "transcribe" not in voice_meet.ANNOUNCE

@@ -33,7 +33,8 @@ from core.repositories.agent_mail_inbox_repo import (
     list_page,
     reply_key,
 )
-from core.services import effect_doors, meeting_invites, messaging
+from core.services import effect_doors, messaging
+from core.voice.meetings import meeting_invites
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
 from core.services.rate_bucket import RateBucket

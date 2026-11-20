@@ -30,7 +30,6 @@ from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import container_repo, effects_repo, integrations_repo, messaging_repo, tasks_repo
 from core.services import (
-    business_profile,
     chat_gate,
     container_provision,
     hermes_profiles,
@@ -47,6 +46,7 @@ from core.services import (
     task_asks,
     tasks_access,
 )
+from core.voice.phone import business_profile
 from core.temporal import client as temporal_client
 from core.temporal import router_prompt, rules_activities
 from core.temporal.client import get_client
@@ -420,7 +420,7 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         apps |= set(await integrations_repo.get_manual_mcp_servers(ws))
         parts.append(f"Connected apps: {', '.join(sorted(apps)) or 'none'}")
     if str(task.get("triggerId") or "").startswith("meeting-notes:"):
-        from core.services import meeting_notes  # the notes task's transcript, read by reference (Task 7)
+        from core.voice.meetings import meeting_notes  # the notes task's transcript, read by reference (Task 7)
 
         parts.append(await meeting_notes.worker_transcript(ws, task["triggerId"]) or "")
         memory["sync"] = "none"  # raw meeting speech never syncs into team memory, as a phone caller's words
@@ -443,7 +443,7 @@ async def worker_turn(inp: WorkerTurnIn) -> WorkerTurnOut:
     await tasks_repo.update_attempt(
         inp.ws, inp.task_id, inp.n, {"taskToken": token}, allowed_status=frozenset({"dispatched", "running"})
     )
-    from core.services import meeting_notes
+    from core.voice.meetings import meeting_notes
 
     try:
         request = await _request(inp.ws, tree["task"], att, tree)
@@ -744,7 +744,7 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
         task = tree["task"]
         if task is not None and task["status"] == to:
             # A meeting's notes task keeps its notes at every end, a person's Stop included (checked below).
-            from core.services import meeting_notes
+            from core.voice.meetings import meeting_notes
 
             await meeting_notes.on_task_moved(task, to)
         if task is None or task["status"] != to or to not in _MARKS or reason in _PERSON_REASONS:
@@ -996,7 +996,7 @@ async def _router_run(
     Returned still running, unmetered, once `settled(status)` holds: the decisions are in and the rest of the run
     is the Router's closing word, so the ack need not wait for it (`_finish_router_run` meters it)."""
     identity = await _router_identity(ws, inp, scope, call)
-    from core.services import meeting_context
+    from core.voice.meetings import meeting_context
 
     context_triggers = []
     for trigger_id in inp.trigger_ids:
@@ -1163,7 +1163,7 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     """The task a decision names, created once (deterministic id) with its room and memory card."""
     ref = trig.get("ref") or {}
     if "meetingFollowups" in ref:
-        from core.services import meeting_context, meeting_followups
+        from core.voice.meetings import meeting_context, meeting_followups
 
         await meeting_context.authorize(ws, trig)  # recheck after model work and on a retried start
     existing = await tasks_repo.get_task(ws, task_id)
@@ -1312,7 +1312,7 @@ async def _apply(
             )
             if gate.get("blocked"):  # §14.10: today's failure copy, no task
                 sl["lines"].append(gate.get("message") or router_prompt.FALLBACK)
-                from core.services import meeting_notes  # a notes trigger with no task: the meeting has no notes
+                from core.voice.meetings import meeting_notes  # a notes trigger with no task: the meeting has no notes
 
                 await meeting_notes.on_not_started(ws, trig)
                 continue
@@ -1369,7 +1369,7 @@ async def _apply(
                 sl["react"] = True
         elif isinstance(dec, ts.Ask):
             if "meetingFollowups" in (trig.get("ref") or {}):
-                from core.services import meeting_followups
+                from core.voice.meetings import meeting_followups
 
                 task_id = ts.router_task_id(inp.batch_id, i, 0)
                 brief, question = await meeting_followups.clarification(ws, trig, task_id, dec.text, dec.options)
@@ -1783,7 +1783,7 @@ async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
             line = router_prompt.PARTIAL if (trig.get("routedTo") or {}).get("taskId") else router_prompt.FALLBACK
             await _deliver(ws, trig, line, event_id=f"router-fallback:{tid}", refs=None, remember=False)
             if not (trig.get("routedTo") or {}).get("taskId"):
-                from core.services import meeting_notes  # a notes trigger with no task: the meeting has no notes
+                from core.voice.meetings import meeting_notes  # a notes trigger with no task: the meeting has no notes
 
                 await meeting_notes.on_not_started(ws, trig)
         elif trig:  # a candidate gets no line: its "reading…" ends now, not on the client's timer (walk 15)

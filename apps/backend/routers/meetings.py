@@ -17,15 +17,9 @@ from core.billing import voice_billing
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, billing_repo
-from core.services import (
-    clerk_admin,
-    livekit_huddles,
-    meeting_bots,
-    meeting_invites,
-    meeting_notes,
-    messaging,
-    voice_calls,
-)
+from core.services import clerk_admin, messaging
+from core.voice import livekit_huddles, voice_calls
+from core.voice.meetings import meeting_bots, meeting_invites, meeting_notes
 from core.services.live_events import get_live_event_publisher
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 

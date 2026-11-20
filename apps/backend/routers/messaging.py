@@ -37,7 +37,8 @@ from core.services import (
     task_board,
 )
 from core.services import local_session_grants
-from core.services import container_rpc, runtime_transport, voice_calls
+from core.services import container_rpc, runtime_transport
+from core.voice import voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
 from core.services.hook_grants import require_hook_token
 from core.services.messaging import (

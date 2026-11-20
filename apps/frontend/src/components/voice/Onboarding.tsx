@@ -4,7 +4,7 @@
 // (1) the business → the assistant reads its website; (2) check what it learned, on the Agent page's own cards;
 // (3) where bookings go; (4) its number and forwarding; (5) name, greeting, voice, test call, Go live.
 // Every step after the first saves the Agent page document with `onboardingStep`, so leaving (e.g. for the Google
-// consent screen) resumes where the owner was. Shapes: routers/voice.py, core/services/voice_onboarding.py.
+// consent screen) resumes where the owner was. Shapes: routers/voice.py, core/voice/phone/voice_onboarding.py.
 import { useEffect, useState } from "react";
 import { useOrganization } from "@clerk/nextjs";
 import { ArrowLeft, Plus } from "lucide-react";

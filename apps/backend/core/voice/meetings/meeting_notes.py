@@ -17,7 +17,8 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.observability.metrics import put_metric
 from core import tasks_schema as ts
 from core.repositories import container_repo, messaging_repo, tasks_repo
-from core.services import admission, meeting_invites, messaging, task_conversation
+from core.services import admission, messaging, task_conversation
+from core.voice.meetings import meeting_invites
 
 logger = logging.getLogger(__name__)
 
@@ -587,7 +588,7 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
         else next((h for h in (saved or {}).get("history") or [] if h.get("startAt") == occurrence), {})
     )
     if canonical := (entry or {}).get("notes"):
-        from core.services import meeting_followups
+        from core.voice.meetings import meeting_followups
 
         # Durable admission precedes the completion claim: retry uses the same immutable trigger.
         await meeting_followups.enqueue(owner_id, message_id, request)

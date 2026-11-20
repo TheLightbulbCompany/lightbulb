@@ -21,7 +21,7 @@ from core.billing import voice_billing
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
 from core.services import messaging
-from core.services.voice_calls import _voice_requester
+from core.voice.voice_calls import _voice_requester
 from routers.huddles import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
 from routers.voice_meet import QuestionRef, agent_lines, answer_said_question, assistant_name, latest_seq
 from routers.voice_phone import transcript_lines

@@ -419,6 +419,10 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         apps = {e["provider"] for e in await owner_facts._lookup_connected_integrations(ws)}
         apps |= set(await integrations_repo.get_manual_mcp_servers(ws))
         parts.append(f"Connected apps: {', '.join(sorted(apps)) or 'none'}")
+    if str(task.get("triggerId") or "").startswith("meeting-notes:"):
+        from core.services import meeting_notes  # the notes task's transcript, read by reference (Task 7)
+
+        parts.append(await meeting_notes.worker_transcript(ws, task["triggerId"]) or "")
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS + (CALLER_THREAD_NOTE if contact else ""),
@@ -724,6 +728,11 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
     try:
         tree = await tasks_repo.get_task_tree(ws, task_id)
         task = tree["task"]
+        if task is not None and task["status"] == to:
+            # A meeting's notes task keeps its notes at every end, a person's Stop included (checked below).
+            from core.services import meeting_notes
+
+            await meeting_notes.on_task_moved(task, to)
         if task is None or task["status"] != to or to not in _MARKS or reason in _PERSON_REASONS:
             return
         if to == "idle" and task.get("watchUntil"):  # still working: it wakes itself (watches.py)

@@ -1,6 +1,7 @@
 """After a meeting: its transcript lands in the meeting's output room (the workspace's default
-room) as ``transcript.txt`` (never as messages), one CEO run writes the notes there, and the
-notes stay in the app; nothing is emailed automatically. A series then moves on to its next occurrence.
+room) as ``transcript.txt`` (never as messages), one Router task writes the notes there (a scripted
+start, its Worker reading the transcript by reference), and the notes stay in the app; nothing is
+emailed automatically. A series then moves on to its next occurrence.
 """
 
 from __future__ import annotations
@@ -12,28 +13,31 @@ import time
 import uuid
 from datetime import datetime
 
-from core.dynamodb import run_in_thread
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.observability.metrics import put_metric
 from core import tasks_schema as ts
 from core.repositories import container_repo, messaging_repo, tasks_repo
-from core.services import (
-    meeting_invites,
-    messaging,
-    openclaw_work,
-)
+from core.services import admission, meeting_invites, messaging, task_conversation
 
 logger = logging.getLogger(__name__)
 
 _WAIT_S, _POLL_S = 60, 2  # outlasts the worker's 45 s final-transcript retry budget
 _CLAIM_S = 120  # a notes attempt younger than this is still running; older, it died and is retried
 _NOTES_TRIES, _NOTES_RETRY_S = 3, 10
+#: A notes task's trigger id, which is also its notes request's id: `meeting-notes:<meeting room>:<occurrence>`.
+NOTES_PREFIX = "meeting-notes:"
+#: The transcript's share of the Worker's input. The bridge refuses an input over 200 KB (bridge/runs.py
+#: MAX_INPUT_BYTES); the brief, the time and the connected apps share the rest.
+TRANSCRIPT_MAX_BYTES = 150 * 1024
+#: The first line of notes written from a cut transcript.
+CUT_LINE = "These notes cover only the last part of a long meeting: the start of its transcript was too long to read."
 
 
 def owed(meeting: dict) -> bool:
     """A call that happened (the bot was in it) and is over, whose notes have not finished."""
     held = meeting.get("status") in ("ended", "bot_failed") and meeting.get("inCallAt")
-    # Legacy attempted/completed markers still count as done. A dispatched notes run keeps its
-    # reply in the app (on_agent_reply / on_notes_run_ended).
+    # Legacy attempted/completed markers still count as done. A started notes task keeps its
+    # result in the app (on_task_moved).
     return bool(held) and not (
         meeting.get("notesMailedAt") or meeting.get("notesMailAttemptedAt") or meeting.get("notesRunId")
     )
@@ -184,44 +188,125 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 if meeting.get("invitedBy")
                 else None
             )
-            message = await meeting_invites._post_line(
+            trigger_id = f"{NOTES_PREFIX}{room_id}:{occurrence}"
+            task_id = ts.router_task_id(trigger_id, 0, 0)  # a scripted start's task id (activities._apply)
+            # What the keep reads travels with the request: a recurring series rewrites the meeting
+            # record as it advances, before the notes come back. Written first: the task's end reads it.
+            snapshot = {k: meeting[k] for k in _MAIL_FIELDS if meeting.get(k) is not None}
+            await messaging_repo.put_meeting_notes_request(owner_id, trigger_id, {
+                "roomId": room_id, "occurrence": occurrence, "targetRoomId": target, "agentId": writer,
+                "taskId": task_id, "meeting": snapshot, **({"principalUserId": principal} if principal else {}),
+            })  # fmt: skip
+            await admission.enqueue_trigger(
                 owner_id,
-                target,
-                f"meeting:{room_id}:{occurrence}:notes",
-                f"Write the meeting notes for {title}: open questions, two paragraphs max, then a section headed "
-                '"Decisions:" with one line per decision the people made ("- <what was decided> (decided by <who>)", '
-                "leaving out the parenthesis when nobody said who; no section when nothing was decided), then a last "
-                'section headed "Action items:" with one line per item ("- <owner>: <what>"); do not create tasks '
-                "yourself. Action items are recorded commitments, not authorization to start work. Action items come only from what people "
-                f"said: never from a line marked{ASSISTANT_MARK}, which is the voice repeating the team. The "
-                "transcript is attached" + _unsaid_text(meeting),
-                dispatch_targets=[{"agentId": writer, "eventKind": "user_request"}],
+                _notes_trigger(owner_id, trigger_id, task_id, title, writer, principal, meeting),
+                room_id=target,
             )
-            if message:
-                run_id = messaging_repo.run_id_for(writer, message["messageId"])
-                # Completion waits for the notes themselves (on_agent_reply) or the run's end
-                # (on_notes_run_ended). What it reads travels with the request: a recurring series
-                # rewrites the meeting record as it advances, before the notes come back.
-                snapshot = {k: meeting[k] for k in _MAIL_FIELDS if meeting.get(k) is not None}
-                await messaging_repo.put_meeting_notes_request(owner_id, message["messageId"], {
-                    "roomId": room_id, "occurrence": occurrence, "targetRoomId": target, "agentId": writer,
-                    "triggerSeq": message.get("messageSeq"), "meeting": snapshot,
-                    **({"principalUserId": principal} if principal else {}),
-                })  # fmt: skip
-                await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
-                return
+            await meeting_invites._patch_meeting(room_id, {"notesRunId": task_id}, when=this_occurrence)
+            return
     if meeting.get("notesRunId"):
-        return  # its notes run was dispatched: its reply keeps the notes in the app
+        return  # its notes task was started: its end keeps the notes in the app
     # Automatic meeting notes are app-only. Keep the existing completion marker for old rows.
     await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
 
+def _notes_brief(title: str, meeting: dict) -> str:
+    """The notes task's brief: the notes request the room turn used to get, its sections unchanged."""
+    return (
+        f"Write the meeting notes for {title}: open questions, two paragraphs max, then a section headed "
+        '"Decisions:" with one line per decision the people made ("- <what was decided> (decided by <who>)", '
+        "leaving out the parenthesis when nobody said who; no section when nothing was decided), then a last "
+        'section headed "Action items:" with one line per item ("- <owner>: <what>"); do not create tasks '
+        "yourself. Action items are recorded commitments, not authorization to start work. Action items come only from what people "
+        f"said: never from a line marked{ASSISTANT_MARK}, which is the voice repeating the team. The "
+        "transcript is below" + _unsaid_text(meeting)
+    )
+
+
+def _notes_trigger(
+    owner_id: str, trigger_id: str, task_id: str, title: str, writer: str, principal: str | None, meeting: dict
+) -> ts.Trigger:
+    """A scripted StartTask (``ref.start``, applied without a Router model turn, as voice-start does). The
+    transcript goes by reference (``meetingNotes.requestId`` names the request, which names the attachment):
+    a trigger row never carries it."""
+    start = ts.StartTask(
+        kind="start_task",
+        trigger_ids=[trigger_id],
+        title=f"Meeting notes: {title}"[:200],
+        brief=_notes_brief(title, meeting),
+        specialist=writer,
+        ack=f"Writing the notes for {title}.",
+        visibility="room",
+    )
+    now = utc_now_iso()
+    return ts.Trigger(
+        ws=owner_id,
+        trigger_id=trigger_id,
+        source="webhook",
+        admission="respond",
+        lane="shared",
+        actor_user_id=principal,
+        received_at=now,
+        created_at=now,
+        updated_at=now,
+        # confirmAll: the transcript is anyone's speech, so every outside action the Worker tries gets a card.
+        ref={
+            "taskId": task_id,
+            "meetingNotes": {"requestId": trigger_id},
+            "start": start.model_dump(by_alias=True),
+            "confirmAll": True,
+        },
+    )
+
+
 async def _notes_writer(owner_id: str, room_id: str) -> str | None:
-    """The agent that writes the notes. The run is dispatched in ``room_id``, so only its agent
-    members qualify: the CEO when it sits there, else the one openclaw_work's fallback picks (a
-    founder roster has no starter ids). None when the room has no agent."""
-    agents = sorted(m["id"] for m in await messaging_repo.list_members(room_id) if m.get("kind") == "agent")
-    return await openclaw_work._fallback_single(owner_id, agents, {}, []) if agents else None
+    """The agent the notes task runs as: the output room's front agent (Lightbulb). None when it has none."""
+    try:
+        return await task_conversation.front_agent_id(owner_id, room_id=room_id)
+    except task_conversation.NoFrontAgent:
+        return None
+
+
+def _transcript_room(request: dict) -> str:
+    return (request.get("meeting") or {}).get("transcriptRoomId") or request["roomId"]
+
+
+async def worker_transcript(owner_id: str, request_id: str) -> str | None:
+    """The notes Worker's ``## Transcript`` (activities._request), read from the attachment the request names.
+    Over ``TRANSCRIPT_MAX_BYTES`` the start is cut at a line and the end kept whole (decisions and action items
+    come late), and the Worker is told. None for any other task. Raises when the attachment cannot be read: notes
+    written without it would be invented."""
+    if not request_id.startswith(NOTES_PREFIX):
+        return None
+    request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
+    attachment = ((request or {}).get("meeting") or {}).get("transcriptId")
+    if not attachment:
+        return None
+    _, raw = await run_in_thread(messaging.load_attachment, owner_id, _transcript_room(request), attachment)
+    if len(raw) <= TRANSCRIPT_MAX_BYTES:
+        return f"## Transcript\n{raw.decode('utf-8', 'replace')}"
+    # ponytail: a meeting over ~150 KB of talk (about 3 hours) loses its start; a paged reader tool if that bites.
+    tail = raw[-TRANSCRIPT_MAX_BYTES:].decode("utf-8", "ignore")
+    tail = tail.split("\n", 1)[1] if "\n" in tail else tail
+    logger.warning(
+        "meeting room %s: transcript cut from the start for the notes (%d of %d bytes kept)",
+        request["roomId"], len(tail.encode()), len(raw),
+    )  # fmt: skip
+    return f"## Transcript\n(This meeting was long: its start was cut, only its last part is below.)\n{tail}"
+
+
+async def _was_cut(owner_id: str, request: dict) -> bool:
+    attachment = (request.get("meeting") or {}).get("transcriptId")
+    if not attachment:
+        return False
+    try:
+        meta, _ = await run_in_thread(
+            messaging.load_attachment_head, owner_id, _transcript_room(request), attachment, 1
+        )
+    except (messaging.ApiProblem, ValueError):  # the notes are kept either way; only their first line is lost
+        logger.warning("meeting room %s: transcript size unreadable", request["roomId"], exc_info=True)
+        return False
+    return meta.size > TRANSCRIPT_MAX_BYTES
 
 
 def _unsaid_text(meeting: dict) -> str:
@@ -239,49 +324,37 @@ _MAIL_FIELDS = (
 )  # fmt: skip
 
 
-async def on_agent_reply(owner_id: str, agent_id: str, reply_to: str | None, text: str, progress: bool) -> None:
-    """Keep the requested notes in the app. Only the assigned agent's final reply qualifies.
-    Never raises: the reply is already stored."""
-    if progress or not reply_to or not text.strip():
-        return
-    try:
-        request = await messaging_repo.get_meeting_notes_request(owner_id, reply_to)
-        if request is not None and request.get("agentId") == agent_id:
-            await _keep_notes(owner_id, reply_to, request, notes=text)
-    except Exception:  # noqa: BLE001
-        put_metric("meeting.notes.mail_failed")
-        logger.warning("meeting notes keep failed for reply to %s", reply_to, exc_info=True)
+#: A notes task's end. `idle` is done (its output is the notes); the rest end it without notes: failed, or a
+#: person's Stop, Close or Dismiss (`resolved`).
+_ENDS = frozenset({"idle", "failed", "resolved"})
 
 
-async def on_notes_run_ended(owner_id: str, row: dict) -> None:
-    """Keep a notes run's final reply, including one that arrived before its request record.
-    A failed run is marked complete without emailing anyone. Never raises."""
-    trigger = row.get("triggerMessageId")
-    if not trigger:
+async def on_task_moved(task: dict, to: str) -> None:
+    """Keep a notes task's result in the app when it ends (activities._announce, every status change, before its
+    person-reason check). Done: the last completed attempt's output is the notes. Failed, stopped, closed or
+    dismissed: the meeting is marked done with no notes, as a failed notes run was. Never raises."""
+    request_id = str(task.get("triggerId") or "")
+    owner_id = str(task.get("pk") or "").removeprefix("WS#")
+    if not request_id.startswith(NOTES_PREFIX) or to not in _ENDS or not owner_id:
         return
     try:
-        request = await messaging_repo.get_meeting_notes_request(owner_id, trigger)
-        if request is None or request.get("mailAttemptedAt"):
+        request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
+        if request is None or request.get("mailAttemptedAt") or request.get("taskId") != task.get("taskId"):
             return
-        notes = await _posted_notes(request, trigger) if row.get("outcome") == "completed" else None
-        await _keep_notes(owner_id, trigger, request, notes=notes)
+        notes = None
+        if to == "idle":
+            tree = await tasks_repo.get_task_tree(owner_id, task["taskId"])
+            done = [
+                a for a in tree.get("attempts") or []
+                if a.get("outcome") == "completed" and (a.get("output") or "").strip()
+            ]  # fmt: skip
+            notes = max(done, key=lambda a: a["n"])["output"] if done else None
+            if notes and await _was_cut(owner_id, request):
+                notes = f"{CUT_LINE}\n\n{notes}"
+        await _keep_notes(owner_id, request_id, request, notes=notes)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
-        logger.warning("meeting notes end-of-run keep failed for %s", trigger, exc_info=True)
-
-
-async def _posted_notes(request: dict, trigger: str) -> str | None:
-    """The notes agent's final reply to the request, read from the room just after it."""
-    seq = request.get("triggerSeq")
-    if seq is None:
-        return None
-    rows, _ = await messaging_repo.list_messages(request["targetRoomId"], int(seq), 100)
-    replies = [
-        r.get("text") or "" for r in rows
-        if (r.get("author") or {}).get("id") == request.get("agentId")
-        and r.get("replyToMessageId") == trigger and r.get("progress") is not True
-    ]  # fmt: skip
-    return next((t for t in reversed(replies) if t.strip()), None)
+        logger.warning("meeting notes keep failed for %s", request_id, exc_info=True)
 
 
 _ACTIONS_HEAD = re.compile(r"^\W*action items\W*$", re.I)
@@ -410,7 +483,7 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
 
 
 async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
-    """The notes agent's reply is kept on the meeting record (the app's timeline); nothing is mailed. A recurring
+    """The notes task's result is kept on the meeting record (the app's timeline); nothing is mailed. A recurring
     series has advanced by the time the reply lands: the notes go into that occurrence's history entry. The
     write is idempotent, so the once-only claim is spent only after it lands."""
     room_id, occurrence = request["roomId"], request.get("occurrence")
@@ -443,7 +516,7 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
             put_metric("meeting.notes.actions_failed")
             logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)
         if not await _remember_decisions(owner_id, request, entry):
-            return  # the completion claim stays unspent: the run end (on_notes_run_ended) writes the rest
+            return  # the completion claim stays unspent: the task's next status change writes the rest
     await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
 
 

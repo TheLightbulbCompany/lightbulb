@@ -5110,9 +5110,6 @@ async def end_run_and_announce(owner_id: str, run_id: str, **kwargs: Any) -> dic
     if row is not None:
         await announce_run(row, "idle")
         await _schedule_room_run_analytics(owner_id, row)
-        from core.services import meeting_notes  # a meeting's notes run owes its organizer one mail
-
-        await meeting_notes.on_notes_run_ended(owner_id, row)
     return row
 
 

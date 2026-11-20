@@ -178,7 +178,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 5.13 | A Worker's result comes back into the meeting; the follow-up shows its status | yes | yes | no | Product | |
 | 5.14 | Starts follow-up work it was clearly given; records human commitments without acting | yes | no | no | Platform | #5163 merged, on dev |
 | 5.15 | Everyone acts with the inviter's authority; spend, send and publish need the inviter's card tap | yes | yes | no | Product | |
-| 5.16 | Notes in the app after the meeting; no email | yes | part | part | Product | Notes in the app are verified on screen on prod. The removal of the automatic email reaches prod with the queued train |
+| 5.16 | Notes in the app after the meeting; no email | yes | no | no | Product | Built: the notes are a Router task now (a scripted start; the Worker reads the transcript by reference, cut from the start past 150 KB), no longer a room turn. Needs one dev Meet to mark tested. The earlier room-turn notes were verified on screen on prod |
 | 5.17 | Structured decisions, recallable by voice ("what did we decide") | yes | no | no | Product | #5186: the notes run also returns a Decisions section; stored on the meeting, shown in the pane, each written once to the workspace's team memory for recall. Not yet seen in a real meeting or recalled live |
 | 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked. Built in #5185, unverified live: GPT-Live hands the request to the Router, whose `meeting_stop_transcribing` excludes only the recorded speaker; the worker adopts it from `/events`; the tile shows the count. Needs a real-meeting run. |
 | 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |

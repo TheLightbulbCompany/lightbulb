@@ -239,18 +239,20 @@ async def output_room(owner_id: str, room_id: str) -> str:
 
 async def _organizer_dm(owner_id: str, room_id: str) -> str | None:
     """The DM between the meeting's organizer (the member whose invite made its room, seated as its
-    owner) and the agent that writes its notes (the CEO when it sits in the meeting, as the notes
-    writer is picked). Found or created; None when either is missing or it cannot be opened. A DM
+    owner) and the agent that writes its notes (the meeting's front agent, as the notes writer is
+    picked). Found or created; None when either is missing or it cannot be opened. A DM
     passed in (a line already resolved here) resolves to itself."""
     from core.auth import AuthContext
-    from core.services import openclaw_work
+    from core.services import task_conversation
 
     members = await messaging_repo.list_members(room_id)
     creator = next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
-    agents = sorted(m["id"] for m in members if m.get("kind") == "agent")
-    if not creator or not agents:
+    if not creator:
         return None
-    writer = await openclaw_work._fallback_single(owner_id, agents, {}, [])
+    try:  # the notes task runs as the meeting's front agent (meeting_notes._notes_writer)
+        writer = await task_conversation.front_agent_id(owner_id, room_id=room_id)
+    except task_conversation.NoFrontAgent:
+        return None
     request = messaging.CreateRoomRequest(
         client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-meeting-dm|{owner_id}|{creator}|{writer}"),
         name=None,

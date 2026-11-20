@@ -28,6 +28,8 @@
 
 **Target companies:** independent, owner-operated salons (hair, nails, lashes, brows), day spas and massage studios, and barbershops in the US. One location, roughly 1 to 15 chairs or rooms, no IT person. US only: numbers are US local numbers and the forwarding instructions cover US carriers.
 
+Lightbulb Meetings is for any business that meets on Google Meet (founder, 20 Nov).
+
 **Decision-maker:** the owner, who is usually also a working stylist, tech, therapist or barber. They decide alone and pay with a card.
 
 **Primary use case:** calls that come in while the owner's hands are busy with a client, after closing time, or when the front desk is busy go unanswered, and some of those callers book somewhere else.
@@ -126,6 +128,13 @@ Paths are relative to the repo root `/Users/prasiddhaparthsarthy/Desktop/lb-mark
 | Zoom, Microsoft Teams, Webex | DO NOT CLAIM | Google Meet links only. |
 | In-app voice orb: tap and talk to your assistant | VERIFIED | `/voice/lightbulb` (`apps/frontend/src/components/voice/LightbulbPage.tsx`, `TalkOrb.tsx`). Keep it secondary in marketing; the phone is the product. |
 | Meeting minutes count toward the plan | VERIFIED | `apps/backend/routers/meetings.py` `_report_minutes`. Say it if you explain minutes. |
+| Meetings is offered on the site by waitlist only; `/meetings` sells nothing and shows no price | VERIFIED | `app/meetings/page.tsx`; `waitlist` in `apps/backend/schemas/setup_request.py` |
+
+### Lightbulb OS
+
+| Capability | Status | Proof / what is missing |
+|---|---|---|
+| Lightbulb OS is a voice app for the Mac, not released; waitlist only | VERIFIED as a waitlist | `app/os/page.tsx`. The app is built outside this repo, so no capability of it may be claimed. |
 
 ### Billing, trial, compliance
 

@@ -30,6 +30,7 @@ from core.services import hosted_mcp
 from core.services.a2a_auth import READ_SCOPE_A2A, RESOURCE_A2A, SEND_SCOPE
 from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE
 from core.services.update_service import run_scheduled_worker
+from core.voice import engine_hooks
 from routers import (
     agent_mail,
     agent_text,
@@ -332,6 +333,8 @@ openapi_tags = [
         "description": "Root and health check endpoints for verifying API availability.",
     },
 ]
+
+engine_hooks.register()  # engine code in this process asks the products through core.engine.hooks
 
 app = FastAPI(
     title="Lightbulb API",

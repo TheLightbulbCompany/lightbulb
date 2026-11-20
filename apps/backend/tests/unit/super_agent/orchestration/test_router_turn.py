@@ -567,7 +567,9 @@ async def test_pinned_specialist_in_prompt(world):
     assert (
         f"- {FIN} · Finance · Books and invoices" in request.input and CEO in request.input.split("## Specialists")[1]
     )
-    assert request.instructions == router_prompt.ROUTER_INSTRUCTIONS
+    from core.voice import engine_hooks  # the products' rules and tools, filled in by the `router` context
+
+    assert request.instructions == router_prompt.instructions(engine_hooks.ROUTER_RULES, engine_hooks.ROUTER_TOOLS)
     assert request.memory == {
         "lane": "shared",
         "member": None,
@@ -1405,7 +1407,9 @@ def test_recurring_asks_are_automations_not_requests():
     """Dev walk 7 (W7-6): "every Monday at 9am post a one-line summary of this room here" became a start_task; its
     Worker made an Active Paperclip routine in UTC, with no confirm card. The prompt listed five tools and not
     propose_automation, and said to start everything: recurring work is propose_automation, never start_task."""
-    text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    from core.voice import engine_hooks
+
+    text = " ".join(router_prompt.instructions(engine_hooks.ROUTER_RULES, engine_hooks.ROUTER_TOOLS).split())
     assert "ignore, propose_automation, meeting_chat, meeting_stop_transcribing, meeting_context)" in text
     assert "Recurring work" in text and "propose_automation, never start_task" in text
 

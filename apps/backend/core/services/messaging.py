@@ -44,14 +44,12 @@ from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.person_label import email_label, is_relay_email
 from core.services.push_service import send_push_to_user
 from core.services import clerk_admin, hermes_profiles, run_analytics
+from core.engine.contract import MessageVia
 from core.voice import livekit_huddles
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
 from core.services.workspace_provisioning import STARTER_ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
 
-# Where a message came from when not the chat surface itself; carried on the stored message.
-# voice: said in a Live talk; meeting_notes: a meeting's action items, filed from its notes
-MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text", "apps", "voice", "meeting_notes", "meeting_chat"]
 
 logger = logging.getLogger(__name__)
 

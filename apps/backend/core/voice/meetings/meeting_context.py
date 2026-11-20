@@ -15,6 +15,7 @@ import uuid
 import jwt
 
 from core.dynamodb import run_in_thread
+from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
 from core.repositories import messaging_repo, tasks_repo
 from core.services import clerk_admin, messaging
 from core.services.service_token import _signing_key
@@ -26,10 +27,6 @@ GRANT_PURPOSE = "router_meeting_context"
 GRANT_TTL = 600  # bounded cold-start + the Router's existing four-minute model budget
 GRANT_HEADER = "X-Lightbulb-Meeting-Context-Grant"
 MAX_TRIGGERS = 20
-
-
-class NotAuthorized(ValueError):
-    pass
 
 
 def mint_grant(owner_id: str, run_id: str, trigger_ids: list[str]) -> str:

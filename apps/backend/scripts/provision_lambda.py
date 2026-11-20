@@ -105,7 +105,10 @@ def handler(event, context):
         except Exception as exc:  # an SSM/Secrets blip: retried by the machine, not a failed provision
             raise ProvisionTransient(f"environment load failed: {type(exc).__name__}") from exc
         from core.services import hermes_provisioning as hp  # imports core.config: env first
+        from core.voice import engine_hooks
         from scripts import provision_runner as runner
+
+        engine_hooks.register()  # seeding reaches the front agent, which asks the product (core.engine.hooks)
 
         provision_runner = runner
         hermes_provisioning = hp

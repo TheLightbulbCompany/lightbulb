@@ -147,20 +147,6 @@ async def test_declared_commands_for_includes_derived_commands():
     assert declared == {"device.info", "browser.cdp.v1", "browser.cast.v1", "browser.wipe.v1"}
 
 
-async def test_a_mac_that_declares_cast_can_cast_only_with_the_browser_grant():
-    """The relay's intersection (gateway_relay: declared & declared_commands_for). The pair was
-    stored before browser.cast.v1 existed; the grant is derived at connect, so no re-pair."""
-    from core.services.node_broker import NodeSession
-
-    declared = {"device.info", "browser.cdp.v1", "browser.cast.v1"}
-    for browser in (True, False):
-        row = {"paired_devices": _pair(browser=browser)}
-        assert "browser.cast.v1" not in row["paired_devices"]["mac-1"]["commands"]
-        with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row)):
-            allowed = declared & await declared_commands_for("org_1", "mac-1")
-        assert NodeSession("mac-1", allowed).can_cast is browser
-
-
 # ---------------------------------------------------------------------------
 # Device identity
 # ---------------------------------------------------------------------------

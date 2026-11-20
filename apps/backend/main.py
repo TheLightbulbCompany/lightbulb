@@ -46,11 +46,8 @@ from routers import (
     debug,
     desktop_auth,
     devices,
-    gateway_relay,
     hooks,
     huddles,
-    desktop_execution,
-    mac_cdp,
     meet_audio,
     meet_bot,
     meetings,
@@ -506,13 +503,8 @@ app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhook
 app.include_router(messaging.router, prefix="/api/v1", tags=["messaging"])
 app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messaging"])
 
-# Raw WebSocket relay for machine clients (desktop node hosts, Paperclip
-# operators) — a direct browser-facing WS door on the ALB, not the API Gateway
-# WebSocket path.
-app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gateway-relay"])
-# Recall's per-person Meet audio: the same door, since it is the only raw-WS path the bv- edge forwards.
+# Recall's per-person Meet audio: the bv- raw-WS door (/api/v1/gateway/*), the only raw-WS path that edge forwards.
 app.include_router(meet_audio.router, prefix="/api/v1/gateway", tags=["meetings"])
-app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
@@ -545,7 +537,6 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
 app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
 app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
-app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac-cdp"])
 
 # Workspace website logins (the store behind every agent's browser vault)
 app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])

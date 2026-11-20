@@ -6,6 +6,7 @@ import inspect
 import os
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 os.environ.setdefault("LIGHTBULB_API_URL", "http://x")
@@ -92,7 +93,10 @@ class FakeBackend:
         if path == "/internal/voice/calls":
             return dict(INFO)
         out = self.replies.get(path, {})
-        return out.pop(0) if isinstance(out, list) else out
+        out = out.pop(0) if isinstance(out, list) else out
+        if isinstance(out, Exception):
+            raise out
+        return out
 
 
 class Call:
@@ -215,11 +219,30 @@ async def test_followup_post_keeps_its_task_receipt_for_terminal_answer_correlat
 async def test_turn_retries_once_on_5xx(monkeypatch):
     """A 5xx on `/turn` is retried once with the same body ((call, n) keys it: the retry is the same line)."""
     call = await Call(
-        monkeypatch, replies={"turn": [{"error": "http_503"}, {"messageId": "m1"}]}
+        monkeypatch, replies={"turn": [{"error": "http_503", "status": 503}, {"messageId": "m1"}]}
     ).answer()
     assert await call.started["post"]("Book me in", []) == "m1"
     turns = [b for p, b in call.backend.calls if p == "turn"]
     assert len(turns) == 2 and turns[0] == turns[1]
+
+
+@pytest.mark.parametrize(
+    "first",
+    [{"error": "turn_failed", "status": 503}, httpx.ReadTimeout("slow")],
+    ids=["5xx_with_a_code", "timeout"],
+)
+async def test_turn_retries_once_on_a_coded_5xx_or_a_timeout(monkeypatch, first):
+    """A 5xx whose body names a code, and a request that timed out, are retried once with the same body too."""
+    call = await Call(monkeypatch, replies={"turn": [first, {"messageId": "m1"}]}).answer()
+    assert await call.started["post"]("Book me in", []) == "m1"
+    turns = [b for p, b in call.backend.calls if p == "turn"]
+    assert len(turns) == 2 and turns[0] == turns[1]
+
+
+async def test_a_coded_4xx_on_turn_is_not_retried(monkeypatch):
+    call = await Call(monkeypatch, replies={"turn": [{"error": "bad_turn", "status": 422}, {"messageId": "m1"}]}).answer()
+    assert await call.started["post"]("Book me in", []) is None
+    assert len([b for p, b in call.backend.calls if p == "turn"]) == 1
 
 
 async def test_phone_person_and_message_are_delegations_with_kind(monkeypatch):

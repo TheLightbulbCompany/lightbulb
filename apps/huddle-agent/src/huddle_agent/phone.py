@@ -210,7 +210,8 @@ class Backend:
         return {
             "error": (detail or {}).get("code", f"http_{r.status_code}")
             if isinstance(detail, dict)
-            else f"http_{r.status_code}"
+            else f"http_{r.status_code}",
+            "status": r.status_code,
         }
 
 
@@ -358,8 +359,12 @@ async def entrypoint(ctx: JobContext) -> None:
         q, at = question  # owner mode: the Worker question just said is answered by this line (owner.py's rule)
         answers = q if q and time.monotonic() - at <= ANSWER_WITHIN_S else None
         turn = {"n": n, "text": body, **({"answers": answers} if answers else {})}
-        out = await backend.post("turn", turn)
-        if str(out.get("error", "")).startswith("http_5"):  # once, same body: (call, n) keys it, so the same line
+        try:
+            out = await backend.post("turn", turn)
+            retry = out.get("status", 0) >= 500  # a 5xx, with or without a code in its body
+        except httpx.TimeoutException:
+            retry = True
+        if retry:  # once, same body: (call, n) keys it, so the same line
             out = await backend.post("turn", turn)
         if answers is not None and question[0] is q:
             question[:] = [None, 0.0]

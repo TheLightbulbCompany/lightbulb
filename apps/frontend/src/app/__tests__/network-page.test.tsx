@@ -16,6 +16,7 @@ describe("/network", () => {
     expect(text).toContain("four-word code");
     expect(text).toContain("An invite is the approval");
     expect(text).not.toContain("approve J1");
-    expect(screen.getByRole("link", { name: /start a workspace/i }).getAttribute("href")).toBe("/sign-up");
+    expect(screen.queryByRole("link", { name: /start a workspace/i })).toBeNull();
+    expect(container.querySelector('a[href="/sign-up"]')).toBeNull();
   });
 });

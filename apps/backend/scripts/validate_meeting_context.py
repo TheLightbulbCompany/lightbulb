@@ -338,4 +338,7 @@ if __name__ == "__main__":
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--expected-image-tag", default="h-2026.11.9-a29f9bb")
     args = parser.parse_args()
+    from core.voice import engine_hooks
+
+    engine_hooks.register()
     asyncio.run(validate(args.receipt, args.expected_image_tag))

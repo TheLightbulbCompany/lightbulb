@@ -28,6 +28,9 @@ from core import tasks_schema as ts
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
+from core.engine import hooks
+from core.engine.contract import PRODUCT_REF_KEYS, product_ref
+from core.engine.hooks import ContextAsk, EngineEvent
 from core.repositories import container_repo, effects_repo, integrations_repo, messaging_repo, tasks_repo
 from core.services import (
     chat_gate,
@@ -46,7 +49,6 @@ from core.services import (
     task_asks,
     tasks_access,
 )
-from core.voice.phone import business_profile
 from core.temporal import client as temporal_client
 from core.temporal import router_prompt, rules_activities
 from core.temporal.client import get_client
@@ -353,7 +355,7 @@ async def _caller_profile(ws: str, triggers) -> str | None:
     caller = next((t for t in triggers if (t.get("ref") or {}).get("origin") == "phone_contact"), None)
     if caller is None:
         return None
-    return await business_profile.business_profile(ws, await business_profile.caller_of(caller)) or None
+    return (await hooks.context(ContextAsk(tenant_id=ws, purpose="router", trigger=caller))).text or None
 
 
 #: A phone caller's task (and every sub-task of it) gets this much Worker time per attempt (end-state Task 4).
@@ -376,6 +378,10 @@ CALLER_THREAD_NOTE = (
     "message was taken only when the message action itself returned a saved result. Never write that a change is under way, being finalized or done "
     "unless a tool result confirmed it."
 )
+
+
+class _NoContext(Exception):
+    """A `worker` context with allow=False: no run and no inference; the text says why."""
 
 
 async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.RunRequest:
@@ -407,23 +413,25 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         # chat's own scope through room ingestion; recall still reads that scope (founder ruling, 6 Nov 2026).
         memory["sync"] = "none"
     contact = await tasks_repo.from_contact(ws, task)
+    trig = None
     if contact:  # a phone caller's words (the brief) never sync into team memory
         memory["sync"] = "none"
         # The Front desk thread: the business's facts in hand, and (bridge) only the caller's booking tools.
-        trig = await tasks_repo.get_trigger(ws, task["triggerId"]) if task.get("triggerId") else None
-        if profile := await business_profile.business_profile(ws, await business_profile.caller_of(trig)):
-            parts.append("\n".join(router_prompt.profile_block(profile)))
+        # `{}`: a caller's task with no trigger row still gets the business's (caller-less) profile.
+        trig = (await tasks_repo.get_trigger(ws, task["triggerId"]) if task.get("triggerId") else None) or {}
     else:  # a caller never sees the owner's connected apps
         from core.services import owner_facts
 
         apps = {e["provider"] for e in await owner_facts._lookup_connected_integrations(ws)}
         apps |= set(await integrations_repo.get_manual_mcp_servers(ws))
         parts.append(f"Connected apps: {', '.join(sorted(apps)) or 'none'}")
-    if str(task.get("triggerId") or "").startswith("meeting-notes:"):
-        from core.voice.meetings import meeting_notes  # the notes task's transcript, read by reference (Task 7)
-
-        parts.append(await meeting_notes.worker_transcript(ws, task["triggerId"]) or "")
-        memory["sync"] = "none"  # raw meeting speech never syncs into team memory, as a phone caller's words
+    product = await hooks.context(ContextAsk(tenant_id=ws, purpose="worker", task=task, trigger=trig))
+    if not product.allow:  # the product has nothing for this task to work from (a notes task with no transcript)
+        raise _NoContext(product.text or "")
+    if product.text:
+        parts.append("\n".join(router_prompt.profile_block(product.text)) if contact else product.text)
+    if product.flags.get("memorySync"):
+        memory["sync"] = product.flags["memorySync"]
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS + (CALLER_THREAD_NOTE if contact else ""),
@@ -443,11 +451,9 @@ async def worker_turn(inp: WorkerTurnIn) -> WorkerTurnOut:
     await tasks_repo.update_attempt(
         inp.ws, inp.task_id, inp.n, {"taskToken": token}, allowed_status=frozenset({"dispatched", "running"})
     )
-    from core.voice.meetings import meeting_notes
-
     try:
         request = await _request(inp.ws, tree["task"], att, tree)
-    except meeting_notes.TranscriptUnavailable as exc:  # a notes task with nothing to read: no run, no inference
+    except _NoContext as exc:  # a notes task with nothing to read: no run, no inference
         await task_conversation.ensure_task_room(inp.ws, tree["task"])
         await task_conversation.post_as_lightbulb(
             inp.ws,
@@ -742,18 +748,14 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
     try:
         tree = await tasks_repo.get_task_tree(ws, task_id)
         task = tree["task"]
-        if task is not None and task["status"] == to:
-            # A meeting's notes task keeps its notes at every end, a person's Stop included (checked below).
-            from core.voice.meetings import meeting_notes
-
-            await meeting_notes.on_task_moved(task, to)
-        if task is None or task["status"] != to or to not in _MARKS or reason in _PERSON_REASONS:
+        if task is None or task["status"] != to:
             return
-        if to == "idle" and task.get("watchUntil"):  # still working: it wakes itself (watches.py)
+        # A person's Close, Stop or Reopen gets no line; nor does a watch going idle: still working, it wakes itself
+        # (watches.py). The products hear every move (a meeting's notes keep its notes at every end, a Stop included).
+        announced = to in _MARKS and reason not in _PERSON_REASONS and not (to == "idle" and task.get("watchUntil"))
+        await hooks.event(EngineEvent(type="task.moved", tenant_id=ws, task=task, to=to, announced=announced))
+        if not announced:
             return
-        from core.voice.meetings import records  # a meeting's follow-up and its Meet chat line (Task 21)
-
-        await records.task_moved(task, to)
         n = int(task.get("attemptCount") or 0)
         await task_conversation.ensure_task_room(ws, task)
         await task_conversation.post_as_lightbulb(
@@ -779,8 +781,11 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             line = tasks_access.result_text(tree, room, humans) or ("Done." if to == "idle" else "Didn't finish.")
             if to == "failed" and await tasks_repo.from_contact(ws, task):  # read out on the call: offer a message
                 line = CALLER_FAILED_LINE
-            if to == "idle":  # a meeting's thread that made something: its link here and in the Meet's chat
-                line = await records.with_link(room, task, line)
+            if to == "idle":  # the product's line for it (a meeting's thread that made something: its link)
+                ask = ContextAsk(
+                    tenant_id=ws, purpose="result_line", conversation_id=room, task=task, message={"text": line}
+                )
+                line = (await hooks.context(ask)).text or line
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,
@@ -822,9 +827,8 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         "text": await _input_text(ws, trig["triggerId"]),
         "who": None,
         "where": None,
-        "meetingChat": bool(ref.get("meetingBotId")),
-        "meetingFollowups": "meetingFollowups" in ref,
         "caller": ref.get("origin") == "phone_contact",  # a phone caller's line: fenced as data in the batch
+        "productRef": {k: ref[k] for k in PRODUCT_REF_KEYS if k in ref},  # the products' words on its line (heads)
     }
     if ref.get("roomId") and ref.get("messageId"):
         msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"]) or {}
@@ -981,6 +985,19 @@ async def _router_identity(ws: str, inp: RouterTurnIn, scope: str, call: bool = 
     )
 
 
+async def _router_surface(ws: str) -> hooks.ContextAnswer:
+    """The products' Router rules, tool names and trigger-line words (`hooks` `router` context)."""
+    return await hooks.context(ContextAsk(tenant_id=ws, purpose="router"))
+
+
+async def _authorize(ws: str, trigger: dict, run_id: str | None = None) -> hooks.ContextAnswer:
+    """The product's yes for a trigger of its own; a no fails the work (`hooks.NotAuthorized`, a ValueError)."""
+    answer = await hooks.context(ContextAsk(tenant_id=ws, purpose="authorize", trigger=trigger, run_id=run_id))
+    if not answer.allow:
+        raise hooks.NotAuthorized(answer.text or "")
+    return answer
+
+
 async def _router_run(
     ws: str,
     inp: RouterTurnIn,
@@ -991,23 +1008,31 @@ async def _router_run(
     settled: Callable[[runtime_runs.RunStatus], bool] = lambda _status: False,
     progress: Callable[[runtime_runs.RunStatus], Awaitable[None]] | None = None,
     call: bool = False,
+    surface: hooks.ContextAnswer | None = None,
 ) -> runtime_runs.RunStatus:
     """One Router run in the lane's session, polled to its end (Router runs post no events), its usage metered.
     Returned still running, unmetered, once `settled(status)` holds: the decisions are in and the rest of the run
-    is the Router's closing word, so the ack need not wait for it (`_finish_router_run` meters it)."""
+    is the Router's closing word, so the ack need not wait for it (`_finish_router_run` meters it). `surface`: the
+    products' part of the instructions (`_router_surface`), asked here when the caller has none."""
     identity = await _router_identity(ws, inp, scope, call)
-    from core.voice.meetings import meeting_context
-
-    context_triggers = []
+    granted = []
     for trigger_id in inp.trigger_ids:
         trigger = await tasks_repo.get_trigger(ws, trigger_id)
-        if trigger and "meetingFollowups" in (trigger.get("ref") or {}):
-            await meeting_context.authorize(ws, trigger)
-            context_triggers.append(trigger_id)
-    grant = meeting_context.mint_grant(ws, identity.run_id, context_triggers) if context_triggers else None
+        if trigger and product_ref(trigger) and (await _authorize(ws, trigger, identity.run_id)).flags.get("grant"):
+            granted.append(trigger_id)
+    grant = (
+        (
+            await hooks.context(
+                ContextAsk(tenant_id=ws, purpose="authorize", run_id=identity.run_id, trigger_ids=granted)
+            )
+        ).grant
+        if granted
+        else None
+    )
+    surface = surface or await _router_surface(ws)
     request = runtime_runs.RunRequest(
         input=prompt,
-        instructions=router_prompt.ROUTER_INSTRUCTIONS,
+        instructions=router_prompt.instructions(surface.text, surface.flags.get("tools")),
         max_iterations=ROUTER_MAX_ITERATIONS,
         run_budget_seconds=ROUTER_BUDGET_S,
         memory=memory,
@@ -1162,16 +1187,15 @@ async def _work_origin(ws: str, task_id: str, trig: dict, parent_id: str | None)
 async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str, **fields) -> dict:
     """The task a decision names, created once (deterministic id) with its room and memory card."""
     ref = trig.get("ref") or {}
-    if "meetingFollowups" in ref:
-        from core.voice.meetings import meeting_context, meeting_followups
-
-        await meeting_context.authorize(ws, trig)  # recheck after model work and on a retried start
+    product = product_ref(trig)
+    if product:
+        await _authorize(ws, trig)  # recheck after model work and on a retried start
     existing = await tasks_repo.get_task(ws, task_id)
     if existing:
         if fields.get("initialQuestion") is not None and existing.get("initialQuestion") != fields["initialQuestion"]:
             raise ValueError("initial_question_binding_changed")
-        if "meetingFollowups" in ref:
-            await meeting_followups.record_task(ws, existing)
+        if product:
+            await hooks.event(EngineEvent(type="task.created", tenant_id=ws, task=existing, trigger=trig))
         return existing
     actor = trig.get("actorUserId")
     room = ts.trigger_room(trig)
@@ -1229,8 +1253,8 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     row, _ = await tasks_repo.create_task(ws, row)
     await task_conversation.ensure_task_room(ws, row)
     await memory_tasks_index.index_task(ws, row)  # memory (M5)
-    if "meetingFollowups" in ref:
-        await meeting_followups.record_task(ws, row)
+    if product:
+        await hooks.event(EngineEvent(type="task.created", tenant_id=ws, task=row, trigger=trig))
     return row
 
 
@@ -1312,9 +1336,7 @@ async def _apply(
             )
             if gate.get("blocked"):  # §14.10: today's failure copy, no task
                 sl["lines"].append(gate.get("message") or router_prompt.FALLBACK)
-                from core.voice.meetings import meeting_notes  # a notes trigger with no task: the meeting has no notes
-
-                await meeting_notes.on_not_started(ws, trig)
+                await hooks.event(EngineEvent(type="trigger.dropped", tenant_id=ws, trigger=trig))
                 continue
             try:
                 await _ensure_task(
@@ -1368,11 +1390,22 @@ async def _apply(
             else:
                 sl["react"] = True
         elif isinstance(dec, ts.Ask):
-            if "meetingFollowups" in (trig.get("ref") or {}):
-                from core.voice.meetings import meeting_followups
-
-                task_id = ts.router_task_id(inp.batch_id, i, 0)
-                brief, question = await meeting_followups.clarification(ws, trig, task_id, dec.text, dec.options)
+            task_id = ts.router_task_id(inp.batch_id, i, 0)
+            clarify = (
+                await hooks.context(
+                    ContextAsk(
+                        tenant_id=ws,
+                        purpose="clarification",
+                        trigger=trig,
+                        task={"taskId": task_id},
+                        message={"text": dec.text, "options": dec.options},
+                    )
+                )
+                if product_ref(trig)
+                else None
+            )
+            if clarify and clarify.text is not None:  # the product's own clarification task (a meeting follow-up)
+                question = clarify.flags["question"]
                 initial = await task_asks.prepare_initial_question(ws, task_id, trig["actorUserId"], inp.lane, question)
                 task = await _ensure_task(
                     ws,
@@ -1380,15 +1413,15 @@ async def _apply(
                     trig,
                     inp.lane,
                     "queued",
-                    title="Clarify meeting follow-up",
-                    description=brief,
+                    title=clarify.flags["title"],
+                    description=clarify.text,
                     initialQuestion=initial,
                 )
                 await task_asks.open_ask(ws, task, **question)  # gate BEFORE card/subscription exposure
                 sl["asks"][task_id] = question
                 sl["refs"].append({"taskId": task_id, "role": "started"})
                 sl["starts"].append(task_id)
-                sl["lines"].append("A meeting follow-up needs your answer in Needs You.")
+                sl["lines"].append(clarify.flags["line"])
                 for tid in dec.trigger_ids:
                     routed_to.setdefault(tid, []).append(task_id)
             else:
@@ -1591,12 +1624,11 @@ async def _drop_paused(ws: str, triggers: dict[str, dict]) -> None:
     """A turn queued before its project was paused starts nothing (UX slice 6), and says nothing in the room: the
     paused bar tells the sender (W18-8). Dropped quietly, as admission drops them."""
     from core.services import admission  # lazy: admission imports the temporal client
-    from core.voice.meetings import meeting_notes
 
     for tid, trig in list(triggers.items()):
         if await admission.paused_room(ts.trigger_room(trig)):
             del triggers[tid]
-            await meeting_notes.on_not_started(ws, trig)  # a notes trigger: "no notes", not "pending" for ever
+            await hooks.event(EngineEvent(type="trigger.dropped", tenant_id=ws, trigger=trig))
 
 
 async def _project_instructions(room_id: str | None) -> str | None:
@@ -1673,6 +1705,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         closed = await _closed_tasks(ws, inp.lane, user_id, rooms)
         if _callers(to_model):
             open_tasks, closed = _caller_tasks(open_tasks, rooms), _caller_tasks(closed, rooms)
+        surface = await _router_surface(ws)
         prompt = router_prompt.render_batch(
             views,
             roster,
@@ -1684,6 +1717,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             now=await _local_now(ws, user_id),
             instructions=await _project_instructions(room_id),
             profile=await _caller_profile(ws, to_model.values()),
+            heads=surface.flags.get("heads"),
         )
         # A phone caller's batch gets no memory block at all: owner memory never reaches a caller through a reply.
         memory = (
@@ -1720,7 +1754,16 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         hold = asyncio.create_task(stage.hold())
         try:
             status = await _router_run(
-                ws, inp, prompt, memory, scope, user_id, settled, stage.update, call=bool(_callers(to_model))
+                ws,
+                inp,
+                prompt,
+                memory,
+                scope,
+                user_id,
+                settled,
+                stage.update,
+                call=bool(_callers(to_model)),
+                surface=surface,
             )
         except Exception:
             hold.cancel()  # before the clear, or a last tick could put the line back
@@ -1784,10 +1827,8 @@ async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
             # Work already started for it (its ack and cards are posted): say only that the rest did not start.
             line = router_prompt.PARTIAL if (trig.get("routedTo") or {}).get("taskId") else router_prompt.FALLBACK
             await _deliver(ws, trig, line, event_id=f"router-fallback:{tid}", refs=None, remember=False)
-            if not (trig.get("routedTo") or {}).get("taskId"):
-                from core.voice.meetings import meeting_notes  # a notes trigger with no task: the meeting has no notes
-
-                await meeting_notes.on_not_started(ws, trig)
+            if not (trig.get("routedTo") or {}).get("taskId"):  # no task started for it
+                await hooks.event(EngineEvent(type="trigger.dropped", tenant_id=ws, trigger=trig))
         elif trig:  # a candidate gets no line: its "reading…" ends now, not on the client's timer (walk 15)
             await _read_quietly(ws, trig)
 

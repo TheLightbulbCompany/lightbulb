@@ -26,6 +26,9 @@ from temporalio.service import RPCError
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
+from core.engine import hooks
+from core.engine.contract import PRODUCT_META_FIELDS, PRODUCT_REF_KEYS, product_ref
+from core.engine.hooks import ContextAsk, EngineEvent
 from core.observability.metrics import put_metric
 from core.repositories import automations_repo, messaging_repo, tasks_repo
 from core.services import jev, messaging, room_memory, rules, task_conversation, tasks_access
@@ -162,20 +165,16 @@ async def _admit_trigger(ws: str, trigger_id: str) -> None:
     if trig is None:
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
         return
-    if "meetingFollowups" in (trig.get("ref") or {}):
-        from core.voice.meetings import meeting_context
-
-        try:
-            await meeting_context.authorize(ws, trig)
-        except meeting_context.NotAuthorized:
-            put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "meeting_followups"})
-            return
+    if (
+        product_ref(trig)
+        and not (await hooks.context(ContextAsk(tenant_id=ws, purpose="authorize", trigger=trig))).allow
+    ):  # a product's trigger it no longer authorizes (a meeting follow-up)
+        put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "meeting_followups"})
+        return
     # Voice starts, A2A, proactive ideas, schedules: nothing new starts in a paused project.
     if await paused_room(ts.trigger_room(trig)):
         put_metric("admission.outcome", dimensions={"outcome": "paused", "source": trig["source"]})
-        from core.voice.meetings import meeting_notes  # lazy: meeting_notes imports admission
-
-        await meeting_notes.on_not_started(ws, trig)  # a notes trigger: "no notes", not "pending" for ever
+        await hooks.event(EngineEvent(type="trigger.dropped", tenant_id=ws, trigger=trig))  # e.g. "no notes"
         return
     await _signal(TriggerRef(ws, trigger_id, trig["lane"], trig["admission"], ts.trigger_scope(trig)))
     put_metric("admission.outcome", dimensions={"outcome": trig["admission"], "source": trig["source"]})
@@ -200,20 +199,12 @@ async def _admit_message(room_id: str, seq: int) -> None:
     ref = {"roomId": room_id, "messageId": msg["messageId"]}
     if msg.get("threadRootMessageId"):
         ref["threadRoot"] = msg["threadRootMessageId"]
-    if meta.get("meeting"):
-        ref["origin"] = "meeting"  # anyone in a Meet acts as the inviter: every spend, send or publish gets a card
-        from datetime import datetime
-
-        meeting = meta["meeting"]
-        try:
-            current = datetime.fromisoformat(
-                str(msg.get("createdAt") or "").replace("Z", "+00:00")
-            ).timestamp() >= float(meeting.get("inCallAt") or 0)
-        except ValueError:
-            current = False
-        if meeting.get("status") == "in_call" and current:
-            ref["meetingBotId"] = meeting.get("recallBotId")
-            ref["meetingInCallAt"] = meeting.get("inCallAt")
+    # A product's room (a call, a Meet): its trigger fields (origin, its ref keys) and, when it decides, `respond`.
+    flags: dict = {}
+    if annotations := {k: meta[k] for k in PRODUCT_META_FIELDS if k in meta}:
+        ask = ContextAsk(tenant_id=ws, purpose="admit", conversation_id=room_id, message=msg, annotations=annotations)
+        flags = (await hooks.context(ask)).flags
+    ref.update({k: v for k, v in flags.items() if k == "origin" or k in PRODUCT_REF_KEYS})
     if msg.get("via") == "voice":
         # DeepSeek §4.2, channel-appropriate replies: the Router's and a Worker's input (`activities._input_text`
         # reads `ref.text` first) says the line was spoken, so the answer the voice says back is short
@@ -271,10 +262,12 @@ async def _admit_message(room_id: str, seq: int) -> None:
     routed: dict[str, str] | None = None
     if listen == "observe":
         admission = None
-    elif meta.get("meeting") and msg.get("via") == "meeting_chat":
-        admission = "candidate"  # the Router decides whether chat is directed to it
-    elif addressed or named or meta.get("kind") == "dm" or meta.get("meeting"):
-        admission = "respond"  # a meeting's lines are posted only when they named the assistant (meet.py's gate)
+    elif flags.get("respond") == "candidate":
+        admission = "candidate"  # the product leaves it to the Router (a Meet's chat: is it directed to it?)
+    elif addressed or named or meta.get("kind") == "dm" or flags.get("respond") == "respond":
+        admission = (
+            "respond"  # the product says answer: a meeting's lines are posted only when they named the assistant
+        )
     elif listen == "mentions":
         admission = None
     elif await _to_people(meta, msg):

@@ -79,6 +79,14 @@ async def _no_background_work(*_args, **_kwargs) -> None:
     """Stands in for a lifespan background worker."""
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _engine_hooks():
+    """The products' engine hooks, as every process that runs engine code registers them (core.engine.hooks)."""
+    from core.voice import engine_hooks
+
+    engine_hooks.register()
+
+
 @pytest.fixture(autouse=True)
 def _no_lifespan_background_workers(request, monkeypatch):
     """Every TestClient enters the app lifespan, which starts the background sweepers. Outside

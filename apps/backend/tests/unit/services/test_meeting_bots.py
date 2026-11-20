@@ -51,7 +51,7 @@ async def test_create_body(recall, caplog):
     assert req.method == "POST" and str(req.url) == "https://us-east-1.recall.ai/api/v1/bot/"
     assert req.headers["authorization"] == f"Token {KEY}" and req.headers["idempotency-key"] == "nonce-1"
     body = json.loads(req.content)
-    assert body["meeting_url"] == URL and body["bot_name"] == "Acme agents · Lightbulb"
+    assert body["meeting_url"] == URL and body["bot_name"] == "Acme assistant · Lightbulb"
     audio = body["recording_config"]["realtime_endpoints"].pop()
     assert body["recording_config"] == {
         "retention": None,
@@ -203,7 +203,7 @@ def test_no_webhook_secret_refuses_everything(recall, monkeypatch):
 async def test_a_long_company_name_fits_recalls_bot_name_cap(recall):
     await meeting_bots.create(room_id="room-1", meeting=_meeting(60), company="A" * 120)
     name = json.loads(recall[0][0].content)["bot_name"]
-    assert len(name) == 100 and name.endswith(" agents · Lightbulb")
+    assert len(name) == 100 and name.endswith(" assistant · Lightbulb")
 
 
 async def test_find_for_room_adopts_only_a_live_bot_of_this_booking(recall):

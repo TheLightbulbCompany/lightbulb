@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_BODY = "Your Lightbulb agents will join. Notes will land in your Lightbulb workspace afterwards."
+_BODY = "Your Lightbulb assistant will join. The notes will be in Lightbulb afterwards."
 
 
 def _utc(dt: datetime) -> str:
@@ -61,7 +61,7 @@ def reply_ics(invite: Invite, address: str, now: datetime) -> str:
         f"SEQUENCE:{invite.sequence}",
         f"DTSTAMP:{_utc(now)}",
         f"ORGANIZER:mailto:{_clean(invite.organizer_email)}",
-        f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb agents:mailto:{_clean(address)}",
+        f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb assistant:mailto:{_clean(address)}",
         f"SUMMARY:{_escape(invite.summary)}",
         "END:VEVENT",
         "END:VCALENDAR",

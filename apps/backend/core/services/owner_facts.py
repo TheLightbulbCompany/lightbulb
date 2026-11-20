@@ -29,12 +29,8 @@ FACTS_FILENAME = "lightbulb-facts.json"
 
 
 def _paid_plan_label(plan: str | None) -> str:
-    """Name and price of a live paid plan. A missing plan is a legacy paid row (Team)."""
-    if plan == "base":
-        return f"Base (${settings.BASE_PRICE_USD}/mo)"
-    if plan == "ultra_pro":
-        return f"Ultra (${settings.ULTRA_PRICE_USD}/mo)"
-    return f"Team (${settings.WORKSPACE_PRICE_USD}/mo for up to 5 people, ${settings.SEAT_PRICE_USD}/mo per member from the 6th)"
+    """Base, Ultra and Team are all retired; only the Phone plan is sold."""
+    return "An older plan that is no longer sold (not the Lightbulb Phone plan)"
 
 
 def format_provider_label(provider_choice: str | None, byo_provider: str | None) -> str:
@@ -71,12 +67,15 @@ def build_owner_facts(
     from core.services.container_provision import provider_choice_from_row
 
     account = billing_account or {}
-    from core.billing.voice_billing import has_voice_plan
+    from core.billing.voice_billing import INCLUDED_MINUTES, MONTHLY_USD, OVERAGE_USD_PER_MINUTE, has_voice_plan
 
     voice_paid = has_voice_plan(account)
     status = account.get("subscription_status")
     if voice_paid:
-        voice_label = "Voice agents ($250/mo, 1,500 phone/meeting minutes then $0.35/min; UTC periods)"
+        voice_label = (
+            f"Lightbulb Phone plan (${MONTHLY_USD}/mo, {INCLUDED_MINUTES:,} minutes for calls and meetings, "
+            f"then ${OVERAGE_USD_PER_MINUTE}/min; UTC periods)"
+        )
         plan = voice_label
         if account.get("voice_plan_ending_at"):
             plan += f"; cancellation confirmed at {account['voice_plan_ending_at']}"
@@ -100,7 +99,7 @@ def build_owner_facts(
     else:
         plan = "No billing account yet"
     if account.get("metronome_voice_contract_id") and not voice_paid:
-        plan += "; Voice agents coverage is not active — check payment and paid coverage in Voice settings"
+        plan += "; Lightbulb Phone plan coverage is not active; check payment in Settings"
 
     provider_choice, byo_provider = provider_choice_from_row(account)
     from core.services.trial_cap import is_managed_capped

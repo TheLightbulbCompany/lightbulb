@@ -48,7 +48,7 @@ async def test_accept_sends_one_reply(send):
     assert kw["tenant_name"] == "tenant-1" and kw["headers"] == {"Auto-Submitted": "auto-generated"}
     cal = _unfold(kw["calendar"])
     assert "METHOD:REPLY\r\n" in cal and "UID:abc@google.com\r\n" in cal and "SEQUENCE:2\r\n" in cal
-    assert f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb agents:mailto:{ADDRESS}\r\n" in cal
+    assert f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb assistant:mailto:{ADDRESS}\r\n" in cal
     assert "DTSTART" not in cal and "DTEND" not in cal
     assert r"SUMMARY:Sync\, Q4\; plan\\notes" + "\r\n" in cal
 
@@ -134,4 +134,8 @@ async def test_a_public_address_workspace_answers_as_the_listed_address(send, mo
         return
     kw = send.await_args.kwargs
     assert kw["from_addr"] == answer
-    assert f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb agents:mailto:{answer}\r\n" in _unfold(kw["calendar"])
+    assert f"ATTENDEE;PARTSTAT=ACCEPTED;CN=Lightbulb assistant:mailto:{answer}\r\n" in _unfold(kw["calendar"])
+
+
+def test_reply_body_names_the_assistant():
+    assert meeting_rsvp._BODY == "Your Lightbulb assistant will join. The notes will be in Lightbulb afterwards."

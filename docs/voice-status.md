@@ -163,7 +163,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 
 | # | Promise | Built | Prod | Machine | Owner | Note |
 |---|---|---|---|---|---|---|
-| 5.1 | Invite the workspace address to a Meet and the agent joins; only a signed-in member's invite counts | yes | yes | part | Product | Joined once after a manual repair |
+| 5.1 | Invite the workspace address to a Meet and the agent joins; only a signed-in member's invite counts | yes | yes | part | Product | Joined once after a manual repair. The bot shows in Meet as "<company> assistant · Lightbulb" (was "<company> agents · Lightbulb"; a bot booked under the old name is still recognised as itself, because both end in " · Lightbulb"). The calendar reply says "Your Lightbulb assistant will join. The notes will be in Lightbulb afterwards." |
 | 5.2 | Joins signed in, with no lobby click | yes | no | no | Founder | `RECALL_GOOGLE_LOGIN_GROUP_ID` is empty on prod |
 | 5.3 | Shared `agents@` address routes by sender | part | part | no | Founder | Backend built. Needs Google Workspace mail forwarding |
 | 5.4 | Recurring series; one occurrence moved or cancelled | yes | yes | no | Product | |

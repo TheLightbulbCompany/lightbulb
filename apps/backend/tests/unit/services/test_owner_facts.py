@@ -36,7 +36,7 @@ def test_build_owner_facts_legacy_row_without_status_counts_as_subscribed():
     facts = owner_facts.build_owner_facts(
         "user_abc", {"stripe_subscription_id": "sub_1", "provider_choice": "openrouter_managed"}
     )
-    assert facts["plan"] == "Team ($50/mo for up to 5 people, $20/mo per member from the 6th)"
+    assert facts["plan"] == "An older plan that is no longer sold (not the Lightbulb Phone plan)"
 
 
 def test_build_owner_facts_paid_byo_org():
@@ -49,7 +49,7 @@ def test_build_owner_facts_paid_byo_org():
         },
     )
     assert facts["owner_kind"] == "org"
-    assert facts["plan"] == "Team ($50/mo for up to 5 people, $20/mo per member from the 6th)"
+    assert facts["plan"] == "An older plan that is no longer sold (not the Lightbulb Phone plan)"
     assert facts["provider"] == "BYO Anthropic key"
 
 
@@ -125,7 +125,7 @@ def test_build_owner_facts_uses_ultra_plan_label():
             "provider_choice": "openrouter_managed",
         },
     )
-    assert facts["plan"] == "Ultra ($150/mo)"
+    assert facts["plan"] == "An older plan that is no longer sold (not the Lightbulb Phone plan)"
 
 
 def _facts_env(monkeypatch, owner_facts, address, written):
@@ -310,7 +310,7 @@ def test_facts_carry_this_environments_app_url(monkeypatch):
 
 def test_base_and_trial_are_labelled_as_what_they_are():
     base = owner_facts.build_owner_facts("org_a", {"subscription_status": "active", "plan": "base"})
-    assert base["plan"] == "Base ($20/mo)"
+    assert base["plan"] == "An older plan that is no longer sold (not the Lightbulb Phone plan)"
     trial = owner_facts.build_owner_facts("org_a", {"subscription_status": "trial_local"})
     assert "DeepSeek" in trial["plan"] and "Bedrock" not in trial["plan"]
 
@@ -473,3 +473,24 @@ async def test_delete_agent_everywhere_refreshes_facts_for_every_caller():
     ):
         await lc.delete_agent_everywhere(owner_id="org_1", agent_id="a1")
     facts.assert_awaited_once_with("org_1")
+
+
+def test_plan_labels_never_name_a_retired_price_or_voice_agents():
+    old = "An older plan that is no longer sold (not the Lightbulb Phone plan)"
+    for plan in ("base", "ultra_pro", None):
+        facts = owner_facts.build_owner_facts("org_a", {"subscription_status": "active", "plan": plan})
+        assert facts["plan"] == old
+        assert "$20" not in facts["plan"] and "$150" not in facts["plan"] and "Voice agents" not in facts["plan"]
+
+
+def test_phone_plan_label_and_inactive_coverage_note():
+    from unittest.mock import patch
+
+    with patch("core.billing.voice_billing.has_voice_plan", return_value=True):
+        facts = owner_facts.build_owner_facts("org_a", {"subscription_status": "active"})
+    assert facts["plan"] == (
+        "Lightbulb Phone plan ($250/mo, 1,500 minutes for calls and meetings, then $0.35/min; UTC periods)"
+    )
+    lapsed = owner_facts.build_owner_facts("org_a", {"metronome_voice_contract_id": "c1"})
+    assert lapsed["plan"].endswith("Lightbulb Phone plan coverage is not active; check payment in Settings")
+    assert "Voice agents" not in lapsed["plan"]

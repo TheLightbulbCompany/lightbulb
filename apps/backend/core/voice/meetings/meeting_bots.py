@@ -25,7 +25,9 @@ _REASONS = {
     "timeout": "the meeting-bot service didn't answer",
     "bad_response": "the meeting-bot service sent an unreadable answer",
 }
-_BOT_SUFFIX = " agents · Lightbulb"  # Recall caps bot_name at 100 chars; the company part gives way
+_BOT_SUFFIX = " · Lightbulb"  # the tail of the old name too, so bots booked as "Acme agents · Lightbulb" still match
+_BOT_ROLE = " assistant"
+# Recall caps bot_name at 100 chars; the company part gives way
 _TICKET_GRACE_S = 4 * 3600  # the ticket outlives the scheduled end by this much, then dies
 _SPEECH_EVENTS = [
     "participant_events.chat_message",
@@ -115,7 +117,7 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
     join_at = int(meeting["startAt"]) - 120
     body = {
         "meeting_url": meeting["meetingUrl"],
-        "bot_name": company[: 100 - len(_BOT_SUFFIX)] + _BOT_SUFFIX,
+        "bot_name": company[: 100 - len(_BOT_ROLE + _BOT_SUFFIX)] + _BOT_ROLE + _BOT_SUFFIX,
         "recording_config": _recording_config(room_id, meeting),
         "output_media": _output_media(room_id, meeting),
         "variant": {"google_meet": "web_4_core"},

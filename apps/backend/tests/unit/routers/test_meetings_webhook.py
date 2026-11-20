@@ -746,7 +746,7 @@ def test_signed_chat_is_durable_candidate_input_with_stable_replay_identity(env)
     assert store.await_args.args[0].org_id == "org_a"
 
 
-@pytest.mark.parametrize("change", ["old_bot", "old_nonce", "old_time", "ended", "self", "no_inviter"])
+@pytest.mark.parametrize("change", ["old_bot", "old_nonce", "old_time", "ended", "self", "self_old", "no_inviter"])
 def test_stale_or_self_chat_cannot_start_work(env, change):
     from core.voice.meetings import records
 
@@ -760,8 +760,11 @@ def test_stale_or_self_chat_cannot_start_work(env, change):
         event["data"]["data"]["timestamp"]["absolute"] = "2020-01-01T00:00:00Z"
     elif change == "ended":
         env["meta"]["meeting"]["status"] = "ended"
-    elif change == "self":
-        event["data"]["data"]["participant"]["name"] = "Acme agents · Lightbulb"
+    elif change in ("self", "self_old"):
+        # a bot booked before the rename keeps its old name; both must be skipped
+        event["data"]["data"]["participant"]["name"] = (
+            "Acme assistant · Lightbulb" if change == "self" else "Acme agents · Lightbulb"
+        )
     store = AsyncMock()
     with (
         patch.object(records, "inviting_member", return_value=None if change == "no_inviter" else "maya"),

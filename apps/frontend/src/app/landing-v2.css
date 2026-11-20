@@ -331,3 +331,22 @@
   .ld-page .landing-nav .nav-cta-long { display: none; }
   .ld-page .landing-nav .nav-cta-short { display: inline; }
 }
+
+/* ---------- company home (/): the line, then one card per product ---------- */
+.ld-page .lb-hub { display: block; min-height: 0; text-align: center; padding: clamp(48px, 6vw, 88px) 0 clamp(56px, 7vw, 96px); }
+.ld-page .lb-hub .lb-sub { margin-inline: auto; max-width: 64ch; }
+.ld-page .lb-hub-cards { list-style: none; padding: 0; margin: clamp(36px, 4vw, 56px) auto 0; max-width: 1080px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(14px, 1.4vw, 22px); text-align: left; }
+.ld-page .lb-hub-card { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; padding: 1.5rem 1.4rem 1.4rem; }
+.ld-page .lb-hub-card h2 { font-family: var(--font-lora-serif), Georgia, serif; font-weight: 500; font-size: 1.32rem; letter-spacing: -0.004em; margin: 0; color: var(--lb-ink); }
+.ld-page .lb-hub-card p { font-size: 0.95rem; line-height: 1.58; color: var(--lb-ink-mute); margin: 0.5rem 0 1.4rem; }
+.ld-page .lb-hub-card .lb-btn { width: 100%; }
+.ld-page .lb-hub-card .lb-btn-s { background: transparent; box-shadow: inset 0 0 0 1px var(--cream-deeper); }
+.ld-page .lb-hub-card .lb-btn-s:hover { background: var(--cream-deeper); }
+.ld-page .lb-hub .lb-btn:focus-visible, .ld-page .lb-hub a:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.ld-page .lb-hub-more { display: block; margin-top: 0.8rem; text-align: center; font-size: 0.88rem; }
+.ld-page .lb-hub-more, .ld-page .lb-hub-founder a { color: var(--lb-ink); text-decoration: underline; text-underline-offset: 3px; }
+.ld-page .lb-hub-founder { margin: clamp(26px, 3vw, 40px) 0 0; font-size: 0.95rem; color: var(--lb-ink-mute); }
+@media (max-width: 900px) {
+  .ld-page .lb-hub-cards { grid-template-columns: 1fr; max-width: 460px; }
+  .ld-page .lb-hub-card { grid-row: auto; grid-template-rows: auto; }
+}

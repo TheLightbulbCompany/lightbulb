@@ -503,7 +503,8 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
 async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
     """The notes task's result is kept on the meeting record (the app's timeline); nothing is mailed. A recurring
     series has advanced by the time the reply lands: the notes go into that occurrence's history entry. The
-    write is idempotent, so the once-only claim is spent only after it lands."""
+    write is idempotent, so the once-only claim is spent only after it lands. Without notes it only marks the
+    meeting done ("no notes")."""
     room_id, occurrence = request["roomId"], request.get("occurrence")
     text = (notes or "").strip()
 
@@ -535,7 +536,9 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
             logger.warning("meeting room %s: action items not filed", room_id, exc_info=True)
         if not await _remember_decisions(owner_id, request, entry):
             return  # the completion claim stays unspent: the task's next status change writes the rest
-    await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
+        # Spent only with notes kept: a failed or stopped task leaves it unspent (the meeting's notesMailedAt says
+        # "no notes"), so a Retry that succeeds still admits the follow-ups (meeting_followups.enqueue reads it).
+        await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
 
 
 async def _remember_decisions(owner_id: str, request: dict, entry: dict) -> bool:

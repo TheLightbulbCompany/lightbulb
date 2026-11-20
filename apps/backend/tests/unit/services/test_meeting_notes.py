@@ -407,7 +407,7 @@ async def test_notes_task_failed_marks_meeting(env):
     await mod.on_ended(ROOM)
     await task_done(env, to="failed")
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
-    assert env.requests[TRIG]["mailAttemptedAt"]
+    assert not env.requests[TRIG].get("mailAttemptedAt")  # left for a Retry's follow-ups
 
 
 async def test_a_person_stopped_notes_task_marks_meeting(env):
@@ -415,7 +415,7 @@ async def test_a_person_stopped_notes_task_marks_meeting(env):
     await mod.on_ended(ROOM)
     await task_done(env, to="resolved")  # Stop, Close or Dismiss
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
-    assert env.requests[TRIG]["mailAttemptedAt"]
+    assert not env.requests[TRIG].get("mailAttemptedAt")
 
 
 async def test_a_done_task_without_output_marks_no_notes(env):
@@ -728,7 +728,7 @@ async def test_retry_after_failure_keeps_notes(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     await mod.on_ended(ROOM)
     await task_done(env, to="failed")
-    assert env.requests[TRIG]["mailAttemptedAt"] and "notes" not in env.meta["meeting"]
+    assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
     await task_done(env, DECIDED)  # the Retry's attempt is done
     assert env.meta["meeting"]["notes"] == DECIDED and len(env.meta["meeting"]["decisions"]) == 2
     await task_done(env, "a later attempt's other text")
@@ -742,4 +742,21 @@ async def test_a_notes_trigger_the_router_never_started_marks_no_notes(env):
     assert "notesMailedAt" not in env.meta["meeting"]
     await mod.on_not_started("org_1", {"triggerId": TRIG})
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
-    assert env.requests[TRIG]["mailAttemptedAt"]
+
+
+async def test_retry_after_failure_admits_followups(env, monkeypatch):
+    """Codex P2 on #5288: a failed completion spent the marker meeting_followups.enqueue reads, so a successful
+    Retry kept the notes but admitted no follow-up work."""
+    from core.services import meeting_followups
+
+    seen = []
+    enqueue = AsyncMock(side_effect=lambda _o, _r, request: seen.append(dict(request)) or True)
+    monkeypatch.setattr(meeting_followups, "enqueue", enqueue)
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    await task_done(env, to="failed")
+    enqueue.assert_not_awaited()
+    await task_done(env)  # the Retry's attempt is done
+    enqueue.assert_awaited_once()
+    assert not seen[0].get("mailAttemptedAt")  # admitted as a fresh completion
+    assert env.requests[TRIG]["mailAttemptedAt"]  # spent once the notes landed

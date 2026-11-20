@@ -38,8 +38,8 @@ function anonymousId(): string {
  * a founder calls. The payload is `POST /setup-requests` (schemas/setup_request.py);
  * `agents: ["other"]` is the one value that schema still requires.
  */
-export function RequestSetupForm() {
-  const [state, setState] = useState<"idle" | "sending" | "error">("idle");
+export function RequestSetupForm({ waitlist }: { waitlist?: "meetings" | "os" } = {}) {
+  const [state, setState] = useState<"idle" | "sending" | "error" | "invalid">("idle");
   const [done, setDone] = useState<string | null>(null);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -55,8 +55,7 @@ export function RequestSetupForm() {
         body: JSON.stringify({
           name,
           email: text("email"),
-          phone: text("phone"),
-          company: text("company"),
+          ...(waitlist ? { waitlist } : { phone: text("phone"), company: text("company") }),
           agents: ["other"],
           attribution: readAttribution(),
           // Read at submit, not with useSearchParams, so the page renders on the server with its headline.
@@ -64,11 +63,25 @@ export function RequestSetupForm() {
           anonymous_id: anonymousId(),
         }),
       });
+      if (res.status === 422 && waitlist) return setState("invalid");
       if (!res.ok) throw new Error(String(res.status));
       setDone(name.split(/\s+/)[0]);
     } catch {
       setState("error");
     }
+  }
+
+  if (done && waitlist) {
+    return (
+      <div role="status">
+        <h2 className="font-editorial-serif text-3xl leading-tight text-[var(--lb-ink)]">
+          Thanks, {done}. You&apos;re on the list.
+        </h2>
+        <p className="mt-4 text-lg leading-8 text-[var(--lb-ink-soft)]">
+          We&apos;ll email you when Lightbulb {waitlist === "os" ? "OS" : "Meetings"} is ready for you.
+        </p>
+      </div>
+    );
   }
 
   if (done) {
@@ -88,12 +101,16 @@ export function RequestSetupForm() {
 
   return (
     <>
-      <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)] md:text-6xl">Talk to a founder</h1>
-      <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
-        Rather not set it up alone? Tell us about your salon, spa or barbershop. One of the founders will get in touch
-        and set up your assistant with you.
-      </p>
-      <form className="mt-12 space-y-8" onSubmit={onSubmit}>
+      {!waitlist && (
+        <>
+          <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)] md:text-6xl">Talk to a founder</h1>
+          <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
+            Rather not set it up alone? Tell us about your salon, spa or barbershop. One of the founders will get in touch
+            and set up your assistant with you.
+          </p>
+        </>
+      )}
+      <form className={waitlist ? "space-y-8" : "mt-12 space-y-8"} onSubmit={onSubmit}>
         <div>
           <label className={label} htmlFor="rs-name">Your name</label>
           <input id="rs-name" name="name" required autoComplete="name" className={field} />
@@ -102,6 +119,8 @@ export function RequestSetupForm() {
           <label className={label} htmlFor="rs-email">Email</label>
           <input id="rs-email" name="email" type="email" required autoComplete="email" className={field} />
         </div>
+        {!waitlist && (
+          <>
         <div>
           <label className={label} htmlFor="rs-phone">Mobile number</label>
           <input id="rs-phone" name="phone" type="tel" required autoComplete="tel" maxLength={40} className={field} />
@@ -111,11 +130,18 @@ export function RequestSetupForm() {
           <label className={label} htmlFor="rs-company">Business name</label>
           <input id="rs-company" name="company" required autoComplete="organization" className={field} />
         </div>
+          </>
+        )}
         <div>
           <button type="submit" className="lb-btn lb-btn-p" disabled={state === "sending"}>
-            {state === "sending" ? "Sending…" : "Send to a founder"}
+            {state === "sending" ? "Sending…" : waitlist ? "Join the waitlist" : "Send to a founder"}
           </button>
-          <p className={helper}>A founder reads every request.</p>
+          {!waitlist && <p className={helper}>A founder reads every request.</p>}
+          {state === "invalid" && (
+            <p role="alert" className="mt-3 text-sm font-medium text-[var(--lb-ink)]">
+              Check your email address and try again.
+            </p>
+          )}
           {state === "error" && (
             <p role="alert" className="mt-3 text-sm font-medium text-[var(--lb-ink)]">
               That did not go through. Try again, or email {SUPPORT_EMAIL}.

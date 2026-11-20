@@ -61,4 +61,56 @@ describe("RequestSetupForm", () => {
     fill();
     expect(await screen.findByRole("alert")).toHaveTextContent("did not go through");
   });
+
+  describe("with the waitlist prop", () => {
+    function join() {
+      fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Rosa Diaz" } });
+      fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rosa@example.test" } });
+      fireEvent.click(screen.getByRole("button", { name: "Join the waitlist" }));
+    }
+
+    it("posts the waitlist payload without phone or company", async () => {
+      render(<RequestSetupForm waitlist="meetings" />);
+      expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+      expect(screen.queryByLabelText("Mobile number")).toBeNull();
+      join();
+      await screen.findByRole("heading", { level: 2, name: "Thanks, Rosa. You're on the list." });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body).toEqual({
+        name: "Rosa Diaz",
+        email: "rosa@example.test",
+        waitlist: "meetings",
+        agents: ["other"],
+        attribution: { first_touch_utm_source: "google", first_touch_landing_path: "/" },
+        source_param: "home",
+        anonymous_id: "anon-1",
+      });
+      expect(screen.getByRole("status")).toHaveTextContent("We'll email you when Lightbulb Meetings is ready for you.");
+    });
+
+    it("a 422 asks to check the email and shows no thanks", async () => {
+      fetchMock.mockResolvedValue({ ok: false, status: 422 });
+      render(<RequestSetupForm waitlist="os" />);
+      join();
+      expect(await screen.findByRole("alert")).toHaveTextContent("Check your email address and try again.");
+      expect(screen.queryByText(/on the list/)).toBeNull();
+    });
+
+    it("a double click sends one request", async () => {
+      render(<RequestSetupForm waitlist="os" />);
+      join();
+      expect(screen.getByRole("button", { name: "Sending…" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Sending…" }));
+      await screen.findByRole("status");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("the waitlist thanks has no sign-up link", async () => {
+      render(<RequestSetupForm waitlist="os" />);
+      join();
+      await screen.findByRole("status");
+      expect(screen.getByRole("status")).toHaveTextContent("Lightbulb OS is ready for you");
+      expect(screen.queryByRole("link")).toBeNull();
+    });
+  });
 });

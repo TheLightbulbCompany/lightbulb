@@ -110,3 +110,51 @@ async def test_rate_limited_per_ip(unauthenticated_async_client):
             (await unauthenticated_async_client.post("/api/v1/setup-requests", json=BODY)).status_code for _ in range(6)
         ]
     assert codes[:5] == [201] * 5 and codes[5] == 429
+
+
+WAITLIST = {"name": "Rosa", "email": "rosa@example.test", "waitlist": "meetings", "agents": ["other"]}
+
+
+async def _post_waitlist(client, body=WAITLIST):
+    put, send, capture = AsyncMock(), AsyncMock(return_value="msg-1"), MagicMock()
+    with (
+        patch.object(setup_requests.setup_requests_repo, "put", put),
+        patch.object(setup_requests.email_service, "send_email", send),
+        patch.object(setup_requests, "capture_product_event", capture),
+    ):
+        r = await client.post("/api/v1/setup-requests", json=body)
+    return r, put, send, capture
+
+
+async def test_waitlist_accepts_name_and_email_only(unauthenticated_async_client):
+    r, put, _, _ = await _post_waitlist(unauthenticated_async_client)
+    assert r.status_code == 201, r.text
+    item = put.await_args.args[0]
+    assert item["waitlist"] == "meetings" and item["company"] == ""
+
+
+async def test_setup_request_without_company_is_422(unauthenticated_async_client):
+    body = {k: v for k, v in BODY.items() if k != "company"}
+    r, put, _, _ = await _post_waitlist(unauthenticated_async_client, body)
+    assert r.status_code == 422
+    put.assert_not_awaited()
+
+
+@pytest.mark.parametrize("over", [{"waitlist": "zoom"}, {"email": "not-an-email"}])
+async def test_waitlist_bad_body_is_422(unauthenticated_async_client, over):
+    r, put, _, _ = await _post_waitlist(unauthenticated_async_client, {**WAITLIST, **over})
+    assert r.status_code == 422
+    put.assert_not_awaited()
+
+
+async def test_waitlist_emits_waitlist_joined_not_setup_requested(unauthenticated_async_client):
+    _, _, _, capture = await _post_waitlist(unauthenticated_async_client)
+    ev = capture.call_args.kwargs
+    assert ev["event"] == "waitlist_joined" and ev["properties"]["waitlist"] == "meetings"
+
+
+async def test_waitlist_subject_names_product(unauthenticated_async_client):
+    _, _, send, _ = await _post_waitlist(unauthenticated_async_client, {**WAITLIST, "waitlist": "os"})
+    mail = send.await_args.kwargs
+    assert mail["subject"] == "Waitlist (os): rosa@example.test"
+    assert "Waitlist: os" in mail["text"]

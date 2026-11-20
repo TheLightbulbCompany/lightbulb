@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 TEAM_SIZES = ("just_me", "2", "3-5", "6-15", "16+")
 AGENTS = ("claude_code", "codex", "chatgpt", "cursor", "other")
@@ -25,7 +25,9 @@ class SetupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     phone: str = Field(default="", max_length=40)
-    company: str = Field(min_length=1, max_length=120)
+    company: str = Field(default="", max_length=120)
+    # Set by the Meetings / OS waitlist pages: name and email only, no company.
+    waitlist: Literal["", "meetings", "os"] = ""
     # The salon form asks four things (name, email, mobile, business); the rest are optional.
     team_size: Literal[("", *TEAM_SIZES)] = ""  # type: ignore[valid-type]
     agents: list[Literal[AGENTS]] = Field(min_length=1, max_length=len(AGENTS))  # type: ignore[valid-type]
@@ -69,3 +71,9 @@ class SetupRequest(BaseModel):
     @classmethod
     def _bounded_values(cls, v: dict[str, str]) -> dict[str, str]:
         return {str(k)[:60]: str(val)[:500] for k, val in v.items()}
+
+    @model_validator(mode="after")
+    def _company_unless_waitlist(self):
+        if not self.waitlist and not self.company:
+            raise ValueError("company is required")
+        return self

@@ -18,7 +18,7 @@ export function inviteSendNote(error: unknown): string {
     const detail = (error.body as { detail?: unknown } | undefined)?.detail;
     if (error.status === 409 && typeof detail === "string" && detail) return detail;
     if (error.status === 422) return "That doesn't look like an email address.";
-    if (error.status === 403) return "You can't invite people to this workspace.";
+    if (error.status === 403) return "You can't invite people to this business.";
   }
   return "Couldn't send. Try again.";
 }

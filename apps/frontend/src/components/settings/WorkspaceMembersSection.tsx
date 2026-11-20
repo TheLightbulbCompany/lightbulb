@@ -227,7 +227,7 @@ export function WorkspaceMembersSection() {
   return (
     <>
       <div className="settings-card" data-testid="members-roster">
-        <div className="settings-card-title">In this workspace</div>
+        <div className="settings-card-title">In this business</div>
         <div className="settings-card-desc">
           Everyone here can sign in to this business and see its calls and meetings. To make someone an
           admin or remove them, use Manage members.
@@ -313,7 +313,7 @@ export function WorkspaceMembersSection() {
       <div className="settings-card" data-testid="members-join-link">
         <div className="settings-card-title">Join link</div>
         <div className="settings-card-desc">
-          One link for the whole workspace — send it however you like. Anyone who opens it
+          One link for the whole business. Send it however you like. Anyone who opens it
           and signs in joins {organization.name || "this business"} as a member. Treat it
           like a password: whoever has it gets in.
         </div>

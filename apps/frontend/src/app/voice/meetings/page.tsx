@@ -15,7 +15,7 @@ export default function MeetingsPage() {
   const c = config, name = nameOf(c);
   const toggle = (next: boolean) => {
     setFollowUps(next); setStatus({ text: "Saving…" });
-    save({ ...c, meetings: { ...c.meetings, followUps: next } }).then(() => setStatus({ text: "Saved" }), (e) => {
+    save({ ...c, meetings: { ...c.meetings, followUps: next } }).then(() => { setFollowUps(null); setStatus({ text: "Saved" }); }, (e) => {
       setFollowUps(null);
       setStatus({ text: saveRefusal(e) ?? "Couldn't save the last change. Change it again to retry.", err: true });
     });

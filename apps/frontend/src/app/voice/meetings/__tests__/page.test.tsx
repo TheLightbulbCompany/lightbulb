@@ -38,6 +38,17 @@ it("saves meetings.followUps on toggle", async () => {
   expect(cfg.save).toHaveBeenCalledWith(expect.objectContaining({ name: "Nova", meetings: { followUps: false } }));
 });
 
+it("after a save the switch follows the stored config again", async () => {
+  const { rerender } = render(<Page />);
+  const box = screen.getByLabelText("Turn action items into follow-ups");
+  fireEvent.click(box);
+  await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
+  cfg.value = { ...cfg.value, meetings: { followUps: true } };
+  rerender(<Page />);
+  expect(box).toBeChecked();
+  expect(screen.getByText("Saved")).toBeInTheDocument();
+});
+
 it("a member who cannot edit sees why it did not save", async () => {
   cfg.save.mockRejectedValueOnce({ status: 403 });
   render(<Page />);

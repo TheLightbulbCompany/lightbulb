@@ -103,7 +103,7 @@ export function resolveCeoAgentId(
   return agents.find((a) => a.role === "ceo" && !a.reportsTo && (a.origin === "Starter" || a.origin === "Seed"))?.id;
 }
 
-/** Agent id → display name (from the workspace's agents list; `useAgentDirectory`). */
+/** Agent id → display name (from the workspace's agents list; `agentDirectory`). */
 export type AgentNames = ReadonlyMap<string, string>;
 
 /** A handle that reads as a name ("finance", "customer success"); anything with digits, underscores or other marks
@@ -296,9 +296,6 @@ export function primaryOptionId(options: readonly OptionLike[] | null | undefine
   const o = options ?? [];
   return (o.find((x) => x.style === "primary") ?? o.find((x) => x.id !== "deny" && x.id !== "request_changes"))?.id ?? null;
 }
-
-/** A free-text question (a worker's ask with no options): answered with optionId "answer" + text (questions.py `answer`). */
-export const FREE_TEXT_OPTION = "answer";
 
 /** What the approver is asked: "Allow Engineering to send 'Q3' to a@b.c" (the title names the action and
  *  its target, questions.py `title_for`). Other kinds read their title as written: the title is the question, `text`

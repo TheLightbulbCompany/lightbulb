@@ -5,23 +5,11 @@
  * and platform-parameterized data hooks.
  *
  * This barrel is the package's public surface: every line here is imported by
- * `apps/frontend`, `apps/mobile` or both. Internals stay internal — import them relatively from
+ * `apps/frontend`. Internals stay internal — import them relatively from
  * inside the package instead of re-exporting them here.
  */
-export type { PlatformAdapter } from "./adapter";
-
 export type { RuntimeRpcSource } from "./hooks/useRuntimeRpc";
-export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
-export type { OAuthState } from "./hooks/useChatGPTOAuth";
-export { useStatusLoaded } from "./hooks/containerStatus";
-export type {
-  ClassifiedStatus,
-  ContainerStatusBody,
-} from "./hooks/containerStatus";
-export { deriveUIPhase } from "./hooks/statusContract";
-export type { StatusContract, UIPhase } from "./hooks/statusContract";
-export { refreshOnboardingStatus, resetSwrCache, useOnboardingStatus, useResetSwrOnUserChange } from "./hooks/useOnboardingStatus";
-export type { VisibilityAdapter } from "./hooks/useOnboardingStatus";
+export { useResetSwrOnUserChange } from "./hooks/useResetSwrOnUserChange";
 
 export { ApiError } from "./api/error";
 export { createApiClient, fetchJsonWithStatus } from "./api/client";
@@ -70,10 +58,8 @@ export type {
   RoomsLiveSource,
   RoomsPersistence,
   RoomsPlatform,
-  RoomsSnapshot,
   SendState,
   TypingMember,
-  UseRoomsOptions,
   UseRoomsResult,
 } from "./messaging/useRooms";
 export type {
@@ -83,7 +69,6 @@ export type {
   MessageAttachment,
   MessageAttachmentContentType,
   ListenMode,
-  LiveConfig,
   MemberPrefsRequest,
   PatchRoomRequest,
   MemberRef,
@@ -92,7 +77,6 @@ export type {
   RoomDetail,
   RoomKind,
   RoomListResponse,
-  RoomMember,
   RoomSection,
   RoomSummary,
   RunStatusResponse,
@@ -144,8 +128,8 @@ export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply
 export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
 export {
-  TASK_STATUSES, SHOWN_GROUPS, STATUS_WORDS, GROUP_LABELS, GROUP_ORDER, resolveCeoAgentId, taskView, summaryView, specialistLabel, nameSpecialistIn, activityLine, elapsedShort, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule, timeOfDay,
-  FREE_TEXT_OPTION, ALWAYS_ALLOW_UNAVAILABLE, answerVerb, askFields, askLine, decisionButtons, decisionMeta, moneyText, previewRows, primaryOptionId, stepLines, stepNow, chipState, clockTime,
+  TASK_STATUSES, SHOWN_GROUPS, STATUS_WORDS, GROUP_LABELS, GROUP_ORDER, taskView, summaryView, specialistLabel, nameSpecialistIn, activityLine, elapsedShort, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule, timeOfDay,
+  ALWAYS_ALLOW_UNAVAILABLE, answerVerb, askFields, askLine, decisionButtons, decisionMeta, moneyText, previewRows, primaryOptionId, stepLines, stepNow, chipState, clockTime,
 } from "./tasks/view";
 export type {
   AgentNames, ChipMark, DecisionButton, EffectRow, OverviewGroup, OverviewGroupId, QuestionRow, ShownGroup, StatusWord, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
@@ -158,7 +142,7 @@ export type {
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { OutputsFilter, TasksClient } from "./tasks/client";
 export type { DirectoryAgent } from "./tasks/useTasks";
-export { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, agentDirectory, useAgentDirectory, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
+export { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, agentDirectory, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
 export {
   automationRowLine, automationStatusLine, budgetLine, canDecide, canEdit, deliveryRoomId, deliveryWords, money, nextRunWords, runNow, runNowReason, runsAgain, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords,
 } from "./tasks/automations";

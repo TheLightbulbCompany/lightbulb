@@ -1,7 +1,7 @@
 // SWR hooks over the task routes, and the `task.changed` refresh (ids only, I1): the client
 // refetches through the authorized API; a task it can no longer see is dropped quietly.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import useSWR, { useSWRConfig, type Cache, type ScopedMutator } from "swr";
 
 import { ApiError } from "../api/error";
@@ -162,11 +162,4 @@ export function agentDirectory(agents: readonly DirectoryAgent[]): { names: Read
   // The front agent's roster name ("CEO") never shows: it is Lightbulb everywhere.
   const names = new Map(agents.filter((a) => a.name).map((a) => [a.id, a.id === frontAgentId ? "Lightbulb" : a.name!]));
   return { names, frontAgentId };
-}
-
-/** `agentDirectory` over one SWR read shared by every caller with the same `key` (the app passes its own loader:
- *  `/teams/agents`). `null` key = no request. */
-export function useAgentDirectory(key: string | null, load: () => Promise<readonly DirectoryAgent[]>): { names: ReadonlyMap<string, string>; frontAgentId: string | undefined } {
-  const { data } = useSWR(key ? ["agent-names", key] : null, load, { shouldRetryOnError: false, dedupingInterval: 60_000 });
-  return useMemo(() => agentDirectory(data ?? []), [data]);
 }

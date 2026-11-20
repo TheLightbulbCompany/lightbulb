@@ -14,8 +14,7 @@
 # a step someone had to remember. By hand: gh workflow run sign-cli-release.yml -f tag=vX.Y.Z
 # Runbook: docs/runbooks/sign-cli-release.md.
 #
-# GitHub-hosted macos-latest on purpose: the self-hosted `macos-desktop` Mac is reserved for
-# mobile-release.yml.
+# GitHub-hosted macos-latest on purpose: no workflow here targets the self-hosted `macos-desktop` Mac.
 name: sign-cli-release
 'on':
   workflow_dispatch:

@@ -104,7 +104,7 @@ async def test_people_in_a_session_chat_follow_the_session_never_a_hand(monkeypa
 
 @pytest.mark.asyncio
 async def test_an_agents_unbound_post_stays_in_the_session_chat(monkeypatch):
-    from core.services import meeting_invites
+    from core.voice.meetings import meeting_invites
 
     output_room = AsyncMock(return_value="general")
     monkeypatch.setattr(meeting_invites, "output_room", output_room)
@@ -144,7 +144,7 @@ async def test_silence_removes_every_human_but_the_kept_one_with_rotation(monkey
 @pytest.mark.asyncio
 async def test_an_agents_unbound_post_in_a_meet_room_still_goes_to_its_output_room(monkeypatch):
     """The redirect narrowed to rooms with a meeting record: a Google Meet's hidden room keeps it."""
-    from core.services import meeting_invites
+    from core.voice.meetings import meeting_invites
 
     meet = {"roomId": ROOM, "ownerId": OWNER, "kind": "channel", "hidden": True, "meeting": {"title": "Standup"}}
     general = {"roomId": "general", "ownerId": OWNER, "kind": "channel"}
@@ -179,7 +179,7 @@ async def test_an_agents_unbound_post_in_a_meet_room_still_goes_to_its_output_ro
 async def test_lightbulbs_post_stays_in_the_meet_room_only_during_the_call(monkeypatch, status, front, redirected):
     """The meeting's voice says the Router's answers from its room while the call is on; after it, Lightbulb's posts
     go to the organizer's output room again, and another agent's always do."""
-    from core.services import meeting_invites
+    from core.voice.meetings import meeting_invites
 
     meet = {"roomId": ROOM, "ownerId": OWNER, "kind": "channel", "hidden": True,
             "meeting": {"title": "Standup", "status": status}}  # fmt: skip

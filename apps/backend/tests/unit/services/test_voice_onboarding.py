@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.repositories import messaging_repo
-from core.services import link_preview, voice_onboarding as vo
+from core.services import link_preview
+from core.voice.phone import voice_onboarding as vo
 from tests.unit.services.conftest import repos  # noqa: F401
 
 WS = "org_test_456"

@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from core.voice import room_lines
+from core.voice.meetings import records
 from routers import voice_meet
 
 ROOM = "7f1d2c3b-0000-4000-8000-000000000001"
@@ -37,7 +39,7 @@ def m():
         patch.object(voice_meet.meeting_bots, "say", AsyncMock()) as say,
         patch.object(voice_meet.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
         patch.object(
-            voice_meet.tasks_repo,
+            records.tasks_repo,
             "get_trigger",
             AsyncMock(
                 return_value={
@@ -53,12 +55,12 @@ def m():
         patch.object(
             voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": meeting})
         ),
-        patch.object(voice_meet.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
+        patch.object(records.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
         patch.object(voice_meet, "latest_seq", AsyncMock(return_value=41)),
     ):
         patched.update(phase=phase, meeting=meeting, say=say)
         yield patched
-    voice_meet._clears.clear()
+    records._clears.clear()
 
 
 async def test_announce_once(m):
@@ -102,8 +104,8 @@ async def test_end_keeps_the_record(m):
 
 async def test_assistant_name_from_the_agent_page(m):
     with patch.object(voice_meet.messaging_repo, "get_voice_agent", AsyncMock(side_effect=[{"name": " Nova "}, None])):
-        assert await voice_meet.assistant_name("org_1") == "Nova"
-        assert await voice_meet.assistant_name("org_1") == "Lightbulb"
+        assert await room_lines.assistant_name("org_1") == "Nova"
+        assert await room_lines.assistant_name("org_1") == "Lightbulb"
 
 
 def _meet_task(status="idle"):
@@ -121,7 +123,7 @@ async def test_meeting_task_done_posts_link_in_chat(m):
         patch.object(activities.tasks_repo, "get_task_tree", AsyncMock(return_value={"task": _meet_task()})),
         patch.object(activities.task_conversation, "ensure_task_room", AsyncMock()),
         patch.object(activities.task_conversation, "post_as_lightbulb", AsyncMock()),
-        patch.object(voice_meet, "_tile_phase", AsyncMock()),  # no real 60 s clear task
+        patch.object(records, "_tile_phase", AsyncMock()),  # no real 60 s clear task
     ):
         await activities._announce("org_1", "k1", "idle")
     m["say"].assert_awaited_once()
@@ -131,7 +133,7 @@ async def test_meeting_task_done_posts_link_in_chat(m):
         "panel=task-detail&taskId=k1"
     )
     assert m["meeting"]["followUps"][0]["status"] == "done"
-    await voice_meet.task_moved(_meet_task(), "idle")  # a retried Activity: said once
+    await records.task_moved(_meet_task(), "idle")  # a retried Activity: said once
     m["say"].assert_awaited_once()
 
 
@@ -139,13 +141,13 @@ async def test_meeting_task_done_posts_link_in_chat(m):
 async def test_followup_status_follows_task(m, to, status):
     other = {"text": "Other", "status": "working", "taskId": "k2"}
     m["meeting"].update(status="ended", followUps=[{"text": "Draft", "status": "x", "taskId": "k1"}, other])
-    await voice_meet.task_moved(_meet_task(to), to)
+    await records.task_moved(_meet_task(to), to)
     assert [f["status"] for f in m["meeting"]["followUps"]] == [status, "working"]
 
 
 async def test_ended_meeting_updates_status_only(m):
     m["meeting"].update(status="ended", followUps=[{"text": "Draft", "status": "working", "taskId": "k1"}])
-    await voice_meet.task_moved(_meet_task(), "idle")
+    await records.task_moved(_meet_task(), "idle")
     assert m["meeting"]["followUps"][0]["status"] == "done"
     m["say"].assert_not_awaited()
 
@@ -153,7 +155,7 @@ async def test_ended_meeting_updates_status_only(m):
 async def test_task_followup_cannot_update_another_workspaces_room(m):
     m["meeting"].update(followUps=[{"taskId": "k1", "status": "working"}])
     task = {**_meet_task(), "pk": "WS#other-owner"}
-    await voice_meet.task_moved(task, "idle")
+    await records.task_moved(task, "idle")
     assert m["meeting"]["followUps"][0]["status"] == "working"
     m["say"].assert_not_awaited()
 
@@ -162,14 +164,14 @@ async def test_task_updates_the_archived_occurrence_without_announcing_in_the_ne
     m["meeting"].update(
         status="in_call", history=[{"startAt": 100, "followUps": [{"taskId": "k1", "status": "working"}]}]
     )
-    await voice_meet.task_moved(_meet_task(), "idle")
+    await records.task_moved(_meet_task(), "idle")
     assert m["meeting"]["history"][0]["followUps"][0]["status"] == "done"
     m["say"].assert_not_awaited()
 
 
 async def test_single_announcement(m):
     """The Recall join chat is gone (test_meeting_bots), so the chat gets only voice_meet's line, including its per-person opt-out."""
-    from core.services import meeting_bots
+    from core.voice.meetings import meeting_bots
 
     assert not hasattr(meeting_bots, "CONSENT_LINE")
     assert "transcribe" not in voice_meet.ANNOUNCE
@@ -235,7 +237,7 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
         },  # fmt: skip
     ]
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))) as lm:
-        out = await voice_meet.agent_lines(ROOM, 4)
+        out = await room_lines.agent_lines(ROOM, 4)
     lm.assert_awaited_once_with(ROOM, 4, 100)
     # inReplyTo: the human message a line answers, so the voice matches it to that spoken ask; action: the phone's
     assert out == {"messages": [{"id": "a1", "seq": 6, "text": "Checking GitHub.", "waiting": False, "inReplyTo": "h1"},
@@ -243,7 +245,7 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
                                 {"id": "a5", "seq": 11, "text": "Putting you through.", "waiting": False, "action": "transfer"}],
                    "after": 11}  # fmt: skip
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=([], None))):
-        assert await voice_meet.agent_lines(ROOM, 10) == {"messages": [], "after": 10}
+        assert await room_lines.agent_lines(ROOM, 10) == {"messages": [], "after": 10}
 
 
 async def test_start_gives_the_first_cursor(m):
@@ -268,7 +270,7 @@ async def test_a_worker_question_in_a_thread_is_said_with_its_ref():
                    "threadRootMessageId": "t"}]  # fmt: skip
     with _open_questions("q-17b4"), patch.object(voice_meet.messaging_repo, "list_messages",
                                                  AsyncMock(return_value=(rows, None))):  # fmt: skip
-        out = await voice_meet.agent_lines(ROOM, 4)
+        out = await room_lines.agent_lines(ROOM, 4)
     assert out["messages"] == [{"id": "q1", "seq": 8, "text": QROW["text"], "waiting": False,
                                 "taskIds": ["k1"],
                                 "question": {"taskId": "k1", "qid": "q-17b4"}}]  # fmt: skip
@@ -296,7 +298,7 @@ async def test_an_answered_or_closed_question_is_never_said():
     vera = {**QROW, "messageId": "q2", "messageSeq": 9, "taskRefs": [{"taskId": "k2", "role": "started", "qid": "q-2"}]}
     with _open_questions("q-2"), patch.object(voice_meet.messaging_repo, "list_messages",
                                               AsyncMock(return_value=([QROW, vera], None))):  # fmt: skip
-        out = await voice_meet.agent_lines(ROOM, 4)
+        out = await room_lines.agent_lines(ROOM, 4)
     assert [m["id"] for m in out["messages"]] == ["q2"] and out["after"] == 9
 
 
@@ -377,7 +379,7 @@ async def _announce_made(m, task):
         patch.object(
             voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": m["meeting"]})
         ),
-        patch.object(voice_meet, "_tile_phase", AsyncMock()),
+        patch.object(records, "_tile_phase", AsyncMock()),
     ):
         await activities._announce("org_1", task["taskId"], "idle")
     return next(c.kwargs["text"] for c in post.await_args_list if c.kwargs.get("kind") == "task_line")
@@ -405,7 +407,7 @@ async def test_after_the_call_the_room_line_still_has_the_link_and_an_answer_get
 
 async def test_a_thread_outside_a_meeting_keeps_its_line():
     with patch.object(voice_meet.messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"})):
-        assert await voice_meet.with_link("dm-1", _made_task(), "Done.") == "Done."
+        assert await records.with_link("dm-1", _made_task(), "Done.") == "Done."
 
 
 async def test_a_caller_threads_lines_are_in_the_call_rooms_main_chat():
@@ -425,7 +427,7 @@ async def test_a_caller_threads_lines_are_in_the_call_rooms_main_chat():
          "text": "You’re booked for the founding team setup on Saturday, November 14 at 12:00 PM."},
     ]  # fmt: skip
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
-        out = await voice_meet.agent_lines(ROOM, 1)
+        out = await room_lines.agent_lines(ROOM, 1)
     assert [m["id"] for m in out["messages"]] == ["m2", "m4", "m6"] and out["after"] == 6
 
 
@@ -472,7 +474,7 @@ async def test_voice_events_distinguish_a_task_ack_from_the_terminal_answer():
         },
     ]
     with patch.object(voice_meet.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
-        out = await voice_meet.agent_lines(ROOM, 0)
+        out = await room_lines.agent_lines(ROOM, 0)
     assert [(m["waiting"], m["taskIds"]) for m in out["messages"]] == [(True, ["k1"]), (False, ["k1"])]
 
 
@@ -487,7 +489,7 @@ async def test_an_old_result_link_never_reaches_a_new_occurrences_bot(m):
 async def test_unproven_occurrence_keeps_the_app_link_without_provider_delivery(m):
     m["meeting"].update(status="in_call")
     with patch.object(
-        voice_meet.tasks_repo, "get_trigger", AsyncMock(return_value={"ref": {"roomId": ROOM, "origin": "meeting"}})
+        records.tasks_repo, "get_trigger", AsyncMock(return_value={"ref": {"roomId": ROOM, "origin": "meeting"}})
     ):
         line = await _announce_made(m, _made_task())
     assert line.endswith("taskId=k9")

@@ -24,7 +24,8 @@ from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo, messaging_repo
-from core.services import agent_email, clerk_admin, meeting_bots, meeting_rsvp, messaging
+from core.services import agent_email, clerk_admin, messaging
+from core.voice.meetings import meeting_bots, meeting_rsvp
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
 
 logger = logging.getLogger(__name__)
@@ -302,7 +303,7 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
     """The meeting's room: hidden from every room list, owned by the inviting member (the one human,
     whom the Meet bot's speech acts as), with every agent of the workspace listening on ``mentions``.
     A replay or a conflicting create returns quietly; the caller's update path takes it from there."""
-    # ponytail: the room member cap bounds a meeting to the first N agents; read the roster directly in voice_calls.room_agents when a workspace outgrows it.
+    # ponytail: the room member cap bounds a meeting to the first N agents; read the roster directly in rooms.room_agents when a workspace outgrows it.
     roster = (await messaging.load_agent_roster(owner_id))[: messaging_repo.MAX_ROOM_MEMBERS - 1]
     handles = await messaging._handles_for(owner_id, roster)
     members = [

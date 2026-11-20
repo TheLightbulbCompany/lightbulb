@@ -7,11 +7,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.repositories import billing_repo, messaging_repo
-from core.services import business_profile as bp
-from core.services import clerk_admin, voice_booking
+from core.voice.phone import business_profile as bp
+from core.services import clerk_admin
+from core.voice.phone import voice_booking
 from core.temporal import activities as acts
 from core.temporal import router_prompt
-from routers import voice_phone as vp
+from core.voice.phone import calls as vp
 
 CFG = {
     "services": [{"name": "Pedicure", "price": "$45", "minutes": 45}, {"name": "Gel manicure", "price": "$40"}],

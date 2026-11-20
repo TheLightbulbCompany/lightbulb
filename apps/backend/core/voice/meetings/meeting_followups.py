@@ -7,7 +7,7 @@ import logging
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo, tasks_repo
-from core.services import meeting_context
+from core.voice.meetings import meeting_context
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ async def _record_task(owner_id: str, task: dict) -> bool:
     room_id, occurrence = completion.get("meetingRoomId"), completion.get("occurrence")
     if not room_id or occurrence is None or not trigger.get("actorUserId") or task.get("origin") != "meeting":
         return False
-    from core.services import meeting_invites
+    from core.voice.meetings import meeting_invites
 
     meta = await messaging_repo.get_room(room_id) or {}
     if meta.get("ownerId") != owner_id or not meeting_context.occurrence_entry(meta.get("meeting") or {}, occurrence):

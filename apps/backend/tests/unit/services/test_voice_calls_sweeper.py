@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services import voice_calls as vc
+from core.voice import voice_calls as vc
 
 
 @pytest.mark.asyncio

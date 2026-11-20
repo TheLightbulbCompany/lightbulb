@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -26,6 +27,35 @@ from huddle_agent.metrics import emit_metric
 from huddle_agent.mouth import speakable
 
 logger = logging.getLogger("live")
+
+
+#: A bare backchannel from the voice ("Hmm.", "Mhm."): heard as listening, not a line of the record.
+_BACKCHANNEL = re.compile(r"^(h+m+|m+-?h?m+|mm-?hmm|uh-?huh|um+|uh+)[.!?…]*$", re.I)
+
+
+def clean_transcript(items: list[dict]) -> list[dict]:
+    """The call's transcript for the record, in spoken order (`t`, seconds since the call started), consecutive
+    repeats once. An interrupted reply stays (the caller heard it; 10 Nov prod: the hours answer was talked over and
+    dropped, leaving "Hmm." as the reply) unless it was said again in full; a bare backchannel is not a line. Only
+    what was transcribed; nothing added."""
+    full = [i["text"].strip() for i in items if i["role"] == "assistant" and not i.get("interrupted")]
+    out: list[dict] = []
+    for i in sorted(items, key=lambda i: i["t"]):
+        who = {"user": "caller", "assistant": "assistant"}.get(i["role"])
+        text = i["text"].strip()
+        if not who or not text:
+            continue
+        if who == "assistant" and (
+            _BACKCHANNEL.match(text)
+            or (i.get("interrupted") and any(f.startswith(text.rstrip(".,!?… ")) for f in full))
+        ):
+            continue
+        line = {"who": who, "text": text, "t": round(max(i["t"], 0.0), 1)}
+        if out and (out[-1]["who"], out[-1]["text"]) == (who, line["text"]):
+            continue
+        out.append(line)
+    return out
+
 
 Surface = Literal["owner", "meet", "phone"]
 

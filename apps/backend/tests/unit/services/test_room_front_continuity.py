@@ -11,11 +11,12 @@ from core import tasks_schema as ts
 from core.repositories import agent_registry_repo, automations_repo
 from core.repositories import messaging_repo as repo
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import admission, agent_registry, meeting_invites, messaging
+from core.services import admission, agent_registry, messaging
+from core.voice.meetings import meeting_invites
 from core.services import task_conversation as tc
 from core.temporal import activities
 from core.temporal.types import RouterTurnIn
-from routers import voice_meet
+from core.voice import room_lines
 from temporalio.testing import ActivityEnvironment
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401 -- local moto store
 
@@ -123,7 +124,7 @@ async def test_router_answer_remains_spoken_in_active_meeting_after_default_swit
     world.config["frontAgentId"] = B
     second = await _answer(meeting, "after-switch")
 
-    lines = (await voice_meet.agent_lines(meeting, 0))["messages"]
+    lines = (await room_lines.agent_lines(meeting, 0))["messages"]
     assert [line["id"] for line in lines] == [first, second]
     assert (await repo.get_room(meeting))["frontAgentId"] == A
     assert (await repo.get_room(general))["lastSeq"] == 0
@@ -138,7 +139,7 @@ async def test_router_answer_remains_spoken_in_active_meeting_after_default_swit
     new_answer = await _answer(new_meeting, "new-meeting")
     assert (await repo.get_room(new_meeting))["frontAgentId"] == B
     assert (await repo.get_message_by_id(new_meeting, new_answer))["author"]["id"] == B
-    assert [line["id"] for line in (await voice_meet.agent_lines(new_meeting, 0))["messages"]] == [new_answer]
+    assert [line["id"] for line in (await room_lines.agent_lines(new_meeting, 0))["messages"]] == [new_answer]
 
 
 async def test_ended_meeting_still_routes_unbound_answer_to_output(world):
@@ -165,7 +166,7 @@ async def test_ended_meeting_still_routes_unbound_answer_to_output(world):
     answer = await _answer(meeting, "after-meeting")
     assert await repo.get_message_by_id(meeting, answer) is None
     assert (await repo.get_message_by_id(general, answer))["author"]["id"] == A
-    assert (await voice_meet.agent_lines(meeting, 0))["messages"] == []
+    assert (await room_lines.agent_lines(meeting, 0))["messages"] == []
 
 
 async def test_another_seated_agent_does_not_gain_active_meeting_redirect_exception(world, monkeypatch):

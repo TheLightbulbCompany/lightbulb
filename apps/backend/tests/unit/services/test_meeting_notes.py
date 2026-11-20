@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.services import meeting_notes as mod, ses_email
+from core.services import ses_email
+from core.voice.meetings import meeting_notes as mod
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 CEO = "22222222-2222-4222-8222-222222222222"
@@ -585,7 +586,7 @@ async def test_the_notes_request_says_the_assistants_lines_are_not_action_items(
 
 
 async def test_stored_notes_recover_admission_failure_before_consuming_completion_claim(env, monkeypatch):
-    from core.services import meeting_followups
+    from core.voice.meetings import meeting_followups
 
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     await mod.on_ended(ROOM)
@@ -749,7 +750,7 @@ async def test_a_notes_trigger_the_router_never_started_marks_no_notes(env):
 async def test_retry_after_failure_admits_followups(env, monkeypatch):
     """Codex P2 on #5288: a failed completion spent the marker meeting_followups.enqueue reads, so a successful
     Retry kept the notes but admitted no follow-up work."""
-    from core.services import meeting_followups
+    from core.voice.meetings import meeting_followups
 
     seen = []
     enqueue = AsyncMock(side_effect=lambda _o, _r, request: seen.append(dict(request)) or True)
@@ -765,7 +766,7 @@ async def test_retry_after_failure_admits_followups(env, monkeypatch):
 
 
 def _record_followups(monkeypatch):
-    from core.services import meeting_followups
+    from core.voice.meetings import meeting_followups
 
     seen = []
     enqueue = AsyncMock(side_effect=lambda _o, rid, request: seen.append((rid, dict(request))) or True)

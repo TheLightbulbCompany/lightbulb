@@ -88,15 +88,8 @@ def _no_lifespan_background_workers(request, monkeypatch):
     if request.node.get_closest_marker("real_background_workers"):
         return
     import main
-    from core.services import (
-        browser_control,
-        daily_digest,
-        durable_activity,
-        memory_api,
-        needs_you_email,
-        run_ledger,
-        voice_calls,
-    )
+    from core.services import browser_control, daily_digest, durable_activity, memory_api, needs_you_email, run_ledger
+    from core.voice import voice_calls
 
     monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
     monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)

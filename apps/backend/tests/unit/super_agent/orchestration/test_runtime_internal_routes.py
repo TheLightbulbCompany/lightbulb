@@ -342,7 +342,7 @@ async def test_front_desk_acts_only_for_a_callers_thread(api, monkeypatch):
     monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
     booked = AsyncMock(return_value={"booked": True})
     monkeypatch.setattr(vp, "book", booked)
-    from core.services import business_profile
+    from core.voice.phone import business_profile
 
     forgotten = []
     monkeypatch.setattr(business_profile, "forget", forgotten.append)
@@ -512,7 +512,7 @@ async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch
 
 async def test_meeting_chat_route_checks_hook_and_preserves_limit(api, monkeypatch):
     from unittest.mock import AsyncMock
-    from core.services import meeting_chat
+    from core.voice.meetings import meeting_chat
 
     sent = AsyncMock(return_value={"status": "unknown", "replayed": False})
     monkeypatch.setattr(meeting_chat, "send", sent)
@@ -529,7 +529,7 @@ async def test_meeting_chat_route_checks_hook_and_preserves_limit(api, monkeypat
 
 async def test_meeting_chat_whitespace_is_invalid_without_effects(api, monkeypatch):
     from unittest.mock import AsyncMock
-    from core.services import meeting_chat
+    from core.voice.meetings import meeting_chat
 
     lookup, provider = AsyncMock(), AsyncMock()
     monkeypatch.setattr(meeting_chat.tasks_repo, "get_trigger", lookup)
@@ -546,7 +546,7 @@ async def test_meeting_chat_whitespace_is_invalid_without_effects(api, monkeypat
 
 async def test_meeting_context_authenticates_hook_before_access_and_bounds_cursor(api, monkeypatch):
     from unittest.mock import AsyncMock
-    from core.services import meeting_context
+    from core.voice.meetings import meeting_context
 
     source = AsyncMock(return_value={"quotedSource": True, "text": "page", "nextCursor": "next"})
     monkeypatch.setattr(meeting_context, "context", source)
@@ -562,7 +562,7 @@ async def test_meeting_context_authenticates_hook_before_access_and_bounds_curso
 
 async def test_owner_hook_cannot_read_private_meeting_without_current_batch_grant(api, monkeypatch):
     from unittest.mock import AsyncMock
-    from core.services import meeting_context
+    from core.voice.meetings import meeting_context
 
     lookup = AsyncMock()
     monkeypatch.setattr(meeting_context.tasks_repo, "get_trigger", lookup)

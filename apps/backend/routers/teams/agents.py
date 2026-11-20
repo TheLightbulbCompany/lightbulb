@@ -19,8 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import agent_registry, hermes_profiles, voice_calls
-from core.services.voice_persona import agent_voice
+from core.services import agent_registry, hermes_profiles
+from core.voice import voice_calls
+from core.voice.voice_persona import agent_voice
 from core.services.agent_provenance import _load_agent_sidecars, stamp_agent_provenance
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.agent_lifecycle import (

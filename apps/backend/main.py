@@ -179,7 +179,7 @@ async def lifespan(app: FastAPI):
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
     from core.services.memory_api import run_memory_sweeper
-    from core.services.voice_calls import voice_call_sweeper
+    from core.voice.voice_calls import voice_call_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     idle_sweeper_stop = asyncio.Event()

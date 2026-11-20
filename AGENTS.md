@@ -320,7 +320,7 @@ Caller → Twilio number → LiveKit SIP (dispatch rule, room "phone-*")
 
 - **Caller identity comes from the server, never the model:** the `PHONE#<e164>` / line row and the call record.
   A paused or not-live line only takes messages (`/message`); a caller cannot do what the owner unticked.
-- **Bookings** (`core/services/voice_booking.py`): the assistant's own calendar first, Google Calendar optional,
+- **Bookings** (`core/voice/phone/voice_booking.py`): the assistant's own calendar first, Google Calendar optional,
   with pending-operation reconciliation so a slow or lost Google write never leaves a booking stuck. The slot is
   reserved atomically, so two bookings cannot take one slot.
 - **Numbers** are bought at Go live (`VOICE_BUY_NUMBERS`, on in prod). "Keep my number" forwards to the bought
@@ -330,7 +330,7 @@ Caller → Twilio number → LiveKit SIP (dispatch rule, room "phone-*")
 ### How a Meet works
 
 A signed-in member invites the workspace's agent address (`agents@{slug}.{AGENT_EMAIL_DOMAIN}`) to a meeting.
-`core/services/meeting_invites.py` turns a member's calendar invite into a meeting room; a stranger's invite is
+`core/voice/meetings/meeting_invites.py` turns a member's calendar invite into a meeting room; a stranger's invite is
 ordinary team mail. At start time a Recall.ai bot joins the Meet (`meeting_bots.py`); `meet_bridge.py` turns each
 person's Recall audio into their own LiveKit participant, so the worker (`meet.py`) knows who spoke. Everything
 said that needs the business goes to the Router like a phone line. Everyone acts with the inviter's authority;

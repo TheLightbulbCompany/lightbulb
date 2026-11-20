@@ -14,7 +14,8 @@ from urllib.parse import urlencode
 import httpx
 
 from core.config import settings
-from core.services import livekit_huddles, standard_webhooks
+from core.services import standard_webhooks
+from core.voice import livekit_huddles
 
 logger = logging.getLogger(__name__)
 

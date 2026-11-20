@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.auth import AuthContext
-from core.services import meeting_invites
+from core.voice.meetings import meeting_invites
 from tests.unit.repositories.test_messaging_repo import FRIDAY, OWNER, USER_A, _member, table  # noqa: F401
 
 GOOGLE = "\r\n".join(

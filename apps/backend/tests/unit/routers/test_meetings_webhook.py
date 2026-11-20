@@ -78,7 +78,7 @@ def env(monkeypatch):
         patch.object(mod.meeting_invites, "advance", MagicMock(side_effect=lambda _r: noop())) as advance,
         patch.object(repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok")) as claim,
         patch.object(repo, "release_owner_lifecycle_claim", AsyncMock()) as release,
-        patch.object(mod.voice_calls, "room_agents", AsyncMock(return_value=TEAM)),
+        patch.object(mod.rooms, "room_agents", AsyncMock(return_value=TEAM)),
         patch.object(mod.settings, "LIVEKIT_URL", "wss://lk.test"),
         patch.object(mod.settings, "RECALL_API_KEY", "rk"),
         patch.object(mod.meeting_bots.settings, "RECALL_WEBHOOK_SECRET", SECRET),
@@ -91,7 +91,7 @@ def env(monkeypatch):
         patch.multiple(mod.meeting_bots, leave=bot_leave, audio_mode=audio_mode),
         patch.object(lk, "close_room", AsyncMock()) as close,
         patch.object(lk, "send_meet_speaker", AsyncMock()) as speaker,
-        patch.object(mod.voice_calls, "prewake_owner", MagicMock()) as wake,
+        patch.object(mod.rooms, "prewake_owner", MagicMock()) as wake,
         patch.object(mod, "get_live_event_publisher", return_value=publisher),
         patch.object(mod, "put_metric") as metric,
     ):
@@ -728,12 +728,12 @@ def _chat_event(text="Nova, please put the link here", *, name="Maya", bot="bot-
 
 def test_signed_chat_is_durable_candidate_input_with_stable_replay_identity(env):
     env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
-    from routers import voice_meet
+    from core.voice.meetings import records
     from types import SimpleNamespace
 
     store = AsyncMock(return_value=SimpleNamespace(message_id="m"))
     with (
-        patch.object(voice_meet, "inviting_member", return_value="maya"),
+        patch.object(records, "inviting_member", return_value="maya"),
         patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
         patch.object(mod.messaging, "create_human_message", store),
     ):
@@ -748,7 +748,7 @@ def test_signed_chat_is_durable_candidate_input_with_stable_replay_identity(env)
 
 @pytest.mark.parametrize("change", ["old_bot", "old_nonce", "old_time", "ended", "self", "no_inviter"])
 def test_stale_or_self_chat_cannot_start_work(env, change):
-    from routers import voice_meet
+    from core.voice.meetings import records
 
     env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
     event = _chat_event()
@@ -764,7 +764,7 @@ def test_stale_or_self_chat_cannot_start_work(env, change):
         event["data"]["data"]["participant"]["name"] = "Acme agents · Lightbulb"
     store = AsyncMock()
     with (
-        patch.object(voice_meet, "inviting_member", return_value=None if change == "no_inviter" else "maya"),
+        patch.object(records, "inviting_member", return_value=None if change == "no_inviter" else "maya"),
         patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
         patch.object(mod.messaging, "create_human_message", store),
     ):
@@ -773,11 +773,11 @@ def test_stale_or_self_chat_cannot_start_work(env, change):
 
 
 def test_chat_store_failure_is_retryable_instead_of_acknowledged_and_lost(env):
-    from routers import voice_meet
+    from core.voice.meetings import records
 
     env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
     with (
-        patch.object(voice_meet, "inviting_member", return_value="maya"),
+        patch.object(records, "inviting_member", return_value="maya"),
         patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
         patch.object(mod.messaging, "create_human_message", AsyncMock(side_effect=RuntimeError("down"))),
     ):

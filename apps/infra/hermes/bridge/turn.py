@@ -1807,7 +1807,7 @@ def warm_agent(agent_id: str) -> None:
     """Pay now what an agent's first turn in this process pays before its first model call: Hermes's
     plugin discovery for the profile's home (once per home, `hermes_cli.plugins`) and its MCP servers'
     connections (kept per agent, `_mcp_session`). The backend asks for this as a call opens
-    (voice_calls.prewake_owner -> profile.warm), about 25 s before the first request: in the 10-09 prod
+    (rooms.prewake_owner -> profile.warm), about 25 s before the first request: in the 10-09 prod
     Meet the first spoken turn spent ~7.6 s here before thinking. Never raises: the turn builds what
     is still missing. Called with the profile restored."""
     try:

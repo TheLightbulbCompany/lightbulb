@@ -1097,7 +1097,7 @@ INVITE = "\r\n".join(
 
 
 def _team(monkeypatch, members):
-    from core.services import meeting_invites
+    from core.voice.meetings import meeting_invites
 
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme")))
     team_row = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}

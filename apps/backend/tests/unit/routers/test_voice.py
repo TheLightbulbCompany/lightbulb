@@ -166,7 +166,7 @@ async def test_handoff_number_must_be_us_or_canada(repos, async_client_org_admin
                 "+1 284 555 0123"):  # fmt: skip
         r = await put(bad)
         assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_number_not_us", bad
-    from routers.voice import us_number
+    from core.voice.phone.numbers import us_number
 
     assert us_number("+1 340 555 0123") == "+13405550123"  # US territories are US
     assert us_number("+1 155 555 0123") is None  # not a NANP area code

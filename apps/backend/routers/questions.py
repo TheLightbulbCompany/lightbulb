@@ -262,14 +262,14 @@ async def submit_answer(ws: str, task_id: str, qid: str, me: str, body: AnswerBo
 
 
 async def _remember(ws: str, q: dict, body: AnswerBody, me: str) -> None:
-    """A phone call's Question (voice_phone.call_ask) answered: the call is handled, and a "didn't know" answered with
+    """A phone call's Question (calls.call_ask) answered: the call is handled, and a "didn't know" answered with
     text goes into the Agent page's Knowledge."""
-    from routers import voice_phone
+    from core.voice.phone import calls
 
     room = (q.get("preview") or {}).get("roomId")
-    if q.get("subkind") not in voice_phone.CALL_OPTIONS or not room:
+    if q.get("subkind") not in calls.CALL_OPTIONS or not room:
         return
     if q["subkind"] == "didnt_know" and body.option_id == "answer" and (body.text or "").strip():
         question = q["preview"].get("question") or q["title"]
-        await voice_phone.remember_answer(ws, question, body.text.strip(), me)
-    await voice_phone.resolve_call(ws, room, me)
+        await calls.remember_answer(ws, question, body.text.strip(), me)
+    await calls.resolve_call(ws, room, me)

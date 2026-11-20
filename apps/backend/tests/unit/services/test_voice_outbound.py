@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from core.config import settings
 from core.repositories import messaging_repo
-from core.services import livekit_huddles, voice_outbound
+from core.voice import livekit_huddles
+from core.voice.phone import voice_outbound
 from routers import voice_phone
 from tests.unit.services.conftest import repos  # noqa: F401
 

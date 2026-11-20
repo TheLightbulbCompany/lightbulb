@@ -1516,7 +1516,7 @@ async def refresh_agent_soul(owner_id: str, agent_id: str, by: str | None = None
     # room member labels follow it, and an open Live window hears about it (C3 ``renamed``).
     # Best effort: the Paperclip rename already landed, so a blip here must not 5xx a door and
     # make the person repeat a rename that happened.
-    from core.services import voice_calls
+    from core.voice import voice_calls
     from core.services.messaging import refresh_agent_member_names
 
     name = agent_row.get("name")

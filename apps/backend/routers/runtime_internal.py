@@ -545,7 +545,7 @@ async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> di
     bookings and honours the Agent page's allow switches. 403 for any task that is not a caller's."""
     from pydantic import ValidationError
 
-    from core.services import business_profile
+    from core.voice.phone import business_profile
     from routers import voice_phone as vp
 
     await _gate(owner_id, request)
@@ -614,7 +614,7 @@ class MeetingContextBody(BaseModel):
 
 @router.post("/{owner_id}/meeting-context")
 async def meeting_context(owner_id: str, body: MeetingContextBody, request: Request) -> dict:
-    from core.services import meeting_context as source
+    from core.voice.meetings import meeting_context as source
 
     await _gate(owner_id, request)
     try:
@@ -639,7 +639,7 @@ class MeetingChatBody(BaseModel):
 
 @router.post("/{owner_id}/meeting-chat")
 async def meeting_chat(owner_id: str, body: MeetingChatBody, request: Request) -> dict:
-    from core.services import meeting_chat as delivery
+    from core.voice.meetings import meeting_chat as delivery
 
     await _gate(owner_id, request)
     try:
@@ -659,7 +659,7 @@ class MeetingStopTranscribingBody(BaseModel):
 
 @router.post("/{owner_id}/meeting-stop-transcribing")
 async def meeting_stop_transcribing(owner_id: str, body: MeetingStopTranscribingBody, request: Request) -> dict:
-    from core.services import meeting_chat as delivery
+    from core.voice.meetings import meeting_chat as delivery
 
     await _gate(owner_id, request)
     try:
@@ -758,7 +758,7 @@ async def business_facts(owner_id: str, body: RunRef, request: Request) -> dict:
     """A Worker's `business_facts`: its own workspace's Agent page (services, prices, hours, the Knowledge answers),
     without the abbreviated profile's character cap; later saved answers must remain readable.
     Read-only; the workspace is the path's, proven by the hook token and the attempt's secret."""
-    from core.services import business_profile
+    from core.voice.phone import business_profile
 
     await _gate(owner_id, request)
     await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)

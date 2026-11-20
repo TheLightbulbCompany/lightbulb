@@ -170,7 +170,7 @@ async def context(
     owner_id: str, run_id: str, trigger_id: str, section: str, cursor: str | None = None, *, grant: str | None
 ) -> dict:
     """Bounded pages from the original artifact/tasks; cursor data is never an authorization source."""
-    from core.services.meeting_notes import _meeting_tasks
+    from core.voice.meetings.meeting_notes import _meeting_tasks
 
     verify_grant(grant, owner_id, run_id, trigger_id)
     if section not in {"transcript", "tasks"}:

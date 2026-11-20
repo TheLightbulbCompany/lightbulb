@@ -17,7 +17,8 @@ from botocore.exceptions import ClientError
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import livekit_huddles, local_sessions, messaging
+from core.services import local_sessions, messaging
+from core.voice import livekit_huddles
 from core.services.messaging import ApiProblem
 
 logger = logging.getLogger(__name__)

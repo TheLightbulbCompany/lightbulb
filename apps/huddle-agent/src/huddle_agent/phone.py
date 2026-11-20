@@ -24,7 +24,6 @@ import itertools
 import json
 import logging
 import os
-import re
 import time
 
 import httpx
@@ -33,6 +32,7 @@ from livekit.agents import AgentServer, JobContext, cli, room_io
 from livekit.plugins import noise_cancellation
 
 from huddle_agent import GOODBYE, live
+from huddle_agent.live import clean_transcript
 from huddle_agent.metrics import emit_metric
 
 logger = logging.getLogger("phone")
@@ -170,34 +170,6 @@ def e164(number: str) -> str:
     """LiveKit Phone Numbers send the dialed number as digits ("14842079294"); line rows key on E.164."""
     n = number.strip()
     return "+" + n if n.isdigit() else n
-
-
-#: A bare backchannel from the voice ("Hmm.", "Mhm."): heard as listening, not a line of the record.
-_BACKCHANNEL = re.compile(r"^(h+m+|m+-?h?m+|mm-?hmm|uh-?huh|um+|uh+)[.!?…]*$", re.I)
-
-
-def clean_transcript(items: list[dict]) -> list[dict]:
-    """The call's transcript for the record, in spoken order (`t`, seconds since the call started), consecutive
-    repeats once. An interrupted reply stays (the caller heard it; 10 Nov prod: the hours answer was talked over and
-    dropped, leaving "Hmm." as the reply) unless it was said again in full; a bare backchannel is not a line. Only
-    what was transcribed; nothing added."""
-    full = [i["text"].strip() for i in items if i["role"] == "assistant" and not i.get("interrupted")]
-    out: list[dict] = []
-    for i in sorted(items, key=lambda i: i["t"]):
-        who = {"user": "caller", "assistant": "assistant"}.get(i["role"])
-        text = i["text"].strip()
-        if not who or not text:
-            continue
-        if who == "assistant" and (
-            _BACKCHANNEL.match(text)
-            or (i.get("interrupted") and any(f.startswith(text.rstrip(".,!?… ")) for f in full))
-        ):
-            continue
-        line = {"who": who, "text": text, "t": round(max(i["t"], 0.0), 1)}
-        if out and (out[-1]["who"], out[-1]["text"]) == (who, line["text"]):
-            continue
-        out.append(line)
-    return out
 
 
 class Backend:

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
-from core.services import voice_calls as vc
+from core.voice import voice_calls as vc
 
 CALL = {
     "owner_id": "__call__#call-1",

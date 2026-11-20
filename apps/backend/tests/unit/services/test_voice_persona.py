@@ -1,4 +1,4 @@
-from core.services import voice_persona as vp
+from core.voice import voice_persona as vp
 
 
 # ---- Option D -------------------------------------------------------------------------------
@@ -23,7 +23,7 @@ def test_agent_voice_role_voices_and_a_stable_hash_for_the_rest():
 
 def test_a_roster_with_no_recorded_starters_takes_the_role_voices_by_title():
     """The founder workspace: Friday is its CEO, Forge its engineer... and three of them shared one voice."""
-    from core.services import voice_persona as vp
+    from core.voice import voice_persona as vp
 
     team = {
         "friday": ("CEO", "ceo"),

@@ -9,7 +9,8 @@ import pytest
 os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://test.execute-api.us-east-1.amazonaws.com/test")
 
 from core.repositories import container_repo, messaging_repo  # noqa: E402
-from core.services import hermes_profiles, livekit_huddles, messaging  # noqa: E402
+from core.services import hermes_profiles, messaging
+from core.voice import livekit_huddles  # noqa: E402
 from core.services.hermes_provisioning import refresh_agent_soul  # noqa: E402
 
 OWNER = "org_1"

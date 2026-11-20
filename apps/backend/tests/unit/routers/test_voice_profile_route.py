@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://test.execute-api.us-east-1.amazonaws.com/test")
 
 from core.repositories import container_repo, messaging_repo  # noqa: E402
-from core.services import hermes_profiles, livekit_huddles, messaging  # noqa: E402
+from core.services import hermes_profiles, messaging
+from core.voice import livekit_huddles  # noqa: E402
 from core.services.agent_registry import RegistryUnavailable  # noqa: E402
 from routers import messaging as messaging_router  # noqa: E402
 

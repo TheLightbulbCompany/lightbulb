@@ -1,7 +1,7 @@
 "use client";
 
 // Needs you (spec 2026-11-07 §5): one list, the kind label on each card, the action on the card. One source: the open
-// Questions (/needs-you), calls included: a call's "didn't know" and "wanted a person" are Questions (voice_phone.call_ask).
+// Questions (/needs-you), calls included: a call's "didn't know" and "wanted a person" are Questions (calls.call_ask).
 import { useState } from "react";
 import Link from "next/link";
 import type { QuestionView } from "@lightbulb/shared";

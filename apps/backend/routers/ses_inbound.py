@@ -78,7 +78,8 @@ from core.repositories.agent_email_repo import (
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
 from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import agent_email, clerk_admin, meeting_invites
+from core.services import agent_email, clerk_admin
+from core.voice.meetings import meeting_invites
 from core.services.agent_email import ensure_team_address, sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key

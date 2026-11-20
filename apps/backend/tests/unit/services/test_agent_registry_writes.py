@@ -29,7 +29,8 @@ def ddb(monkeypatch):
 @pytest.fixture
 def side_effects(monkeypatch):
     """Everything an agent write touches besides the registry: the S3 profile, facts, network, META."""
-    from core.services import hermes_profiles, hermes_provisioning, network_member, owner_facts, voice_calls
+    from core.services import hermes_profiles, hermes_provisioning, network_member, owner_facts
+    from core.voice import voice_calls
     from routers.teams import agents as agents_mod
 
     fx = SimpleNamespace(
@@ -172,7 +173,7 @@ async def test_runtime_rpc_create_rolls_back_when_profile_write_fails(ddb, side_
 @pytest.mark.asyncio
 async def test_voice_profile_rename_updates_registry(ddb, side_effects, monkeypatch):
     from core.repositories import messaging_repo
-    from core.services import voice_calls
+    from core.voice import voice_calls
 
     agent = await agent_registry.create(WS, name="Ana")
     monkeypatch.setattr(

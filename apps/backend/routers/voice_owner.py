@@ -5,7 +5,7 @@ the Router), and `/events` hands back the agent messages the room gets, which th
 approves or starts work for the voice: the Router and its Workers do, and approval is the one-tap card.
 
 Who may act: the speaker is the LiveKit identity the server took from the Clerk-minted join token, and must be a
-human member of this workspace seated in the DM (`voice_calls._voice_requester`); anyone else is refused.
+human member of this workspace seated in the DM (`rooms._voice_requester`); anyone else is refused.
 """
 
 import asyncio
@@ -21,10 +21,11 @@ from core.billing import voice_billing
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
 from core.services import messaging
-from core.services.voice_calls import _voice_requester
-from routers.huddles import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
-from routers.voice_meet import QuestionRef, agent_lines, answer_said_question, assistant_name, latest_seq
-from routers.voice_phone import transcript_lines
+from core.voice.rooms import _voice_requester
+from core.voice.worker_api import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
+from core.voice.room_lines import QuestionRef, agent_lines, assistant_name, latest_seq
+from routers.voice_meet import answer_said_question
+from core.voice.phone.calls import transcript_lines
 
 router = APIRouter(dependencies=[_Worker])
 

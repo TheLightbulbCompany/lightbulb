@@ -113,7 +113,7 @@ export function AfterTheCall() {
 
 const IN_CHARGE: [string, string][] = [
   [
-    "It’s honest about being an AI",
+    "It never pretends to be a person",
     "The default greeting introduces it as your AI assistant. If a caller sincerely asks whether it’s a person, it tells the truth.",
   ],
   [

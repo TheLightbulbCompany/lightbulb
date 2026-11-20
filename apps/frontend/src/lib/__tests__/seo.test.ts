@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -5,6 +8,8 @@ import {
   HOME_TITLE,
   PHONE_DESCRIPTION,
   PHONE_TITLE,
+  SITE_DESCRIPTION,
+  SITE_TITLE,
   hubJsonLd,
   organizationJsonLd,
   phoneJsonLd,
@@ -85,6 +90,24 @@ describe('/ @graph', () => {
     expect(graph.map((n) => n['@type'])).toEqual(['Organization', 'WebSite', 'WebPage']);
     expect(graph[2]).toMatchObject({ about: { '@id': 'https://thelightbulb.company/#organization' } });
     expect(JSON.stringify(hubJsonLd)).not.toMatch(/FAQPage|SoftwareApplication|"offers"/);
+    // The founder's H1 is positioning, not a claim for structured data.
+    expect(JSON.stringify(hubJsonLd)).not.toMatch(/number one/i);
     expect(graph.every((n) => !('@context' in n))).toBe(true);
+  });
+});
+
+describe('root layout default', () => {
+  it('is neutral: not the home headline and not the receptionist', () => {
+    expect(SITE_TITLE).toBe('Lightbulb');
+    expect(SITE_DESCRIPTION).toBe(
+      'Lightbulb makes voice assistants: Lightbulb Phone, Lightbulb Meetings and Lightbulb OS.',
+    );
+    for (const s of [SITE_TITLE, SITE_DESCRIPTION]) {
+      expect(s).not.toMatch(/number one/i);
+      expect(s).not.toMatch(/salon|receptionist/i);
+    }
+    const layout = readFileSync(join(__dirname, '../../app/layout.tsx'), 'utf8');
+    expect(layout).toMatch(/import \{ SITE_DESCRIPTION, SITE_TITLE \} from "@\/lib\/seo";/);
+    expect(layout).not.toMatch(/HOME_TITLE|HOME_DESCRIPTION/);
   });
 });

@@ -17,7 +17,7 @@ import {
   clerkTaskUrls,
 } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
-import { HOME_DESCRIPTION, HOME_TITLE } from "@/lib/seo";
+import { SITE_DESCRIPTION, SITE_TITLE } from "@/lib/seo";
 import "./globals.css";
 
 const geistMono = Geist_Mono({
@@ -35,9 +35,6 @@ const satoshi = localFont({
 });
 
 
-// One positioning source: the homepage's title and description (lib/seo.tsx).
-const SITE_TITLE = HOME_TITLE;
-const SITE_DESCRIPTION = HOME_DESCRIPTION;
 const SOCIAL_IMAGE = "/og-lightbulb-v2.png";
 
 export const metadata: Metadata = {

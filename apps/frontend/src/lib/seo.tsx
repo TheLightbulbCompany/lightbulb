@@ -7,6 +7,10 @@ import { SITE_URL, SUPPORT_EMAIL } from "./domain";
 export { SITE_URL };
 export const SITE_NAME = "Lightbulb";
 export const OG_IMAGE = "/og-lightbulb.png";
+/** The root layout's default for pages without their own metadata: neutral, not the home headline. */
+export const SITE_TITLE = "Lightbulb";
+export const SITE_DESCRIPTION =
+  "Lightbulb makes voice assistants: Lightbulb Phone, Lightbulb Meetings and Lightbulb OS.";
 export const HOME_TITLE = "The Number One Voice AI Application Company | Lightbulb";
 export const HOME_DESCRIPTION =
   "Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Lightbulb OS is a voice app for the Mac.";
@@ -164,7 +168,8 @@ export const hubJsonLd = {
       "@type": "WebPage",
       "@id": `${SITE_URL}/#webpage`,
       url: SITE_URL,
-      name: HOME_TITLE,
+      // Not HOME_TITLE: the H1 is positioning, not a claim for structured data.
+      name: SITE_NAME,
       isPartOf: { "@id": `${SITE_URL}/#website` },
       about: { "@id": `${SITE_URL}/#organization` },
     },

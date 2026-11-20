@@ -33,6 +33,12 @@ describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
     expect(String(meta.description)).not.toMatch(/salon|receptionist/i);
   });
 
+  it("keeps AI out of every bold headline", () => {
+    const { container } = render(<Page />);
+    const bold = [...container.querySelectorAll("h1, h2, h3, b")].map((el) => el.textContent ?? "");
+    expect(bold.filter((t) => /\bAI\b/.test(t))).toEqual([]);
+  });
+
   it("carries no banned word, price or dash", () => {
     const { container } = render(<Page />);
     const text = container.textContent ?? "";
@@ -67,7 +73,7 @@ describe("/", () => {
 
   it("keeps AI out of every other bold headline", () => {
     const { container } = render(<HubPage />);
-    const bold = [...container.querySelectorAll("h1, h2, b")].map((el) => el.textContent ?? "");
+    const bold = [...container.querySelectorAll("h1, h2, h3, b")].map((el) => el.textContent ?? "");
     expect(bold.filter((t) => t !== HUB_H1_AI_EXCEPTION && /\bAI\b/.test(t))).toEqual([]);
   });
 
@@ -86,6 +92,7 @@ describe("/", () => {
     fireEvent.click(screen.getByRole("link", { name: /Set up Lightbulb Phone/ }));
     expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hub_sign_up"]);
     expect(hubMeta.alternates?.canonical).toBe("https://thelightbulb.company/");
+    expect(hubMeta.title).toBe("The Number One Voice AI Application Company | Lightbulb");
     expect(String(hubMeta.description)).not.toMatch(/salon|receptionist/i);
   });
 });

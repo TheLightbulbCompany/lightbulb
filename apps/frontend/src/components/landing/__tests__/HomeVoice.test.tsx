@@ -63,7 +63,7 @@ describe("Phone page voice", () => {
 
   it("keeps AI out of every bold headline", () => {
     const { container } = page();
-    const bold = [...container.querySelectorAll("h1, h2, b")].map((el) => el.textContent ?? "");
+    const bold = [...container.querySelectorAll("h1, h2, h3, b")].map((el) => el.textContent ?? "");
     expect(bold.filter((t) => /\bAI\b/.test(t))).toEqual([]);
     expect(container.textContent).not.toContain("honest about being an AI");
     expect(container.textContent).toContain("It never pretends to be a person");

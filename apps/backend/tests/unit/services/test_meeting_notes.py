@@ -824,3 +824,33 @@ async def test_an_expired_notes_request_ends_quietly(env, monkeypatch):
     await task_done(env, to="failed")  # the meeting record's request is gone: nothing to mark, no error
     assert "notesMailedAt" not in env.meta["meeting"]
     assert not [c for c in env.metric.call_args_list if c.args and c.args[0] == "meeting.notes.mail_failed"]
+
+
+async def test_keep_total_time_is_bounded(env, monkeypatch, caplog):
+    """Review on #5288: a keep that outlasts end_attempt's 30 s runs beside the activity's retry."""
+    import asyncio as real_asyncio
+
+    async def hangs(*_a, **_k):
+        await real_asyncio.Event().wait()  # a remember call that never answers
+
+    monkeypatch.setattr(mod, "_keep_notes", hangs)
+    monkeypatch.setattr(mod, "KEEP_TOTAL_S", 0.05)
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    with caplog.at_level("ERROR", logger=mod.logger.name):
+        await task_done(env)  # returns: never raises into the activity
+    assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
+    error = next(r for r in caplog.records if r.levelname == "ERROR")
+    assert ROOM in error.getMessage() and TASK in error.getMessage()
+
+
+async def test_an_unreadable_transcript_says_try_again(env, monkeypatch):
+    env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1", transcriptRoomId=DEFAULT)
+    await mod.on_ended(ROOM)
+    monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(side_effect=OSError("s3 timeout")))
+    with pytest.raises(mod.TranscriptUnavailable, match="couldn't be read just now"):
+        await mod.worker_transcript("org_1", TRIG)
+    gone = mod.messaging.ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.")
+    monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(side_effect=gone))
+    with pytest.raises(mod.TranscriptUnavailable, match="no longer available"):
+        await mod.worker_transcript("org_1", TRIG)

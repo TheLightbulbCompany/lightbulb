@@ -31,13 +31,16 @@ NOTES_PREFIX = "meeting-notes:"
 TRANSCRIPT_MAX_BYTES = 150 * 1024
 #: What the owner reads when a notes task cannot get its transcript (a Retry after the request expired).
 TRANSCRIPT_GONE = "The transcript for this meeting is no longer available, so notes can't be written."
+#: ... and when the transcript is there but a read failed for now.
+TRANSCRIPT_UNREAD = "The transcript for this meeting couldn't be read just now. Try again."
 
 
 class TranscriptUnavailable(RuntimeError):
-    """A notes task with no transcript to read: it fails before any Worker run (activities.worker_turn)."""
+    """A notes task with no transcript to read: it fails before any Worker run (activities.worker_turn). Its message
+    is what the owner reads."""
 
-    def __init__(self) -> None:
-        super().__init__(TRANSCRIPT_GONE)
+    def __init__(self, message: str = TRANSCRIPT_GONE) -> None:
+        super().__init__(message)
 
 
 #: The first line of notes written from a cut transcript.
@@ -295,8 +298,11 @@ async def worker_transcript(owner_id: str, request_id: str) -> str | None:
         raise TranscriptUnavailable()
     try:
         _, raw = await run_in_thread(messaging.load_attachment, owner_id, _transcript_room(request), attachment)
-    except (messaging.ApiProblem, ValueError, OSError) as exc:
-        raise TranscriptUnavailable() from exc
+    except messaging.ApiProblem as exc:
+        gone = exc.error.code == "MESSAGE_NOT_FOUND"
+        raise TranscriptUnavailable(TRANSCRIPT_GONE if gone else TRANSCRIPT_UNREAD) from exc
+    except Exception as exc:  # an S3 or network error: the transcript is there, the read failed for now
+        raise TranscriptUnavailable(TRANSCRIPT_UNREAD) from exc
     if len(raw) <= TRANSCRIPT_MAX_BYTES:
         return f"## Transcript\n{raw.decode('utf-8', 'replace')}"
     # ponytail: a meeting over ~150 KB of talk (about 3 hours) loses its start; a paged reader tool if that bites.
@@ -370,7 +376,14 @@ async def on_task_moved(task: dict, to: str) -> None:
             return
         if await _was_cut(owner_id, request):
             notes = f"{CUT_LINE}\n\n{notes}"
-        if await _keep_with_retries(owner_id, request_id, request, notes):
+        try:
+            # One bound over every try: end_attempt and transition get 30 s each, and a keep past that would run
+            # beside the activity's own retry (which skips the push and usage metering).
+            async with asyncio.timeout(KEEP_TOTAL_S):
+                kept = await _keep_with_retries(owner_id, request_id, request, notes)
+        except TimeoutError:  # our own deadline only: an outer cancel stays a CancelledError
+            kept = False
+        if kept:
             return
         put_metric("meeting.notes.keep_failed")
         logger.error("meeting room %s task %s: notes not kept after retries", request["roomId"], task["taskId"])
@@ -382,6 +395,8 @@ async def on_task_moved(task: dict, to: str) -> None:
 
 #: The pauses between a notes keep's tries (three tries in all).
 _KEEP_BACKOFF_S = (0.5, 1.0)
+#: The whole keep, every try included, inside the calling activity's 30 s start-to-close (workflows._SHORT).
+KEEP_TOTAL_S = 20
 
 
 async def _keep_with_retries(owner_id: str, request_id: str, request: dict, notes: str) -> bool:

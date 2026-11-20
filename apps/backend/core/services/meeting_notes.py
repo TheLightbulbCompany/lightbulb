@@ -331,11 +331,10 @@ _ENDS = frozenset({"idle", "failed", "resolved"})
 
 async def on_task_moved(task: dict, to: str) -> None:
     """Keep a notes task's result in the app when it ends (activities._announce, every status change, before its
-    person-reason check). The notes are the last completed attempt's output, kept with ``_KEEP_BACKOFF_S`` retries.
-    Done (`idle`) is the first pass: a keep that fails every try leaves the meeting pending. The task's later end
-    (the workflow's quiet resolve after ``QUIET_AFTER``, or a person's Close) is the second pass, with the same
-    tries; past it the meeting is marked "no notes" and an error logged. With no output (failed, stopped,
-    dismissed) the meeting is marked "no notes". Never raises."""
+    person-reason check). Done: the last completed attempt's output is the notes, kept with ``_KEEP_BACKOFF_S``
+    retries; when every try fails, an error is logged and the meeting marked "no notes" (the notes still stand in
+    the room as the task's result). Failed, stopped, closed or dismissed: the meeting is marked "no notes". Never
+    raises."""
     request_id = str(task.get("triggerId") or "")
     owner_id = str(task.get("pk") or "").removeprefix("WS#")
     if not request_id.startswith(NOTES_PREFIX) or to not in _ENDS or not owner_id:
@@ -344,24 +343,23 @@ async def on_task_moved(task: dict, to: str) -> None:
         request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
         if request is None or request.get("taskId") != task.get("taskId") or request.get("mailAttemptedAt"):
             return  # not this task's, or its notes are kept (the claim is spent only then)
-        tree = await tasks_repo.get_task_tree(owner_id, task["taskId"])
-        done = [
-            a for a in tree.get("attempts") or []
-            if a.get("outcome") == "completed" and (a.get("output") or "").strip()
-        ]  # fmt: skip
-        if not done:
+        notes = None
+        if to == "idle":
+            tree = await tasks_repo.get_task_tree(owner_id, task["taskId"])
+            done = [
+                a for a in tree.get("attempts") or []
+                if a.get("outcome") == "completed" and (a.get("output") or "").strip()
+            ]  # fmt: skip
+            notes = max(done, key=lambda a: a["n"])["output"] if done else None
+        if not notes:
             await _mark_no_notes(request)
             return
-        notes = max(done, key=lambda a: a["n"])["output"]
         if await _was_cut(owner_id, request):
             notes = f"{CUT_LINE}\n\n{notes}"
         if await _keep_with_retries(owner_id, request_id, request, notes):
             return
-        put_metric("meeting.notes.keep_failed", dimensions={"pass": "first" if to == "idle" else "second"})
-        if to == "idle":
-            logger.warning("meeting room %s task %s: notes not kept yet; the task's end retries", request["roomId"], task["taskId"])  # fmt: skip
-            return
-        logger.error("meeting room %s task %s: notes not kept after the second pass", request["roomId"], task["taskId"])  # fmt: skip
+        put_metric("meeting.notes.keep_failed")
+        logger.error("meeting room %s task %s: notes not kept after retries", request["roomId"], task["taskId"])
         await _mark_no_notes(request)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")

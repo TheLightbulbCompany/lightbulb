@@ -784,27 +784,6 @@ async def test_keep_retries_then_succeeds(env, monkeypatch):
     env.sleep.assert_awaited_once_with(0.5)
 
 
-async def test_keep_failure_recovered_at_quiet_resolve(env, monkeypatch, remember):
-    enqueue, seen = _record_followups(monkeypatch)
-    env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
-    env.patch_failures = 3  # every first-pass try fails to write the meeting
-    await task_done(env, DECIDED)
-    meeting = env.meta["meeting"]
-    assert "notes" not in meeting and "notesMailedAt" not in meeting  # still pending, not failed
-    assert not env.requests[TRIG].get("mailAttemptedAt")
-    assert [c.args for c in env.sleep.await_args_list] == [(0.5,), (1.0,)]
-    enqueue.assert_not_awaited()
-    env.metric.assert_any_call("meeting.notes.keep_failed", dimensions={"pass": "first"})
-    # QUIET_AFTER later the workflow resolves the idle task: the stored output is kept then.
-    await mod.on_task_moved(notes_task(status="resolved"), "resolved")
-    assert env.meta["meeting"]["notes"] == DECIDED and len(env.meta["meeting"]["decisions"]) == 2
-    assert env.requests[TRIG]["mailAttemptedAt"]
-    assert len(seen) == 1 and not seen[0][1].get("mailAttemptedAt")  # follow-ups admitted once
-    await mod.on_task_moved(notes_task(status="resolved"), "resolved")  # a retried Activity
-    assert enqueue.await_count == 1
-
-
 async def test_keep_is_safe_to_repeat(env, monkeypatch, remember):
     """Every step of a keep repeats harmlessly: one notes record, one follow-up trigger id, no duplicate action
     items, each decision remembered once."""
@@ -821,15 +800,18 @@ async def test_keep_is_safe_to_repeat(env, monkeypatch, remember):
     assert remember.await_count == 2 and meeting["decisionsRemembered"] == [0, 1]
 
 
-async def test_keep_failure_at_quiet_marks_no_notes(env, caplog):
+async def test_keep_failure_after_retries_marks_no_notes(env, caplog):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     await mod.on_ended(ROOM)
-    env.patch_failures = 6  # both passes fail every try
-    await task_done(env)
+    env.patch_failures = 3  # every try fails to write the meeting
     with caplog.at_level("ERROR", logger=mod.logger.name):
-        await mod.on_task_moved(notes_task(status="resolved"), "resolved")
+        await task_done(env)
     meeting = env.meta["meeting"]
-    assert meeting["notesMailedAt"] and "notes" not in meeting  # no longer pending
+    assert meeting["notesMailedAt"] and "notes" not in meeting  # "no notes" at once, never left pending
+    assert [c.args for c in env.sleep.await_args_list] == [(0.5,), (1.0,)]
     error = next(r for r in caplog.records if r.levelname == "ERROR")
     assert ROOM in error.getMessage() and TASK in error.getMessage() and "Decisions" not in error.getMessage()
-    env.metric.assert_any_call("meeting.notes.keep_failed", dimensions={"pass": "second"})
+    env.metric.assert_any_call("meeting.notes.keep_failed")
+    assert not env.requests[TRIG].get("mailAttemptedAt")  # a Retry that succeeds still keeps them
+    await mod.on_task_moved(notes_task(status="resolved"), "resolved")  # the quiet resolve: no second pass
+    assert "notes" not in env.meta["meeting"]

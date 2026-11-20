@@ -8,7 +8,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { DAYS, nameOf, saveRefusal, useAgentConfig, useInviteAddress, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
+import { DAYS, nameOf, saveRefusal, useAgentConfig, useWaitlist, usPhone, type AgentConfig, type StaffMember } from "./data";
 
 import { FORWARDING_CODES } from "./forwarding";
 import { PhoneVoiceSettings } from "./PhoneVoiceSettings";
@@ -21,7 +21,6 @@ type Save = "idle" | "saving" | "saved" | "error" | "payment";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
-  const invite = useInviteAddress();
   const { organization } = useOrganization();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [saveState, setSaveState] = useState<Save>("idle");
@@ -143,12 +142,6 @@ export function AgentPage() {
         <input className="vx-field" type="tel" value={c.handoff.number} placeholder="Your cell" onChange={(e) => set({ handoff: { ...c.handoff, number: e.target.value } })} /></label>
       <Check label="Only during opening hours" on={c.handoff.onlyOpenHours} set={(onlyOpenHours) => set({ handoff: { ...c.handoff, onlyOpenHours } })} />
     </Sec>
-
-    <Sec title="Meetings" hint={<>Add {invite ? <span className="vx-code">{invite}</span> : "your assistant's meeting address"} as a guest on a Google Calendar event with a Google Meet link. Invites only work from people in your business. {name} joins, tells everyone it&apos;s there and that the meeting is recorded, and speaks when someone says &ldquo;{name}&rdquo;. Anyone can say &ldquo;{name}, stop transcribing me&rdquo;.</>}>
-      <div>
-        <Check label="Turn action items into follow-ups" on={c.meetings.followUps} set={(followUps) => set({ meetings: { ...c.meetings, followUps } })} />
-      </div>
-    </Sec>
   </div>;
 }
 
@@ -172,9 +165,9 @@ export function Closures({ c, set }: Edit) {
   </div>;
 }
 
-export function Check({ label, on, set, disabled, note }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean; note?: string }) {
+export function Check({ label, on, set, disabled, busy, note }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean; busy?: boolean; note?: string }) {
   return <label className="vx-check" data-off={disabled}>
-    <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set?.(e.target.checked)} />{label}{note && <small className="vx-muted">{note}</small>}</label>;
+    <input type="checkbox" checked={on} disabled={disabled} aria-busy={busy || undefined} onChange={(e) => set?.(e.target.checked)} />{label}{note && <small className="vx-muted">{note}</small>}</label>;
 }
 
 /** Shown only while someone is waiting: the toggle is hidden (10 Nov demo ruling), but a caller already waiting must not be lost. */

@@ -49,7 +49,7 @@ it("requires explicit terms acceptance and binds checkout to the displayed works
     expectedOwnerId: "org-1", planVersion: "voice-agents-v1", acceptMonthlyUsd: 250, acceptIncludedMinutes: 1500, acceptOverageUsdPerMinute: 0.35,
   }));
   expect(await screen.findByText("Waiting for payment to confirm")).toBeInTheDocument();
-  expect(screen.queryByText("Voice plan active")).not.toBeInTheDocument();
+  expect(screen.queryByText("Phone plan active")).not.toBeInTheDocument();
 });
 
 it("opens hosted card setup only after the accepted checkout request returns it", async () => {
@@ -118,5 +118,5 @@ it("does not claim success for an unconfirmed provider write", async () => {
   fireEvent.click(screen.getByRole("checkbox", { name: /I agree/ }));
   fireEvent.click(screen.getByRole("button", { name: "Continue to payment" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("We couldn’t confirm that change");
-  expect(screen.queryByText("Voice plan active")).not.toBeInTheDocument();
+  expect(screen.queryByText("Phone plan active")).not.toBeInTheDocument();
 });

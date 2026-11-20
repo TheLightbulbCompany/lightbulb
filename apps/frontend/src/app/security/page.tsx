@@ -83,7 +83,7 @@ const SECTIONS: { title: string; body: React.ReactNode }[] = [
       <ul>
         <li>Your assistant does not take payments, and card numbers are removed from every record it keeps.</li>
         <li>A caller reaches only their own bookings, and only when their phone carrier verifies their number.</li>
-        <li>You choose what it may do on the Agent page, and you can pause it at any time.</li>
+        <li>You choose what it may do on the Phone page, and you can pause it at any time.</li>
         <li>You see every call: a summary, what it did and the transcript.</li>
       </ul>
     ),

@@ -124,6 +124,12 @@ describe("WorkspaceMembersSection", () => {
     expect(teams.read).toHaveBeenCalledWith("/members");
   });
 
+  it("says who the members are in this business's words", async () => {
+    asAdmin();
+    render(<WorkspaceMembersSection />);
+    expect(await screen.findByText(/Everyone here can sign in to this business and see its calls and meetings\./)).toBeInTheDocument();
+  });
+
   it("opens Clerk's own members screen for roles and removal", async () => {
     asAdmin();
     openOrganizationProfile.mockReset();
@@ -313,7 +319,7 @@ describe("WorkspaceMembersSection", () => {
     render(<WorkspaceMembersSection />);
 
     expect(screen.queryByTestId("members-personal")).not.toBeInTheDocument();
-    expect(screen.getByRole("status", { name: /loading workspace/i })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: /loading members/i })).toBeInTheDocument();
   });
 
   // --- Errors -------------------------------------------------------------
@@ -335,7 +341,7 @@ describe("WorkspaceMembersSection", () => {
 describe("joinLinkErrorMessage", () => {
   it("maps a 403 to admin-only copy", () => {
     expect(joinLinkErrorMessage(new ApiError(403, { detail: "Cannot manage a different workspace" }))).toMatch(
-      /only a workspace admin/i,
+      /only a business admin/i,
     );
   });
 

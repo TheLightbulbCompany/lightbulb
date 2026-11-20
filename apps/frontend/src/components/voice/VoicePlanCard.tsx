@@ -22,10 +22,10 @@ interface VoicePlan {
 const label = {
   not_enrolled: "No plan yet",
   pending_payment: "Waiting for payment to confirm",
-  active: "Voice plan active",
+  active: "Phone plan active",
   past_due: "Your last payment didn’t go through",
   canceling: "Renewal canceled",
-  canceled: "Voice plan ended",
+  canceled: "Phone plan ended",
 };
 
 export function VoicePlanCard() {
@@ -83,9 +83,9 @@ export function VoicePlanCard() {
   }
 
   return <section className="vx-card" aria-labelledby="voice-plan-heading">
-    <h2 className="vx-h" id="voice-plan-heading">Voice plan</h2>
+    <h2 className="vx-h" id="voice-plan-heading">Phone plan</h2>
     {(!current || isLoading) && !error && <p className="vx-sub" role="status">Loading your plan…</p>}
-    {error && <p role="alert">Couldn’t load your voice plan. <Button variant="ghost" onClick={() => void mutate()}>Retry</Button></p>}
+    {error && <p role="alert">Couldn’t load your Phone plan. <Button variant="ghost" onClick={() => void mutate()}>Retry</Button></p>}
     {current && <>
       <p className="vx-sub" role="status">{label[plan.status]}</p>
       <p className="vx-sub">${plan.monthlyUsd}/month includes {plan.includedMinutes.toLocaleString()} voice minutes. Additional minutes cost ${plan.overageUsdPerMinute.toFixed(2)} each. Month to month: you can cancel the renewal here at any time.</p>

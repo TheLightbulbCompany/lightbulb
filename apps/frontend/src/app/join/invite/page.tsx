@@ -57,7 +57,7 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
       {status === "complete" ? (
         <>
           <p className="text-ui text-midnight-muted">You already accepted this invitation.</p>
-          <Button asChild><Link href="/chat">Open Lightbulb</Link></Button>
+          <Button asChild><Link href="/voice">Open Lightbulb</Link></Button>
         </>
       ) : (
         <>

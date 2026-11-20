@@ -30,6 +30,15 @@ it("Settings rail item opens /voice/settings", () => {
   expect(settings).toHaveAttribute("aria-current", "page");
 });
 
+it("Meetings rail item opens /voice/meetings", () => {
+  nav.path = "/voice/meetings";
+  render(<VoiceShell>x</VoiceShell>);
+  const meetings = screen.getByRole("link", { name: "Meetings" });
+  expect(meetings).toHaveAttribute("href", "/voice/meetings");
+  expect(meetings).toHaveAttribute("aria-current", "page");
+  nav.path = "/voice/settings";
+});
+
 it("no-org user at /voice sees OrganizationList with afterSelect /voice", () => {
   org.current = null;
   render(<VoiceShell>x</VoiceShell>);
@@ -38,10 +47,12 @@ it("no-org user at /voice sees OrganizationList with afterSelect /voice", () => 
   org.current = { id: "o" };
 });
 
-it("the rail is Lightbulb (the logo) · Home · Agent · Needs you · Settings, and Workspace is gone", () => {
+it("the rail is Lightbulb (the logo) · Home · Phone · Meetings · Needs you · Settings, and Agent and Workspace are gone", () => {
   render(<VoiceShell><div /></VoiceShell>);
   const links = screen.getAllByRole("link");
-  expect(links.map((l) => l.getAttribute("href"))).toEqual(["/voice/lightbulb", "/voice", "/voice/agent", "/voice/needs-you", "/voice/settings"]);
+  expect(links.map((l) => l.getAttribute("href"))).toEqual(["/voice/lightbulb", "/voice", "/voice/agent", "/voice/meetings", "/voice/needs-you", "/voice/settings"]);
+  expect(links.slice(1).map((l) => l.textContent)).toEqual(["Home", "Phone", "Meetings", "Needs you", "Settings"]);
+  expect(screen.queryByRole("link", { name: "Agent" })).not.toBeInTheDocument();
   expect(links[0]).toHaveAccessibleName("Lightbulb");
   expect(links[0].querySelector("svg.brand-mark")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Workspace" })).not.toBeInTheDocument();
@@ -72,7 +83,7 @@ it("a workspace or user change creates a fresh talk and huddle owner", () => {
   org.current = { id: "o" }; org.userId = "u";
 });
 
-it.each([["/voice/agent", true], ["/voice/lightbulb", true], ["/voice/settings", false], ["/voice", false]])(
+it.each([["/voice/agent", true], ["/voice/meetings", true], ["/voice/lightbulb", true], ["/voice/settings", false], ["/voice", false]])(
   "with setup unfinished, %s sends the owner to Home: %s", (path, sent) => {
     agent.setup = true; nav.path = path; nav.replace.mockClear();
     render(<VoiceShell><p>page</p></VoiceShell>);

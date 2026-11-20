@@ -22,7 +22,7 @@ export function BillingMinutes() {
   if (!u.paidAllowance) return <section className="vx-card vx-billing" aria-labelledby="vx-billing-h">
     <h2 className="vx-h" id="vx-billing-h">Billing &amp; minutes</h2>
     <p className="vx-minutes"><span className="vx-number">{Math.round(u.used).toLocaleString()}</span> minutes used {u.periodStart && u.periodEnd ? "this billing period" : "this month"}</p>
-    <p className="vx-sub">Your plan&apos;s included minutes show here once the plan is paid. See Voice plan above.</p>
+    <p className="vx-sub">Your plan&apos;s included minutes show here once the plan is paid. See Phone plan above.</p>
   </section>;
   const pct = Math.min(100, Math.round((u.used / u.included) * 100));
   const rate = `$${u.overageRate.toFixed(2)}`;
@@ -78,14 +78,14 @@ function CalendarCard() {
 export function VoiceSettings() {
   return <div className="vx-page vx-settings">
     <h1 className="vx-title">Settings</h1>
-    <Section name="Voice plan"><VoicePlanCard /></Section>
+    <Section name="Phone plan"><VoicePlanCard /></Section>
     <Section name="Billing & minutes"><BillingMinutes /></Section>
     <Section name="Phone PIN"><PhonePinCard /></Section>
     <Section name="Booking calendar"><CalendarCard /></Section>
     <Section name="Members"><div className="settings-panel" id="panel-members">
       <h2 className="settings-page-title">Members</h2>
       <p className="settings-page-desc">Who can sign in to this business, and the link that lets someone else in.</p>
-      <WorkspaceMembersSection blurb="Everyone here can sign in to this business and see its calls." />
+      <WorkspaceMembersSection />
     </div></Section>
     <Section name="Notifications"><div className="settings-panel" id="panel-notifications">
       <h2 className="settings-page-title">Notifications</h2>

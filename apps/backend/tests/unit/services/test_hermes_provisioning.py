@@ -627,7 +627,6 @@ async def test_write_profiles_uploads_a_facts_file_to_every_agent_in_a_six_agent
         AsyncMock(return_value={"subscription_status": "active"}),
     )
     monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
-    monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
 
     uploaded: list[tuple[str, list[str], str]] = []
 
@@ -666,7 +665,6 @@ async def test_write_profiles_facts_staging_uses_this_provisions_own_provider_ch
         AsyncMock(return_value={"subscription_status": "active", "provider_choice": "chatgpt_oauth"}),
     )
     monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
-    monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
 
     captured = {}
     monkeypatch.setattr(
@@ -767,7 +765,6 @@ async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatc
         AsyncMock(return_value={"subscription_status": "active"}),
     )
     monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
-    monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
     monkeypatch.setattr("core.services.owner_facts._lookup_owner_timezone", AsyncMock(return_value="UTC"))
     monkeypatch.setattr("core.services.owner_facts._lookup_connected_integrations", AsyncMock(return_value=[]))
     monkeypatch.setattr("core.services.owner_facts._lookup_teammates", AsyncMock(return_value=[]))

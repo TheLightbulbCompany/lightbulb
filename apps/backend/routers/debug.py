@@ -16,10 +16,8 @@ from core.observability.metrics import put_metric
 from core.services.hermes_provisioning import delete_workspace_runtime
 from core.repositories import (
     billing_repo,
-    channel_link_repo,
     container_repo,
     integrations_repo,
-    update_repo,
     usage_repo,
     user_repo,
 )
@@ -275,8 +273,6 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("billing-accounts", lambda: billing_repo.delete(owner_id)),
             ("byo-llm-keys", _wipe_byo_llm_keys),
             ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
-            ("pending-updates", lambda: update_repo.delete_all_for_owner(owner_id)),
-            ("channel-links", lambda: channel_link_repo.delete_all_for_owner(owner_id)),
             ("integrations", _wipe_integrations),
             ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
             ("users", lambda: user_repo.delete(user_id)),
@@ -365,8 +361,6 @@ async def ddb_rows(
     container = await container_repo.get_by_owner_id(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
     usage = await usage_repo.count_for_owner(owner_id)
-    updates = await update_repo.count_for_owner(owner_id)
-    channels = await channel_link_repo.count_for_owner(owner_id)
     ws_conns = await connection_service.count_for_user(effective_user_id)
 
     return {
@@ -375,8 +369,6 @@ async def ddb_rows(
             "containers": 1 if container else 0,
             "billing-accounts": 1 if billing else 0,
             "usage-counters": usage,
-            "pending-updates": updates,
-            "channel-links": channels,
             "ws-connections": ws_conns,
         }
     }

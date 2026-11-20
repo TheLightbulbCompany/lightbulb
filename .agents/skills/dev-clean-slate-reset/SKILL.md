@@ -116,14 +116,13 @@ owner's AIPs — which is a good reason to use step 1 instead.
 
 Names are `lightbulb-{env}-*` (58 tables in the account; `database-stack.ts` is
 the list). The per-user ones a reset cares about are `containers`, `users`,
-`billing-accounts`, `paperclip-companies`, `usage-counters`, `pending-updates`,
-`channel-links`, `api-keys`, `ws-connections`, `messaging`, `integrations`,
-`oauth-tokens`, `bedrock-gate-tokens`.
+`billing-accounts`, `paperclip-companies`, `usage-counters`, `api-keys`,
+`ws-connections`, `messaging`, `integrations`, `oauth-tokens`,
+`bedrock-gate-tokens`.
 
 ```bash
 for t in lightbulb-dev-containers lightbulb-dev-users lightbulb-dev-billing-accounts \
          lightbulb-dev-paperclip-companies lightbulb-dev-usage-counters \
-         lightbulb-dev-pending-updates lightbulb-dev-channel-links \
          lightbulb-dev-api-keys lightbulb-dev-ws-connections lightbulb-dev-bedrock-gate-tokens; do
   keys=$(aws dynamodb describe-table --table-name "$t" \
     --query 'Table.KeySchema[].AttributeName' --output text)

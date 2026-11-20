@@ -48,7 +48,7 @@ EXPECTED_ORDER = [
     # containers row that holds the only pointers to them.
     "bedrock_gate_tokens",
     # One step for the whole runtime: the AgentCore runtime + boot secret, the S3 profile
-    # prefix (the owner's CONTENT on this transport), the containers row and channel-links.
+    # prefix (the owner's CONTENT on this transport), and the containers row.
     # No bedrock_aips / bedrock_role steps either: the owner's Bedrock footprint is reaped
     # inside it, by the shared reaper at the seam every teardown path crosses
     # (bedrock_aip.reap_owner_bedrock_resources).
@@ -66,10 +66,6 @@ EXPECTED_ORDER = [
     "paperclip_row",
     "billing_row",
     "user_row",
-    # Spec §3.6: open provisioning workflows are CANCELLED, never
-    # deprovisioned — and before the credential deletes, so a reader mid-step
-    # cannot re-land a secret the wipe already removed.
-    "provisioning",
     # Credential + identity leftovers: without these a "wiped" owner kept
     # their BYOK LLM keys, ChatGPT tokens and integration credentials in
     # Secrets Manager, their agent email addresses still routed inbound SES
@@ -222,10 +218,6 @@ def wipe_mocks():
     agent_email_delete = AsyncMock(return_value=["friday@acme.isol8.co"])
     slack_installs_list = AsyncMock(return_value=[{"team_id": "T1", "owner_id": "user_abc123"}])
     slack_installs_delete = AsyncMock(return_value=["T1"])
-    # One OPEN provisioning workflow by default, so the preview's
-    # would_delete sweep over EXPECTED_ORDER has something to report.
-    workflows_list = AsyncMock(return_value=[{"workflow_id": "pwf_1", "owner_id": OWNER_ID, "state": "provisioning"}])
-    workflows_transition = AsyncMock(return_value={"workflow_id": "pwf_1", "state": "cancelled"})
     slug_get = AsyncMock(return_value={"owner_id": "user_abc123", "slug": "acme"})
     slug_delete = AsyncMock(return_value="acme")
     # Real boto3 underneath — the moto-backed tests at the bottom of this file
@@ -275,8 +267,6 @@ def wipe_mocks():
         ("core.services.account_wipe.delete_owner_secrets", owner_secrets_delete),
         ("core.services.account_wipe.integrations_repo.list_for_owner", integrations_list),
         ("core.services.account_wipe.integrations_repo.delete_all_for_owner", integrations_delete),
-        ("core.services.account_wipe.provisioning_workflow_repo.list_for_owner", workflows_list),
-        ("core.services.account_wipe.provisioning_workflow_repo.transition", workflows_transition),
         ("core.services.account_wipe.revoke_user_oauth", oauth_revoke),
         ("core.services.account_wipe.agent_email_repo.query_by_owner", agent_email_query),
         ("core.services.account_wipe.agent_email_repo.delete_all_for_owner", agent_email_delete),
@@ -326,8 +316,6 @@ def wipe_mocks():
             clerk_delete=clerk_delete,
             owner_secrets_delete=owner_secrets_delete,
             integrations_delete=integrations_delete,
-            workflows_list=workflows_list,
-            workflows_transition=workflows_transition,
             oauth_revoke=oauth_revoke,
             agent_email_delete=agent_email_delete,
             slack_installs_list=slack_installs_list,
@@ -642,7 +630,6 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.paperclip_row_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.billing_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
-    wipe_mocks.workflows_list.side_effect = RuntimeError("ddb down")
     wipe_mocks.owner_secrets_delete.side_effect = RuntimeError("sm down")
     wipe_mocks.integrations_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.oauth_revoke.side_effect = RuntimeError("openai down")
@@ -870,7 +857,6 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
     wipe_mocks.paperclip_row_delete.assert_not_awaited()
     wipe_mocks.pending_brief_delete.assert_not_awaited()
     wipe_mocks.gate_tokens_delete.assert_not_awaited()
-    wipe_mocks.workflows_transition.assert_not_awaited()
     wipe_mocks.billing_delete.assert_not_awaited()
     wipe_mocks.user_delete.assert_not_awaited()
     wipe_mocks.clerk_delete.assert_not_awaited()

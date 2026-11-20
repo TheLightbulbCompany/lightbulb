@@ -156,28 +156,6 @@ def _create_tables(resource):
             {"AttributeName": "provider", "AttributeType": "S"},
         ],
     )
-    # provisioning-workflows: PK workflow_id, GSI owner-state-index (mirror
-    # database-stack.ts exactly).
-    _make(
-        f"{_PREFIX}provisioning-workflows",
-        [{"AttributeName": "workflow_id", "KeyType": "HASH"}],
-        [
-            {"AttributeName": "workflow_id", "AttributeType": "S"},
-            {"AttributeName": "owner_id", "AttributeType": "S"},
-            {"AttributeName": "state", "AttributeType": "S"},
-        ],
-        gsis=[
-            {
-                "IndexName": "owner-state-index",
-                "KeySchema": [
-                    {"AttributeName": "owner_id", "KeyType": "HASH"},
-                    {"AttributeName": "state", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            },
-        ],
-    )
-
     # tasks: PK pk, SK sk — the PUBLIC A2A Agent Card reads the workspace's
     # AGENT# roster rows, so the fuzzer needs the table to reach the real 404.
     _make(

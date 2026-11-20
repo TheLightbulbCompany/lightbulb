@@ -238,7 +238,6 @@ def _seam(monkeypatch, *, row, owed=None):
         return {}
 
     monkeypatch.setattr("core.billing.bedrock_aip.reap_owner_bedrock_resources", _reap)
-    monkeypatch.setattr("core.repositories.channel_link_repo.sweep_by_owner", AsyncMock(return_value=0))
 
     async def _wipe(owner_id):
         calls.append(f"memory:{owner_id}")
@@ -369,6 +368,18 @@ async def test_a_workspace_provisioned_again_mid_window_keeps_its_names(monkeypa
     assert deleted == [ROW["agentcore_runtime_arn"]]
     revoked.assert_awaited_once_with(["hash-1"])
     assert "try:True" not in calls and "runtime" not in calls and "secret" not in calls
+
+
+@pytest.mark.asyncio
+async def test_teardown_runs_without_channel_links(monkeypatch):
+    """The channel-links table is gone. The seam voice-plan cancel and the wipes share still
+    tears the runtime down and reaps, with no channel-links step left in it."""
+    import importlib.util
+
+    assert importlib.util.find_spec("core.repositories.channel_link_repo") is None
+    calls = _seam(monkeypatch, row=ROW)
+    assert await hermes_provisioning.delete_workspace_runtime("org_a") == ROW
+    assert calls == ["runtime", "reap"]
 
 
 @pytest.mark.asyncio

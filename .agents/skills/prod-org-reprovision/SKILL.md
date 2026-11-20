@@ -30,8 +30,7 @@ is "let the funnel run" and not a hand-rolled sequence.
 org/users, Stripe customer + subscription.
 
 **Wiped:** the AgentCore runtime, the boot secret, the gate-token rows, the
-owner's Bedrock AIPs + role, the `containers` row, `pending-updates`,
-`channel-links`, the Paperclip company in Aurora (cascades to agents/threads),
+owner's Bedrock AIPs + role, the `containers` row, the Paperclip company in Aurora (cascades to agents/threads),
 the Aurora Better Auth `user` rows for each org member, and all
 `paperclip-companies` DDB rows for the org.
 
@@ -65,7 +64,7 @@ TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "${SERVICE##*/}" \
 
 # 1-4: StopRuntimeSession -> DeleteAgentRuntime -> revoke the gate-token hash ->
 #      delete the boot secret -> delete the containers row -> reap the Bedrock
-#      footprint off its ALL_OLD image -> sweep channel_links. Profiles KEPT.
+#      footprint off its ALL_OLD image. Profiles KEPT.
 SCRIPT_B64=$(cat <<PYEOF | base64
 import asyncio
 from core.services.hermes_provisioning import delete_workspace_runtime

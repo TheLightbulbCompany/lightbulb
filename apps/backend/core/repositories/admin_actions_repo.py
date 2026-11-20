@@ -28,8 +28,7 @@ def _get_table():
 def _generate_action_id() -> str:
     """ULID-like ID: timestamp-prefixed, sortable, unique.
 
-    Same shape as update_repo._generate_ulid_like to keep the codebase
-    consistent (avoids pulling in a uuid6/ulid dependency).
+    Avoids pulling in a uuid6/ulid dependency.
     """
     ts_ms = int(time.time() * 1000)
     ts_hex = f"{ts_ms:012x}"

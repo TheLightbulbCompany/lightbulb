@@ -44,7 +44,6 @@ for them (see the inline notes at those call sites):
   spec #1  -> "paperclip_membership" (WorkspaceRepo.remove_member, per workspace)
   spec #2  -> gone (the Better Auth user lived in Paperclip's Aurora)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
-  (no spec row) -> "provisioning" (provisioning_workflow_repo.transition -> "cancelled")
   spec #3  -> "runtime"               (hermes_provisioning.delete_workspace_runtime)
   spec #4  -> folded into "runtime" (the S3 profile prefix IS the owner's content
               on this transport; there is no EFS tree left)
@@ -55,7 +54,7 @@ for them (see the inline notes at those call sites):
   spec #10 -> "stripe"                (billing_service.delete_stripe_customer)
   spec #11 -> "usage_counters" / "messaging" / "paperclip_row" /
               "billing_row" / "user_row"
-              (containers row + channel-links already folded into
+              (containers row already folded into
               "runtime" — see note below; "paperclip_row" also carries the
               owner's ``__pending_brief__:`` item, which lives in the SAME
               table under a prefixed key)
@@ -99,7 +98,6 @@ from core.repositories import (
     container_repo,
     integrations_repo,
     messaging_repo,
-    provisioning_workflow_repo,
     slack_installs_repo,
     usage_repo,
     user_repo,
@@ -400,10 +398,10 @@ def _runtime_detail(report: dict) -> str:
     """The runtime step's detail; "scheduled" when a parked member keeps the runtime a while."""
     if report.get("runtime") == "scheduled":
         return (
-            "containers row + channel-links removed; agentcore runtime + boot secret + S3 profiles "
+            "containers row removed; agentcore runtime + boot secret + S3 profiles "
             "teardown scheduled (after the cloud member forgets its entries, within a few minutes)"
         )
-    return "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
+    return "agentcore runtime + boot secret + S3 profiles + containers row removed"
 
 
 async def _step(steps: list[WipeStep], *, system: str, action: str, fn: Callable[[], Awaitable[str | None]]) -> None:
@@ -424,28 +422,6 @@ async def _step(steps: list[WipeStep], *, system: str, action: str, fn: Callable
 
 def _skip(steps: list[WipeStep], system: str, action: str, detail: str) -> None:
     steps.append(WipeStep(system=system, action=action, status="skipped", detail=detail))
-
-
-async def cancel_open_workflows(owner_id: str) -> tuple[int, int]:
-    """Cancel every non-terminal provisioning workflow — never deprovision.
-
-    The row is OUR durable memory of an ask, and closing it makes it terminal,
-    so no later read of it touches Stripe for this owner again. The provider
-    resources themselves are the owner's and are left standing (spec §3.6);
-    this is a pure DDB write and reaches no provider. Shared by the account
-    wipe and the owner's revoke-all. Returns (cancelled, open_count) — a
-    transition returning None means someone else moved the row first, which is
-    closed-or-moving either way and not an error here.
-    """
-    rows = await provisioning_workflow_repo.list_for_owner(owner_id)
-    open_rows = [r for r in rows if r.get("state") not in provisioning_workflow_repo.TERMINAL_STATES]
-    cancelled = 0
-    for row in open_rows:
-        if await provisioning_workflow_repo.transition(
-            row["workflow_id"], from_state=row["state"], to_state="cancelled"
-        ):
-            cancelled += 1
-    return cancelled, len(open_rows)
 
 
 async def _wipe_company_stripe(steps: list[WipeStep], *, owner_id: str) -> None:
@@ -542,7 +518,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         exists=ids.container is not None,
         detail_if_exists=(
             f"agentcore_runtime_arn={(ids.container or {}).get('agentcore_runtime_arn', '')} "
-            "(+ boot secret, S3 profiles, containers row, channel-links, "
+            "(+ boot secret, S3 profiles, containers row, "
             "and the Bedrock footprint: gate-token rows, AIPs, IAM role)"
         ),
         detail_if_absent=_org_hint_for_missing_container(ids.workspaces),
@@ -651,20 +627,6 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     # Credential + identity leftovers. A preview that omits these tells an
     # admin the credentials survive — the impression this report exists to
     # correct. All read-only.
-    open_workflows = [
-        r
-        for r in await provisioning_workflow_repo.list_for_owner(owner_id)
-        if r.get("state") not in provisioning_workflow_repo.TERMINAL_STATES
-    ]
-    _preview_step(
-        steps,
-        system="provisioning",
-        action="cancel_open_workflows",
-        exists=bool(open_workflows),
-        detail_if_exists=f"{len(open_workflows)} open provisioning workflow(s) would be cancelled (never deprovisioned)",
-        detail_if_absent="no open provisioning workflows",
-    )
-
     secret_names = await list_owner_secret_names(owner_id)
     _preview_step(
         steps,
@@ -803,8 +765,8 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     # delete the boot secret -> delete every object under ``<owner>/hermes/`` (spec #4's
     # "content" step, which on this transport IS the S3 profile prefix -- there is no EFS
     # tree or access point left) -> delete the containers row (part of spec #11) -> reap the
-    # owner's Bedrock footprint -> sweep channel-links rows. One WipeStep stands in for spec
-    # rows #3, #4, #5 and the containers-row/channel-links slice of #11.
+    # owner's Bedrock footprint. One WipeStep stands in for spec
+    # rows #3, #4, #5 and the containers-row slice of #11.
     if ids.container is not None:
 
         async def _s3() -> str:
@@ -885,7 +847,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     await _wipe_company_stripe(steps, owner_id=owner_id)
 
     # --- Step 9 (spec #11, remaining tables) -------------------------------
-    # containers + channel-links already removed inside step 3 above.
+    # containers already removed inside step 3 above.
 
     async def _s9a() -> str:
         count = await usage_repo.delete_all_for_owner(owner_id)
@@ -982,16 +944,6 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     # "wipe", and their agent email addresses kept routing inbound SES mail
     # at an owner that no longer existed. Unconditional and idempotent —
     # each no-ops on an empty set.
-
-    # Any provisioning workflow still in flight is CANCELLED — never
-    # deprovisioned (see cancel_open_workflows' docstring). It
-    # runs BEFORE the credential deletes below so a reader mid-step cannot land
-    # a fresh secret after those have already run.
-    async def _s9e2() -> str:
-        cancelled, open_count = await cancel_open_workflows(owner_id)
-        return f"cancelled {cancelled} of {open_count} open provisioning workflow(s)"
-
-    await _step(steps, system="provisioning", action="cancel_open_workflows", fn=_s9e2)
 
     async def _s9f() -> str:
         names = await delete_owner_secrets(owner_id)

@@ -1,6 +1,6 @@
 """Tests for admin-actions DynamoDB repository.
 
-Mirrors test_update_repo style — moto mock_aws + table create + patch
+moto mock_aws + table create + patch
 core.dynamodb internals.
 """
 

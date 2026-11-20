@@ -23,7 +23,7 @@ This module snapshots by ORG id instead:
   ``status="failed"`` and execution CONTINUES, Clerk deletes last).
 
 Layers (each independently selectable): ``runtime`` (gate tokens, AgentCore
-runtime + S3 profiles + containers row, provisioning workflows,
+runtime + S3 profiles + containers row,
 usage counters), ``paperclip`` (the workspace row + deleted members'
 identity rows + pending briefs, old agent-key secrets), ``messaging``
 (room partitions + owner partition), ``secrets`` (owner secrets, OpenRouter
@@ -97,7 +97,6 @@ from core.repositories import (
     integrations_repo,
     messaging_repo,
     openrouter_key_repo,
-    provisioning_workflow_repo,
     slack_installs_repo,
     usage_repo,
     user_repo,
@@ -115,7 +114,6 @@ from core.services.account_wipe import (
     _runtime_detail,
     _skip,
     _step,
-    cancel_open_workflows,
 )
 from core.services.billing_service import delete_stripe_customer
 from core.services.credentials import integration_secret_store
@@ -225,7 +223,6 @@ class WorkspaceSnapshot:
     email_rows: list[dict]
     slack_rows: list[dict]
     slug_row: dict | None
-    open_workflows: list[dict]
     gate_hashes: list[str]
     join_link: dict | None = None
     openrouter_row: dict | None = None
@@ -307,8 +304,6 @@ async def _read_workspace_snapshot(
     email_rows = await agent_email_repo.query_by_owner(org_id)
     slack_rows = await slack_installs_repo.list_for_owner(org_id)
     slug_row = await company_slug_repo.get_by_owner(org_id)
-    workflows = await provisioning_workflow_repo.list_for_owner(org_id)
-    open_workflows = [r for r in workflows if r.get("state") not in provisioning_workflow_repo.TERMINAL_STATES]
     org = await clerk_admin.get_organization(org_id)
     snapshot = WorkspaceSnapshot(
         org_id=org_id,
@@ -322,7 +317,6 @@ async def _read_workspace_snapshot(
         email_rows=email_rows,
         slack_rows=slack_rows,
         slug_row=slug_row,
-        open_workflows=open_workflows,
         gate_hashes=owner_gate_token_hashes(container),
         join_link=await workspace_join_repo.get_link(org_id),
         openrouter_row=await openrouter_key_repo.get(org_id),
@@ -357,7 +351,6 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
         "agent_emails": sorted(r.get("address", "?") for r in snapshot.email_rows),
         "slack_teams": sorted(r.get("team_id", "?") for r in snapshot.slack_rows),
         "slug": (snapshot.slug_row or {}).get("slug", ""),
-        "open_workflows": sorted(r.get("workflow_id", "?") for r in snapshot.open_workflows),
         "gate_hash_count": len(snapshot.gate_hashes),
         "join_link": snapshot.join_link is not None,
         "openrouter_state": (snapshot.openrouter_row or {}).get("state", ""),
@@ -451,7 +444,7 @@ def _runtime_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
     arn = (snap.container or {}).get("agentcore_runtime_arn", "")
     return True, (
         f"agentcore_runtime_arn={arn} (+ boot secret, S3 profiles under "
-        f"{snap.org_id}/hermes/, containers row, channel-links, Bedrock footprint)"
+        f"{snap.org_id}/hermes/, containers row, Bedrock footprint)"
     )
 
 
@@ -595,11 +588,6 @@ async def _user_rows_run(snap: WorkspaceSnapshot) -> str:
     if not members:
         return "no users rows for workspace"
     return f"deleted {len(members)} users row(s)"
-
-
-async def _provisioning_run(snap: WorkspaceSnapshot) -> str:
-    cancelled, open_count = await cancel_open_workflows(snap.org_id)
-    return f"cancelled {cancelled} of {open_count} open provisioning workflow(s)"
 
 
 def _owner_secrets_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
@@ -842,17 +830,6 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
             else (False, "no users rows for workspace")
         ),
         _user_rows_run,
-    ),
-    WorkspaceStepDef(
-        "provisioning",
-        "cancel_open_workflows",
-        LAYER_RUNTIME,
-        lambda snap: (
-            (True, f"{len(snap.open_workflows)} open provisioning workflow(s) would be cancelled (never deprovisioned)")
-            if snap.open_workflows
-            else (False, "no open provisioning workflows")
-        ),
-        _provisioning_run,
     ),
     WorkspaceStepDef(
         "owner_secrets", "delete_owner_secrets", LAYER_SECRETS, _owner_secrets_preview, _owner_secrets_run

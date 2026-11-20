@@ -42,14 +42,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         },
     ),
     "usage-counters": ([("owner_id", "HASH", "S"), ("period", "RANGE", "S")], {}),
-    "pending-updates": (
-        [("owner_id", "HASH", "S"), ("update_id", "RANGE", "S")],
-        {"status-index": [("status", "HASH", "S"), ("scheduled_at", "RANGE", "S")]},
-    ),
-    "channel-links": (
-        [("owner_id", "HASH", "S"), ("sk", "RANGE", "S")],
-        {"by-member": [("member_id", "HASH", "S"), ("owner_provider_agent", "RANGE", "S")]},
-    ),
     "company-slugs": ([("slug", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
     "agent-email-addresses": ([("address", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
     "slack-installs": ([("team_id", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
@@ -71,10 +63,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     "oauth-tokens": ([("user_id", "HASH", "S")], {}),
     "oauth-state": ([("state", "HASH", "S")], {}),
     "integrations": ([("owner_id", "HASH", "S"), ("provider", "RANGE", "S")], {}),
-    "provisioning-workflows": (
-        [("workflow_id", "HASH", "S")],
-        {"owner-state-index": [("owner_id", "HASH", "S"), ("state", "RANGE", "S")]},
-    ),
     "workspace-join-links": ([("org_id", "HASH", "S")], {}),
     # The public A2A Agent Card reads the workspace's AGENT# roster rows here.
     "tasks": ([("pk", "HASH", "S"), ("sk", "RANGE", "S")], {}),

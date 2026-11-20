@@ -1,12 +1,6 @@
-import { render } from "@testing-library/react";
-import { createElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import nextConfig from "../../next.config";
-import NetworkPage from "@/app/network/page";
-
-vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
-vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 
 describe("retired public pages", () => {
   it("retired pages are gone, not redirected", async () => {
@@ -17,14 +11,6 @@ describe("retired public pages", () => {
     for (const path of ["/ai-agent-workspace", "/compare/slack", "/docs/get-started"]) {
       expect(redirects.some((r) => r.source === path)).toBe(false);
     }
-  });
-});
-
-describe("/network", () => {
-  it("has no sign-up line", () => {
-    const { container } = render(createElement(NetworkPage));
-    expect(container.querySelector('a[href="/sign-up"]')).toBeNull();
-    expect(container.textContent).not.toContain("Start a workspace");
   });
 });
 

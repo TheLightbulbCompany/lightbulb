@@ -20,64 +20,6 @@ const agentId = "22222222-2222-4222-8222-222222222222";
 const messageId = "33333333-3333-4333-8333-333333333333";
 
 describe("messaging HTTP client", () => {
-  it("opens a session's chat through its own door", async () => {
-    const { client, methods } = setup();
-    await client.openSessionChat("sess 1");
-    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/sess%201/chat", {});
-  });
-
-  it("reads Activity with an opaque cursor, marks it seen and runs one escaped action door", async () => {
-    const { client, methods } = setup();
-    await client.listActivity();
-    await client.listActivity({ cursor: "MjAyNi0wOS0yNA", limit: 50 });
-    await client.markActivitySeen("2026-09-24T10:00:00Z");
-    await client.runActivityAction("paperclip:approval:ap-1", "approve", { note: "go" });
-    await client.runActivityAction("mention:m:r:1", "mark_done");
-    expect(methods.get.mock.calls).toEqual([
-      ["/messaging/activity"],
-      ["/messaging/activity?cursor=MjAyNi0wOS0yNA&limit=50"],
-    ]);
-    expect(methods.post.mock.calls).toEqual([
-      ["/messaging/activity/seen", { upTo: "2026-09-24T10:00:00Z" }],
-      ["/messaging/activity/paperclip%3Aapproval%3Aap-1/actions/approve", { note: "go" }],
-      ["/messaging/activity/mention%3Am%3Ar%3A1/actions/mark_done", {}],
-    ]);
-  });
-
-  it("removes one ended session with DELETE", async () => {
-    const { client, methods } = setup();
-    methods.del.mockResolvedValue({ removed: 0 } as never);
-    await client.removeLocalSession("session/b");
-    expect(methods.del.mock.calls).toEqual([["/messaging/sessions/session%2Fb"]]);
-  });
-
-  it("uses workspace-scoped session routes and preserves command identity with escaped path segments", async () => {
-    const { client, methods } = setup();
-    const command = { requestId: "request-1", expectedGeneration: "generation-1", kind: "send" as const, text: "continue" };
-    await client.listLocalSessionEvents("session/b", 3, 20);
-    await client.submitLocalSessionCommand("session/b", command);
-    await client.submitLocalSessionCommand("session/b", command, "old/request");
-    await client.getLocalSessionCommand("session/b", "request/c");
-    await client.listLocalSessionOutbox("session/b");
-    await client.cancelLocalSessionCommand("session/b", "request/c");
-    expect(methods.get.mock.calls).toEqual([
-      ["/messaging/sessions/session%2Fb/events?afterSeq=3&limit=20"],
-      ["/messaging/sessions/session%2Fb/commands/request%2Fc"],
-      ["/messaging/sessions/session%2Fb/outbox"],
-    ]);
-    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands", command);
-    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands?replacesRequestId=old%2Frequest", command);
-    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands/request%2Fc/cancel", {});
-  });
-
-  it("addresses resume and its revocation", async () => {
-    const { client, methods } = setup();
-    await client.resumeLocalSession("s/1", { resumeId: "r-1", message: "go on" });
-    await client.revokeLocalSessionResume("s/1", "user/bob");
-    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/s%2F1/resume", { resumeId: "r-1", message: "go on" });
-    expect(methods.del).toHaveBeenCalledWith("/messaging/sessions/s%2F1/resume-allowed/user%2Fbob");
-  });
-
   it("uses the frozen read endpoints and sequence query", async () => {
     const { client, methods } = setup();
     await client.getLiveConfig();
@@ -274,25 +216,4 @@ it("cancels history immediately and skips an already-cancelled read", async () =
   await expect(read).rejects.toThrow("cancelled");
   await expect(client.listMessages(roomId, 0, 100, { signal: controller.signal })).rejects.toThrow("cancelled");
   expect(get).toHaveBeenCalledTimes(1);
-});
-
-it("keeps a running session's live terminal coming by posting /viewing", async () => {
-  const post = vi.fn(async () => undefined);
-  const client = createMessagingClient({ post } as unknown as ApiMethods);
-  await client.watchLocalSession("s 1");
-  expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/viewing", {});
-  await client.watchLocalSession("s 1", true); // a view that just mounted
-  expect(post).toHaveBeenLastCalledWith("/messaging/sessions/s%201/viewing", { fresh: true });
-});
-
-it("posts an admitted viewer's keystrokes with the screen epoch to /input", async () => {
-  const post = vi.fn(async () => undefined);
-  const client = createMessagingClient({ post } as unknown as ApiMethods);
-  await client.sendLocalSessionInput("s 1", "aGk=", 3);
-  expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/input", { data: "aGk=", epoch: 3 });
-  // The panel's size, alone or with keys (owner ruling 2026-10-14).
-  await client.sendLocalSessionInput("s 1", "", 3, { cols: 120, rows: 40, claim: true });
-  expect(post).toHaveBeenLastCalledWith("/messaging/sessions/s%201/input", { epoch: 3, size: { cols: 120, rows: 40, claim: true } });
-  await client.sendLocalSessionInput("s 1", "aGk=", 3, { cols: 120, rows: 40, claim: true });
-  expect(post).toHaveBeenLastCalledWith("/messaging/sessions/s%201/input", { data: "aGk=", epoch: 3, size: { cols: 120, rows: 40, claim: true } });
 });

@@ -14,7 +14,7 @@ from urllib.parse import quote
 from typing import Annotated, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.observability.metrics import put_metric
@@ -27,7 +27,7 @@ from core.auth import (
 )
 from core.config import settings
 from core.repositories import container_repo, messaging_repo, user_repo
-from core.services import activity, chat_gate
+from core.services import chat_gate
 from core.services import messaging as service
 from core.services import (
     a2a_tasks,
@@ -289,35 +289,6 @@ async def agent_local_session_events(
 
 _typing_last: dict[tuple[str, str], float] = {}
 
-# Presence: who has a tab open and in use in this workspace. Clients heartbeat
-# while the tab is visible and recently used; readers poll the snapshot. Kept
-# in-process on purpose -- the backend runs one task, and there is no room-wide
-# live channel to push it over (room events are per-room subscriptions).
-# ponytail: a backend restart shows everyone offline until their next heartbeat
-# (<= 45s), and a rolling deploy (two tasks for a minute or two, no shared
-# state, no stickiness on this endpoint) makes the dot flicker for that window;
-# move to a shared table if either ever matters.
-PRESENCE_TTL_SECONDS = 90.0
-_presence_last: dict[str, dict[str, float]] = {}
-
-
-def _online_user_ids(owner_id: str, now: float) -> list[str]:
-    seen = _presence_last.get(owner_id, {})
-    for stale in [user_id for user_id, ts in seen.items() if now - ts > PRESENCE_TTL_SECONDS]:
-        del seen[stale]
-    return sorted(seen)
-
-
-@router.post("/messaging/presence", status_code=204)
-async def presence_heartbeat(auth: AuthContext = Depends(get_current_user)):
-    _presence_last.setdefault(resolve_owner_id(auth), {})[auth.user_id] = time.monotonic()
-    return Response(status_code=204)
-
-
-@router.get("/messaging/presence")
-async def presence_snapshot(auth: AuthContext = Depends(get_current_user)) -> dict[str, list[str]]:
-    return {"online": _online_user_ids(resolve_owner_id(auth), time.monotonic())}
-
 
 def _count_hook_auth_failure(owner_id: str) -> None:
     """Counted so that silence pages; the owner goes to the log (never a metric dimension)."""
@@ -384,34 +355,6 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
 @router.get("/messaging/rooms", response_model=RoomListResponse)
 async def list_rooms(auth: AuthContext = Depends(get_current_user)):
     return await service.list_rooms(auth)
-
-
-@router.get("/messaging/activity", response_model=activity.ActivityPage)
-async def list_activity(
-    cursor: Annotated[str | None, Query(max_length=512)] = None,
-    limit: Annotated[int, Query(ge=1, le=activity.MAX_LIMIT)] = activity.DEFAULT_LIMIT,
-    auth: AuthContext = Depends(get_current_user),
-):
-    """The viewer's Activity feed: mentions, DMs, thread replies, and (page 1 only) the open Questions."""
-    return await activity.list_activity(auth, cursor=cursor, limit=limit)
-
-
-@router.post("/messaging/activity/seen", response_model=activity.ActivitySeenResponse)
-async def mark_activity_seen(body: activity.ActivitySeenRequest, auth: AuthContext = Depends(get_current_user)):
-    return await activity.mark_seen(auth, body)
-
-
-@router.post("/messaging/activity/{item_id}/actions/{action_id}", response_model=activity.ActivityItem)
-async def run_activity_action(
-    # 320 covers the longest id: an agent ask's `agentmsg:<36-char session>:<request id up to 256>`.
-    # The session stays in it because an agent's request id is unique per session, not per workspace.
-    item_id: Annotated[str, Path(max_length=320)],
-    action_id: Annotated[str, Path(pattern=r"^[a-z_]{1,40}$")],
-    body: activity.ActivityActionRequest | None = None,
-    auth: AuthContext = Depends(get_current_user),
-):
-    """One door for every Activity action; the backend maps it to the real call."""
-    return await activity.run_action(auth, item_id, action_id, body or activity.ActivityActionRequest())
 
 
 @router.put("/messaging/me/sections", response_model=RoomListResponse)

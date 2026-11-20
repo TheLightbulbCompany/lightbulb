@@ -58,7 +58,7 @@ describe("/os", () => {
 });
 
 // The founder's own wording (20 Nov): the one bold headline allowed to say "AI".
-const HUB_H1_AI_EXCEPTION = "The number one voice AI application company.";
+const HUB_H1_AI_EXCEPTION = "The voice AI application company.";
 
 describe("/", () => {
   it("leads with the company line and links to all three products", () => {
@@ -92,7 +92,7 @@ describe("/", () => {
     fireEvent.click(screen.getByRole("link", { name: /Set up Lightbulb Phone/ }));
     expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hub_sign_up"]);
     expect(hubMeta.alternates?.canonical).toBe("https://thelightbulb.company/");
-    expect(hubMeta.title).toBe("The Number One Voice AI Application Company | Lightbulb");
+    expect(hubMeta.title).toBe("The Voice AI Application Company | Lightbulb");
     expect(String(hubMeta.description)).not.toMatch(/salon|receptionist/i);
   });
 });

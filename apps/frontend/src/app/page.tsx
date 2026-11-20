@@ -36,7 +36,7 @@ export default function HomePage() {
       <JsonLd data={hubJsonLd} />
       <Navbar />
       <Hero
-        title="The number one voice AI application company."
+        title="The voice AI application company."
         sub="Lightbulb makes assistants you talk to. Lightbulb Phone answers your business line and books appointments. Lightbulb Meetings joins your Google Meet and keeps the notes. Lightbulb OS is a voice app for the Mac."
         ctas={<HubCtas />}
       />

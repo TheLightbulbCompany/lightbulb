@@ -29,7 +29,7 @@ describe('search metadata', () => {
   });
 
   it('gives / the company title and names the three products', () => {
-    expect(HOME_TITLE).toBe('The Number One Voice AI Application Company | Lightbulb');
+    expect(HOME_TITLE).toBe('The Voice AI Application Company | Lightbulb');
     expect(HOME_TITLE.length).toBeLessThanOrEqual(60);
     expect(HOME_DESCRIPTION).toBe(
       'Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Lightbulb OS is a voice app for the Mac.',

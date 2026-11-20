@@ -11,7 +11,7 @@ export const OG_IMAGE = "/og-lightbulb.png";
 export const SITE_TITLE = "Lightbulb";
 export const SITE_DESCRIPTION =
   "Lightbulb makes voice assistants: Lightbulb Phone, Lightbulb Meetings and Lightbulb OS.";
-export const HOME_TITLE = "The Number One Voice AI Application Company | Lightbulb";
+export const HOME_TITLE = "The Voice AI Application Company | Lightbulb";
 export const HOME_DESCRIPTION =
   "Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Lightbulb OS is a voice app for the Mac.";
 export const PHONE_TITLE = "AI Receptionist for Salons, Spas & Barbershops | Lightbulb";

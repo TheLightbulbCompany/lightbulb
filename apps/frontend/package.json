@@ -59,7 +59,7 @@
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
-    "eslint-plugin-boundaries": "^6.0.2",
+    "eslint-plugin-boundaries": "^7.4.4",
     "jsdom": "^25.0.1",
     "msw": "^2.2.0",
     "tailwindcss": "^4",

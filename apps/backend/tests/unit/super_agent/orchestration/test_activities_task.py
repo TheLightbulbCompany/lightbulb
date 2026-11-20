@@ -942,3 +942,19 @@ async def test_a_notes_trigger_the_router_could_not_answer_marks_the_meeting(mon
     trig["routedTo"] = {"taskId": "t1"}  # its task did start: that task's end marks the meeting
     await acts.apply_fallback(WS, [trig["triggerId"]])
     marked.assert_not_awaited()
+
+
+async def test_retry_without_notes_request_fails_without_running_worker(world, monkeypatch):
+    """Codex P2 on #5288: a Retry after the notes request expired (2 days) ran a Worker with no transcript."""
+    from core.services import meeting_notes, room_memory
+
+    monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))
+    tid = await _task(triggerId=f"meeting-notes:{ROOM}:1")
+    ref = await _attempt(tid)
+    out = await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    assert (out.outcome, out.error) == ("failed", "TranscriptUnavailable")
+    assert world["runs"] == []  # no Worker run: no model call
+    assert any(p["text"] == meeting_notes.TRANSCRIPT_GONE for p in world["posts"])  # the owner reads why
+    await acts.end_attempt(WS, tid, 1, out.outcome, out.error)
+    assert (await repo.get_task(WS, tid))["status"] == "failed"

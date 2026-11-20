@@ -443,7 +443,20 @@ async def worker_turn(inp: WorkerTurnIn) -> WorkerTurnOut:
     await tasks_repo.update_attempt(
         inp.ws, inp.task_id, inp.n, {"taskToken": token}, allowed_status=frozenset({"dispatched", "running"})
     )
-    request = await _request(inp.ws, tree["task"], att, tree)
+    from core.services import meeting_notes
+
+    try:
+        request = await _request(inp.ws, tree["task"], att, tree)
+    except meeting_notes.TranscriptUnavailable as exc:  # a notes task with nothing to read: no run, no inference
+        await task_conversation.ensure_task_room(inp.ws, tree["task"])
+        await task_conversation.post_as_lightbulb(
+            inp.ws,
+            ts.task_room_id(inp.task_id),
+            text=str(exc),
+            event_id=f"task-no-transcript:{inp.task_id}:{inp.n}",
+            remember=False,
+        )
+        return WorkerTurnOut("failed", "TranscriptUnavailable")
     fake_ms = super_agent_faults.fault("fake_worker")
     if fake_ms is not None:  # dev fault hook: no bridge run, a canned result after `ms`
         await asyncio.sleep(int(fake_ms or 0) / 1000)

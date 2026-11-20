@@ -815,3 +815,12 @@ async def test_keep_failure_after_retries_marks_no_notes(env, caplog):
     assert not env.requests[TRIG].get("mailAttemptedAt")  # a Retry that succeeds still keeps them
     await mod.on_task_moved(notes_task(status="resolved"), "resolved")  # the quiet resolve: no second pass
     assert "notes" not in env.meta["meeting"]
+
+
+async def test_an_expired_notes_request_ends_quietly(env, monkeypatch):
+    monkeypatch.setattr(mod.messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))
+    with pytest.raises(mod.TranscriptUnavailable):
+        await mod.worker_transcript("org_1", TRIG)
+    await task_done(env, to="failed")  # the meeting record's request is gone: nothing to mark, no error
+    assert "notesMailedAt" not in env.meta["meeting"]
+    assert not [c for c in env.metric.call_args_list if c.args and c.args[0] == "meeting.notes.mail_failed"]

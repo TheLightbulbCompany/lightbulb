@@ -29,6 +29,17 @@ NOTES_PREFIX = "meeting-notes:"
 #: The transcript's share of the Worker's input. The bridge refuses an input over 200 KB (bridge/runs.py
 #: MAX_INPUT_BYTES); the brief, the time and the connected apps share the rest.
 TRANSCRIPT_MAX_BYTES = 150 * 1024
+#: What the owner reads when a notes task cannot get its transcript (a Retry after the request expired).
+TRANSCRIPT_GONE = "The transcript for this meeting is no longer available, so notes can't be written."
+
+
+class TranscriptUnavailable(RuntimeError):
+    """A notes task with no transcript to read: it fails before any Worker run (activities.worker_turn)."""
+
+    def __init__(self) -> None:
+        super().__init__(TRANSCRIPT_GONE)
+
+
 #: The first line of notes written from a cut transcript.
 CUT_LINE = "These notes cover only the last part of a long meeting: the start of its transcript was too long to read."
 
@@ -274,15 +285,18 @@ def _transcript_room(request: dict) -> str:
 async def worker_transcript(owner_id: str, request_id: str) -> str | None:
     """The notes Worker's ``## Transcript`` (activities._request), read from the attachment the request names.
     Over ``TRANSCRIPT_MAX_BYTES`` the start is cut at a line and the end kept whole (decisions and action items
-    come late), and the Worker is told. None for any other task. Raises when the attachment cannot be read: notes
-    written without it would be invented."""
+    come late), and the Worker is told. None for any other task. Raises ``TranscriptUnavailable`` when the request
+    has expired (2 days) or the attachment cannot be read: notes written without it would be invented."""
     if not request_id.startswith(NOTES_PREFIX):
         return None
     request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
     attachment = ((request or {}).get("meeting") or {}).get("transcriptId")
     if not attachment:
-        return None
-    _, raw = await run_in_thread(messaging.load_attachment, owner_id, _transcript_room(request), attachment)
+        raise TranscriptUnavailable()
+    try:
+        _, raw = await run_in_thread(messaging.load_attachment, owner_id, _transcript_room(request), attachment)
+    except (messaging.ApiProblem, ValueError, OSError) as exc:
+        raise TranscriptUnavailable() from exc
     if len(raw) <= TRANSCRIPT_MAX_BYTES:
         return f"## Transcript\n{raw.decode('utf-8', 'replace')}"
     # ponytail: a meeting over ~150 KB of talk (about 3 hours) loses its start; a paged reader tool if that bites.

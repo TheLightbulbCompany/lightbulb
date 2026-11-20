@@ -339,7 +339,7 @@ async def on_task_moved(task: dict, to: str) -> None:
         return
     try:
         request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
-        if request is None or request.get("mailAttemptedAt") or request.get("taskId") != task.get("taskId"):
+        if request is None or request.get("taskId") != task.get("taskId"):
             return
         notes = None
         if to == "idle":
@@ -349,12 +349,30 @@ async def on_task_moved(task: dict, to: str) -> None:
                 if a.get("outcome") == "completed" and (a.get("output") or "").strip()
             ]  # fmt: skip
             notes = max(done, key=lambda a: a["n"])["output"] if done else None
-            if notes and await _was_cut(owner_id, request):
-                notes = f"{CUT_LINE}\n\n{notes}"
-        await _keep_notes(owner_id, request_id, request, notes=notes)
+        if request.get("mailAttemptedAt") and not notes:
+            return  # already ended; only a later attempt's notes (a Retry after a failure) still land
+        if notes and await _was_cut(owner_id, request):
+            notes = f"{CUT_LINE}\n\n{notes}"
+        await _keep_notes(owner_id, request_id, request, notes=notes)  # writes the notes once, whatever repeats
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
         logger.warning("meeting notes keep failed for %s", request_id, exc_info=True)
+
+
+async def on_not_started(owner_id: str, trigger: dict) -> None:
+    """The Router took a notes trigger and started no task (the credit gate, or a batch that failed past its
+    retries: activities._apply / apply_fallback): the meeting ends with no notes, as a failed task does, instead of
+    reading "pending" for ever. Never raises."""
+    request_id = str(trigger.get("triggerId") or "")
+    if not request_id.startswith(NOTES_PREFIX):
+        return
+    try:
+        request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
+        if request is not None and not request.get("mailAttemptedAt"):
+            await _keep_notes(owner_id, request_id, request, notes=None)
+    except Exception:  # noqa: BLE001
+        put_metric("meeting.notes.mail_failed")
+        logger.warning("meeting notes not-started mark failed for %s", request_id, exc_info=True)
 
 
 _ACTIONS_HEAD = re.compile(r"^\W*action items\W*$", re.I)

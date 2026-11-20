@@ -906,8 +906,11 @@ async def test_a_meeting_notes_worker_gets_the_transcript(monkeypatch):
     task = {"taskId": ts.new_task_id(), "title": "Meeting notes: Sync", "description": "Write the meeting notes",
             "triggerId": f"meeting-notes:{ROOM}:1", "audience": {"kind": "room", "roomId": ROOM}, "lane": "shared"}  # fmt: skip
     att, tree = {"n": 1, "inputTriggerIds": []}, {"attempts": []}
-    assert (await acts._request(WS, task, att, tree)).input.endswith("## Transcript\n[10:00] Pat: hi\n")
-    assert "## Transcript" not in (await acts._request(WS, task | {"triggerId": "chat:m1"}, att, tree)).input
+    notes = await acts._request(WS, task, att, tree)
+    assert notes.input.endswith("## Transcript\n[10:00] Pat: hi\n")
+    assert notes.memory["sync"] == "none"  # raw meeting speech never reaches team memory
+    other = await acts._request(WS, task | {"triggerId": "chat:m1"}, att, tree)
+    assert "## Transcript" not in other.input and other.memory["sync"] != "none"
     block.assert_awaited_once()  # only a notes task reads one
 
 
@@ -922,3 +925,20 @@ async def test_every_end_of_a_task_reaches_the_meeting_notes_keep(monkeypatch, t
     monkeypatch.setattr(meeting_notes, "on_task_moved", keep)
     await acts._announce(WS, "t1", to, reason)
     keep.assert_awaited_once_with(task, to)
+
+
+async def test_a_notes_trigger_the_router_could_not_answer_marks_the_meeting(monkeypatch):
+    """Task 7 review: a batch that failed past its retries started no notes task; the meeting must not stay pending."""
+    from core.services import meeting_notes
+
+    trig = {"triggerId": f"meeting-notes:{ROOM}:1", "admission": "respond", "ref": {"deliverRoomId": ROOM}}
+    monkeypatch.setattr(repo, "get_trigger", AsyncMock(return_value=trig))
+    monkeypatch.setattr(acts, "_deliver", AsyncMock(return_value=None))
+    marked = AsyncMock()
+    monkeypatch.setattr(meeting_notes, "on_not_started", marked)
+    await acts.apply_fallback(WS, [trig["triggerId"]])
+    marked.assert_awaited_once_with(WS, trig)
+    marked.reset_mock()
+    trig["routedTo"] = {"taskId": "t1"}  # its task did start: that task's end marks the meeting
+    await acts.apply_fallback(WS, [trig["triggerId"]])
+    marked.assert_not_awaited()

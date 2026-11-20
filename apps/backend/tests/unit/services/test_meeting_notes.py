@@ -721,3 +721,25 @@ async def test_long_transcript_is_cut_from_start_and_flagged(env, monkeypatch, c
     assert "line 19999" not in warning.getMessage()  # sizes, never transcript text
     await task_done(env)
     assert env.meta["meeting"]["notes"] == f"{mod.CUT_LINE}\n\n{NOTES}"  # the stored notes say so
+
+
+async def test_retry_after_failure_keeps_notes(env):
+    """A failed notes task spends the claim with no notes; a person's Retry that succeeds still stores them."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    await task_done(env, to="failed")
+    assert env.requests[TRIG]["mailAttemptedAt"] and "notes" not in env.meta["meeting"]
+    await task_done(env, DECIDED)  # the Retry's attempt is done
+    assert env.meta["meeting"]["notes"] == DECIDED and len(env.meta["meeting"]["decisions"]) == 2
+    await task_done(env, "a later attempt's other text")
+    assert env.meta["meeting"]["notes"] == DECIDED  # written once
+
+
+async def test_a_notes_trigger_the_router_never_started_marks_no_notes(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    await mod.on_not_started("org_1", {"triggerId": "chat:other"})  # not a notes trigger
+    assert "notesMailedAt" not in env.meta["meeting"]
+    await mod.on_not_started("org_1", {"triggerId": TRIG})
+    assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
+    assert env.requests[TRIG]["mailAttemptedAt"]

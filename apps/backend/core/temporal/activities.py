@@ -423,6 +423,7 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         from core.services import meeting_notes  # the notes task's transcript, read by reference (Task 7)
 
         parts.append(await meeting_notes.worker_transcript(ws, task["triggerId"]) or "")
+        memory["sync"] = "none"  # raw meeting speech never syncs into team memory, as a phone caller's words
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS + (CALLER_THREAD_NOTE if contact else ""),
@@ -1298,6 +1299,9 @@ async def _apply(
             )
             if gate.get("blocked"):  # §14.10: today's failure copy, no task
                 sl["lines"].append(gate.get("message") or router_prompt.FALLBACK)
+                from core.services import meeting_notes  # a notes trigger with no task: the meeting has no notes
+
+                await meeting_notes.on_not_started(ws, trig)
                 continue
             try:
                 await _ensure_task(
@@ -1765,6 +1769,10 @@ async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
             # Work already started for it (its ack and cards are posted): say only that the rest did not start.
             line = router_prompt.PARTIAL if (trig.get("routedTo") or {}).get("taskId") else router_prompt.FALLBACK
             await _deliver(ws, trig, line, event_id=f"router-fallback:{tid}", refs=None, remember=False)
+            if not (trig.get("routedTo") or {}).get("taskId"):
+                from core.services import meeting_notes  # a notes trigger with no task: the meeting has no notes
+
+                await meeting_notes.on_not_started(ws, trig)
         elif trig:  # a candidate gets no line: its "reading…" ends now, not on the client's timer (walk 15)
             await _read_quietly(ws, trig)
 

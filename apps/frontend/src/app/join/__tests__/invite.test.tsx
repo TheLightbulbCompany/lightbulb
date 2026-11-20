@@ -44,7 +44,7 @@ describe("/join/invite", () => {
 
   it("opens the app for an invitation already used", async () => {
     await renderPage({ __clerk_status: "complete" });
-    expect(screen.getByRole("link", { name: "Open Lightbulb" })).toHaveAttribute("href", "/chat");
+    expect(screen.getByRole("link", { name: "Open Lightbulb" })).toHaveAttribute("href", "/voice");
   });
 
   it("names the decision and sends the new teammate to Activity (Needs you) after sign-up", async () => {

@@ -255,3 +255,9 @@ async def test_say_posts_one_chat_line_to_everyone(recall):
     await meeting_bots.say("bot-1", "x" * 600)
     assert calls[0].method == "POST" and calls[0].url.path == "/api/v1/bot/bot-1/send_chat_message/"
     assert json.loads(calls[0].content) == {"to": "everyone", "message": "x" * 500}
+
+
+def test_is_own_bot_knows_both_names_and_not_a_person():
+    assert meeting_bots.is_own_bot("Acme assistant · Lightbulb")
+    assert meeting_bots.is_own_bot("Acme agents · Lightbulb ")  # booked before the rename
+    assert not meeting_bots.is_own_bot("Sam · Lightbulb")

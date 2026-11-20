@@ -53,7 +53,7 @@ class MeetBridge:
         except (ValueError, TypeError, KeyError, AttributeError):
             return
         name = " ".join(str(who.get("name") or "").split())
-        if name.endswith(meeting_bots._BOT_SUFFIX.strip()) or who.get("is_bot"):
+        if meeting_bots.is_own_bot(name) or who.get("is_bot"):
             return  # the bot's own seat is the page (meetbot:), never a person
         try:
             if event == "participant_events.leave":

@@ -25,9 +25,9 @@ _REASONS = {
     "timeout": "the meeting-bot service didn't answer",
     "bad_response": "the meeting-bot service sent an unreadable answer",
 }
-_BOT_SUFFIX = " · Lightbulb"  # the tail of the old name too, so bots booked as "Acme agents · Lightbulb" still match
-_BOT_ROLE = " assistant"
-# Recall caps bot_name at 100 chars; the company part gives way
+_BOT_SUFFIX = " assistant · Lightbulb"  # Recall caps bot_name at 100 chars; the company part gives way
+# The second tail is the name bots booked before 2026-11-20 carry; remove it once no scheduled meeting predates that.
+OWN_BOT_TAILS = (_BOT_SUFFIX, " agents · Lightbulb")
 _TICKET_GRACE_S = 4 * 3600  # the ticket outlives the scheduled end by this much, then dies
 _SPEECH_EVENTS = [
     "participant_events.chat_message",
@@ -111,13 +111,17 @@ def _recording_config(room_id: str, meeting: dict) -> dict:
     }
 
 
+def is_own_bot(name: str) -> bool:
+    return name.strip().endswith(OWN_BOT_TAILS)
+
+
 async def create(*, room_id: str, meeting: dict, company: str) -> str:
     """Books the bot; returns its id. Recall does not deduplicate a create, so callers run
     ``find_for_room`` first: ``meeting.ticketNonce`` rides in the metadata as the booking's id."""
     join_at = int(meeting["startAt"]) - 120
     body = {
         "meeting_url": meeting["meetingUrl"],
-        "bot_name": company[: 100 - len(_BOT_ROLE + _BOT_SUFFIX)] + _BOT_ROLE + _BOT_SUFFIX,
+        "bot_name": company[: 100 - len(_BOT_SUFFIX)] + _BOT_SUFFIX,
         "recording_config": _recording_config(room_id, meeting),
         "output_media": _output_media(room_id, meeting),
         "variant": {"google_meet": "web_4_core"},

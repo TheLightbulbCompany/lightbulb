@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 FACTS_FILENAME = "lightbulb-facts.json"
 
 
-def _paid_plan_label(plan: str | None) -> str:
+def _paid_plan_label() -> str:
     """Base, Ultra and Team are all retired; only the Phone plan is sold."""
     return "An older plan that is no longer sold (not the Lightbulb Phone plan)"
 
@@ -87,7 +87,7 @@ def build_owner_facts(
             if is_trial_expired(account):
                 plan = "Trial ended (reading-only)"
     elif status in ("active", "trialing"):
-        plan = _paid_plan_label(account.get("plan"))
+        plan = _paid_plan_label()
     elif status:
         # canceled / past_due / unpaid / incomplete — do NOT tell agents the
         # owner is on a paid plan when the subscription has lapsed.
@@ -95,7 +95,7 @@ def build_owner_facts(
     elif account.get("stripe_subscription_id"):
         # Legacy rows whose status hasn't been backfilled yet — treated as
         # subscribed by provision_gate.is_subscription_active.
-        plan = _paid_plan_label(account.get("plan"))
+        plan = _paid_plan_label()
     else:
         plan = "No billing account yet"
     if account.get("metronome_voice_contract_id") and not voice_paid:

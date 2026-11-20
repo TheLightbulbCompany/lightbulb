@@ -372,12 +372,14 @@ def test_realtime_relays_the_kind_and_keeps_the_roster_on_the_meeting(env):
     assert _realtime(env, "join", 2, "Dan")["roster"] == ["Dan", "Pat"]
     # The bot's own join (Meet lists it as a participant) is never a person.
     assert _realtime(env, "join", 3, "Acme" + mod.meeting_bots._BOT_SUFFIX)["roster"] == ["Dan", "Pat"]
+    assert _realtime(env, "join", 4, "Acme agents · Lightbulb")["roster"] == ["Dan", "Pat"]  # booked before the rename
+    assert _realtime(env, "join", 5, "Sam · Lightbulb")["roster"] == ["Dan", "Pat", "Sam · Lightbulb"]  # a person
     got = _realtime(env, "leave", 1, "Pat")
-    assert got["kind"] == "leave" and got["speaking"] is False and got["roster"] == ["Dan"]
+    assert got["kind"] == "leave" and got["speaking"] is False and got["roster"] == ["Dan", "Sam · Lightbulb"]
     # Kept on META, so a worker that came in after the joins hears the roster on any later event.
-    assert mod._names(env["meta"]["meeting"]["roster"]) == ["Dan"]
+    assert mod._names(env["meta"]["meeting"]["roster"]) == ["Dan", "Sam · Lightbulb"]
     got = _realtime(env, "speech_on", 2, "Dan")
-    assert got["kind"] == "speech_on" and got["roster"] == ["Dan"]
+    assert got["kind"] == "speech_on" and got["roster"] == ["Dan", "Sam · Lightbulb"]
 
 
 def test_an_older_join_that_lands_after_a_newer_leave_does_not_bring_the_person_back():
@@ -773,6 +775,23 @@ def test_stale_or_self_chat_cannot_start_work(env, change):
     ):
         assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
     store.assert_not_awaited()
+
+
+def test_chat_from_a_person_named_like_the_brand_is_stored(env):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
+    from types import SimpleNamespace
+
+    from core.voice.meetings import records
+
+    store = AsyncMock(return_value=SimpleNamespace(message_id="m"))
+    with (
+        patch.object(records, "inviting_member", return_value="maya"),
+        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(mod.messaging, "create_human_message", store),
+    ):
+        event = _chat_event(name="Sam · Lightbulb")
+        assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
+    store.assert_awaited_once()
 
 
 def test_chat_store_failure_is_retryable_instead_of_acknowledged_and_lost(env):

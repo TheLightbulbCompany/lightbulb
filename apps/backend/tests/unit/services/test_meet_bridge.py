@@ -133,12 +133,21 @@ async def test_a_packet_behind_its_senders_leave_seats_nobody(fake):
     assert len(fake.rooms) == 2 and len(fake.frames) == 2
 
 
-async def test_the_bot_is_never_seated(fake):
+@pytest.mark.parametrize("bot", [BOT, "Acme agents · Lightbulb"])
+async def test_the_bot_is_never_seated(fake, bot):
     bridge = meet_bridge.MeetBridge(ROOM)
-    await bridge.feed(_event("participant_events.join", 1, BOT))
-    await bridge.feed(_audio(1, BOT, b"\x00\x00"))
+    await bridge.feed(_event("participant_events.join", 1, bot))
+    await bridge.feed(_audio(1, bot, b"\x00\x00"))
     await bridge.drain()
     assert fake.rooms == [] and fake.frames == []
+
+
+async def test_a_person_named_like_the_brand_is_seated(fake):
+    bridge = meet_bridge.MeetBridge(ROOM)
+    await bridge.feed(_event("participant_events.join", 2, "Sam · Lightbulb"))
+    await bridge.feed(_audio(2, "Sam · Lightbulb", b"\x00\x00"))
+    await bridge.drain()
+    assert len(fake.rooms) == 1
 
 
 async def test_seventeenth_person_is_ignored_once(fake):

@@ -132,14 +132,13 @@ export class AuthStack extends cdk.Stack {
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
     );
 
-    // Shared secret that authenticates the CALLER of the backend /api/v1/ws/*
-    // endpoints. The WebSocket Lambdas (ws-connect/disconnect/message) attach it
-    // as a header; the public HTTP API Gateway $default route — which proxies to
-    // the same ALB with no authorizer — cannot. Without it, anyone could POST to
-    // /api/v1/ws/connect with a forged x-user-id and pollute/evict the
-    // connection registry. Same CMK + createSecret shape as the service-token
-    // key; read by api-stack (the Lambdas) + service-stack (the backend). Safe to
-    // rotate — both sides read it live, never cache across the value change.
+    // Shared secret (header x-lightbulb-ws-internal) that authenticates internal
+    // callers of backend routes the public HTTP API Gateway $default route — which
+    // proxies to the same ALB with no authorizer — can also reach: the EventBridge
+    // connection that posts provision status events (routers/container.py) and one
+    // backend task forwarding a network op to another (routers/network_route.py).
+    // Same CMK + createSecret shape as the service-token key; read by service-stack
+    // (the backend and that connection, which needs a redeploy to pick up a rotation).
     this.wsInternalSecret = createSecret(
       "WsInternalSecret",
       "ws_internal_secret",

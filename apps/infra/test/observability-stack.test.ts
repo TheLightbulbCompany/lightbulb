@@ -480,7 +480,7 @@ describe("ObservabilityStack", () => {
     const names = Object.values(template.findResources("AWS::CloudWatch::Alarm")).map(
       (r: any) => r.Properties.AlarmName as string,
     );
-    for (const gone of [/-P10-/, /-P11-/, /-W1[34]-/, /-W3[0-5]-/, /-W51-/, /-W53-/, /-W66-/, /-ddb-[a-z]+-(usage-counters|ws-connections)$/]) {
+    for (const gone of [/-P10-/, /-P11-/, /-W1[34]-/, /-W3[0-5]-/, /-W51-/, /-W53-/, /-W66-/, /-ddb-[a-z]+-(usage-counters|pending-updates|channel-links|ws-connections)$/]) {
       expect(names.filter((n) => gone.test(n))).toEqual([]);
     }
     for (const fn of ["alert-subscription-monitor", "task-stopped-metric"]) {

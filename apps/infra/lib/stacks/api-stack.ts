@@ -121,7 +121,7 @@ function parsePath(ctx) {
   if (p[3] === 'session-frames' && p.length === 5 && util.matches(UUID, p[4])) {
     return { kind: 'sessions', workspaceId: p[2], sessionId: p[4] };
   }
-  // /ws/{workspaceId}/tasks: super-agent task.changed ids (dev only), the same member check as /sessions.
+  // /ws/{workspaceId}/tasks: super-agent task.changed ids, the same member check as /sessions.
   if (p[3] === 'tasks' && p.length === 4) {
     return { kind: 'sessions', workspaceId: p[2] };
   }
@@ -210,8 +210,8 @@ export class ApiStack extends cdk.Stack {
    * is named with, never `queue.queueName` / `fn.functionName`. A construct
    * reference is a token, and a token consumed by another stack becomes a
    * CloudFormation Export — which CloudFormation then refuses to change while
-   * anything imports it. That is the deadlock the `containersTableName` note
-   * above describes, and it is why the house pattern is names-not-constructs.
+   * anything imports it. That deadlock is why the house pattern is
+   * names-not-constructs.
    */
   public readonly openClawWorkQueueName: string;
   public readonly openClawWorkDlqName: string;
@@ -479,7 +479,7 @@ export class ApiStack extends cdk.Stack {
     });
     this.messagingTableName = `${tablePrefix(env)}messaging`;
 
-    // Super-agent tasks table (contracts-v2 §3; dev only until a founder-approved rollout). RETAIN in
+    // Super-agent tasks table (contracts-v2 §3). RETAIN in
     // every env (spec 10 C27). Both GSIs are created with the table because CloudFormation adds at most
     // one per later update; names and keys mirror core/tasks_schema.py GSIS (api-stack.test.ts reads
     // the exported tasks-schema.json). Stream feeds MessagingProjector's task.changed events; TTL `expiresAt`

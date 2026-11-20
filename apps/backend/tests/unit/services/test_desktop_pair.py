@@ -16,8 +16,6 @@ locking are deleted. What stays is what was never about EFS.
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.services.desktop_pair import (
     BROWSER_GRANT_MARKER,
@@ -27,32 +25,11 @@ from core.services.desktop_pair import (
     DESKTOP_CLI_SHELL_COMMANDS,
     DESKTOP_MAC_COMMANDS,
     DesktopPermissionGrant,
-    DeviceRegisteredToAnotherMember,
-    PairResult,
     assert_command_sets_disjoint,
-    build_paired_entry,
     declared_commands_for,
-    derive_device_id,
     granted_commands,
-    pair_desktop_devices,
     revoke_desktop_device,
 )
-
-
-def _pem(seed: bytes) -> str:
-    return (
-        Ed25519PrivateKey.from_private_bytes(seed * 32)
-        .public_key()
-        .public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        .decode()
-    )
-
-
-_MAC_PEM = _pem(b"\x11")
-_CLI_PEM = _pem(b"\x12")
 
 
 # ---------------------------------------------------------------------------
@@ -125,186 +102,9 @@ async def test_declared_commands_for_includes_derived_commands():
 # ---------------------------------------------------------------------------
 
 
-def test_build_paired_entry_derives_device_id_from_pubkey():
-    entry = build_paired_entry(
-        pubkey_pem=_MAC_PEM,
-        client_id="openclaw-macos",
-        display_name="Alice | Lightbulb Mac",
-        commands=list(DESKTOP_MAC_COMMANDS),
-        user_id="user_alice",
-    )
-    assert entry["deviceId"] == derive_device_id(_MAC_PEM)
-
-
-def test_build_paired_entry_rejects_unknown_client_id():
-    with pytest.raises(ValueError):
-        build_paired_entry(
-            pubkey_pem=_MAC_PEM,
-            client_id="not-a-client",
-            display_name="x",
-            commands=[],
-            user_id="user_alice",
-        )
-
-
-def test_build_paired_entry_public_key_is_base64url_raw():
-    """``machine_auth`` verifies a device's WS-upgrade signature against the RAW 32-byte
-    Ed25519 key, base64url-encoded — not the PEM/SPKI wrapper it arrives in."""
-    entry = build_paired_entry(
-        pubkey_pem=_MAC_PEM,
-        client_id="openclaw-macos",
-        display_name="x",
-        commands=[],
-        user_id="user_alice",
-    )
-    import base64
-
-    raw = base64.urlsafe_b64decode(entry["publicKey"] + "=" * (-len(entry["publicKey"]) % 4))
-    assert len(raw) == 32
-    assert "=" not in entry["publicKey"]
-
-
 # ---------------------------------------------------------------------------
-# pair / revoke against the row
+# revoke against the row
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_pair_writes_both_devices_onto_the_owner_row():
-    upsert = AsyncMock()
-    stored = {}
-
-    async def _upsert(_owner, entries):
-        stored.update(entries)
-
-    upsert.side_effect = _upsert
-    with (
-        patch("core.services.desktop_pair.container_repo.upsert_paired_devices", upsert),
-        patch(
-            "core.services.desktop_pair.container_repo.get_by_owner_id",
-            AsyncMock(side_effect=lambda *_args, **_kwargs: {"gateway_token": "gw-token", "paired_devices": stored}),
-        ),
-    ):
-        result: PairResult = await pair_desktop_devices(
-            user_id="user_alice",
-            owner_id="org_42",
-            display_name_base="Alice Smith",
-            tauri_mac_pubkey=_MAC_PEM,
-            cli_pubkey=_CLI_PEM,
-        )
-
-    assert result.device_id_mac != result.device_id_cli
-    assert result.commands_mac == tuple(
-        command
-        for command in DESKTOP_MAC_COMMANDS
-        if command
-        not in {"system.run.approve.v1", "desktop.operation.approve.v1", "session.options.v1", "session.start.v1"}
-    )
-    assert result.commands_cli == DESKTOP_CLI_COMMANDS
-    assert result.gateway_token == "gw-token"
-
-    # ONE call carrying both devices, keyed by deviceId — flat, no wrapper, because that map
-    # is what the authorizer point-looks-up.
-    upsert.assert_awaited_once()
-    owner_arg, entries = upsert.await_args.args
-    assert owner_arg == "org_42"
-    assert set(entries) == {result.device_id_mac, result.device_id_cli}
-    for device_id, entry in entries.items():
-        assert entry["userId"] == "user_alice"
-        assert entry["publicKey"] and "=" not in entry["publicKey"]
-        assert entry["commands"]
-    assert entries[result.device_id_mac]["clientId"] == "openclaw-macos"
-    assert entries[result.device_id_cli]["clientId"] == "node-host"
-    assert entries[result.device_id_mac]["pairingGroupId"] == entries[result.device_id_cli]["pairingGroupId"]
-    assert entries[result.device_id_mac]["displayName"] == "Alice Smith | Lightbulb Mac"
-    assert entries[result.device_id_cli]["displayName"] == "Alice Smith | Lightbulb Desktop (CLI)"
-
-
-@pytest.mark.asyncio
-async def test_pair_honors_an_explicit_permission_grant():
-    upsert = AsyncMock()
-    stored = {}
-
-    async def _upsert(_owner, entries):
-        stored.update(entries)
-
-    upsert.side_effect = _upsert
-    grant = DesktopPermissionGrant()
-    with (
-        patch("core.services.desktop_pair.container_repo.upsert_paired_devices", upsert),
-        patch(
-            "core.services.desktop_pair.container_repo.get_by_owner_id",
-            AsyncMock(side_effect=lambda *_args, **_kwargs: {"paired_devices": stored}),
-        ),
-    ):
-        result = await pair_desktop_devices(
-            user_id="user_alice",
-            owner_id="org_42",
-            display_name_base="Alice",
-            tauri_mac_pubkey=_MAC_PEM,
-            cli_pubkey=_CLI_PEM,
-            permissions=grant,
-        )
-
-    assert result.commands_cli == grant.cli_commands()
-    _owner, entries = upsert.await_args.args
-    assert entries[result.device_id_cli]["commands"] == list(grant.cli_commands())
-
-
-@pytest.mark.asyncio
-async def test_pair_fails_closed_when_the_two_scoped_writes_land_partially():
-    """The repository writes each device conditionally, not as one transaction.
-
-    A cross-member collision can therefore leave only one new entry.  Pairing must not
-    report that incomplete physical Mac as execution-capable.
-    """
-    stored = {}
-
-    async def _partial_upsert(_owner, entries):
-        device_id, entry = next(iter(entries.items()))
-        stored[device_id] = entry
-
-    with (
-        patch("core.services.desktop_pair.container_repo.upsert_paired_devices", _partial_upsert),
-        patch(
-            "core.services.desktop_pair.container_repo.get_by_owner_id",
-            AsyncMock(side_effect=lambda *_args, **_kwargs: {"paired_devices": stored}),
-        ),
-    ):
-        with pytest.raises(ValueError, match="pair again"):
-            await pair_desktop_devices(
-                user_id="user_alice",
-                owner_id="org_42",
-                display_name_base="Alice",
-                tauri_mac_pubkey=_MAC_PEM,
-                cli_pubkey=_CLI_PEM,
-            )
-
-
-@pytest.mark.asyncio
-async def test_pair_names_a_device_already_registered_to_another_member():
-    """A Mac handed to a new member still holds the old member's Keychain keys: the
-    conditional write refuses to relabel, and pairing must say so rather than 'pair again'."""
-    mac_id = derive_device_id(_MAC_PEM)
-    stored = {mac_id: {"userId": "user_bob", "clientId": "openclaw-macos"}}
-
-    with (
-        patch("core.services.desktop_pair.container_repo.upsert_paired_devices", AsyncMock()),
-        patch(
-            "core.services.desktop_pair.container_repo.get_by_owner_id",
-            AsyncMock(return_value={"paired_devices": stored}),
-        ),
-    ):
-        with pytest.raises(DeviceRegisteredToAnotherMember) as err:
-            await pair_desktop_devices(
-                user_id="user_alice",
-                owner_id="org_42",
-                display_name_base="Alice",
-                tauri_mac_pubkey=_MAC_PEM,
-                cli_pubkey=_CLI_PEM,
-            )
-    assert err.value.device_id == mac_id
-    assert err.value.other_user_id == "user_bob"
 
 
 @pytest.mark.asyncio

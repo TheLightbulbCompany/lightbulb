@@ -318,6 +318,7 @@ Caller → Twilio number → LiveKit SIP (dispatch rule, room "phone-*")
     them from …/events and gives them to GPT-Live, which says them in its own words
 ```
 
+- The caller's line is also signalled to the Router inline (2 s bound); the `WORK#ADMIT#` row stays as the retry.
 - **Caller identity comes from the server, never the model:** the `PHONE#<e164>` / line row and the call record.
   A paused or not-live line only takes messages (`/message`); a caller cannot do what the owner unticked.
 - **Bookings** (`core/voice/phone/voice_booking.py`): the assistant's own calendar first, Google Calendar optional,
@@ -335,7 +336,8 @@ ordinary team mail. At start time a Recall.ai bot joins the Meet (`meeting_bots.
 person's Recall audio into their own LiveKit participant, so the worker (`meet.py`) knows who spoke. Everything
 said that needs the business goes to the Router like a phone line. Everyone acts with the inviter's authority;
 spend, send and publish need the inviter's card tap. The Router can post to Meet chat (`meeting_chat`). Notes
-stay in the app, with no email (F15).
+stay in the app, with no email (F15). Notes are a Router task (a `meeting-notes:` trigger; the backend loads the
+transcript into the Worker's input). Phone and meeting code lives in `core/voice/{phone,meetings}`.
 
 ### How the orb works
 

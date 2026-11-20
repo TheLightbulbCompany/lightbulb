@@ -108,25 +108,3 @@ async def entry(row: dict, at: int) -> dict:
             key=lambda r: (r["userId"], r["kind"]),
         ),
     }
-
-
-async def push(row: dict) -> None:
-    """Best effort, now: a join request was made or answered, sharing paused or resumed, or
-    someone started watching.
-    Always a full entry, an empty one included, so the Mac drops what is gone (and an older Mac
-    lifts its input freeze). The row is read again here, after `at` is taken, so `at` never
-    claims a newer read than it is."""
-    if FEATURE not in row.get("deviceFeatures", ()):
-        return
-    from core.services.local_session_relay import check_envelope, get_local_session_relay  # imports this module
-
-    try:
-        at = _ms()
-        fresh = await repo.get_session(row["ownerId"], row["sessionId"])
-        if fresh is None:
-            return
-        envelope = {"type": "local.session.presence", **await entry(fresh, at)}
-        check_envelope(envelope)
-        await get_local_session_relay().management.send_message_async(row["connectionId"], envelope)
-    except Exception as exc:  # noqa: BLE001 -- the next ack carries the same news
-        logger.info("session presence push failed error=%s", type(exc).__name__)

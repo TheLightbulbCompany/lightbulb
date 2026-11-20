@@ -173,6 +173,9 @@ async def _admit_trigger(ws: str, trigger_id: str) -> None:
     # Voice starts, A2A, proactive ideas, schedules: nothing new starts in a paused project.
     if await paused_room(ts.trigger_room(trig)):
         put_metric("admission.outcome", dimensions={"outcome": "paused", "source": trig["source"]})
+        from core.voice.meetings import meeting_notes  # lazy: meeting_notes imports admission
+
+        await meeting_notes.on_not_started(ws, trig)  # a notes trigger: "no notes", not "pending" for ever
         return
     await _signal(TriggerRef(ws, trigger_id, trig["lane"], trig["admission"], ts.trigger_scope(trig)))
     put_metric("admission.outcome", dimensions={"outcome": trig["admission"], "source": trig["source"]})

@@ -7,22 +7,16 @@ desktop journal receipt can establish native admission. Unknown blocks its proce
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from functools import lru_cache
 
 
-from core.repositories import messaging_repo as store
 from core.services import local_sessions as sessions
-from core.services.connection_service import ConnectionService
-from core.services.management_api_client import ManagementApiClient
-from core.services.messaging import ApiProblem, make_live_event
+from core.services.messaging import make_live_event
 
-CLIENT_ID = "lightbulb-local-sessions"
 CLAIM_SECONDS = 5
 logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
@@ -43,12 +37,6 @@ def step(name: str):
 
 
 Event = sessions.LocalSessionEventBody
-
-
-def check_envelope(body: dict) -> None:
-    # Match ManagementApiClient's *actual* encoding, including non-ASCII expansion.
-    if len(json.dumps(body, separators=(",", ":")).encode("utf-8")) > sessions.MAX_ENVELOPE_BYTES:
-        raise ApiProblem("INVALID_REQUEST", "Local session envelope exceeds 16 KiB.")
 
 
 #: In-flight hint fan-outs, referenced so asyncio cannot garbage-collect them before they finish.
@@ -162,33 +150,3 @@ def waiting_line(prompt: dict | None, text: str = "") -> str:
         return line(f"Has a question: {summary}") if summary else "Has a question for you"
     ask = f'{tool} wants to run "{summary}"' if summary else f"{tool} wants your OK"
     return ask if prompt.get("exact") or prompt.get("full") else f"{ask}: answer it in your terminal"
-
-
-class LocalSessionRelay:
-    def __init__(self, connections: ConnectionService, management: ManagementApiClient):
-        self.connections, self.management = connections, management
-
-    async def connect(self, connection_id: str) -> tuple[dict, dict]:
-        row = await store.run_in_thread(self.connections.get_connection, connection_id)
-        if (
-            not row
-            or row.get("connection_type") != "local-session"
-            or row.get("auth_kind") != "device"
-            or row.get("client_id") != CLIENT_ID
-            or not row.get("device_id")
-        ):
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Verified local session connection required.")
-        owner = row.get("org_id") or row["user_id"]
-        enrollment = await sessions._enrolled(owner, row["user_id"], row["device_id"])
-        try:
-            int(row["connected_at"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Connection identity is incomplete.") from exc
-        return row, enrollment
-
-        # Another worker owns progression. Heartbeat/POST/receipt will drive it again.
-
-
-@lru_cache(maxsize=1)
-def get_local_session_relay() -> LocalSessionRelay:
-    return LocalSessionRelay(ConnectionService(), ManagementApiClient())

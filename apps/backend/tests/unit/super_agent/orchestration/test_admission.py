@@ -439,6 +439,36 @@ async def test_no_trigger_starts_work_in_a_paused_project(world, source):
     assert len(world["router"]) == 1
 
 
+def _paused_trigger(trigger_id):
+    return {
+        "triggerId": trigger_id,
+        "source": "webhook",
+        "admission": "respond",
+        "lane": "shared",
+        "actorUserId": "sam",
+        "receivedAt": "2026-11-06T10:00:00Z",
+        "ref": {"deliverRoomId": ROOM},
+    }
+
+
+@pytest.mark.parametrize("notes", [True, False])
+async def test_paused_room_drop_at_admission_marks_notes_not_started(world, monkeypatch, notes):
+    """A notes trigger dropped on a paused output room ends the meeting with no notes instead of "pending" for
+    ever; any other trigger dropped there touches nothing."""
+    from core.voice.meetings import meeting_invites, meeting_notes
+
+    tid = f"meeting-notes:{ROOM}:1" if notes else "voice:1"
+    await repo.put_trigger(WS, _paused_trigger(tid))
+    world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
+    request = AsyncMock(return_value={"roomId": ROOM, "occurrence": 1})
+    patch = AsyncMock()
+    monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", request)
+    monkeypatch.setattr(meeting_invites, "_patch_meeting", patch)
+    await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": tid})
+    assert world["router"] == []
+    assert patch.await_count == (1 if notes else 0) and request.await_count == (1 if notes else 0)
+
+
 async def test_paused_project_still_passes_replies_to_running_tasks(world):
     """Running tasks finish: a reply in a running task's thread still reaches it."""
     task_id, root = await _subscribed_task()

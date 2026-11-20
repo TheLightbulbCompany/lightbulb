@@ -1,5 +1,4 @@
 # apps/backend/tests/unit/services/test_session_presence.py
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -78,39 +77,6 @@ async def test_entry_names_viewers_typists_and_pending_requests(monkeypatch):
     # A Mac that does not advertise pickupRequests would call a pick-up "asked to join": it gets none.
     older = {**row, "deviceFeatures": ["sessionPresence"]}
     assert [r["kind"] for r in (await presence.entry(older, 123))["joinRequests"]] == ["join"]
-
-
-@pytest.mark.asyncio
-async def test_push_sends_an_empty_entry_once_the_request_is_answered(monkeypatch):
-    monkeypatch.setattr(presence.store, "_query", _rows())
-    send = AsyncMock(return_value=True)
-    from core.services import local_session_relay
-
-    monkeypatch.setattr(
-        local_session_relay,
-        "get_local_session_relay",
-        lambda: SimpleNamespace(management=SimpleNamespace(send_message_async=send)),
-    )
-    monkeypatch.setattr(presence.repo, "get_session", AsyncMock(return_value=_row(joinRequests={})))
-    stale = _row(joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}})
-    await presence.push(stale)  # the caller's copy is older than the row: push reads it again
-    frame = send.await_args.args[1]
-    assert frame["type"] == "local.session.presence" and frame["joinRequests"] == [] and frame["viewers"] == []
-    assert frame["at"] == NOW * 1000
-
-
-@pytest.mark.asyncio
-async def test_push_skips_a_mac_without_the_feature(monkeypatch):
-    send = AsyncMock()
-    from core.services import local_session_relay
-
-    monkeypatch.setattr(
-        local_session_relay,
-        "get_local_session_relay",
-        lambda: SimpleNamespace(management=SimpleNamespace(send_message_async=send)),
-    )
-    await presence.push(_row(deviceFeatures=["liveTerminal"]))
-    send.assert_not_awaited()
 
 
 def test_input_paused_only_for_a_presence_mac_without_band_owner_only(monkeypatch):

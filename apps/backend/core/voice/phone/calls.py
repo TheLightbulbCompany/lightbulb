@@ -22,6 +22,7 @@ from core.services import questions
 from core.voice.phone import voice_booking, voice_preferences
 
 # The name these lines always logged under (routers/voice_phone.py): the W85 alarm matches loggers `routers.voice*`.
+# Kept on the old router name: alarm W85 (observability-stack.ts) filters on loggers named routers.voice*.
 logger = logging.getLogger("routers.voice_phone")
 
 

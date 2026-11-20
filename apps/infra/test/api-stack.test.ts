@@ -140,7 +140,7 @@ describe("ApiStack — browser-view CloudFront door", () => {
       env,
       environment,
       vpc: network.vpc,
-        albV2: network.albV2,
+      albV2: network.albV2,
       albHttpListenerArn: network.albHttpListenerArn,
       albSecurityGroup: network.albSecurityGroup,
       certificate: acm.Certificate.fromCertificateArn(
@@ -154,7 +154,7 @@ describe("ApiStack — browser-view CloudFront door", () => {
       }),
       clerkIssuerSecretName: `lightbulb/${environment}/clerk_issuer`,
       paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
-        });
+    });
     return Template.fromStack(api);
   }
 

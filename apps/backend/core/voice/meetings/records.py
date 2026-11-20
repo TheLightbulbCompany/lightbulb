@@ -10,6 +10,7 @@ from core.voice import livekit_huddles
 from core.voice.meetings import meeting_bots, meeting_invites
 
 # The name these lines always logged under (routers/voice_meet.py): the W85 alarm matches loggers `routers.voice*`.
+# Kept on the old router name: alarm W85 (observability-stack.ts) filters on loggers named routers.voice*.
 logger = logging.getLogger("routers.voice_meet")
 
 

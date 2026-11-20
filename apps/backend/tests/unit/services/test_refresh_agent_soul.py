@@ -1,17 +1,14 @@
 """Task 13: the one rename seam (refresh_agent_soul) -- name line, member labels, C3 `renamed`."""
 
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://test.execute-api.us-east-1.amazonaws.com/test")
-
-from core.repositories import container_repo, messaging_repo  # noqa: E402
+from core.repositories import container_repo, messaging_repo
 from core.services import hermes_profiles, messaging
-from core.voice import livekit_huddles  # noqa: E402
-from core.services.hermes_provisioning import refresh_agent_soul  # noqa: E402
+from core.voice import livekit_huddles
+from core.services.hermes_provisioning import refresh_agent_soul
 
 OWNER = "org_1"
 AGENT = "11111111-1111-4111-8111-111111111111"

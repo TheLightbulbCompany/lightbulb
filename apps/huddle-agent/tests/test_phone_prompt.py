@@ -39,6 +39,16 @@ async def test_backend_sends_the_call_token_on_every_per_call_route():
     ]
 
 
+async def test_an_error_carries_its_status_with_or_without_a_code():
+    import httpx
+
+    replies = iter([httpx.Response(503, json={"detail": {"code": "turn_failed"}}), httpx.Response(502, text="bad gateway")])
+    b = phone.Backend()
+    b._http = httpx.AsyncClient(base_url="http://x/api/v1", transport=httpx.MockTransport(lambda _req: next(replies)))
+    assert await b.post("turn", {}) == {"error": "turn_failed", "status": 503}
+    assert await b.post("turn", {}) == {"error": "http_502", "status": 502}
+
+
 GREETING = "Thanks for calling Super Agent Test. This is Lightbulb, Super Agent Test's AI assistant. How can I help?"
 INFO = {
     "assistantName": "Lightbulb",

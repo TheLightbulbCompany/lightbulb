@@ -93,22 +93,9 @@ describe("messaging HTTP client", () => {
     }
   });
 
-  it("calls the subagent routes", async () => {
-    const { client, methods } = setup();
-    await client.listSubagents("r1");
-    await client.subagentTail("r1", "a1", "sa-1");
-    await client.steerSubagent("r1", "a1", "sa-1", "focus");
-    await client.stopSubagent("r1", "a1", "sa-1");
-    expect(methods.get).toHaveBeenCalledWith("/messaging/rooms/r1/subagents");
-    expect(methods.get).toHaveBeenCalledWith("/messaging/rooms/r1/agents/a1/subagents/sa-1/tail");
-    expect(methods.post).toHaveBeenCalledWith("/messaging/rooms/r1/agents/a1/subagents/sa-1/steer", { text: "focus" });
-    expect(methods.post).toHaveBeenCalledWith("/messaging/rooms/r1/agents/a1/subagents/sa-1/stop", {});
-  });
-
   it("uses exact mutation verbs, paths, and bodies without server-owned owner/author fields", async () => {
     const { client, methods } = setup();
     await client.updateRoom(roomId, { name: null });
-    await client.updateMessage(roomId, messageId, { operationId: messageId, expectedRevision: 2, text: null });
     await client.upsertMember(roomId, { kind: "agent", id: agentId, role: "member", listenMode: "mentions" });
     await client.removeMember(roomId, "agent", agentId);
     await client.markRead(roomId, { lastReadSeq: 9 });
@@ -118,7 +105,6 @@ describe("messaging HTTP client", () => {
     await client.steerRun("run-1", { text: "focus on checkout" });
 
     expect(methods.patch).toHaveBeenCalledWith(`/messaging/rooms/${roomId}`, { name: null });
-    expect(methods.patch).toHaveBeenCalledWith(`/messaging/rooms/${roomId}/messages/${messageId}`, { operationId: messageId, expectedRevision: 2, text: null });
     expect(methods.post).toHaveBeenCalledWith(`/messaging/rooms/${roomId}/members`, {
       kind: "agent", id: agentId, role: "member", listenMode: "mentions",
     });
@@ -152,7 +138,6 @@ describe("messaging HTTP client", () => {
     } as never;
     const client = createMessagingClient(api);
     await client.setMemberPrefs("r 1", { starred: true });
-    await client.putSections({ sections: [{ id: "s-1", name: "Ship" }] });
     await client.leaveRoom("r 1");
     await client.deleteRoom("r 1");
     await client.setPin("r 1", "m 1", true);
@@ -161,7 +146,6 @@ describe("messaging HTTP client", () => {
     await client.markUnread("r 1");
     expect(calls).toEqual([
       ["patch", "/messaging/rooms/r%201/me", { starred: true }],
-      ["put", "/messaging/me/sections", { sections: [{ id: "s-1", name: "Ship" }] }],
       ["post", "/messaging/rooms/r%201/leave", {}],
       ["del", "/messaging/rooms/r%201", undefined],
       ["put", "/messaging/rooms/r%201/pins/m%201", {}],

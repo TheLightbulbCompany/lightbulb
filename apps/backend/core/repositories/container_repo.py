@@ -1176,8 +1176,7 @@ async def _put_paired_device(table, owner_id: str, device_id: str, entry: dict) 
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            # Row deleted mid-write, or deviceId owned by another member. The caller
-            # (desktop_pair.pair_desktop_devices) re-reads the row and names the latter.
+            # Row deleted mid-write, or deviceId owned by another member.
             return
         raise
 

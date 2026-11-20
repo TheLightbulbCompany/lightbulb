@@ -3,7 +3,6 @@ import type {
   AbortRunResponse,
   CanonicalRoomMessage,
   CreateMessageRequest,
-  UpdateMessageRequest,
   MessageAttachment,
   CreateRoomRequest,
   LiveConfig,
@@ -13,11 +12,9 @@ import type {
   PatchRoomRequest,
   ReadCursorRequest,
   ReadCursorResponse,
-  RoomMemoryResponse,
   RoomDetail,
   RoomListResponse,
   RunStatusResponse,
-  SectionsRequest,
   SteerRunRequest,
   SteerRunResponse,
   TypingRequest,
@@ -55,14 +52,7 @@ const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(room
 const SEND_MESSAGE_TIMEOUT_MS = 30_000;
 const HISTORY_TIMEOUT_MS = 30_000;
 
-const subagentPath = (roomId: string, agentId: string, subagentId: string) =>
-  `/messaging/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/subagents/${encodeURIComponent(subagentId)}`;
-
-export type SubagentTail = { subagentId: string; available: boolean; text: string; truncated: boolean };
-
 export interface MessagingClient {
-  updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
-  setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
   listRooms(): Promise<RoomListResponse>;
   createRoom(request: CreateRoomRequest): Promise<RoomDetail>;
@@ -80,30 +70,21 @@ export interface MessagingClient {
   markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
   markUnread(roomId: string, fromSeq?: number): Promise<ReadCursorResponse>;
   setMemberPrefs(roomId: string, request: MemberPrefsRequest): Promise<RoomDetail>;
-  putSections(request: SectionsRequest): Promise<RoomListResponse>;
   leaveRoom(roomId: string): Promise<void>;
   /** Owner-only channel delete (a tombstone; history is kept server-side). */
   deleteRoom(roomId: string): Promise<void>;
   /** What was said in the coding sessions the caller may read. */
   setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
-  /** What Lightbulb noted in this room, newest first. */
-  listRoomMemory(roomId: string): Promise<RoomMemoryResponse>;
   /** Forget one noted fact (the room's owner or admin). */
   forgetRoomMemory(roomId: string, messageId: string): Promise<void>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
   steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
-  listSubagents(roomId: string): Promise<{ subagents: Record<string, unknown>[] }>;
-  subagentTail(roomId: string, agentId: string, subagentId: string): Promise<SubagentTail>;
-  steerSubagent(roomId: string, agentId: string, subagentId: string, text: string): Promise<{ state: "queued" }>;
-  stopSubagent(roomId: string, agentId: string, subagentId: string): Promise<{ state: "stopping" }>;
   getRunStatus(runId: string): Promise<RunStatusResponse>;
 }
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
-    updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
-    setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,
     listRooms: () => api.get("/messaging/rooms") as Promise<RoomListResponse>,
     createRoom: (request) => api.post("/messaging/rooms", request) as Promise<RoomDetail>,
@@ -168,7 +149,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       `${roomPath(roomId)}/unread`, fromSeq === undefined ? {} : { fromSeq },
     ) as Promise<ReadCursorResponse>,
     setMemberPrefs: (roomId, request) => api.patch(`${roomPath(roomId)}/me`, request) as Promise<RoomDetail>,
-    putSections: (request) => api.put("/messaging/me/sections", request) as Promise<RoomListResponse>,
     async leaveRoom(roomId) {
       await api.post(`${roomPath(roomId)}/leave`, {});
     },
@@ -178,7 +158,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     setPin: (roomId, messageId, pinned) => (pinned
       ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})
       : api.del(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`)) as Promise<RoomDetail>,
-    listRoomMemory: (roomId) => api.get(`${roomPath(roomId)}/memory`) as Promise<RoomMemoryResponse>,
     async forgetRoomMemory(roomId, messageId) {
       await api.del(`${roomPath(roomId)}/memory/${encodeURIComponent(messageId)}`);
     },
@@ -187,10 +166,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     abortRun: (runId) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/abort`, {}) as Promise<AbortRunResponse>,
     steerRun: (runId, request) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/steer`, request) as Promise<SteerRunResponse>,
-    listSubagents: (roomId) => api.get(`/messaging/rooms/${encodeURIComponent(roomId)}/subagents`) as Promise<{ subagents: Record<string, unknown>[] }>,
-    subagentTail: (roomId, agentId, subagentId) => api.get(`${subagentPath(roomId, agentId, subagentId)}/tail`) as Promise<SubagentTail>,
-    steerSubagent: (roomId, agentId, subagentId, text) => api.post(`${subagentPath(roomId, agentId, subagentId)}/steer`, { text }) as Promise<{ state: "queued" }>,
-    stopSubagent: (roomId, agentId, subagentId) => api.post(`${subagentPath(roomId, agentId, subagentId)}/stop`, {}) as Promise<{ state: "stopping" }>,
     getRunStatus: (runId) => api.get(`/messaging/runs/${encodeURIComponent(runId)}`) as Promise<RunStatusResponse>,
   };
 }

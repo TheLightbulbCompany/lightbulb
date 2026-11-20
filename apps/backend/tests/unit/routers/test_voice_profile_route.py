@@ -1,6 +1,5 @@
 """C8: POST /internal/agents/voice-profile/{ownerId} -- rename and voice notes, asked by voice."""
 
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -9,7 +8,6 @@ from botocore.exceptions import ClientError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://test.execute-api.us-east-1.amazonaws.com/test")
 
 from core.repositories import container_repo, messaging_repo  # noqa: E402
 from core.services import hermes_profiles, messaging

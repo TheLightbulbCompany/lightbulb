@@ -132,10 +132,6 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
         },
     )
     await tell_mac(row, now, fresh)
-    # The owner's band names the new viewer now, not at the next heartbeat ack (up to 10 s later).
-    # After the nudge: the picture matters more than the name. The owner is never listed.
-    if fresh and row.get("endedAt") is None and auth.user_id != row["humanUserId"]:
-        await session_presence.push(row)
     # What the view says about its audience, while people watch by link: counts only. The owner
     # is not counted, as on the band. No link viewer (nearly every session): no read, and zeros.
     via_link = await session_presence.link_viewers(row, now)
@@ -158,8 +154,6 @@ async def tell_mac(row: dict, now: int, fresh: bool) -> None:
         + (":now" if fresh else "if_not_exists(since, :now)"),
         ExpressionAttributeValues={":sid": row["sessionId"], ":exp": now + VIEWER_TTL_S, ":now": now},
     )
-    if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
-        await _nudge(row, now)
 
 
 async def _screen_gone(row: dict) -> None:
@@ -178,32 +172,6 @@ async def _screen_gone(row: dict) -> None:
     except ClientError:
         return  # renewed meanwhile, or another ping already told them
     await local_session_relay.publish_resources_changed(row["ownerId"], row["humanUserId"], session_id=row["sessionId"])
-
-
-async def _nudge(row: dict, since: int) -> None:
-    """Tell the Mac now, not at its next heartbeat ack (up to 10 s). Only a Mac that advertised
-    `liveTerminal`: an older desktop drops its connection over a frame it does not know. The
-    Mac never answers; the ack's `watching` stays the backstop and the stop signal.
-
-    `since` is the WATCH row's own, so the ack that lists this viewer next is not news to the
-    Mac and asks for no second history burst. A desktop that predates the key ignores it (it
-    reads `sessionId` and `generation` out of the JSON by name)."""
-    from core.services.local_session_relay import check_envelope, get_local_session_relay  # imports this module
-
-    envelope = {
-        "type": "local.session.watch",
-        "sessionId": row["sessionId"],
-        "generation": row["generation"],
-        "since": since,
-    }
-    # An ended session's final screen is on the connection that renews it.
-    cid = row.get("screenConnectionId") if row.get("endedAt") is not None else row["connectionId"]
-    try:
-        check_envelope(envelope)
-        if not await get_local_session_relay().management.send_message_async(cid, envelope):
-            logger.info("session watch nudge not delivered")
-    except Exception as exc:  # noqa: BLE001 -- best effort; the next ack carries the same news
-        logger.info("session watch nudge failed error=%s", type(exc).__name__)
 
 
 MAX_RAW_BYTES = 11 * 1024

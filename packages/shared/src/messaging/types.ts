@@ -140,10 +140,6 @@ export interface MemberPrefsRequest {
   sectionId?: string | null;
 }
 
-export interface SectionsRequest {
-  sections: RoomSection[];
-}
-
 /** The 12 lucide glyphs a project tile may use (kebab-case lucide names). */
 export const PROJECT_ICONS = [
   "sparkles", "rocket", "shopping-bag", "megaphone", "code", "pen-line",
@@ -339,13 +335,6 @@ export interface CreateMessageRequest {
   attachmentIds?: string[];
 }
 
-export interface UpdateMessageRequest {
-  operationId: string;
-  expectedRevision: number;
-  /** null deletes the public message; existing agent work is unchanged. */
-  text: string | null;
-}
-
 export interface MessagePage {
   messages: CanonicalRoomMessage[];
   nextAfterSeq: number | null;
@@ -354,17 +343,6 @@ export interface MessagePage {
 
 export interface ReadCursorRequest {
   lastReadSeq: number;
-}
-
-/** A fact Lightbulb noted from a room message (project Settings › Memory, W15-5). */
-export interface NotedFact {
-  messageId: string;
-  fact: string;
-  notedAt: string;
-}
-
-export interface RoomMemoryResponse {
-  items: NotedFact[];
 }
 
 export interface ReadCursorResponse {

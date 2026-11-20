@@ -242,8 +242,6 @@ async def set_pickup(
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
-        if sessions.pending_pickups(row):
-            await sessions._push_presence(updated)  # a pending ask froze the owner's Mac; lift it now
         return sessions._session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

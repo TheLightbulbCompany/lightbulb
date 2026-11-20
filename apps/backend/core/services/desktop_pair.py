@@ -11,27 +11,14 @@ them on /desktop/pair.
 """
 
 import asyncio
-import base64
-import hashlib
 import logging
-import secrets
-import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from cryptography.hazmat.primitives import serialization
 
-from core.config import settings
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
-
-
-# NOTE: the retired-brand display-name normalizer went with the EFS ``paired.json`` rail.
-# It existed because a same-key re-pair PRESERVED the stored entry, so nothing would ever
-# refresh a device's name. ``pair_desktop_devices`` now REWRITES each device's map entry on
-# every pair (the non-relabel ConditionExpression is the only thing it preserves), so the
-# composed name is current by construction.
 
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
@@ -129,11 +116,6 @@ DESKTOP_CLI_COMMANDS: tuple[str, ...] = (
 NODE_HOST_DECLARED_CAPS: tuple[str, ...] = ("system", "mcp")
 
 ALLOWED_CLIENT_IDS = {"openclaw-macos", "node-host"}
-
-# Legacy (permission-less) pairs never consented to a native approval handler.
-_EXPLICIT_CONSENT_COMMANDS = frozenset(
-    {"system.run.approve.v1", "desktop.operation.approve.v1", "session.options.v1", "session.start.v1"}
-)
 
 
 def assert_command_sets_disjoint(
@@ -255,215 +237,6 @@ def granted_commands(devices: dict, entry: dict) -> set[str]:
     if entry.get("clientId") == "openclaw-macos" and entry.get("pairingGroupId"):
         granted.add("browser.wipe.v1")
     return granted
-
-
-def _public_key_raw_bytes(pubkey_pem: str) -> bytes:
-    """Parse PEM-encoded Ed25519 SPKI and return the 32 raw key bytes.
-
-    Upstream strips the 12-byte ED25519 SPKI prefix; cryptography's
-    ``serialization`` parses the PEM into the raw form natively, avoiding
-    manual prefix-stripping fragility.
-    """
-    pubkey = serialization.load_pem_public_key(pubkey_pem.encode())
-    return pubkey.public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-
-
-def _public_key_raw_base64url(pubkey_pem: str) -> str:
-    """Return the Ed25519 raw 32-byte key encoded as base64url-no-pad.
-
-    Mirrors upstream's ``publicKeyRawBase64UrlFromPem`` (openclaw
-    src/infra/device-identity.ts). This is the EXACT wire format the
-    gateway sees in the signed connect frame and the EXACT shape it
-    string-compares against paired.json (message-handler.ts
-    `paired?.publicKey === devicePublicKey`). Writing PEM here breaks the
-    equality and gets every device flagged NOT_PAIRED.
-    """
-    return base64.urlsafe_b64encode(_public_key_raw_bytes(pubkey_pem)).decode().rstrip("=")
-
-
-def derive_device_id(pubkey_pem: str) -> str:
-    """Mirror openclaw's deriveDeviceIdFromPublicKey.
-
-    Upstream SHA-256s the 32 raw key bytes (post-SPKI-strip).
-    """
-    return hashlib.sha256(_public_key_raw_bytes(pubkey_pem)).hexdigest()
-
-
-def build_paired_entry(
-    *,
-    pubkey_pem: str,
-    client_id: str,
-    display_name: str,
-    commands: list[str],
-    user_id: str | None = None,
-) -> dict:
-    """Construct a paired.json entry per upstream PairedDevice schema.
-
-    The ``publicKey`` field is the base64url-no-pad 32-byte raw key, NOT
-    the PEM. Upstream's gateway does strict string equality of paired.json's
-    ``publicKey`` against the wire-format pubkey in the signed connect
-    frame (message-handler.ts); the wire format is
-    base64url-no-pad raw 32 bytes (server.auth.shared.ts
-    `publicKeyRawBase64UrlFromPem`). PEM here would always mismatch.
-
-    tokens.node is load-bearing — listEffectivePairedDeviceRoles returns []
-    for tokenless paired records, leaving the device connected but stripped
-    of effective commands like system.run. The ``role``/``scopes`` inside
-    tokens.node mirror the canonical shape the in-container counterpart writes.
-    """
-    if client_id not in ALLOWED_CLIENT_IDS:
-        raise ValueError(f"clientId must be one of {ALLOWED_CLIENT_IDS}; got {client_id!r}")
-    now_ms = int(time.time() * 1000)
-    entry: dict = {
-        "deviceId": derive_device_id(pubkey_pem),
-        "publicKey": _public_key_raw_base64url(pubkey_pem),
-        "role": "node",
-        "roles": ["node"],
-        "clientId": client_id,
-        "clientMode": "node",
-        "displayName": display_name,
-        "commands": commands,
-        "scopes": [],
-        "approvedScopes": [],
-        "tokens": {
-            "node": {
-                "token": secrets.token_urlsafe(32),
-                "role": "node",
-                "scopes": [],
-                "createdAtMs": now_ms,
-            },
-        },
-        "createdAtMs": now_ms,
-        "approvedAtMs": now_ms,
-    }
-    if user_id is not None:
-        # Custom Isol8 field. Upstream openclaw's `coercePairingStateRecord`
-        # (pairing-files.ts) does a permissive cast — unknown fields are
-        # preserved across read/write cycles. We use this on re-pair to
-        # distinguish "this user's prior stale entries" (safe to prune)
-        # from "another org member's still-valid entry" (must preserve).
-        entry["userId"] = user_id
-    return entry
-
-
-# Mutator contract: receives the current pairing-state file as a FLAT dict
-# (``Record<id, Entry>`` per upstream pairing-files.ts), mutates it in place,
-# and returns True iff a write is needed.
-PairedMutator = Callable[[dict], bool]
-
-
-class DeviceRegisteredToAnotherMember(Exception):
-    """A submitted device id is already paired to a DIFFERENT member of this owner.
-
-    The Keychain identity is per app, not per Clerk user, so a Mac handed to (or shared
-    with) another member re-submits the previous member's keys. The repository's
-    non-relabel condition correctly refuses the write; this names the refusal so the
-    desktop can mint fresh keys and pair again instead of retrying the same collision.
-    """
-
-    code = "device_registered_to_another_member"
-
-    def __init__(self, device_id: str, other_user_id: str):
-        super().__init__(f"device {device_id} is registered to another member")
-        self.device_id = device_id
-        self.other_user_id = other_user_id
-
-
-@dataclass(frozen=True)
-class PairResult:
-    gateway_url: str
-    gateway_token: str
-    device_id_mac: str
-    device_id_cli: str
-    commands_mac: tuple[str, ...]
-    commands_cli: tuple[str, ...]
-
-
-async def pair_desktop_devices(
-    *,
-    user_id: str,
-    owner_id: str,
-    display_name_base: str,
-    tauri_mac_pubkey: str,
-    cli_pubkey: str,
-    permissions: DesktopPermissionGrant | None = None,
-) -> PairResult:
-    """Idempotently register the user's two devices on the owner's containers row.
-
-    The record is ONE map (``paired_devices``) rather than the old pair of EFS
-    ``paired.json`` files: the gateway that read those is gone, and the row is what
-    ``machine_auth`` already verifies a device's WS-upgrade token against and what
-    ``declared_commands_for`` reads its command allowlist from.
-
-    Returns the connection material the desktop needs to reach the node relay.
-    """
-    grant = permissions or DesktopPermissionGrant.full()
-    mac_commands = grant.mac_commands()
-    if permissions is None:
-        # Legacy full access was never explicit consent to the new approval handler.
-        mac_commands = tuple(command for command in mac_commands if command not in _EXPLICIT_CONSENT_COMMANDS)
-    cli_commands = grant.cli_commands()
-    pairing_group_id = secrets.token_urlsafe(18)
-
-    mac_entry = build_paired_entry(
-        pubkey_pem=tauri_mac_pubkey,
-        client_id="openclaw-macos",
-        display_name=f"{display_name_base} | Lightbulb Mac",
-        commands=list(mac_commands),
-        user_id=user_id,
-    )
-    cli_entry = build_paired_entry(
-        pubkey_pem=cli_pubkey,
-        client_id="node-host",
-        display_name=f"{display_name_base} | Lightbulb Desktop (CLI)",
-        commands=list(cli_commands),
-        user_id=user_id,
-    )
-    # One scoped, server-atomic UpdateItem per device (see
-    # ``container_repo.upsert_paired_devices``): touching only that device's map key means a
-    # concurrent status/hook-token writer, or a concurrent write of another device, cannot
-    # clobber it or resurrect a revoked one. Its ConditionExpression is also the NON-RELABEL
-    # guard -- ``deviceId = sha256(pubkey)`` and this route does not verify private-key
-    # possession, so a co-tenant submitting another member's PUBLIC key must not be able to
-    # relabel their device. ``publicKey`` is the base64url-raw key ``machine_auth`` verifies
-    # the device's WS-upgrade signature against; ``commands`` is what
-    # ``declared_commands_for`` intersects a connecting client's declared set with.
-    await container_repo.upsert_paired_devices(
-        owner_id,
-        {
-            entry["deviceId"]: {
-                "publicKey": entry["publicKey"],
-                "userId": user_id,
-                "clientId": entry["clientId"],
-                "displayName": entry["displayName"],
-                "commands": list(entry["commands"]),
-                "pairingGroupId": pairing_group_id,
-            }
-            for entry in (mac_entry, cli_entry)
-        },
-    )
-
-    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    devices = row.get("paired_devices") or {}
-    for device_id in (mac_entry["deviceId"], cli_entry["deviceId"]):
-        holder = (devices.get(device_id) or {}).get("userId")
-        if holder and holder != user_id:
-            raise DeviceRegisteredToAnotherMember(device_id, holder)
-    if not paired_physical_mac(row, user_id, mac_entry["deviceId"]) or not paired_physical_mac(
-        row, user_id, cli_entry["deviceId"]
-    ):
-        raise ValueError("desktop pairing was incomplete; pair again")
-    return PairResult(
-        gateway_url=settings.WS_GATEWAY_URL,
-        gateway_token=row.get("gateway_token") or "",
-        device_id_mac=mac_entry["deviceId"],
-        device_id_cli=cli_entry["deviceId"],
-        commands_mac=mac_commands,
-        commands_cli=cli_commands,
-    )
 
 
 async def revoke_desktop_device(

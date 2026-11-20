@@ -10,13 +10,12 @@ import useSWR, { useSWRConfig } from "swr";
 import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
-import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, delegationIdOf, liveSubagents, pruneFinishedSubagents, reconcileSubagentSnapshot, type RoomSubagents } from "./subagents";
+import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, delegationIdOf, pruneFinishedSubagents, type RoomSubagents } from "./subagents";
 import { applyRunFrame, declinedRun, lastSequence, mergeCanonicalMessages, runView, shownRunText, type LiveRoomRun } from "./timeline";
 import type {
   ActiveRoomRun,
   CanonicalRoomMessage,
   CreateMessageRequest,
-  UpdateMessageRequest,
   CreateRoomRequest,
   MemberPrefsRequest,
   MessagePage,
@@ -149,9 +148,6 @@ export interface UseRoomsOptions {
    * after. MUST be referentially stable.
    */
   persistence?: RoomsPersistence;
-  /** The one screen showing the subagent strip opts in to the snapshot hydrate, the 5 s poll and the
-   *  foreground refresh: each is a runtime invoke that extends its idle clock. Live events need none. */
-  subagents?: boolean;
 }
 
 /** What `RoomsPersistence` keeps for one `userId:orgId` scope. */
@@ -279,7 +275,7 @@ const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
 export const roomsListKey = (userId: string, orgId: string | null | undefined) => ["messaging-rooms", `${userId}:${orgId ?? userId}`] as const;
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
-  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence, subagents: watchSubagents = false } = options;
+  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
   const {
     messaging,
@@ -386,11 +382,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const runsRef = useRef(runs);
   runsRef.current = runs;
   const [subagents, setSubagents] = useState<RoomSubagents>(EMPTY_ROOM_SUBAGENTS);
-  const subagentsRef = useRef(subagents);
-  subagentsRef.current = subagents;
-  const activeRoomIdRef = useRef(activeRoomId);
-  activeRoomIdRef.current = activeRoomId;
-  const subagentPoll = useRef({ visible: false, failures: 0, inFlight: false });
   const [receipts, setReceipts] = useState<RoomReceipts>(NO_RECEIPTS);
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
@@ -466,7 +457,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setTyping(new Map());
     setRuns(new Map());
     setSubagents(EMPTY_ROOM_SUBAGENTS);
-    subagentPoll.current.failures = 0;
     setReceipts(NO_RECEIPTS);
     setAccessRemoved(false);
     setDeliveryOverride(null);
@@ -1133,27 +1123,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
   }, [activeRoom, activeRoomId, messaging, mutateRooms, roomsData, userId]);
 
-  const updateMessage = useCallback(async (messageId: string, request: UpdateMessageRequest) => {
-    if (!activeRoomId || accessRemoved) throw new Error("No room selected.");
-    const runGeneration = generation.current;
-    try {
-      const message = await messaging.updateMessage(activeRoomId, messageId, request);
-      if (generation.current !== runGeneration || message.roomId !== activeRoomId) return;
-      applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [message]));
-    } catch (error) {
-      if (generation.current === runGeneration) void reconcile(0).catch(() => {});
-      throw error;
-    }
-  }, [activeRoomId, accessRemoved, messaging, reconcile]);
-
-  const setReaction = useCallback(async (messageId: string, emoji: string, active: boolean) => {
-    if (!activeRoomId || accessRemoved) throw new Error("No room selected.");
-    const runGeneration = generation.current;
-    const message = await messaging.setReaction(activeRoomId, messageId, emoji, active);
-    if (generation.current !== runGeneration || message.roomId !== activeRoomId) return;
-    applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [message]));
-  }, [activeRoomId, accessRemoved, messaging]);
-
   const reconcileSend = useCallback(async (clientMessageId: string) => {
     const request = requests.current.get(clientMessageId);
     if (!request) return;
@@ -1308,20 +1277,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
   }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
-  const saveSections = useCallback(async (next: readonly RoomSection[]) => {
-    try {
-      const response = await messaging.putSections({ sections: [...next] });
-      // Merge like setRoomPrefs does, rather than replacing the cache entry
-      // outright: an in-flight background revalidate (the live-event and
-      // reconnect effects above call `mutateRooms()` with no debounce) can
-      // resolve after this write and, with a wholesale replace, silently
-      // clobber the section this call just saved back to the pre-save list.
-      await mutateRooms((current) => current && { ...current, sections: response.sections, rooms: response.rooms }, false);
-    } finally {
-      await mutateRooms();
-    }
-  }, [messaging, mutateRooms]);
-
   // A room this person left or deleted leaves the list BEFORE the open room clears:
   // otherwise auto-select reopens it from the not-yet-refetched list, with a live
   // composer onto a room they no longer belong to.
@@ -1434,46 +1389,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     return delegationsRef.current.map;
   }, [runs, messages]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
-  const refreshSubagents = useCallback(async () => {
-    if (!activeRoomId) return;
-    const roomId = activeRoomId;
-    subagentPoll.current.inFlight = true;
-    try {
-      const { subagents: children } = await messaging.listSubagents(roomId);
-      subagentPoll.current.failures = 0;
-      if (roomId === activeRoomIdRef.current) setSubagents((s) => reconcileSubagentSnapshot(s, children, Date.now()));
-    } catch {
-      subagentPoll.current.failures += 1;
-    } finally {
-      subagentPoll.current.inFlight = false;
-    }
-  }, [activeRoomId, messaging]);
-
-  useEffect(() => { if (watchSubagents) void refreshSubagents(); }, [watchSubagents, refreshSubagents]); // hydrate once per room
-
-  // upstream's only polling: every 5 s while the strip is on screen and a row is live; 3 failures stop it until the page is visible again.
-  useEffect(() => {
-    if (!watchSubagents) return;
-    const id = setInterval(() => {
-      const p = subagentPoll.current;
-      if (!p.visible || p.inFlight || p.failures >= 3 || !liveSubagents(subagentsRef.current).length) return;
-      void refreshSubagents();
-    }, 5_000);
-    const unsubscribe = onVisibilityChange(() => {
-      const p = subagentPoll.current;
-      if (!p.visible || p.inFlight || !isVisible()) return;
-      p.failures = 0;
-      void refreshSubagents();
-    });
-    return () => { clearInterval(id); unsubscribe(); };
-  }, [watchSubagents, refreshSubagents, onVisibilityChange, isVisible]);
-
-  const subagentsPollVisible = useCallback((visible: boolean) => { subagentPoll.current.visible = visible; }, []);
-  const steerSubagent = useCallback((agentId: string, subagentId: string, text: string) =>
-    activeRoomId ? messaging.steerSubagent(activeRoomId, agentId, subagentId, text) : Promise.reject(new Error("No room selected.")), [activeRoomId, messaging]);
-  const stopSubagent = useCallback((agentId: string, subagentId: string) =>
-    activeRoomId ? messaging.stopSubagent(activeRoomId, agentId, subagentId) : Promise.reject(new Error("No room selected.")), [activeRoomId, messaging]);
-
   const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);
   const loadHistory = useCallback(() => {
     initialRequest.current += 1;
@@ -1530,7 +1445,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     createRoom,
     updateRoom,
     setRoomPrefs,
-    saveSections,
     leaveRoom,
     deleteRoom,
     setPin,
@@ -1538,8 +1452,6 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     removeMember,
     markUnread,
     sendMessage,
-    setReaction,
-    updateMessage,
     uploadAttachment,
     downloadAttachment,
     attachmentUrl,
@@ -1550,9 +1462,5 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     steerRun,
     subagents,
     delegationsByMessage,
-    refreshSubagents,
-    steerSubagent,
-    stopSubagent,
-    subagentsPollVisible,
   };
 }

@@ -129,11 +129,8 @@ async def test_disable_workspace_sets_purge_timer():
 def rooms(monkeypatch):
     from core.services import messaging, welcome_email
 
-    fx = SimpleNamespace(
-        default=AsyncMock(return_value="room_1"), feed=AsyncMock(), welcome=AsyncMock(), proactive=AsyncMock()
-    )
+    fx = SimpleNamespace(default=AsyncMock(return_value="room_1"), welcome=AsyncMock(), proactive=AsyncMock())
     monkeypatch.setattr(messaging, "ensure_default_room", fx.default)
-    monkeypatch.setattr(messaging, "ensure_feed_room", fx.feed)
     monkeypatch.setattr(welcome_email, "send_owner_welcome", fx.welcome)
     return fx
 
@@ -143,7 +140,6 @@ async def test_default_room_and_welcome_after_native_seed(rooms):
 
     await _ensure_workspace_for_org(org_id=ORG, user_id="user_1", is_admin=True)
     rooms.default.assert_awaited_once_with(ORG, "user_1")
-    rooms.feed.assert_awaited_once_with(ORG, "user_1")
     rooms.welcome.assert_awaited_once_with(ORG, "user_1")
 
     # Active now: a re-run joins (no-op) and makes no second room or welcome.
@@ -198,13 +194,7 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
         monkeypatch.setattr(hermes_provisioning, name, AsyncMock())
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_1"}))
     monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": "user_1"}]))
-    for name in (
-        "ensure_default_room",
-        "ensure_feed_room",
-        "ensure_vendor_room",
-        "join_default_room",
-        "join_feed_room",
-    ):
+    for name in ("ensure_default_room", "join_default_room"):
         monkeypatch.setattr(messaging, name, AsyncMock(return_value="room_1"))
     monkeypatch.setattr(welcome_email, "send_owner_welcome", AsyncMock())
     monkeypatch.setattr(onboarding_brief, "reconcile_pending_brief", AsyncMock())

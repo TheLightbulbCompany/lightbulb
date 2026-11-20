@@ -18,7 +18,7 @@ def test_internal_attachment_route_requires_hook_token_and_streams_bytes():
         file_name = "shot.png"
 
     with (
-        patch("routers.messaging._require_hook_token") as guard,
+        patch("routers.messaging.require_hook_token") as guard,
         patch("routers.messaging.service.load_attachment", return_value=(Att(), b"\x89PNG...")),
     ):
         guard.return_value = None

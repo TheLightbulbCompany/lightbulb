@@ -1,13 +1,19 @@
-"""Reader for the first narrow runtime grant: one canonical room run's events."""
+"""The runtime's hook-token check, and the reader for the first narrow runtime grant: one canonical room
+run's events."""
 
+import hmac
+import logging
 import os
 import time
 import uuid
 
 import jwt
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
-from core.repositories import messaging_repo
+from core.observability.metrics import put_metric
+from core.repositories import container_repo, messaging_repo
+
+logger = logging.getLogger(__name__)
 
 PURPOSE = "lightbulb_hook_run"
 AUDIENCE = "lightbulb:hook:run-events"
@@ -79,3 +85,34 @@ async def require_run_event(token: str, owner_id: str, container: dict, run_id: 
         or not await messaging.room_agent(claims["roomId"], claims["agentId"], room)
     ):
         raise HTTPException(403, detail="hook grant room unavailable")
+
+
+def _count_hook_auth_failure(owner_id: str) -> None:
+    """Counted so that silence pages; the owner goes to the log (never a metric dimension)."""
+    logger.warning("internal hook auth failed owner=%s", owner_id)
+    put_metric("internal_hook.auth_failed", dimensions={"route": "other"})
+
+
+async def require_hook_token(owner_id: str, request: Request, *, run_event_id: str | None = None) -> dict:
+    """The owner's hook token (or, with ``run_event_id``, a run-event grant); returns the containers row."""
+    authorization = request.headers.get("Authorization", "")
+    if not authorization.startswith("Bearer "):
+        _count_hook_auth_failure(owner_id)
+        raise HTTPException(status_code=401, detail="missing hook token")
+    presented = authorization.removeprefix("Bearer ")
+    container = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    expected = (container or {}).get("hook_token") or ""
+    if expected and hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        put_metric("internal_hook.auth_accepted", dimensions={"source": "legacy"})
+        return container
+    if run_event_id is not None:
+        try:
+            await require_run_event(presented, owner_id, container or {}, run_event_id)
+        except HTTPException:
+            _count_hook_auth_failure(owner_id)
+            raise
+        put_metric("internal_hook.auth_accepted", dimensions={"source": "run_grant"})
+        return container
+    _count_hook_auth_failure(owner_id)
+    # Internal hook auth intentionally remains 401 at the router boundary.
+    raise HTTPException(status_code=401, detail="invalid hook token")

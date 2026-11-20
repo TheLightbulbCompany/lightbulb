@@ -270,9 +270,9 @@ class ExtensionAsk(WebStoreInstall):
 async def browser_extensions_agent_request(owner_id: str, body: ExtensionAsk, request: Request):
     """An agent (hook token, via lightbulb-api.sh) asks to add a Web Store extension. It never
     installs: every workspace member gets a Needs-you Activity item, and one click adds it."""
-    from routers.messaging import _require_hook_token
+    from core.services.hook_grants import require_hook_token
 
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     return await _extension_result(browser_extensions.request_install(owner_id, body.idOrUrl, agent_id=body.agentId))
 
 
@@ -387,9 +387,9 @@ browser_internal_router = APIRouter()
 
 @browser_internal_router.post("/{owner_id}/acquire")
 async def browser_agent_acquire(owner_id: str, body: BrowserRun, request: Request, response: Response):
-    from routers.messaging import _require_hook_token
+    from core.services.hook_grants import require_hook_token
 
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     response.headers["Cache-Control"] = "no-store"
     result = await _browser_result(browser_control.acquire_agent(owner_id, body.runId, body.agentId))
     if result == browser_control.STARTING:
@@ -399,9 +399,9 @@ async def browser_agent_acquire(owner_id: str, body: BrowserRun, request: Reques
 
 @browser_internal_router.post("/{owner_id}/release")
 async def browser_agent_release(owner_id: str, body: BrowserRunRelease, request: Request, response: Response):
-    from routers.messaging import _require_hook_token
+    from core.services.hook_grants import require_hook_token
 
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     response.headers["Cache-Control"] = "no-store"
     return await _browser_result(browser_control.release_agent(owner_id, body.runId, body.generation))
 

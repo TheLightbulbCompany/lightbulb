@@ -428,9 +428,8 @@ class Settings(BaseSettings):
     # entirely, so an env without a verified mail domain never mints.
     AGENT_EMAIL_DOMAIN: str = ""
 
-    # The Lightbulb workspace's Clerk org id. Every OTHER org workspace gets a
-    # platform-managed channel shared with this org (core/services/messaging.py
-    # ensure_vendor_room). Empty disables the feature entirely.
+    # The Lightbulb workspace's Clerk org id: workspace_wipe refuses it, and an existing vendor shared
+    # channel (messaging.is_vendor_room) is recognised by it. Empty: no room is a vendor room.
     VENDOR_ORG_ID: str = ""
 
     # SES configuration set every agent-mail send is stamped with (the

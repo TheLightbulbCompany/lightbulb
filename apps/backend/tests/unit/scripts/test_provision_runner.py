@@ -35,12 +35,8 @@ def hermes(monkeypatch):
     monkeypatch.setattr("core.services.onboarding_brief.reconcile_pending_brief", drain)
     arm_trial = AsyncMock(return_value=None)
     monkeypatch.setattr("core.repositories.billing_repo.arm_trial_if_unset", arm_trial)
-    vendor_room = AsyncMock()
-    monkeypatch.setattr("core.services.messaging.ensure_vendor_room", vendor_room)
     join_room = AsyncMock()
     monkeypatch.setattr("core.services.messaging.join_default_room", join_room)
-    join_feed = AsyncMock()
-    monkeypatch.setattr("core.services.messaging.join_feed_room", join_feed)
     members = AsyncMock(return_value=[{"user_id": "user_creator"}, {"user_id": "user_early"}])
     monkeypatch.setattr("core.services.clerk_admin.list_organization_members", members)
     return SimpleNamespace(
@@ -49,9 +45,7 @@ def hermes(monkeypatch):
         reconcile=reconcile,
         drain=drain,
         arm_trial=arm_trial,
-        vendor_room=vendor_room,
         join_room=join_room,
-        join_feed=join_feed,
     )
 
 
@@ -93,25 +87,21 @@ async def test_the_brief_drains_after_step_0_and_the_trial_arms_after_the_runtim
         provision_runner, "_seed_owner_workspace", AsyncMock(side_effect=lambda _o: order.append("seed") or 0)
     )
     hermes.drain.side_effect = lambda _o: order.append("drain")
-    hermes.vendor_room.side_effect = lambda _o: order.append("vendor_room")
+    hermes.join_room.side_effect = lambda *_a: order.append("seat")
     hermes.provision.side_effect = lambda _o: order.append("runtime")
     hermes.arm_trial.side_effect = lambda _o: order.append("arm_trial")
     hermes.reconcile.side_effect = lambda _o: order.append("reconcile")
 
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    assert order == ["seed", "drain", "vendor_room", "runtime", "arm_trial", "reconcile"]
+    assert order == ["seed", "drain", "seat", "seat", "runtime", "arm_trial", "reconcile"]
 
 
 async def test_every_teammate_is_seated_once_the_company_is_active(monkeypatch, hermes, repo):
-    """The status poll used to create the vendor room and seat teammates the membership webhook
-    missed (one who joined before #general existed). The executor does it after step 0; a
-    failure never fails the provision."""
+    """The status poll used to seat teammates the membership webhook missed (one who joined before
+    #general existed). The executor does it after step 0; a failure never fails the provision."""
     hermes.join_room.side_effect = [RuntimeError("ddb"), True]
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    hermes.vendor_room.assert_awaited_once_with("org_a")
     assert [c.args for c in hermes.join_room.await_args_list] == [("org_a", "user_creator"), ("org_a", "user_early")]
-    # ...and in the workspace feed, the same way.
-    assert [c.args for c in hermes.join_feed.await_args_list] == [("org_a", "user_creator"), ("org_a", "user_early")]
     repo.mark_provision_error.assert_not_awaited()
 
 

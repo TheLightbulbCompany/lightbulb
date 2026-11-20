@@ -36,12 +36,11 @@ Targets (one per post):
 --room '#sales'                 a channel you are in, by name
 --handle aden | --user <userId> a teammate's DM
 --issue "$PAPERCLIP_TASK_ID"    the issue creator's DM
---feed --why "<reason>"         the feed: references/feed.md
 ```
 
-- Target order: `--feed` or `--room`, then `--user`/`--handle`, then `--issue` (falls through to
+- Target order: `--room`, then `--user`/`--handle`, then `--issue` (falls through to
   #general when an agent created the issue), then #general. Name at most one of
-  feed/room/user/handle. A DM is created if it does not exist; a named room is NOT joined
+  room/user/handle. A DM is created if it does not exist; a named room is NOT joined
   for you — you must already be a member.
 - A retry of the same post replays instead of doubling. A recurring post whose text
   may repeat (a daily brief) passes `--event-id <something per day>` so tomorrow's

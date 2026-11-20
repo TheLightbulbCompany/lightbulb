@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
 import math
 import time
@@ -31,18 +30,16 @@ from core.services import chat_gate
 from core.services import messaging as service
 from core.services import (
     a2a_tasks,
-    hook_grants,
     hosted_mcp,
     network_login,
-    link_preview,
     local_sessions,
     openclaw_work,
-    subagents,
     task_board,
 )
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
+from core.services.hook_grants import require_hook_token
 from core.services.messaging import (
     AbortRunResponse,
     AgentMessageReceiptResponse,
@@ -53,8 +50,6 @@ from core.services.messaging import (
     ContractModel,
     FollowUpRequest,
     FollowUpResponse,
-    SetReactionRequest,
-    UpdateMessageRequest,
     CreateMessageRequest,
     CreateRoomRequest,
     LiveConfig,
@@ -66,13 +61,11 @@ from core.services.messaging import (
     ReadCursorRequest,
     ReadCursorResponse,
     RoomDetail,
-    RoomMemoryResponse,
     RoomListResponse,
     MessageAttachment,
     RunEventRequest,
     RunEventResponse,
     RunStatusResponse,
-    SectionsRequest,
     SteerRunRequest,
     SteerRunResponse,
     TypingRequest,
@@ -290,49 +283,6 @@ async def agent_local_session_events(
 _typing_last: dict[tuple[str, str], float] = {}
 
 
-def _count_hook_auth_failure(owner_id: str) -> None:
-    """Counted so that silence pages; the owner goes to the log (never a metric dimension)."""
-    logger.warning("internal hook auth failed owner=%s", owner_id)
-    put_metric("internal_hook.auth_failed", dimensions={"route": "other"})
-
-
-async def _require_hook_token(owner_id: str, request: Request, *, run_event_id: str | None = None) -> dict:
-    authorization = request.headers.get("Authorization", "")
-    if not authorization.startswith("Bearer "):
-        _count_hook_auth_failure(owner_id)
-        raise HTTPException(status_code=401, detail="missing hook token")
-    presented = authorization.removeprefix("Bearer ")
-    container = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    expected = (container or {}).get("hook_token") or ""
-    if expected and hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
-        put_metric("internal_hook.auth_accepted", dimensions={"source": "legacy"})
-        return container
-    if run_event_id is not None:
-        try:
-            await hook_grants.require_run_event(presented, owner_id, container or {}, run_event_id)
-        except HTTPException:
-            _count_hook_auth_failure(owner_id)
-            raise
-        put_metric("internal_hook.auth_accepted", dimensions={"source": "run_grant"})
-        return container
-    _count_hook_auth_failure(owner_id)
-    # Internal hook auth intentionally remains 401 at the router boundary.
-    raise HTTPException(status_code=401, detail="invalid hook token")
-
-
-@router.get("/messaging/link-preview", response_model=link_preview.LinkPreview)
-async def get_link_preview(
-    url: Annotated[str, Query(min_length=8, max_length=2048)],
-    auth: AuthContext = Depends(get_current_user),
-):
-    """Rich-link card metadata for a URL in a message, fetched server-side (SSRF-guarded, cached)."""
-    resolve_owner_id(auth)  # workspace fence, same as every other messaging read
-    preview = await link_preview.get_preview(url)
-    if preview is None:
-        raise HTTPException(status_code=404, detail="no preview")
-    return preview
-
-
 @router.get("/messaging/live-config", response_model=LiveConfig, response_model_exclude_none=True)
 async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
@@ -355,11 +305,6 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
 @router.get("/messaging/rooms", response_model=RoomListResponse)
 async def list_rooms(auth: AuthContext = Depends(get_current_user)):
     return await service.list_rooms(auth)
-
-
-@router.put("/messaging/me/sections", response_model=RoomListResponse)
-async def put_sections(request: SectionsRequest, auth: AuthContext = Depends(get_current_user)):
-    return await service.put_sections(auth, request)
 
 
 @router.post("/messaging/rooms", response_model=RoomDetail, status_code=201)
@@ -473,31 +418,6 @@ async def create_room_message(
             "displayName": f"{label} via {await service.human_display_name(auth.user_id)}"[:256],
         },
     )
-
-
-@router.put("/messaging/rooms/{room_id}/messages/{message_id}/reactions", response_model=CanonicalMessage)
-async def set_message_reaction(
-    room_id: str, message_id: str, request: SetReactionRequest, auth: AuthContext = Depends(get_current_user)
-):
-    return await service.set_reaction(auth, room_id, message_id, request)
-
-
-@router.patch("/messaging/rooms/{room_id}/messages/{message_id}", response_model=CanonicalMessage)
-async def update_room_message(
-    room_id: str, message_id: str, request: UpdateMessageRequest, auth: AuthContext = Depends(get_current_user)
-):
-    return await service.update_message(auth, room_id, message_id, request)
-
-
-@router.get("/messaging/rooms/{room_id}/memory", response_model=RoomMemoryResponse)
-async def list_room_memory(room_id: str, auth: AuthContext = Depends(get_current_user)):
-    return await service.list_room_memory(auth, room_id)
-
-
-@router.delete("/messaging/rooms/{room_id}/memory/{message_id}", status_code=204)
-async def forget_room_memory(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
-    await service.forget_room_memory(auth, room_id, message_id)
-    return Response(status_code=204)
 
 
 @router.post("/messaging/rooms/{room_id}/attachments", response_model=MessageAttachment, status_code=201)
@@ -772,65 +692,13 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
     raise ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is unavailable.", retryable=True, retry_after=3)
 
 
-async def _subagent_scope(auth: AuthContext, room_id: str, agent_id: str | None = None) -> str:
-    """Membership is checked from the caller's workspace; the subagents live in the ROOM owner's
-    runtime, so a guest in a shared/vendor room reaches that runtime, never their own."""
-    meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    if agent_id is not None:
-        agent_id = service.validate_uuid(agent_id, label="agent ID")
-        if await service.room_agent(room_id, agent_id, meta) is None:  # the feed: a roster author
-            raise ApiProblem("SUBAGENT_NOT_FOUND", "That agent is not in this room.")
-    return meta["ownerId"]
-
-
-async def _subagent_control_gate(auth: AuthContext, owner_id: str, room_id: str, agent_id: str) -> None:
-    gate = await chat_gate.gate_chat(
-        user_id=auth.user_id, owner_id=owner_id, session_key=subagents.session_key(room_id, agent_id)
-    )
-    if gate.get("blocked"):
-        raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "This workspace cannot act on agents right now."))
-    await container_repo.touch_last_interactive(owner_id)
-
-
-@router.get("/messaging/rooms/{room_id}/subagents")
-async def list_room_subagents(room_id: str, auth: AuthContext = Depends(get_current_user)):
-    owner_id = await _subagent_scope(auth, room_id)
-    return await subagents.list_for_room(owner_id, room_id)
-
-
-@router.get("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/tail")
-async def tail_subagent(room_id: str, agent_id: str, subagent_id: str, auth: AuthContext = Depends(get_current_user)):
-    owner_id = await _subagent_scope(auth, room_id, agent_id)
-    return await subagents.tail(owner_id, room_id, agent_id, subagent_id)
-
-
-@router.post("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/steer")
-async def steer_subagent(
-    room_id: str,
-    agent_id: str,
-    subagent_id: str,
-    request: SteerRunRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    owner_id = await _subagent_scope(auth, room_id, agent_id)
-    await _subagent_control_gate(auth, owner_id, room_id, agent_id)
-    return await subagents.steer(owner_id, room_id, agent_id, subagent_id, request.text)
-
-
-@router.post("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/stop")
-async def stop_subagent(room_id: str, agent_id: str, subagent_id: str, auth: AuthContext = Depends(get_current_user)):
-    owner_id = await _subagent_scope(auth, room_id, agent_id)
-    await _subagent_control_gate(auth, owner_id, room_id, agent_id)
-    return await subagents.stop(owner_id, room_id, agent_id, subagent_id)
-
-
 @router.post(
     "/internal/messaging/agent-messages/{owner_id}",
     response_model=AgentMessageReceiptResponse,
     status_code=201,
 )
 async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: Request):
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     receipt = await service.create_agent_message(owner_id, body)
     if not body.progress:
         # An A2A task waiting in this DM completes with this reply; never break the reply path.
@@ -858,16 +726,8 @@ async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: 
 async def post_agent_post(owner_id: str, body: AgentPostRequest, request: Request):
     """An agent posting outside a room turn (``lightbulb-post.sh``): resolves the target
     room, then writes through the same canonical agent writer as ``agent-messages``."""
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     return await service.post_agent_message(owner_id, body)
-
-
-@router.get("/messaging/feed/u/{owner_id}")
-async def agent_feed(owner_id: str, request: Request):
-    """The feed's brief and latest posts for an agent outside a room turn (hook token):
-    ``lightbulb-api.sh GET /api/v1/messaging/feed/u/$ISOL8_OWNER_ID``."""
-    await _require_hook_token(owner_id, request)
-    return await service.agent_feed(owner_id)
 
 
 @router.get(
@@ -875,13 +735,13 @@ async def agent_feed(owner_id: str, request: Request):
     response_model=AgentMessageReceiptResponse,
 )
 async def get_agent_message_receipt(owner_id: str, event_id: str, request: Request):
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     return await service.get_agent_receipt(owner_id, event_id)
 
 
 @router.post("/internal/messaging/runs/{owner_id}/events", response_model=RunEventResponse)
 async def post_run_event(owner_id: str, body: RunEventRequest, request: Request):
-    await _require_hook_token(owner_id, request, run_event_id=str(body.run_id))
+    await require_hook_token(owner_id, request, run_event_id=str(body.run_id))
     if body.type == "run.heartbeat":  # a room turn's session is alive: keep it on its runtime at cut-over
         await run_in_thread(runtime_transport.note_alive, owner_id)
     return await service.handle_run_event(owner_id, body)
@@ -889,7 +749,7 @@ async def post_run_event(owner_id: str, body: RunEventRequest, request: Request)
 
 @router.post("/internal/messaging/followups/{owner_id}", response_model=FollowUpResponse, status_code=202)
 async def post_follow_up(owner_id: str, body: FollowUpRequest, request: Request, response: Response):
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     result = await service.create_follow_up(owner_id, body)
     if result.status == "replayed":
         response.status_code = 200
@@ -901,7 +761,7 @@ async def recycle_runtime_session(owner_id: str, request: Request):
     """The bridge asks to have its own session stopped: the 7 h recycle, ahead of AgentCore's
     8 h maxLifetime SIGTERM that kills a busy microVM mid-turn. The bridge already refuses new
     turns (a TTL'd hold), so the retried work cold-starts a fresh microVM."""
-    container = await _require_hook_token(owner_id, request)
+    container = await require_hook_token(owner_id, request)
     from core.dynamodb import run_in_thread
     from core.services.runtime_transport import live_arn
 
@@ -919,14 +779,15 @@ async def recycle_runtime_session(owner_id: str, request: Request):
 
 @router.post("/internal/messaging/usage/{owner_id}", response_model=UsageReportResponse)
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     return await service.handle_usage_report(owner_id, body)
 
 
 @router.post("/internal/messaging/subagents/{owner_id}/events")
-async def post_subagent_events(owner_id: str, body: subagents.SubagentEventsRequest, request: Request):
-    await _require_hook_token(owner_id, request)
-    return await subagents.publish_events(owner_id, body)
+async def post_subagent_events(owner_id: str, request: Request):
+    """No client shows subagents any more; the bridge still posts its events, so they are accepted and dropped."""
+    await require_hook_token(owner_id, request)
+    return {"published": 0}
 
 
 class VoiceProfileRequest(ContractModel):
@@ -940,7 +801,7 @@ class VoiceProfileRequest(ContractModel):
 @router.post("/internal/agents/voice-profile/{owner_id}")
 async def post_voice_profile(owner_id: str, body: VoiceProfileRequest, request: Request):
     """C8: the agent's ``lightbulb_voice_profile`` tool -- rename or voice notes, asked by voice."""
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     return await voice_calls.edit_voice_profile(
         owner_id, agent_id=body.agent_id, run_id=body.run_id, action=body.action, name=body.name, text=body.text
     )
@@ -951,6 +812,6 @@ async def get_internal_attachment(owner_id: str, room_id: str, attachment_id: st
     """Hook-token twin of ``get_room_attachment`` (Clerk-authed, above) for the bridge's
     ``sync.materialize_attachments`` -- a Hermes microVM has no EFS to read attachments from
     directly, so it fetches them over this door instead (Task 25, spec §5 "Ingress")."""
-    await _require_hook_token(owner_id, request)
+    await require_hook_token(owner_id, request)
     attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
     return Response(content=data, media_type=attachment.content_type)

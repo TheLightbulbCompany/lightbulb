@@ -35,34 +35,6 @@ def feed_world(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("agent", "allowed"), [(AUTHOR, True), (STRANGER, False)])
-async def test_subagents_admit_a_feed_author(agent, allowed):
-    from core.services import subagents
-
-    key = f"agent:{agent}:lightbulb:channel:{FEED}"
-    if allowed:
-        assert await subagents.room_and_agent(OWNER, key) == (FEED, agent)
-    else:
-        with pytest.raises(ApiProblem):
-            await subagents.room_and_agent(OWNER, key)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("agent", "allowed"), [(AUTHOR, True), (STRANGER, False)])
-async def test_the_subagent_route_scope_admits_a_feed_author(monkeypatch, agent, allowed):
-    from core.auth import AuthContext
-    from routers import messaging as router
-
-    monkeypatch.setattr(router.service, "require_room_member", AsyncMock(return_value=({"ownerId": OWNER}, {})))
-    call = router._subagent_scope(AuthContext(user_id=USER, org_id=OWNER), FEED, agent)
-    if allowed:
-        assert await call == OWNER
-    else:
-        with pytest.raises(ApiProblem):
-            await call
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("agent", "allowed"), [(AUTHOR, True), (STRANGER, False)])
 async def test_local_sessions_admit_a_feed_author(agent, allowed):
     import time
 
@@ -199,14 +171,12 @@ async def test_every_gate_refuses_another_workspaces_feed(monkeypatch, foreign_f
     import time
 
     from core.auth import AuthContext
-    from core.services import local_sessions, subagents
+    from core.services import local_sessions
     from core.services.local_session_grants import AgentInvocation
     from routers import messaging as router
 
     with pytest.raises(ApiProblem):
         await messaging.require_agent_in_live_room(OWNER, OTHER_FEED, AUTHOR)
-    with pytest.raises(ApiProblem):
-        await subagents.room_and_agent(OWNER, f"agent:{AUTHOR}:lightbulb:channel:{OTHER_FEED}")
     with pytest.raises(ApiProblem):
         await local_sessions.require_caller(
             AgentInvocation(

@@ -120,7 +120,7 @@ async def test_agent_acquire_answers_202_while_the_browser_starts(app):
     from core.services import browser_control
 
     with (
-        patch("routers.messaging._require_hook_token", AsyncMock()),
+        patch("core.services.hook_grants.require_hook_token", AsyncMock()),
         patch("routers.container.browser_control.acquire_agent", AsyncMock(return_value=browser_control.STARTING)),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -292,7 +292,7 @@ async def test_helper_save_needs_a_persons_fresh_click_and_no_agent(async_client
 @pytest.mark.asyncio
 async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_client):
     with (
-        patch("routers.messaging._require_hook_token") as hook,
+        patch("core.services.hook_grants.require_hook_token") as hook,
         patch("routers.container.browser_extensions.request_install", return_value={"status": "requested"}) as ask,
     ):
         resp = await async_client.post(

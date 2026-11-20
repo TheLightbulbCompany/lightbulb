@@ -12,24 +12,20 @@ def _container():
     )
 
 
-def test_valid_token_reaches_the_service(client):
-    with (
-        _container(),
-        patch("routers.messaging.subagents.publish_events", AsyncMock(return_value={"published": 1})) as svc,
-    ):
+def test_valid_token_is_accepted_and_dropped(client):
+    """The bridge still posts subagent events; nothing shows them, so they are accepted (200) and dropped."""
+    with _container():
         r = client.post(
             f"/api/v1/internal/messaging/subagents/{OWNER}/events",
             json=BODY,
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
-    assert r.status_code == 200 and r.json() == {"published": 1}
-    assert svc.await_args.args[0] == OWNER
+    assert r.status_code == 200 and r.json() == {"published": 0}
 
 
 def test_wrong_token_is_401(client):
-    with _container(), patch("routers.messaging.subagents.publish_events", AsyncMock()) as svc:
+    with _container():
         r = client.post(
             f"/api/v1/internal/messaging/subagents/{OWNER}/events", json=BODY, headers={"Authorization": "Bearer nope"}
         )
     assert r.status_code == 401
-    svc.assert_not_awaited()

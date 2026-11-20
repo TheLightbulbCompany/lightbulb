@@ -1,8 +1,8 @@
-"""The workspace feed room (spec 2026-10-14 §4.2, task 8a): one hidden channel per workspace,
-identified by id, its topic the team's brief; agents post to it with ``feed: true`` and a reason."""
+"""An existing workspace feed room (spec 2026-10-14 §4.2, task 8a): one hidden channel per workspace, identified
+by id, its topic the team's brief. Nothing seeds or reads it any more; these pin the rules its rows keep, and the
+#general autojoin's removal window."""
 
 import asyncio
-import threading
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -48,7 +48,7 @@ def test_the_summary_flags_the_feed_so_clients_hide_it():
         "lastSeq": 1,
         "updatedAt": "2026-10-14T00:00:00Z",
         "createdAt": "2026-10-14T00:00:00Z",
-        "topic": messaging.FEED_DEFAULT_TOPIC,
+        "topic": "Only money.",
     }
     member = {"kind": "human", "id": "user_a", "ownerId": OWNER, "role": "member", "joinedSeq": 0}
     summary = messaging.RoomSummary(**messaging._room_summary_fields(meta, member, None))
@@ -79,120 +79,67 @@ def workspace(table, monkeypatch):  # noqa: F811
     monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_A"}))
 
 
-@pytest.mark.asyncio
-async def test_ensure_feed_room_twice_makes_one_room_with_one_welcome(workspace):
-    assert await messaging.ensure_feed_room(OWNER, "user_A") == FEED
-    assert await messaging.ensure_feed_room(OWNER, "user_A") == FEED
+GENERAL = messaging.default_room_id(OWNER)
 
-    meta = await repo.get_room(FEED)
-    assert (meta["name"], meta["kind"], meta["topic"]) == ("feed", "channel", messaging.FEED_DEFAULT_TOPIC)
-    assert messaging.FEED_DEFAULT_TOPIC == (
-        "Keep us posted on customers, money and what the team finished. Skip engineering details."
+
+def _human(user_id: str, role: str = "member") -> dict:
+    return {"kind": "human", "id": user_id, "role": role, "listenMode": None, "displayName": f"Name {user_id}"}
+
+
+async def _feed() -> dict:
+    """An existing workspace feed (nothing seeds one any more): people only, the brief as its topic, and the CEO's
+    top-level post a Discuss reply can thread under."""
+    members = [_human("user_A", "owner"), _human("user_B")]
+    await repo.create_room(
+        owner_id=OWNER,
+        room_id=FEED,
+        client_room_id=f"workspace-feed-v1:{OWNER}",
+        creator_user_id="user_A",
+        name="feed",
+        kind="channel",
+        members=members,
+        req_hash=repo.request_hash("feed", "channel", members),
+        extra={"topic": "Keep us posted on customers and money."},
     )
-    members = await repo.list_members(FEED)
-    # Every workspace human (the creator and the teammate seated through the AUTOJOIN marker).
-    assert {row["id"] for row in members if row["kind"] == "human"} == {"user_A", "user_B"}
-    # Agents are the feed's authors, not its members: nobody but people sits in the room.
-    assert not [row for row in members if row["kind"] == "agent"]
-    messages, _ = await repo.list_messages(FEED, 0, 100)
-    assert len(messages) == 1
-    assert messages[0]["author"]["id"] == CEO
-    assert messages[0]["text"] == messaging.FEED_WELCOME
-    assert messages[0]["kind"] == "welcome"  # clients find the welcome by kind, never by its text
-    # The general room is untouched.
-    assert await repo.get_room(messaging.default_room_id(OWNER)) is None
-
-
-@pytest.mark.asyncio
-async def test_a_super_agent_feed_welcome_promises_only_what_runs(workspace, monkeypatch):
-    await messaging.ensure_feed_room(OWNER, "user_A")
-    messages, _ = await repo.list_messages(FEED, 0, 100)
-    text = messages[0]["text"]
-    assert text == messaging.FEED_WELCOME
-    assert "three" not in text and "💡" not in text and "Work for tasks" not in text
-    for place in ("Home", "Needs you", "Ideas", "feed", "Discuss", "brief"):
-        assert place in text
-
-
-@pytest.mark.asyncio
-async def test_a_later_teammate_joins_once_and_workspace_membership_alone_decides(workspace):
-    await messaging.ensure_feed_room(OWNER, "user_A")
-    assert await messaging.join_feed_room(OWNER, "user_C") is True
-    assert await messaging.join_feed_room(OWNER, "user_C") is False
-    before = await repo.get_room(FEED)
-    # A workspace removal still removes and rotates the key...
-    await messaging.revoke_human_membership(OWNER, "user_C")
-    assert await repo.get_member(FEED, "human", "user_C") is None
-    assert (await repo.get_room(FEED))["deliveryKey"] != before["deliveryKey"]
-    assert await messaging.join_feed_room(OWNER, "user_C") is False  # stream off: no seat
-    # ...and a real rejoin to the workspace re-seats them.
-    await repo.ensure_user_stream(OWNER, "user_C", rejoin=True)
-    assert await messaging.join_feed_room(OWNER, "user_C") is True
-
-
-@pytest.mark.asyncio
-async def test_the_first_reader_is_a_member_and_the_workspace_creator_owns_the_feed(workspace):
-    from core.auth import AuthContext
-
-    await messaging.get_feed(AuthContext(user_id="user_B", org_id=OWNER))
-    roles = {row["id"]: row["role"] for row in await repo.list_members(FEED) if row["kind"] == "human"}
-    assert roles == {"user_A": "owner", "user_B": "member"}
-
-
-@pytest.mark.asyncio
-async def test_two_different_users_racing_get_one_room_one_welcome_no_error(workspace, monkeypatch):
-    from core.auth import AuthContext
-
-    # moto restores the whole table on a failed transaction and is not thread-safe: a losing
-    # create's restore can wipe the winner's rows, which DynamoDB never does. One call at a time
-    # (test_messaging_repo's pattern); the readers still interleave between awaits.
-    atomic = threading.Lock()
-    real = repo.run_in_thread
-
-    async def run_in_thread(call, *args, **kwargs):
-        def locked(*a, **kw):
-            with atomic:
-                return call(*a, **kw)
-
-        return await real(locked, *args, **kwargs)
-
-    monkeypatch.setattr(repo, "run_in_thread", run_in_thread)
-    results = await asyncio.gather(
-        messaging.get_feed(AuthContext(user_id="user_B", org_id=OWNER)),
-        messaging.get_feed(AuthContext(user_id="user_A", org_id=OWNER)),
-        messaging.ensure_feed_room(OWNER, "user_A"),
+    item, _ = await repo.create_message(
+        room_id=FEED,
+        owner_id=OWNER,
+        idemp_pk=repo.owner_pk(OWNER),
+        idemp_sk=repo.agent_idemp_sk(f"feed-welcome:{OWNER}"),
+        req_hash="w",
+        author={"kind": "agent", "id": CEO, "displayName": "Ceo"},
+        text="**This is our feed.**",
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=CEO,
+        client_message_id=None,
+        author_member_check=False,  # the CEO writes the feed as an author, never a member
     )
-    assert {str(results[0].room_id), str(results[1].room_id), results[2]} == {FEED}
-    messages, _ = await repo.list_messages(FEED, 0, 100)
-    assert len(messages) == 1
+    return item
 
 
-@pytest.mark.asyncio
-async def test_a_stale_create_that_loses_to_another_roster_converges(workspace, monkeypatch):
-    """The loser of a create race whose request differs (here: an agent hired in between)
-    re-reads the room instead of answering 500."""
-    await messaging.ensure_feed_room(OWNER)
-    real_get_room = repo.get_room
-    calls = {"n": 0}
-
-    async def stale_once(room_id):
-        calls["n"] += 1
-        return None if calls["n"] == 1 else await real_get_room(room_id)
-
-    roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
-    roster.append({"id": "10000000-0000-4000-8000-000000000099", "name": "Hire"})
-    monkeypatch.setattr(messaging.messaging_repo, "get_room", stale_once)
-    monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
-    assert await messaging.ensure_feed_room(OWNER) == FEED
-    messages, _ = await repo.list_messages(FEED, 0, 100)
-    assert len(messages) == 1
+async def _general() -> None:
+    members = [_human("user_A", "owner")]
+    await repo.create_room(
+        owner_id=OWNER,
+        room_id=GENERAL,
+        client_room_id="general",
+        creator_user_id="user_A",
+        name="general",
+        kind="channel",
+        members=members,
+        req_hash=repo.request_hash("general", "channel", members),
+    )
 
 
 @pytest.mark.asyncio
 async def test_humans_are_never_added_or_removed_in_the_feed_by_hand(workspace):
     from core.auth import AuthContext
 
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     owner = AuthContext(user_id="user_A", org_id=OWNER)
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.remove_member(owner, FEED, "human", "user_B")
@@ -208,15 +155,6 @@ async def test_humans_are_never_added_or_removed_in_the_feed_by_hand(workspace):
         )
 
 
-@pytest.mark.asyncio
-async def test_ensure_waits_for_an_active_company(table, monkeypatch):  # noqa: F811
-    from core.repositories.workspace_repo import WorkspaceRepo
-
-    monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", lambda *_a, **_k: asyncio.sleep(0, result=None))
-    assert await messaging.ensure_feed_room(OWNER, "user_A") is None
-    assert await repo.get_room(FEED) is None
-
-
 # ---- posting ---------------------------------------------------------------
 
 
@@ -224,19 +162,10 @@ def _post(**over) -> messaging.AgentPostRequest:
     return messaging.AgentPostRequest.model_validate({"eventId": "post:x:1", "agentId": AGENT, "text": "hi", **over})
 
 
-@pytest.mark.asyncio
-async def test_feed_true_targets_the_feed_room_with_its_reason(created, monkeypatch):  # noqa: F811
-    ensure = AsyncMock(return_value=FEED)
-    monkeypatch.setattr(messaging, "ensure_feed_room", ensure)
-    await messaging.post_agent_message(OWNER, _post(feed=True, postReason="Revenue is the brief's first ask."))
-    ensure.assert_awaited_once_with(OWNER)
-    assert created.call_args.kwargs["room_id"] == FEED
-    assert created.call_args.kwargs["post_reason"] == "Revenue is the brief's first ask."
-
-
-def test_feed_is_a_target_like_the_others():
+def test_the_feed_is_no_longer_a_post_target():
+    """Nothing seeds or reads the feed any more: an older script's `--feed` post is refused, never sent elsewhere."""
     with pytest.raises(ValidationError):
-        _post(feed=True, roomId=str(uuid.uuid4()))
+        _post(feed=True, postReason="why")
 
 
 def test_post_reason_is_capped_at_280_characters():
@@ -322,7 +251,7 @@ async def test_post_reason_round_trips_through_the_store(table):  # noqa: F811
 async def test_any_member_edits_the_brief_but_nobody_renames_archives_or_leaves(workspace, monkeypatch):
     from core.auth import AuthContext
 
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
     member, creator = AuthContext(user_id="user_B", org_id=OWNER), AuthContext(user_id="user_A", org_id=OWNER)
     detail = await messaging.patch_room(member, FEED, messaging.PatchRoomRequest(topic="Only money."))
@@ -336,48 +265,7 @@ async def test_any_member_edits_the_brief_but_nobody_renames_archives_or_leaves(
         await messaging.delete_room(creator, FEED)
 
 
-@pytest.mark.asyncio
-async def test_an_agent_reads_the_brief_and_recent_posts_outside_a_room_turn(workspace):
-    """A routine has no signed-in person, so lightbulb_read_rooms reads nothing: the feed's own
-    hook-token read is how the writer sees its recent posts and never repeats one."""
-    feed = await messaging.agent_feed(OWNER)
-    assert feed["roomId"] == FEED and feed["topic"] == messaging.FEED_DEFAULT_TOPIC
-    assert [(p["author"], p["text"], p["postReason"]) for p in feed["posts"]] == [("Ceo", messaging.FEED_WELCOME, None)]
-
-
-@pytest.mark.asyncio
-async def test_the_agent_read_returns_top_level_posts_only(workspace):
-    await messaging.ensure_feed_room(OWNER)
-    (welcome,), _ = await repo.list_messages(FEED, 0, 100)
-    await repo.create_message(
-        room_id=FEED,
-        owner_id=OWNER,
-        idemp_pk=repo.owner_pk(OWNER),
-        idemp_sk=repo.agent_idemp_sk("discuss-1"),
-        req_hash="d",
-        author={"kind": "agent", "id": CEO, "displayName": "Ceo"},
-        text="A Discuss reply",
-        mentions=[],
-        reply_to_message_id=None,
-        thread_root_message_id=welcome["messageId"],
-        run_id=None,
-        dispatch_targets=[],
-        source_agent_id=CEO,
-        client_message_id=None,
-        thread_root_seq=welcome["messageSeq"],
-        author_member_check=False,  # an agent writes the feed as an author
-    )
-    feed = await messaging.agent_feed(OWNER)
-    assert [p["text"] for p in feed["posts"]] == [messaging.FEED_WELCOME]
-
-
-# ---- round 2: removal window, feed owner choice ----------------------------
-
-
-async def _seated_c():
-    await messaging.ensure_feed_room(OWNER)
-    assert await messaging.join_feed_room(OWNER, "user_C") is True
-    return await repo.get_room(FEED)
+# ---- round 2: the removal window (#general autojoin) ----------------------------
 
 
 def _active(stream) -> bool:
@@ -385,29 +273,10 @@ def _active(stream) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_a_feed_read_inside_the_removal_window_does_not_reseat(workspace, monkeypatch):
-    """Keys rotate before the stream goes off; a read landing in between must not re-seat."""
-    await _seated_c()
-    real_deactivate = repo.deactivate_user_stream
-
-    async def read_first(owner_id, user_id):
-        await messaging.join_feed_room(OWNER, "user_C")  # the removed user's still-valid JWT reads Activity
-        return await real_deactivate(owner_id, user_id)
-
-    monkeypatch.setattr(messaging.messaging_repo, "deactivate_user_stream", read_first)
-    await messaging.revoke_human_membership(OWNER, "user_C")
-    assert await repo.get_member(FEED, "human", "user_C") is None
-    assert not _active(await repo.get_user_stream(OWNER, "user_C"))
-    # A real rejoin (stream back on) re-seats them: the marker is free again.
-    await repo.ensure_user_stream(OWNER, "user_C", rejoin=True)
-    assert await messaging.join_feed_room(OWNER, "user_C") is True
-
-
-@pytest.mark.asyncio
 async def test_a_seat_that_lands_as_the_stream_goes_off_is_undone(workspace, monkeypatch):
-    await messaging.ensure_feed_room(OWNER)
+    await _general()
     await repo.ensure_user_stream(OWNER, "user_C")
-    before = await repo.get_room(FEED)
+    before = await repo.get_room(GENERAL)
     real_upsert = repo.upsert_member
 
     async def removed_meanwhile(**kwargs):
@@ -416,50 +285,9 @@ async def test_a_seat_that_lands_as_the_stream_goes_off_is_undone(workspace, mon
         return meta
 
     monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
-    assert await messaging.join_feed_room(OWNER, "user_C") is False
-    assert await repo.get_member(FEED, "human", "user_C") is None
-    assert (await repo.get_room(FEED))["deliveryKey"] != before["deliveryKey"]
-
-
-@pytest.mark.asyncio
-async def test_a_departed_creator_never_owns_the_feed(workspace, monkeypatch):
-    # The provisioner (user_A) and Clerk's created_by (user_X) have both left; user_B is an admin.
-    monkeypatch.setattr(
-        messaging.clerk_admin,
-        "list_organization_members",
-        AsyncMock(return_value=[{"user_id": "user_C"}, {"user_id": "user_B", "role": "org:admin"}]),
-    )
-    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_X"}))
-    assert await messaging.ensure_feed_room(OWNER) == FEED
-    roles = {row["id"]: row["role"] for row in await repo.list_members(FEED) if row["kind"] == "human"}
-    assert roles == {"user_B": "owner", "user_C": "member"}
-
-
-@pytest.mark.asyncio
-async def test_an_inactive_stream_is_not_an_owner_and_the_reader_is_the_last_resort(workspace, monkeypatch):
-    from core.auth import AuthContext
-
-    await repo.ensure_user_stream(OWNER, "user_A")
-    await repo.deactivate_user_stream(OWNER, "user_A")  # removed, Clerk not caught up yet
-    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value={}))
-    await messaging.get_feed(AuthContext(user_id="user_B", org_id=OWNER))
-    roles = {row["id"]: row["role"] for row in await repo.list_members(FEED) if row["kind"] == "human"}
-    assert roles == {"user_B": "owner"}
-
-
-@pytest.mark.asyncio
-async def test_a_workspace_with_no_active_human_has_no_feed_404_not_503(workspace, monkeypatch):
-    from core.auth import AuthContext
-
-    monkeypatch.setattr(messaging.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
-    for call in (
-        messaging.get_feed(AuthContext(user_id="user_Z", org_id=OWNER)),
-        messaging.agent_feed(OWNER),
-    ):
-        with pytest.raises(messaging.ApiProblem) as exc:
-            await call
-        assert exc.value.error.code == "ROOM_NOT_FOUND"
-    assert await repo.get_room(FEED) is None
+    assert await messaging.join_default_room(OWNER, "user_C") is False
+    assert await repo.get_member(GENERAL, "human", "user_C") is None
+    assert (await repo.get_room(GENERAL))["deliveryKey"] != before["deliveryKey"]
 
 
 # ---- round 3: a seat inside revoke's own window; the undo's revision race -----
@@ -475,9 +303,9 @@ def _cancelled():
 async def test_a_first_seat_between_revokes_room_list_and_stream_off_is_removed(workspace, monkeypatch):
     """No marker is held for a user not yet seated: a seat landing after revoke listed the rooms
     passes its own re-check (stream still on). Revoke's second pass removes it."""
-    await messaging.ensure_feed_room(OWNER)
+    await _general()
     await repo.ensure_user_stream(OWNER, "user_C")
-    before = await repo.get_room(FEED)
+    before = await repo.get_room(GENERAL)
     real_list = repo.list_rooms_for_member
     calls = {"n": 0}
 
@@ -485,18 +313,18 @@ async def test_a_first_seat_between_revokes_room_list_and_stream_off_is_removed(
         rows = await real_list(owner_id, kind, member_id)
         calls["n"] += 1
         if calls["n"] == 1:
-            assert await messaging.join_feed_room(OWNER, "user_C") is True  # lands in the window
+            assert await messaging.join_default_room(OWNER, "user_C") is True  # lands in the window
         return rows
 
     monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", seat_after_first_list)
     await messaging.revoke_human_membership(OWNER, "user_C")
-    assert await repo.get_member(FEED, "human", "user_C") is None
-    assert (await repo.get_room(FEED))["deliveryKey"] != before["deliveryKey"]
+    assert await repo.get_member(GENERAL, "human", "user_C") is None
+    assert (await repo.get_room(GENERAL))["deliveryKey"] != before["deliveryKey"]
 
 
 @pytest.mark.asyncio
 async def test_the_undo_retries_a_revision_race_and_still_unseats(workspace, monkeypatch):
-    await messaging.ensure_feed_room(OWNER)
+    await _general()
     await repo.ensure_user_stream(OWNER, "user_C")
     real_upsert, real_remove = repo.upsert_member, repo.remove_member
 
@@ -515,15 +343,15 @@ async def test_the_undo_retries_a_revision_race_and_still_unseats(workspace, mon
         return await real_remove(**kwargs)
 
     monkeypatch.setattr(messaging.messaging_repo, "remove_member", flaky)
-    assert await messaging.join_feed_room(OWNER, "user_C") is False
-    assert await repo.get_member(FEED, "human", "user_C") is None
+    assert await messaging.join_default_room(OWNER, "user_C") is False
+    assert await repo.get_member(GENERAL, "human", "user_C") is None
 
 
 @pytest.mark.asyncio
 async def test_an_undo_that_cannot_remove_fails_loudly(workspace, monkeypatch):
     from botocore.exceptions import ClientError
 
-    await messaging.ensure_feed_room(OWNER)
+    await _general()
     await repo.ensure_user_stream(OWNER, "user_C")
     real_upsert = repo.upsert_member
 
@@ -535,10 +363,10 @@ async def test_an_undo_that_cannot_remove_fails_loudly(workspace, monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
     monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(side_effect=_cancelled()))
     with pytest.raises(ClientError):
-        await messaging.join_feed_room(OWNER, "user_C")
+        await messaging.join_default_room(OWNER, "user_C")
 
 
-# ---- round 4: the GSI-backed list can miss a fresh seat; a failed undo frees the marker -----
+# ---- round 4: the GSI-backed list can miss a fresh seat -----
 
 
 @pytest.mark.asyncio
@@ -546,7 +374,7 @@ async def test_an_undo_that_cannot_remove_fails_loudly(workspace, monkeypatch):
 async def test_revoke_removes_a_feed_or_general_seat_the_member_index_has_not_caught(workspace, monkeypatch, room):
     """``list_rooms_for_member`` reads an eventually consistent GSI: a seat committed just before
     stream-off may be missing from it. Revoke removes the feed and #general seats regardless."""
-    await messaging.ensure_feed_room(OWNER)
+    await _feed()
     room_id = FEED
     if room == "general":
         room_id = messaging.default_room_id(OWNER)
@@ -570,44 +398,6 @@ async def test_revoke_removes_a_feed_or_general_seat_the_member_index_has_not_ca
     assert (await repo.get_room(room_id))["deliveryKey"] != before["deliveryKey"]
 
 
-@pytest.mark.asyncio
-async def test_a_failed_undo_still_frees_the_feed_marker_for_a_later_rejoin(workspace, monkeypatch):
-    await messaging.ensure_feed_room(OWNER)
-    await repo.ensure_user_stream(OWNER, "user_C")
-    real_upsert = repo.upsert_member
-
-    async def removed_meanwhile(**kwargs):
-        meta = await real_upsert(**kwargs)
-        await repo.deactivate_user_stream(OWNER, "user_C")
-        return meta
-
-    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
-    monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(side_effect=_cancelled()))
-    with pytest.raises(Exception):
-        await messaging.join_feed_room(OWNER, "user_C")
-    # The marker is free: claiming it again succeeds.
-    assert await repo.claim_autojoin(FEED, "user_C") is True
-
-
-@pytest.mark.asyncio
-async def test_a_failed_marker_release_never_hides_the_undo_error(workspace, monkeypatch):
-    await messaging.ensure_feed_room(OWNER)
-    await repo.ensure_user_stream(OWNER, "user_C")
-    real_upsert = repo.upsert_member
-
-    async def removed_meanwhile(**kwargs):
-        meta = await real_upsert(**kwargs)
-        await repo.deactivate_user_stream(OWNER, "user_C")
-        return meta
-
-    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
-    monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(side_effect=_cancelled()))
-    monkeypatch.setattr(messaging.messaging_repo, "release_autojoin", AsyncMock(side_effect=RuntimeError("release")))
-    with pytest.raises(Exception) as exc:
-        await messaging.join_feed_room(OWNER, "user_C")
-    assert "revision" in str(exc.value)  # the undo's TransactionCanceledException, not "release"
-
-
 # ---- Codex review on #4145: human top-level posts, the member cap, --why with --feed -----
 
 
@@ -615,7 +405,7 @@ async def test_a_failed_marker_release_never_hides_the_undo_error(workspace, mon
 async def test_a_human_top_level_post_in_the_feed_is_refused_but_a_discuss_reply_is_allowed(workspace):
     from core.auth import AuthContext
 
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     auth = AuthContext(user_id="user_A", org_id=OWNER)
     welcome = (await repo.list_messages(FEED, 0, 10))[0][0]
 
@@ -642,27 +432,6 @@ def crowded(workspace, monkeypatch):
     monkeypatch.setattr(messaging.clerk_admin, "list_organization_members", AsyncMock(return_value=PEOPLE))
 
 
-@pytest.mark.asyncio
-async def test_twenty_humans_are_all_seated_and_no_agent_sits_in_the_feed(crowded):
-    assert await messaging.ensure_feed_room(OWNER, "user_A") == FEED
-    members = await repo.list_members(FEED)
-    assert {row["id"] for row in members if row["kind"] == "human"} == {row["user_id"] for row in PEOPLE}
-    assert not [row for row in members if row["kind"] == "agent"]
-
-
-@pytest.mark.asyncio
-async def test_a_human_who_cannot_be_seated_fails_the_feed_read_loudly(crowded, monkeypatch):
-    from core.auth import AuthContext
-
-    await messaging.ensure_feed_room(OWNER, "user_A")
-    monkeypatch.setattr(
-        messaging.messaging_repo, "upsert_member", AsyncMock(side_effect=repo.MemberLimitExceeded("full"))
-    )
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.get_feed(AuthContext(user_id="user_late", org_id=OWNER))
-    assert exc.value.error.code == "MEMBER_LIMIT"
-
-
 # ---- owner redesign: agents are the feed's AUTHORS, not its members -----
 
 
@@ -672,21 +441,23 @@ async def _work_rows(table):  # noqa: F811
 
 @pytest.mark.asyncio
 async def test_a_roster_agent_outside_the_room_posts_to_the_feed(crowded):
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     hire = BIG_ROSTER["hire3"]
-    receipt = await messaging.post_agent_message(OWNER, _post(feed=True, postReason="why", agentId=hire, text="**Up**"))
+    receipt = await messaging.post_agent_message(
+        OWNER, _post(roomId=FEED, postReason="why", agentId=hire, text="**Up**")
+    )
     assert str(receipt.room_id) == FEED
     assert await repo.get_member(FEED, "agent", hire) is None  # posted as an author, never seated
-    posts = (await messaging.agent_feed(OWNER))["posts"]
-    assert posts[-1]["text"] == "**Up**" and posts[-1]["postReason"] == "why"
+    posted = await repo.get_message_by_id(FEED, str(receipt.message_id))
+    assert posted["text"] == "**Up**" and posted["postReason"] == "why"
 
 
 @pytest.mark.asyncio
 async def test_another_owners_agent_cannot_post_to_the_feed(crowded):
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     stranger = "30000000-0000-4000-8000-000000000001"
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.post_agent_message(OWNER, _post(feed=True, postReason="why", agentId=stranger))
+        await messaging.post_agent_message(OWNER, _post(roomId=FEED, postReason="why", agentId=stranger))
     assert exc.value.error.code == "MEMBER_NOT_FOUND"
 
 
@@ -704,7 +475,7 @@ def _human_reply(root, mentions=()):
 async def test_a_discuss_reply_that_mentions_an_agent_wakes_exactly_that_agent(crowded, table):  # noqa: F811
     from core.auth import AuthContext
 
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
     auth = AuthContext(user_id="user_A", org_id=OWNER)
     await messaging.create_human_message(auth, FEED, _human_reply(root, [BIG_ROSTER["growth"]]))
@@ -717,16 +488,16 @@ async def test_a_discuss_reply_that_mentions_an_agent_wakes_exactly_that_agent(c
 async def test_plain_feed_posts_wake_nobody(crowded, table):  # noqa: F811
     from core.auth import AuthContext
 
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
     await messaging.create_human_message(AuthContext(user_id="user_A", org_id=OWNER), FEED, _human_reply(root))
-    await messaging.post_agent_message(OWNER, _post(feed=True, postReason="why", agentId=CEO, text="@growth look"))
+    await messaging.post_agent_message(OWNER, _post(roomId=FEED, postReason="why", agentId=CEO, text="@growth look"))
     assert await _work_rows(table) == []
 
 
 @pytest.mark.asyncio
 async def test_a_non_member_agents_discuss_reply_is_accepted_in_its_thread(crowded):
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     root = (await repo.list_messages(FEED, 0, 10))[0][0]["messageId"]
     agent = BIG_ROSTER["growth"]
     receipt = await messaging.create_agent_message(
@@ -776,20 +547,11 @@ def test_the_feed_rule_wakes_only_mentioned_roster_agents_in_a_thread():
 
 @pytest.mark.asyncio
 async def test_room_agent_stands_in_a_roster_agent_for_the_feed_only(crowded):
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     stand_in = await messaging.room_agent(FEED, CEO)
     assert (stand_in["kind"], stand_in["id"], stand_in["listenMode"]) == ("agent", CEO, "mentions")
     assert await messaging.room_agent(FEED, "30000000-0000-4000-8000-000000000001") is None
     assert await messaging.room_agent(messaging.default_room_id(OWNER), CEO) is None
-
-
-def test_a_feed_post_requires_a_reason():
-    with pytest.raises(ValidationError):
-        _post(feed=True)
-    with pytest.raises(ValidationError):
-        _post(feed=True, postReason="   ")  # blank is no reason
-    assert _post(feed=True, postReason="why").post_reason == "why"
-    assert _post().post_reason is None  # other targets keep it optional
 
 
 @pytest.mark.asyncio
@@ -797,7 +559,7 @@ async def test_the_work_consumer_wakes_a_feed_author_it_never_seated(crowded):
     from core.auth import AuthContext
     from core.services import openclaw_work as work
 
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
     growth = BIG_ROSTER["growth"]
     await messaging.create_human_message(
@@ -833,7 +595,7 @@ def _agent_message(event_id, *, root=None, reason=None, text="**Paid**"):
 
 @pytest.mark.asyncio
 async def test_a_direct_top_level_feed_post_needs_a_reason_but_a_discuss_reply_does_not(crowded):
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     for reason in (None, "   "):
         with pytest.raises(messaging.ApiProblem) as exc:
             await messaging.create_agent_message(OWNER, _agent_message("e-none", reason=reason))
@@ -844,7 +606,7 @@ async def test_a_direct_top_level_feed_post_needs_a_reason_but_a_discuss_reply_d
 
 @pytest.mark.asyncio
 async def test_a_changed_reason_under_one_event_id_is_a_conflict_not_a_replay(crowded):
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     first = await messaging.create_agent_message(OWNER, _agent_message("e-1", reason="Money in."))
     assert (await messaging.create_agent_message(OWNER, _agent_message("e-1", reason="Money in."))).message_id == (
         first.message_id
@@ -859,7 +621,7 @@ async def test_a_changed_reason_under_one_event_id_is_a_conflict_not_a_replay(cr
 async def test_nobody_changes_feed_membership_by_hand(crowded, kind):
     from core.auth import AuthContext
 
-    await messaging.ensure_feed_room(OWNER, "user_A")
+    await _feed()
     auth = AuthContext(user_id="user_A", org_id=OWNER)  # the feed's owner
     member_id = CEO if kind == "agent" else "user_05"
     listen = "active" if kind == "agent" else None
@@ -874,22 +636,3 @@ async def test_nobody_changes_feed_membership_by_hand(crowded, kind):
         await messaging.remove_member(auth, FEED, kind, member_id)
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     assert await repo.get_member(FEED, "agent", CEO) is None
-
-
-@pytest.mark.asyncio
-async def test_a_teammate_who_joins_while_the_feed_is_being_made_is_seated(crowded, monkeypatch):
-    """C joins Clerk after the creator's snapshot but before the room exists: C's own webhook
-    join no-ops (no room yet), so the creation seats everyone Clerk lists once the room exists."""
-    late = {"user_id": "user_late"}
-    reads = {"n": 0}
-
-    async def members(*_args, **_kwargs):
-        reads["n"] += 1
-        if reads["n"] == 1:
-            assert await messaging.join_feed_room(OWNER, "user_late") is False  # the webhook, too early
-            return PEOPLE
-        return [*PEOPLE, late]
-
-    monkeypatch.setattr(messaging.clerk_admin, "list_organization_members", members)
-    await messaging.ensure_feed_room(OWNER, "user_A")
-    assert await repo.get_member(FEED, "human", "user_late") is not None

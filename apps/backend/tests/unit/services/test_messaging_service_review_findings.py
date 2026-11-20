@@ -134,35 +134,6 @@ async def test_a_human_message_opening_with_an_agents_name_is_dispatched_to_it(m
     assert create.await_args.kwargs["dispatch_targets"] == [{"agentId": "friday", "eventKind": "user_request"}]
 
 
-@pytest.mark.asyncio
-async def test_reaction_rejects_foreign_room_message_and_invalid_emoji(monkeypatch):
-    auth = AuthContext(user_id="user_owner", org_id="org_1")
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_1"}, {})))
-    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None))
-    with pytest.raises(ApiProblem) as exc:
-        await messaging.set_reaction(
-            auth, str(uuid.uuid4()), str(uuid.uuid4()), messaging.SetReactionRequest(emoji="👍", active=True)
-        )
-    assert exc.value.error.code == "MESSAGE_NOT_FOUND"
-    with pytest.raises(ValueError):
-        messaging.SetReactionRequest(emoji="not-an-emoji", active=True)
-
-
-@pytest.mark.asyncio
-async def test_update_rejects_missing_message_and_invalid_text(monkeypatch):
-    auth = AuthContext(user_id="author", org_id="org_1")
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_1"}, {})))
-    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None))
-    request = messaging.UpdateMessageRequest(operationId=uuid.uuid4(), expectedRevision=0, text="edit")
-    with pytest.raises(ApiProblem) as exc:
-        await messaging.update_message(auth, str(uuid.uuid4()), str(uuid.uuid4()), request)
-    assert exc.value.error.code == "MESSAGE_NOT_FOUND"
-    with pytest.raises(ValueError):
-        messaging.UpdateMessageRequest(operationId=uuid.uuid4(), expectedRevision=-1, text="edit")
-    with pytest.raises(ValueError):
-        messaging.UpdateMessageRequest(operationId=uuid.uuid4(), expectedRevision=0, text="é" * 50_001)
-
-
 def test_public_tombstone_hides_original_attachment_and_preserves_thread_links():
     from core.services.openclaw_work import _public_message
 
@@ -644,49 +615,6 @@ async def test_room_member_updated_is_a_recognised_user_live_event():
     assert "room.member.updated" in messaging.USER_LIVE_EVENT_TYPES
     assert "room.member.updated" in messaging.LIVE_EVENT_TYPES
     assert "room.member.updated" not in messaging.ROOM_LIVE_EVENT_TYPES
-
-
-@pytest.mark.asyncio
-async def test_put_sections_persists_and_returns_the_whole_sidebar(monkeypatch):
-    auth = AuthContext(user_id="user_owner", org_id="org_1")
-    section_id = "33333333-3333-4333-8333-333333333333"
-    put = AsyncMock(return_value=[{"id": section_id, "name": "Ship"}])
-    monkeypatch.setattr(messaging.messaging_repo, "put_user_sections", put)
-    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[]))
-    monkeypatch.setattr(messaging.messaging_repo, "get_user_prefs", AsyncMock(return_value=None))
-
-    result = await messaging.put_sections(
-        auth, messaging.SectionsRequest(sections=[messaging.RoomSection(id=section_id, name="Ship")])
-    )
-
-    assert [str(section.id) for section in result.sections] == [section_id]
-    assert result.rooms == []
-    put.assert_awaited_once_with("org_1", "user_owner", [{"id": section_id, "name": "Ship"}])
-
-
-def test_sections_request_rejects_too_many_sections_and_blank_names():
-    section_id = "33333333-3333-4333-8333-333333333333"
-    with pytest.raises(ValueError):
-        messaging.SectionsRequest(
-            sections=[messaging.RoomSection(id=section_id, name="Ship")] * (messaging.MAX_SECTIONS + 1)
-        )
-    with pytest.raises(ValueError):
-        messaging.RoomSection(id=section_id, name="")
-    with pytest.raises(ValueError):
-        messaging.RoomSection(id=section_id, name="   ")
-    with pytest.raises(ValueError):
-        messaging.RoomSection(id=section_id, name="x" * (messaging.SECTION_NAME_MAX_CHARS + 1))
-
-
-def test_sections_request_rejects_duplicate_section_ids():
-    section_id = "33333333-3333-4333-8333-333333333333"
-    with pytest.raises(ValueError):
-        messaging.SectionsRequest(
-            sections=[
-                messaging.RoomSection(id=section_id, name="Ship"),
-                messaging.RoomSection(id=section_id, name="Admin"),
-            ]
-        )
 
 
 @pytest.mark.asyncio
@@ -1258,44 +1186,6 @@ async def test_create_refuses_project_fields_off_a_channel(monkeypatch, kind, fi
     create.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_room_memory_lists_for_members_and_only_owners_or_admins_forget(monkeypatch):
-    """W15-5: Settings › Memory lists what Lightbulb noted; Forget is the project's owner/admin's."""
-    auth = AuthContext(user_id="member", org_id="org_1")
-    room_id, mid = str(uuid.uuid4()), str(uuid.uuid4())
-    rows = [{"messageId": mid, "fact": "Classes cap at 12 kids.", "notedAt": "2026-11-06T13:40:00+00:00"}]
-    member = AsyncMock(return_value=({"ownerId": "org_1", "kind": "channel"}, {"role": "member"}))
-    monkeypatch.setattr(messaging, "require_room_member", member)
-    monkeypatch.setattr(messaging.messaging_repo, "list_noted", AsyncMock(return_value=rows))
-    delete = AsyncMock()
-    monkeypatch.setattr(messaging.messaging_repo, "delete_noted", delete)
-
-    listed = await messaging.list_room_memory(auth, room_id)
-    assert listed.model_dump(by_alias=True) == {
-        "items": [{"messageId": mid, "fact": "Classes cap at 12 kids.", "notedAt": "2026-11-06T13:40:00+00:00"}]
-    }
-    with pytest.raises(ApiProblem) as exc:
-        await messaging.forget_room_memory(auth, room_id, mid)
-    assert exc.value.error.code == "ROOM_FORBIDDEN" and delete.await_count == 0
-
-    member.return_value = ({"ownerId": "org_1", "kind": "channel"}, {"role": "admin"})
-    await messaging.forget_room_memory(auth, room_id, mid)
-    delete.assert_awaited_once_with(room_id, mid)
-
-
-@pytest.mark.asyncio
-async def test_room_memory_is_closed_to_non_members(monkeypatch):
-    async def deny(*_args):
-        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
-
-    monkeypatch.setattr(messaging, "require_room_member", deny)
-    auth = AuthContext(user_id="stranger", org_id="org_1")
-    with pytest.raises(ApiProblem):
-        await messaging.list_room_memory(auth, str(uuid.uuid4()))
-    with pytest.raises(ApiProblem):
-        await messaging.forget_room_memory(auth, str(uuid.uuid4()), str(uuid.uuid4()))
-
-
 # --- Lightbulb everywhere (founder ruling, 6 Nov 2026): a DM or group chat with Lightbulb is a project --------------
 
 
@@ -1398,58 +1288,3 @@ async def test_create_a_chat_with_lightbulb_takes_project_fields(monkeypatch, ki
         ),
     )
     assert create.await_args.kwargs["extra"] == {"topic": "Plan the trip", "icon": "rocket", "frontAgentId": "lb"}
-
-
-def _noted_fixture(monkeypatch, kind, joined, role="member"):
-    meta = {"ownerId": "org_1", "kind": kind}
-    monkeypatch.setattr(
-        messaging, "require_room_member", AsyncMock(return_value=(meta, {"role": role, "joinedAt": joined}))
-    )
-    old, new = str(uuid.uuid4()), str(uuid.uuid4())
-    rows = [
-        {"messageId": new, "fact": "Group plan: Lisbon.", "notedAt": "2026-11-06T12:00:00+00:00"},
-        {"messageId": old, "fact": "My salary is 90k.", "notedAt": "2026-11-01T09:00:00+00:00"},
-    ]
-    monkeypatch.setattr(messaging.messaging_repo, "list_noted", AsyncMock(return_value=rows))
-    delete = AsyncMock()
-    monkeypatch.setattr(messaging.messaging_repo, "delete_noted", delete)
-    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=True))  # Lightbulb seated
-    return old, new, delete
-
-
-@pytest.mark.asyncio
-async def test_a_dm_turned_group_chat_hides_its_dm_era_notes_from_the_new_member(monkeypatch):
-    """Privacy: Bob joins Ann's Lightbulb DM on 5 Nov. He never reads (or forgets) what she told it on 1 Nov."""
-    old, new, delete = _noted_fixture(monkeypatch, "group-dm", "2026-11-05T00:00:00+00:00")
-    bob = AuthContext(user_id="bob", org_id="org_1")
-    listed = await messaging.list_room_memory(bob, str(uuid.uuid4()))
-    assert [i.message_id for i in listed.items] == [new]
-    room = str(uuid.uuid4())
-    await messaging.forget_room_memory(bob, room, old)
-    delete.assert_not_awaited()
-    await messaging.forget_room_memory(bob, room, new)  # any group-chat member may forget what they can see
-    delete.assert_awaited_once_with(room, new)
-
-
-@pytest.mark.asyncio
-async def test_the_original_dm_person_still_sees_every_note(monkeypatch):
-    old, new, _ = _noted_fixture(monkeypatch, "group-dm", "2026-10-01T00:00:00+00:00")
-    listed = await messaging.list_room_memory(AuthContext(user_id="ann", org_id="org_1"), str(uuid.uuid4()))
-    assert [i.message_id for i in listed.items] == [new, old]
-
-
-@pytest.mark.asyncio
-async def test_a_channel_lists_every_note_to_a_late_joiner(monkeypatch):
-    _, _, _ = _noted_fixture(monkeypatch, "channel", "2026-11-05T00:00:00+00:00")
-    listed = await messaging.list_room_memory(AuthContext(user_id="late", org_id="org_1"), str(uuid.uuid4()))
-    assert len(listed.items) == 2
-
-
-@pytest.mark.asyncio
-async def test_a_member_cannot_forget_once_lightbulb_left_the_group_chat(monkeypatch):
-    _, new, delete = _noted_fixture(monkeypatch, "group-dm", "2026-10-01T00:00:00+00:00")
-    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))
-    with pytest.raises(ApiProblem) as exc:
-        await messaging.forget_room_memory(AuthContext(user_id="m", org_id="org_1"), str(uuid.uuid4()), new)
-    assert exc.value.error.code == "ROOM_FORBIDDEN"
-    delete.assert_not_awaited()

@@ -875,50 +875,6 @@ async def test_set_member_prefs_rejects_a_member_that_is_not_in_the_room(table):
 
 
 @pytest.mark.asyncio
-async def test_user_sections_round_trip_preserve_order_and_replace_wholesale(table):
-    assert await repo.get_user_prefs(OWNER, USER_A) is None
-
-    first = await repo.put_user_sections(OWNER, USER_A, [{"id": "s-2", "name": "Ship"}, {"id": "s-1", "name": "Admin"}])
-    assert first == [{"id": "s-2", "name": "Ship"}, {"id": "s-1", "name": "Admin"}]
-    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == first
-
-    replaced = await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
-    assert replaced == [{"id": "s-1", "name": "Admin"}]
-    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == replaced
-
-    assert await repo.put_user_sections(OWNER, USER_A, []) == []
-
-
-@pytest.mark.asyncio
-async def test_user_sections_are_per_user_and_survive_stream_deactivation(table):
-    await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
-    assert await repo.get_user_prefs(OWNER, USER_B) is None
-
-    await repo.ensure_user_stream(OWNER, USER_A)
-    await repo.deactivate_user_stream(OWNER, USER_A)
-    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == [{"id": "s-1", "name": "Admin"}]
-
-
-@pytest.mark.asyncio
-async def test_put_user_sections_does_not_clobber_other_pref_row_attributes(table):
-    repo._table().put_item(
-        Item={
-            "pk": repo.owner_pk(OWNER),
-            "sk": repo.pref_sk(USER_A),
-            "ownerId": OWNER,
-            "userId": USER_A,
-            "theme": "dark",
-        }
-    )
-
-    await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
-
-    prefs = await repo.get_user_prefs(OWNER, USER_A)
-    assert prefs["sections"] == [{"id": "s-1", "name": "Admin"}]
-    assert prefs["theme"] == "dark"
-
-
-@pytest.mark.asyncio
 async def test_patch_room_meta_writes_name_topic_and_mirrors_only_the_name(table):
     room_id, meta = await _room(name="Launch crew")
 
@@ -974,15 +930,12 @@ async def test_set_pin_appends_removes_is_idempotent_and_caps_at_fifty(table):
 
 
 @pytest.mark.asyncio
-async def test_noted_rows_list_newest_first_overwrite_on_retry_and_forget(table):
+async def test_noted_rows_list_newest_first_and_overwrite_on_retry(table):
     room_id, _ = await _room()
     await repo.put_noted(room_id, "m-1", "Classes cap at 12 kids.", actor_user_id=USER_A)
     await repo.put_noted(room_id, "m-2", "We only use Caputo flour.")
     await repo.put_noted(room_id, "m-1", "Classes cap at 12 kids.")  # a retried Router turn
     assert [r["messageId"] for r in await repo.list_noted(room_id)] == ["m-2", "m-1"]
-    await repo.delete_noted(room_id, "m-2")
-    await repo.delete_noted(room_id, "m-2")  # idempotent
-    assert [r["fact"] for r in await repo.list_noted(room_id)] == ["Classes cap at 12 kids."]
 
 
 @pytest.mark.asyncio

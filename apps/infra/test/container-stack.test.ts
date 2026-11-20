@@ -181,13 +181,8 @@ describe("ContainerStack — dev", () => {
     template.resourceCountIs("AWS::ECS::TaskDefinition", 0);
   });
 
-  test("keeps the Cloud Map namespace PaperclipStack registers into", () => {
-    // paperclip-stack derives PAPERCLIP_INTERNAL_URL from this namespace name
-    // and registers `paperclip.<namespace>` through cloudMapOptions. Deleting
-    // it takes the Teams Inbox down; only the per-user SERVICE goes.
-    template.hasResourceProperties("AWS::ServiceDiscovery::PrivateDnsNamespace", {
-      Name: "lightbulb-dev.local",
-    });
+  test("has no Cloud Map namespace (PaperclipStack, its only user, is gone)", () => {
+    template.resourceCountIs("AWS::ServiceDiscovery::PrivateDnsNamespace", 0);
   });
 
   test("keeps the security group every AgentCore runtime ENI carries", () => {

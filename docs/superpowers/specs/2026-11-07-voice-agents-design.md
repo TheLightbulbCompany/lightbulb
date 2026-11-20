@@ -127,7 +127,7 @@ A Needs-you card is resolved by tapping, or by saying it: "Nova, yes, order them
 
 We tested multi-party voice in Live and Meet through October and November. One voice removes the worst of it; these are the things to build and test against, not rediscover:
 
-1. **Several voices answered talk meant for others and took over the call** (12 Oct — why every voice became a "mouth"). Now: one voice, addressed by name, with Gemini's native decide-not-to-respond mode *and* the existing wake rules kept as a second gate; replay the 17 scenarios in `tests/replay/` with the new model before any live meeting.
+1. **Several voices answered talk meant for others and took over the call** (12 Oct — why every voice became a "mouth"). Now: one voice, addressed by name, with Gemini's native decide-not-to-respond mode *and* the existing wake rules kept as a second gate; test the new model on these cases before any live meeting.
 2. **The agent left meetings because the room looked empty for 3 seconds** while Recall reconnected and re-seated participants (`EMPTY_ROOM_GRACE=3`, `huddle.py:69`; `meet_bridge.py:113`). Now: leave only on Recall's own "bot left / call ended" webhook, never on an empty-room timer.
 3. **A voice run had no time budget**; nothing stopped one that went on (`voice_calls.py:270-274`). Now: every `start_work` from a call or meeting is a task with the standard budget and a visible Working row; the voice session never waits on it.
 4. **Held answers never expired**, so it spoke stale answers minutes later (`NEWS_TTL` covered Live only; meetings kept unsaid answers on the META). Now: an answer not spoken within 20 s of its question is dropped and posted to chat instead.
@@ -205,7 +205,7 @@ Each phase gets its own plan (writing-plans) and is built by subagents with revi
 
 ## 8. Left to the builder
 
-Exact tool schemas for the six voice tools; the Gemini plugin's session-resumption handling; the call-record META shape (mirror `META.meeting`); the contact policy's exact allow-list; the memory retention rule's thresholds; the shrink of the backend's 11 background loops; the order of stack deletions; test plans per phase (replay scenarios for proactive audio; 50-call A/B).
+Exact tool schemas for the six voice tools; the Gemini plugin's session-resumption handling; the call-record META shape (mirror `META.meeting`); the contact policy's exact allow-list; the memory retention rule's thresholds; the shrink of the backend's 11 background loops; the order of stack deletions; test plans per phase (proactive-audio scenarios; 50-call A/B).
 
 ## 9. Builder check (7 Nov) — what it asked, and the answers
 

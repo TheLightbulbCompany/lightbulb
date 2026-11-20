@@ -242,7 +242,6 @@ export class LightbulbStage extends cdk.Stage {
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {
         cluster: container.cluster,
-        cloudMapNamespace: container.cloudMapNamespace,
         // Live on the Hermes path: the AgentCore runtime ENI's security group.
         containerSecurityGroup: container.containerSecurityGroup,
         ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,

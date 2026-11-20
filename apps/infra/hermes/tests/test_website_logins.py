@@ -65,17 +65,6 @@ def test_a_code_is_typed_into_the_browser_by_the_person_never_handed_to_the_agen
         "threadRootMessageId": None, "hint": "Check your text messages", "surface": "cloud"})]
 
 
-def test_a_run_browsing_on_a_mac_sends_the_person_to_that_mac(backend, monkeypatch):
-    monkeypatch.setattr(wl, "_code_field_present", lambda: False)
-    monkeypatch.setattr(wl, "_page_heading", lambda: "")
-    token = wl.browser_control._TURN.set({"runId": "run-1", "mac": True})
-    try:
-        _in_turn(lambda: wl._code_prompt("x.com", ""), ctx={})
-    finally:
-        wl.browser_control._TURN.reset(token)
-    assert backend["calls"][0][2]["surface"] == "mac"
-
-
 def test_a_run_with_no_room_does_not_wait_for_a_person_nobody_told(backend, monkeypatch):
     monkeypatch.setattr(wl, "_code_field_present", lambda: True)
     ctx = {}

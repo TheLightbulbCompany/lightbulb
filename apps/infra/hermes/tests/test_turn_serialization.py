@@ -105,11 +105,10 @@ def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
 
 
 def test_a_turn_behind_a_long_job_is_keyed_to_its_side_session_before_anything_is_set_up(home, posted, monkeypatch):
-    """Decided in run_turn, before the turn context, the Mac tool's ledger and the delegation
-    bookkeeping exist: each is the side session's, so the long job keeps its own delegations."""
+    """Decided in run_turn, before the turn context and the delegation bookkeeping exist: each is
+    the side session's, so the long job keeps its own delegations."""
     room_key, seen = turn._resolve_session_key("ceo", f.ingress()), {}
     monkeypatch.setattr(turn, "LAST_TURN", {})
-    monkeypatch.setattr(turn, "_start_desktop_turn", lambda _p, ctx: seen.update(desktop=ctx["sessionKey"]))
     monkeypatch.setattr(turn, "_run_hermes", lambda _a, body, _f: (
         seen.update(body=body, during=dict(turn.LAST_TURN)), ("completed", None, "ok", dict(turn.ZERO_USAGE)))[1])
     with turn._turn_lock("ceo", room_key):
@@ -117,7 +116,7 @@ def test_a_turn_behind_a_long_job_is_keyed_to_its_side_session_before_anything_i
         turn.run_turn("ceo", f.ingress(run={"runId": "run-side", "workspaceId": f.ROOM,
                                              "frameChannel": "", "frameEndpoint": ""}))
     side = turn.side_session_key("ceo", "run-side")
-    assert seen["desktop"] == side and seen["body"]["sessionKey"] == side
+    assert seen["body"]["sessionKey"] == side
     assert seen["body"][turn.ROOM_KEY_FIELD] == room_key
     assert side in turn.LAST_TURN and room_key not in turn.LAST_TURN
     assert side in seen["during"]  # registered before it ran: a delegation finishing mid-turn is routed

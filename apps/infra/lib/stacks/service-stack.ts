@@ -17,12 +17,10 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
-import { superAgentEnabled } from "../super-agent";
 import {
   allTableArns,
   alertTopicArn,
@@ -140,7 +138,6 @@ export interface ServiceStackProps extends cdk.StackProps {
   kmsKeyArn: string;
   container: {
     cluster: ecs.ICluster;
-    cloudMapNamespace: servicediscovery.IPrivateDnsNamespace;
     /**
      * The VPC security group every workspace's AgentCore runtime ENI carries.
      * Named for the retired per-user ECS task it was created for, but it is
@@ -922,15 +919,13 @@ export class ServiceStack extends cdk.Stack {
     // lb-kind=task-overlay so the replicas bucket's 14-day TaskOverlays rule expires them. Tagging
     // at task end, not per put, keeps a running or waiting task's overlay out of the rule (S3 counts
     // expiry from object creation). Read + tag only: the backend never writes overlay content.
-    if (superAgentEnabled(env)) {
-      this.taskRole.addToPolicy(
-        new iam.PolicyStatement({
-          sid: "HermesTaskOverlaysReadTag",
-          actions: ["s3:GetObject", "s3:PutObjectTagging"],
-          resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes-tasks/*`],
-        }),
-      );
-    }
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "HermesTaskOverlaysReadTag",
+        actions: ["s3:GetObject", "s3:PutObjectTagging"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes-tasks/*`],
+      }),
+    );
 
     // Browser extensions (core/services/browser_extensions.py): every object a session loads
     // (extension ZIPs, our helper, the Chrome policy file) lives under the backend-only
@@ -1587,10 +1582,6 @@ export class ServiceStack extends cdk.Stack {
         }),
       );
     }
-    const desktopOwner = process.env[`DESKTOP_EXECUTION_OWNER_${env.toUpperCase()}`] ?? "";
-    if (desktopOwner && !/^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(desktopOwner)) {
-      throw new Error(`Invalid desktop execution owner for ${env}`);
-    }
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1641,10 +1632,6 @@ export class ServiceStack extends cdk.Stack {
       // unauthenticated WebSocket-impersonation hole on the public HTTP
       // API Gateway $default path.
       WS_ENFORCE_INTERNAL_SECRET: "true",
-      // One owner per env. An unset synth variable closes new submissions;
-      // existing receipts remain readable/cancellable in the backend.
-      DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
-      DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
       // OpenAI's plugin-portal domain token (public by design). Unset = the path 404s.
       OPENAI_APPS_CHALLENGE_TOKEN: process.env[`OPENAI_APPS_CHALLENGE_TOKEN_${env.toUpperCase()}`] ?? "",
       // Platform admin (/admin, /ops, marketplace review, workspace wipe) is
@@ -1843,15 +1830,10 @@ export class ServiceStack extends cdk.Stack {
       VOICE_BUY_NUMBERS: env === "prod" ? "true" : "false",
       RECALL_GOOGLE_LOGIN_GROUP_ID: props.recallGoogleLoginGroupId ?? "",
       ...(props.livekitAgentName ? { LIVEKIT_AGENT_NAME: props.livekitAgentName } : {}),
-      // Temporal where the super-agent gate is on.
-      ...(superAgentEnabled(env)
-        ? {
-            // Temporal Cloud (contracts-v2 §16); the API key is TEMPORAL_API_KEY in backendContainerSecrets.
-            TEMPORAL_ADDRESS: `lightbulb-${env}.nv5xx.tmprl.cloud:7233`,
-            TEMPORAL_NAMESPACE: `lightbulb-${env}.nv5xx`,
-            TEMPORAL_TASK_QUEUE: "lightbulb",
-          }
-        : {}),
+      // Temporal Cloud (contracts-v2 §16); the API key is TEMPORAL_API_KEY in backendContainerSecrets.
+      TEMPORAL_ADDRESS: `lightbulb-${env}.nv5xx.tmprl.cloud:7233`,
+      TEMPORAL_NAMESPACE: `lightbulb-${env}.nv5xx`,
+      TEMPORAL_TASK_QUEUE: "lightbulb",
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard
@@ -2038,13 +2020,9 @@ export class ServiceStack extends cdk.Stack {
       ),
       // Temporal Cloud API key (minted with tcld straight into Secrets Manager). Covered by the
       // lightbulb/{env}/* read grants like every other secret here.
-      ...(superAgentEnabled(env)
-        ? {
-            TEMPORAL_API_KEY: ecs.Secret.fromSecretsManager(
-              secretsmanager.Secret.fromSecretNameV2(this, "ImportTemporalApiKey", `lightbulb/${env}/temporal_api_key`),
-            ),
-          }
-        : {}),
+      TEMPORAL_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportTemporalApiKey", `lightbulb/${env}/temporal_api_key`),
+      ),
     };
 
     // ---------------------------------------------------------------------
@@ -2523,73 +2501,70 @@ export class ServiceStack extends cdk.Stack {
     // The backend image run as `scripts.temporal_worker` on task queue `lightbulb`. No port and no
     // load balancer: it only dials out to Temporal Cloud (serviceSg allows all egress). SIGTERM ->
     // worker.shutdown() with a 20 s graceful window, inside the 30 s stopTimeout.
-    if (superAgentEnabled(env)) {
-      const workerTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWorkerTaskDef", {
-        family: `lightbulb-${env}-temporal-worker`,
-        runtimePlatform: backendRuntimePlatform,
-        cpu: 512,
-        memoryLimitMiB: 1024,
-        taskRole: this.taskRole,
-        executionRole: taskExecutionRole,
-      });
-      workerTaskDef.addContainer("temporal-worker", {
-        image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
-        // The venv python directly, as the Lambdas do: no `uv run` sync at start.
-        command: ["/app/.venv/bin/python", "-m", "scripts.temporal_worker"],
-        environment: backendContainerEnvironment,
-        secrets: backendContainerSecrets,
-        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-worker", logGroup }),
-        stopTimeout: cdk.Duration.seconds(30),
-      });
-      new ecs.FargateService(this, "TemporalWorkerService", {
-        serviceName: `lightbulb-${env}-temporal-worker`,
-        cluster: props.container.cluster,
-        taskDefinition: workerTaskDef,
-        desiredCount: 1,
-        ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
-        circuitBreaker: { rollback: true },
-        ...taskNetwork,
-        securityGroups: [serviceSg],
-        enableExecuteCommand: true,
-      });
+    const workerTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWorkerTaskDef", {
+      family: `lightbulb-${env}-temporal-worker`,
+      runtimePlatform: backendRuntimePlatform,
+      cpu: 512,
+      memoryLimitMiB: 1024,
+      taskRole: this.taskRole,
+      executionRole: taskExecutionRole,
+    });
+    workerTaskDef.addContainer("temporal-worker", {
+      image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+      // The venv python directly, as the Lambdas do: no `uv run` sync at start.
+      command: ["/app/.venv/bin/python", "-m", "scripts.temporal_worker"],
+      environment: backendContainerEnvironment,
+      secrets: backendContainerSecrets,
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-worker", logGroup }),
+      stopTimeout: cdk.Duration.seconds(30),
+    });
+    new ecs.FargateService(this, "TemporalWorkerService", {
+      serviceName: `lightbulb-${env}-temporal-worker`,
+      cluster: props.container.cluster,
+      taskDefinition: workerTaskDef,
+      desiredCount: 1,
+      ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
+      circuitBreaker: { rollback: true },
+      ...taskNetwork,
+      securityGroups: [serviceSg],
+      enableExecuteCommand: true,
+    });
 
-      // Watchdog (spec 11, wave-2 plan W7): the same image on its own task queue and service, so the
-      // watchdog keeps ticking when the main worker pool is stuck. The `#watchdog` ids are Lightbulb's own
-      // dev workspace and room (created by hand); empty means the digest logs instead of posting. Inside
-      // superAgentEnabled(env).
-      const watchdogTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWatchdogTaskDef", {
-        family: `lightbulb-${env}-temporal-watchdog`,
-        runtimePlatform: backendRuntimePlatform,
-        cpu: 256,
-        memoryLimitMiB: 512,
-        taskRole: this.taskRole,
-        executionRole: taskExecutionRole,
-      });
-      watchdogTaskDef.addContainer("temporal-watchdog", {
-        image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
-        command: ["/app/.venv/bin/python", "-m", "scripts.temporal_worker", "--queue", "lightbulb-watchdog"],
-        environment: {
-          ...backendContainerEnvironment,
-          TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
-          WATCHDOG_OWNER_ID: env === "dev" ? "org_3LgB9twuJbYCjGILfOL5JjgQV0p" : "", // Super Agent Test (dev); prod logs until a prod #watchdog room exists
-          WATCHDOG_ROOM_ID: env === "dev" ? "b6619138-2379-5b3c-af96-f28b791d7d8f" : "", // its #watchdog room
-        },
-        secrets: backendContainerSecrets,
-        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-watchdog", logGroup }),
-        stopTimeout: cdk.Duration.seconds(30),
-      });
-      new ecs.FargateService(this, "TemporalWatchdogService", {
-        serviceName: `lightbulb-${env}-temporal-watchdog`,
-        cluster: props.container.cluster,
-        taskDefinition: watchdogTaskDef,
-        desiredCount: 1,
-        ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
-        circuitBreaker: { rollback: true },
-        ...taskNetwork,
-        securityGroups: [serviceSg],
-        enableExecuteCommand: true,
-      });
-    }
+    // Watchdog (spec 11, wave-2 plan W7): the same image on its own task queue and service, so the
+    // watchdog keeps ticking when the main worker pool is stuck. The `#watchdog` ids are Lightbulb's own
+    // dev workspace and room (created by hand); empty means the digest logs instead of posting.
+    const watchdogTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWatchdogTaskDef", {
+      family: `lightbulb-${env}-temporal-watchdog`,
+      runtimePlatform: backendRuntimePlatform,
+      cpu: 256,
+      memoryLimitMiB: 512,
+      taskRole: this.taskRole,
+      executionRole: taskExecutionRole,
+    });
+    watchdogTaskDef.addContainer("temporal-watchdog", {
+      image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+      command: ["/app/.venv/bin/python", "-m", "scripts.temporal_worker", "--queue", "lightbulb-watchdog"],
+      environment: {
+        ...backendContainerEnvironment,
+        TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
+        WATCHDOG_OWNER_ID: env === "dev" ? "org_3LgB9twuJbYCjGILfOL5JjgQV0p" : "", // Super Agent Test (dev); prod logs until a prod #watchdog room exists
+        WATCHDOG_ROOM_ID: env === "dev" ? "b6619138-2379-5b3c-af96-f28b791d7d8f" : "", // its #watchdog room
+      },
+      secrets: backendContainerSecrets,
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-watchdog", logGroup }),
+      stopTimeout: cdk.Duration.seconds(30),
+    });
+    new ecs.FargateService(this, "TemporalWatchdogService", {
+      serviceName: `lightbulb-${env}-temporal-watchdog`,
+      cluster: props.container.cluster,
+      taskDefinition: watchdogTaskDef,
+      desiredCount: 1,
+      ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
+      circuitBreaker: { rollback: true },
+      ...taskNetwork,
+      securityGroups: [serviceSg],
+      enableExecuteCommand: true,
+    });
 
     // Horizontal autoscaling: the machine relay (sub-project D) moved every
     // remaining piece of per-connection state that made a second instance

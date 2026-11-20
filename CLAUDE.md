@@ -452,7 +452,7 @@ it talks (F5). Time caps are cost caps: `PHONE_MAX_S` (20 min) and `MEET_MAX_S` 
 - The `LIVEKIT_AGENT_NAME` in the Dockerfile and `agent_name=` in `agent.py` must stay equal: the backend
   dispatches by that name. The worker authenticates to the backend with `X-Lightbulb-Huddle-Secret`
   (`lightbulb/{env}/huddle_worker_secret`). Its secrets live in LiveKit (`lk agent secrets`), not in CDK.
-- Phone evals: `tests/evals/sim.py` (simulated callers). Meet scenarios: `tests/replay/scenarios/`.
+- Phone evals: `tests/evals/sim.py` (simulated callers). Meet has no scenario list or runner.
 
 ## Backend (FastAPI + DynamoDB)
 

@@ -17,7 +17,6 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
-import { superAgentEnabled } from "../super-agent";
 
 // ---------------------------------------------------------------------------
 // Tunable thresholds
@@ -335,9 +334,7 @@ export class ObservabilityStack extends cdk.Stack {
     this.createLateAlarms(props);
     this.createCostAlarms(props);
     this.createUptimeChecks();
-    if (superAgentEnabled(this.envName)) {
-      this.createWatchdogAlarms();
-    }
+    this.createWatchdogAlarms();
 
     // -----------------------------------------------------------------------
     // Dashboard
@@ -2305,8 +2302,7 @@ def handler(event, context):
    * runs, which is where this stack already lives.
    */
   /**
-   * Watchdog alarms on the watchdog itself (spec 11 §3.7, §4.4; wave-2 plan W7). Dev only, behind the
-   * super-agent gate: prod has no watchdog service. P48 is BREACHING on missing data on purpose (the P7
+   * Watchdog alarms on the watchdog itself (spec 11 §3.7, §4.4; wave-2 plan W7). P48 is BREACHING on missing data on purpose (the P7
    * pattern): the watchdog not ticking is exactly what it must catch.
    */
   private createWatchdogAlarms(): void {

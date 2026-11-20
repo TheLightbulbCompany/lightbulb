@@ -124,7 +124,7 @@ Test on prod (F26). Delete the leftovers that are truly dead (row 1.13). Orb min
 | Surface | Tool | State today |
 |---|---|---|
 | Phone | `apps/huddle-agent/tests/evals/sim.py`: simulated callers, each scenario must pass three runs in a row. | Works on dev only, with the worker on this Mac. Needs a mode that scores a real prod call from its call record. |
-| Meet | The scenario list in `apps/huddle-agent/tests/replay/scenarios/`, run in a real Meet with two signed-in Chrome profiles. | No simulator exists; the earlier one was removed. How the test speaks into a Meet is unsolved. |
+| Meet | A scenario list (to be written), run in a real Meet with two signed-in Chrome profiles. | No scenario list or simulator exists; the unused `tests/replay/` JSON was deleted. How the test speaks into a Meet is unsolved. |
 | Web | Claude in Chrome, signed in with a Clerk sign-in token. | Ready. |
 | Mac app | Computer use on the installed prod app. | Ready. |
 | Billing | Stripe sandbox on dev, then Metronome reads. | Passed once before; re-run. |

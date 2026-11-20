@@ -220,9 +220,6 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // bootstrap HTML needs it to load the Clerk SDK.
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
-      // Empty GitHub variables keep desktop submissions closed in both envs.
-      DESKTOP_EXECUTION_OWNER_DEV: "${{ vars.DESKTOP_EXECUTION_OWNER_DEV }}",
-      DESKTOP_EXECUTION_OWNER_PROD: "${{ vars.DESKTOP_EXECUTION_OWNER_PROD }}",
       // OpenAI plugin portal's domain token, served at /.well-known/openai-apps-challenge. Empty = 404.
       OPENAI_APPS_CHALLENGE_TOKEN_DEV: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_DEV }}",
       OPENAI_APPS_CHALLENGE_TOKEN_PROD: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_PROD }}",

@@ -38,7 +38,6 @@ import {
 } from "../table-names";
 import { Construct } from "constructs";
 import { ROOT_DOMAIN } from "../domains";
-import { superAgentEnabled } from "../super-agent";
 
 // =============================================================================
 // ApiStack — HTTP API Gateway + WebSocket API Gateway
@@ -112,23 +111,6 @@ const THROTTLE_CONFIG: Record<
   prod: { burstLimit: 500, rateLimit: 200 },
 };
 
-// Slack posts every workspace's events to ONE URL. Give that route its own
-// bucket so a chatty tenant (or Slack's 3× retries) never eats the stage-wide
-// budget every browser/desktop/mobile REST call shares — and vice versa.
-const SLACK_ROUTE_KEY = "POST /api/v1/slack/events";
-const SLACK_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> = {
-  dev: { burstLimit: 50, rateLimit: 25 },
-  prod: { burstLimit: 200, rateLimit: 100 },
-};
-
-// Session links open with no sign-in (spec 2026-10-05-public-session-links §6): their own bucket,
-// so an unauthenticated flood never eats the stage-wide budget, and the reverse.
-const PUBLIC_ROUTE_KEY = "ANY /api/v1/public/{proxy+}";
-const PUBLIC_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> = {
-  dev: { burstLimit: 20, rateLimit: 10 },
-  prod: { burstLimit: 100, rateLimit: 50 },
-};
-
 // One namespace, workspace-scoped paths, tenancy decided here (spec §3). Segments are
 // UUID-only; every decision strong-reads the base table. IAM admits publishers to the
 // namespace; this handler narrows a per-owner container task role to its own rows.
@@ -169,11 +151,11 @@ function parsePath(ctx) {
   if (p[3] === 'session-frames' && p.length === 5 && util.matches(UUID, p[4])) {
     return { kind: 'sessions', workspaceId: p[2], sessionId: p[4] };
   }
-${superAgentEnabled(env) ? `  // /ws/{workspaceId}/tasks: super-agent task.changed ids (dev only), the same member check as /sessions.
+  // /ws/{workspaceId}/tasks: super-agent task.changed ids (dev only), the same member check as /sessions.
   if (p[3] === 'tasks' && p.length === 4) {
     return { kind: 'sessions', workspaceId: p[2] };
   }
-` : ""}  util.unauthorized();
+  util.unauthorized();
 }
 function metaKey(path) {
   if (path.kind === 'rooms') return { pk: 'ROOM#' + path.roomId, sk: 'META' };
@@ -380,20 +362,6 @@ export class ApiStack extends cdk.Stack {
       target: `integrations/${httpIntegration.ref}`,
     });
 
-    // Explicit route so the stage can attach route-level throttling to it;
-    // it forwards to the same ALB integration as $default.
-    new apigatewayv2.CfnRoute(this, "HttpSlackEventsRoute", {
-      apiId: httpApi.ref,
-      routeKey: SLACK_ROUTE_KEY,
-      target: `integrations/${httpIntegration.ref}`,
-    });
-
-    new apigatewayv2.CfnRoute(this, "HttpPublicRoute", {
-      apiId: httpApi.ref,
-      routeKey: PUBLIC_ROUTE_KEY,
-      target: `integrations/${httpIntegration.ref}`,
-    });
-
     // --- HTTP API Log Group ---
     const httpApiLogGroup = new logs.LogGroup(this, "HttpApiLogs", {
       logGroupName: `/aws/api-gateway/lightbulb-${env}-http`,
@@ -409,20 +377,6 @@ export class ApiStack extends cdk.Stack {
       defaultRouteSettings: {
         throttlingBurstLimit: throttle.burstLimit,
         throttlingRateLimit: throttle.rateLimit,
-      },
-      // NOTE: CfnStage.routeSettings is typed `any` in the L1 construct (it's
-      // a free-form route-key -> settings map), so CDK's usual camelCase ->
-      // PascalCase property translation does NOT run on it — the nested
-      // keys must already be CloudFormation-cased.
-      routeSettings: {
-        [SLACK_ROUTE_KEY]: {
-          ThrottlingBurstLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).burstLimit,
-          ThrottlingRateLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).rateLimit,
-        },
-        [PUBLIC_ROUTE_KEY]: {
-          ThrottlingBurstLimit: (PUBLIC_THROTTLE[env] ?? PUBLIC_THROTTLE.dev).burstLimit,
-          ThrottlingRateLimit: (PUBLIC_THROTTLE[env] ?? PUBLIC_THROTTLE.dev).rateLimit,
-        },
       },
       accessLogSettings: {
         destinationArn: httpApiLogGroup.logGroupArn,
@@ -564,33 +518,30 @@ export class ApiStack extends cdk.Stack {
     // one per later update; names and keys mirror core/tasks_schema.py GSIS (api-stack.test.ts reads
     // the exported tasks-schema.json). Stream feeds MessagingProjector's task.changed events; TTL `expiresAt`
     // is set only on RTURN# rows (spec 01 §3.10).
-    let tasksTable: dynamodb.Table | undefined;
-    if (superAgentEnabled(env)) {
-      tasksTable = new dynamodb.Table(this, "TasksTable", {
-        tableName: `${tablePrefix(env)}tasks`,
-        partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
-        sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
-        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-        encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-        encryptionKey: messagingKey,
-        pointInTimeRecovery: true,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-        stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
-        timeToLiveAttribute: "expiresAt",
-      });
-      tasksTable.addGlobalSecondaryIndex({
-        indexName: "by-status",
-        partitionKey: { name: "statusKey", type: dynamodb.AttributeType.STRING },
-        sortKey: { name: "updatedAt", type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
-      });
-      tasksTable.addGlobalSecondaryIndex({
-        indexName: "ws-meta",
-        partitionKey: { name: "metaKind", type: dynamodb.AttributeType.STRING },
-        sortKey: { name: "pk", type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
-      });
-    }
+    const tasksTable = new dynamodb.Table(this, "TasksTable", {
+      tableName: `${tablePrefix(env)}tasks`,
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: messagingKey,
+      pointInTimeRecovery: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+      timeToLiveAttribute: "expiresAt",
+    });
+    tasksTable.addGlobalSecondaryIndex({
+      indexName: "by-status",
+      partitionKey: { name: "statusKey", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "updatedAt", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    tasksTable.addGlobalSecondaryIndex({
+      indexName: "ws-meta",
+      partitionKey: { name: "metaKind", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     const workDlq = new sqs.Queue(this, "OpenClawWorkDlq", {
       queueName: `${resourcePrefix(env)}openclaw-work-dlq.fifo`,
@@ -836,20 +787,18 @@ export class ApiStack extends cdk.Stack {
       },
     );
     projectorFn.addEventSource(projectorEventSource);
-    if (tasksTable) {
-      // task.changed (ids only) on /ws/{wsChannel}/tasks; index.py routes by the stream ARN.
-      projectorFn.addEventSource(
-        new lambdaEventSources.DynamoEventSource(tasksTable, {
-          startingPosition: lambda.StartingPosition.TRIM_HORIZON,
-          batchSize: 25,
-          reportBatchItemFailures: true,
-          bisectBatchOnError: true,
-          maxRecordAge: cdk.Duration.hours(1),
-          retryAttempts: 3,
-          onFailure: new lambdaEventSources.S3OnFailureDestination(projectorFailureBucket),
-        }),
-      );
-    }
+    // task.changed (ids only) on /ws/{wsChannel}/tasks; index.py routes by the stream ARN.
+    projectorFn.addEventSource(
+      new lambdaEventSources.DynamoEventSource(tasksTable, {
+        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+        batchSize: 25,
+        reportBatchItemFailures: true,
+        bisectBatchOnError: true,
+        maxRecordAge: cdk.Duration.hours(1),
+        retryAttempts: 3,
+        onFailure: new lambdaEventSources.S3OnFailureDestination(projectorFailureBucket),
+      }),
+    );
 
     const pipeRole = new iam.Role(this, "OpenClawWorkPipeRole", {
       roleName: `${resourcePrefix(env)}openclaw-work-pipe`,

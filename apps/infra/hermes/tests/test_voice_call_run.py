@@ -162,7 +162,7 @@ class _Agent(SimpleNamespace):
 @pytest.fixture
 def env(monkeypatch):
     """_run_call with every scope real except Hermes itself: records what the run saw."""
-    seen = {"convos": [], "keys": [], "desktop": []}
+    seen = {"convos": [], "keys": []}
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda _a: None)
     monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _a: None)
     real_scope = turn._secret_scope
@@ -170,10 +170,6 @@ def env(monkeypatch):
     def secret_scope(agent_id, overlay=None):
         seen["overlay"] = overlay
         return real_scope(agent_id, overlay)
-
-    def begin_turn(run_id, agent_id, sink=None, family="room", room_id=None):
-        seen["family"] = family
-        return {}
 
     script = []
 
@@ -197,8 +193,7 @@ def env(monkeypatch):
     monkeypatch.setitem(sys.modules, "tools", sys.modules.get("tools") or types.ModuleType("tools"))
     monkeypatch.setitem(sys.modules, "tools.approval_context", approval)
     monkeypatch.setattr(turn, "_secret_scope", secret_scope)
-    monkeypatch.setattr(turn, "_desktop_active_turn", lambda key, run: seen["desktop"].append((key, run)) or nullcontext())
-    monkeypatch.setattr(turn.browser_control, "begin_turn", begin_turn)
+    monkeypatch.setattr(turn.browser_control, "begin_turn", lambda *_a: {})
     monkeypatch.setattr(turn.browser_control, "release", lambda _l: None)
     monkeypatch.setattr(turn, "_construct_agent", construct)
     seen["script"] = script
@@ -221,14 +216,12 @@ def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, 
     turn.register_call_run(IDENTITY)
     assert turn._run_call(IDENTITY, REQUEST, _frames())[0::2] == ("completed", "It landed.")
     assert env["overlay"] == {"LIGHTBULB_ROOM_SESSION_KEY": SESSION, "LIGHTBULB_RUN_ID": IDENTITY["runId"]}
-    assert env["family"] == "call"
     assert env["session"] == CALL_SESSION
     assert scopes == [CALL_SESSION] and locks == [(False, True)]  # the call's own work folder and turn lock
     # No step cap, and no post-turn review fork after a spoken turn.
     assert env["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}, "skip_background_review": True}
     assert env["body"]["room"] == {"id": ROOM, "kind": "channel"} and env["body"]["sender"] == SPEAKER
     assert env["keys"] == [SESSION, ("reset", "tok")]  # compression keeps async delegations attached
-    assert env["desktop"] == [(CALL_SESSION, "run-1")]  # found by the session id Hermes hands the plugin
     (convo,) = env["convos"]
     # A typed turn's turn line (sender, live sessions) before what was said.
     assert convo["user_message"] == f"{turn.TURN_CONTEXT_PREFIX}{{\"sender\":{json.dumps(SPEAKER, separators=(',', ':'))},\"sessions\":[],\"eventKind\":\"voice\"}}\nAden (voice): check payouts"
@@ -251,28 +244,6 @@ def test_a_spoken_turn_gets_the_room_block_and_live_sessions_a_typed_turn_gets(e
     (convo,) = env["convos"]
     assert '"sessions":[{"sessionId":"s-1"' in convo["user_message"]
     assert "#general, on a Live voice call there" in env["agent"].ephemeral_system_prompt
-
-
-def test_a_spoken_turn_starts_the_mac_tools_turn_like_a_typed_one(home, monkeypatch):
-    """lightbulb_desktop answered "Turn stopped" on every call: nothing started its run state. Now
-    run_call_turn starts it (family "call", keyed by the call's session) and removes it after."""
-    seen = {}
-
-    def fake_call(identity, request, frames):
-        state = json.loads(turn._desktop_state_path(turn._profile_dir("agent-1"), "run-1").read_text())
-        seen.update(state["ctx"])
-        return "completed", None, "Done.", dict(turn.ZERO_USAGE)
-
-    monkeypatch.setattr(turn, "_run_call", fake_call)
-    monkeypatch.setattr(turn, "call_frame_publisher", lambda spec, identity, run_id: _frames())
-    for name in ("finish_run", "report_usage", "save_profile", "restore_profile", "_await_post_turn_writes", "_end_turn"):
-        monkeypatch.setattr(turn, name, lambda *a, **k: None)
-    monkeypatch.setattr(turn.sync, "restore_root_auth", lambda: None)
-    monkeypatch.setattr(turn.sync, "save_root_auth", lambda: None)
-    turn.register_call_run(IDENTITY)
-    turn.run_call_turn(IDENTITY, REQUEST, reserved=True)
-    assert seen["family"] == "call" and seen["sessionKey"] == CALL_SESSION and seen["runId"] == "run-1"
-    assert not turn._desktop_state_path(turn._profile_dir("agent-1"), "run-1").exists()
 
 
 def test_the_turn_context_names_the_voice_room(env, home, monkeypatch):

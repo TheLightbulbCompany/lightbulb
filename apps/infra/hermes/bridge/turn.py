@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import collections
 import contextvars
-import fcntl
 import hashlib
 import importlib
 import contextlib
@@ -452,8 +451,8 @@ def _voice_body(identity: dict, request: dict) -> dict:
 
 
 def call_turn_context(identity: dict) -> dict:
-    """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it (and
-    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own."""
+    """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it by
+    the session id Hermes hands them, which is the call's own."""
     return {"apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": identity["agentId"],
             "runId": identity["runId"], "sessionKey": call_session_key(identity["agentId"], identity["callId"]),
             "roomId": None, "voiceRoomId": identity["roomId"], "callId": identity["callId"],
@@ -672,7 +671,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             return "aborted", None, "", dict(ZERO_USAGE)
         # The room turn's own environment on the call's key (its own folder and shell), plus the
         # steer-lowered grant a call can get mid-run.
-        with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
+        with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx), _call_grant_scope(run_id, ctx):
             limits = dict(CALL_RUN_LIMITS)
             enabled, _ = profile_toolsets()  # lane A: work asked aloud may become a task (start_work)
             if enabled is not None:  # the Router's decision tools stay off a call, as _construct_agent strips them
@@ -746,13 +745,7 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
-            # The Mac tool's run state, as run_turn starts it for a typed turn.
-            _start_desktop_turn(_profile_dir(agent_id), call_turn_context(identity))
-            try:
-                outcome, error, output, usage = ("aborted", None, "", usage) if run_aborted(run_id) else _run_call(identity, request, frames)
-            finally:
-                cancel_run_desktop(run_id)
-                _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
+            outcome, error, output, usage = ("aborted", None, "", usage) if run_aborted(run_id) else _run_call(identity, request, frames)
         except Exception:  # noqa: BLE001 -- the class only, never prompt data
             outcome = "aborted" if run_aborted(run_id) else "error"
             log.error("call turn %s failed\n%s", run_id, traceback.format_exc())
@@ -1129,7 +1122,6 @@ def abort_run(run_id: str) -> bool:
         entry["aborted"] = True
         agent = entry["agent"]
     log.info("abort accepted run=%s state=%s", run_id, entry["state"])
-    cancel_run_desktop(run_id)
     # A browser action in flight is a blocking agent-browser CLI call Hermes does not poll for
     # interrupts; reaping this run's browser session ends it now instead of at its own timeout.
     browser_control.abort(run_id)
@@ -2042,13 +2034,7 @@ def display_args(name: str, args: dict) -> dict:
     Mirrors redactToolArgs in packages/shared (the client masks too, for older images)."""
     if name == "browser_type" and "text" in args:
         return {**args, "text": MASK}
-    inner = args.get("args") if name == "lightbulb_desktop" else None
-    if not isinstance(inner, dict):
-        return args
-    inner = dict(inner)
-    if isinstance(inner.get("env"), dict):
-        inner["env"] = {k: MASK for k in inner["env"]}
-    return {**args, "args": inner}
+    return args
 FRAME_FLUSH_MS = 100
 
 
@@ -2586,96 +2572,6 @@ def _turn_context_file(agent_id: str, ctx: dict | None):
 
 def clear_turn_context(root, session_id: str) -> None:
     _turn_context_path(root, session_id).unlink(missing_ok=True)
-
-
-def _desktop_state_path(root, run_id):
-    # Same file contract as plugins/lightbulb/desktop.py; module globals are not shared.
-    return Path(root) / TURN_CONTEXT_DIRNAME / ("desktop-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
-
-
-def _start_desktop_turn(root, ctx):
-    with _RUNS_LOCK:
-        entry = RUNS[ctx["runId"]]
-        target = _desktop_state_path(root, ctx["runId"])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
-            json.dump({"ctx": ctx, "stopped": entry["aborted"], "receipts": {}}, stream)
-        entry["desktopRoot"] = str(root)
-
-
-def _desktop_active_turn(session_id, run_id):
-    from contextlib import contextmanager
-
-    @contextmanager
-    def scope():
-        with _RUNS_LOCK:
-            root = (RUNS.get(run_id) or {}).get("desktopRoot")
-        if not root:
-            yield
-            return
-        target = Path(root) / TURN_CONTEXT_DIRNAME / ("desktop-active-" + hashlib.sha256(session_id.encode()).hexdigest() + ".json")
-        with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as stream:
-            json.dump({"runId": run_id}, stream)
-        try:
-            yield
-        finally:
-            target.unlink(missing_ok=True)
-
-    return scope()
-
-
-def cancel_run_desktop(run_id):
-    """Latch Stop before returning, then cancel only this run's recorded receipts.
-
-    Shell cancellation requests termination; browser/file/MCP effects cannot be undone.
-    A network failure is unconfirmed cancellation, never permission to replay.
-    """
-    with _RUNS_LOCK:
-        root = (RUNS.get(run_id) or {}).get("desktopRoot")
-    if not root:
-        return None  # Ordinary cloud-only turns have no desktop ledger.
-    try:
-        with _desktop_state_path(root, run_id).open("r+", encoding="utf-8") as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
-            state = json.load(stream)
-            if state["stopped"]:
-                return None
-            state["stopped"] = True
-            stream.seek(0)
-            json.dump(state, stream)
-            stream.truncate()
-    except (OSError, ValueError):
-        log.warning("desktop cancellation ledger unavailable run=%s", run_id)
-        return None
-
-    def cancel_receipts():
-        from concurrent.futures import ThreadPoolExecutor
-
-        ctx = state["ctx"]
-
-        def cancel(receipt_id):
-            request = urllib.request.Request(
-                ctx["apiUrl"].rstrip("/") + "/api/v1/desktop-execution/operations/" + receipt_id + "/cancel",
-                data=b"{}", method="POST", headers={
-                    "Authorization": "Bearer " + ctx["hookToken"], "Content-Type": "application/json",
-                    "X-Desktop-Owner": ctx["ownerId"], "X-Desktop-Run": ctx["runId"],
-                    "X-Desktop-Agent": ctx["agentId"], "X-Desktop-Run-Family": ctx["family"],
-                })
-            try:
-                with urllib.request.urlopen(request, timeout=12) as response:
-                    response.read(1024)
-            except Exception:  # never delay Hermes interrupt or claim physical termination
-                log.warning("desktop cancellation unconfirmed run=%s", run_id)
-
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(cancel, (rid for rid, item in state["receipts"].items()
-                                   if item.get("state") not in {"succeeded", "failed", "rejected"})))
-
-    if not state["receipts"]:
-        return None
-    worker = threading.Thread(target=cancel_receipts, name=f"desktop-stop-{run_id}", daemon=True)
-    worker.start()
-    return worker
 
 
 # ---- the turn --------------------------------------------------------------------------------
@@ -4100,12 +3996,11 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
 
 
 @contextlib.contextmanager
-def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, body: dict, frames, ctx, family: str = "room"):
+def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, body: dict, frames, ctx):
     """THE environment of a room turn, typed or spoken (one path: a spoken turn used to rebuild
-    this by hand and missed what chat gained later -- the Mac tool, room logins, the browser
-    preview). Under the caller's turn lock: the profile refreshed, the room's browser and logins,
-    the profile's home, MCP bearers, secrets, the room's terminal, the Mac tool's active turn and
-    the plugin's turn context, keyed by `hermes_key` (the session id Hermes hands the tools, and
+    this by hand and missed what chat gained later -- room logins, the browser preview). Under the
+    caller's turn lock: the profile refreshed, the room's browser and logins, the profile's home,
+    MCP bearers, secrets, the room's terminal and the plugin's turn context, keyed by `hermes_key` (the session id Hermes hands the tools, and
     the shell's: the room key on a typed turn, the call's or side session's own key otherwise).
     `session_key` is the room's own, given to the shell as LIGHTBULB_ROOM_SESSION_KEY. Yields the
     browser lease."""
@@ -4119,11 +4014,9 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
     # only when _construct_agent calls it, by which point the scope below would already
     # have installed against the stale value. See normalize_profile_backends's
     # docstring. (Done above, under the profile lock.)
-    # Positional: family and room go with the Mac browser routes (use_browser). A runless turn's
-    # synthetic "browser:" run id is refused there on purpose: no Mac browser without a run.
     room_id = (body.get("room") or {}).get("id")
     browser_lease = browser_control.begin_turn(
-        str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None, family, room_id,
+        str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None,
     )
     logins = website_logins.prompt_scope(agent_id, room_id, turn_thread_root(body), lambda: run_aborted(run_id))
     # The room's own key (and the message that started the turn) reach the shell beside the
@@ -4143,7 +4036,7 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
         room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
     if run_id:  # the CLI forwards it as X-Lightbulb-Run; per-turn secret scope, so concurrent turns never share it
         room_env = {**(room_env or {}), "LIGHTBULB_RUN_ID": str(run_id)}
-    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             yield browser_lease
         finally:
@@ -4353,10 +4246,9 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
-    browser_lease = browser_control.begin_turn(str(run_id), agent_id, _task_frame_sink(identity), family)
+    browser_lease = browser_control.begin_turn(str(run_id), agent_id, _task_frame_sink(identity))
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         env["OPENCLI_CDP_ENDPOINT"] = cdp
-    # Same-session Paperclip retries must not replace another active desktop ledger.
     logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
     token = identity.get("localSessionToken")
     router = identity.get("mode") == "router"
@@ -4375,7 +4267,7 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     # The task id lets the backend decide the principal itself from the task row (a caller's task vends no owner token).
     task_scope = {"task_id": identity["taskId"]} if not paperclip and not router and identity.get("taskId") else {}
     mcp_env = runtime_mcp_env(agent_id, **task_scope, **({"principal": "caller"} if caller else {}))
-    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(mcp_env, None if caller else agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(mcp_env, None if caller else agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         budget = None
         try:
             extra = {"max_iterations": limits["max_iterations"]} if limits.get("max_iterations") else {}
@@ -4534,31 +4426,12 @@ def _run_paperclip_session(identity: dict, request: dict) -> tuple[str, str | No
     """Every Paperclip run, an issue's included, runs in its own session, as stock Paperclip does
     (owner ruling 2026-10-18: the task is the record; a room is told only when it is done or needs
     the person, by the task's run posting to the room named in its From section)."""
-    agent_id, run_id = identity["agentId"], identity["runId"]
-    _start_desktop_turn(_profile_dir(agent_id), {
-        "apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
-        "sessionKey": identity["sessionId"], "family": "paperclip",
-    })
-    try:
-        return _run_native_paperclip(identity, request)
-    finally:
-        cancel_run_desktop(run_id)
-        _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
+    return _run_native_paperclip(identity, request)
 
 
 def _run_task_session(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
-    """A task's Worker turn: the Paperclip session's desktop ledger, under the task family."""
-    agent_id, run_id = identity["agentId"], identity["runId"]
-    _start_desktop_turn(_profile_dir(agent_id), {
-        "apiUrl": API, "ownerId": bridge.OWNER, "hookToken": bridge.HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
-        "sessionKey": identity["sessionKey"], "family": "task",
-        "taskId": identity.get("taskId") or "", "runSecret": identity.get("runSecret") or "",
-    })
-    try:
-        return _run_task_turn(identity, request, family="task")
-    finally:
-        cancel_run_desktop(run_id)
-        _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
+    """A task's Worker turn, under the task family."""
+    return _run_task_turn(identity, request, family="task")
 
 
 def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) -> None:
@@ -4702,7 +4575,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             restore_profile(agent_id)
             RESTORED.add(agent_id)
             # Behind a long job in its room this turn runs beside it (_side_session), decided before
-            # anything below is keyed: the turn context, the Mac tool's ledger and the delegation
+            # anything below is keyed: the turn context and the delegation
             # bookkeeping are the side session's. Run events, usage and steers keep the room's key.
             hermes_key = session_key
             if has_run and _side_session(agent_id, session_key, run_id):
@@ -4722,40 +4595,33 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 "family": "room" if has_run else "unavailable",
             }
             body["_turnContext"] = turn_ctx  # written under the turn lock: _turn_context_file
-            try:
-                if has_run:
-                    _start_desktop_turn(_profile_dir(agent_id), turn_ctx)
-                if has_run and RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched
-                    outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
-                else:
-                    # No ambient gate (it was a Bedrock call per room event): the backend (Jev) picks
-                    # who takes a room_event, so every turn that arrives runs. An older backend that
-                    # sends no `routing` gets what the gate did whenever it could not answer: dispatch.
-                    remembered = {"roomId": room.get("id"), "agentId": agent_id,
-                                  "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")}
-                    if has_run and hermes_key != session_key:
-                        # A side session is brand new: a delegation it starts may finish before the
-                        # turn does, and the drain drops a completion whose session has no turn.
-                        LAST_TURN[hermes_key] = remembered
-                    try:
-                        outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
-                    finally:
-                        if has_run:
-                            _remember_turn(hermes_key, remembered)
-                    if has_run and RUNS.get(run_id, {}).get("aborted"):
-                        # Interrupted mid-flight (agent.interrupt() from a concurrent
-                        # abort_run call): the tokens were spent, so `usage` stays what
-                        # _run_hermes actually reported, but the outcome/reply reflect the
-                        # stop, not whatever the interrupted conversation produced. This
-                        # also catches the TOCTOU where abort_run raced in before
-                        # attach_agent ever ran (entry stayed "queued", no live agent to
-                        # interrupt) -- abort_run marks `aborted` regardless of whether an
-                        # agent was attached, so this check still sees it.
-                        outcome, error_kind, reply = "aborted", None, ""
-            finally:
-                if has_run:
-                    cancel_run_desktop(run_id)
-                    _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
+            if has_run and RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched
+                outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
+            else:
+                # No ambient gate (it was a Bedrock call per room event): the backend (Jev) picks
+                # who takes a room_event, so every turn that arrives runs. An older backend that
+                # sends no `routing` gets what the gate did whenever it could not answer: dispatch.
+                remembered = {"roomId": room.get("id"), "agentId": agent_id,
+                              "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")}
+                if has_run and hermes_key != session_key:
+                    # A side session is brand new: a delegation it starts may finish before the
+                    # turn does, and the drain drops a completion whose session has no turn.
+                    LAST_TURN[hermes_key] = remembered
+                try:
+                    outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
+                finally:
+                    if has_run:
+                        _remember_turn(hermes_key, remembered)
+                if has_run and RUNS.get(run_id, {}).get("aborted"):
+                    # Interrupted mid-flight (agent.interrupt() from a concurrent
+                    # abort_run call): the tokens were spent, so `usage` stays what
+                    # _run_hermes actually reported, but the outcome/reply reflect the
+                    # stop, not whatever the interrupted conversation produced. This
+                    # also catches the TOCTOU where abort_run raced in before
+                    # attach_agent ever ran (entry stayed "queued", no live agent to
+                    # interrupt) -- abort_run marks `aborted` regardless of whether an
+                    # agent was attached, so this check still sees it.
+                    outcome, error_kind, reply = "aborted", None, ""
         except Exception as exc:  # noqa: BLE001
             _post_turn.error_detail = provider_quota(  # the attached agent names chatgpt vs openai
                 exc, getattr((RUNS.get(run_id) or {}).get("agent"), "provider", ""))

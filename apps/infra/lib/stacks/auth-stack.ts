@@ -32,11 +32,9 @@ export class AuthStack extends cdk.Stack {
   public readonly secrets: AuthSecrets;
   public readonly kmsKey: kms.Key;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
-  public readonly paperclipEventsWebhookSecret: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
   public readonly networkProofKey: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
-  public readonly cloudflareWarpEnrollment: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly sesIngestSecret: secretsmanager.Secret;
@@ -132,18 +130,6 @@ export class AuthStack extends cdk.Stack {
       "paperclip_service_token_key",
       { passwordLength: 64, excludePunctuation: true },
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
-    );
-
-    // Shared bearer secret between the isol8.notifications Paperclip plugin
-    // and the backend's /webhooks/paperclip-events receiver. Generated here;
-    // the backend reads it as an env secret (service-stack), and the
-    // Paperclip task receives the same value as PAPERCLIP_ISOL8_NOTIFY_TOKEN
-    // (paperclip-stack) for the plugin worker's env passthrough.
-    this.paperclipEventsWebhookSecret = createSecret(
-      "PaperclipEventsWebhookSecret",
-      "paperclip_events_webhook_secret",
-      { passwordLength: 64, excludePunctuation: true },
-      "Bearer secret the isol8.notifications Paperclip plugin sends to the backend paperclip-events webhook.",
     );
 
     // Shared secret that authenticates the CALLER of the backend /api/v1/ws/*
@@ -254,63 +240,12 @@ export class AuthStack extends cdk.Stack {
       "Stable password for the gog CLI file-keyring backend (Google OAuth keyring on EFS). Never rotate - rotation orphans every existing keyring.",
     );
 
-    // Cloudflare Zero Trust enrollment for the per-user containers' WARP
-    // browser egress. JSON: {"organization","auth_client_id","auth_client_secret"}
-    // — a ZT team name plus a service token with device-enrollment permission.
-    //
-    // Placeholder-until-set: CDK generates a
-    // random string on first create and a human pastes the real JSON in after
-    // the Zero Trust org exists. That is a designed state, not a broken one —
-    // isol8-warp-boot.sh treats "not enrollment JSON" as "skip, browser egress
-    // stays on the NAT IP" and exits 0.
-    //
-    // ONE FLEET-WIDE TOKEN, and it is readable by every customer's agent (it
-    // lands in the container env and in mdm.xml on disk). A Cloudflare account
-    // caps service tokens at 50, so per-customer tokens are not an option.
-    // Rotation = delete + recreate the token in the ZT dashboard, then
-    // overwrite this secret; containers pick it up on their next task start.
-    this.cloudflareWarpEnrollment = createSecret(
-      "CloudflareWarpEnrollment",
-      "cloudflare-warp-enrollment",
-      { passwordLength: 32, excludePunctuation: true },
-      "Cloudflare Zero Trust service token for container browser egress (JSON: {organization,auth_client_id,auth_client_secret}). Placeholder until set by hand.",
-    );
-
     // CDK's default GenerateSecretString produces a hex-ish placeholder that
     // is NOT a valid Fernet key (Fernet wants 32 random bytes encoded as
     // 44-char URL-safe base64). Bootstrap a real Fernet key on first deploy
     // via a Lambda-backed Custom Resource. Idempotent: if the current value
     // already decodes to 32 bytes via urlsafe_b64decode, the Lambda no-ops.
     this.bootstrapFernetKey(encryptionKey, env);
-
-    // Pinned export. The retired per-user ECS task-execution role in
-    // container-stack was this secret's ONLY consumer, so dropping that role
-    // orphans the Output CDK generated for it. CloudFormation refuses to delete
-    // an Output another stack still imports, and after that same change the
-    // container job no longer `needs:` this one — so the two update
-    // CONCURRENTLY, and an auth-first ordering would fail with
-    //
-    //   Cannot delete export lightbulb-{env}-auth:ExportsOutputRefCloudflareWarp…
-    //   as it is in use by lightbulb-{env}-container
-    //
-    // Unlike container-stack's own transitional pins, this one holds no
-    // resource alive — the secret exists either way — so there is no second
-    // deploy owed. Drop it in any later infra change, once every environment's
-    // deployed container template has stopped importing it.
-    // Declared by hand rather than via `this.exportValue(...)`: the export NAME
-    // is not enough, the logical ID has to match too. CDK's helper would emit a
-    // second Output carrying the same export name, and CloudFormation rejects
-    // a create whose export name is already published. Both are the values CDK
-    // itself generated for the container-stack reference — `Ref` on a Secret is
-    // its ARN — and the name is verified against `aws cloudformation
-    // list-exports` in both environments.
-    const warpExport = new cdk.CfnOutput(this, "CloudflareWarpEnrollmentArnPin", {
-      value: this.cloudflareWarpEnrollment.secretArn,
-      exportName: `lightbulb-${env}-auth:ExportsOutputRefCloudflareWarpEnrollmentLightbulb6CFC576893D2B67B`,
-    });
-    warpExport.overrideLogicalId(
-      "ExportsOutputRefCloudflareWarpEnrollmentLightbulb6CFC576893D2B67B",
-    );
   }
 
   private bootstrapFernetKey(secret: secretsmanager.Secret, env: string): void {

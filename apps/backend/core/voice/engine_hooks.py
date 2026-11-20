@@ -109,12 +109,6 @@ def _admit(ask: ContextAsk) -> ContextAnswer:
     return ContextAnswer(flags=flags)
 
 
-async def _front_agent(ask: ContextAsk) -> ContextAnswer:
-    from core.repositories import messaging_repo  # the Agent page's settings row (VOICEAGENT)
-
-    return ContextAnswer(agent_id=((await messaging_repo.get_voice_agent(ask.tenant_id)) or {}).get("frontAgentId"))
-
-
 async def _context(ask: ContextAsk) -> ContextAnswer:
     if ask.purpose == "router":
         return await _router(ask)
@@ -128,8 +122,6 @@ async def _context(ask: ContextAsk) -> ContextAnswer:
         return ContextAnswer(text=await records.with_link(ask.conversation_id, ask.task, ask.message["text"]))
     if ask.purpose == "admit":
         return _admit(ask)
-    if ask.purpose == "front_agent":
-        return await _front_agent(ask)
     raise ValueError(f"no product context for {ask.purpose}")
 
 

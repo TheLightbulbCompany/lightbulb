@@ -24,7 +24,6 @@ fails the activity (retried, so product handlers are idempotent on the ids they 
 - `result_line`: a finished task's line in `conversation_id` (`message["text"]`): `text` is the line to post.
 - `admit`: a message in a room whose META carries `PRODUCT_META_FIELDS` (`annotations`): `flags` carries `origin`
   and product `ref` keys for its trigger, and `respond` ("respond" or "candidate") when the product decides that.
-- `front_agent`: `agent_id` is the workspace's chosen front agent, or None.
 """
 
 from __future__ import annotations
@@ -64,7 +63,6 @@ class ContextAsk(Model):
         "result_line",
         "admit",
         "post_target",
-        "front_agent",
         "voice_run",
     ]
     conversation_id: str | None = None

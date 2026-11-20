@@ -228,6 +228,9 @@ def main() -> None:
     parser.add_argument("--owner", required=True)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    from core.voice import engine_hooks
+
+    engine_hooks.register()  # engine code reached from provisioning asks the products through core.engine.hooks
     sys.exit(asyncio.run(run(args.owner)))
 
 

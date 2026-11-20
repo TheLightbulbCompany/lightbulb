@@ -123,7 +123,6 @@ KNOWN_ENGINE_TO_PRODUCT = [
 ]
 #: Product modules that still import engine code other than the contract (`core.engine`). Only ever shrinks.
 KNOWN_PRODUCT_TO_ENGINE = [
-    "core/voice/engine_hooks.py: _front_agent: core.repositories.messaging_repo",
     "core/voice/livekit_huddles.py: <module>: core.repositories.messaging_repo",
     "core/voice/meetings/meeting_chat.py: <module>: core.repositories.messaging_repo",
     "core/voice/meetings/meeting_chat.py: <module>: core.repositories.tasks_repo",
@@ -203,22 +202,26 @@ def _module(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
-def _expanded(path: Path) -> list[tuple[str, str]]:
-    """`_imports`, with `from pkg import mod` read as `pkg.mod` for every name (a symbol's module still prefixes it)."""
-    found: list[tuple[str, str]] = []
+def _expanded(path: Path, package: str) -> list[tuple[str, list[str]]]:
+    """(enclosing function, names) per import statement in `path`, a module of `package`: `from pkg import mod` read
+    as `pkg.mod` for every name (a symbol's module still prefixes it), relative imports resolved against `package`,
+    and `importlib.import_module("x")` / `__import__("x")` with a literal name as `x`."""
+    found: list[tuple[str, list[str]]] = []
 
     def visit(node: ast.AST, where: str) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             where = node.name
         if isinstance(node, ast.Import):
-            found.extend((where, alias.name) for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            found.extend((where, f"{node.module}.{alias.name}") for alias in node.names)
+            found.append((where, [alias.name for alias in node.names]))
+        elif isinstance(node, ast.ImportFrom):
+            parts = package.split(".")
+            base = ".".join([*parts[: len(parts) - node.level + 1], node.module or ""] if node.level else [node.module])
+            found.append((where, [f"{base.strip('.')}.{alias.name}" for alias in node.names]))
         elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-            if name == "import_module" and isinstance(node.args[0].value, str):
-                found.append((where, node.args[0].value))
+            if name in ("import_module", "__import__") and isinstance(node.args[0].value, str):
+                found.append((where, [node.args[0].value]))
         for child in ast.iter_child_nodes(node):
             visit(child, where)
 
@@ -227,22 +230,36 @@ def _expanded(path: Path) -> list[tuple[str, str]]:
 
 
 def _crossing(sources: list[str], targets: list[str]) -> list[str]:
-    """`file: function: module` for every import in `sources` of a module in `targets` (the longest module that
-    names it), once per function."""
+    """`file: function: module` for every import statement in `sources` of a module in `targets` (the longest module
+    that names it). A second statement importing the same module in the same function is a second entry, `#2`."""
     mods = sorted({_module(f) for f in _files(targets)}, key=len, reverse=True)
-    out = set()
+    out: list[str] = []
     for path in _files(sources):
-        for where, name in _expanded(path):
-            hit = next((m for m in mods if name == m or name.startswith(m + ".")), None)
-            if hit:
-                out.add(f"{path.relative_to(BACKEND)}: {where}: {hit}")
+        mod = _module(path)
+        package = mod if path.name == "__init__.py" else mod.rpartition(".")[0]
+        seen: dict[str, int] = {}
+        for where, names in _expanded(path, package):
+            hits = {m for name in names for m in mods[:] if name == m or name.startswith(m + ".")}
+            hits = {h for h in hits if not any(o != h and o.startswith(h + ".") for o in hits)}  # the longest only
+            for hit in sorted(hits):
+                key = f"{path.relative_to(BACKEND)}: {where}: {hit}"
+                seen[key] = seen.get(key, 0) + 1
+                out.append(key if seen[key] == 1 else f"{key} #{seen[key]}")
     return sorted(out)
 
 
 def test_the_boundary_scan_expands_from_imports(tmp_path):
     src = tmp_path / "m.py"
-    src.write_text("from core.voice.meetings import meeting_notes\ndef f():\n    from core.voice import rooms\n")
-    assert _expanded(src) == [("<module>", "core.voice.meetings.meeting_notes"), ("f", "core.voice.rooms")]
+    src.write_text(
+        "from core.voice.meetings import meeting_notes\n"
+        "def f():\n    from core.voice import rooms\n    from ..voice import rooms\n    __import__('core.voice.rooms')\n"
+    )
+    assert _expanded(src, "core.services") == [
+        ("<module>", ["core.voice.meetings.meeting_notes"]),
+        ("f", ["core.voice.rooms"]),
+        ("f", ["core.voice.rooms"]),
+        ("f", ["core.voice.rooms"]),
+    ]
 
 
 def test_engine_does_not_import_product():

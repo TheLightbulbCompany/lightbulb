@@ -13,8 +13,6 @@ import uuid
 
 from core import tasks_schema as ts
 from core.constants import SYSTEM_ACTOR_ID
-from core.engine import hooks
-from core.engine.hooks import ContextAsk
 from core.repositories import messaging_repo
 from core.services import agent_registry, messaging, room_memory, session_chat
 
@@ -60,8 +58,9 @@ async def _front_agent(ws: str, *, room_id: str | None = None) -> dict:
             raise NoFrontAgent(
                 "This conversation's agent is unavailable. Start a new conversation with an active front-door agent."
             )
-    selected = (await hooks.context(ContextAsk(tenant_id=ws, purpose="front_agent"))).agent_id  # the Agent page's pick
+    config = await messaging_repo.get_voice_agent(ws) or {}
     roster = await agent_registry.roster(ws)
+    selected = config.get("frontAgentId")
     company = await WorkspaceRepo().resolve_owner_row(ws)
     stable = (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
     target = selected or stable

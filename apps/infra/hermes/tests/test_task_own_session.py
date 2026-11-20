@@ -29,10 +29,9 @@ def _old_binding():
 def test_a_paperclip_run_runs_in_the_issue_session_even_with_an_old_binding_on_disk(monkeypatch):
     _old_binding()
     seen = {}
-    monkeypatch.setattr(turn, "_start_desktop_turn", lambda _p, ctx: seen.update(desktop=ctx["sessionKey"]))
     monkeypatch.setattr(turn, "_run_native_paperclip", lambda *args: (seen.update(args=args), ("completed", None, "ok", {}))[1])
     assert turn._run_paperclip_session(IDENTITY, REQUEST)[0] == "completed"
-    assert seen == {"desktop": SESSION, "args": (IDENTITY, REQUEST)}
+    assert seen == {"args": (IDENTITY, REQUEST)}
 
 
 def test_the_native_run_uses_its_own_session_and_has_no_room_for_prompts(monkeypatch):

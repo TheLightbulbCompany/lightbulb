@@ -99,7 +99,6 @@ function build(environment: "dev" | "prod"): {
     kmsKeyArn: kmsKey.keyArn,
     container: {
       cluster: container.cluster,
-      cloudMapNamespace: container.cloudMapNamespace,
       containerSecurityGroup: container.containerSecurityGroup,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,

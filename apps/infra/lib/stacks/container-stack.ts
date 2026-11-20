@@ -9,7 +9,6 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
-import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 import { logGroupPath } from "../table-names";
 
@@ -34,8 +33,6 @@ const CONSOLIDATION_PROMPT = promptText("memory-consolidation.md");
  *
  *  - the PLATFORM ECS cluster (the backend Fargate service runs on it; the
  *    provisioner is a Lambda now),
- *  - the Cloud Map private DNS namespace (PaperclipStack used to register
- *    `paperclip.<namespace>`; nothing derives a URL from it any more),
  *  - the per-owner Bedrock base policy + permissions boundary, which double as
  *    every workspace's AgentCore Runtime EXECUTION role,
  *  - the per-owner state bucket (`lightbulb-{env}-openclaw-replicas`) every
@@ -66,7 +63,6 @@ const ENV_CONFIG: Record<
 
 export class ContainerStack extends cdk.Stack {
   public readonly cluster: ecs.Cluster;
-  public readonly cloudMapNamespace: servicediscovery.PrivateDnsNamespace;
   public readonly containerSecurityGroup: ec2.SecurityGroup;
   public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
   public readonly ownerBedrockBoundary: iam.ManagedPolicy;
@@ -97,37 +93,6 @@ export class ContainerStack extends cdk.Stack {
       // inert, and removing it is a live-cluster property change for no gain.
       enableFargateCapacityProviders: true,
     });
-
-    // Cloud Map private DNS namespace.
-    //
-    // The construct id stays "NamespaceV2" even though the TypeScript member
-    // is the plain name. Renaming a construct id changes
-    // the LOGICAL id, which CloudFormation reads as delete-and-recreate — it
-    // would destroy the live namespace every service is registered in, purely
-    // to make this file read more nicely. The V2 suffix is the scar from the
-    // rename; leave it.
-    //
-    // The retired `isol8-${env}.local` pair that used to live here is gone as of
-    // this change. It could not be renamed in place: `name` is create-only, so a
-    // rename is a replacement, and the replacement changed this stack's exported
-    // service ARN while {env}-service still imported it —
-    //
-    //   "Cannot update export ...NamespaceContainerService34...Arn
-    //    as it is in use by isol8-{env}-service"
-    //
-    // Stacks deploy container -> service, so no single deploy could move the
-    // consumer off first. It took two: add alongside and move every consumer,
-    // then delete. Removing the old pair also drops the four exportValue pins
-    // that kept its exports published through the middle deploy.
-    this.cloudMapNamespace = new servicediscovery.PrivateDnsNamespace(
-      this,
-      "NamespaceV2",
-      {
-        name: `lightbulb-${props.environment}.local`,
-        vpc: props.vpc,
-        description: `Lightbulb ${props.environment} service discovery namespace`,
-      },
-    );
 
     this.containerSecurityGroup = new ec2.SecurityGroup(
       this,

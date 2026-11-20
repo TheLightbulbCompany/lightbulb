@@ -239,12 +239,6 @@ def _browser_task_ids() -> list[str]:
     return sorted(tasks) or ["default"]
 
 
-def _browsing_on_mac() -> bool:
-    """A run that selected a paired Mac browses in that Mac's "Lightbulb agent" Chrome, not the
-    cloud browser: the person types the code into that window, and the Browser panel shows nothing."""
-    return bool((browser_control._TURN.get() or {}).get("mac"))
-
-
 def _page_eval(task_id: str, expression: str):
     """Evaluate page JS on one task's tab through Hermes's own (non-secret) eval path. None = no answer."""
     try:
@@ -303,7 +297,7 @@ def _code_prompt(site: str, _hint: str) -> str:
             "kind": "code", "origin": site if "://" in site else f"https://{site}",
             "agentId": ctx["agentId"], "roomId": ctx.get("roomId"),
             "threadRootMessageId": ctx.get("threadRootMessageId"), "hint": _page_heading(),
-            "surface": "mac" if _browsing_on_mac() else "cloud",
+            "surface": "cloud",
         })
     except Exception:  # noqa: BLE001
         posted = None

@@ -16,7 +16,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal
 
 from livekit.agents import Agent, AgentSession, JobContext, llm, room_io
 from livekit import rtc
@@ -109,21 +109,6 @@ def startup_context(history: list[tuple[str, str]]) -> llm.ChatContext:
     return ctx
 
 
-class Transport(Protocol):
-    """What LiveSession needs from GPT-Live: the chat context, commentary, close. One real one (`_GPTLive`)."""
-
-    billed_s: float
-
-    def history(
-        self,
-    ) -> list[tuple[str, str, str]]: ...  # (item id, role, text), the chat context
-    def commentary(self, text: str, delegation_id: str | None) -> None: ...
-    def context(self, text: str, delegation_id: str | None = None) -> None: ...
-    def instructions(self, text: str) -> None: ...
-    def set_input_enabled(self, enabled: bool) -> None: ...
-    async def close(self) -> None: ...
-
-
 @dataclass
 class Delegation:
     id: str
@@ -157,7 +142,7 @@ def _chunks(text: str) -> list[str]:
 class LiveSession:
     def __init__(
         self,
-        transport: Transport,
+        transport: _GPTLive,
         surface: Surface,
         post: Post,
         events: Events,

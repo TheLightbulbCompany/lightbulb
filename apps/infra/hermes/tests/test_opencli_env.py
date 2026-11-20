@@ -21,7 +21,6 @@ def _stub_scopes(monkeypatch, seen):
     monkeypatch.setattr(turn.browser_control, "begin_turn", lambda *a, **k: {})
     monkeypatch.setattr(turn.browser_control, "release", lambda _l: None)
     monkeypatch.setattr(turn.browser_control, "cdp_url", lambda: CDP)
-    monkeypatch.setattr(turn, "_desktop_active_turn", lambda *a: nullcontext())
 
 
 def test_room_turn_overlay_carries_opencli_endpoint(monkeypatch):

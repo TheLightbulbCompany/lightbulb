@@ -132,15 +132,6 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
             }
 
     def construct(agent_id, body, frames, session_key):
-        import json
-        import hashlib
-        root = turn._profile_dir(agent_id)
-        state = json.loads(turn._desktop_state_path(root, RUN).read_text())
-        assert state["ctx"] == {"runId": RUN, "agentId": agent_id, "ownerId": bridge.OWNER,
-                                "apiUrl": turn.API, "hookToken": bridge.HOOK_TOKEN,
-                                "family": "paperclip", "sessionKey": SESSION}
-        marker = root / turn.TURN_CONTEXT_DIRNAME / ("desktop-active-" + hashlib.sha256(SESSION.encode()).hexdigest() + ".json")
-        assert json.loads(marker.read_text()) == {"runId": RUN}
         seen["construct"] = (agent_id, body, frames, session_key)
         return Agent()
 
@@ -170,7 +161,6 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
         f"{turn.worktrees.prompt_line("agent-1", "issue-1", [])}\n{turn.CHAT_STYLE}",
     }
     assert seen["construct"] == ("agent-1", {"sessionKey": SESSION}, None, SESSION)
-    assert not turn._desktop_state_path(turn._profile_dir("agent-1"), RUN).exists()
     assert seen["secret_overlay"] == {
         "PAPERCLIP_API_URL": "http://paperclip.internal:3100",
         "PAPERCLIP_AGENT_ID": "agent-1",

@@ -119,33 +119,6 @@ A managed policy can still deny networking; daemon resume reports that denial ra
 silently presenting a session without the requested access. An already running session must
 be reopened to receive new launch defaults.
 
-**Session browser** (desktop app on the session's Mac, sharing on): a shared Claude Code or
-Codex session browses with its `lightbulb-browser` tools in that Mac's "Lightbulb agent"
-Chrome, with the workspace's sign-ins. A session that is not shared is refused ("Share this session to use the
-Lightbulb browser"). On the Mac browser, its sign-ins load when it starts browsing and save five minutes after its
-last browser command and when the session ends; its next command after such a pause waits up
-to a minute or two while they load again (anything signed into in that window meanwhile is saved
-first, not lost). When a session stops being shared its browser connection closes and its
-sign-ins are no longer saved from that session (they stay in that Mac's agent Chrome until the
-next save there). It shares the Mac's four browser connections with agent runs. Only a Codex
-CLI started on its own gets it: the Codex app, or one Codex process that serves several
-conversations (its shared background service), is refused with "More than one session runs in
-this process ... so the Lightbulb browser cannot tell which one is asking"; the person can
-start Codex with `--no-daemon`.
-When Browser is switched off on that Mac, the session browses the workspace's cloud browser
-instead (its own tab, the same sign-ins; saved when the shared browser saves). The cloud tab is
-held for 30 minutes without a command; after that the next command may wait while the cloud
-browser starts, and the tab may be gone.
-A session chooses between the two with the session's own `lightbulb` MCP tool `use_browser` (`mac`, which needs Browser on for that Mac and otherwise falls
-back to the cloud browser, or `cloud`);
-a person who may control the session can do the same through the hosted MCP's `use_browser`
-with its `session_id`. It applies to the session's next browser connection (restarting its
-`lightbulb-browser` MCP server); an open connection stays where it is.
-People watching the session see a **Browser** tab beside its terminal while it browses; those
-who may type into the session may also click and type there. While the session's person has
-paused others' input (a request to join), the browser is read-only too. Frames flow only while
-someone has that tab open, and nothing is recorded.
-
 **New session** (web and desktop): a small form with no first message. The person picks
 **Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses
 **Start**. The terminal opens on the tool's own start screen, where they can type anything,

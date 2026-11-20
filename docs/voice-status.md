@@ -183,7 +183,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 5.18 | A person can opt out of transcription; the tile says so | part | no | no | Product | #5009 parked. Built in #5185, unverified live: GPT-Live hands the request to the Router, whose `meeting_stop_transcribing` excludes only the recorded speaker; the worker adopts it from `/events`; the tile shows the count. Needs a real-meeting run. |
 | 5.19 | Office specialist pre-warmed for the meeting | part | part | no | Product | |
 | 5.20 | Meeting minutes counted | yes | part | part | Platform | #5155, verified on dev |
-| 5.21 | The scenario list (`tests/replay/scenarios/`) passes in a real Meet | n/a | n/a | no | Product | No simulator exists; the earlier one was removed |
+| 5.21 | A Meet scenario list passes in a real Meet | no | n/a | no | Product | No scenario list or simulator exists; the unused `tests/replay/` JSON scenarios (no runner) were deleted |
 
 ## Phase 6. Billing and go to market
 

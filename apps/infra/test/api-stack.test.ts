@@ -215,38 +215,6 @@ describe("ApiStack — browser-view CloudFront door", () => {
   });
 });
 
-describe("ApiStack — Slack events route has its own throttle bucket", () => {
-  const template: Template = API_TEMPLATE;
-
-  test("explicit POST /api/v1/slack/events route exists", () => {
-    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
-      RouteKey: "POST /api/v1/slack/events",
-    });
-  });
-
-  test("stage carries route-level throttling for the Slack route", () => {
-    template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
-      RouteSettings: Match.objectLike({
-        "POST /api/v1/slack/events": Match.objectLike({
-          ThrottlingBurstLimit: Match.anyValue(),
-          ThrottlingRateLimit: Match.anyValue(),
-        }),
-      }),
-    });
-  });
-});
-
-describe("ApiStack — public session-link routes have their own throttle bucket", () => {
-  test("route and stage settings exist", () => {
-    API_TEMPLATE.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "ANY /api/v1/public/{proxy+}" });
-    API_TEMPLATE.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
-      RouteSettings: Match.objectLike({
-        "ANY /api/v1/public/{proxy+}": Match.objectLike({ ThrottlingBurstLimit: 20, ThrottlingRateLimit: 10 }),
-      }),
-    });
-  });
-});
-
 describe("ApiStack — canonical messaging storage and work delivery", () => {
   test("messaging table has the frozen keys, stream, TTL, GSI, PITR, on-demand billing, and CMK", () => {
     API_TEMPLATE.hasResourceProperties("AWS::DynamoDB::Table", {

@@ -440,11 +440,8 @@ RPC_METHODS.update(subagents.RPC_METHODS)
 
 
 def _browser_state(params: dict, **_kwargs) -> dict:
-    """Checkpoint through the isolated state helper; never return its URL or exception text. A
-    ``doorUrl`` is the backend's own Mac sync for a shared session (browser_control.mac_checkpoint)."""
+    """Checkpoint through the isolated state helper; never return its URL or exception text."""
     try:
-        if (params or {}).get("doorUrl"):
-            return {"ok": True, "payload": browser_control.mac_checkpoint(params)}
         from bridge import browser_state
         return {"ok": True, "payload": browser_state.checkpoint(params)}
     except Exception:
@@ -455,12 +452,9 @@ RPC_METHODS["browser.state"] = _browser_state
 
 
 def _browser_frames(params: dict, **_kwargs) -> dict:
-    """A live-frame watcher's heartbeat (backend, while an agent browses); with a session's `runId`,
-    that session's Browser tab only."""
+    """A live-frame watcher's heartbeat (backend, while an agent browses)."""
     params = params or {}
     ttl = float(browser_control.FRAMES_TTL_S if params.get("ttl") is None else params["ttl"])  # 0 stops a cast
-    if params.get("runId"):
-        return {"ok": True, "payload": {"runs": browser_control.session_frames(str(params["runId"]), ttl)}}
     return {"ok": True, "payload": {"runs": browser_control.frames_wanted(ttl)}}
 
 
@@ -475,17 +469,8 @@ def _browser_input(params: dict, **_kwargs) -> dict:
         return {"ok": False, "error": {"code": "UNAVAILABLE", "message": f"browser input failed ({type(exc).__name__})"}}
 
 
-def _browser_attach(params: dict, **_kwargs) -> dict:
-    """A shared session's CDP onto the cloud browser (browser_control.attach_session)."""
-    try:
-        return {"ok": True, "payload": browser_control.attach_session(params or {})}
-    except ValueError:
-        return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "invalid browser attach"}}
-
-
 RPC_METHODS["browser.frames"] = _browser_frames
 RPC_METHODS["browser.input"] = _browser_input
-RPC_METHODS["browser.attach"] = _browser_attach
 
 
 def _unavailable(method: str) -> dict:

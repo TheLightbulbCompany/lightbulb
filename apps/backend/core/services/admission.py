@@ -18,6 +18,7 @@ Temporal down ⇒ `WorkRetry` (the FIFO redelivers).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -35,6 +36,9 @@ from core.temporal.types import TaskInputRef, TriggerRef
 logger = logging.getLogger(__name__)
 
 _HISTORY = 20
+# The inline admit's bound: the Temporal SDK retries an unreachable server with no end, and a live call's line waits
+# on this. Past it the outbox row delivers the trigger.
+INLINE_ADMIT_S = 2.0
 # Lightbulb spoken to (a vocative at the start: "Hi Lightbulb, …", "Lightbulb, can you…", "lightbulb?"), not the
 # company's name mid-sentence ("the Lightbulb app is down"), which goes to Jev like any unaddressed message.
 _LIGHTBULB_NAME = re.compile(r"^\W*(?:(?:hey|hi|hello|yo|ok|okay)\s+)?lightbulb\b\s*[,:?!]", re.IGNORECASE)
@@ -95,9 +99,10 @@ async def admit_inline(admit, key: object) -> None:
     logged and the queue delivers it; the duplicate signal is harmless (a deterministic trigger id the Router
     dedupes, `RouterWorkflow.trigger`)."""
     try:
-        await admit
-    except Exception:  # noqa: BLE001 -- Temporal down (WorkRetry) or anything else: the queue redelivers
-        logger.warning("inline admit failed %s; the queue will deliver it", key, exc_info=True)
+        async with asyncio.timeout(INLINE_ADMIT_S):
+            await admit
+    except Exception as exc:  # noqa: BLE001 -- TimeoutError, Temporal down (WorkRetry) or anything else: the queue redelivers
+        logger.warning("inline admit %s failed (%s); the queue will deliver it", key, type(exc).__name__, exc_info=True)
 
 
 async def admit_pointer(pointer: dict) -> None:

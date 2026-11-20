@@ -1,5 +1,6 @@
 """Admission (wave-2 O Task 6; contracts §10, §14.7). Review focus 1: a redelivered message admits once."""
 
+import asyncio
 import json
 import uuid
 from unittest.mock import AsyncMock
@@ -522,6 +523,21 @@ async def test_enqueue_trigger_swallows_inline_failure(world, monkeypatch):
     assert await admission.enqueue_trigger(WS, _sched(), room_id=ROOM) is True  # WorkRetry swallowed
     put_admit.assert_awaited_once_with(WS, "sched:s1:200")
     down.assert_awaited_once()
+
+
+async def test_admit_inline_times_out_and_returns(world, monkeypatch):
+    """Temporal connected but unreachable: the SDK retries for ever, so a live call's line must not wait on it."""
+    put_admit = AsyncMock()
+    monkeypatch.setattr(messaging_repo, "put_admit_trigger", put_admit)
+    monkeypatch.setattr(admission, "INLINE_ADMIT_S", 0.05)
+
+    async def hang(ref):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(temporal, "signal_router", hang)
+    async with asyncio.timeout(1):
+        assert await admission.enqueue_trigger(WS, _sched(), room_id=ROOM) is True
+    put_admit.assert_awaited_once_with(WS, "sched:s1:200")
 
 
 async def test_admit_twice_same_trigger_id(world):

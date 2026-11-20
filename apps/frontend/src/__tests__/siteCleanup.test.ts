@@ -1,20 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { render } from "@testing-library/react";
+import { createElement } from "react";
+import { describe, expect, it, vi } from "vitest";
 
-import nextConfig, { RETIRED_PAGE_REDIRECTS } from "../../next.config";
-import { COMPARE_PAGES } from "@/content/compare";
-import { getAllPosts } from "@/content/blog";
+import nextConfig from "../../next.config";
+import NetworkPage from "@/app/network/page";
+
+vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
+vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 
 describe("retired public pages", () => {
-  it("308s every retired page and no longer publishes it", async () => {
+  it("retired pages are gone, not redirected", async () => {
     const redirects = await nextConfig.redirects!();
-    for (const r of RETIRED_PAGE_REDIRECTS) {
-      expect(redirects).toContainEqual({ ...r, permanent: true });
+    for (const r of redirects) {
+      expect(r.has !== undefined || r.source === "/install" || r.source === "/install.sh").toBe(true);
     }
-    const live = new Set([
-      ...COMPARE_PAGES.map((p) => p.path),
-      ...getAllPosts().map((p) => `/blog/${p.slug}`),
-    ]);
-    for (const r of RETIRED_PAGE_REDIRECTS) expect(live.has(r.source)).toBe(false);
+    for (const path of ["/ai-agent-workspace", "/compare/slack", "/docs/get-started"]) {
+      expect(redirects.some((r) => r.source === path)).toBe(false);
+    }
+  });
+});
+
+describe("/network", () => {
+  it("has no sign-up line", () => {
+    const { container } = render(createElement(NetworkPage));
+    expect(container.querySelector('a[href="/sign-up"]')).toBeNull();
+    expect(container.textContent).not.toContain("Start a workspace");
   });
 });
 

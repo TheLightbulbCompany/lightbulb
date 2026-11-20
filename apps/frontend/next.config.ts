@@ -106,40 +106,6 @@ const BUILD_ID = process.env.NEXT_DEPLOYMENT_ID
       .replace(/[^A-Za-z0-9-]/g, "").slice(0, 32)
     : undefined);
 
-// Retired pages, each 308'd to the nearest real page so old links and crawls land.
-export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] = [
-  ["/ai-agent-workspace", "/"],
-  ["/ai-agent-marketplace", "/"],
-  ["/autonomous-ai-company", "/"],
-  ["/persistent-ai-agents", "/"],
-  ["/ai-agents-for-discord", "/"],
-  ["/ai-agents-for-telegram", "/"],
-  ["/ai-chief-of-staff", "/"],
-  ["/ai-operations-agent", "/"],
-  ["/ai-customer-support-agent", "/"],
-  ["/blog/connect-ai-agent-slack-discord-telegram", "/"],
-  ["/blog/ai-native-company-operating-system", "/"],
-  ["/ai-agents-for-slack", "/"],
-  // Web session sharing went with the old chat app.
-  ["/claude-code-session-sharing", "/"],
-  // The AI-workspace comparisons, posts and docs went with the 2026-11 move to
-  // the salon receptionist; /compare now compares ways to answer the phone.
-  ["/compare/slack", "/compare"],
-  ["/compare/slack-alternatives-for-ai-agents", "/compare"],
-  ["/compare/grok-bot", "/compare"],
-  ["/compare/microsoft-teams-copilot", "/compare"],
-  ["/compare/bloome", "/compare"],
-  ["/blog/persistent-ai-agent-workspace", "/network"],
-  ["/blog/human-in-the-loop-ai-agent-approvals", "/security"],
-  ["/blog/webhook-event-reference", "/docs"],
-  ["/blog/browser-automation-for-nonnative-integrations", "/docs"],
-  ["/docs/get-started", "/docs"],
-  ["/docs/use-cases", "/docs"],
-  ["/docs/skills-and-automations", "/docs"],
-  ["/docs/browser-and-apps", "/docs"],
-  ["/docs/approvals-security-privacy", "/security"],
-].map(([source, destination]) => ({ source, destination }));
-
 // Only the production host may be indexed. Keyed on host, not VERCEL_ENV: the
 // dev hosts are attached to the same Vercel project as production domains, so
 // a dev deploy reports VERCEL_ENV=production too.
@@ -209,7 +175,6 @@ const nextConfig: NextConfig = {
         destination: `${host.startsWith("dev.") ? `https://dev.${ROOT_DOMAIN}` : SITE_URL}/:path*`,
         permanent: true,
       })),
-      ...RETIRED_PAGE_REDIRECTS.map((r) => ({ ...r, permanent: true })),
       // `curl -fsSL <site>/install | sh` installs the network engine: the
       // engine repo's own installer (curl -L follows the redirect).
       ...["/install", "/install.sh"].map((source) => ({

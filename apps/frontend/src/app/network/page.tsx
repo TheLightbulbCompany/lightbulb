@@ -1,5 +1,3 @@
-import Link from "next/link";
-
 import { CopyLine } from "@/components/landing/CopyLine";
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
@@ -96,10 +94,6 @@ export default function NetworkPage() {
               <Code>{AGENT_BRIEF}</Code>
             </div>
           </div>
-
-          <p className="text-base">
-            Want an always-on AI teammate on your network? <Link href="/sign-up">Start a workspace.</Link>
-          </p>
         </div>
       </section>
       <Footer />

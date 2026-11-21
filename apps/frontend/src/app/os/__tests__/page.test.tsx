@@ -110,6 +110,16 @@ describe("/os with an invite", () => {
     await waitFor(() => expect(capture.mock.calls).toEqual([["spark_invite_signup_completed"]]));
   });
 
+  it("signing up on the page records the invite without a reload", async () => {
+    const el = await OsPage();
+    const view = render(el);
+    expect(post).not.toHaveBeenCalled();
+    s.signedIn = true;
+    view.rerender(await OsPage());
+    expect(await screen.findByRole("link", { name: DOWNLOAD })).toBeInTheDocument();
+    expect(post.mock.calls).toEqual([["/os/referral", { code: "abc123XYZ" }]]);
+  });
+
   it("signed in and the call fails: the download still shows", async () => {
     s.signedIn = true;
     post.mockRejectedValue(new Error("network"));

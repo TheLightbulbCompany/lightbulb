@@ -394,6 +394,11 @@ async def seed_users(a, b, mp, calls) -> dict:
     return {}
 
 
+async def seed_os(a, b, mp, calls) -> dict:
+    await ok(a, "POST", "/api/v1/os/ticket")  # A's Spark account and pending ticket
+    return {}
+
+
 async def seed_runtime_rpc(a, b, mp, calls) -> dict:
     await a_runtime(a)
     op = str(uuid.uuid4())
@@ -464,6 +469,7 @@ SEEDS = {
     "connections": seed_connections,
     "container": seed_container,
     "users": seed_users,
+    "os": seed_os,
     "runtime_rpc": seed_runtime_rpc,
     "oauth": seed_oauth,
     "devices": seed_devices,
@@ -724,6 +730,8 @@ CASES = [
     Case("users", "GET", "/api/v1/users/me/prefs"),
     Case("users", "PUT", "/api/v1/users/me/prefs", {"timezone": "Europe/London"}),
     Case("users", "POST", "/api/v1/users/me/delete", {"confirm_email": "{b}@example.com"}),
+    # os: a Spark ticket for the caller's own account (the app-token doors take no Clerk session)
+    Case("os", "POST", "/api/v1/os/ticket"),
     # devices, support, desktop sign-in: the caller's own
     Case(
         "devices", "POST", "/api/v1/devices", {"token": "ExponentPushToken[b]", "platform": "ios", "deviceId": "dev-b"}

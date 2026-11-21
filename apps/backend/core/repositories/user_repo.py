@@ -37,13 +37,23 @@ async def put(user_id: str, email: str | None = None) -> dict:
     Writing an empty string would shadow Clerk's actual primary email
     in any future upsert, so we omit the attribute entirely when the
     caller has nothing to record.
+
+    An UpdateItem that keeps every other attribute: a redelivered Clerk
+    ``user.created`` must not drop push tokens, prefs or the Spark account.
     """
     table = _get_table()
-    item: dict = {"user_id": user_id, "created_at": utc_now_iso()}
+    sets, values = ["created_at = if_not_exists(created_at, :c)"], {":c": utc_now_iso()}
     if email:
-        item["email"] = email
-    await run_in_thread(table.put_item, Item=item)
-    return item
+        sets.append("email = :e")
+        values[":e"] = email
+    got = await run_in_thread(
+        table.update_item,
+        Key={"user_id": user_id},
+        UpdateExpression="SET " + ", ".join(sets),
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    return got["Attributes"]
 
 
 async def backfill_email(user_id: str, email: str | None) -> None:

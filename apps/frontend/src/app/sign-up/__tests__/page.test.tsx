@@ -8,7 +8,7 @@ const push = vi.hoisted(() => vi.fn());
 vi.mock("@clerk/nextjs", () => ({
   SignUp: (props: unknown) => { signUpProps(props); return <div data-testid="clerk-sign-up" />; },
 }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }), useSearchParams: () => new URLSearchParams() }));
 beforeEach(() => vi.clearAllMocks());
 
 const openJoinDoor = () => fireEvent.click(screen.getByRole("tab", { name: /I was invited/ }));

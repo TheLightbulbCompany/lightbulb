@@ -2,6 +2,7 @@ import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
+import { AuthSwitchLink } from "@/components/onboarding/AuthSwitchLink";
 import { SignUpDoors } from "@/components/onboarding/SignUpDoors";
 
 export default function Page() {
@@ -346,7 +347,7 @@ export default function Page() {
 
             <div className="auth-footer-links">
               Already have an account?{" "}
-              <Link href="/sign-in">Sign in</Link>
+              <AuthSwitchLink to="/sign-in">Sign in</AuthSwitchLink>
             </div>
 
             <div className="auth-legal-links">

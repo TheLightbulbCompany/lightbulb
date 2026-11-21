@@ -1,10 +1,10 @@
 "use client";
 
 import { SignIn } from "@clerk/nextjs";
-import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { Logo } from "@/components/Logo";
+import { AuthSwitchLink } from "@/components/onboarding/AuthSwitchLink";
 
 const TASKS = [
   "a new booking",
@@ -297,7 +297,7 @@ export default function Page() {
 
             <p className="auth-footer">
               Don&apos;t have an account?{" "}
-              <Link href="/sign-up">Sign up</Link>
+              <AuthSwitchLink to="/sign-up">Sign up</AuthSwitchLink>
             </p>
           </div>
         </main>

@@ -807,6 +807,10 @@ async def handle_clerk_webhook(request: Request):
         from core.services.workspace_memory import delete_person_memory
 
         await delete_person_memory(user_id)
+        # Their Spark tokens; a failure fails the event, and the redelivery retries it.
+        from routers import os as os_router
+
+        await os_router.revoke_all(user_id)
 
     elif event_type == "organization.created":
         await _handle_organization_created(data)  # never deduped (above): a redelivery retries it

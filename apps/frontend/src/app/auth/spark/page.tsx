@@ -1,8 +1,8 @@
 "use client";
 
-import { SignIn, useAuth } from "@clerk/nextjs";
+import { useAuth, useClerk } from "@clerk/nextjs";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
@@ -14,43 +14,37 @@ const SCHEMES = new Set(["spark", "spark-dev", "eve"]);
 
 function SparkSignIn() {
   const { isLoaded, isSignedIn } = useAuth();
+  const clerk = useClerk();
   const api = useApi();
   const scheme = useSearchParams().get("scheme") ?? "";
   const allowed = SCHEMES.has(scheme);
   const [link, setLink] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  // One ticket per page load: the account holds one ticket, so a second request would void the first.
+  const asked = useRef(false);
 
   useEffect(() => {
-    if (!allowed || !isLoaded || !isSignedIn) return;
-    let live = true;
+    if (!allowed || !isLoaded) return;
+    if (!isSignedIn) {
+      // The app's own sign-in and sign-up pages, which return here (scheme checked again on return).
+      clerk.redirectToSignIn({ redirectUrl: `${window.location.origin}/auth/spark?scheme=${scheme}` });
+      return;
+    }
+    if (asked.current) return;
+    asked.current = true;
     (api.post("/os/ticket", {}) as Promise<{ ticket: string }>)
       .then(({ ticket }) => {
-        if (!live) return;
         const url = `${scheme}://auth?ticket=${encodeURIComponent(ticket)}`;
         setLink(url);
         // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- the app's URL scheme, not a page
         window.location.href = url;
       })
-      .catch(() => live && setFailed(true));
-    return () => {
-      live = false;
-    };
-  }, [allowed, isLoaded, isSignedIn, scheme, api]);
+      .catch(() => setFailed(true));
+  }, [allowed, isLoaded, isSignedIn, scheme, api, clerk]);
 
   let body: React.ReactNode;
   if (!allowed) {
     body = <h1 className="text-xl font-semibold">This sign-in link is not valid. Start again from Spark.</h1>;
-  } else if (isLoaded && !isSignedIn) {
-    const back = `/auth/spark?scheme=${scheme}`;
-    return (
-      <div className="flex justify-center items-center h-screen">
-        <SignIn
-          forceRedirectUrl={back}
-          signUpForceRedirectUrl={back}
-          appearance={{ elements: { rootBox: "mx-auto" } }}
-        />
-      </div>
-    );
   } else if (failed) {
     body = <h1 className="text-xl font-semibold">Could not sign in. Reload the page to try again.</h1>;
   } else if (link) {

@@ -7,6 +7,7 @@ users row of `user_id` holds the SHA-256 of each secret (`os_ticket`, `os_tokens
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 import time
@@ -19,6 +20,7 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_human_session
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 TICKET_TTL_S = 60
@@ -124,7 +126,10 @@ async def create_session(body: SessionRequest) -> SessionResponse:
         raise
     stored = sorted(row["Attributes"]["os_tokens"])  # entries start with their mint time in ns
     if len(stored) > MAX_TOKENS:
-        await _drop_tokens(user_id, set(stored[:-MAX_TOKENS]))
+        try:  # housekeeping: the person is signed in either way, and the next sign-in trims again
+            await _drop_tokens(user_id, set(stored[:-MAX_TOKENS]))
+        except Exception:
+            logger.exception("os token trim failed for %s", user_id)
     return SessionResponse(token=token, accountId=user_id)
 
 
@@ -135,6 +140,20 @@ async def _drop_tokens(user_id: str, entries: set[str]) -> None:
         UpdateExpression="DELETE os_tokens :gone",
         ExpressionAttributeValues={":gone": entries},
     )
+
+
+async def revoke_all(user_id: str) -> None:
+    """Sign every Mac of a deleted person out. A person with no users row has nothing to revoke."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="REMOVE os_tokens, os_ticket",
+            ConditionExpression="attribute_exists(user_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
 
 async def get_os_account(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> tuple[dict, str]:

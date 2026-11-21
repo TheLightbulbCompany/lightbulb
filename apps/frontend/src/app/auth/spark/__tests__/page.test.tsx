@@ -1,23 +1,22 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
 import SparkSignInPage from "../page";
 
 const s = vi.hoisted(() => ({
   signedIn: true,
   query: "scheme=spark",
   post: vi.fn(),
-  signInProps: vi.fn(),
+  redirectToSignIn: vi.fn(),
 }));
+const clerk = vi.hoisted(() => ({ redirectToSignIn: (...args: unknown[]) => s.redirectToSignIn(...args) }));
 const api = vi.hoisted(() => ({ post: (...args: unknown[]) => s.post(...args) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(s.query) }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: s.signedIn }),
-  SignIn: (props: unknown) => {
-    s.signInProps(props);
-    return <div>sign in</div>;
-  },
+  useClerk: () => clerk,
 }));
 
 const original = window.location;
@@ -25,7 +24,7 @@ beforeEach(() => {
   Object.assign(s, { signedIn: true, query: "scheme=spark" });
   vi.clearAllMocks();
   s.post.mockResolvedValue({ ticket: "user_a.secret" });
-  Object.defineProperty(window, "location", { configurable: true, value: { href: "" } });
+  Object.defineProperty(window, "location", { configurable: true, value: { href: "", origin: "https://app.test" } });
 });
 afterEach(() => {
   Object.defineProperty(window, "location", { configurable: true, value: original });
@@ -54,18 +53,26 @@ describe("Spark sign-in", () => {
     },
   );
 
-  it("signed out shows sign-in that returns to the same link", () => {
+  it("signed out goes to the app's sign-in page, which returns to the same link", () => {
     s.signedIn = false;
     s.query = "scheme=spark-dev";
     render(<SparkSignInPage />);
-    expect(screen.getByText("sign in")).toBeInTheDocument();
-    expect(s.signInProps).toHaveBeenCalledWith(
-      expect.objectContaining({
-        forceRedirectUrl: "/auth/spark?scheme=spark-dev",
-        signUpForceRedirectUrl: "/auth/spark?scheme=spark-dev",
-      }),
-    );
+    expect(s.redirectToSignIn).toHaveBeenCalledWith({ redirectUrl: "https://app.test/auth/spark?scheme=spark-dev" });
     expect(s.post).not.toHaveBeenCalled();
+  });
+
+  it("signed out with a bad scheme shows the error and goes nowhere", () => {
+    s.signedIn = false;
+    s.query = "scheme=javascript";
+    render(<SparkSignInPage />);
+    expect(screen.getByText("This sign-in link is not valid. Start again from Spark.")).toBeInTheDocument();
+    expect(s.redirectToSignIn).not.toHaveBeenCalled();
+  });
+
+  it("one page load asks for one ticket, even under strict mode", async () => {
+    render(<StrictMode><SparkSignInPage /></StrictMode>);
+    expect(await screen.findByText("You can go back to Spark")).toBeInTheDocument();
+    expect(s.post).toHaveBeenCalledTimes(1);
   });
 
   it("a failed ticket says so and opens nothing", async () => {

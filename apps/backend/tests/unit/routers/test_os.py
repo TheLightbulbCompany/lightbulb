@@ -189,3 +189,36 @@ async def test_a_replayed_user_created_webhook_keeps_the_account(users, clock):
     await user_repo.put("user_a", "user_a@example.com")
     body = (await account(token)).json()
     assert body["trialEndsAt"] == clock[0] + 3 * DAY
+
+
+async def user_deleted(monkeypatch, user_id: str):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
+    monkeypatch.setattr("core.services.workspace_memory.delete_person_memory", AsyncMock())
+    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo.delete", AsyncMock())
+    payload = {"type": "user.deleted", "data": {"id": user_id, "deleted": True}}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        return await c.post("/api/v1/webhooks/clerk", json=payload, headers={"svix-timestamp": "1234567890"})
+
+
+async def test_a_deleted_clerk_account_is_signed_out_everywhere(users, clock, monkeypatch):
+    a, b = await session(A), await session(B)
+    assert (await user_deleted(monkeypatch, "user_a")).status_code == 200
+    assert answer(await account(a)) == REVOKED
+    assert (await account(b)).status_code == 200
+
+
+async def test_user_deleted_with_no_users_row_completes(users, clock, monkeypatch):
+    assert (await user_deleted(monkeypatch, "user_nobody")).status_code == 200
+    assert users.scan()["Items"] == []
+
+
+async def test_a_failed_trim_still_signs_in(users, clock, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    for _ in range(10):
+        await session()
+    monkeypatch.setattr("routers.os._drop_tokens", AsyncMock(side_effect=RuntimeError("down")))
+    token = await session()
+    assert (await account(token)).status_code == 200

@@ -96,7 +96,9 @@ async def fixture(ctx: Ctx, label: str) -> dict:
     )
     room_id, occurrence = room["roomId"], int(time.time())
     marker = "Synthetic source marker " + uuid.uuid4().hex
-    transcript_id = await run_in_thread(transcripts.put, ctx.ws, room_id, marker.encode())
+    transcript_id = await run_in_thread(
+        transcripts.put, ctx.ws, room_id, marker.encode(), name=f"{room_id}|{occurrence}"
+    )
     snapshot = {
         "transcriptId": transcript_id,
         "transcriptRoomId": room_id,

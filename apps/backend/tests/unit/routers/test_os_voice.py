@@ -712,6 +712,7 @@ async def test_a_replaced_session_is_closed_by_its_sideband_and_counted_once(ddb
     await until(lambda: rec(ddb, first).get("usageSeconds") == 25)
     second = await opened_session()
     await until(lambda: {"type": "session.close"} in sockets[0].sent)  # within a tick of being replaced
+    await until(lambda: len(sockets) == 2)  # the new session's sideband attaches on its own schedule
     assert "session.close" not in str(sockets[1].sent)
     sockets[0].push(closed(27))
     await until(lambda: rec(ddb, first).get("endedReason"))

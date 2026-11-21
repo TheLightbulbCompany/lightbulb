@@ -18,6 +18,7 @@ from core.repositories import effects_repo, questions_repo, tasks_repo
 from core.services import questions
 from core.temporal import client as temporal_client
 from core.temporal import task_questions as tq
+from core.engine import api  # the answer and action bodies moved there (engine-service Task 4)
 from routers import questions as router_mod
 
 from .conftest import TASK, WS
@@ -33,7 +34,7 @@ MEMBERS = [
 
 @pytest.fixture
 def world(table, monkeypatch):
-    monkeypatch.setattr(router_mod, "human_display_name", AsyncMock(side_effect=lambda u: u.split("_")[1].title()))
+    monkeypatch.setattr(api, "human_display_name", AsyncMock(side_effect=lambda u: u.split("_")[1].title()))
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
     roster = {"members": list(MEMBERS)}
 

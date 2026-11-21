@@ -1,0 +1,713 @@
+"""The engine's operations for products (engine-service plan Task 4; research `2026-11-20-engine-boundary.md` §6.1).
+
+Lightbulb Phone and Lightbulb Meetings call these, and only these, to put lines in a conversation, start and answer
+tasks and read what the agents said. In process today; the same shapes go over HTTP later (`core.engine.contract`).
+Every operation takes the tenant explicitly: none reads a Clerk organisation. A refusal is an `EngineError` carrying
+the status and body the routes answered before; `http` turns it back into that `HTTPException` for a route.
+
+The bodies were moved here from the routes and voice modules that held them (`routers/voice_phone.caller_turn`,
+`routers/voice_meet.answer_said_question`, `routers/questions.submit_answer`, `routers/tasks._act`,
+`routers/internal_automations.start_voice_work`, `core/voice/room_lines`, `core/voice/rooms.prewake_owner`); the
+old names call these. Ids, sequence numbers, idempotency keys and trigger ids are the ones those wrote.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from collections.abc import Awaitable
+from typing import Any, TypeVar
+
+from fastapi import HTTPException
+from temporalio.client import WorkflowUpdateFailedError
+from temporalio.service import RPCError
+
+from core import tasks_schema as ts
+from core.auth import AuthContext
+from core.constants import SYSTEM_ACTOR_ID
+from core.dynamodb import utc_now_iso
+from core.engine import hooks
+from core.engine.contract import (
+    ActIn,
+    AgentRef,
+    AnswerIn,
+    ConversationOut,
+    EngineError,
+    EventIn,
+    EventOut,
+    LineIn,
+    LineOut,
+    LinesOut,
+    PRODUCT_META_FIELDS,
+    Principal,
+    QuestionRef,
+    StartIn,
+    StartOut,
+)
+from core.engine.hooks import EngineEvent
+from core.repositories import effects_repo, messaging_repo, questions_repo, tasks_repo
+from core.services import admission, chat_gate, container_rpc, messaging, questions, task_conversation, tasks_access
+from core.services.messaging import human_display_name
+from core.temporal import client as temporal_client
+from core.temporal.task_questions import AnswerRef
+from core.temporal.types import ActionRequest, StopRequest
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+async def http(call: Awaitable[T]) -> T:
+    """A route's adapter: an operation's refusal as the HTTPException the route raised before (same status, body)."""
+    try:
+        return await call
+    except EngineError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail) from e
+
+
+def _problem(status: int, code: str, **extra: Any) -> EngineError:
+    return EngineError(code, status, {"code": code, **extra})
+
+
+_err = _problem  # the tasks routes' name for it
+
+
+# --- 2. append_line --------------------------------------------------------------------------------------------------
+
+
+async def append_line(req: LineIn) -> LineOut:
+    """A line in a conversation, by `principal.kind`. `member`: a person's message (`create_human_message`, client id
+    the uuid5 of `idempotency_key`), after it answers the said question `answers` names (then it wakes nobody).
+    `contact`: an outside caller's line (silent, keyed on `idempotency_key`) and its trigger `trigger_key`, taken by
+    the conversation's open thread or else admitted. `system`: Lightbulb's own line (`post_as_lightbulb`, event id
+    `idempotency_key`); its `seq` is not reported."""
+    if req.principal.kind == "contact":
+        return await _contact_line(req)
+    if req.principal.kind == "system":
+        message_id = await task_conversation.post_as_lightbulb(
+            req.tenant_id,
+            req.conversation_id,
+            text=req.text,
+            event_id=req.idempotency_key,
+            attrs=req.system_attrs,
+            remember=req.remember,
+            in_reply_to=req.in_reply_to,
+        )
+        return LineOut(message_id=message_id)
+    member, key = req.principal.id, req.idempotency_key
+    answered = await answer_said_question(req.tenant_id, req.conversation_id, member, req.answers, req.text, key)
+    msg = await messaging.create_human_message(
+        AuthContext(user_id=member, org_id=req.tenant_id),
+        req.conversation_id,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+            text=req.text,
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+        via=req.via,
+        wake=req.respond == "auto" and not answered,
+    )
+    return LineOut(message_id=str(msg.message_id), seq=msg.message_seq, answered=answered)
+
+
+async def _contact_line(req: LineIn) -> LineOut:
+    """Moved from `routers/voice_phone.caller_turn` (the line after the product's own checks): the caller's message,
+    authored by the caller (a non-member: no admission row, no memory), and its trigger for the conversation, so the
+    Router decides it with the caller's scope, or the conversation's open thread takes it."""
+    ws, requester, call_id = req.tenant_id, req.requester_user_id, req.conversation_id
+    who = req.principal.display_name
+    key = req.idempotency_key
+    msg, _ = await messaging_repo.create_message(
+        room_id=call_id,
+        owner_id=ws,
+        idemp_pk=messaging_repo.owner_pk(ws),
+        idemp_sk=messaging_repo.agent_idemp_sk(key),
+        req_hash=messaging_repo.request_hash(call_id, req.turn, req.text),
+        author={"kind": "human", "id": req.principal.id, "displayName": who},
+        text=req.text,
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=None,
+        client_message_id=None,
+        silent=True,
+        author_member_check=False,
+        via=req.via,
+    )
+    now = utc_now_iso()
+    trigger = ts.Trigger(
+        ws=ws,
+        trigger_id=ts.trigger_id(req.via, call_id, req.trigger_key),
+        source=req.via,
+        admission="respond",
+        lane="shared",  # the batch key is the conversation (trigger_scope): a call never shares a Router prompt
+        actor_user_id=requester,  # the product's accountable user for the line, never the model
+        received_at=now,
+        created_at=now,
+        updated_at=now,
+        ref={
+            "roomId": call_id,
+            "messageId": msg["messageId"],
+            **({"origin": req.origin} if req.origin else {}),
+            **req.product_ref,
+            "text": f"{req.text}\n\n{req.hint}" if req.hint else req.text,
+        },
+    )
+    if task_id := await _open_thread(ws, call_id, int(msg["messageSeq"]), req.origin):
+        # The conversation's open thread takes the line, as a typed reply in a task's thread does (admission's
+        # pass-through): it already holds what it offered and the caller's answers (8 Nov prod final smoke: each
+        # line started a new thread, and the "yes" thread asked again and picked a time never offered).
+        trig = {**trigger.model_dump(by_alias=True), "routedTo": {"taskId": task_id}}
+        trig["ref"]["deliverRoomId"] = call_id
+        await tasks_repo.put_trigger(ws, trig)
+        if blocked := await task_conversation.gate_input(ws, task_id, trig):  # §14.10, as admission's pass-through
+            await task_conversation.post_as_lightbulb(
+                ws,
+                call_id,
+                text=blocked,
+                event_id=f"task-gate:{task_id}:{trigger.trigger_id}",
+                remember=False,
+                in_reply_to=msg["messageId"],
+                attrs={"voiceWaiting": False},
+            )
+            task_id = None
+        else:
+            await admission._to_task(ws, task_id, trigger.trigger_id)
+    else:
+        await admission.enqueue_trigger(ws, trigger, room_id=call_id)
+    return LineOut(message_id=msg["messageId"], seq=int(msg["messageSeq"]), trigger_id=trigger.trigger_id,
+                   task_id=task_id)  # fmt: skip
+
+
+_CLOSED = frozenset({"resolved", "failed"})  # a task that takes no more input
+
+
+async def _open_thread(ws: str, call_id: str, before_seq: int, origin: str | None) -> str | None:
+    """The conversation's latest thread of `origin` still open (its card on a Lightbulb line in the room), else
+    None: a conversation's first line, or a line after its thread failed or was closed, goes to the Router."""
+    for row in reversed(await messaging_repo.list_messages_before(call_id, before_seq, 50)):
+        for ref in reversed(row.get("taskRefs") or []):
+            task = await tasks_repo.get_task(ws, ref.get("taskId") or "")
+            if (
+                task
+                and task.get("origin") == origin
+                and (task.get("audience") or {}).get("roomId") == call_id  # this conversation's, never another's
+                and task.get("status") not in _CLOSED
+            ):
+                return task["taskId"]
+    return None
+
+
+async def answer_said_question(owner_id: str, room_id: str, member: str, ref: QuestionRef | None, text: str,
+                               key: str) -> bool:  # fmt: skip
+    """The line said right after the voice said a Worker's question answers it, as `member`, through the card's own
+    path (`submit_answer`): a message in the room never answers a Question (task_questions.py). False (the line
+    then goes to the Router as a message): no ref, a question this room never got, or a refused answer (closed, not
+    an answerer, an approval: a spoken yes never approves)."""
+    if ref is None:
+        return False
+
+    rows = await messaging_repo.list_messages_before(room_id, 10**19, 100)
+    if not any(_question_ref(r) == ref.model_dump(by_alias=True) for r in rows):
+        return False
+    body = AnswerIn(tenant_id=owner_id, task_id=ref.task_id, qid=ref.qid, principal=Principal(kind="member", id=member),
+                    option_id="answer", text=text[:4000],
+                    client_answer_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex)  # fmt: skip
+    try:
+        await submit_answer(owner_id, ref.task_id, ref.qid, member, body)
+    except EngineError as e:
+        logger.info("voice room %s: question %s not answered by voice (%s)", room_id, ref.qid, e.detail)
+        return False
+    return True
+
+
+# --- 3. start_task, 9. submit_event -----------------------------------------------------------------------------------
+
+
+async def start_task(req: StartIn) -> StartOut:
+    """A task started with no Router model turn (a scripted `ref.start`), answered in `conversation_id`. The same
+    `trigger_id` is the same task. `lane="auto"`: the requester's private lane in a DM, else shared. `ask`
+    (`task_asks.open_ask`'s arguments): the task opens waiting on that Question instead of running first."""
+    requester = req.principal.id if req.principal else None
+    lane = "shared"
+    if req.lane == "auto":
+        meta = await messaging_repo.get_room(req.conversation_id) or {}
+        lane = ts.router_lane_key(requester) if meta.get("kind") == "dm" else "shared"
+    trigger_id = req.trigger_id
+    task_id = ts.router_task_id(trigger_id, 0, 0)
+    start = ts.StartTask(
+        kind="start_task",
+        trigger_ids=[trigger_id],
+        title=req.title,
+        brief=req.brief,
+        specialist=req.specialist,
+        ack=req.ack or f"On it: {req.title}",
+        visibility="room",
+    )
+    now = utc_now_iso()
+    trigger = ts.Trigger(
+        ws=req.tenant_id,
+        trigger_id=trigger_id,
+        source=req.source,
+        admission="respond",
+        lane=lane,
+        actor_user_id=requester,
+        received_at=now,
+        created_at=now,
+        updated_at=now,
+        ref={
+            "deliverRoomId": req.conversation_id,
+            **req.product_ref,
+            "taskId": task_id,
+            "start": start.model_dump(by_alias=True),
+            **({"origin": req.origin} if req.origin else {}),
+            **({"confirmAll": True} if req.confirm_all else {}),  # every effect of the task gets a card
+            **({"ask": req.ask} if req.ask else {}),
+        },
+    )
+    created = await admission.enqueue_trigger(req.tenant_id, trigger, room_id=req.conversation_id)
+    return StartOut(task_id=task_id, trigger_id=trigger_id, created=created, qid=(req.ask or {}).get("qid"))
+
+
+async def submit_event(req: EventIn) -> EventOut:
+    """A source event for the Router with no message behind it: `respond` (it answers) or `candidate` (it decides
+    whether to act). The same `trigger_id` is the same event."""
+    now = utc_now_iso()
+    trigger = ts.Trigger(
+        ws=req.tenant_id,
+        created_at=now,
+        updated_at=now,
+        trigger_id=req.trigger_id,
+        source=req.source,
+        admission=req.admission,
+        lane="shared",
+        actor_user_id=req.principal.id if req.principal else None,
+        ref={
+            **({"roomId": req.conversation_id} if req.conversation_id else {}),
+            **({"origin": req.origin} if req.origin else {}),
+            **({"confirmAll": True} if req.confirm_all else {}),
+            **req.product_ref,
+            "text": req.text,
+        },
+        received_at=now,
+    )
+    return EventOut(trigger_id=req.trigger_id, created=await admission.enqueue_trigger(req.tenant_id, trigger))
+
+
+# --- 4. read_lines ------------------------------------------------------------------------------------------------
+
+
+async def read_lines(tenant_id: str, conversation_id: str, after: int) -> LinesOut:
+    """The agent lines a voice says in `conversation_id` after seq `after` (`agent_lines`), and the next cursor."""
+    return LinesOut(**await agent_lines(conversation_id, after))
+
+
+async def latest_seq(room_id: str) -> int:
+    """The room's newest message seq: the first `/events` cursor, so a talk says only what comes after it."""
+    rows = await messaging_repo.list_messages_before(room_id, 10**19, 1)
+    return int(rows[-1]["messageSeq"]) if rows else 0
+
+
+def _question_ref(row: dict) -> dict | None:
+    """{taskId, qid} of a Worker's question line (task_questions.relay_question posts it in the origin thread)."""
+    if row.get("kind") != "question":
+        return None
+    ref = next((t for t in row.get("taskRefs") or [] if t.get("qid") and t.get("taskId")), None)
+    return {"taskId": ref["taskId"], "qid": ref["qid"]} if ref else None
+
+
+async def agent_lines(room_id: str, after: int) -> dict:
+    """The agent messages in the room's main chat after seq `after`, oldest first, and the next cursor. A thread's
+    lines and progress lines are not said, except a Worker's question in a thread this room started (with its
+    `question` ref: the next line said to the voice answers it, `answer_said_question`); the meeting never heard
+    one and the task waited on it (8 Nov prod Meet). The voice says these word for word (huddle-agent mouth.py).
+    `inReplyTo`: the human message a line answers (the voice matches it to that spoken ask); `action`: what the voice
+    does with it (the phone's "transfer")."""
+    from core.repositories import questions_repo
+
+    rows, _ = await messaging_repo.list_messages(room_id, after, 100)
+    said, owner = [], None
+    for r in rows:
+        text, question = r.get("editedText") or r.get("text") or "", _question_ref(r)
+        if (r.get("author") or {}).get("kind") != "agent" or r.get("progress") or r.get("deletedAt"):
+            continue
+        if question:  # answered or closed (on its card, or by voice) before the voice got to it: never said
+            owner = owner or ((await messaging_repo.get_room(room_id)) or {}).get("ownerId")
+            q = await questions_repo.get_question(owner, question["taskId"], question["qid"]) if owner else None
+            if (q or {}).get("state") != "open":
+                continue
+        if text.strip() and (question or not r.get("threadRootMessageId")):
+            said.append({"id": r["messageId"], "seq": int(r["messageSeq"]), "text": text,
+                         "waiting": bool(r.get("voiceWaiting", r.get("taskRefs") and r.get("kind") != "task_line")) if not question else False,
+                         **({"taskIds": r.get("voiceTaskIds") or [ref["taskId"] for ref in r["taskRefs"]]} if r.get("voiceTaskIds") or r.get("taskRefs") else {}),
+                         **({"question": question} if question else {}),
+                         **{k: r[k] for k in ("inReplyTo", "action", "voiceDelivery") if r.get(k)}})  # fmt: skip
+    return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
+
+
+# --- 5. answer ------------------------------------------------------------------------------------------------------
+
+_STYLES = {"deny": "danger", "request_changes": "secondary"}
+
+
+async def answer(req: AnswerIn) -> dict:
+    """`principal` answers Question `qid` of `task_id` (`submit_answer`): the question's view and the task's summary."""
+    return await submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req)
+
+
+def _not_found() -> EngineError:
+    return EngineError("not_found", 404, {"code": "not_found"})
+
+
+async def _people(ids: list[str | None]) -> dict[str, str]:
+    unique = [u for u in dict.fromkeys(ids) if u]
+    return dict(zip(unique, await asyncio.gather(*(human_display_name(u) for u in unique))))
+
+
+def _view(q: dict, viewer: str, names: dict[str, str]) -> dict[str, Any]:
+    """`QuestionView` (spec 05 §5.1, states from contracts-v2 §3). `canAnswer` is the stored list;
+    the answer route re-checks authority (`questions.can_answer_now`)."""
+    answerers = list(q.get("answerers") or [])
+    is_open = q["state"] == "open"
+    if not is_open:
+        waiting = None
+    elif viewer in answerers:
+        waiting = "Waiting on you"
+    else:
+        waiting = questions.waiting_label([names.get(u, u) for u in answerers])
+
+    def person(uid: str | None) -> dict | None:
+        return {"id": uid, "name": names.get(uid, uid)} if uid else None
+
+    return {
+        "id": q["qid"],
+        "taskId": q["taskId"],
+        "kind": q["kind"],
+        "subkind": q.get("subkind"),
+        "title": q["title"],
+        "text": q.get("text", ""),
+        "preview": q.get("preview"),
+        "options": [
+            {"id": o["id"], "label": o["label"], "style": _STYLES.get(o["id"], "primary" if i == 0 else "secondary")}
+            for i, o in enumerate(q.get("options") or [])
+        ],
+        "state": q["state"],
+        "askedBy": q.get("askedBy"),
+        "answerers": [person(u) for u in answerers],
+        "canAnswer": is_open and viewer in answerers,
+        "waitingLabel": waiting,
+        "answer": q.get("answer"),
+        "answeredBy": person(q.get("answeredBy")),
+        "answeredAt": q.get("answeredAt"),
+        "reason": q.get("reason"),
+        "cancelledBy": None if q.get("cancelledBy") in _NOT_A_PERSON else person(q.get("cancelledBy")),
+        "cancelledAt": q.get("cancelledAt"),
+        "govRef": q.get("govRef"),
+        "createdAt": q["createdAt"],
+        "version": q["version"],
+    }
+
+
+async def _views(qs: list[dict], viewer: str) -> list[dict]:
+    names = await _people(
+        [u for q in qs for u in (*(q.get("answerers") or []), q.get("answeredBy"), q.get("cancelledBy"))]
+    )
+    return [_view(q, viewer, names) for q in qs]
+
+
+def _failure_codes(err: BaseException) -> set[str]:
+    """Every error type and message along a failed update's cause chain (validator message, Activity type)."""
+    codes: set[str] = set()
+    seen: BaseException | None = err
+    while seen is not None:
+        codes.add(type(seen).__name__)
+        codes.add(str(getattr(seen, "message", "") or ""))
+        if getattr(seen, "type", None):
+            codes.add(seen.type)
+        seen = seen.__cause__ or getattr(seen, "cause", None)
+    return codes
+
+
+async def _answered_view(ws: str, task: dict, qid: str, viewer: str) -> dict[str, Any]:
+    tree = await tasks_repo.get_task_tree(ws, task["taskId"])
+    tree["effects"] = await effects_repo.effects_of_task(ws, task["taskId"])
+    q = next(q for q in tree["questions"] if q["qid"] == qid)
+    [view] = await _views([q], viewer)
+    return {"question": view, "next": tasks_access.summarize(tree, viewer)}
+
+
+_NOT_A_PERSON = frozenset({SYSTEM_ACTOR_ID, "watch"})  # the task ended it (resolve, failure, watchdog, watch)
+
+
+def _not_open(q: dict) -> EngineError:
+    """409 with who closed it. Cancelled: `reason` (stopped, resolved, quiet, lost_run, watch_gave_up, ...) for the
+    client's copy, and `by` only when a person did it ("This thread ended", never a system id as a name)."""
+    if q["state"] == "cancelled":
+        by = q.get("cancelledBy")
+        return _problem(
+            409,
+            "not_open",
+            state="cancelled",
+            by=None if by in _NOT_A_PERSON else by,
+            at=q.get("cancelledAt"),
+            reason=q.get("reason"),
+        )
+    return _problem(409, "not_open", state=q["state"], by=q.get("answeredBy"), at=q.get("answeredAt"))
+
+
+async def submit_answer(ws: str, task_id: str, qid: str, me: str, body: Any) -> dict[str, Any]:
+    """`me` answers Question `qid`: the card's press, and a line said to the voice right after it said the question
+    (`answer_said_question`). `body`: `option_id`, `text`, `client_answer_id`, `expect_version`. Raises the answer
+    route's refusals as EngineError."""
+    task = await tasks_repo.get_task(ws, task_id)
+    if task is None or not await tasks_access.can_view(task, me):
+        raise _not_found()
+    q = await questions_repo.get_question(ws, task_id, qid)
+    if q is None:
+        raise _not_found()
+    if q["state"] != "open":
+        if q["state"] == "answered" and q.get("clientAnswerId") == body.client_answer_id and q.get("answeredBy") == me:
+            await _remember(ws, q, body, me)  # finishes a write a failed first press left
+            return await _answered_view(ws, task, qid, me)  # the same press again
+        raise _not_open(q)
+    if task.get("status") in _CLOSED:
+        # A closed task's Questions are cancelled when it ends; one left open (that cancel failed) is still never
+        # answered, and no Temporal update is sent (it would start a fresh run for a finished task).
+        raise _problem(409, "task_closed")
+    if not await questions.can_answer_now(ws, q, me):
+        raise _problem(403, "not_answerer")
+    offered = {o["id"] for o in q.get("options") or []} or {"answer"}
+    if body.option_id not in offered:
+        raise _problem(400, "invalid_option")
+    trigger_id = None
+    if body.text:
+        # The text rides on a Trigger row; the Temporal update carries ids only.
+        trigger_id = ts.trigger_id("answer", qid, body.client_answer_id)
+        await tasks_repo.put_trigger(
+            ws,
+            {
+                "triggerId": trigger_id,
+                "source": "answer",
+                "ref": {"taskId": task_id, "qid": qid, "optionId": body.option_id, "text": body.text},
+                "admission": "respond",
+                "lane": "shared",
+                "actorUserId": me,
+                "receivedAt": utc_now_iso(),
+            },
+        )
+    ref = AnswerRef(qid, body.option_id, trigger_id, me, body.client_answer_id, body.expect_version)
+    try:
+        await temporal_client.update_task(ws, task_id, "answer", ref)
+    except temporal_client.TemporalUnavailable as err:
+        raise _problem(503, "TEMPORAL_UNAVAILABLE", retryable=True) from err
+    except Exception as err:  # noqa: BLE001 -- an update failure: the row says what happened
+        codes = _failure_codes(err)
+        now = await questions_repo.get_question(ws, task_id, qid)
+        if now and now["state"] == "answered" and now.get("clientAnswerId") == body.client_answer_id:
+            await _remember(ws, q, body, me)
+            return await _answered_view(ws, task, qid, me)
+        if now and now["state"] != "open":
+            raise _not_open(now) from err
+        if "task_closed" in codes or (await tasks_repo.get_task(ws, task_id) or {}).get("status") in _CLOSED:
+            raise _problem(409, "task_closed") from err
+        if {"not_answerer", "NotAnswerer"} & codes:
+            raise _problem(403, "not_answerer") from err
+        if "InvalidOption" in codes:
+            raise _problem(400, "invalid_option") from err
+        if "VersionConflict" in codes:
+            raise _problem(409, "stale_version") from err
+        raise _problem(502, "answer_failed") from err
+    await _remember(ws, q, body, me)
+    return await _answered_view(ws, task, qid, me)
+
+
+async def _remember(ws: str, q: dict, body: Any, me: str) -> None:
+    """A Question that names a conversation (only a phone call's does: calls.call_ask) answered: its product hears
+    it. Every other Question tells the products nothing."""
+    if not (q.get("preview") or {}).get("roomId"):
+        return
+    answer = {"optionId": body.option_id, "text": body.text}
+    await hooks.event(EngineEvent(type="question.answered", tenant_id=ws, question=q, answer=answer, actor_user_id=me))
+
+
+# --- 6. act ---------------------------------------------------------------------------------------------------------
+
+_GATED = frozenset({"retry"})  # a new attempt: today's chat gate first (§14.10). Reopen runs nothing.
+
+
+async def act(req: ActIn) -> dict:
+    """Stop, resolve, reopen or retry a task as `principal`, at `version` when given: the task's summary after."""
+    return await _act(req.tenant_id, req.task_id, req.action, req.principal.id, req.version)
+
+
+async def _visible_tree(ws: str, task_id: str, user_id: str) -> dict:
+    tree = await tasks_repo.get_task_tree(ws, task_id)
+    if tree["task"] is None:
+        raise _err(404, "not_found")
+    if not await tasks_access.can_view(tree["task"], user_id):
+        raise _err(404, "not_found")  # hidden reads as missing: no existence leak (lead ruling, 5 Nov)
+    return tree
+
+
+async def _summary(tree: dict, viewer: str) -> dict:
+    ids = list(
+        dict.fromkeys(u for q in tree["questions"] if q.get("state") == "open" for u in q.get("answerers") or [])
+    )
+    names = dict(zip(ids, await asyncio.gather(*(human_display_name(u) for u in ids))))
+    return tasks_access.summarize({**tree, "userNames": names}, viewer)
+
+
+async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | None) -> dict:
+    tree = await _visible_tree(ws, task_id, user_id)
+    task = tree["task"]
+    if version is not None and task["version"] != version:
+        raise _err(409, "version_conflict", version=task["version"])
+    if action in {"retry", "reopen"}:
+        trig = await tasks_repo.get_trigger(ws, task["triggerId"]) if task.get("triggerId") else None
+        if await admission.paused_room(ts.trigger_room(trig or {}) or (task.get("audience") or {}).get("roomId")):
+            raise _err(409, "project_paused", message=messaging.PAUSED_ROOM_TEXT)
+    if action in _GATED:
+        gate = await chat_gate.gate_chat(user_id=user_id, owner_id=ws, session_key=f"task:{task_id}")
+        if gate.get("blocked"):
+            raise _err(402, gate.get("code") or "blocked", message=gate.get("message"))
+    try:
+        if action == "stop":
+            await temporal_client.update_task(ws, task_id, "stop", StopRequest(by_user_id=user_id))
+        else:
+            await temporal_client.update_task(ws, task_id, action, ActionRequest(user_id, expected_version=version))
+    except WorkflowUpdateFailedError as exc:  # the workflow's validator refused this state
+        raise _err(409, "illegal_state") from exc
+    except (temporal_client.TemporalUnavailable, RPCError) as exc:
+        raise _err(503, "TEMPORAL_UNAVAILABLE", retryable=True) from exc
+    await _mark_action(ws, task, action, user_id)
+    return await _summary(await tasks_repo.get_task_tree(ws, task_id), user_id)
+
+
+_ACTION_MARKS = {"resolve": "Closed", "stop": "Stopped", "reopen": "Reopened"}
+
+
+async def _mark_action(ws: str, task: dict, action: str, user_id: str) -> None:
+    """The task room's marker for a person's Close, Stop or Reopen, by name ("Closed by Sam"); the workflow's own
+    status changes are marked by `activities._announce`. Keyed on the version acted on: one line per press."""
+    mark = _ACTION_MARKS.get(action)
+    if not mark:
+        return
+    try:
+        await task_conversation.ensure_task_room(ws, task)
+        await task_conversation.post_as_lightbulb(
+            ws,
+            ts.task_room_id(task["taskId"]),
+            text=f"{mark} by {await human_display_name(user_id)}",
+            event_id=f"task-mark:{task['taskId']}:{action}:{task['version']}",
+            kind="marker",
+            progress=True,
+            remember=False,
+        )
+    except Exception:  # noqa: BLE001 -- the action happened; its line is cosmetic
+        logger.warning("action marker not posted task=%s action=%s", task["taskId"], action, exc_info=True)
+
+
+# --- 7. reads ---------------------------------------------------------------------------------------------------------
+
+
+async def get_conversation(tenant_id: str, conversation_id: str) -> ConversationOut | None:
+    """The conversation and its members; None when it is not this tenant's (or gone). Product fields on its record
+    come back as `annotations`, untouched."""
+    meta = await messaging_repo.get_room(conversation_id)
+    if not meta or meta.get("ownerId") != tenant_id or meta.get("deletedAt"):
+        return None
+    return ConversationOut(
+        conversation_id=conversation_id,
+        kind=meta.get("kind") or "",
+        hidden=bool(meta.get("hidden")),
+        revision=int(meta.get("revision") or 0),
+        last_seq=int(meta.get("lastSeq") or 0),
+        archived=bool(meta.get("archivedAt")),
+        members=await messaging_repo.list_members(conversation_id),
+        front_agent_id=meta.get("frontAgentId"),
+        annotations={k: meta[k] for k in PRODUCT_META_FIELDS if k in meta},
+    )
+
+
+async def read_history(tenant_id: str, conversation_id: str, before_seq: int, limit: int) -> list[dict]:
+    """The `limit` newest messages before `before_seq`, oldest first."""
+    return await messaging_repo.list_messages_before(conversation_id, before_seq, limit)
+
+
+async def get_roster(tenant_id: str) -> list[AgentRef]:
+    """The workspace's agents, with the handle each is @mentioned by."""
+    roster = await messaging.load_agent_roster(tenant_id)
+    handles = await messaging._handles_for(tenant_id, roster)
+    return [AgentRef(id=a["id"], name=a["name"], mention_handle=handles.get(a["id"])) for a in roster]
+
+
+async def get_task(tenant_id: str, task_id: str) -> dict | None:
+    return await tasks_repo.get_task(tenant_id, task_id)
+
+
+async def get_task_tree(tenant_id: str, task_id: str) -> dict:
+    return await tasks_repo.get_task_tree(tenant_id, task_id)
+
+
+async def get_trigger(tenant_id: str, trigger_id: str) -> dict | None:
+    return await tasks_repo.get_trigger(tenant_id, trigger_id)
+
+
+async def list_conversation_tasks(tenant_id: str, conversation_id: str, since: int, until: int) -> list[dict]:
+    """The tasks that hold, or held, the conversation's threads, created between epoch seconds `since` and `until`
+    and answered in it: never a workspace-wide scan."""
+    from datetime import datetime
+
+    threads = await tasks_repo.list_room_threads(tenant_id, conversation_id)
+    ids = dict.fromkeys(tid for t in threads for tid in (t["taskId"], *(t.get("history") or [])))
+    rows = await tasks_repo.batch_get(tenant_id, [ts.task_sk(tid) for tid in ids])
+
+    def within(row: dict) -> bool:
+        try:
+            at = datetime.fromisoformat(row.get("createdAt") or "").timestamp()
+        except ValueError:
+            return False
+        audience = row.get("audience") or {}
+        return since <= at <= until and audience.get("kind") == "room" and audience.get("roomId") == conversation_id
+
+    return [r for r in rows if within(r)]
+
+
+# --- 8. warm --------------------------------------------------------------------------------------------------------
+
+_background: set[asyncio.Task] = set()
+
+
+def _fire(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+def warm(tenant_id: str, agent_ids: list[str], conversation_id: str | None = None) -> None:
+    """Fire-and-forget wake of the workspace runtime (one health RPC), then a profile pull for each agent (the
+    bridge's profile.warm, off its request thread), so the first summon finds both warm. Pulse's first voice answer
+    waited 23 s on its cold profile restore alone.
+
+    With `conversation_id` the bridge also compacts each agent's session for that room if it is near Hermes's
+    threshold: a spoken turn never compacts (67-103 s inside a turn, prod 10-07), so the start of the call is where
+    it happens. The RPC answers at once either way."""
+    owner_id, room_id = tenant_id, conversation_id
+
+    async def wake():
+        try:
+            await container_rpc.call(owner_id, "health")
+        except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
+            logger.info("voice owner prewake failed", exc_info=True)
+            return
+        for agent_id in agent_ids:
+            try:
+                params = {"agentId": agent_id, **({"roomId": room_id} if room_id else {})}
+                await container_rpc.call(owner_id, "profile.warm", params, timeout_s=10.0)
+            except Exception:  # noqa: BLE001 -- an old image answers "unavailable"; the summon restores
+                logger.info("voice profile prewarm failed agent=%s", agent_id, exc_info=True)
+
+    _fire(wake())

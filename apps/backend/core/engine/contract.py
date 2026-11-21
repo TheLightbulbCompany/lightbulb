@@ -133,11 +133,16 @@ class LineIn(Model):
     product_ref: dict = {}
     in_reply_to: str | None = None
     system_attrs: dict | None = None
+    #: a contact line's place in its conversation (a phone call's turn n): with the conversation and the text it is
+    #: the line's request hash, so a retry of the same turn replays and a different text under its key conflicts
+    turn: int | None = None
+    #: a system line goes into room memory (`post_as_lightbulb`'s `remember`)
+    remember: bool = True
 
 
 class LineOut(Model):
     message_id: str
-    seq: int
+    seq: int | None = None  # not reported for a system line
     trigger_id: str | None = None
     task_id: str | None = None
     answered: bool = False

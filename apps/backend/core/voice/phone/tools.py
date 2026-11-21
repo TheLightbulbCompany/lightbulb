@@ -8,8 +8,9 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
+from core.engine import api
+from core.engine.contract import LineIn, Principal
 from core.engine.hooks import ToolCall
-from core.services import task_conversation
 
 
 async def front_desk(call: ToolCall) -> dict:
@@ -96,14 +97,18 @@ async def transfer_call(call: ToolCall) -> dict:
             call_id, lambda c: {"handoffMissed": True, "steps": vp._step(c, "Asked for a person; nobody was available")}
         )
         raise HTTPException(status_code=403, detail={"code": "nobody_available"})
-    message_id = await task_conversation.post_as_lightbulb(
-        owner_id,
-        call_id,
-        text=vp.redact_cards(body.text),
-        event_id=f"call-transfer:{body.trigger_ids[0]}",
-        attrs={"action": "transfer"},
-        remember=False,
+    line = await api.append_line(
+        LineIn(
+            tenant_id=owner_id,
+            conversation_id=call_id,
+            principal=Principal(kind="system", id="lightbulb"),
+            text=vp.redact_cards(body.text),
+            idempotency_key=f"call-transfer:{body.trigger_ids[0]}",
+            system_attrs={"action": "transfer"},
+            remember=False,
+        )
     )
+    message_id = line.message_id
     return {"messageId": message_id, "routedTo": {"transfer": message_id}}
 
 

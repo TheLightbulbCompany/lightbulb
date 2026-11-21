@@ -238,7 +238,7 @@ async def test_only_a_dm_is_owner_mode_and_the_worker_secret_is_required(m):
 async def test_the_orbs_line_after_a_said_question_answers_it(m):
     from types import SimpleNamespace
 
-    from routers import questions as question_routes
+    from core.engine import api as question_routes  # the answer path moved there (engine-service Task 4)
 
     qrow = {"kind": "question", "taskRefs": [{"taskId": "k1", "qid": "q-2"}]}
     body = voice_owner.TurnIn(

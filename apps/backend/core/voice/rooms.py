@@ -8,8 +8,9 @@ import logging
 
 from core.billing import voice_billing
 from core.config import settings
+from core.engine import api
 from core.repositories import billing_repo, messaging_repo
-from core.services import container_rpc, messaging
+from core.services import messaging
 from core.voice.voice_calls import _problem
 
 logger = logging.getLogger(__name__)
@@ -57,28 +58,8 @@ def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str
 
 
 def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | None = None) -> None:
-    """Fire-and-forget wake of the workspace runtime (one health RPC), then a profile pull for every
-    agent in the room (the bridge's profile.warm, off its request thread), so the first summon finds
-    both warm. Pulse's first voice answer waited 23 s on its cold profile restore alone.
-
-    With ``room_id`` the bridge also compacts each agent's session for that room if it is near
-    Hermes's threshold: a spoken turn never compacts (67-103 s inside a turn, prod 10-07), so the
-    start of the call is where it happens. The RPC answers at once either way."""
-
-    async def wake():
-        try:
-            await container_rpc.call(owner_id, "health")
-        except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
-            logger.info("voice owner prewake failed", exc_info=True)
-            return
-        for member in team or ():
-            try:
-                params = {"agentId": member["id"], **({"roomId": room_id} if room_id else {})}
-                await container_rpc.call(owner_id, "profile.warm", params, timeout_s=10.0)
-            except Exception:  # noqa: BLE001 -- an old image answers "unavailable"; the summon restores
-                logger.info("voice profile prewarm failed agent=%s", member["id"], exc_info=True)
-
-    _fire(wake())
+    """Fire-and-forget wake of the workspace runtime and of every agent of `team` (`core.engine.api.warm`)."""
+    api.warm(owner_id, [member["id"] for member in team or ()], room_id)
 
 
 def _live_configured() -> bool:

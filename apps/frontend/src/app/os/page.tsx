@@ -6,10 +6,16 @@ import { Navbar } from "@/components/landing/Navbar";
 import { pageMetadata } from "@/lib/seo";
 
 import { OsInvite } from "./OsInvite";
+import { OsLanding, type SparkPrice } from "./OsLanding";
+
+// ponytail: dev-only until the founder approves; delete this switch and the short page to launch
+const landing = () => !(process.env.NEXT_PUBLIC_API_URL ?? "").includes("//api.thelightbulb.company");
 
 export const metadata = pageMetadata({
   title: "Spark, a Voice App for the Mac | Lightbulb",
-  description: "Meet Spark, a one-click voice interface for your Mac. Download it for Mac with Apple silicon.",
+  description: landing()
+    ? "Meet Spark, a one-click voice interface for your Mac. Hold fn, say what you want done, and Spark does it on your Mac."
+    : "Meet Spark, a one-click voice interface for your Mac. Download it for Mac with Apple silicon.",
   path: "/os",
 });
 
@@ -17,6 +23,11 @@ export const metadata = pageMetadata({
 // Every line is a VERIFIED row in .agents/product-marketing.md ("Spark").
 export default async function OsPage() {
   const [ready, price] = await Promise.all([installerPublished(), sparkPrice()]);
+  return landing() ? <OsLanding ready={ready} price={price} /> : <ShortPage ready={ready} price={price} />;
+}
+
+// Today's short page, unchanged: what production renders until the landing page is approved.
+function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
   return (
     <main className="ld-page min-h-screen">
       <Navbar />
@@ -69,7 +80,7 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/ap
 
 // Spark's price and trial from the backend (GET /os/config), the same facts the app shows. Any failure or
 // unexpected shape is null, and the page shows no price.
-async function sparkPrice(): Promise<{ priceText: string; trialDays: number } | null> {
+async function sparkPrice(): Promise<SparkPrice> {
   try {
     const r = await fetch(`${BACKEND_URL}/os/config`, { next: { revalidate: 300 } });
     if (!r.ok) return null;

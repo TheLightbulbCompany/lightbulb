@@ -51,6 +51,8 @@ describe("/os", () => {
   // The page is async: it asks GitHub whether the installer is published (a 302 when it is) and the
   // backend for Spark's price (GET /os/config).
   const LINE = "Free for 3 days, then $20/month. Renews monthly until you cancel.";
+  // Production's short page; the dev-only landing page is tested in app/os/__tests__/landing.test.tsx.
+  beforeEach(() => vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.thelightbulb.company/api/v1"));
   beforeEach(() =>
     vi.stubGlobal(
       "fetch",
@@ -61,7 +63,10 @@ describe("/os", () => {
       ),
     ),
   );
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
 
   it("meets Spark and offers the Mac download, with no waitlist form", async () => {
     const { container } = render(await OsPage());

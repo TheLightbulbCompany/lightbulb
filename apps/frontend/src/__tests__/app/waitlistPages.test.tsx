@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
@@ -48,8 +48,12 @@ describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
 });
 
 describe("/os", () => {
-  it("meets Spark and offers the Mac download, with no waitlist form", () => {
-    const { container } = render(<OsPage />);
+  // The page is async: it asks GitHub whether the installer is published (a 302 when it is).
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn(async () => ({ status: 302 }))));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("meets Spark and offers the Mac download, with no waitlist form", async () => {
+    const { container } = render(await OsPage());
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Meet Spark");
     expect(container.textContent).toContain("One-click voice interface for your Mac.");
     expect(container.textContent).toContain("For Mac with Apple silicon (M1 or later). Requires macOS 14 or later.");
@@ -59,8 +63,8 @@ describe("/os", () => {
     expect(String(osMeta.title)).toContain("Spark");
   });
 
-  it("keeps AI, banned words, prices and dashes out", () => {
-    const { container } = render(<OsPage />);
+  it("keeps AI, banned words, prices and dashes out", async () => {
+    const { container } = render(await OsPage());
     const text = container.textContent ?? "";
     expect(container.querySelector("h1")?.textContent).not.toMatch(/\bAI\b/);
     expect(text).not.toMatch(BANNED);

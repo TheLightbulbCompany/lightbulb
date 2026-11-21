@@ -330,7 +330,6 @@ async def test_the_sweep_runs_a_past_due_teardown_and_deletes_its_row(monkeypatc
     table.put_item(Item={**base, "sk": "org_a#not-yet", "dueAt": now + 999})
     monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
     monkeypatch.setattr(memory_api.container_repo, "scan_all", AsyncMock(return_value=[]))
-    monkeypatch.setattr(memory_api.evaluator, "collect_due", AsyncMock(return_value=0))
     await memory_api.sweep_once()
     assert calls == ["try:True", "runtime"]
     assert [i["sk"] for i in table.scan()["Items"]] == ["org_a#not-yet"]

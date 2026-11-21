@@ -25,9 +25,11 @@ async def test_claim_usage_receipt_is_first_writer_wins():
 
 @pytest.mark.asyncio
 async def test_decision_claim_is_put_if_absent_or_stale_and_result_overwrites():
+    run = AsyncMock()
     with (
         patch.object(messaging_repo.settings, "MESSAGING_TABLE", "test-messaging"),
-        patch("core.repositories.messaging_repo.run_in_thread", new_callable=AsyncMock) as run,
+        patch("core.repositories.messaging_repo.run_in_thread", run),
+        patch("core.dynamodb.run_in_thread", run),  # the repo's `_get` reads through `core.dynamodb.get_item`
         patch("core.repositories.messaging_repo.time.time", return_value=1000.0),
     ):
         assert await messaging_repo.claim_decision("room-1", "m1") is True

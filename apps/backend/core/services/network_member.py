@@ -75,13 +75,13 @@ async def write_sessions(owner_id: str) -> dict:
         "workspace": (org or {}).get("name") or owner_id,
         "sessions": sessions,
         "members": members,
-        "revoked_keys": await _revoked_keys(members),
+        "revoked_keys": await revoked_keys(members),
     }
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
 
 
-async def _revoked_keys(user_ids: list[str]) -> list[str]:
+async def revoked_keys(user_ids: list[str]) -> list[str]:
     """The unexpired ``NETREVOKED#<user>`` keys of these people."""
     from core.repositories import messaging_repo
 

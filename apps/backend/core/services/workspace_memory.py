@@ -331,10 +331,13 @@ async def forget_workspace_authored(owner_id: str) -> str | None:
 
 
 async def _computer_keys(user_id: str) -> list[str]:
-    """Member keys this person's computers signed in with (``NETKEY#<user>`` rows, kept for the wipes)."""
+    """Member keys of this person's computers: the registry (``NETKEY#<user>``, every key that signed in)
+    and the signed-out keys still in force (a registry write is best effort)."""
     from core.repositories import messaging_repo
+    from core.services.network_member import revoked_keys
 
-    return sorted(r["sk"].removeprefix("NETKEY#") for r in await messaging_repo._query(f"NETKEY#{user_id}"))
+    registered = [r["sk"].removeprefix("NETKEY#") for r in await messaging_repo._query(f"NETKEY#{user_id}")]
+    return sorted({*registered, *await revoked_keys([user_id])})
 
 
 async def _forget_keys(user_id: str) -> None:

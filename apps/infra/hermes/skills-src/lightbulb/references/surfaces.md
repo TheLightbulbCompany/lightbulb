@@ -167,10 +167,7 @@ Starting the same conversation again on the Mac lists it again.
 **Claude Code or Codex without the Mac app** (Linux, Windows, or a Mac with no
 Lightbulb app): the person installs the `lightbulb` plugin from the public
 marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives skills and hooks
-(the `lightbulb-session-sharing` skill among them). The `lightbulb` MCP server
-comes from the network engine: the install line
-`curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh`.
-The plugin does not share
+(the `lightbulb-session-sharing` skill among them). The plugin does not share
 sessions; only the Mac app does that. Claude Code:
 `claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
 `claude plugin install lightbulb@lightbulb`. Codex:

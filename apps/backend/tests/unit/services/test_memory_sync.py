@@ -854,6 +854,5 @@ async def test_the_sweep_retries_owed_wipes_for_every_workspace(monkeypatch):
     monkeypatch.setattr(memory_api.container_repo, "scan_all", AsyncMock(return_value=[{"owner_id": "org_1"}]))
     retry = AsyncMock(return_value=1)
     monkeypatch.setattr(memory_api, "retry_member_wipes", retry)
-    monkeypatch.setattr(memory_api.evaluator, "collect_due", AsyncMock(return_value=0))
     await memory_api.sweep_once()
     retry.assert_awaited_once_with("org_1")

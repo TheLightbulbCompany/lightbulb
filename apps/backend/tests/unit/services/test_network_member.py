@@ -49,11 +49,23 @@ async def test_sessions_json_lists_every_agent_and_the_members(store, table):
             {"name": "ops-lead", "agent": "Ops Lead", "title": "Ops Lead", "agentId": A2},
         ],
         "members": ["user_1", "user_2"],
+        "revoked_keys": [],
     }
     key = {"pk": "OWNER#org_a", "sk": "NETWAKE"}
     armed = table.get_item(Key=key)["Item"]["tokenHash"]
     await network_member.write_sessions("org_a")
     assert table.get_item(Key=key)["Item"]["tokenHash"] == armed  # set once, kept: wake conditions on it
+
+
+@pytest.mark.asyncio
+async def test_a_signed_out_computer_stays_revoked_until_its_proof_expires(store, table):
+    import time
+
+    now = int(time.time())
+    table.put_item(Item={"pk": "NETREVOKED#user_1", "sk": "k" * 52, "ttl": now + 3600})
+    table.put_item(Item={"pk": "NETREVOKED#user_2", "sk": "x" * 52, "ttl": now - 1})  # its proof has expired
+    await network_member.write_sessions("org_a")
+    assert _doc(store)["revoked_keys"] == ["k" * 52]
 
 
 @pytest.mark.asyncio

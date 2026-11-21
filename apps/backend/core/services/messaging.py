@@ -1874,9 +1874,8 @@ async def _lightbulb_only(owner_id: str, members: list[CreateRoomMember], kind: 
     return [*humans, CreateRoomMember(kind="agent", id=front, role="member", listen_mode=listen or "active")]
 
 
-#: Event-id prefixes that may still post in a Router room as another agent: A2A hold cards and Live late answers,
-#: until lane Q's Question holds replace them (lead ruling, 5 Nov 2026; lanes/O.md).
-_VOICE_EXEMPT_EVENT_PREFIXES = ("a2a:", "live-late:")
+#: Event-id prefixes that may still post in a Router room as another agent: Live late answers.
+_VOICE_EXEMPT_EVENT_PREFIXES = ("live-late:",)
 
 
 async def _require_lightbulb_voice(owner_id: str, meta: dict, agent_id: str, event_id: str = "") -> None:
@@ -2413,7 +2412,7 @@ async def room_agent(room_id: str, agent_id: str, meta: dict | None = None) -> d
 
 
 async def _stand_in(owner_id: str, agent_id: str) -> dict | None:
-    """A roster-backed author with no seat (the feed, a task room's specialist, an exempt A2A/Live post)."""
+    """A roster-backed author with no seat (the feed, a task room's specialist, an exempt Live post)."""
     roster = await load_agent_roster(owner_id)
     row = next((agent for agent in roster if agent["id"] == agent_id), None)
     if row is None:
@@ -5037,8 +5036,7 @@ async def create_agent_message(
         raise ApiProblem("INVALID_REQUEST", "A feed post needs postReason: why it matters.")
     member = await room_agent(room_id, agent_id, meta)
     if member is None and router and request.event_id.startswith(_VOICE_EXEMPT_EVENT_PREFIXES):
-        # A Router room seats only Lightbulb: the A2A agent in the holder's DM (or a Live late answer) is not a
-        # member, so the exempt post goes out as a roster stand-in, like the feed's authors.
+        # A Router room seats only Lightbulb: a Live late answer's agent is not a member, so the exempt post goes out as a roster stand-in, like the feed's authors.
         member = await _stand_in(owner_id, agent_id)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")

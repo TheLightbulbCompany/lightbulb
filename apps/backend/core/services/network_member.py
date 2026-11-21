@@ -69,10 +69,25 @@ async def write_sessions(owner_id: str) -> dict:
         sessions.append({"name": name, "agent": agent["name"] or name, "title": agent["name"], "agentId": agent["id"]})
 
     await _arm_wake(owner_id)
-    # ``members``: the sidecar's gate, the workspace's people.
-    doc = {"workspace": (org or {}).get("name") or owner_id, "sessions": sessions, "members": members}
+    # ``members``: the sidecar's gate, the workspace's people; ``revoked_keys``: their signed-out computers, whose
+    # proofs stay valid until they expire (30 days). ponytail: goes with the member sidecar
+    doc = {
+        "workspace": (org or {}).get("name") or owner_id,
+        "sessions": sessions,
+        "members": members,
+        "revoked_keys": await _revoked_keys(members),
+    }
     await run_in_thread(put_owner_object, sessions_key(owner_id), json.dumps(doc).encode())
     return doc
+
+
+async def _revoked_keys(user_ids: list[str]) -> list[str]:
+    """The unexpired ``NETREVOKED#<user>`` keys of these people."""
+    from core.repositories import messaging_repo
+
+    rows = await asyncio.gather(*(messaging_repo._query(f"NETREVOKED#{u}") for u in user_ids))
+    now = int(time.time())
+    return sorted({r["sk"] for found in rows for r in found if int(r.get("ttl") or 0) > now})
 
 
 async def publish_sessions(owner_id: str) -> None:

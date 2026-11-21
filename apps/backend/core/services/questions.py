@@ -163,7 +163,7 @@ def _target(kind: str, operands: dict) -> tuple[str, str] | None:
 
 async def rule_effect(ws: str, specialist: str | None, kind: str, operands: dict) -> tuple[str, str] | None:
     """`("allow" | "deny", rule id)` when a stored rule names this action (`a2a_rules.decide` over the workspace's
-    Rules document), else None. The A2A defaults and holders never decide an effect: only a rule for this skill
+    Rules document), else None. The defaults and holders never decide an effect: only a rule for this skill
     does. A mail with cc/bcc is never covered: a rule binds `to` alone. An allow for a purchase or provision is
     ignored (`NEVER_REMEMBERED`): a deny still holds."""
     from core.repositories import a2a_repo
@@ -298,8 +298,6 @@ def _rule_for(subkind: str | None, policy: dict[str, bool]) -> str:
         return "creator+admins"
     if subkind == "review":
         return "requester+admins"
-    if subkind == "a2a_hold":
-        return "holders"
     return "requester"  # `question`, `tool`, `a2a` and any gated effect not listed above
 
 
@@ -310,11 +308,10 @@ async def answerers(
     subkind: str | None,
     *,
     app: dict | None = None,
-    holders: list[str] | None = None,
 ) -> tuple[list[str], str, list[str]]:
     """Spec 05 §3.3, computed at ask time and stored on the row.
 
-    Returns `(answerers, rule, base)`: `base` is the non-admin part (requester, app creator, governance holders), kept
+    Returns `(answerers, rule, base)`: `base` is the non-admin part (requester, app creator), kept
     so `can_answer_now` can re-check the admin part at answer time. Raises `NoAnswerer` on an empty list.
     """
     inviter = task.get("ownerUserId")
@@ -324,9 +321,7 @@ async def answerers(
         # who left the workspace (or a workspace-owned task) falls through to the rule below: never a locked card.
         return [inviter], "inviter", [inviter]
     rule = await _current_rule(ws, subkind)
-    if rule == "holders":
-        base = list(holders or [])
-    elif rule == "creator+admins":
+    if rule == "creator+admins":
         # An app the call did not name (`lightbulb app publish` run in the app's folder carries no id) has no
         # creator seat to add; its admins still answer, as they would for a named app.
         base = [app["created_by"]] if app and app.get("created_by") else []

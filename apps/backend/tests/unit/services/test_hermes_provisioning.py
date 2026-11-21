@@ -1115,6 +1115,7 @@ async def test_pool_preparation_preserves_network_identity_and_refreshes_session
             "workspace": "Acme",
             "sessions": [],
             "members": [],
+            "revoked_keys": [],
         }
 
         # A reconcile keeps the key and refreshes sessions.json (#4359: workspaces always carry members).

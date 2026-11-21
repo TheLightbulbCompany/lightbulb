@@ -393,8 +393,8 @@ class Settings(BaseSettings):
     # workspace's sessions run there (runtime_transport.runtime_arn), each its own microVM, and a
     # new workspace gets no runtime, role or boot secret of its own. Names infra, not a flag.
     HERMES_SHARED_RUNTIME_ARN: str = ""
-    # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): the evaluator's
-    # episodes and reflections, apart from the workspace memory. Empty = no evaluator.
+    # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): what the wipes delete of
+    # the evaluator's episodes and reflections. Empty = nothing to delete.
     AGENTCORE_SESSIONS_MEMORY_ID: str = ""
     # Haiku-class model that splits a recall question into the facts it needs (memory_models.expand);
     # the same id container-stack.ts gives AgentCore extraction (MEMORY_EXTRACT_MODEL).

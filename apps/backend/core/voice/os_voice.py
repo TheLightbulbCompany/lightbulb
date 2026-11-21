@@ -286,12 +286,14 @@ async def _release(sid: str, attach_failed: bool = False) -> None:
 
 async def _trial_ends_at(user_id: str) -> int | None:
     """The person's trial end, read consistently: it decides whether to close a live session. None (no row,
-    or no trial attribute) is never an ended trial."""
+    no trial attribute, or a live Spark subscription) is never an ended trial."""
+    from core.services import os_billing
+
     row = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ConsistentRead=True)).get(
         "Item"
     ) or {}
     ends = row.get("os_trial_ends_at")
-    return None if ends is None else int(ends)
+    return None if ends is None or os_billing.status(row, now()) == "active" else int(ends)
 
 
 async def _due(s: dict, at: int) -> str | None:

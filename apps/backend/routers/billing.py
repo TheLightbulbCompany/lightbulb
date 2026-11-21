@@ -22,7 +22,7 @@ from core.billing import voice_billing, voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.repositories.workspace_repo import customer_ops_agent_id
-from core.services import apple_iap, billing_service, openrouter_keys, photon, text_lines, trial_cap
+from core.services import apple_iap, billing_service, openrouter_keys, os_billing, photon, text_lines, trial_cap
 from core.services.billing_service import SEATS_INCLUDED, BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
@@ -540,7 +540,8 @@ async def handle_stripe_webhook(
     put_metric("stripe.webhook.received", dimensions={"event_type": event_type})
 
     billing_service = BillingService()
-    handler = STRIPE_WEBHOOK_HANDLERS.get(event_type)
+    # A Spark subscription is the person's, never a workspace's: its own handler, before any workspace one.
+    handler = os_billing.stripe_handler(event) or STRIPE_WEBHOOK_HANDLERS.get(event_type)
     if handler is None:
         return {"status": "ok"}
 

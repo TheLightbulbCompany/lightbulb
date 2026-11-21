@@ -932,6 +932,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     if ids.user_row is not None:
 
         async def _s9d() -> str:
+            from core.services.os_billing import cancel_for_deleted_user
+
+            await cancel_for_deleted_user(owner_id)  # a failure keeps the row: it holds the subscription id
             await user_repo.delete(owner_id)
             return "users row deleted"
 

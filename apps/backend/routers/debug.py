@@ -258,6 +258,12 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         for provider in ("openai", "anthropic"):
             await svc.delete_key(owner_id, provider)
 
+    async def _delete_user_row():
+        from core.services.os_billing import cancel_for_deleted_user
+
+        await cancel_for_deleted_user(user_id)  # a failure keeps the row: it holds the subscription id
+        await user_repo.delete(user_id)
+
     ddb_steps = []
     if runtime_succeeded:
         ddb_steps.append(("containers", lambda: container_repo.delete(owner_id)))
@@ -268,7 +274,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
             ("integrations", _wipe_integrations),
             ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
-            ("users", lambda: user_repo.delete(user_id)),
+            ("users", _delete_user_row),
             # The person's own memory data: sessions, drafts, episodes, computer keys.
             ("person-memory", lambda: workspace_memory.delete_person_memory(user_id)),
             # The WORKSPACE row (keyed by the owner id) carries the company,

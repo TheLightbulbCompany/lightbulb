@@ -70,6 +70,8 @@ async def test_first_account_read_starts_a_three_day_trial(users, clock):
         "referralCount": 0,
         "checkoutUrl": None,
         "portalUrl": None,
+        "priceText": "$20/month",
+        "trialDays": 3,
     }
 
 

@@ -452,6 +452,18 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  test("backend task definition carries STRIPE_SPARK_PRICE_ID", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_SPARK_PRICE_ID" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
   test("backend task definition carries STRIPE_FRONT_DESK_PRICE_ID", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([

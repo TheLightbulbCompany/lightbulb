@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_human_session
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact, utc_now_iso
+from core.services import os_billing
 from core.voice import os_voice
 from core.voice.os_voice import now as _now
 from core.voice.rooms import live_configured
@@ -42,8 +43,25 @@ class AccountResponse(BaseModel):
     referralUrl: str
     referralDaysEarned: int
     referralCount: int
-    checkoutUrl: None = None
-    portalUrl: None = None
+    checkoutUrl: str | None = None
+    portalUrl: str | None = None
+    priceText: str
+    trialDays: int
+
+
+class ConfigResponse(BaseModel):
+    priceText: str
+    trialDays: int
+
+
+def _price_facts() -> ConfigResponse:
+    return ConfigResponse(priceText=f"${settings.SPARK_PRICE_USD}/month", trialDays=TRIAL_S // DAY_S)
+
+
+@router.get("/config", response_model=ConfigResponse, operation_id="os_config")
+async def get_config() -> ConfigResponse:
+    """Spark's price and trial length, for the sign-in screen before anyone is signed in. Public."""
+    return _price_facts()
 
 
 class ReferralResponse(BaseModel):
@@ -90,15 +108,19 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
     now = _now()
     row = await _account(auth, now)
     ends, referrals = int(row["os_trial_ends_at"]), int(row.get("os_referrals", 0))
+    checkout_url, portal_url = os_billing.links(row, auth.user_id, now)
     return AccountResponse(
         accountId=auth.user_id,
         email=row.get("email") or "",
         name="",  # the backend stores no name for a person
-        status="trial" if now < ends else "ended",
+        status=os_billing.status(row, now),
         trialEndsAt=ends,
         referralUrl=f"{settings.FRONTEND_URL.rstrip('/')}/os?ref={auth.user_id.removeprefix('user_')}",
         referralDaysEarned=referrals,  # one referral is one day
         referralCount=referrals,
+        checkoutUrl=checkout_url,
+        portalUrl=portal_url,
+        **_price_facts().model_dump(),
     )
 
 
@@ -159,6 +181,7 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
     except BotoCoreError:
         logger.warning("os referral not written for %s: transport", auth.user_id)
         raise HTTPException(status_code=503, detail="referral_unavailable")
+    await os_billing.extend_trial(referrer)
     return ReferralResponse(applied=True)
 
 
@@ -269,7 +292,7 @@ async def create_voice_session(
     if not live_configured():
         raise HTTPException(status_code=503, detail="voice_unavailable")
     at = _now()
-    if at >= int((await _account(auth, at))["os_trial_ends_at"]):
+    if os_billing.status(await _account(auth, at), at) == "ended":
         raise HTTPException(status_code=402, detail="trial_ended")
     return await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
 

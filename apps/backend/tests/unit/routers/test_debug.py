@@ -8,6 +8,12 @@ from fastapi import HTTPException
 from routers.debug import assert_debug_enabled
 
 
+@pytest.fixture(autouse=True)
+def _no_spark_subscription(monkeypatch):
+    """The users-row step cancels a Spark subscription first, which reads the users table; these tests have none."""
+    monkeypatch.setattr("core.services.os_billing.cancel_for_deleted_user", AsyncMock())
+
+
 class TestDebugEnvironmentAllowlist:
     """The /debug gate is an allowlist (issue #743 item (c)).
 

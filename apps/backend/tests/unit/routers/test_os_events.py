@@ -287,7 +287,7 @@ async def test_subscription_events_once_each_under_redelivery(ph, ddb, monkeypat
     for _ in range(2):
         await os_billing.sync_subscription(event)
     assert [c["event"] for c in ph.captures if c["event"] != "account_created"] == [
-        "checkout_completed", "subscription_started", "subscription_cancelled"
+        "subscription_started", "subscription_cancelled"
     ]  # fmt: skip
     assert ph.named("subscription_cancelled")[0]["properties"]["$set"]["spark_status"] in ("trial", "ended")
 

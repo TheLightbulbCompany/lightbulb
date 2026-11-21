@@ -289,7 +289,7 @@ def _subscription_events(user_id: str, old: dict, current: dict) -> None:
     """Product events for the status change this webhook wrote: going live, or becoming canceled."""
     before, after = old.get("os_subscription_status"), current["status"]
     if after in LIVE and before not in LIVE:
-        events = ("checkout_completed", "subscription_started")
+        events = ("subscription_started",)
     elif after == "canceled" and before != "canceled":
         events = ("subscription_cancelled",)
     else:

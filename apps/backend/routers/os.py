@@ -277,13 +277,16 @@ def _live_session(session: Any) -> dict:
 
 
 def _client(client: Any) -> dict:
-    """The app's description of itself, stored with the session: its version and protocol as short strings,
-    which assistant it runs (`brain`) and whether it has full access. Any other key is refused."""
-    if not isinstance(client, dict) or not set(client) <= {"appVersion", "protocol", "brain", "fullAccess"}:
-        raise _bad("invalid_config")
-    if client.get("brain", "chatgpt") not in ("chatgpt", "claude") or type(client.get("fullAccess", False)) is not bool:
-        raise _bad("invalid_config")
-    return {k: str(v)[:64] if k in ("appVersion", "protocol") else v for k, v in client.items()}
+    """The app's description of itself, stored with the session (never sent to OpenAI): its version and
+    protocol as short strings, which assistant it runs (`brain`) and whether it has full access. Unknown keys
+    and known keys with a bad value are dropped."""
+    client = client if isinstance(client, dict) else {}
+    out = {k: str(client[k])[:64] for k in ("appVersion", "protocol") if k in client}
+    if client.get("brain") in ("chatgpt", "claude"):
+        out["brain"] = client["brain"]
+    if type(client.get("fullAccess")) is bool:
+        out["fullAccess"] = client["fullAccess"]
+    return out
 
 
 @router.post("/voice-session", status_code=201, response_model=VoiceSessionResponse, operation_id="os_voice_session")

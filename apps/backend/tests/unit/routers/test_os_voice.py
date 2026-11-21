@@ -231,11 +231,6 @@ async def test_a_model_off_the_list_is_refused(ddb, clock, no_sideband, openai):
         body(kind="shout"),
         body(dcid=5),
         body(session="x"),
-        body(client={"appVersion": "1.0.0", "brain": "gpt"}),
-        body(client={"appVersion": "1.0.0", "brain": "codex"}),
-        body(client={"fullAccess": "yes"}),
-        body(client={"appVersion": "1.0.0", "device": "mac"}),
-        body(client="x"),
     ],
 )
 async def test_invalid_config_never_reaches_openai(ddb, clock, no_sideband, openai, bad):
@@ -249,6 +244,20 @@ async def test_client_brain_and_full_access_are_stored(ddb, clock, no_sideband, 
     r = await create(client=client)
     assert r.status_code == 201, r.text
     assert rec(ddb, r.json()["sessionId"])["client"] == client | {"protocol": "2"}
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        {"appVersion": "1.0.0", "brain": "gpt", "fullAccess": "yes", "device": "mac"},
+        {"appVersion": "1.0.0", "brain": "codex"},
+        {"appVersion": "1.0.0", "brain": ["claude"]},
+    ],
+)
+async def test_unknown_client_keys_and_bad_values_are_dropped(ddb, clock, no_sideband, openai, client):
+    r = await create(client=client)
+    assert r.status_code == 201, r.text
+    assert rec(ddb, r.json()["sessionId"])["client"] == {"appVersion": "1.0.0"}
 
 
 async def test_the_largest_allowed_config_passes(ddb, clock, no_sideband, openai):

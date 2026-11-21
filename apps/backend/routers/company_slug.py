@@ -16,7 +16,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org, resolve_owner_id
 from core.config import settings
 from core.repositories import company_slug_repo
 from core.services.company_identity import MAX_SLUG_LEN, slug_format_problem, slug_unavailable_reason
@@ -81,6 +81,7 @@ async def claim_slug(body: HoldBody, auth: Annotated[AuthContext, Depends(get_cu
     """The page calls this with the NEW workspace's token right after creating it: a keyed,
     strongly consistent hand-over of the hold. The ``organization.created`` webhook repeats
     it as a backstop (idempotent)."""
+    require_org(auth)
     owner_id = resolve_owner_id(auth)
     if not await company_slug_repo.claim(slug=body.slug, user_id=auth.user_id, owner_id=owner_id):
         raise HTTPException(status_code=409, detail="slug_hold_lost")

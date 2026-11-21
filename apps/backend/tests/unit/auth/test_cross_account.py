@@ -51,6 +51,7 @@ from core.repositories import (
     user_repo,
 )
 from core.services import hermes_profiles, messaging, network_route, workspace_provisioning
+from core.services.credentials import integration_secret_store
 from core.services.provision_dispatch import dispatch_provision
 from core.temporal import client as temporal_client
 from core.voice.phone import phone_pin
@@ -371,8 +372,7 @@ async def seed_agent_text(a, b, mp, calls) -> dict:
 
 
 async def seed_company_slug(a, b, mp, calls) -> dict:
-    await ok(a, "POST", "/api/v1/company/slug/hold", {"slug": "acme-a"})
-    await ok(a, "POST", "/api/v1/company/slug/claim", {"slug": "acme-a"})
+    await _mail(a, "acme-a")  # A's claimed slug, as an org's claim leaves it (a person cannot claim one yet)
     await ok(a, "POST", "/api/v1/company/slug/hold", {"slug": "held-a"})
     return {}
 
@@ -380,7 +380,7 @@ async def seed_company_slug(a, b, mp, calls) -> dict:
 async def seed_connections(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     await integrations_repo.put_status(a.tenant, "github", identity=f"{MARKER}-gh")
-    await ok(a, "GET", "/api/v1/connections/aws/aws-setup")  # A's external id: B's complete must not use it
+    await integration_secret_store.put(a.tenant, "aws", {"external_id": MARKER})  # what A's aws-setup mints
     fake(mp, calls, "routers.connections._validate_token", True)
     fake(mp, calls, "core.services.credentials.apply_connection.apply_connection")
     return {}
@@ -711,8 +711,8 @@ CASES = [
     ),
     Case("agent_text", "POST", "/api/v1/agent-text/thread", {"key": "{key}", "mode": "human"}, a_id=True),
     # agent_mail: tenant = caller; mail keys and transcripts are read at the caller's own team address
-    Case("agent_mail", "GET", "/api/v1/agent-mail/address"),
-    Case("agent_mail", "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}),
+    Case("agent_mail", "GET", "/api/v1/agent-mail/address", org_only=True),  # creates the slug and mailbox
+    Case("agent_mail", "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, org_only=True),
     Case("agent_mail", "GET", "/api/v1/agent-mail/inbox"),
     Case("agent_mail", "GET", "/api/v1/agent-mail/inbox/new", query={"since": "2026-01-01T00:00:00+00:00"}),
     Case("agent_mail", "GET", "/api/v1/agent-mail/message", query={"key": "{key}"}, a_id=True),
@@ -720,12 +720,12 @@ CASES = [
     # company_slug: a claim moves only the caller's own hold
     Case("company_slug", "GET", "/api/v1/company/slug-availability", query={"slug": "acme-b"}),
     Case("company_slug", "POST", "/api/v1/company/slug/hold", {"slug": "acme-a"}, a_id=True, ok=(409,)),  # taken
-    Case("company_slug", "POST", "/api/v1/company/slug/claim", {"slug": "held-a"}, a_id=True, ok=(409,)),
+    Case("company_slug", "POST", "/api/v1/company/slug/claim", {"slug": "held-a"}, a_id=True, ok=(409,), org_only=True),
     Case("company_slug", "POST", "/api/v1/company/source", {"source": "web"}),
     # container: tenant = caller; the owner reads status and retries. B's own answers: an org's gate wants credits
     # (402) and it has no container (404); a person is refused a trial row (403) and passes no provision gate
     # (402) until user tenants provision (Task 2; test_no_org_caller_cannot_provision pins it).
-    Case("container", "GET", "/api/v1/container/status", ok=(402, 403)),
+    Case("container", "GET", "/api/v1/container/status", ok=(402,), org_only=True),
     Case("container", "POST", "/api/v1/container/provision", ok=(200, 403)),
     Case("container", "POST", "/api/v1/container/retry", ok=(403, 404)),
     Case("container", "POST", "/api/v1/browser/viewing", {}, ok=(402,)),
@@ -734,8 +734,10 @@ CASES = [
     Case("connections", "GET", "/api/v1/connections"),
     Case("connections", "POST", "/api/v1/connections/parallel", {"token": "b"}),
     Case("connections", "DELETE", "/api/v1/connections/github"),
-    Case("connections", "GET", "/api/v1/connections/github/authorize", ok=(503,)),  # no GitHub OAuth app in tests
-    Case("connections", "GET", "/api/v1/connections/aws/aws-setup"),
+    Case(
+        "connections", "GET", "/api/v1/connections/github/authorize", ok=(503,), org_only=True
+    ),  # no GitHub OAuth app in tests: the org case proves only that nothing of A's moves
+    Case("connections", "GET", "/api/v1/connections/aws/aws-setup", org_only=True),
     Case(
         "connections",
         "POST",
@@ -785,7 +787,9 @@ CASES = [
     ),
     Case("devices", "DELETE", "/api/v1/devices/dev-a"),
     Case("support_tickets", "POST", "/api/v1/support/tickets", {"message": "help"}),
-    Case("desktop_auth", "POST", "/api/v1/auth/desktop/sign-in-token", ok=(500,)),  # CLERK_SECRET_KEY unset
+    Case(
+        "desktop_auth", "POST", "/api/v1/auth/desktop/sign-in-token", ok=(500,)
+    ),  # no CLERK_SECRET_KEY in tests: the case proves only that nothing of A's moves
     # runtime_rpc: tenant = caller
     Case(
         "runtime_rpc",
@@ -811,7 +815,8 @@ NO_SEED = {
     "a2a": "the path names a workspace; any caller not in it is refused before a row is read (in user mode A "
     "itself is refused: A2A is org-only until Task 9)",
     "main": "/protected echoes the caller's own id",
-    "support_tickets": "emails support about the caller; reads only the caller's own rows",
+    "support_tickets": "one POST: it reads the caller's own billing and container rows, emails support and stores "
+    "nothing; it takes no id",
     "desktop_auth": "mints a Clerk sign-in token for the caller; reads no tenant row (Clerk is the network fake)",
 }
 
@@ -960,7 +965,7 @@ async def test_org_claim_still_wins_interim(tenants):
 
 # Every door that would provision, buy, bill or join a network for a person with no org, and what it answers.
 REFUSED = [
-    ("GET", "/api/v1/container/status", None, 403),  # no trial row for a person (ensure_workspace_trial_default)
+    ("GET", "/api/v1/container/status", None, 409),
     ("POST", "/api/v1/container/provision", None, 403),
     ("POST", "/api/v1/container/retry", None, 403),
     ("POST", "/api/v1/debug/provision", None, 200),  # answers "provisioning"; dispatch_provision refuses
@@ -971,6 +976,11 @@ REFUSED = [
     ("POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, 409),
     ("POST", "/api/v1/billing/apple/purchase-intent", None, 409),
     ("POST", "/api/v1/billing/apple/link", {"signed_transaction": "x"}, 409),
+    ("GET", "/api/v1/agent-mail/address", None, 409),  # would mint a company slug and an agents@ mailbox
+    ("PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, 409),
+    ("POST", "/api/v1/company/slug/claim", {"slug": "solo-co"}, 409),
+    ("GET", "/api/v1/connections/aws/aws-setup", None, 409),  # mints the STS ExternalId
+    ("GET", "/api/v1/connections/github/authorize", None, 409),  # starts a provider OAuth grant
     ("POST", "/api/v1/voice/number", {}, 409),
     ("PUT", "/api/v1/voice/agent", {"config": {"live": True}}, 409),  # going live gives a number
     ("POST", "/api/v1/oauth/chatgpt/start", None, 402),  # needs a paid plan, which a person cannot buy yet
@@ -987,6 +997,7 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
     from core.services import device_login, network_login
 
     person = Tenant("user_solo", None)
+    await company_slug_repo.hold(slug="solo-co", user_id=person.user_id)  # a held slug a claim would bind
     timeline = await ok(person, "GET", "/api/v1/voice/timeline")
     assert not any(v for v in timeline.values() if isinstance(v, list))
     assert (await ok(person, "GET", "/api/v1/tasks"))["tasks"] == []
@@ -1003,3 +1014,6 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
     assert await dispatch_provision(person.user_id) is False
     assert await container_repo.get_by_owner_id(person.user_id) is None
     assert await billing_repo.get_by_owner_id(person.user_id) is None
+    assert await company_slug_repo.get_by_owner(person.user_id) is None  # no company slug
+    assert await agent_email_repo.query_by_owner(person.user_id) == []  # no mailbox
+    assert await integration_secret_store.get(person.user_id, "aws") is None  # no ExternalId

@@ -1,6 +1,8 @@
 """get_human_session: only a first-party Clerk session token reaches the local-session doors that
 put keystrokes or a screen on a person's Mac (/input, /viewing, /resume)."""
 
+from dataclasses import replace
+
 import jwt
 import pytest
 from fastapi import HTTPException
@@ -20,14 +22,16 @@ def token(claims: dict, headers: dict | None = None) -> HTTPAuthorizationCredent
 
 @pytest.fixture(autouse=True)
 def _verified(monkeypatch):
-    async def verified(credentials):
-        return ALICE
+    async def verified(credentials):  # get_current_user: verifies, then classifies the token
+        raw = credentials.credentials
+        claims = jwt.decode(raw, options={"verify_signature": False})
+        return replace(ALICE, human_session=auth._session_token(jwt.get_unverified_header(raw), claims))
 
     monkeypatch.setattr(auth, "get_current_user", verified)
 
 
 async def test_a_session_token_with_sid_passes():
-    assert await auth.get_human_session(token({"sid": "sess_1", "azp": "https://x"})) is ALICE
+    assert (await auth.get_human_session(token({"sid": "sess_1", "azp": "https://x"}))).user_id == ALICE.user_id
 
 
 @pytest.mark.parametrize(

@@ -281,8 +281,7 @@ async def get_human_session(
     claim) and a JWT-template token (no `sid`) are refused with 403. The web, desktop webview
     and mobile call these routes with Clerk's default session token (no template)."""
     ctx = await get_current_user(credentials)
-    token = credentials.credentials
-    if not _session_token(jwt.get_unverified_header(token), jwt.decode(token, options={"verify_signature": False})):
+    if not ctx.human_session:
         put_metric("auth.human_session.refused")
         logger.warning("AUTH REFUSED: not a first-party session token")
         raise HTTPException(status_code=403, detail=HUMAN_SESSION_REQUIRED)

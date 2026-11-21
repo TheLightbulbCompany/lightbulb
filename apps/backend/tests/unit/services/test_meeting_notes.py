@@ -5,13 +5,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.services import ses_email
-from core.voice.meetings import meeting_notes as mod
+from botocore.exceptions import ClientError
+
+from core.services import messaging, ses_email
+from core.voice.meetings import meeting_notes as mod, transcripts
+
+real_put = transcripts.put
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 CEO = "22222222-2222-4222-8222-222222222222"
 MEET = "https://meet.google.com/abc-defg-hij"
-DEFAULT = mod.messaging.default_room_id("org_1")  # the output room: every line lands there
+DEFAULT = messaging.default_room_id("org_1")  # the output room: every line lands there
 TRIG = f"meeting-notes:{ROOM}:1790972400"  # the notes task's trigger, and its request id
 TASK = mod.ts.router_task_id(TRIG, 0, 0)
 
@@ -41,10 +45,9 @@ def env(monkeypatch):
         meta["meeting"] = {**meta["meeting"], **(fields(meta["meeting"]) if callable(fields) else fields)}
         return meta["meeting"]
 
-    attachment = SimpleNamespace(id="att-1", model_dump=lambda **_: {"id": "att-1", "fileName": "transcript.txt"})
     m = SimpleNamespace(
         meta=meta,
-        store=MagicMock(return_value=attachment),
+        store=MagicMock(return_value="tr-1"),
         line=AsyncMock(return_value={"messageId": "msg-1", "messageSeq": 7}),
         send=AsyncMock(return_value="<id@ses>"),
         sleep=AsyncMock(),
@@ -92,9 +95,8 @@ def env(monkeypatch):
     m.meeting_tasks = AsyncMock(return_value=[])
     monkeypatch.setattr(mod, "_meeting_tasks", m.meeting_tasks)
     monkeypatch.setattr(mod.meeting_invites, "_post_line", m.line)
-    monkeypatch.setattr(mod.messaging, "store_attachment", m.store)
-    head = MagicMock(return_value=(SimpleNamespace(size=100), b"["))  # a short transcript: nothing cut
-    monkeypatch.setattr(mod.messaging, "load_attachment_head", head)
+    monkeypatch.setattr(mod.transcripts, "put", m.store)
+    monkeypatch.setattr(mod.transcripts, "size", MagicMock(return_value=100))  # a short transcript: nothing cut
     monkeypatch.setattr(ses_email, "send_ses_email", m.send)
     monkeypatch.setattr(mod.asyncio, "sleep", m.sleep)
     return m
@@ -129,24 +131,18 @@ def _line(mark, name, text, at):
     return {"mark": mark, "kind": "person", "name": name, "text": text, "at": at, "to": ""}
 
 
-async def test_a_final_transcript_attaches_once(env):
+async def test_a_final_transcript_is_kept_once_and_never_posted(env):
     await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi all", 1790972595.0)], False)
     env.store.assert_not_called()  # a rolling flush is only logged
     whole = [_line(1, "Ada", "Hello", 1790972655.0), _line(0, "Pat", "Hi all", 1790972595.0)]
     await mod.on_transcript(ROOM, whole, True)
     env.store.assert_called_once()
-    owner, room, name, ctype, data = env.store.call_args.args
-    assert (owner, room, name, ctype) == ("org_1", DEFAULT, "transcript.txt", "text/plain")
+    owner, room, data = env.store.call_args.args
+    assert (owner, room, env.store.call_args.kwargs) == ("org_1", DEFAULT, {"name": f"{ROOM}|1790972400"})
     assert data.decode() == "[20:23] Pat: Hi all\n[20:24] Ada: Hello\n"  # UTC, by mark
-    env.line.assert_awaited_once()
-    assert env.line.await_args.args[1:] == (
-        DEFAULT,
-        f"meeting:{ROOM}:1790972400:transcript",
-        "Transcript of **Weekly sync** attached.",
-    )
-    assert env.line.await_args.kwargs["attachments"] == [{"id": "att-1", "fileName": "transcript.txt"}]
+    env.line.assert_not_awaited()  # not in chat: the owner opens it from the meeting view
     assert env.meta["meeting"]["transcriptAttachedAt"]
-    assert (env.meta["meeting"]["transcriptId"], env.meta["meeting"]["transcriptRoomId"]) == ("att-1", DEFAULT)
+    assert (env.meta["meeting"]["transcriptId"], env.meta["meeting"]["transcriptRoomId"]) == ("tr-1", DEFAULT)
     await mod.on_transcript(ROOM, whole, True)  # a retried final
     env.store.assert_called_once()
 
@@ -154,6 +150,24 @@ async def test_a_final_transcript_attaches_once(env):
 async def test_an_empty_final_attaches_nothing(env):
     await mod.on_transcript(ROOM, [], True)
     env.store.assert_not_called()
+
+
+@pytest.mark.parametrize("refused", ["denied", "over_cap"])
+async def test_a_refused_transcript_write_ends_in_no_notes(env, monkeypatch, refused):
+    """A write refused by S3 (a role without the grant) or by the size cap raises to the route (an error answer the
+    worker retries) and leaves no transcript mark, so the notes take the existing "no transcript" path."""
+    if refused == "denied":
+        env.store.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "PutObject")
+    else:
+        monkeypatch.setattr(transcripts, "MAX_BYTES", 4)
+        env.store.side_effect = real_put  # the cap refuses before any S3 call
+    with pytest.raises((ClientError, ValueError)):
+        await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
+    assert "transcriptId" not in env.meta["meeting"] and "transcriptAttachedAt" not in env.meta["meeting"]
+    await mod.on_ended(ROOM)
+    assert env.meta["meeting"]["notesSkipped"] == "no_transcript"
+    with pytest.raises(mod.TranscriptUnavailable, match="no longer available"):
+        await mod.worker_transcript("org_1", TRIG)
 
 
 async def test_meeting_end_enqueues_notes_task(env):
@@ -245,7 +259,7 @@ async def test_without_a_default_room_the_transcript_stays_in_the_meetings_room(
         mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: None if r == DEFAULT else env.meta)
     )
     await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
-    assert env.store.call_args.args[1] == ROOM and env.line.await_args.args[1] == ROOM
+    assert env.store.call_args.args[1] == ROOM and env.meta["meeting"]["transcriptRoomId"] == ROOM
 
 
 async def test_no_notes_or_mail_for_a_call_nobody_admitted_the_bot_to(env):
@@ -295,20 +309,6 @@ async def test_no_marker_lands_on_the_next_occurrence(env):
     env.enqueue.side_effect = redated
     await mod.on_ended(ROOM)
     assert "notesRunId" not in env.meta["meeting"] and "notesMailedAt" not in env.meta["meeting"]
-
-
-@pytest.fixture
-def legacy(env, monkeypatch):
-    """A workspace with no default room and no organizer DM to open: the hidden meeting room is the
-    output room, so the mail carries the transcript itself."""
-    monkeypatch.setattr(
-        mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: None if r == DEFAULT else env.meta)
-    )
-    monkeypatch.setattr(mod.meeting_invites, "_organizer_dm", AsyncMock(return_value=None))
-    env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1")
-    env.load = MagicMock(return_value=(None, b"[20:23] Pat: Hi all\n"))
-    monkeypatch.setattr(mod.messaging, "load_attachment", env.load)
-    return env
 
 
 async def test_a_redate_during_the_wait_keeps_todays_key_and_tomorrows_run(env):
@@ -463,7 +463,7 @@ async def test_the_notes_request_asks_for_action_items_not_paperclip_tasks(env):
 async def test_notes_record_commitments_once_without_authorizing_agent_work(env, monkeypatch):
     env.meta["meeting"].update(transcriptAttachedAt=1)
     made = AsyncMock()
-    monkeypatch.setattr(mod.messaging, "create_human_message", made)
+    monkeypatch.setattr(messaging, "create_human_message", made)
     notes = "Action items:\n- Pat: send the holiday post\n- Ada: order nail gels"
     await ended_and_noted(env, notes)
     first = list(env.meta["meeting"]["followUps"])
@@ -479,7 +479,7 @@ async def test_notes_record_commitments_once_without_authorizing_agent_work(env,
 async def test_notes_link_completed_work_without_rerunning_it(env, monkeypatch):
     env.meta["meeting"].update(transcriptAttachedAt=1)
     made = AsyncMock()
-    monkeypatch.setattr(mod.messaging, "create_human_message", made)
+    monkeypatch.setattr(messaging, "create_human_message", made)
     env.meeting_tasks.return_value = [
         {"taskId": "t-done", "title": "Draft the holiday-hours post", "status": "idle", "triggerId": "chat:ask1"},
         {"taskId": "t-working", "title": "Order more gel colors from OPI", "status": "working"},
@@ -695,8 +695,8 @@ async def test_late_decisions_land_on_the_original_occurrence(env, remember):
 
 async def test_the_worker_reads_the_transcript_by_reference(env, monkeypatch):
     env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1", transcriptRoomId=DEFAULT)
-    load = MagicMock(return_value=(None, b"[20:23] Pat: Hi all\n"))
-    monkeypatch.setattr(mod.messaging, "load_attachment", load)
+    load = MagicMock(return_value=b"[20:23] Pat: Hi all\n")
+    monkeypatch.setattr(mod.transcripts, "get", load)
     await mod.on_ended(ROOM)
     block = await mod.worker_transcript("org_1", TRIG)
     load.assert_called_once_with("org_1", DEFAULT, "att-1")
@@ -709,9 +709,8 @@ async def test_long_transcript_is_cut_from_start_and_flagged(env, monkeypatch, c
     lines = [f"[10:{i % 60:02d}] Pat: line {i} of the meeting\n" for i in range(20000)]
     raw = "".join(lines).encode()
     assert len(raw) > mod.TRANSCRIPT_MAX_BYTES
-    monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(return_value=(None, raw)))
-    meta = SimpleNamespace(size=len(raw))
-    monkeypatch.setattr(mod.messaging, "load_attachment_head", MagicMock(return_value=(meta, b"[")))
+    monkeypatch.setattr(mod.transcripts, "get", MagicMock(return_value=raw))
+    monkeypatch.setattr(mod.transcripts, "size", MagicMock(return_value=len(raw)))
     await mod.on_ended(ROOM)
     with caplog.at_level("WARNING", logger=mod.logger.name):
         block = await mod.worker_transcript("org_1", TRIG)
@@ -848,17 +847,11 @@ async def test_keep_total_time_is_bounded(env, monkeypatch, caplog):
 async def test_an_unreadable_transcript_says_try_again(env, monkeypatch):
     env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1", transcriptRoomId=DEFAULT)
     await mod.on_ended(ROOM)
-    monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(side_effect=OSError("s3 timeout")))
+    monkeypatch.setattr(mod.transcripts, "get", MagicMock(side_effect=OSError("s3 timeout")))
     with pytest.raises(mod.TranscriptUnavailable, match="couldn't be read just now"):
         await mod.worker_transcript("org_1", TRIG)
-    gone = mod.messaging.ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.")
-    monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(side_effect=gone))
+    monkeypatch.setattr(mod.transcripts, "get", MagicMock(return_value=None))
     with pytest.raises(mod.TranscriptUnavailable, match="no longer available"):
-        await mod.worker_transcript("org_1", TRIG)
-    wrapped = mod.messaging.ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.")
-    wrapped.__cause__ = OSError("connection reset")  # load_attachment maps a failed read to "not found"
-    monkeypatch.setattr(mod.messaging, "load_attachment", MagicMock(side_effect=wrapped))
-    with pytest.raises(mod.TranscriptUnavailable, match="couldn't be read just now"):
         await mod.worker_transcript("org_1", TRIG)
 
 

@@ -495,15 +495,24 @@ async def test_inbox_reads_at_most_eight_meetings_at_once(async_client_org_membe
 
 @pytest.mark.parametrize(("start_at", "att", "room"), [(200, "t-now", "room-now"), (100, "t-past", "room-past")])
 async def test_a_member_reads_current_and_past_transcripts(async_client_org_member, start_at, att, room):
-    load = MagicMock(return_value=(None, b"[20:23] Pat: Hi\n"))
+    load = MagicMock(return_value=b"[20:23] Pat: Hi\n")
     with (
         patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: _ROOMS.get(r))),
-        patch.object(agent_mail.messaging, "load_attachment", load),
+        patch.object(agent_mail.transcripts, "get", load),
     ):
         r = await async_client_org_member.get(f"/api/v1/agent-mail/meetings/{M1}/transcript?start_at={start_at}")
     assert r.status_code == 200 and r.text == "[20:23] Pat: Hi\n"
     assert r.headers["content-type"] == "text/plain; charset=utf-8"
     load.assert_called_once_with("org_test_456", room, att)
+
+
+async def test_a_gone_transcript_404s(async_client_org_member):
+    with (
+        patch.object(agent_mail.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: _ROOMS.get(r))),
+        patch.object(agent_mail.transcripts, "get", MagicMock(return_value=None)),
+    ):
+        r = await async_client_org_member.get(f"/api/v1/agent-mail/meetings/{M1}/transcript?start_at=200")
+    assert r.status_code == 404 and r.json()["detail"] == {"status": "not_found"}
 
 
 @pytest.mark.parametrize(

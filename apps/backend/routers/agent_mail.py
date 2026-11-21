@@ -33,8 +33,8 @@ from core.repositories.agent_mail_inbox_repo import (
     list_page,
     reply_key,
 )
-from core.services import effect_doors, messaging
-from core.voice.meetings import meeting_invites
+from core.services import effect_doors
+from core.voice.meetings import meeting_invites, transcripts
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
 from core.services.rate_bucket import RateBucket
@@ -482,8 +482,7 @@ async def meeting_transcript(meeting_id: str, start_at: int, auth: AuthContext =
     if hit is None:
         raise HTTPException(status_code=404, detail={"status": "not_found"})
     room_id = hit.get("transcriptRoomId") or await meeting_invites.output_room(owner_id, meeting_id)
-    try:
-        _, data = await run_in_thread(messaging.load_attachment, owner_id, room_id, hit["transcriptId"])
-    except messaging.ApiProblem:
-        raise HTTPException(status_code=404, detail={"status": "not_found"}) from None
+    data = await run_in_thread(transcripts.get, owner_id, room_id, hit["transcriptId"])
+    if data is None:
+        raise HTTPException(status_code=404, detail={"status": "not_found"})
     return Response(content=data, media_type="text/plain; charset=utf-8")

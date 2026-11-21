@@ -346,9 +346,9 @@ def _delete_boot_secret(owner_id: str) -> None:
 
 def _delete_profile_prefix_objects(owner_id: str) -> None:
     """Delete every S3 object under ``<owner>/hermes/`` -- the whole Hermes home, every agent's
-    profile plus the root ``auth.json``. Only called by ``teardown_hermes_runtime`` when
-    ``delete_profiles=True`` (an account wipe, never a rollback). Sync — call via
-    ``run_in_thread``."""
+    profile plus the root ``auth.json`` -- and under ``<owner>/voice/`` (meeting transcripts). Only
+    called by ``teardown_hermes_runtime`` when ``delete_profiles=True`` (an account wipe, never a
+    rollback). Sync — call via ``run_in_thread``."""
     from core.services.hermes_profiles import root_home_prefix
 
     _delete_prefixes(
@@ -357,6 +357,7 @@ def _delete_profile_prefix_objects(owner_id: str) -> None:
             f"marketplace-installs/{owner_id}/",
             f"browser-state/{owner_id}/",
             f"{owner_id}/browser-extensions/",
+            f"{owner_id}/voice/",
         ]
     )
 
@@ -396,7 +397,7 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
       4. Delete the ONE JSON boot secret, and the workspace's ``<owner>/network/`` state
          (whatever ``delete_profiles`` says: the member key dies with the secret, so the state
          that key signed is dead too).
-      5. (``delete_profiles`` only) delete every object under ``<owner>/hermes/`` in S3.
+      5. (``delete_profiles`` only) delete every object under ``<owner>/hermes/`` and ``<owner>/voice/`` in S3.
 
     ``delete_profiles=False`` is the default and what a reprovision wants -- S3 profiles are
     cheap and the next provision overwrites them. ``delete_profiles=True`` is for a caller after

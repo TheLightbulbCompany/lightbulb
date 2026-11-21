@@ -144,13 +144,11 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
 async def transcript(room_id: str, body: TranscriptBody):
     """The worker's rolling transcript, in batches: what people and agents said in a huddle, kept
     in the backend's CloudWatch log (search `live transcript huddle=<id>`) so a bad call can be
-    read back. A meeting's ``final`` request carries the whole transcript and becomes its room's
-    ``transcript.txt``; nothing else is posted to the room."""
+    read back. A meeting's ``final`` request carries the whole transcript, which is kept in the Meetings
+    transcript store for its notes and the meeting view; nothing is posted to the room. The batch is logged
+    before that write, so a failed write (an error answer the worker retries) still leaves the log copy."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    meta = await messaging_repo.get_room(room_id) or {}
-    if meta.get("meeting") and meta.get("ownerId") == body.ownerId:
-        await meeting_notes.on_transcript(room_id, [x.model_dump(exclude={"ready"}) for x in body.lines], body.final)
     rendered = "\n".join(
         f"[{x.mark} @{int(x.at)}{f' waited {x.at - x.ready:.1f}s' if x.ready else ''}] "
         f"{x.name}{' → ' + x.to if x.to else ''}: {x.text}"
@@ -158,4 +156,7 @@ async def transcript(room_id: str, body: TranscriptBody):
     )
     logger.info("live transcript room=%s huddle=%s owner=%s\n%s", room_id, body.huddleId, body.ownerId, rendered)
     put_metric("voice.huddle.transcript_lines", len(body.lines))
+    meta = await messaging_repo.get_room(room_id) or {}
+    if meta.get("meeting") and meta.get("ownerId") == body.ownerId:
+        await meeting_notes.on_transcript(room_id, [x.model_dump(exclude={"ready"}) for x in body.lines], body.final)
     return {"ok": True}

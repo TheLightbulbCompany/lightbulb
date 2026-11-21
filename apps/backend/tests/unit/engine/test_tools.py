@@ -141,6 +141,11 @@ async def test_meeting_context_route_bodies(api, monkeypatch):
     assert _json(await api.post(url, json=body, headers=H)) == (403, {"detail": "not_in_this_run"})
     source.side_effect = ValueError("bad cursor")
     assert _json(await api.post(url, json=body, headers=H)) == (422, {"detail": "invalid_arguments"})
+    source.side_effect, source.return_value = None, None  # the transcript is gone
+    assert _json(await api.post(url, json=body, headers=H)) == (404, {"detail": "transcript_gone"})
+    source.side_effect = KeyError("bug")  # the code's own error is never a 404
+    with pytest.raises(KeyError):
+        await api.post(url, json=body, headers=H)
 
 
 async def test_meeting_chat_route_bodies(api, monkeypatch):

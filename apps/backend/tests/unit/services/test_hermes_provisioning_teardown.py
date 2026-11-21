@@ -70,6 +70,8 @@ def test_delete_profile_prefix_objects_paginates_all_owner_scoped_prefixes(monke
                 return iter([{"Contents": [{"Key": "browser-state/org_a/checkpoint.json"}]}])
             if Prefix == "org_a/browser-extensions/":
                 return iter([{"Contents": [{"Key": "org_a/browser-extensions/supademo.zip"}]}])
+            if Prefix == "org_a/voice/":
+                return iter([{"Contents": [{"Key": "org_a/voice/transcripts/r/t.txt"}]}])
             raise AssertionError(f"unexpected prefix: {Prefix}")
 
     class Client:
@@ -95,6 +97,7 @@ def test_delete_profile_prefix_objects_paginates_all_owner_scoped_prefixes(monke
         "marketplace-installs/org_a/",
         "browser-state/org_a/",
         "org_a/browser-extensions/",
+        "org_a/voice/",
     ]
     assert client.deleted == [
         ("test-bucket", "org_a/hermes/agent_a/config.yaml"),
@@ -102,6 +105,7 @@ def test_delete_profile_prefix_objects_paginates_all_owner_scoped_prefixes(monke
         ("test-bucket", "marketplace-installs/org_a/agent_a.json"),
         ("test-bucket", "browser-state/org_a/checkpoint.json"),
         ("test-bucket", "org_a/browser-extensions/supademo.zip"),
+        ("test-bucket", "org_a/voice/transcripts/r/t.txt"),
     ]
     assert all("org_b" not in key for _, key in client.deleted)
 
@@ -164,6 +168,35 @@ async def test_teardown_with_delete_profiles_true_also_deletes_the_s3_prefix(mon
     await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=True)
 
     assert deleted["owner_id"] == "org_a"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", [True, False])
+async def test_only_a_terminal_wipe_deletes_meeting_transcripts(monkeypatch, terminal):
+    import uuid
+
+    import boto3
+    from moto import mock_aws
+
+    from core.services import hermes_profiles
+    from core.voice.meetings import transcripts
+
+    for name in ("_stop_runtime_session", "_delete_runtime", "_delete_boot_secret"):
+        monkeypatch.setattr(hermes_provisioning, name, lambda *a: None)
+    monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", AsyncMock())
+    monkeypatch.setattr("core.services.browser_control.teardown", AsyncMock())
+    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "test-bucket")
+    monkeypatch.setattr(hermes_profiles, "_SHARED_S3_CLIENT", None)
+    room = str(uuid.uuid4())
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-bucket")
+        mine, theirs = (transcripts.put(o, room, b"hi\n", name="m|1") for o in ("org_a", "org_b"))
+
+        await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=terminal)
+
+        assert (transcripts.get("org_a", room, mine) is None) is terminal  # a reprovision keeps it
+        assert transcripts.get("org_b", room, theirs) == b"hi\n"
 
 
 @pytest.mark.asyncio

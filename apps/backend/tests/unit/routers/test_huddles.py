@@ -378,6 +378,24 @@ def test_an_answers_wait_to_be_heard_is_logged(client, caplog):
     assert "ready" not in notes.await_args.args[1][0]  # the room's transcript.txt never shows it
 
 
+def test_a_failed_transcript_write_still_logs_and_counts_then_errors(client, caplog):
+    """The log line is the transcript's other copy: it is written before the store, and the error answer lets the
+    worker retry."""
+    line = {"mark": 0, "kind": "person", "name": "Pat", "text": "Ship it", "at": 1.0, "to": ""}
+    body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line], "final": True}
+    meta = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
+    with (
+        caplog.at_level("INFO", logger="routers.huddles"),
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meta)),
+        patch.object(mod.meeting_notes, "on_transcript", AsyncMock(side_effect=RuntimeError("s3 denied"))),
+        patch.object(mod, "put_metric") as metric,
+    ):
+        resp = TestClient(client.app, raise_server_exceptions=False).post(TRANSCRIPT, json=body, headers=W)
+    assert resp.status_code >= 500
+    assert any("Pat: Ship it" in r.getMessage() for r in caplog.records if "live transcript" in r.getMessage())
+    metric.assert_called_once_with("voice.huddle.transcript_lines", 1)
+
+
 def test_a_meeting_rooms_chunks_reach_the_notes_with_the_final_flag(client):
     line = {"mark": 7, "kind": "person", "name": "Pat", "text": "Ship it", "at": 1.0, "to": ""}
     body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line]}

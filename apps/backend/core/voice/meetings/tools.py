@@ -17,7 +17,7 @@ async def meeting_context(call: ToolCall) -> dict:
     owner_id = call.tenant_id
     body = SimpleNamespace(run_id=call.run_id, trigger_id=call.trigger_ids[0], **call.args)
     try:
-        return await source.context(
+        page = await source.context(
             owner_id,
             body.run_id,
             body.trigger_id,
@@ -29,6 +29,9 @@ async def meeting_context(call: ToolCall) -> dict:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+    if page is None:
+        raise HTTPException(status_code=404, detail="transcript_gone")
+    return page
 
 
 async def meeting_chat(call: ToolCall) -> dict:

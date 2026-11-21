@@ -30,7 +30,7 @@ from core.engine.contract import GRANT_HEADER
 from core.repositories import messaging_repo, tasks_repo
 from core.voice import store
 from core.services import memory_tags, runtime_runs, runtime_transport
-from core.voice.meetings import meeting_context
+from core.voice.meetings import meeting_context, transcripts
 from core.temporal import activities
 from core.temporal.types import RouterTurnIn
 from scripts.multiparty_e2e.runner import Clerk, _secret
@@ -52,7 +52,7 @@ def deployed_transport(expected_tag: str) -> dict:
         raise RuntimeError("unexpected DEV task definition")
     task = ecs.describe_task_definition(taskDefinition=definition)["taskDefinition"]
     backend = next(c for c in task["containerDefinitions"] if c["name"] == "backend")
-    wanted = {"HERMES_SHARED_RUNTIME_ARN", "AGENTCORE_HERMES_IMAGE"}
+    wanted = {"HERMES_SHARED_RUNTIME_ARN", "AGENTCORE_HERMES_IMAGE", "OWNER_STATE_BUCKET"}
     env = {item["name"]: item["value"] for item in backend.get("environment", []) if item["name"] in wanted}
     arn, image = env.get("HERMES_SHARED_RUNTIME_ARN", ""), env.get("AGENTCORE_HERMES_IMAGE", "")
     expected_image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:" + expected_tag
@@ -68,6 +68,7 @@ def deployed_transport(expected_tag: str) -> dict:
     if runtime.get("status") != "READY" or actual != image:
         raise RuntimeError("actual DEV pool is not READY on the reviewed image")
     settings.HERMES_SHARED_RUNTIME_ARN, settings.AGENTCORE_HERMES_IMAGE = arn, image
+    settings.OWNER_STATE_BUCKET = env.get("OWNER_STATE_BUCKET", "")
     return {
         "backendTaskDefinition": definition,
         "runtimeArn": arn,
@@ -95,18 +96,11 @@ async def fixture(ctx: Ctx, label: str) -> dict:
     )
     room_id, occurrence = room["roomId"], int(time.time())
     marker = "Synthetic source marker " + uuid.uuid4().hex
-    attachment = (
-        (
-            await ctx.api("owner").post(
-                f"/api/v1/messaging/rooms/{room_id}/attachments",
-                files={"image": ("synthetic-transcript.txt", marker.encode(), "text/plain")},
-            )
-        )
-        .raise_for_status()
-        .json()
+    transcript_id = await run_in_thread(
+        transcripts.put, ctx.ws, room_id, marker.encode(), name=f"{room_id}|{occurrence}"
     )
     snapshot = {
-        "transcriptId": str(attachment["id"]),
+        "transcriptId": transcript_id,
         "transcriptRoomId": room_id,
         "inCallAt": occurrence,
         "endedAt": occurrence + 1,

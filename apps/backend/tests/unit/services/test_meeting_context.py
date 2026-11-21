@@ -60,8 +60,8 @@ def world(monkeypatch):
     monkeypatch.setattr(mod.tasks_repo, "get_trigger", AsyncMock(side_effect=lambda *_: state["trigger"]))
     state["enqueue"] = AsyncMock(return_value=True)
     monkeypatch.setattr(admission, "enqueue_trigger", state["enqueue"])
-    state["load"] = MagicMock(return_value=({}, b"human source " * 3000))
-    monkeypatch.setattr(mod.messaging, "load_attachment", state["load"])
+    state["load"] = MagicMock(return_value=b"human source " * 3000)
+    monkeypatch.setattr(mod.transcripts, "get", state["load"])
     state["tasks"] = [
         {
             "taskId": f"task-{i:02}",
@@ -75,6 +75,14 @@ def world(monkeypatch):
     state["runId"] = "current-run"
     state["grant"] = mod.mint_grant("org_a", state["runId"], [trigger["triggerId"]])
     return state
+
+
+async def test_a_gone_transcript_reads_as_none(world):
+    world["load"].return_value = None
+    assert (
+        await mod.context("org_a", world["runId"], world["trigger"]["triggerId"], "transcript", grant=world["grant"])
+        is None
+    )
 
 
 async def test_superseded_series_reads_only_the_original_occurrences_artifact(world):

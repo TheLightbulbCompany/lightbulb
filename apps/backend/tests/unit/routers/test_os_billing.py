@@ -805,3 +805,142 @@ async def test_an_open_subscription_for_a_deleted_account_is_cancelled_and_ackno
     assert [c for c in fake.calls if c[0] == "cancel"] == [("cancel", {"id": "sub_orphan"})]
     assert "os_billing.orphan_subscription_cancelled" in metrics
     assert "Item" not in ddb.users.get_item(Key={"user_id": "user_gone"})
+
+
+# --- terms consent on checkout ------------------------------------------------------------------------------
+
+
+async def test_checkout_asks_for_terms_consent(ddb, clock, fake):
+    await open_link((await account())["checkoutUrl"])
+    assert fake.calls[-1][1]["consent_collection"] == {"terms_of_service": "required"}
+
+
+async def test_checkout_without_a_terms_url_retries_once_without_consent(ddb, clock, fake, monkeypatch, metrics):
+    create = fake.checkout_create
+
+    def refuse_consent(**kw):
+        if "consent_collection" in kw:
+            fake.calls.append(("refused", kw))
+            raise stripe.InvalidRequestError("You must set a terms of service URL in your public details", "x")
+        return create(**kw)
+
+    monkeypatch.setattr(stripe.checkout.Session, "create", refuse_consent)
+    r = await open_link((await account())["checkoutUrl"])
+    assert (r.status_code, r.headers["location"]) == (303, "https://checkout.stripe.test/cs_1")
+    assert fake.kinds()[-2:] == ["refused", "checkout"] and "consent_collection" not in fake.calls[-1][1]
+    assert metrics == ["os_billing.checkout.tos_consent_unavailable"]
+
+
+async def test_any_other_checkout_error_still_fails_as_before(ddb, clock, fake, monkeypatch):
+    def boom(**kw):
+        fake.calls.append(("refused", kw))
+        raise stripe.InvalidRequestError("No such price", "price")
+
+    monkeypatch.setattr(stripe.checkout.Session, "create", boom)
+    r = await open_link((await account())["checkoutUrl"])
+    assert (r.status_code, r.headers["location"]) == (303, page("expired"))
+    assert fake.kinds().count("refused") == 1
+
+
+# --- DELETE /os/account -------------------------------------------------------------------------------------
+
+SID = "vs_" + "0" * 32
+
+
+@pytest.fixture
+def gone(ddb, monkeypatch):
+    """The containers table for voice sessions, Clerk faked (`orgs` is what the person belongs to) and the
+    product events recorded."""
+    from core.observability import spark_events
+
+    dynamodb._dynamodb_resource.create_table(
+        TableName=dynamodb.table_name("containers"),
+        KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    out = SimpleNamespace(orgs=[], deleted=[], events=[])
+
+    async def orgs_of(user_id, **kw):
+        return out.orgs
+
+    async def delete_user(user_id):
+        out.deleted.append(user_id)
+
+    monkeypatch.setattr("core.services.clerk_admin.list_user_organizations", orgs_of)
+    monkeypatch.setattr("core.services.clerk_admin.delete_user", delete_user)
+    monkeypatch.setattr(
+        spark_events.product_analytics, "capture_product_event", lambda **kw: out.events.append(kw["event"])
+    )
+    return out
+
+
+def spark_keys(ddb, user_id="user_a") -> set[str]:
+    item = ddb.users.get_item(Key={"user_id": user_id}).get("Item") or {}
+    return {k for k in item if k.startswith("os_")}
+
+
+async def a_spark_account(ddb, fake):
+    from core.voice import os_voice
+
+    await account()
+    subscribe(ddb, "user_a", status="active")
+    fake.subs["sub_1"] = "active"
+    await os_voice.reserve("user_a", SID, "hold", {}, START)
+
+
+async def test_delete_without_an_org_removes_everything_and_the_clerk_user(ddb, clock, fake, gone):
+    from core.voice import os_voice
+
+    await a_spark_account(ddb, fake)
+    r = await req("DELETE", "/os/account", A)
+    assert r.status_code == 204, r.text
+    assert ("cancel", {"id": "sub_1"}) in fake.calls
+    assert (await os_voice.get(SID))["endedReason"] == "signed_out"
+    assert spark_keys(ddb) == {"os_deleted_at"}
+    assert gone.deleted == ["user_a"] and gone.events.count("account_deleted") == 1
+
+
+async def test_delete_with_an_org_keeps_the_clerk_user(ddb, clock, fake, gone):
+    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
+    await a_spark_account(ddb, fake)
+    assert (await req("DELETE", "/os/account", A)).status_code == 204
+    assert spark_keys(ddb) == {"os_deleted_at"} and gone.deleted == []
+
+
+async def test_delete_twice_is_204_both_times(ddb, clock, fake, gone):
+    await a_spark_account(ddb, fake)
+    assert (await req("DELETE", "/os/account", A)).status_code == 204
+    assert (await req("DELETE", "/os/account", A)).status_code == 204
+    assert fake.kinds().count("cancel") == 1 and gone.events.count("account_deleted") == 1
+
+
+async def test_a_stripe_failure_is_502_and_keeps_the_spark_data(ddb, clock, fake, gone, monkeypatch):
+    await a_spark_account(ddb, fake)
+    before = spark_keys(ddb)
+
+    def boom(sub_id, **kw):
+        raise stripe.APIConnectionError("down")
+
+    monkeypatch.setattr(stripe.Subscription, "cancel", boom)
+    r = await req("DELETE", "/os/account", A)
+    assert (r.status_code, r.json()) == (502, {"detail": "delete_failed"})
+    assert spark_keys(ddb) == before and "os_subscription_id" in before and gone.deleted == []
+
+
+async def test_a_referrer_keeps_their_day_when_the_referee_deletes(ddb, clock, fake, gone):
+    await account(A), await account(B)
+    assert (await req("POST", "/os/referral", B, json={"code": "a"})).json() == {"applied": True}
+    earned = ddb.users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert earned["os_referrals"] == 1 and earned["os_trial_ends_at"] == START + 4 * DAY
+    assert (await req("DELETE", "/os/account", B)).status_code == 204
+    assert ddb.users.get_item(Key={"user_id": "user_a"})["Item"] == earned
+    assert spark_keys(ddb, "user_b") == {"os_deleted_at"}
+
+
+async def test_a_deleted_account_read_again_has_no_new_trial(ddb, clock, fake, gone):
+    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
+    await account()
+    assert (await req("DELETE", "/os/account", A)).status_code == 204
+    again = await account()
+    assert again["status"] == "ended" and again["trialEndsAt"] == START

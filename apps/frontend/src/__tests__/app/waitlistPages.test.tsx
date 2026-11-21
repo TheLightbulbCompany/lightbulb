@@ -48,8 +48,19 @@ describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
 });
 
 describe("/os", () => {
-  // The page is async: it asks GitHub whether the installer is published (a 302 when it is).
-  beforeEach(() => vi.stubGlobal("fetch", vi.fn(async () => ({ status: 302 }))));
+  // The page is async: it asks GitHub whether the installer is published (a 302 when it is) and the
+  // backend for Spark's price (GET /os/config).
+  const LINE = "Free for 3 days, then $20/month. Renews monthly until you cancel.";
+  beforeEach(() =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.endsWith("/os/config")
+          ? { ok: true, json: async () => ({ priceText: "$20/month", trialDays: 3 }) }
+          : { status: 302 },
+      ),
+    ),
+  );
   afterEach(() => vi.unstubAllGlobals());
 
   it("meets Spark and offers the Mac download, with no waitlist form", async () => {
@@ -63,12 +74,12 @@ describe("/os", () => {
     expect(String(osMeta.title)).toContain("Spark");
   });
 
-  it("keeps AI, banned words, prices and dashes out", async () => {
+  it("keeps AI, banned words and dashes out, and a price only in the one line from the config", async () => {
     const { container } = render(await OsPage());
     const text = container.textContent ?? "";
     expect(container.querySelector("h1")?.textContent).not.toMatch(/\bAI\b/);
-    expect(text).not.toMatch(BANNED);
-    expect(text).not.toMatch(/\$\d/);
+    expect(text.split(LINE)).toHaveLength(2);
+    expect(text.replace(LINE, "")).not.toMatch(BANNED); // BANNED includes any price
     expect(text).not.toMatch(/[—–]/);
   });
 });

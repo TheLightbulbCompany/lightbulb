@@ -29,8 +29,20 @@ const DOWNLOAD = "Download for Mac";
 const SAME = "Open Spark and sign in with the same Apple, Google or email.";
 const INVITED = "You've been invited to Spark. Create your account, then download.";
 
-// The installer check: GitHub answers a published release asset with a 302.
-const installer = (status: number) => vi.stubGlobal("fetch", vi.fn(async () => ({ status })));
+const CONFIG = { priceText: "$20/month", trialDays: 3 };
+const LINE = "Free for 3 days, then $20/month. Renews monthly until you cancel.";
+
+// The installer check (GitHub answers a published release asset with a 302) and GET /os/config
+// (`config` null: the backend is down).
+const installer = (status: number, config: unknown = CONFIG) =>
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      if (!url.endsWith("/os/config")) return { status };
+      if (config === null) throw new Error("down");
+      return { ok: true, json: async () => config };
+    }),
+  );
 
 async function page() {
   render(await OsPage());
@@ -67,6 +79,42 @@ describe("/os without an invite", () => {
     await page();
     expect(screen.getByText("Download coming soon.")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: DOWNLOAD })).toBeNull();
+  });
+});
+
+describe("/os price line and legal links", () => {
+  const legal = () => {
+    expect(screen.getByRole("link", { name: "Terms" })).toHaveAttribute("href", "/terms");
+    expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute("href", "/privacy");
+  };
+
+  it.each([
+    ["plain", "", false, 302],
+    ["coming soon", "", false, 404],
+    ["invite, signed out", "ref=abc123XYZ", false, 302],
+    ["invite, signed in", "ref=abc123XYZ", true, 302],
+  ])("%s: the line from the config and both links", async (_, query, signedIn, status) => {
+    installer(status, { priceText: "$25/month", trialDays: 5 });
+    s.query = query;
+    s.signedIn = signedIn;
+    await page();
+    expect(await screen.findByText("Free for 5 days, then $25/month. Renews monthly until you cancel.")).toBeInTheDocument();
+    legal();
+  });
+
+  it.each([null, { priceText: 20 }, { trialDays: 3 }])("config %j unusable: no line, links still shown", async (config) => {
+    installer(302, config);
+    s.query = "";
+    await page();
+    expect(screen.queryByText(/Renews monthly/)).toBeNull();
+    legal();
+  });
+
+  it("asks the backend's public config", async () => {
+    s.query = "";
+    await page();
+    expect(screen.getByText(LINE)).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.map(([u]) => String(u))).toContain("http://localhost:8000/api/v1/os/config");
   });
 });
 

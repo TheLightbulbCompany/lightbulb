@@ -403,6 +403,8 @@ async def seed_os(a, b, mp, calls) -> dict:
     mp.setattr(settings, "OPENAI_API_KEY", "sk-test-not-real")
     fake(mp, calls, "core.voice.os_voice._create_live", ("live_fake", "v=0\r\nanswer"))  # OpenAI
     mp.setattr(os_voice, "start_sideband", lambda sid: None)
+    clerk(mp, a, b)
+    fake(mp, calls, "core.services.clerk_admin.delete_user")
     voice = await ok(a, "POST", "/api/v1/os/voice-session", {"sdp": f"v=0\r\n{MARKER}", "kind": "hold", "dcid": 4})
     return {"a_voice": voice["sessionId"], "_needles": [voice["sessionId"]]}
 
@@ -741,6 +743,7 @@ CASES = [
     # os: the caller's own Spark account; a referral marks only the caller (A's own code would credit A,
     # which is the point of a code, so test_os covers that one)
     Case("os", "GET", "/api/v1/os/account"),
+    Case("os", "DELETE", "/api/v1/os/account"),  # B's own Spark data and Clerk user only
     Case("os", "POST", "/api/v1/os/referral", {"code": "nobody"}),
     Case("os", "POST", "/api/v1/os/voice-session", {"sdp": "v=0\r\n", "kind": "hold", "dcid": 4}),  # B's own
     Case("os", "GET", "/api/v1/os/voice-session/{a_voice}", a_id=True),

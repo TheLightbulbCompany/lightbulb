@@ -4,7 +4,7 @@ The app signs in with Clerk's own SDK and sends its Clerk session token, like th
 account is a few attributes on their users row: `os_trial_ends_at`, `os_created_at`, `os_referrals` (people
 they referred), `os_referred_by` and `os_referral_credited` (whose code they came with, and whether that person
 got their day; a web sign-up stores `os_referred_by` before the account exists), and for voice `os_voice_active` (their open session ids) and
-`os_voice_seconds` (their voice total). Voice sessions themselves are `core.voice.os_voice`."""
+`os_voice_seconds` (their voice total). After they delete it, `os_deleted_at` is all that remains. Voice sessions themselves are `core.voice.os_voice`."""
 
 import json
 import logging
@@ -109,6 +109,14 @@ async def _account(auth: AuthContext, now: int) -> dict:
     old = written.get("Attributes") or {}
     row = {_DEFAULTS[k]: v for k, v in values.items()} | old  # every SET is if_not_exists
     if "os_created_at" not in old:
+        if "os_deleted_at" in old:  # a deleted Spark account comes back with its trial already over
+            row["os_trial_ends_at"] = now
+            await run_in_thread(
+                _table().update_item,
+                Key={"user_id": auth.user_id},
+                UpdateExpression="SET os_trial_ends_at = :now",
+                ExpressionAttributeValues={":now": now},
+            )
         spark_events.server_event(auth.user_id, "account_created", auth.user_id, row=row, now=now)
     # Referred on the web before the account existed: the referrer gets their day now. Checked on every read,
     # not only the creating one, so a failed credit is retried; the condition makes it once.
@@ -141,6 +149,40 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
         portalUrl=portal_url,
         **_price_facts().model_dump(),
     )
+
+
+@router.delete("/account", status_code=204, operation_id="os_account_delete")
+async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Response:
+    """Delete the signed-in person's Spark account. Every step is idempotent, so a retry finishes a partial one:
+    cancel their Spark subscription, end their open voice session, remove every `os_*` attribute from their
+    users row except the `os_deleted_at` tombstone (a later account starts with no trial), then delete the
+    Clerk user. A person in any Clerk organization keeps their Clerk user, since their other Lightbulb product
+    still uses it; the answer is 204 all the same. Referrers keep what they earned. Ended voice-session rows
+    are keyed by session id and expire by TTL. A Stripe or Clerk failure is 502 `delete_failed`."""
+    from core.services import clerk_admin
+
+    uid = auth.user_id
+    try:
+        await os_billing.cancel_for_deleted_user(uid)  # raises before any Spark data is removed
+        for sid in (await os_billing._row(uid)).get(os_voice.ACTIVE) or ():
+            await os_voice.end_session(sid, "signed_out", 0)
+        row = await os_billing._row(uid)  # re-read: ending a session adds to os_voice_seconds
+        spark = {f"#a{i}": k for i, k in enumerate(k for k in row if k.startswith("os_") and k != "os_deleted_at")}
+        if spark:
+            spark_events.server_event(uid, "account_deleted", uid)
+            await run_in_thread(
+                _table().update_item,
+                Key={"user_id": uid},
+                UpdateExpression="SET os_deleted_at = if_not_exists(os_deleted_at, :now) REMOVE " + ", ".join(spark),
+                ExpressionAttributeNames=spark,
+                ExpressionAttributeValues={":now": _now()},
+            )
+        if not await clerk_admin.list_user_organizations(uid, limit=100, strict=True):
+            await clerk_admin.delete_user(uid)
+    except Exception:  # noqa: BLE001  Stripe, Clerk or DynamoDB: the app retries
+        logger.warning("os account delete failed for %s", uid, exc_info=True)
+        raise HTTPException(status_code=502, detail="delete_failed") from None
+    return Response(status_code=204)
 
 
 def _referrer(code: Any, user_id: str) -> str | None:

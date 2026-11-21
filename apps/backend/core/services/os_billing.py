@@ -231,7 +231,9 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
     """Mirror a Spark subscription onto the person's users row. Events arrive out of order, so it writes
     Stripe's current state (re-read), never the event's snapshot, and another subscription never replaces
     one Stripe still holds open (BILLED). A second open one is a duplicate checkout: it is cancelled. A person
-    with no Spark account gets no row."""
+    with no Spark account (deleted) gets no row, and an open subscription of theirs is cancelled. A trialing
+    subscription whose Stripe trial ends before `os_trial_ends_at` (a referral landed during checkout) is
+    moved to it."""
     sub = event["data"]["object"]
     user_id = sub["metadata"].get("user_id")
     if not isinstance(user_id, str) or not user_id.startswith("user_"):
@@ -259,13 +261,24 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        stored = (await _row(user_id)).get("os_subscription_id")
-        if current["status"] in BILLED and stored and stored != current["id"]:
+        row = await _row(user_id)
+        stored = row.get("os_subscription_id")
+        if current["status"] in BILLED and not row.get("os_trial_ends_at"):
+            try:
+                await run_in_thread(stripe.Subscription.cancel, current["id"], api_key=settings.STRIPE_SECRET_KEY)
+            except stripe.InvalidRequestError:  # already canceled
+                pass
+            put_metric("os_billing.orphan_subscription_cancelled")
+            logger.warning("spark subscription %s cancelled: no Spark account for %s", current["id"], user_id)
+        elif current["status"] in BILLED and stored and stored != current["id"]:
             await run_in_thread(stripe.Subscription.cancel, current["id"], api_key=settings.STRIPE_SECRET_KEY)
             put_metric("os_billing.duplicate_subscription_cancelled")
             logger.warning("spark duplicate subscription %s cancelled for %s (kept %s)", current["id"], user_id, stored)
         else:
             logger.info("spark subscription %s not written for %s", current["id"], user_id)
+    else:
+        if current["status"] == "trialing":
+            await extend_trial(user_id)  # never raises
     return None
 
 
@@ -295,8 +308,12 @@ async def extend_trial(user_id: str) -> None:
 
 async def cancel_for_deleted_user(user_id: str) -> None:
     """Cancel a person's Spark subscription now, so it stops charging, before their users row (which holds
-    the subscription id) is deleted. Raises on failure, so the caller keeps the row and can retry."""
+    the subscription id) is deleted, and expire an open Checkout Session of theirs. Raises on failure, so the
+    caller keeps the row and can retry."""
     row = await user_repo.get(user_id) or {}
+    # An issued Checkout Session could still become a subscription for the deleted account: expire it first.
+    if await _retire_pending(row.get("os_checkout_session_id")) == page("expired"):
+        raise RuntimeError(f"spark checkout session {row['os_checkout_session_id']} still open")
     if row.get("os_subscription_status") not in BILLED or not row.get("os_subscription_id"):
         return
     try:

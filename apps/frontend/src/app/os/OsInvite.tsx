@@ -12,16 +12,18 @@ import { SparkDownload } from "./SparkDownload";
 // A Spark referral code: the referrer's Clerk user id without its `user_` prefix.
 export const CODE = /^[A-Za-z0-9]{1,64}$/;
 
-const SOON = "Download coming soon.";
+export const SOON = "Download coming soon.";
 
 // The download button (or "coming soon" until the installer is published), and on a referral link
 // (`/os?ref=CODE`) the invite: a signed-out visitor creates their account here, and a signed-in one has
 // the invite recorded (POST /os/referral). The Spark account itself is created by the Mac app (the first
 // account read starts the trial), so this page never calls the account route.
-export function OsInvite({ ready }: { ready: boolean }) {
+export function OsInvite({ ready, source }: { ready: boolean; source?: string }) {
   const code = useSearchParams()?.get("ref") ?? "";
   const download = (
-    <div className="mt-12">{ready ? <SparkDownload /> : <p className="text-lg text-[var(--lb-ink)]">{SOON}</p>}</div>
+    <div className="mt-12">
+      {ready ? <SparkDownload source={source} /> : <p className="text-lg text-[var(--lb-ink)]">{SOON}</p>}
+    </div>
   );
   if (!CODE.test(code)) return download;
   return <Invite code={code} ready={ready} download={download} />;

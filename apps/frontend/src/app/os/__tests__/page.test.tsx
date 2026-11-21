@@ -50,11 +50,16 @@ async function page() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Production's API: the short page (the dev-only landing page is in landing.test.tsx).
+  vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.thelightbulb.company/api/v1");
   installer(302);
   s.signedIn = false;
   post.mockResolvedValue({ applied: true });
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("/os without an invite", () => {
   it.each(["", "ref=", "ref=a.b", "ref=user_a", `ref=${"x".repeat(65)}`])("%s: the download button only", async (query) => {

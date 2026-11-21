@@ -5,7 +5,8 @@ short-lived signed link to the backend (`/os/checkout?t=`, `/os/portal?t=`) that
 opened. A token is an HS256 JWT (`sub`, `kind`, `exp`) on the service-token key, the key the emailed
 unsubscribe links use; `kind` keeps it from opening anything else. The users row carries
 `os_stripe_customer_id`, `os_subscription_id` and `os_subscription_status` (Stripe's status string), written by
-the Spark branch of the Stripe webhook, and `os_checkout_session_id` (the last Checkout Session issued)."""
+the Spark branch of the Stripe webhook with `os_next_charge_at` (epoch seconds of the next charge, absent when none
+is due), and `os_checkout_session_id` (the last Checkout Session issued)."""
 
 import logging
 import re
@@ -235,6 +236,17 @@ async def portal(user_id: str) -> str:
     return session["url"]
 
 
+def _next_charge(sub) -> int | None:
+    """When the subscription next charges: its trial end while trialing, else its period end, which this API
+    version (2026-02-25.clover, stripe 14) carries on the subscription item. None when nothing is due."""
+    if sub["status"] not in LIVE or sub.get("cancel_at_period_end"):
+        return None
+    if sub["status"] == "trialing":
+        return sub.get("trial_end")
+    items = (sub.get("items") or {}).get("data") or []
+    return items[0].get("current_period_end") if items else None
+
+
 def stripe_handler(event: dict):
     """The Spark handler for a Spark subscription event, else None (the event goes to the existing handlers)."""
     obj = event["data"]["object"]
@@ -259,11 +271,13 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
         logger.warning("spark subscription %s not found for %s", sub["id"], user_id)
         return None
     customer = current.get("customer")
+    next_charge = _next_charge(current)
     try:
         written = await run_in_thread(
             _users().update_item,
             Key={"user_id": user_id},
-            UpdateExpression="SET os_subscription_id = :id, os_subscription_status = :st, os_stripe_customer_id = :c",
+            UpdateExpression="SET os_subscription_id = :id, os_subscription_status = :st, os_stripe_customer_id = :c"
+            + (", os_next_charge_at = :n" if next_charge else " REMOVE os_next_charge_at"),
             ConditionExpression="attribute_exists(os_trial_ends_at) AND (attribute_not_exists(os_subscription_id)"
             " OR os_subscription_id = :id OR NOT os_subscription_status IN (:b0, :b1, :b2, :b3, :b4))",
             ExpressionAttributeValues={
@@ -271,7 +285,8 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
                 ":st": current["status"],
                 ":c": customer if isinstance(customer, str) else customer["id"],
             }
-            | {f":b{i}": s for i, s in enumerate(BILLED)},
+            | {f":b{i}": s for i, s in enumerate(BILLED)}
+            | ({":n": int(next_charge)} if next_charge else {}),
             ReturnValues="ALL_OLD",
         )
     except ClientError as e:

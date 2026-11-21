@@ -72,6 +72,8 @@ async def test_first_account_read_starts_a_three_day_trial(users, clock):
         "portalUrl": None,
         "priceText": "$20/month",
         "trialDays": 3,
+        "inviteBonusDays": 0,
+        "nextChargeAt": None,
     }
 
 
@@ -236,7 +238,7 @@ async def test_concurrent_credits_credit_once(users, clock):
     await account(A)
     assert await refer(B, "a")
     args = ("user_b", "user_a", "SET os_referral_credited = :t", os_router._NOT_CREDITED, {})
-    assert [await os_router._credit(*args), await os_router._credit(*args)] == [True, False]
+    assert [await os_router._credit(*args), await os_router._credit(*args)] == ["referrer", ""]
     await asyncio.gather(*[account(B) for _ in range(3)])
     assert (await account(A))["referralCount"] == 1
 
@@ -274,13 +276,86 @@ async def test_many_referrals_have_no_cap(users, clock):
     assert a["referralCount"] == 3 and a["referralDaysEarned"] == 3 and a["trialEndsAt"] == START + 6 * DAY
 
 
-async def test_ended_trial_still_gets_the_day(users, clock):
+@pytest.mark.parametrize("ago", [3 * DAY, 3600])
+async def test_an_ended_trials_day_counts_from_now(users, clock, ago):
     await account(A)
-    clock[0] += 10 * DAY
+    clock[0] = START + 3 * DAY + ago
     await account(B)
     assert await refer(B, "a")
     a = await account(A)
-    assert a["trialEndsAt"] == START + 4 * DAY and a["status"] == "ended"
+    assert a["trialEndsAt"] == clock[0] + DAY and a["status"] == "trial" and a["referralDaysEarned"] == 1
+    assert (await account(B))["inviteBonusDays"] == 0
+
+
+def set_row(user_id: str, **fields):
+    names = {f"#k{i}": k for i, k in enumerate(fields)}
+    dynamodb.get_table("users").update_item(
+        Key={"user_id": user_id},
+        UpdateExpression="SET " + ", ".join(f"#k{i} = :v{i}" for i in range(len(fields))),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={f":v{i}": v for i, v in enumerate(fields.values())},
+    )
+
+
+async def test_a_trial_that_ends_between_the_read_and_the_write_is_retried_once(users, clock, monkeypatch):
+    """The read saw a running trial; by the write it had ended. The second try counts the day from now."""
+    from routers import os as os_router
+
+    await account(A)
+    clock[0] = START + 3 * DAY - 10
+    await account(B)
+    real = os_router.transact
+    calls = []
+
+    async def crossing(table, items):
+        calls.append(items[1]["Update"]["UpdateExpression"])
+        if len(calls) == 1:
+            clock[0] = START + 3 * DAY + 10  # the referrer's trial ends now
+            items[1]["Update"]["ExpressionAttributeValues"][":now"] = clock[0]
+        await real(table, items)
+
+    monkeypatch.setattr(os_router, "transact", crossing)
+    assert await refer(B, "a")
+    assert len(calls) == 2 and ":until" in calls[1]
+    a = await account(A)
+    assert a["trialEndsAt"] == clock[0] + DAY and a["referralCount"] == 1 and a["referralDaysEarned"] == 1
+
+
+async def test_a_paying_referrers_friend_gets_the_day(users, clock, monkeypatch):
+    from core.services import os_billing
+
+    monkeypatch.setattr(os_billing, "extend_trial", None)  # no Stripe path is reached at all
+    await account(A)
+    set_row("user_a", os_subscription_status="active", os_subscription_id="sub_1")
+    clock[0] += 100
+    created = clock[0]
+    await account(B)
+    assert await refer(B, "a")
+    b = await account(B)
+    assert b["trialEndsAt"] == created + 3 * DAY + DAY and b["inviteBonusDays"] == 1
+    a = row("user_a")
+    assert int(a["os_trial_ends_at"]) == START + 3 * DAY
+    a = await account(A)
+    assert a["referralCount"] == 1 and a["referralDaysEarned"] == 0
+
+
+async def test_a_paying_referrers_web_invite_shows_the_day_on_the_first_read(users, clock, monkeypatch):
+    await account(A)
+    set_row("user_a", os_subscription_status="active", os_subscription_id="sub_1")
+    assert await refer(B, "a")  # no account yet: only the code is stored
+    b = await account(B)
+    assert b["trialEndsAt"] == START + 4 * DAY and b["inviteBonusDays"] == 1
+    assert (await account(B))["trialEndsAt"] == START + 4 * DAY
+
+
+async def test_a_legacy_row_reads_its_days_from_the_count(users, clock):
+    await account(A)
+    set_row("user_a", os_referrals=3)
+    assert (await account(A))["referralDaysEarned"] == 3
+    await account(B)
+    assert await refer(B, "a")
+    a = await account(A)
+    assert a["referralCount"] == 4 and a["referralDaysEarned"] == 4
 
 
 async def test_two_concurrent_referral_posts_credit_once(users, clock):

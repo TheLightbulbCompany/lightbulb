@@ -2,8 +2,10 @@
 
 The app signs in with Clerk's own SDK and sends its Clerk session token, like the web app. A person's Spark
 account is a few attributes on their users row: `os_trial_ends_at`, `os_created_at`, `os_referrals` (people
-they referred), `os_referred_by` and `os_referral_credited` (whose code they came with, and whether that person
-got their day; a web sign-up stores `os_referred_by` before the account exists), and for voice `os_voice_active` (their open session ids) and
+they referred), `os_referral_days` (days they earned by referring; rows from before it existed earned one per
+referral), `os_referred_by` and `os_referral_credited` (whose code they came with, and whether it was credited; a
+web sign-up stores `os_referred_by` before the account exists), `os_invite_bonus_days` (1 when a paying inviter's
+day went on their own trial), and for voice `os_voice_active` (their open session ids) and
 `os_voice_seconds` (their voice total). After they delete it, `os_deleted_at` is all that remains. Voice sessions themselves are `core.voice.os_voice`."""
 
 import json
@@ -55,6 +57,8 @@ class AccountResponse(BaseModel):
     portalUrl: str | None = None
     priceText: str
     trialDays: int
+    inviteBonusDays: int = 0
+    nextChargeAt: int | None = None
 
 
 class ConfigResponse(BaseModel):
@@ -122,8 +126,12 @@ async def _account(auth: AuthContext, now: int) -> dict:
     # not only the creating one, so a failed credit is retried; the condition makes it once.
     if row.get("os_referred_by") and not row.get("os_referral_credited") and "os_deleted_at" not in row:
         try:
-            if await _credit(auth.user_id, row["os_referred_by"], "SET os_referral_credited = :t", _NOT_CREDITED, {}):
+            got = await _credit(auth.user_id, row["os_referred_by"], "SET os_referral_credited = :t", _NOT_CREDITED, {})
+            if got:
                 row["os_referral_credited"] = True
+            if got == "friend":
+                row["os_trial_ends_at"] = int(row["os_trial_ends_at"]) + DAY_S
+                row["os_invite_bonus_days"] = 1
         except Exception:  # noqa: BLE001  a credit never fails the account read
             logger.warning("os referral credit not written for %s", auth.user_id, exc_info=True)
     return row
@@ -143,10 +151,14 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
         status=os_billing.status(row, now),
         trialEndsAt=ends,
         referralUrl=f"{settings.FRONTEND_URL.rstrip('/')}/os?ref={auth.user_id.removeprefix('user_')}",
-        referralDaysEarned=referrals,  # one referral is one day
+        referralDaysEarned=int(row.get("os_referral_days", referrals)),
         referralCount=referrals,
         checkoutUrl=checkout_url,
         portalUrl=portal_url,
+        inviteBonusDays=int(row.get("os_invite_bonus_days", 0)),
+        nextChargeAt=int(n)
+        if row.get("os_subscription_status") in os_billing.LIVE and (n := row.get("os_next_charge_at"))
+        else None,
         **_price_facts().model_dump(),
     )
 
@@ -218,25 +230,76 @@ _NEVER_DELETED = "attribute_not_exists(os_deleted_at)"  # a person who deleted S
 _NOT_CREDITED = f"attribute_not_exists(os_referral_credited) AND {_NEVER_DELETED}"
 
 
-async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dict) -> bool:
-    """Both rows or neither: the referred person is marked credited (`expr` under `cond`), and the referrer, who
-    must have a Spark account, gets one more day and one more referral."""
-    if not await _written(
-        [
-            _item("Update", user_id, cond, values | {":t": True}, expr),
-            _item(
-                "Update",
-                referrer,
-                "attribute_exists(os_trial_ends_at)",
-                {":day": DAY_S, ":one": 1},
-                "ADD os_trial_ends_at :day, os_referrals :one",
-            ),
-        ]
-    ):
-        return False
-    await os_billing.extend_trial(referrer)
-    spark_events.server_event(referrer, "referral_applied", user_id)
-    return True
+_ST = "os_subscription_status"
+_EARNS = "SET os_referral_days = if_not_exists(os_referral_days, :prior) + :one"
+# Who gets the day, by the referrer's row: each condition pins one branch, and the three cover every row.
+_BRANCHES = {
+    # Paying: the friend gets the day on their own trial; the referrer's trial and billing are untouched.
+    "friend": (
+        f"attribute_exists(os_trial_ends_at) AND {_ST} = :active",
+        "SET os_referral_days = if_not_exists(os_referral_days, :prior) ADD os_referrals :one",
+    ),
+    # A running trial, or a trialing subscription: the day goes on the end, and `extend_trial` moves Stripe's.
+    "referrer": (
+        f"attribute_exists(os_trial_ends_at) AND (attribute_not_exists({_ST}) OR {_ST} <> :active)"
+        f" AND (os_trial_ends_at > :now OR {_ST} = :trialing)",
+        f"{_EARNS} ADD os_trial_ends_at :day, os_referrals :one",
+    ),
+    # An ended trial with no live subscription: the day counts from now.
+    "ended": (
+        f"os_trial_ends_at <= :now AND (attribute_not_exists({_ST}) OR NOT {_ST} IN (:active, :trialing))",
+        f"{_EARNS}, os_trial_ends_at = :until ADD os_referrals :one",
+    ),
+}
+
+
+def _branch(ref: dict, now: int) -> str:
+    if ref.get(_ST) == "active":
+        return "friend"
+    return "referrer" if ref.get(_ST) == "trialing" or int(ref["os_trial_ends_at"]) > now else "ended"
+
+
+async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dict) -> str:
+    """Both rows or neither: the referred person is marked credited (`expr` under `cond`) and the referrer, who
+    must have a Spark account, counts one more referral. One friend is one free day: a paying (`active`)
+    referrer's friend gets it on their own trial; anyone else earns it, on a running trial's end or, once the
+    trial has ended, from now (an ADD cannot say max(end, now)). The branch comes from the referrer's row read
+    first and is pinned by its condition; a referrer who crossed a line meanwhile is read again, once.
+    Returns "friend" or "referrer" (who got the day), or "" when nothing was written."""
+    for _ in range(2):
+        now = _now()
+        ref = (await run_in_thread(_table().get_item, Key={"user_id": referrer}, ConsistentRead=True)).get("Item")
+        if not ref or "os_trial_ends_at" not in ref:
+            return ""
+        branch = _branch(ref, now)
+        ref_cond, ref_expr = _BRANCHES[branch]
+        every = {":active": "active", ":trialing": "trialing", ":now": now, ":until": now + DAY_S, ":day": DAY_S}
+        every |= {":prior": int(ref.get("os_referrals", 0)), ":one": 1}
+        ref_values = {k: every[k] for k in set(re.findall(r":\w+", f"{ref_cond} {ref_expr}"))}
+        friend_expr, friend_values = expr, values | {":t": True}
+        if branch == "friend":
+            friend_expr += ", os_invite_bonus_days = :one ADD os_trial_ends_at :day"
+            friend_values |= {":one": 1, ":day": DAY_S}
+        try:
+            await transact(
+                _table(),
+                [
+                    _item("Update", user_id, cond, friend_values, friend_expr),
+                    _item("Update", referrer, ref_cond, ref_values, ref_expr),
+                ],
+            )
+        except ClientError as e:
+            codes = [r.get("Code") for r in e.response.get("CancellationReasons") or []]
+            if not is_cancelled(e) or "ConditionalCheckFailed" not in codes:
+                raise
+            if codes[0] == "ConditionalCheckFailed":  # already credited, or not creditable
+                return ""
+            continue  # the referrer's row moved across a branch line
+        if branch != "friend":
+            await os_billing.extend_trial(referrer)
+        spark_events.server_event(referrer, "referral_applied", user_id)
+        return "friend" if branch == "friend" else "referrer"
+    return ""
 
 
 @router.post("/referral", response_model=ReferralResponse, operation_id="os_referral")
@@ -252,12 +315,14 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
     try:
         got = await run_in_thread(_table().get_item, Key={"user_id": auth.user_id}, ConsistentRead=True)
         if "os_created_at" in (got.get("Item") or {}):
-            applied = await _credit(
-                auth.user_id,
-                referrer,
-                "SET os_referred_by = :ref, os_referral_credited = :t",
-                f"attribute_not_exists(os_referred_by) AND os_created_at > :cutoff AND {_NEVER_DELETED}",
-                {":ref": referrer, ":cutoff": _now() - REFERRAL_WINDOW_S},
+            applied = bool(
+                await _credit(
+                    auth.user_id,
+                    referrer,
+                    "SET os_referred_by = :ref, os_referral_credited = :t",
+                    f"attribute_not_exists(os_referred_by) AND os_created_at > :cutoff AND {_NEVER_DELETED}",
+                    {":ref": referrer, ":cutoff": _now() - REFERRAL_WINDOW_S},
+                )
             )
         else:
             applied = await _written(

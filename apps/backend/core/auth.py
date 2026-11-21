@@ -288,6 +288,20 @@ async def get_human_session(
     return ctx
 
 
+async def get_optional_human_session(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
+) -> AuthContext | None:
+    """`get_human_session` for a door anyone may call: the verified person, or None when the bearer is
+    missing, invalid, expired or not a session token. A refused bearer is treated as no bearer, never an
+    error, so the answer says nothing about the token."""
+    if credentials is None:
+        return None
+    try:
+        return await get_human_session(credentials)
+    except HTTPException:
+        return None
+
+
 # Email domains that identify team members, for analytics tagging ONLY
 # (run_analytics' internal-owner flag). This is NOT an access check: any
 # self-registered Clerk account can carry one of these addresses, so platform

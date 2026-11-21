@@ -30,6 +30,7 @@ from core.auth import (
     AuthContext,
     get_current_user,
     get_human_session,
+    get_optional_human_session,
     require_org_admin,
     require_platform_admin,
     resolve_owner_id,
@@ -744,6 +745,7 @@ CASES = [
     Case("os", "POST", "/api/v1/os/voice-session", {"sdp": "v=0\r\n", "kind": "hold", "dcid": 4}),  # B's own
     Case("os", "GET", "/api/v1/os/voice-session/{a_voice}", a_id=True),
     Case("os", "DELETE", "/api/v1/os/voice-session/{a_voice}", a_id=True),
+    Case("os", "POST", "/api/v1/os/event", {"event": "app_opened", "installId": "{new}"}),  # B's own install
     # devices, support, desktop sign-in: the caller's own
     Case(
         "devices", "POST", "/api/v1/devices", {"token": "ExponentPushToken[b]", "platform": "ios", "deviceId": "dev-b"}
@@ -819,7 +821,8 @@ def _tenant_doors() -> set[tuple[str, str]]:
     (they read across tenants by design and are guarded by PLATFORM_ADMIN_USER_IDS)."""
     from routers import questions
 
-    signed_in = {get_current_user, get_human_session, questions.person_only}  # person_only calls it in its body
+    # person_only and get_optional_human_session call one of them in their body
+    signed_in = {get_current_user, get_human_session, get_optional_human_session, questions.person_only}
 
     def deps(d):
         for s in d.dependencies:

@@ -231,12 +231,24 @@ async def test_a_model_off_the_list_is_refused(ddb, clock, no_sideband, openai):
         body(kind="shout"),
         body(dcid=5),
         body(session="x"),
+        body(client={"appVersion": "1.0.0", "brain": "gpt"}),
+        body(client={"appVersion": "1.0.0", "brain": "codex"}),
+        body(client={"fullAccess": "yes"}),
+        body(client={"appVersion": "1.0.0", "device": "mac"}),
+        body(client="x"),
     ],
 )
 async def test_invalid_config_never_reaches_openai(ddb, clock, no_sideband, openai, bad):
     r = await req("POST", "/os/voice-session", A, bad)
     assert (r.status_code, r.json()) == (400, {"detail": "invalid_config"})
     assert not openai.called
+
+
+async def test_client_brain_and_full_access_are_stored(ddb, clock, no_sideband, openai):
+    client = {"appVersion": "2.1.1", "protocol": 2, "brain": "chatgpt", "fullAccess": True}
+    r = await create(client=client)
+    assert r.status_code == 201, r.text
+    assert rec(ddb, r.json()["sessionId"])["client"] == client | {"protocol": "2"}
 
 
 async def test_the_largest_allowed_config_passes(ddb, clock, no_sideband, openai):

@@ -117,6 +117,20 @@ def capture_product_event(
     _send(client, distinct_id, event, props, event_uuid)
 
 
+def alias_product_person(*, person_id: str, anonymous_id: str) -> None:
+    """Join an anonymous distinct id (a Spark install) onto a person, so its earlier events count as theirs.
+    PostHog's `$create_alias` (posthog-python `alias(previous_id, distinct_id)`) adds `distinct_id` to the
+    person `previous_id` already names; PostHog refuses it only when the added id is itself an identified
+    person, which an install id never is. Best-effort like `capture_product_event`: never raises."""
+    client = _client_or_none()
+    if client is None or not person_id or not anonymous_id:
+        return
+    try:
+        client.alias(previous_id=person_id, distinct_id=anonymous_id)
+    except Exception:
+        logger.warning("PostHog alias failed (person=%s)", person_id, exc_info=True)
+
+
 def _send(client: Any, distinct_id: str, event: str, props: dict, event_uuid: str | None) -> None:
     try:
         if event_uuid:

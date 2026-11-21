@@ -32,11 +32,15 @@ describe("/os/billing", () => {
   });
 
   it.each([
-    ["thelightbulb.company", "spark://account"],
-    ["dev.thelightbulb.company", "spark-dev://account"],
-    ["localhost", "spark-dev://account"],
-  ])("on %s it links to and opens %s once", (hostname, href) => {
-    const assign = visit("state=success", hostname);
+    ["thelightbulb.company", "state=success", "spark://account?state=success"],
+    ["dev.thelightbulb.company", "state=success", "spark-dev://account?state=success"],
+    ["localhost", "state=portal", "spark-dev://account?state=portal"],
+    ["thelightbulb.company", "state=cancelled", "spark://account?state=cancelled"],
+    ["thelightbulb.company", "state=already", "spark://account?state=already"],
+    ["thelightbulb.company", "state=%22%3E%3Cx", "spark://account?state=expired"],
+    ["thelightbulb.company", "", "spark://account?state=expired"],
+  ])("on %s with %s it links to and opens %s once", (hostname, query, href) => {
+    const assign = visit(query, hostname);
     expect(screen.getByRole("link", { name: "Open Spark" })).toHaveAttribute("href", href);
     expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith(href);

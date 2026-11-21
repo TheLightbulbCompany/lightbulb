@@ -21,17 +21,17 @@ export function Footer() {
         <div className="lb-foot-top">
           <div className="lb-foot-cta">
             <h2>
-              Get back to your client. <em>Your assistant has the phone.</em>
+              Get back to your work. <em>Your assistant has the phone.</em>
             </h2>
             <div className="lb-foot-btns">
               <Link
                 href="/sign-up"
                 className="lb-btn"
                 onClick={() =>
-                  captureSignupCta({ ctaId: "footer_start_free", label: "Set up your assistant", surface: "footer" })
+                  captureSignupCta({ ctaId: "footer_start_free", label: "Set up Lightbulb Phone", surface: "footer" })
                 }
               >
-                Set up your assistant
+                Set up Lightbulb Phone
                 <Arrow />
               </Link>
               <Link
@@ -54,6 +54,9 @@ export function Footer() {
           <div className="lb-foot-cols">
             <div className="lb-foot-col">
               <h4>Product</h4>
+              <Link href="/phone">Lightbulb Phone</Link>
+              <Link href="/meetings">Lightbulb Meetings</Link>
+              <Link href="/os">Lightbulb OS</Link>
               <Link href="/pricing">Pricing</Link>
               <Link href="/compare">Compare</Link>
               <Link href="/request-setup">Talk to a founder</Link>
@@ -82,7 +85,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>Calls answered and appointments booked for salons, spas and barbershops.</span>
+          <span>Lightbulb Phone, Lightbulb Meetings and Lightbulb OS.</span>
         </div>
       </div>
     </footer>

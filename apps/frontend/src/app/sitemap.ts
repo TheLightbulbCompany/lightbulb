@@ -6,7 +6,7 @@ import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
 
 /**
- * Public sitemap: the receptionist's pages first, then the developer network
+ * Public sitemap: the three products' pages first, then the developer network
  * docs, then legal. Private app routes (/chat, /settings, /onboarding, /admin,
  * /api) are excluded here and disallowed in robots.ts.
  */
@@ -16,6 +16,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   const product: MetadataRoute.Sitemap = [
     { url: `${SITE_URL}/`, changeFrequency: "weekly", priority: 1 },
+    { url: `${SITE_URL}/phone`, changeFrequency: "weekly", priority: 0.95 },
+    { url: `${SITE_URL}/meetings`, changeFrequency: "monthly", priority: 0.8 },
+    { url: `${SITE_URL}/os`, changeFrequency: "monthly", priority: 0.6 },
     { url: `${SITE_URL}/pricing`, changeFrequency: "monthly", priority: 0.9 },
     { url: `${SITE_URL}/request-setup`, changeFrequency: "monthly", priority: 0.7 },
     { url: `${SITE_URL}/compare`, lastModified: compareDate, changeFrequency: "monthly", priority: 0.7 },

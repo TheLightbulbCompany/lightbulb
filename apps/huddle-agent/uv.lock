@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 5
 requires-python = ">=3.10, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -607,7 +607,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -838,8 +838,8 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "h11", marker = "python_full_version < '3.11'" },
-    { name = "truststore", marker = "python_full_version < '3.11'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/30/ff/b53af1b49bb2cb5fa97c92215614b173ca5c1a99ded80e2d52f15a94fa6d/httpcore2-2.14.0.tar.gz", hash = "sha256:4f57a1a8249fe6af589d935cfd456f1d13bbdcb0f0fc72af9142368fc94811d7", size = 69096, upload-time = "2026-10-18T16:29:21.898Z" }
 wheels = [
@@ -857,8 +857,8 @@ resolution-markers = [
     "python_full_version == '3.11.*'",
 ]
 dependencies = [
-    { name = "h11", marker = "python_full_version >= '3.11'" },
-    { name = "truststore", marker = "python_full_version >= '3.11'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/61/afa9d6b7452f9eca73f73d45324eb0bb52f098fd5e6049bf6b8263be9b4e/httpcore2-2.16.0.tar.gz", hash = "sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643", size = 69886, upload-time = "2026-10-21T07:09:45.31Z" }
 wheels = [
@@ -888,11 +888,11 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "anyio", marker = "python_full_version < '3.11' and sys_platform != 'emscripten'" },
-    { name = "httpcore2", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and sys_platform != 'emscripten'" },
-    { name = "idna", marker = "python_full_version < '3.11'" },
-    { name = "truststore", marker = "python_full_version < '3.11' and sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "anyio", marker = "sys_platform != 'emscripten'" },
+    { name = "httpcore2", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'emscripten'" },
+    { name = "idna" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e8/67/58353f1848b4ba568e1ec22ea1e0d8e039f0bca5fde7e2d1f07739fd83e7/httpx2-2.14.0.tar.gz", hash = "sha256:47ad61a3c40282cd8d0dc96311531f00f5bfc71a066c6fe3b36d8f63fb9e4f6e", size = 102036, upload-time = "2026-10-18T16:29:22.627Z" }
 wheels = [
@@ -910,12 +910,12 @@ resolution-markers = [
     "python_full_version == '3.11.*'",
 ]
 dependencies = [
-    { name = "anyio", marker = "python_full_version >= '3.11' and sys_platform != 'emscripten'" },
-    { name = "httpcore2", version = "2.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and sys_platform != 'emscripten'" },
+    { name = "anyio", marker = "sys_platform != 'emscripten'" },
+    { name = "httpcore2", version = "2.16.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'emscripten'" },
     { name = "httpx2-jsfetch", marker = "python_full_version >= '3.12' and sys_platform == 'emscripten'" },
-    { name = "idna", marker = "python_full_version >= '3.11'" },
-    { name = "truststore", marker = "python_full_version >= '3.11' and sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "python_full_version >= '3.11' and python_full_version < '3.13'" },
+    { name = "idna" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/73/5ca2cedf5e4e50423d1c258877865a6b62793633b561c58499f8aeb33b7e/httpx2-2.16.0.tar.gz", hash = "sha256:0d54c98128e8f2ff7fbbde0fca8c359e5f032edeaaaac443cdb7f31f685bcd7f", size = 103116, upload-time = "2026-10-21T07:09:46.348Z" }
 wheels = [
@@ -1171,7 +1171,7 @@ openai = [
 
 [[package]]
 name = "livekit-api"
-version = "1.2.2"
+version = "1.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1182,9 +1182,9 @@ dependencies = [
     { name = "pyjwt" },
     { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/0c/a6ced29213cf99f868b8456157a9778294336d2aa53e83cc790b4ed2a364/livekit_api-1.2.2.tar.gz", hash = "sha256:689753198dfefe58b007581fcce09e1089b2ad80adb3f9445798e55abdc9a264", size = 23116, upload-time = "2026-10-16T03:34:58.584Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/da/8bbe928a297f0a3498dc358080e830785a4007c525454e9c81568f22f25b/livekit_api-1.2.3.tar.gz", hash = "sha256:79d8604a9d2bd41ab8e53ddb43348f7e0b3bd145567be963018d24089faa5c74", size = 23063, upload-time = "2026-11-14T01:13:56.972Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/39/d103c5314fb508832a5abc92b8b3394cb50f79cd07aac350bf5a6e7c9c3a/livekit_api-1.2.2-py3-none-any.whl", hash = "sha256:64f82ed90aaef2dc982dbc7f9dcda6f5dc958928ce77ef2b582459d8e2c87b6b", size = 28806, upload-time = "2026-10-16T03:34:57.178Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/2d/b92adefa81fb4af96b60e7b5a781e452ff41902d13fd4ec774620da36740/livekit_api-1.2.3-py3-none-any.whl", hash = "sha256:9f832cf1ad2b6b41e4ef183cd8d6cfdc97967e0ef82d4e7c982db87ed86fc9da", size = 28757, upload-time = "2026-11-14T01:13:55.384Z" },
 ]
 
 [[package]]
@@ -1258,17 +1258,17 @@ wheels = [
 
 [[package]]
 name = "livekit-plugins-noise-cancellation"
-version = "0.3.2"
+version = "0.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "livekit" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/90/2a8043f5565654e6dc393671487adf045e6b1ced5a30849971bd06ca81a3/livekit_plugins_noise_cancellation-0.3.2-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:be077ba5c927189e31a6b33fd58f9d799df88c7a130df997af91f9d7aa63d5c8", size = 66604894, upload-time = "2026-09-15T19:28:41.505Z" },
-    { url = "https://files.pythonhosted.org/packages/bd/27/4fcf53e681ef863484dec15a1d822d290248c394f4eceb635de44cb611e2/livekit_plugins_noise_cancellation-0.3.2-py3-none-macosx_11_0_arm64.whl", hash = "sha256:104c1ae210186f278d04de6f6f19ae2be2d79bc9440e7899ab918bd771f908cb", size = 65096466, upload-time = "2026-09-15T19:28:44.92Z" },
-    { url = "https://files.pythonhosted.org/packages/8c/a5/29626b96e89c9d8620e89a33573b4971a8814ac5f74f419199526ff0e24a/livekit_plugins_noise_cancellation-0.3.2-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:28d82b0a3af773cf3653d8bcedb2166596847c03ab4009e64c931eb77af62a22", size = 70806325, upload-time = "2026-09-15T19:28:48.321Z" },
-    { url = "https://files.pythonhosted.org/packages/07/65/3ca9af4cc5517ebe9c58668f82362a737a981d930514e4af77d8fba360a3/livekit_plugins_noise_cancellation-0.3.2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:632416212279531f30a012486627f4371ef474eca87e9610fbca6787d8599a3d", size = 73590802, upload-time = "2026-09-15T19:28:51.577Z" },
-    { url = "https://files.pythonhosted.org/packages/04/3b/d4a853d237edbe0425e52474e9ad6d4a9d4fd48ec3693d3d69eadf9f2692/livekit_plugins_noise_cancellation-0.3.2-py3-none-win_amd64.whl", hash = "sha256:28ab0d02a34a0459f3202246a818197ed3d2c7173d8239b649a8688ea47cd2f8", size = 66294362, upload-time = "2026-09-15T19:28:54.775Z" },
+    { url = "https://files.pythonhosted.org/packages/96/04/07bae58d18b065a3c487d2d201ca8ec56b08bed6ab26e544cbebd5447409/livekit_plugins_noise_cancellation-0.3.3-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:668556be7c8a781facf1d0e04008408598aea454f899053588a714f7de9155b0", size = 66623987, upload-time = "2026-11-06T14:38:31.341Z" },
+    { url = "https://files.pythonhosted.org/packages/09/2f/5b8a5982a2900ae300f944683f0d754fd96324de0258b132c5fab2d8347d/livekit_plugins_noise_cancellation-0.3.3-py3-none-macosx_11_0_arm64.whl", hash = "sha256:107b506a762875c090d9c04c0631742add52b9ba61cefb035f541e48e5a0b754", size = 65126442, upload-time = "2026-11-06T14:38:36.382Z" },
+    { url = "https://files.pythonhosted.org/packages/11/94/9d9dd25bec9f0f300125fd7fa9a96a585271d7b2fe5bab5592fdf8a1418a/livekit_plugins_noise_cancellation-0.3.3-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:a0bb59c7d5061e487a9c4d90f25d8ca3e0cc228d9b598fe0f1af1b25c1f5a38b", size = 70828028, upload-time = "2026-11-06T14:38:41.689Z" },
+    { url = "https://files.pythonhosted.org/packages/50/3f/f8a0c20a88afedb4072f28bf2c4d7b9ea452e56facba840bfef64535e194/livekit_plugins_noise_cancellation-0.3.3-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:57d175a38ff726638e66a9aa50a2a9712773667a3da556fbdd46bc20ff85fbdc", size = 73609094, upload-time = "2026-11-06T14:38:47.566Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/7c/4104604b1f47720019199a4db434f02c81fe4bb675231aef7aa92e459dee/livekit_plugins_noise_cancellation-0.3.3-py3-none-win_amd64.whl", hash = "sha256:6ddd6f7fb255db0b02309e50e6a193d0ae57dd5624e1045b3e00e9dddec71d33", size = 66307824, upload-time = "2026-11-06T14:38:53.316Z" },
 ]
 
 [[package]]
@@ -1288,15 +1288,15 @@ wheels = [
 
 [[package]]
 name = "livekit-protocol"
-version = "1.1.31"
+version = "1.1.32"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf" },
     { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/18/9055bd2b0615cc477559b7d68853ac79ac09a4ee281081dd8eb02c35d47d/livekit_protocol-1.1.31.tar.gz", hash = "sha256:97fb2453b1050e21ec29e3933ef78df23349dcdc1b642857025d4784fd12547b", size = 134972, upload-time = "2026-11-05T00:33:00.107Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/09/3fa7a365894c444773f32e9ef483b0c9e4642891c77b85174d130165a308/livekit_protocol-1.1.32.tar.gz", hash = "sha256:2b2af25d16e65da64b9b16fec8d773a66107bf9c22db58d1ede5f156f42c98a7", size = 135835, upload-time = "2026-11-14T01:13:57.329Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/7f/3bc2fee2d3f5a1d0dc812ab2212fe7dc84c732660138020e2e54a56f6908/livekit_protocol-1.1.31-py3-none-any.whl", hash = "sha256:b37c262515c541008c43227a9424151bbf3b93dbae7fb6b9c8e8521c76f5cc29", size = 162950, upload-time = "2026-11-05T00:32:58.384Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/9c/028db5523b4434f98a96079fe5bef51919e290d5ada830c207aec01db7f9/livekit_protocol-1.1.32-py3-none-any.whl", hash = "sha256:f86e104b7a84e743f7e382892d781df4f103eefdbfb24520359158f9c427e032", size = 163639, upload-time = "2026-11-14T01:13:55.948Z" },
 ]
 
 [[package]]
@@ -2327,7 +2327,7 @@ wheels = [
 
 [[package]]
 name = "pytest"
-version = "9.1.1"
+version = "9.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
@@ -2338,23 +2338,23 @@ dependencies = [
     { name = "pygments" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/42/bb4641652e58dedeac2ec51abc1f8cae4fee4ec63899a0999016229a0f2a/pytest-9.2.0.tar.gz", hash = "sha256:97c4f3b1f3c7414aa36465e09b8220f1d03627993bd51b1282e193753c80557b", size = 1797555, upload-time = "2026-10-27T21:30:20.728Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+    { url = "https://files.pythonhosted.org/packages/51/39/1f5d8c8877a0fa327db959c19341d4be61660de1ab6b7391f9eb805bcd67/pytest-9.2.0-py3-none-any.whl", hash = "sha256:07acdcf88ec174f907dc01af70bf52d49b014bbab03faeeade31c96b18c2e588", size = 411776, upload-time = "2026-10-27T21:30:19.131Z" },
 ]
 
 [[package]]
 name = "pytest-asyncio"
-version = "1.4.0"
+version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backports-asyncio-runner", marker = "python_full_version < '3.11'" },
     { name = "pytest" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/43/7c/d36d04db312ecf4298932ef77e6e4a9e8ad017906e24e34f0b0c361a2473/pytest_asyncio-1.4.0.tar.gz", hash = "sha256:c6c0d2259945122819f171a32ecea2c349ead889ee28176caaf492143424be42", size = 58514, upload-time = "2026-05-26T09:56:04.083Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/de/80724f9b5b9eca1a654179cae6edc51aaa0a355a9834a736e2a188b91780/pytest_asyncio-1.5.0.tar.gz", hash = "sha256:92c8fa83ca419fd0d4bd6a34df6520dae435841d3733c319343249492adf37f7", size = 146227, upload-time = "2026-11-12T16:35:49.845Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/03/e2/08a497ef684b88559c9cc5f4ad53a37e7b99e727094a86d6ea32536d5d3c/pytest_asyncio-1.4.0-py3-none-any.whl", hash = "sha256:933ca923a23075a87fb7070c0ec272a6848489824d887c85c812670932835aa1", size = 16930, upload-time = "2026-05-26T09:56:02.576Z" },
+    { url = "https://files.pythonhosted.org/packages/27/2d/e600d8f47597a803641704aba367c7266cd621f86561ec36da9888f160ec/pytest_asyncio-1.5.0-py3-none-any.whl", hash = "sha256:557f255ee03cc84f84a8d5f438bc9c6e0f714bf86970ae743c7ecb5a38d7e07d", size = 17215, upload-time = "2026-11-12T16:35:48.446Z" },
 ]
 
 [[package]]

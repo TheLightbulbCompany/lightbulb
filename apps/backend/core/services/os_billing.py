@@ -5,7 +5,7 @@ short-lived signed link to the backend (`/os/checkout?t=`, `/os/portal?t=`) that
 opened. A token is an HS256 JWT (`sub`, `kind`, `exp`) on the service-token key, the key the emailed
 unsubscribe links use; `kind` keeps it from opening anything else. The users row carries
 `os_stripe_customer_id`, `os_subscription_id` and `os_subscription_status` (Stripe's status string), written by
-the Spark branch of the Stripe webhook."""
+the Spark branch of the Stripe webhook, and `os_checkout_session_id` (the last Checkout Session issued)."""
 
 import logging
 import time
@@ -17,7 +17,13 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
-from core.services.billing_service import _checkout_idempotency_key, _checkout_trial_end
+from core.services.billing_service import (
+    BillingServiceError,
+    _checkout_idempotency_key,
+    _checkout_trial_end,
+    _expire_open_checkout_session,
+    _retrieve_checkout_session,
+)
 from core.services.service_token import _signing_key
 
 logger = logging.getLogger(__name__)
@@ -120,6 +126,26 @@ async def _customer(user_id: str, row: dict) -> str:
     return customer["id"]
 
 
+async def _retire_pending(session_id: str | None) -> str | None:
+    """Make sure the person's earlier Checkout Session can no longer be paid: expire it when still open. The
+    billing page to answer instead of a new session, or None to go on."""
+    if not session_id:
+        return None
+    pending = await run_in_thread(_retrieve_checkout_session, session_id)
+    if pending is not None and pending.get("status") == "open":
+        try:
+            await run_in_thread(_expire_open_checkout_session, session_id)
+            return None
+        except BillingServiceError:  # no longer open: it just expired, or was paid in another tab
+            pending = await run_in_thread(_retrieve_checkout_session, session_id)
+    if pending is None or pending.get("status") == "expired":
+        return None
+    if pending.get("status") == "complete":
+        sub = pending.get("subscription")
+        return page("already") if not isinstance(sub, dict) or sub.get("status") in BILLED else None
+    return page("expired")  # still open after a failed expire: try again
+
+
 async def checkout(user_id: str) -> str:
     """Where the checkout link sends the browser: a Stripe Checkout Session, or a billing page state."""
     row = await _row(user_id)
@@ -134,6 +160,9 @@ async def checkout(user_id: str) -> str:
     )
     if any(s["status"] in BILLED for s in subs["data"]):
         return page("already")
+    pending_id = row.get("os_checkout_session_id")
+    if answer := await _retire_pending(pending_id):
+        return answer
     now = _now()
     bucket = now - now % 300
     # The workspace rule: the Stripe trial ends where the free trial does, stretched to Stripe's 48-hour floor
@@ -153,9 +182,27 @@ async def checkout(user_id: str) -> str:
         success_url=page("success"),
         cancel_url=page("cancelled"),
         expires_at=bucket + 300 + CHECKOUT_TTL_S,  # 30 to 35 minutes out, identical within the bucket
-        idempotency_key=_checkout_idempotency_key("spark", user_id, str(trial_end)),
+        # The earlier session is in the key: after expiring it, a retry in this bucket must get a new one.
+        idempotency_key=_checkout_idempotency_key("spark", user_id, f"{trial_end}:{pending_id}"),
         api_key=settings.STRIPE_SECRET_KEY,
     )
+    try:
+        await run_in_thread(
+            _users().update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="SET os_checkout_session_id = :new",
+            ConditionExpression=(
+                "os_checkout_session_id = :new OR "
+                + ("os_checkout_session_id = :prev" if pending_id else "attribute_not_exists(os_checkout_session_id)")
+            ),
+            ExpressionAttributeValues={":new": session["id"]} | ({":prev": pending_id} if pending_id else {}),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # Another open issued a different session meanwhile: this one is never tracked, so it must not stay payable.
+        await _retire_pending(session["id"])
+        return page("expired")
     return session["url"]
 
 

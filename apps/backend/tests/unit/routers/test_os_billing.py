@@ -75,6 +75,8 @@ class FakeStripe:
         self.calls: list[tuple[str, dict]] = []
         self.subs: dict[str, str] = {}
         self.trial_ends: dict[str, int] = {}
+        self.sessions: dict[str, dict] = {}
+        self.by_key: dict[str, str] = {}
         self.customers = 0
 
     def customer_create(self, **kw):
@@ -84,7 +86,21 @@ class FakeStripe:
 
     def checkout_create(self, **kw):
         self.calls.append(("checkout", kw))
-        return {"url": "https://checkout.stripe.test/s"}
+        sid = self.by_key.setdefault(kw["idempotency_key"], f"cs_{len(self.by_key) + 1}")  # Stripe idempotency
+        return self.sessions.setdefault(
+            sid, {"id": sid, "status": "open", "url": f"https://checkout.stripe.test/{sid}"}
+        )
+
+    def session_retrieve(self, sid, **kw):
+        if sid not in self.sessions:
+            raise stripe.InvalidRequestError("No such checkout session", "id")
+        return self.sessions[sid]
+
+    def session_expire(self, sid, **kw):
+        self.calls.append(("expire", {"id": sid}))
+        if self.sessions[sid]["status"] != "open":
+            raise stripe.InvalidRequestError("Only open sessions can be expired", "id")
+        self.sessions[sid]["status"] = "expired"
 
     def portal_create(self, **kw):
         self.calls.append(("portal", kw))
@@ -123,6 +139,8 @@ def fake(monkeypatch):
     f = FakeStripe()
     monkeypatch.setattr(stripe.Customer, "create", f.customer_create)
     monkeypatch.setattr(stripe.checkout.Session, "create", f.checkout_create)
+    monkeypatch.setattr(stripe.checkout.Session, "retrieve", f.session_retrieve)
+    monkeypatch.setattr(stripe.checkout.Session, "expire", f.session_expire)
     monkeypatch.setattr(stripe.billing_portal.Session, "create", f.portal_create)
     monkeypatch.setattr(stripe.Subscription, "retrieve", f.sub_retrieve)
     monkeypatch.setattr(stripe.Subscription, "cancel", f.sub_cancel)
@@ -257,7 +275,7 @@ async def test_link_expires_after_fifteen_minutes(ddb, clock, fake):
 async def test_checkout_creates_a_session_for_the_person(ddb, clock, fake):
     url = (await account())["checkoutUrl"]
     r = await open_link(url)
-    assert (r.status_code, r.headers["location"]) == (303, "https://checkout.stripe.test/s")
+    assert (r.status_code, r.headers["location"]) == (303, "https://checkout.stripe.test/cs_1")
     assert fake.kinds() == ["customer", "list", "checkout"]
     (_, cust), _, (_, s) = fake.calls
     assert cust["email"] == "user_a@example.com" and cust["metadata"] == {"user_id": "user_a"}
@@ -666,3 +684,47 @@ async def test_an_existing_plan_event_still_runs_the_real_workspace_handler(ddb,
     real.resolve.assert_awaited()
     assert ddb.users.scan()["Items"] == users_before
     assert fake.calls == []  # no Spark Stripe call on a workspace event
+
+
+# --- one payable Checkout Session per person ---------------------------------------------------------------
+
+
+def stored_session(ddb):
+    return ddb.users.get_item(Key={"user_id": "user_a"})["Item"].get("os_checkout_session_id")
+
+
+async def test_a_later_open_expires_the_earlier_session_and_returns_the_new_one(ddb, clock, fake):
+    url = (await account())["checkoutUrl"]
+    assert (await open_link(url)).headers["location"].endswith("/cs_1")
+    clock[0] += 600  # a later five-minute bucket, the link still valid
+    r = await open_link(url)
+    assert r.headers["location"].endswith("/cs_2")
+    assert fake.sessions["cs_1"]["status"] == "expired" and stored_session(ddb) == "cs_2"
+
+
+async def test_a_double_click_in_one_bucket_still_leaves_one_payable_session(ddb, clock, fake):
+    url = (await account())["checkoutUrl"]
+    await open_link(url)
+    r = await open_link(url)
+    assert r.headers["location"].endswith("/cs_2") and fake.sessions["cs_1"]["status"] == "expired"
+
+
+async def test_a_completed_earlier_session_answers_already(ddb, clock, fake):
+    url = (await account())["checkoutUrl"]
+    await open_link(url)
+    fake.sessions["cs_1"] |= {"status": "complete", "subscription": {"id": "sub_x", "status": "trialing"}}
+    r = await open_link(url)
+    assert r.headers["location"] == page("already") and fake.kinds().count("checkout") == 1
+
+
+async def test_an_expire_that_finds_it_already_expired_goes_on(ddb, clock, fake, monkeypatch):
+    url = (await account())["checkoutUrl"]
+    await open_link(url)
+
+    def raced(sid, **kw):  # Stripe expired it between our read and our expire
+        fake.sessions[sid]["status"] = "expired"
+        raise stripe.InvalidRequestError("Only open sessions can be expired", "id")
+
+    monkeypatch.setattr(stripe.checkout.Session, "expire", raced)
+    r = await open_link(url)
+    assert r.headers["location"].endswith("/cs_2") and stored_session(ddb) == "cs_2"

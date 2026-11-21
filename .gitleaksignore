@@ -10,3 +10,5 @@
 # Restored Mac app (#5002): public Apple API issuer id in the workflow, and a redaction-test fixture ("...MIIE...MIIF") in the Rust tests.
 e7f42a500f28163825ce557547981d47436368c5:.github/workflows/desktop-build.yml:generic-api-key:67
 e7f42a500f28163825ce557547981d47436368c5:apps/desktop/src-tauri/src/local_sessions.rs:private-key:4084
+# A made-up HMAC key in the Spark billing test from PR #5319's first commit; the test now builds a fake key at runtime.
+89303b0aca4f160394d1be6d416d2894bed529c3:apps/backend/tests/unit/routers/test_os_billing.py:generic-api-key:27

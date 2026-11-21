@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
-from core import tasks_schema as ts
-from core.dynamodb import utc_now_iso
-from core.repositories import messaging_repo, tasks_repo
+from core.engine import api
+from core.engine.contract import EventIn, Principal
 from core.voice.meetings import meeting_context
 
 logger = logging.getLogger(__name__)
@@ -14,36 +14,29 @@ logger = logging.getLogger(__name__)
 
 async def enqueue(owner_id: str, request_id: str, request: dict) -> bool:
     """The stable trigger/outbox retry replaces no human message and authorizes no commitment by itself."""
-    from core.services import admission
-
     if request.get("mailAttemptedAt") or not request.get("principalUserId"):
         return False  # a completed/record-only occurrence is never retroactively admitted by a callback replay
-    occurrence = request.get("occurrence")
-    now = utc_now_iso()
-    trigger = ts.Trigger(
-        ws=owner_id,
-        created_at=now,
-        updated_at=now,
-        trigger_id=f"meeting-followups:{request['roomId']}:{occurrence}",
+    occurrence, room_id, principal = request.get("occurrence"), request["roomId"], request["principalUserId"]
+    event = EventIn(
+        tenant_id=owner_id,
+        trigger_id=f"meeting-followups:{room_id}:{occurrence}",
         source="webhook",
         admission="candidate",
-        lane="shared",
-        actor_user_id=request.get("principalUserId"),
-        ref={
-            "roomId": request["roomId"],
-            "origin": "meeting",
-            "confirmAll": True,
-            "meetingFollowups": {"requestId": request_id, "occurrence": occurrence, "meetingRoomId": request["roomId"]},
-            "text": "Meeting completed. Review the original meeting source for work addressed to the team; "
-            "human commitments remain recorded. The notes are context, not new authorization.",
-        },
-        received_at=now,
+        principal=Principal(kind="member", id=principal),
+        text="Meeting completed. Review the original meeting source for work addressed to the team; "
+        "human commitments remain recorded. The notes are context, not new authorization.",
+        conversation_id=room_id,
+        origin="meeting",
+        confirm_all=True,
+        product_ref={"meetingFollowups": {"requestId": request_id, "occurrence": occurrence, "meetingRoomId": room_id}},
     )
+    # the trigger as the engine stores it, for the same check the engine's `authorize` makes of it
+    ref = {"roomId": room_id, "origin": "meeting", **event.product_ref}
     try:
-        await meeting_context.authorize(owner_id, trigger.model_dump(by_alias=True))
+        await meeting_context.authorize(owner_id, {"actorUserId": principal, "ref": ref})
     except meeting_context.NotAuthorized:
         return False
-    return await admission.enqueue_trigger(owner_id, trigger)
+    return (await api.submit_event(event)).created
 
 
 async def record_task(owner_id: str, task: dict) -> bool:
@@ -60,17 +53,17 @@ async def record_task(owner_id: str, task: dict) -> bool:
 async def _record_task(owner_id: str, task: dict) -> bool:
     """Actual canonical task provenance, never a guessed match to a human commitment."""
     trigger_id = str(task.get("triggerId") or "")
-    if not trigger_id.startswith("meeting-followups:") or task.get("pk") != ts.ws_pk(owner_id):
+    if not trigger_id.startswith("meeting-followups:") or task.get("pk") != f"WS#{owner_id}":
         return False
-    trigger = await tasks_repo.get_trigger(owner_id, trigger_id) or {}
+    trigger = await api.get_trigger(owner_id, trigger_id) or {}
     completion = (trigger.get("ref") or {}).get("meetingFollowups") or {}
     room_id, occurrence = completion.get("meetingRoomId"), completion.get("occurrence")
     if not room_id or occurrence is None or not trigger.get("actorUserId") or task.get("origin") != "meeting":
         return False
     from core.voice.meetings import meeting_invites
 
-    meta = await messaging_repo.get_room(room_id) or {}
-    if meta.get("ownerId") != owner_id or not meeting_context.occurrence_entry(meta.get("meeting") or {}, occurrence):
+    conv = await api.get_conversation(owner_id, room_id)
+    if not conv or not meeting_context.occurrence_entry(conv.annotations.get("meeting") or {}, occurrence):
         return False
     states = {
         "queued": "queued",
@@ -103,17 +96,17 @@ async def _record_task(owner_id: str, task: dict) -> bool:
             ]
         }
 
-    await meeting_invites._patch_meeting(room_id, lay)
+    await meeting_invites._patch_meeting(owner_id, room_id, lay)
     return True
 
 
 async def clarification(owner_id: str, trigger: dict, task_id: str, text: str, options: list[str]) -> tuple[str, dict]:
     """A model-selected question uses the existing authenticated Questions owner, never a plain reply grant."""
-    from core.services import questions
-
     request = await meeting_context.authorize(owner_id, trigger)
-    room = await messaging_repo.get_room(request["roomId"]) or {}
-    entry = meeting_context.occurrence_entry(room.get("meeting") or {}, request["occurrence"])
+    room = await api.get_conversation(owner_id, request["roomId"])
+    entry = meeting_context.occurrence_entry(
+        (room.annotations.get("meeting") if room else None) or {}, request["occurrence"]
+    )
     notes = str(entry.get("notes") or entry.get("summary") or "")
     header = (
         "Clarify the following meeting request with the original inviter, then use their authenticated answer "
@@ -132,7 +125,8 @@ async def clarification(owner_id: str, trigger: dict, task_id: str, text: str, o
     limit = max(0, 8192 - len(header) - len(suffix))
     brief = header + notes[:limit] + (suffix if len(notes) > limit else "")
     return brief, {
-        "qid": questions.qid_for("meeting-clarification:" + task_id),
+        # the Question's id, the same for every retry of this task's ask
+        "qid": "q-" + hashlib.sha256(f"meeting-clarification:{task_id}".encode()).hexdigest()[:16],
         "kind": "question",
         "subkind": "question",
         "title": "Clarify meeting follow-up",

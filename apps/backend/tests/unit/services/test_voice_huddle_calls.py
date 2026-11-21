@@ -5,6 +5,8 @@ import pytest
 from fastapi import HTTPException
 
 from core.engine import api
+from core.repositories import messaging_repo
+from core.services import messaging
 from core.voice import rooms
 from core.voice import voice_calls as vc
 
@@ -13,7 +15,7 @@ TEAM = [{"id": "ceo-1", "name": "Ada"}, {"id": "fin-1", "name": "Finance"}]
 
 async def test_huddle_start_guest_is_404():
     """The real _room_team: a shared-channel guest (room owned by another workspace) 404s."""
-    with patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_other"}, {}))):
+    with patch.object(messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_other"}, {}))):
         with pytest.raises(HTTPException) as exc:
             await rooms._room_team("org_a", "user_b", "room-1")
     assert exc.value.status_code == 404 and exc.value.detail["code"] == "room_not_found"
@@ -22,8 +24,9 @@ async def test_huddle_start_guest_is_404():
 async def test_room_team_people_only_room():
     """Live join (need_team=False) gets an empty team for a people-only room; summon still 409s."""
     with (
-        patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
-        patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": "u"}])),
+        patch.object(messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": "u"}])),
     ):
         assert (await rooms._room_team("org_a", "u", "room-1", need_team=False))[1] == []
         with pytest.raises(HTTPException) as exc:

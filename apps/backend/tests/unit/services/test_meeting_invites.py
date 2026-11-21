@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.auth import AuthContext
+from core.repositories import messaging_repo
+from core.services import messaging as engine_messaging
 from core.voice.meetings import meeting_invites
 from tests.unit.repositories.test_messaging_repo import FRIDAY, OWNER, USER_A, _member, table  # noqa: F401
 
@@ -191,13 +193,16 @@ def room(monkeypatch):
         seen = state["lines"].get(kw["idemp_sk"])
         if seen is not None:
             if seen[0] != kw["req_hash"]:
-                raise meeting_invites.messaging_repo.IdempotencyConflict("different request")
+                raise messaging_repo.IdempotencyConflict("different request")
             return {"messageId": kw["idemp_sk"]}, True
         state["lines"][kw["idemp_sk"]] = (kw["req_hash"], kw["text"])
         return {"messageId": kw["idemp_sk"]}, False
 
-    def create(**kw):
+    def create(**kw):  # the repo's create: META written, and returned; a taken id (a deleted room's) is refused
+        if (state["meta"] or {}).get("deletedAt"):
+            raise messaging_repo.MessagingRepoError("the room exists")
         state["meta"] = {"roomId": kw["room_id"], "ownerId": kw["owner_id"], **kw["extra"]}
+        return state["meta"]
 
     def patch(room_id, updates, expected_revision=None):  # the repo's CAS on the revision the caller read
         if expected_revision != state["meta"].get("revision", 0):
@@ -213,7 +218,8 @@ def room(monkeypatch):
 
     m = SimpleNamespace(
         state=state,
-        get=AsyncMock(side_effect=lambda room_id: state["meta"]),
+        # every room here is org_1's unless a test says otherwise
+        get=AsyncMock(side_effect=lambda room_id: state["meta"] and {"ownerId": "org_1", **state["meta"]}),
         create=AsyncMock(side_effect=create),
         patch=AsyncMock(side_effect=patch),
         post=AsyncMock(side_effect=post),
@@ -225,7 +231,7 @@ def room(monkeypatch):
             ]
         ),
     )
-    repo = meeting_invites.messaging_repo
+    repo = messaging_repo
     monkeypatch.setattr(repo, "get_room", m.get)
     monkeypatch.setattr(repo, "create_room", m.create)
     monkeypatch.setattr(repo, "patch_room_meta", m.patch)
@@ -243,13 +249,13 @@ def room(monkeypatch):
         {"id": ENG, "name": "Engineering"},
         {"id": HIRED, "name": "Hired"},
     ]
-    monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
-    monkeypatch.setattr(meeting_invites.messaging, "_front_agent_id", AsyncMock(return_value=CEO))
+    monkeypatch.setattr(engine_messaging, "load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr(engine_messaging, "_front_agent_id", AsyncMock(return_value=CEO))
     m.seated = AsyncMock(return_value=[{"id": a["id"]} for a in roster])  # every agent already in the room
     m.upsert = AsyncMock()
     monkeypatch.setattr(repo, "list_members", m.seated)
     monkeypatch.setattr(repo, "upsert_member", m.upsert)
-    monkeypatch.setattr(meeting_invites.messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    monkeypatch.setattr(engine_messaging, "human_display_name", AsyncMock(side_effect=lambda u: u))
     # Meetings available, Recall stubbed out: the `bots` fixture puts the real booking back.
     monkeypatch.setattr(meeting_invites.settings, "LIVEKIT_URL", "wss://lk.test")
     monkeypatch.setattr(meeting_invites.settings, "RECALL_API_KEY", "rk")
@@ -406,14 +412,14 @@ async def test_an_older_sequence_that_read_the_room_first_writes_nothing(room):
 async def test_a_stale_patch_writes_nothing(room):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     room.state["meta"]["meeting"]["sequence"] = 3
-    assert await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"sequence": 2}) is None
+    assert await meeting_invites._patch_meeting("org_1", room.state["meta"]["roomId"], {"sequence": 2}) is None
     assert room.state["meta"]["meeting"]["sequence"] == 3
 
 
 async def test_a_racing_second_creator_falls_through_to_the_update(room):
     def lost_race(**kw):
         room.state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}  # the other member's create landed
-        raise meeting_invites.messaging_repo.MessagingRepoError("room create cancelled without a durable receipt")
+        raise messaging_repo.MessagingRepoError("room create cancelled without a durable receipt")
 
     room.create.side_effect = lost_race
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
@@ -421,8 +427,8 @@ async def test_a_racing_second_creator_falls_through_to_the_update(room):
 
 
 async def test_a_cancelled_create_that_left_no_room_propagates(room):
-    room.create.side_effect = meeting_invites.messaging_repo.MessagingRepoError("cancelled, no receipt")
-    with pytest.raises(meeting_invites.messaging_repo.MessagingRepoError):
+    room.create.side_effect = messaging_repo.MessagingRepoError("cancelled, no receipt")
+    with pytest.raises(messaging_repo.MessagingRepoError):
         await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     assert _lines(room) == []
 
@@ -479,7 +485,7 @@ def test_non_invite_methods_are_none(method):
 async def test_a_cancel_for_an_archived_room_is_ignored(room):
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     room.state["meta"]["archivedAt"] = "2026-10-03T00:00:00Z"
-    room.post.side_effect = meeting_invites.messaging_repo.RoomArchived("r")  # what the real repo would do
+    room.post.side_effect = messaging_repo.RoomArchived("r")  # what the real repo would do
     cancel = GOOGLE.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
     assert await meeting_invites.handle_team_mail("org_1", _mail(cancel), TEAM) == "meeting_ignored"
     assert _lines(room) == ["Agents will join **Acme weekly sync** on Sat Oct 3, 3:00 PM EDT."]
@@ -745,7 +751,7 @@ async def test_two_first_deliveries_racing_the_room_create_book_one_bot(room, bo
                 return None if seen["n"] == 1 else room.state["meta"]
 
             room.get.side_effect = get
-            room.create.side_effect = meeting_invites.messaging_repo.MessagingRepoError("lost the create")
+            room.create.side_effect = messaging_repo.MessagingRepoError("lost the create")
             await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
         return "bot-1"
 
@@ -852,7 +858,7 @@ async def test_a_write_is_bound_to_the_revision_it_read(room):
         return room.state["meta"]
 
     room.get.side_effect = get
-    written = await meeting_invites._patch_meeting("r", {"transcriptAttachedAt": 5})
+    written = await meeting_invites._patch_meeting("org_1", "r", {"transcriptAttachedAt": 5})
     assert written == room.state["meta"]["meeting"] == {"status": "ended", "transcriptAttachedAt": 5}
     assert [c.kwargs["expected_revision"] for c in room.patch.await_args_list] == [1, 2]
 
@@ -875,7 +881,7 @@ async def test_a_function_of_the_map_is_redone_over_the_racing_write(room):
         return room.state["meta"]
 
     room.get.side_effect = get
-    written = await meeting_invites._patch_meeting("r", lambda m: {"roster": {**m["roster"], "3": "Lee"}})
+    written = await meeting_invites._patch_meeting("org_1", "r", lambda m: {"roster": {**m["roster"], "3": "Lee"}})
     assert written["roster"] == {"1": "Pat", "2": "Dan", "3": "Lee"}
 
 
@@ -890,10 +896,12 @@ async def test_a_new_meeting_and_every_written_change_nudge_the_mail_panel(room)
     nudge.side_effect = None
     nudge.reset_mock()
     room.state["meta"]["ownerId"] = "org_1"
-    await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"status": "in_call"})
+    await meeting_invites._patch_meeting("org_1", room.state["meta"]["roomId"], {"status": "in_call"})
     nudge.assert_awaited_once_with("org_1")
     nudge.reset_mock()
-    await meeting_invites._patch_meeting(room.state["meta"]["roomId"], {"status": "in_call"})  # nothing changes
+    await meeting_invites._patch_meeting(
+        "org_1", room.state["meta"]["roomId"], {"status": "in_call"}
+    )  # nothing changes
     nudge.assert_not_awaited()
 
 
@@ -1046,13 +1054,13 @@ async def test_a_re_invite_after_the_meeting_ended_is_not_a_move(room):
 
 
 async def test_lines_go_to_the_default_room_else_the_meetings_own(room):
-    default = meeting_invites.messaging.default_room_id("org_1")
+    default = engine_messaging.default_room_id("org_1")
     meeting_room = meeting_invites.store.meeting_room_id("org_1", UID)
-    rooms = {default: {"roomId": default}}
+    rooms = {default: {"roomId": default, "ownerId": "org_1"}}
     room.get.side_effect = lambda room_id: rooms.get(room_id) if room_id == default else room.state["meta"]
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     assert room.post.await_args.kwargs["room_id"] == default
-    assert room.post.await_args.kwargs["idemp_pk"] == meeting_invites.messaging_repo.room_pk(default)
+    assert room.post.await_args.kwargs["idemp_pk"] == messaging_repo.room_pk(default)
     rooms[default]["archivedAt"] = "2026-10-03T00:00:00Z"
     assert await meeting_invites.output_room("org_1", meeting_room) == meeting_room
     rooms.clear()
@@ -1089,7 +1097,7 @@ def metrics(monkeypatch):
 async def test_advance_books_the_next_occurrence(room, now, metrics):
     _ended_series(room)
     now["t"] = _epoch(2026, 11, 7, 15, 40)
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "scheduled"
     assert meeting["startAt"] == _epoch(2026, 11, 14, 15, 0) and meeting["endAt"] == _epoch(2026, 11, 14, 15, 30)
@@ -1097,21 +1105,21 @@ async def test_advance_books_the_next_occurrence(room, now, metrics):
     owner, room_id, written, prior = room.sync.await_args.args
     assert (owner, room_id, written) == ("org_1", "r", meeting) and prior["recallBotId"] == 1
     assert metrics == [("meeting.advance", {"dimensions": {"outcome": "advanced"}})]
-    await meeting_invites.advance("r")  # a second trigger: the next occurrence is not over yet
+    await meeting_invites.advance("org_1", "r")  # a second trigger: the next occurrence is not over yet
     assert room.sync.await_count == 1 and metrics[-1][1]["dimensions"]["outcome"] == "not_due"
 
 
 async def test_advance_of_an_early_end_skips_the_current_occurrence(room, now, metrics):
     _ended_series(room)
     now["t"] = _epoch(2026, 11, 7, 15, 5)  # the idle leave ended it 25 minutes early
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     assert room.state["meta"]["meeting"]["startAt"] == _epoch(2026, 11, 14, 15, 0)
 
 
 async def test_advance_at_the_end_of_a_series(room, now, metrics):
     _ended_series(room, recurrence={**meeting_invites.parse(SERIES).recurrence, "rule": "FREQ=WEEKLY;COUNT=6"})
     now["t"] = _epoch(2026, 11, 7, 15, 40)
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     assert room.state["meta"]["meeting"]["status"] == "ended"
     room.sync.assert_not_awaited()
     assert metrics == [("meeting.advance", {"dimensions": {"outcome": "series_over"}})]
@@ -1122,21 +1130,21 @@ async def test_advance_retries_a_busy_lease_then_gives_up(room, now, metrics, mo
     sleep = AsyncMock()
     monkeypatch.setattr(meeting_invites.asyncio, "sleep", sleep)
     room.claim.return_value = None
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     assert room.claim.await_count == 4 and [c.args for c in sleep.await_args_list] == [(2,)] * 3
     assert room.state["meta"]["meeting"]["status"] == "ended"
     assert metrics == [("meeting.advance", {"dimensions": {"outcome": "busy"}})]
     room.claim.side_effect = [None, "tok"]  # held once, then free
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     assert room.state["meta"]["meeting"]["status"] == "scheduled"
 
 
 async def test_advance_leaves_one_offs_and_live_meetings_alone(room, metrics):
     _ended_series(room, recurrence=None)
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     room.claim.assert_not_awaited()  # a one-off takes no lease
     _ended_series(room, status="in_call")
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     room.sync.assert_not_awaited()
     assert [m[1]["dimensions"]["outcome"] for m in metrics] == ["not_series", "not_due"]
 
@@ -1144,12 +1152,12 @@ async def test_advance_leaves_one_offs_and_live_meetings_alone(room, metrics):
 async def test_advance_never_raises(room, metrics):
     _ended_series(room)
     room.get.side_effect = RuntimeError("ddb")
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     assert metrics == [("meeting.advance", {"dimensions": {"outcome": "error"}})]
 
 
 async def test_a_hidden_room_is_in_no_room_list_but_an_old_meeting_room_stays(table, monkeypatch):  # noqa: F811
-    repo, messaging = meeting_invites.messaging_repo, meeting_invites.messaging
+    repo, messaging = messaging_repo, engine_messaging
     monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
     members = [_member("human", USER_A, "owner")]
     for client, extra in (("hidden", {"meeting": {"uid": "a"}, "hidden": True}), ("old", {"meeting": {"uid": "b"}})):
@@ -1173,7 +1181,7 @@ async def test_a_hidden_room_is_in_no_room_list_but_an_old_meeting_room_stays(ta
 
 async def test_the_bridges_late_answer_in_a_hidden_room_lands_in_the_default_room_once(table, monkeypatch):  # noqa: F811
     """The exact body bridge/turn.py _post_late_call_answer POSTs to /internal/messaging/agent-messages."""
-    repo, messaging = meeting_invites.messaging_repo, meeting_invites.messaging
+    repo, messaging = messaging_repo, engine_messaging
     monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": FRIDAY, "name": "Friday"}]))
     monkeypatch.setattr(messaging, "_emit_reply_telemetry", AsyncMock())
@@ -1269,7 +1277,7 @@ async def test_a_series_reinvite_during_its_call_moves_nothing(room, bots, now):
     assert not any("moved" in line for line in _lines(room))
     # The call ends: the next occurrence still books.
     room.state["meta"]["meeting"]["status"] = "ended"
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     assert room.state["meta"]["meeting"]["startAt"] == _epoch(2026, 11, 14, 15, 0)
     bots.create.assert_awaited_once()
 
@@ -1290,7 +1298,7 @@ async def test_advance_retries_a_failed_booking_then_succeeds(room, bots, now, m
     _series_meeting(room, "ended", inCallAt=1, lastBotStatus="done")
     now["t"] = _epoch(2026, 11, 7, 15, 40)
     bots.create.side_effect = [meeting_invites.meeting_bots.RecallError("507"), "bot-2"]
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "bot_created" and meeting["recallBotId"] == "bot-2"
     assert meeting["startAt"] == _epoch(2026, 11, 14, 15, 0)  # the retry kept the date, not skipped a week
@@ -1303,7 +1311,7 @@ async def test_advance_that_never_books_ends_bot_failed_with_a_line(room, bots, 
     _series_meeting(room, "ended", inCallAt=1, lastBotStatus="done")
     now["t"] = _epoch(2026, 11, 7, 15, 40)
     bots.create.side_effect = meeting_invites.MeetingBusy("r")  # a Recall 409 every time
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     meeting = room.state["meta"]["meeting"]
     assert meeting["status"] == "bot_failed" and "recallBotId" not in meeting
     assert bots.create.await_count == 3
@@ -1327,7 +1335,7 @@ async def test_advance_seats_an_agent_hired_since_the_room_was_made(room, now, m
     _ended_series(room)
     room.seated.return_value = [{"id": CEO}, {"id": ENG}]
     now["t"] = _epoch(2026, 11, 7, 15, 40)
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     room.upsert.assert_awaited_once()
     member = room.upsert.await_args.kwargs["member"]
     assert (member["id"], member["listenMode"], member["role"]) == (HIRED, "mentions", "member")
@@ -1405,7 +1413,7 @@ async def test_a_same_occurrence_booking_retry_adopts_the_bot_its_kept_nonce_boo
     room.state["meta"]["meeting"].update(ticketNonce="nonce-1", botClaimAt=1, botError="timeout")
     now["t"] = _epoch(2026, 11, 7, 12, 0)
     bots.find.return_value = "bot-9"  # the timed-out create did book it
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     bots.find.assert_awaited_once_with("r", "nonce-1")
     bots.create.assert_not_awaited()
     meeting = room.state["meta"]["meeting"]
@@ -1432,7 +1440,7 @@ async def test_a_re_dated_occurrence_keeps_its_transcript_in_history(room, now, 
     old = [{"startAt": 1, "transcriptId": "t0", "transcriptRoomId": "d"}] * 30
     _ended_series(room, transcriptId="t1", transcriptRoomId="default-room", history=old)
     now["t"] = _epoch(2026, 11, 7, 15, 40)
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     history = room.state["meta"]["meeting"]["history"]
     assert len(history) == 30
     assert history[0] == {
@@ -1472,7 +1480,7 @@ async def test_history_keeps_each_occurrences_end_notes_and_unsaid_but_unsaid_on
         history=old,
     )
     now["t"] = _epoch(2026, 11, 7, 15, 40)
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     history = room.state["meta"]["meeting"]["history"]
     assert history[0]["endedAt"] == 99 and history[0]["notesRunId"] == "run-1"
     assert history[0]["notes"] == "Meeting notes" and history[0]["decisions"] == ["Ship Friday"]
@@ -1488,7 +1496,7 @@ async def test_an_occurrence_without_a_transcript_adds_no_history(room, now, met
     _ended_series(room)
     room.state["meta"]["meeting"].pop("transcriptId")
     now["t"] = _epoch(2026, 11, 7, 15, 40)
-    await meeting_invites.advance("r")
+    await meeting_invites.advance("org_1", "r")
     assert "history" not in room.state["meta"]["meeting"]
 
 
@@ -1583,7 +1591,7 @@ async def test_a_transcript_written_after_the_callers_read_still_lands_in_histor
 
 
 async def test_a_late_answer_from_an_agent_outside_the_default_room_is_surfaced_there(table, monkeypatch):  # noqa: F811
-    repo, messaging = meeting_invites.messaging_repo, meeting_invites.messaging
+    repo, messaging = messaging_repo, engine_messaging
     monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": FRIDAY, "name": "Friday"}]))
     human = [_member("human", USER_A, "owner")]
@@ -1703,11 +1711,13 @@ async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_not
         {"kind": "agent", "id": "ceo-agent"},
         {"kind": "agent", "id": "forge"},
     ]
-    monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(return_value=None))  # no default
-    monkeypatch.setattr(meeting_invites.messaging_repo, "list_members", AsyncMock(return_value=members))
+    # no default room; the meeting's room and the DM are the workspace's
+    rooms = {"meeting-room": {"ownerId": "org_1"}, "dm-1": {"ownerId": "org_1"}}
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=rooms.get))
+    monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(return_value=members))
     front = AsyncMock(return_value="ceo-agent")
     monkeypatch.setattr(task_conversation, "front_agent_id", front)
-    monkeypatch.setattr(meeting_invites.messaging, "create_room", create_room)
+    monkeypatch.setattr(engine_messaging, "create_room", create_room)
     assert await meeting_invites.output_room("org_1", "meeting-room") == "dm-1"
     front.assert_awaited_with("org_1", room_id="meeting-room")  # the meeting's own front agent writes its notes
     ((auth, request),) = created
@@ -1718,9 +1728,9 @@ async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_not
     assert created[0][1].client_room_id == created[1][1].client_room_id
     # A DM that cannot be opened leaves the line in the meeting's own room: nothing is lost.
     monkeypatch.setattr(
-        meeting_invites.messaging,
+        engine_messaging,
         "create_room",
-        AsyncMock(side_effect=meeting_invites.messaging.ApiProblem("ROOM_FORBIDDEN", "no")),
+        AsyncMock(side_effect=engine_messaging.ApiProblem("ROOM_FORBIDDEN", "no")),
     )
     assert await meeting_invites.output_room("org_1", "meeting-room") == "meeting-room"
 
@@ -1761,7 +1771,7 @@ async def test_history_byte_budget_bounds_long_notes_actions_and_unsaid_on_every
         for n in range(30)
     ]
     original = copy.deepcopy(history)
-    await meeting_invites._patch_meeting("r", {"history": history})
+    await meeting_invites._patch_meeting("org_1", "r", {"history": history})
     kept = room.state["meta"]["meeting"]["history"]
     assert len(json.dumps(kept, ensure_ascii=False).encode()) <= 200 * 1024
     assert 1 <= len(kept) < 30
@@ -1771,7 +1781,7 @@ async def test_history_byte_budget_bounds_long_notes_actions_and_unsaid_on_every
     assert history == original  # retention never edits the caller's canonical payload in place
     # A later notes callback grows an archived occurrence after the original retention pass.
     await meeting_invites._patch_meeting(
-        "r", lambda m: {"history": [{**h, "notes": "n" * 90000} for h in m["history"]]}
+        "org_1", "r", lambda m: {"history": [{**h, "notes": "n" * 90000} for h in m["history"]]}
     )
     assert len(json.dumps(room.state["meta"]["meeting"]["history"], ensure_ascii=False).encode()) <= 200 * 1024
 
@@ -1788,7 +1798,7 @@ async def test_oversized_newest_history_keeps_canonical_refs_with_explicit_omiss
         "followUps": [{"id": "a1", "text": "Pat: book venue", "status": "recorded"}],
     }
     original = copy.deepcopy(entry)
-    await meeting_invites._patch_meeting("r", {"history": [entry]})
+    await meeting_invites._patch_meeting("org_1", "r", {"history": [entry]})
     [kept] = room.state["meta"]["meeting"]["history"]
     assert kept["transcriptId"] == "transcript" and kept["notesRunId"] == "canonical-notes-run"
     assert kept["detailsOmitted"] is True
@@ -1800,8 +1810,8 @@ async def test_oversized_newest_history_keeps_canonical_refs_with_explicit_omiss
 async def test_new_meeting_uses_selected_uuid_for_reserved_front_handle(room, monkeypatch):
     # An unrelated worker can have the same edited display name; it cannot take the front-door alias.
     roster = [{"id": CEO, "name": "Lightbulb"}, {"id": ENG, "name": "Lightbulb"}]
-    monkeypatch.setattr(meeting_invites.messaging, "load_agent_roster", AsyncMock(return_value=roster))
-    monkeypatch.setattr(meeting_invites.messaging, "_front_agent_id", AsyncMock(return_value=ENG))
+    monkeypatch.setattr(engine_messaging, "load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr(engine_messaging, "_front_agent_id", AsyncMock(return_value=ENG))
     invite = meeting_invites.parse(GOOGLE)
     assert invite is not None
     await meeting_invites._create_room("org_1", "room-front", invite, "user_p", {"status": "scheduled"})
@@ -1819,11 +1829,12 @@ def _deleted(room):
 
 
 async def test_patch_meeting_on_deleted_room_writes_nothing(room):
-    """The stored map comes back unchanged, so no caller dereferences None; one that would act opts into None."""
+    """A gone room has no record to read: {} comes back, so no caller dereferences None; one that would act opts
+    into None."""
     room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 1, "meeting": {"status": "scheduled"}}
     _deleted(room)
-    assert await meeting_invites._patch_meeting("r", {"status": "ended"}) == {"status": "scheduled"}
-    assert await meeting_invites._patch_meeting("r", {"status": "ended"}, stop_if_gone=True) is None
+    assert await meeting_invites._patch_meeting("org_1", "r", {"status": "ended"}) == {}
+    assert await meeting_invites._patch_meeting("org_1", "r", {"status": "ended"}, stop_if_gone=True) is None
     room.patch.assert_not_awaited()
     assert room.state["meta"]["meeting"] == {"status": "scheduled"}
 
@@ -1843,8 +1854,8 @@ async def test_advance_on_deleted_room_is_quiet(room, now, metrics):
     _ended_series(room)
     _deleted(room)
     now["t"] = _epoch(2026, 11, 7, 15, 40)
-    await meeting_invites.advance("r")
-    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "not_due"}})]  # not "error"
+    await meeting_invites.advance("org_1", "r")
+    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "not_series"}})]  # not "error": no meeting
     room.sync.assert_not_awaited()
 
 
@@ -1854,7 +1865,7 @@ async def test_team_mail_for_room_deleted_mid_flight_is_acknowledged(room, bots,
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     lines, before = len(_lines(room)), dict(room.state["meta"]["meeting"])
     room.accept.reset_mock()
-    monkeypatch.setattr(meeting_invites.api, "_owned", AsyncMock(side_effect=meeting_invites.api._not_found()))
+    monkeypatch.setattr(meeting_invites.api, "annotate", AsyncMock(side_effect=meeting_invites.api._not_found()))
     assert await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM) == "meeting_stale"
     assert room.state["meta"]["meeting"] == before and len(_lines(room)) == lines
     bots.create.assert_awaited_once()  # the first delivery's bot only

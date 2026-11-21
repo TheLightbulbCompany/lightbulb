@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from main import app  # noqa: E402
 from routers import meet_audio as mod  # noqa: E402
+from core.repositories import messaging_repo
 
 lk = mod.livekit_huddles
 ROOM = "11111111-1111-4111-8111-111111111111"
@@ -37,7 +38,9 @@ def env():
     with (
         patch.object(lk.settings, "LIVEKIT_API_SECRET", "s" * 32),
         patch.object(
-            mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: {"meeting": meeting} if r == ROOM else None)
+            messaging_repo,
+            "get_room",
+            AsyncMock(side_effect=lambda r: {"ownerId": "org_a", "meeting": meeting} if r == ROOM else None),
         ),
         patch.object(mod.meet_bridge, "MeetBridge", FakeBridge),
     ):
@@ -88,3 +91,11 @@ def test_bad_tickets_are_refused_before_a_bridge(env):
     del meeting["audio"]  # the page publishes the mixed stream: never the bridge beside it
     assert _refused(client, _ticket()) == 1008
     assert FakeBridge.built == []
+
+
+def test_a_deleted_meeting_rooms_socket_is_refused_as_any_bad_ticket(env):
+    client, meeting = env
+    gone = {"ownerId": "org_a", "meeting": meeting, "deletedAt": "2026-11-01T00:00:00Z"}
+    with patch.object(messaging_repo, "get_room", AsyncMock(return_value=gone)):
+        assert _refused(client, _ticket()) == 1008
+    assert not FakeBridge.built

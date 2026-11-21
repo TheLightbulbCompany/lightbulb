@@ -150,7 +150,7 @@ async def test_removing_the_member_mid_call_ends_owner_mode(client, router_seat,
                                        live_events=[])  # fmt: skip
     sent = AsyncMock()
     with (
-        patch.object(voice_phone.api, "agent_lines", AsyncMock(return_value={"messages": [{"id": "x"}], "after": 9})),
+        patch.object(voice_phone.api, "_agent_lines", AsyncMock(return_value={"messages": [{"id": "x"}], "after": 9})),
         patch.object(messaging, "create_human_message", sent),
     ):
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/events", json={"after": 5}, headers=W)
@@ -198,6 +198,6 @@ async def test_the_right_pin_flips_the_call_and_the_next_line_is_the_members_own
     assert (auth.user_id, auth.org_id, room) == ("user_owner", "org_1", DM)
     assert request.text == "What's on my calendar today?" and sent.await_args.kwargs == {"via": "voice", "wake": True}
     enq.assert_not_awaited()  # no caller trigger
-    with patch.object(voice_phone.api, "agent_lines", AsyncMock(return_value={"messages": [], "after": 7})) as lines:
+    with patch.object(voice_phone.api, "_agent_lines", AsyncMock(return_value={"messages": [], "after": 7})) as lines:
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/events", json={"after": 5}, headers=W)
-    assert r.json() == {"messages": [], "after": 7} and lines.await_args.args == (DM, 5)
+    assert r.json() == {"messages": [], "after": 7} and lines.await_args.args == ("org_1", DM, 5)

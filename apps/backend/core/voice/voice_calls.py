@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
+from datetime import UTC, datetime
 
 import httpx
 from botocore.exceptions import ClientError
@@ -19,11 +21,12 @@ from core.billing import metronome_client, voice_billing
 from core.billing import metronome_fast_gate
 from core.config import settings
 from core.dynamodb import get_table, messaging_table, run_in_thread
+from core.engine import api
 from core.engine.contract import VOICE_NOTE_TEXT_MAX
 from core.observability.metrics import put_metric
-from core.repositories import container_repo, messaging_repo
+from core.repositories import container_repo
 from core.voice import store
-from core.services import hermes_profiles, messaging
+from core.services import hermes_profiles
 from core.voice import livekit_huddles
 from core.services.live_events import get_live_event_publisher
 
@@ -255,19 +258,22 @@ async def send_voice_notices(owner_id: str, notices: dict[str, dict]) -> None:
         open_rooms = {r.get("roomId") for r in await _open_windows(owner_id, int(time.time()))}
         for room_id, payload in notices.items():
             if room_id in open_rooms:
-                await livekit_huddles.send_frames(room_id, [{"type": "voice.notice", "payload": payload}])
+                await livekit_huddles.send_frames(owner_id, room_id, [{"type": "voice.notice", "payload": payload}])
     except Exception:  # noqa: BLE001 -- the change already landed; a notice is courtesy
         logger.warning("voice notice not sent owner=%s", owner_id, exc_info=True)
 
 
 async def send_note_saved(owner_id: str, agent_id: str, name: str | None, text: str, by: str | None) -> None:
+    """One notice in every open Live window's room the agent is in."""
     try:
-        rooms = await messaging_repo.list_rooms_for_member(owner_id, "agent", agent_id)
+        windows = {r.get("roomId") for r in await _open_windows(owner_id, int(time.time()))}
+        rooms = await asyncio.gather(*(api.get_conversation(owner_id, r, with_members=True) for r in windows))
     except Exception:  # noqa: BLE001
         logger.warning("voice note notice: rooms unavailable owner=%s", owner_id, exc_info=True)
         return
     payload = {"kind": "voice_note_saved", "agentId": agent_id, "name": name, "text": text, "by": by}
-    await send_voice_notices(owner_id, {e["meta"]["roomId"]: payload for e in rooms})
+    seated = [c for c in rooms if c and any(m.get("kind") == "agent" and m["id"] == agent_id for m in c.members)]
+    await send_voice_notices(owner_id, {c.conversation_id: payload for c in seated})
 
 
 async def send_renamed_notices(
@@ -316,10 +322,11 @@ async def edit_voice_profile(
     if not run or run.get("agentId") != agent_id:
         raise _problem(404, code="voice_run_not_found")
     speaker = run.get("speakerUserId")
-    member = await messaging_repo.get_member(run["roomId"], "human", speaker) if speaker else None
-    if not member or messaging_repo.member_home(member, owner_id) != owner_id:
+    room = await api.get_conversation(owner_id, run["roomId"], with_members=True) if speaker else None
+    member = next((m for m in room.members if m.get("kind") == "human" and m["id"] == speaker), None) if room else None
+    if not member or (member.get("homeOwnerId") or owner_id) != owner_id:
         raise _problem(403, code="not_a_member")  # a guest of a shared room cannot rename our agents
-    roster = await messaging.load_agent_roster(owner_id)
+    roster = await api.get_roster(owner_id)
     row = next((r for r in roster if r["id"] == agent_id), None)
     if row is None:
         raise _problem(404, code="voice_run_not_found")
@@ -391,7 +398,7 @@ async def _worker_gone(call: dict, now: int) -> bool:
     if not livekit_huddles.configured():
         return False
     try:
-        if await livekit_huddles.has_ceo(call["roomId"]):
+        if await livekit_huddles.has_ceo(call["ownerId"], call["roomId"]):
             return False
     except Exception:  # noqa: BLE001 -- LiveKit unreachable: leave it to the deadline
         logger.info("huddle sweep: LiveKit check failed call=%s", call.get("callId"), exc_info=True)
@@ -404,11 +411,17 @@ async def _publish_huddle_presence(room_id: str) -> None:
     try:
         user_ids = await livekit_huddles.participants(room_id)
         await get_live_event_publisher().publish_room(
-            room_id,
-            messaging.make_live_event("room.huddle.changed", {"roomId": room_id, "userIds": user_ids}, room_id=room_id),
+            room_id, room_event("room.huddle.changed", {"roomId": room_id, "userIds": user_ids}, room_id)
         )
     except Exception:  # noqa: BLE001 -- the marker is cosmetic
         logger.info("huddle presence publish failed room=%s", room_id, exc_info=True)
+
+
+def room_event(event_type: str, payload: dict, room_id: str) -> dict:
+    """A live event for the room's members, in the engine's wire shape (`messaging.make_live_event`)."""
+    at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return {"schemaVersion": 1, "eventId": str(uuid.uuid4()), "type": event_type, "occurredAt": at,
+            "roomId": room_id, "payload": payload}  # fmt: skip
 
 
 PHONE_STALE_S = 25 * 60  # the worker's 20 min cap plus grace: a call still live past this lost its `end`

@@ -10,6 +10,7 @@ from moto import mock_aws
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.voice import voice_calls as vc  # noqa: E402
 from routers import meetings  # noqa: E402
+from core.repositories import messaging_repo
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 
@@ -18,7 +19,7 @@ async def test_presence_is_durably_admitted_and_speech_keeps_credit_accounting(m
     # Presence: 1800 seconds is durably admitted for later delivery, never ingested inline.
     meta = {"roomId": ROOM, "ownerId": "org_a", "meeting": {"status": "bot_created", "recallBotId": "bot-1"}}
 
-    async def patch_meeting(room_id, fields, drop=()):
+    async def patch_meeting(owner_id, room_id, fields, drop=()):
         meta["meeting"] = {**meta["meeting"], **fields}
         return meta["meeting"]
 
@@ -26,7 +27,7 @@ async def test_presence_is_durably_admitted_and_speech_keeps_credit_accounting(m
     metronome = MagicMock(ingest=AsyncMock())
     monkeypatch.setattr(vc, "_metronome", MagicMock(return_value=metronome))
     with (
-        patch.object(meetings.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
+        patch.object(messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
         patch.object(meetings.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting)),
         patch.object(meetings.meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="t")),
         patch.object(meetings.meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock()),

@@ -149,7 +149,9 @@ async def _context(ask: ContextAsk) -> ContextAnswer:
     if ask.purpose == "clarification":
         return await _clarification(ask)
     if ask.purpose == "result_line":  # a meeting's thread that made something: its link here and in the Meet's chat
-        return ContextAnswer(text=await records.with_link(ask.conversation_id, ask.task, ask.message["text"]))
+        return ContextAnswer(
+            text=await records.with_link(ask.tenant_id, ask.conversation_id, ask.task, ask.message["text"])
+        )
     if ask.purpose == "admit":
         return _admit(ask)
     if ask.purpose == "post_target":

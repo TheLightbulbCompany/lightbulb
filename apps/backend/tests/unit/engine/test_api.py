@@ -484,19 +484,20 @@ async def test_start_task_trigger_and_task_ids(tables):
     meeting_notes, tid, title, meeting = _notes_args()
     await _room("out-room", "channel")
     task_id = ts.router_task_id(tid, 0, 0)
-    await admission.enqueue_trigger(
-        WS, meeting_notes._notes_trigger(WS, tid, task_id, title, FRONT, OWNER, meeting), room_id="out-room"
-    )
-    base = await _stored_trigger(tid)
-    _drop_trigger(tid)
-    out = await api.start_task(StartIn(
+    start = StartIn(
         tenant_id=WS, principal=Principal(kind="member", id=OWNER), conversation_id="out-room", trigger_id=tid,
         source="webhook", lane="shared", title=f"Meeting notes: {title}"[:200],
         brief=meeting_notes._notes_brief(title, meeting), specialist=FRONT, ack=f"Writing the notes for {title}.",
         confirm_all=True, product_ref={"meetingNotes": {"requestId": tid}},
-    ))  # fmt: skip
+    )  # fmt: skip
+    assert meeting_notes._notes_start(WS, tid, "out-room", title, FRONT, OWNER, meeting) == start
+    out = await api.start_task(start)
     assert (out.task_id, out.created) == (task_id, True)
-    assert await _stored_trigger(tid) == base
+    assert out.task_id == api.start_task_id(tid)
+    ref = (await tasks_repo.get_trigger(WS, tid))["ref"]
+    assert (ref["deliverRoomId"], ref["taskId"], ref["meetingNotes"], ref["confirmAll"]) == (
+        "out-room", task_id, {"requestId": tid}, True,
+    )  # fmt: skip
 
     ask = {"qid": "q-call", "kind": "question"}
     out = await api.start_task(StartIn(
@@ -643,7 +644,7 @@ async def test_said_answer_refused_by_a_product_hook_is_a_message(dm, monkeypatc
     await _agent_line(DM, "Which day?", "q-line", {"kind": "question", "taskRefs": [{"taskId": TASK, "qid": "q-1"}]})
     monkeypatch.setattr(api, "submit_answer", AsyncMock(side_effect=HTTPException(404, "call_not_found")))
     ref = QuestionRef(task_id=TASK, qid="q-1")
-    assert await api.answer_said_question(WS, DM, OWNER, ref, "Tuesday.", "k") is False
+    assert await api._answer_said_question(WS, DM, OWNER, ref, "Tuesday.", "k") is False
     out = await api.append_line(_member_line("voice-turn:run-3", "Tuesday.", ref))
     assert out.answered is False and len(_rows(dm, "WORK#ADMIT#")) == 1  # the line woke the Router
 
@@ -947,8 +948,9 @@ async def test_open_conversation_refuses_another_tenants_conversation(tables, fr
     req = OpenIn(
         tenant_id=OTHER, conversation_id=CALL, client_key="c:x", kind="call", creator=Who(kind="member", id=OWNER)
     )
-    with pytest.raises(messaging_repo.MessagingRepoError):
+    with pytest.raises(EngineError) as refused:
         await engine.open_conversation(req)
+    assert refused.value.status == 404
 
 
 async def test_open_conversation_without_a_front_agent_still_opens(tables, monkeypatch):
@@ -1046,3 +1048,99 @@ async def test_a_call_room_cannot_be_deleted(tables, kind):
         await messaging.delete_room(AuthContext(user_id=OWNER, org_id=WS, org_role="org:admin"), room)
     assert e.value.error.code == "ROOM_NOT_DELETABLE"
     assert not (await messaging_repo.get_room(room)).get("deletedAt")
+
+
+# --- Meetings' operations -------------------------------------------------------------------------------------------
+
+ENG = "e0000000-0000-4000-8000-000000000002"
+MEET = "f0000000-0000-4000-8000-000000000001"
+
+
+@pytest.fixture
+def roster(monkeypatch):
+    agents = [{"id": FRONT, "name": "Lightbulb"}, {"id": ENG, "name": "Engineering"}]
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=agents))
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=FRONT))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Sam"))
+    return agents
+
+
+def _meeting_open(**over):
+    return OpenIn(**{"tenant_id": WS, "conversation_id": MEET, "client_key": "meeting:uid-1", "kind": "channel",
+                     "name": "Weekly", "creator": Who(kind="member", id=OWNER), "hidden": True,
+                     "annotations": {"meeting": {"uid": "uid-1"}}, **over})  # fmt: skip
+
+
+async def test_a_channel_seats_the_creator_and_every_agent_on_mentions(tables, roster):
+    conv = await engine.open_conversation(_meeting_open())
+    assert (conv.kind, conv.front_agent_id, conv.annotations) == ("channel", FRONT, {"meeting": {"uid": "uid-1"}})
+    members = {m["id"]: m for m in await messaging_repo.list_members(MEET)}
+    assert (members[OWNER]["role"], members[OWNER]["displayName"]) == ("owner", "Sam")
+    assert {(m["mentionHandle"], m["listenMode"]) for k, m in members.items() if k != OWNER} == {
+        ("lightbulb", "mentions"), ("engineering", "mentions"),
+    }  # fmt: skip
+    assert (await messaging_repo.get_room(MEET))["hidden"] is True
+    again = await engine.open_conversation(_meeting_open(name="Renamed", annotations={}))  # a replay
+    assert again.annotations == {"meeting": {"uid": "uid-1"}}
+
+
+async def test_a_deleted_channels_id_is_not_found(tables, roster):
+    await engine.open_conversation(_meeting_open())
+    meta = await messaging_repo.get_room(MEET)
+    await messaging_repo.delete_room(meta=meta, deleted_by=OWNER, new_delivery_key="k2", live_events=[])
+    with pytest.raises(EngineError) as gone:
+        await engine.open_conversation(_meeting_open())
+    assert gone.value.status == 404
+    assert await engine.get_conversation(WS, MEET) is None
+
+
+async def test_seat_roster_seats_only_the_agents_not_yet_in(tables, roster):
+    await _room(MEET, "channel", members=[_human(OWNER), _agent()])
+    await engine.seat_roster(WS, MEET)
+    assert {m["id"] for m in await messaging_repo.list_members(MEET)} == {OWNER, FRONT, ENG}
+    with pytest.raises(EngineError):
+        await engine.seat_roster(OTHER, MEET)
+
+
+async def test_a_notice_line_is_the_platforms_and_a_retry_is_the_first(tables):
+    from core.engine.contract import LineIn
+
+    await _room(MEET, "channel")
+    line = LineIn(tenant_id=WS, conversation_id=MEET, principal=Who(kind="notice", id="lightbulb"),
+                  text="**Weekly** moved.", idempotency_key="meeting:uid-1:1:x")  # fmt: skip
+    first = await engine.append_line(line)
+    again = await engine.append_line(line.model_copy(update={"text": "reworded"}))
+    assert again.message_id == first.message_id
+    [row] = await messaging_repo.list_messages_before(MEET, 10**19, 10)
+    assert (row["author"]["kind"], row["text"]) == ("system", "**Weekly** moved.")
+    await messaging_repo.patch_room_meta(MEET, {"archivedAt": "2026-11-01T00:00:00Z"})
+    with pytest.raises(EngineError) as refused:
+        await engine.append_line(line.model_copy(update={"idempotency_key": "k2"}))
+    assert refused.value.status == 409
+    with pytest.raises(EngineError):
+        await engine.append_line(line.model_copy(update={"tenant_id": OTHER}))
+
+
+async def test_get_conversation_as_a_member_answers_as_the_room_door(tables):
+    await _room(MEET, "channel")
+    conv = await engine.get_conversation(WS, MEET, with_members=True, member=OWNER)
+    assert conv.conversation_id == MEET and {m["id"] for m in conv.members} == {OWNER, FRONT}
+    with pytest.raises(EngineError) as no:
+        await engine.get_conversation(WS, MEET, member="user_stranger")
+    assert no.value.status in (403, 404) and no.value.detail["code"] in ("ROOM_FORBIDDEN", "ROOM_NOT_FOUND")
+    await messaging_repo.patch_room_meta(MEET, {"archivedAt": "2026-11-01T00:00:00Z"})
+    assert (await engine.get_conversation(WS, MEET)).archived is True
+
+
+async def test_get_line_and_conversation_tasks_are_the_tenants_only(tables):
+    await _room(CALL, "call")
+    msg = await _agent_line(CALL, "Hi.", "IDEMP#AGENT#r1")
+    assert (await engine.get_line(WS, CALL, msg["messageId"]))["text"] == "Hi."
+    assert await engine.list_conversation_tasks(WS, CALL) == []
+    for op in (engine.get_line(OTHER, CALL, msg["messageId"]), engine.list_conversation_tasks(OTHER, CALL)):
+        with pytest.raises(EngineError):
+            await op
+
+
+def test_start_task_id_is_the_scripted_starts_task():
+    assert engine.start_task_id("meeting-notes:r:1") == ts.router_task_id("meeting-notes:r:1", 0, 0)

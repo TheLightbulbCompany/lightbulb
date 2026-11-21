@@ -6,6 +6,7 @@ import pytest
 from livekit import api
 
 from core.voice import livekit_huddles as lh
+from core.repositories import messaging_repo
 
 
 class FakeAPI:
@@ -65,7 +66,7 @@ def cfg(monkeypatch):
     async def get_room(room_id):
         return rooms.get(room_id)
 
-    monkeypatch.setattr(lh.messaging_repo, "get_room", get_room)
+    monkeypatch.setattr(messaging_repo, "get_room", get_room)
     return rooms
 
 
@@ -85,10 +86,10 @@ def test_mint_token_claims():
 
 async def test_has_ceo_and_participants(monkeypatch):
     fake(monkeypatch, identities=["u1", "agent-ceo"])
-    assert await lh.has_ceo("r1") is True
+    assert await lh.has_ceo("org_1", "r1") is True
     assert await lh.participants("r1") == ["u1"]
     fake(monkeypatch, identities=["u1"])
-    assert await lh.has_ceo("r1") is False
+    assert await lh.has_ceo("org_1", "r1") is False
 
 
 @pytest.mark.parametrize(
@@ -97,20 +98,20 @@ async def test_has_ceo_and_participants(monkeypatch):
 )
 async def test_frames_and_worker_check_follow_an_in_call_meeting(monkeypatch, cfg, meeting, room):
     if meeting:
-        cfg["r1"] = {"meeting": meeting}
+        cfg["r1"] = {"ownerId": "org_1", "meeting": meeting}
     f = fake(monkeypatch, identities=["agent-ceo"])
-    await lh.send_frames("r1", [{"t": 1}])
-    assert await lh.has_ceo("r1") is True
+    await lh.send_frames("org_1", "r1", [{"t": 1}])
+    assert await lh.has_ceo("org_1", "r1") is True
     assert [req.room for _, req in f.calls] == [room, room]
     # The Live join's own check and the Live roster never move to the meeting's room.
-    await lh.has_ceo("r1", live=True)
+    await lh.has_ceo("org_1", "r1", live=True)
     await lh.participants("r1")
     assert [req.room for _, req in f.calls[2:]] == ["huddle-dev-r1", "huddle-dev-r1"]
 
 
 async def test_missing_room_is_empty(monkeypatch):
     fake(monkeypatch, list_error=api.TwirpError("not_found", "no room", status=404))
-    assert await lh.has_ceo("r1") is False
+    assert await lh.has_ceo("org_1", "r1") is False
     assert await lh.participants("r1") == []
 
 
@@ -153,7 +154,7 @@ async def test_dispatch_uses_the_configured_agent_name(monkeypatch):
 
 async def test_send_frames(monkeypatch):
     f = fake(monkeypatch)
-    await lh.send_frames("r1", [{"t": 1}])
+    await lh.send_frames("org_1", "r1", [{"t": 1}])
     _, req = f.calls[0]
     assert req.topic == "call.frame" and list(req.destination_identities) == ["agent-ceo"]
     assert json.loads(req.data) == {"events": [{"t": 1}]}
@@ -169,7 +170,7 @@ def test_configured_false_when_any_empty(monkeypatch, field):
 async def test_send_frames_packs_into_bounded_packets_in_order(monkeypatch):
     f = fake(monkeypatch)
     events = [{"seq": i, "text": "x" * 3_000} for i in range(10)]
-    await lh.send_frames("r1", events)
+    await lh.send_frames("org_1", "r1", events)
     sent = [req.data for _, req in f.calls]
     assert len(sent) > 1 and all(len(d) <= lh.MAX_PACKET_BYTES for d in sent)
     assert [e for d in sent for e in json.loads(d)["events"]] == events
@@ -181,7 +182,7 @@ async def test_send_frames_drops_an_oversize_event(monkeypatch):
     f = fake(monkeypatch)
     metrics = []
     monkeypatch.setattr(lh, "put_metric", lambda name, **kw: metrics.append(name))
-    await lh.send_frames("r1", [{"seq": 1}, {"seq": 2, "text": "x" * 14_000}, {"seq": 3}])
+    await lh.send_frames("org_1", "r1", [{"seq": 1}, {"seq": 2, "text": "x" * 14_000}, {"seq": 3}])
     assert [json.loads(req.data) for _, req in f.calls] == [{"events": [{"seq": 1}, {"seq": 3}]}]
     assert metrics == ["huddle.frame.oversize"]
 
@@ -189,7 +190,7 @@ async def test_send_frames_drops_an_oversize_event(monkeypatch):
 async def test_send_frames_sends_nothing_when_all_dropped(monkeypatch):
     f = fake(monkeypatch)
     monkeypatch.setattr(lh, "put_metric", lambda name, **kw: None)
-    await lh.send_frames("r1", [{"text": "x" * 20_000}])
+    await lh.send_frames("org_1", "r1", [{"text": "x" * 20_000}])
     assert f.calls == []
 
 

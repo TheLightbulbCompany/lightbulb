@@ -1258,9 +1258,9 @@ async def test_call_events_are_lightbulbs_lines_only(client, router_seat):
     call = await _start(client)
     base = f"/api/v1/internal/voice/calls/{call['callId']}"
     client.post(f"{base}/turn", json={"n": 0, "text": "Open Sunday?"}, headers=W)
-    with patch.object(voice_phone.api, "agent_lines", AsyncMock(return_value={"messages": [], "after": 1})) as lines:
+    with patch.object(voice_phone.api, "_agent_lines", AsyncMock(return_value={"messages": [], "after": 1})) as lines:
         assert client.post(f"{base}/events", json={"after": 0}, headers=W).json() == {"messages": [], "after": 1}
-    lines.assert_awaited_once_with(call["callId"], 0)
+    lines.assert_awaited_once_with("org_1", call["callId"], 0)
     real = client.post(f"{base}/events", json={"after": 0}, headers=W).json()
     assert real["messages"] == [] and real["after"] == 1  # the caller's own line is never said back
 

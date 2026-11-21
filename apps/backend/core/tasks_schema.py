@@ -19,6 +19,8 @@ from typing import Annotated, Any, ClassVar, Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from pydantic.alias_generators import to_camel
 
+from core.engine import contract
+
 SCHEMA_VERSION = 1
 
 # --- Enums -----------------------------------------------------------------------------------------
@@ -101,7 +103,7 @@ WatchdogLabel = Literal["tp", "fp", "unsure"]
 
 # Fixed forever: changing either re-keys every run and every Router-made task.
 RUN_NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://thelightbulb.company/ns/super-agent/run")
-TASK_NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://thelightbulb.company/ns/super-agent/task")
+TASK_NS = contract.TASK_NS
 
 
 def new_task_id() -> str:

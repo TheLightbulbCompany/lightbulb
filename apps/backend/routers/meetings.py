@@ -9,18 +9,22 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from core.billing import voice_billing
 from core.config import settings
+from core.engine import api
+from core.engine.contract import LineIn, Principal
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo, billing_repo
-from core.services import clerk_admin, messaging
+from core.repositories import billing_repo
+from core.services import clerk_admin
 from core.voice import livekit_huddles, rooms
 from core.voice.meetings import meeting_bots, meeting_invites, meeting_notes
 from core.services.live_events import get_live_event_publisher
+from core.voice.voice_calls import room_event
 from core.voice.worker_api import RoomBody, _problem, _require_room_token, _room_id, _Worker
 
 logger = logging.getLogger(__name__)
@@ -63,7 +67,9 @@ def _bot(payload: dict | None) -> tuple[str, str, dict] | None:
     if env and env != settings.ENVIRONMENT:
         return None  # Recall's webhook is account-wide: another environment's bot is not ours to touch
     try:
-        room_id = messaging.validate_uuid(str((bot.get("metadata") or {}).get("roomId") or ""), label="room ID")
+        raw = str((bot.get("metadata") or {}).get("roomId") or "")
+        if (room_id := str(uuid.UUID(raw))) != raw.lower():
+            return None  # the canonical form only
         return str(bot["id"]), room_id, data.get("data") or {}
     except Exception:  # noqa: BLE001 -- KeyError or a malformed id alike: not ours
         return None
@@ -72,40 +78,39 @@ def _bot(payload: dict | None) -> tuple[str, str, dict] | None:
 async def _publish(room_id: str, status: str) -> None:
     try:
         await get_live_event_publisher().publish_room(
-            room_id,
-            messaging.make_live_event("room.meeting.changed", {"roomId": room_id, "status": status}, room_id=room_id),
+            room_id, room_event("room.meeting.changed", {"roomId": room_id, "status": status}, room_id)
         )
     except Exception:  # noqa: BLE001 -- live delivery is a hint; clients re-read the room
         logger.warning("meeting room %s: live publish failed", room_id, exc_info=True)
 
 
-async def _count_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
+async def _count_minutes(owner_id: str, room_id: str, seconds: float, in_call_at: int) -> None:
     """Report the occurrence to Metronome and count it toward the workspace's voice allowance."""
-    await _report_minutes(room_id, seconds, in_call_at)
-    meta = await messaging_repo.get_room(room_id) or {}
-    if meta.get("ownerId"):
-        try:
-            await voice_billing.add_month_seconds(
-                meta["ownerId"], int(seconds), datetime.fromtimestamp(in_call_at, UTC)
-            )
-        except Exception:
-            logger.warning("meeting room %s: allowance counter update failed", room_id, exc_info=True)
+    await _report_minutes(owner_id, room_id, seconds, in_call_at)
+    try:
+        await voice_billing.add_month_seconds(owner_id, int(seconds), datetime.fromtimestamp(in_call_at, UTC))
+    except Exception:
+        logger.warning("meeting room %s: allowance counter update failed", room_id, exc_info=True)
 
 
-async def _report_minutes(room_id: str, seconds: float, in_call_at: int) -> None:
+async def _report_minutes(owner_id: str, room_id: str, seconds: float, in_call_at: int) -> None:
     """Await durable usage-source and outbox admission for one frozen occurrence."""
-    meta = await messaging_repo.get_room(room_id) or {}
-    if meta.get("ownerId"):
-        at = datetime.fromtimestamp(in_call_at, UTC)
-        # A recurring meeting reuses its room. Its original in-call time identifies this occurrence
-        # across callback retries, without deduping the next occurrence against this one.
-        await voice_billing.report_minutes(
-            meta["ownerId"], f"meeting:{room_id}:{in_call_at}", at.isoformat(), int(seconds), "meeting"
-        )
+    at = datetime.fromtimestamp(in_call_at, UTC)
+    # A recurring meeting reuses its room. Its original in-call time identifies this occurrence
+    # across callback retries, without deduping the next occurrence against this one.
+    await voice_billing.report_minutes(
+        owner_id, f"meeting:{room_id}:{in_call_at}", at.isoformat(), int(seconds), "meeting"
+    )
 
 
 async def _finish(
-    room_id: str, status: str, sub_code: str, notes: bool, in_call_at: int | None = None, ended_at: int | None = None
+    owner_id: str,
+    room_id: str,
+    status: str,
+    sub_code: str,
+    notes: bool,
+    in_call_at: int | None = None,
+    ended_at: int | None = None,
 ) -> None:
     """Admit usage before scheduling notes or advancing a recurring series.
 
@@ -119,10 +124,12 @@ async def _finish(
     steps = [
         ("presence", lambda: put_metric("meeting.presence.seconds", presence, unit="Seconds") if presence else None),
         ("metric", lambda: put_metric("meeting.ended", dimensions={"sub_code": sub_code or "none"})),
-        ("minutes", lambda: _count_minutes(room_id, presence, in_call_at) if presence else None),
+        ("minutes", lambda: _count_minutes(owner_id, room_id, presence, in_call_at) if presence else None),
         (
             "notes",
-            lambda: rooms._fire(meeting_notes.on_ended(room_id) if notes else meeting_invites.advance(room_id)),
+            lambda: rooms._fire(
+                meeting_notes.on_ended(owner_id, room_id) if notes else meeting_invites.advance(owner_id, room_id)
+            ),
         ),
         ("publish", lambda: _publish(room_id, status)),
         ("close_room", lambda: livekit_huddles.close_room(room_id, meet=True)),
@@ -152,10 +159,10 @@ async def _on_status(
     cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
     target = _TARGET[code]
     async with meeting_invites.meeting_lease(room_id):
-        meta = await messaging_repo.get_room(room_id)
-        if not meta:
-            return  # a room this environment lacks: another environment's (untagged) bot, never ejected
-        meeting = meta.get("meeting") or {}
+        conv = await api.find_conversation(room_id)
+        if not conv:
+            return  # a room this environment lacks (another environment's untagged bot, never ejected), or deleted
+        owner_id, meeting = conv.tenant_id, conv.annotations.get("meeting") or {}
         status = meeting.get("status")
         if meeting.get("recallBotId") != bot_id:
             # Recall books a second bot on a repeated create: the one of this booking (its nonce)
@@ -169,7 +176,7 @@ async def _on_status(
                 audio = await meeting_invites.adopted_audio(room_id, bot_id)
                 fields = {"recallBotId": bot_id, "status": "bot_created", **({"audio": audio} if audio else {})}
                 drop = ("botError", "lastBotStatus", *(() if audio else ("audio",)))
-                meeting = await meeting_invites._patch_meeting(room_id, fields, drop=drop)
+                meeting = await meeting_invites._patch_meeting(owner_id, room_id, fields, drop=drop)
                 status = "bot_created"
             else:
                 if target == "in_call":
@@ -182,11 +189,11 @@ async def _on_status(
             if meeting.get("inCallAt") and meeting.get("endedAt"):
                 seconds = max(0, int(meeting["endedAt"]) - int(meeting["inCallAt"]))
                 if seconds:
-                    await _report_minutes(room_id, seconds, int(meeting["inCallAt"]))
+                    await _report_minutes(owner_id, room_id, seconds, int(meeting["inCallAt"]))
             if meeting_notes.owed(meeting):
-                rooms._fire(meeting_notes.on_ended(room_id))
+                rooms._fire(meeting_notes.on_ended(owner_id, room_id))
             elif meeting.get("recurrence"):
-                rooms._fire(meeting_invites.advance(room_id))
+                rooms._fire(meeting_invites.advance(owner_id, room_id))
             return
         if code in ("joining_call", "in_waiting_room"):
             observed_at = int((at or time.time()) * 1000)
@@ -199,18 +206,20 @@ async def _on_status(
             ):
                 return
             if code != meeting.get("lastBotStatus") or observed_at > int(meeting.get("lastBotStatusAt", 0)):
-                await meeting_invites._patch_meeting(room_id, {"lastBotStatus": code, "lastBotStatusAt": observed_at})
+                await meeting_invites._patch_meeting(
+                    owner_id, room_id, {"lastBotStatus": code, "lastBotStatusAt": observed_at}
+                )
                 await _publish(room_id, status or "bot_created")
             return  # provider presence only: no worker dispatch, allowance check or metering yet
         if target == status or code == meeting.get("lastBotStatus"):
             return  # a replay, or a step this meeting already took
-        owner_id = meta["ownerId"]
         if target == "in_call":
             account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
             if account.get("metronome_voice_contract_id") and not voice_billing.has_voice_plan(account):
                 # Keep an unpaid voice plan from quietly using legacy voice credit/free modes.
                 await meeting_bots.leave(bot_id)
                 await meeting_invites._patch_meeting(
+                    owner_id,
                     room_id,
                     {
                         "status": "bot_failed",
@@ -241,18 +250,24 @@ async def _on_status(
                 put_metric("huddle.livekit.error")
                 raise
             await meeting_invites._patch_meeting(
-                room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
+                owner_id, room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
             )
             # ponytail: warms the room's agents (the default Worker); add the `office` specialist once Task 4 seeds it
-            rooms.prewake_owner(owner_id, team=await rooms.room_agents(room_id), room_id=room_id)
+            rooms.prewake_owner(owner_id, team=await rooms.room_agents(owner_id, room_id), room_id=room_id)
             await _publish(room_id, "in_call")
         elif target == "ended":
             # endedAt is written once (a terminal status returns above on every later webhook), from
             # the event's own time: a retried or late delivery is not when the call ended.
             fields = {"status": "ended", "lastBotStatus": code, "endedAt": int(at or time.time())}
-            await meeting_invites._patch_meeting(room_id, fields)
+            await meeting_invites._patch_meeting(owner_id, room_id, fields)
             await _finish(
-                room_id, "ended", sub_code, notes=True, in_call_at=meeting.get("inCallAt"), ended_at=fields["endedAt"]
+                owner_id,
+                room_id,
+                "ended",
+                sub_code,
+                notes=True,
+                in_call_at=meeting.get("inCallAt"),
+                ended_at=fields["endedAt"],
             )
         else:
             title = meeting.get("title") or "Meeting"
@@ -268,9 +283,10 @@ async def _on_status(
                 "lastBotStatus": code,
                 "endedAt": int(at or time.time()),
             }
-            await meeting_invites._patch_meeting(room_id, fields)
+            await meeting_invites._patch_meeting(owner_id, room_id, fields)
             # A bot that dies mid-call still leaves a conversation worth its notes.
             await _finish(
+                owner_id,
                 room_id,
                 "bot_failed",
                 sub_code,
@@ -345,16 +361,17 @@ async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
     """Relays one event with the roster. The roster lives on META because Meet sends a join once,
     often before the worker is in the room; every event carries it so a late worker catches up."""
     try:
-        meta = (await messaging_repo.get_room(room_id)) or {}
-        meeting = meta.get("meeting") or {}
+        conv = await api.find_conversation(room_id)
+        meeting = (conv.annotations.get("meeting") if conv else None) or {}
         if meeting.get("recallBotId") != bot_id:
-            return  # a stale or rebooked bot pushes nothing into the room
+            return  # a stale or rebooked bot pushes nothing into the room (a gone room has none)
         kind, pid, name, at = event["kind"], event["participantId"], event["name"], int(event["at"] * 1000)
         host = bool(event.get("host"))
         roster = _rostered(meeting.get("roster"), kind, pid, name, at, host)
         if kind in ("join", "leave"):
             try:
                 written = await meeting_invites._patch_meeting(
+                    conv.tenant_id,
                     room_id,
                     lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name, at, host)},
                     # re-checked on every attempt: an old bot's late join never lands on the next occurrence
@@ -378,9 +395,6 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
     Display names identify conversation speakers only, never an owner or an approver. The
     accountable member and workspace are resolved from the active meeting and current roster.
     """
-    import uuid
-
-    from core.auth import AuthContext
     from core.voice.meetings.records import inviting_member
 
     who, content = data.get("participant") or {}, data.get("data") or {}
@@ -400,10 +414,10 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
     except (KeyError, ValueError, TypeError):
         return  # chat without an occurrence timestamp cannot safely execute work
     async with meeting_invites.meeting_lease(room_id):
-        meta = await messaging_repo.get_room(room_id) or {}
-        meeting = meta.get("meeting") or {}
+        conv = await api.find_conversation(room_id)
+        meeting = (conv.annotations.get("meeting") if conv else None) or {}
         if (
-            not meta.get("ownerId")
+            not conv
             or meeting.get("status") != "in_call"
             or meeting.get("recallBotId") != bot_id
             or not nonce
@@ -413,20 +427,19 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
             or at > time.time() + 30
         ):
             return
-        member = inviting_member(meeting, await messaging_repo.list_members(room_id))
+        seated = await api.get_conversation(conv.tenant_id, room_id, with_members=True)
+        member = inviting_member(meeting, seated.members if seated else [])
         if not member:
             return
-        key = f"meet-chat:{bot_id}:{who.get('id')}:{stamp}:{text}"
-        await messaging.create_human_message(
-            AuthContext(user_id=member, org_id=meta["ownerId"]),
-            room_id,
-            messaging.CreateMessageRequest(
-                client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+        await api.append_line(
+            LineIn(
+                tenant_id=conv.tenant_id,
+                conversation_id=room_id,
+                principal=Principal(kind="member", id=member),
                 text=f"{name[:120]} wrote in the meeting chat: {text}",
-                reply_to_message_id=None,
-                thread_root_message_id=None,
-            ),
-            via="meeting_chat",
+                idempotency_key=f"meet-chat:{bot_id}:{who.get('id')}:{stamp}:{text}",
+                via="meeting_chat",
+            )
         )
 
 
@@ -464,12 +477,13 @@ async def leave(room_id: str, body: RoomBody):
     """The worker's idle leave: end the meeting, then pull the bot (its call_ended no-ops)."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
+    owner_id = body.ownerId
     try:
         async with meeting_invites.meeting_lease(room_id):
-            meta = await messaging_repo.get_room(room_id)
-            if not meta or meta.get("ownerId") != body.ownerId:
+            conv = await api.get_conversation(owner_id, room_id)
+            if not conv:
                 raise _problem(404, "room_not_found")
-            meeting = meta.get("meeting") or {}
+            meeting = conv.annotations.get("meeting") or {}
             already_terminal = meeting.get("status") in _TERMINAL
             if not meeting.get("recallBotId") and not already_terminal:
                 return {"ok": True}
@@ -478,14 +492,14 @@ async def leave(room_id: str, body: RoomBody):
             else:
                 # Ended BEFORE the leave, so the call_ended the leave provokes finds the step taken.
                 fields = {"status": "ended", "lastBotStatus": "idle_leave", "endedAt": int(time.time())}
-                await meeting_invites._patch_meeting(room_id, fields)
+                await meeting_invites._patch_meeting(owner_id, room_id, fields)
     except meeting_invites.MeetingBusy:
         raise _problem(503, "meeting_busy") from None
     if already_terminal:
         if meeting.get("inCallAt") and fields.get("endedAt"):
             seconds = max(0, int(fields["endedAt"]) - int(meeting["inCallAt"]))
             if seconds:
-                await _report_minutes(room_id, seconds, int(meeting["inCallAt"]))
+                await _report_minutes(owner_id, room_id, seconds, int(meeting["inCallAt"]))
         return {"ok": True}
     for attempt in range(1, _LEAVE_TRIES + 1):
         try:
@@ -499,6 +513,12 @@ async def leave(room_id: str, body: RoomBody):
             put_metric("meeting.leave_failed")
             logger.warning("meeting room %s: bot leave failed", room_id, exc_info=True)
     await _finish(
-        room_id, "ended", "idle_leave", notes=True, in_call_at=meeting.get("inCallAt"), ended_at=fields["endedAt"]
+        owner_id,
+        room_id,
+        "ended",
+        "idle_leave",
+        notes=True,
+        in_call_at=meeting.get("inCallAt"),
+        ended_at=fields["endedAt"],
     )
     return {"ok": True}

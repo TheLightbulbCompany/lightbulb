@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from core.config import settings
-from core.repositories import messaging_repo, tasks_repo
+from core.engine import api
 from core.voice import livekit_huddles
 from core.voice.meetings import meeting_bots, meeting_invites
 
@@ -77,8 +77,8 @@ async def task_moved(task: dict, to: str) -> None:
             return  # completion work belongs to its original notes, never a newly active Meet
         if audience.get("kind") != "room" or not room_id:
             return  # live provider delivery remains room-only
-        meta = (await messaging_repo.get_room(room_id)) or {}
-        if meta.get("ownerId") != owner_id or not meta.get("meeting"):
+        conv = await api.get_conversation(owner_id, room_id)
+        if not conv or not conv.annotations.get("meeting"):
             return
         current_changed = False
 
@@ -88,9 +88,7 @@ async def task_moved(task: dict, to: str) -> None:
             return {"followUps": updated(m)["followUps"], "history": [updated(h) for h in m.get("history") or []]}
 
         meeting = await meeting_invites._patch_meeting(
-            room_id,
-            lay,
-            when=changed,
+            owner_id, room_id, lay, when=changed
         )  # a retried Activity changes nothing and says nothing twice
         if (
             meeting
@@ -98,7 +96,7 @@ async def task_moved(task: dict, to: str) -> None:
             and status == "done"
             and meeting.get("status") == "in_call"
             and meeting.get("recallBotId")
-            and await _result_occurrence(task, room_id, {**meta, "meeting": meeting})
+            and await _result_occurrence(owner_id, task, room_id, meeting)
         ):
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task['taskId']}"
             await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
@@ -108,7 +106,7 @@ async def task_moved(task: dict, to: str) -> None:
             and current_changed
             and status != "done"
             and meeting.get("status") == "in_call"
-            and await _result_occurrence(task, room_id, {**meta, "meeting": meeting})
+            and await _result_occurrence(owner_id, task, room_id, meeting)
         ):
             await _tile_phase(room_id, "drafting" if status == "working" else "")
     except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
@@ -119,20 +117,15 @@ def task_link(task_id: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task-detail&taskId={task_id}"
 
 
-async def _result_occurrence(task: dict, room_id: str, meta: dict) -> tuple[str, int | float] | None:
-    """Provider delivery needs positive canonical provenance; an app result needs no live bot."""
-    owner_id = str(task.get("pk") or "").removeprefix("WS#")
-    if (
-        task.get("origin") != "meeting"
-        or not str(task.get("pk") or "").startswith("WS#")
-        or meta.get("ownerId") != owner_id
-    ):
+async def _result_occurrence(owner_id: str, task: dict, room_id: str, meeting: dict) -> tuple[str, int | float] | None:
+    """Provider delivery needs positive canonical provenance; an app result needs no live bot. `meeting`: the
+    record of `owner_id`'s room `room_id`."""
+    if task.get("origin") != "meeting" or task.get("pk") != f"WS#{owner_id}":
         return None
-    trigger = await tasks_repo.get_trigger(owner_id, task.get("triggerId")) if task.get("triggerId") else None
+    trigger = await api.get_trigger(owner_id, task.get("triggerId")) if task.get("triggerId") else None
     ref = (trigger or {}).get("ref") or {}
     if ref.get("roomId") != room_id or ref.get("origin") != "meeting" or ref.get("meetingFollowups"):
         return None
-    meeting = meta.get("meeting") or {}
     bot, started = ref.get("meetingBotId"), ref.get("meetingInCallAt")
     return (
         (bot, started)
@@ -141,7 +134,7 @@ async def _result_occurrence(task: dict, room_id: str, meta: dict) -> tuple[str,
     )
 
 
-async def with_link(room_id: str, task: dict, line: str) -> str:
+async def with_link(owner_id: str, room_id: str, task: dict, line: str) -> str:
     """A finished thread that made something (an output: a document, a page) and came from a meeting's room: its
     result line in that room carries the link, and the line goes to the Meet's chat while the bot is in the call, once
     a task (8 Nov prod Meet re-run: "put the link in chat" was never delivered: the result line had only a task card,
@@ -151,19 +144,20 @@ async def with_link(room_id: str, task: dict, line: str) -> str:
         return line
     tid, linked = task["taskId"], f"{line} {task_link(task['taskId'])}"
     try:
-        meta = (await messaging_repo.get_room(room_id)) or {}
-        meeting = meta.get("meeting")
+        conv = await api.get_conversation(owner_id, room_id)
+        meeting = conv.annotations.get("meeting") if conv else None
     except Exception:  # noqa: BLE001 -- the line must still post
         logger.warning("meet room %s: room not read for the result link task=%s", room_id, tid, exc_info=True)
         return line
     if not meeting:
         return line
     try:
-        occurrence = await _result_occurrence(task, room_id, meta)
+        occurrence = await _result_occurrence(owner_id, task, room_id, meeting)
         if occurrence is None:
             return linked
         bot, started = occurrence
         fresh = await meeting_invites._patch_meeting(
+            owner_id,
             room_id,
             lambda m: {"linksSaid": [*(m.get("linksSaid") or []), tid]},
             when=lambda m: (
@@ -185,7 +179,9 @@ def _same(entry: dict, pid: str, name: str) -> bool:
     return bool((pid and entry.get("id") == pid) or (name and entry.get("name", "").lower() == name.lower()))
 
 
-async def record_transcription(room_id: str, meeting: dict, pid: str, name: str, opt_out: bool = True) -> dict:
+async def record_transcription(
+    owner_id: str, room_id: str, meeting: dict, pid: str, name: str, opt_out: bool = True
+) -> dict:
     """Keep (or lift) one person's exclusion on the meeting; the Meet chat gets one line saying so (best-effort).
     The one writer: the worker route below and the Router's `meeting_stop_transcribing` both come here."""
 
@@ -193,7 +189,7 @@ async def record_transcription(room_id: str, meeting: dict, pid: str, name: str,
         rest = [e for e in m.get("notTranscribed") or [] if not _same(e, pid, name)]
         return {"notTranscribed": [*rest, {"id": pid, "name": name}] if opt_out else rest}
 
-    meeting = await meeting_invites._patch_meeting(room_id, change) or meeting
+    meeting = await meeting_invites._patch_meeting(owner_id, room_id, change) or meeting
     if bot := meeting.get("recallBotId"):
         who = name or "you"
         line = (f"OK {who}: your voice is excluded from the assistant and its transcript. The meeting recording continues." if opt_out

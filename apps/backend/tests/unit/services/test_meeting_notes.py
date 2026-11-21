@@ -9,6 +9,11 @@ from botocore.exceptions import ClientError
 
 from core.services import messaging, ses_email
 from core.voice.meetings import meeting_notes as mod, transcripts
+from core.services import admission
+from core.repositories import messaging_repo
+from core.services import task_conversation
+from core.repositories import tasks_repo
+from core import tasks_schema as ts
 
 real_put = transcripts.put
 
@@ -17,7 +22,7 @@ CEO = "22222222-2222-4222-8222-222222222222"
 MEET = "https://meet.google.com/abc-defg-hij"
 DEFAULT = messaging.default_room_id("org_1")  # the output room: every line lands there
 TRIG = f"meeting-notes:{ROOM}:1790972400"  # the notes task's trigger, and its request id
-TASK = mod.ts.router_task_id(TRIG, 0, 0)
+TASK = ts.router_task_id(TRIG, 0, 0)
 
 
 @pytest.fixture
@@ -36,7 +41,7 @@ def env(monkeypatch):
         },
     }
 
-    async def patch_meeting(room_id, fields, drop=(), when=None):
+    async def patch_meeting(owner_id, room_id, fields, drop=(), when=None):
         if m.patch_failures:  # a transient DynamoDB failure on the next N writes
             m.patch_failures -= 1
             raise RuntimeError("ddb")
@@ -76,21 +81,21 @@ def env(monkeypatch):
 
     monkeypatch.setattr(mod.store, "put_meeting_notes_request", put_request)
     monkeypatch.setattr(mod.store, "claim_meeting_notes_mail", claim_mail)
-    monkeypatch.setattr(mod.messaging_repo, "list_messages", AsyncMock(side_effect=lambda *_a: (m.posted, None)))
+    monkeypatch.setattr(messaging_repo, "list_messages", AsyncMock(side_effect=lambda *_a: (m.posted, None)))
     monkeypatch.setattr(
         mod.store, "get_meeting_notes_request", AsyncMock(side_effect=lambda _o, mid: m.requests.get(mid))
     )
-    monkeypatch.setattr(mod.messaging_repo, "list_members", m.members)
-    monkeypatch.setattr(mod.task_conversation, "front_agent_id", m.front)
-    monkeypatch.setattr(mod.admission, "enqueue_trigger", m.enqueue)
+    monkeypatch.setattr(messaging_repo, "list_members", m.members)
+    monkeypatch.setattr(task_conversation, "front_agent_id", m.front)
+    monkeypatch.setattr(admission, "enqueue_trigger", m.enqueue)
     monkeypatch.setattr(
-        mod.tasks_repo, "get_task_tree", AsyncMock(side_effect=lambda _w, t: {"task": {}, "attempts": m.attempts})
+        tasks_repo, "get_task_tree", AsyncMock(side_effect=lambda _w, t: {"task": {}, "attempts": m.attempts})
     )
     monkeypatch.setattr(mod.meeting_invites, "advance", m.advance)
     monkeypatch.setattr(mod, "put_metric", m.metric)
     monkeypatch.setattr(mod.container_repo, "release_owner_lifecycle_claim", m.release)
     monkeypatch.setattr(mod.container_repo, "try_claim_owner_lifecycle", m.claim)
-    monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta))
     monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting))
     m.meeting_tasks = AsyncMock(return_value=[])
     monkeypatch.setattr(mod, "_meeting_tasks", m.meeting_tasks)
@@ -117,7 +122,7 @@ async def task_done(env, notes=NOTES, to="idle"):
 
 async def ended_and_noted(env, notes=NOTES):
     """The call ends, then the notes task finishes with ``notes`` as its output."""
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await task_done(env, notes)
 
 
@@ -132,10 +137,10 @@ def _line(mark, name, text, at):
 
 
 async def test_a_final_transcript_is_kept_once_and_never_posted(env):
-    await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi all", 1790972595.0)], False)
+    await mod.on_transcript("org_1", ROOM, [_line(0, "Pat", "Hi all", 1790972595.0)], False)
     env.store.assert_not_called()  # a rolling flush is only logged
     whole = [_line(1, "Ada", "Hello", 1790972655.0), _line(0, "Pat", "Hi all", 1790972595.0)]
-    await mod.on_transcript(ROOM, whole, True)
+    await mod.on_transcript("org_1", ROOM, whole, True)
     env.store.assert_called_once()
     owner, room, data = env.store.call_args.args
     assert (owner, room, env.store.call_args.kwargs) == ("org_1", DEFAULT, {"name": f"{ROOM}|1790972400"})
@@ -143,12 +148,12 @@ async def test_a_final_transcript_is_kept_once_and_never_posted(env):
     env.line.assert_not_awaited()  # not in chat: the owner opens it from the meeting view
     assert env.meta["meeting"]["transcriptAttachedAt"]
     assert (env.meta["meeting"]["transcriptId"], env.meta["meeting"]["transcriptRoomId"]) == ("tr-1", DEFAULT)
-    await mod.on_transcript(ROOM, whole, True)  # a retried final
+    await mod.on_transcript("org_1", ROOM, whole, True)  # a retried final
     env.store.assert_called_once()
 
 
 async def test_an_empty_final_attaches_nothing(env):
-    await mod.on_transcript(ROOM, [], True)
+    await mod.on_transcript("org_1", ROOM, [], True)
     env.store.assert_not_called()
 
 
@@ -162,9 +167,9 @@ async def test_a_refused_transcript_write_ends_in_no_notes(env, monkeypatch, ref
         monkeypatch.setattr(transcripts, "MAX_BYTES", 4)
         env.store.side_effect = real_put  # the cap refuses before any S3 call
     with pytest.raises((ClientError, ValueError)):
-        await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
+        await mod.on_transcript("org_1", ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
     assert "transcriptId" not in env.meta["meeting"] and "transcriptAttachedAt" not in env.meta["meeting"]
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert env.meta["meeting"]["notesSkipped"] == "no_transcript"
     with pytest.raises(mod.TranscriptUnavailable, match="no longer available"):
         await mod.worker_transcript("org_1", TRIG)
@@ -172,8 +177,8 @@ async def test_a_refused_transcript_write_ends_in_no_notes(env, monkeypatch, ref
 
 async def test_meeting_end_enqueues_notes_task(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
+    await mod.on_ended("org_1", ROOM)
     env.enqueue.assert_awaited_once()
     env.line.assert_not_awaited()  # no dispatch_targets line: the Router's task path writes the notes
     owner, trigger = env.enqueue.await_args.args
@@ -185,9 +190,10 @@ async def test_meeting_end_enqueues_notes_task(env):
         "shared",
     )
     assert trigger.ref["meetingNotes"] == {"requestId": TRIG} and trigger.ref["taskId"] == TASK
-    assert set(trigger.ref) == {"taskId", "meetingNotes", "start", "confirmAll"}  # the transcript by reference only
+    # the transcript by reference only
+    assert set(trigger.ref) == {"deliverRoomId", "taskId", "meetingNotes", "start", "confirmAll"}
     assert trigger.ref["confirmAll"] is True  # transcript lines are anyone's words: every outside action gets a card
-    start = mod.ts.StartTask.model_validate({**trigger.ref["start"], "triggerIds": [TRIG]})
+    start = ts.StartTask.model_validate({**trigger.ref["start"], "triggerIds": [TRIG]})
     assert start.specialist == CEO and start.visibility == "room"
     assert start.brief.startswith("Write the meeting notes for Weekly sync: open questions")
     assert start.brief.endswith("The transcript is below")
@@ -213,13 +219,13 @@ async def test_on_ended_waits_for_the_transcript_then_proceeds(env):
             env.meta["meeting"]["transcriptAttachedAt"] = 1
 
     env.sleep.side_effect = attach_on_second
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert env.sleep.await_count == 2
     env.enqueue.assert_awaited_once()
 
 
 async def test_meeting_end_without_transcript_marks_no_notes(env):
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert env.sleep.await_count == 30 and env.sleep.await_args.args == (2,)
     # No notes task from the default room's unrelated history: one plain line.
     env.line.assert_awaited_once()
@@ -236,7 +242,7 @@ async def test_meeting_end_without_transcript_marks_no_notes(env):
 async def test_on_ended_never_raises(env):
     env.enqueue.side_effect = RuntimeError("boom")
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
 
 
 async def test_app_notes_use_a_legacy_completion_marker_without_a_delivery_claim(env):
@@ -248,34 +254,32 @@ async def test_app_notes_use_a_legacy_completion_marker_without_a_delivery_claim
 
 async def test_a_late_transcript_is_never_the_next_occurrences(env):
     env.meta["meeting"]["status"] = "scheduled"  # the series already advanced
-    await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
+    await mod.on_transcript("org_1", ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
     env.store.assert_not_called()
     env.line.assert_not_awaited()
     env.metric.assert_called_once_with("meeting.transcript.dropped")
 
 
 async def test_without_a_default_room_the_transcript_stays_in_the_meetings_room(env, monkeypatch):
-    monkeypatch.setattr(
-        mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: None if r == DEFAULT else env.meta)
-    )
-    await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: None if r == DEFAULT else env.meta))
+    await mod.on_transcript("org_1", ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
     assert env.store.call_args.args[1] == ROOM and env.meta["meeting"]["transcriptRoomId"] == ROOM
 
 
 async def test_no_notes_or_mail_for_a_call_nobody_admitted_the_bot_to(env):
     del env.meta["meeting"]["inCallAt"]
     assert not mod.owed(env.meta["meeting"])
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     env.claim.assert_not_awaited()
     env.line.assert_not_awaited()
     env.send.assert_not_awaited()
-    env.advance.assert_awaited_once_with(ROOM)  # a series still moves on
+    env.advance.assert_awaited_once_with("org_1", ROOM)  # a series still moves on
 
 
 async def test_the_output_rooms_front_agent_writes_the_notes(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.front.return_value = "front-agent"
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     env.front.assert_awaited_with("org_1", room_id=DEFAULT)
     assert started(env)[1]["specialist"] == "front-agent" and env.requests[TRIG]["agentId"] == "front-agent"
 
@@ -283,16 +287,16 @@ async def test_the_output_rooms_front_agent_writes_the_notes(env):
 async def test_on_ended_advances_after_the_attempt_either_way_but_not_beside_another(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.enqueue.side_effect = RuntimeError("ddb")  # fails before the task starts: the notes stay owed
-    await mod.on_ended(ROOM)  # failed
-    env.advance.assert_awaited_once_with(ROOM)
+    await mod.on_ended("org_1", ROOM)  # failed
+    env.advance.assert_awaited_once_with("org_1", ROOM)
     env.claim.return_value = None  # another end path holds the notes: it advances when done
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     env.advance.assert_awaited_once()
 
 
 async def test_a_transcript_without_a_call_is_dropped(env):
     del env.meta["meeting"]["inCallAt"]
-    await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
+    await mod.on_transcript("org_1", ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
     env.store.assert_not_called()
     env.metric.assert_called_once_with("meeting.transcript.dropped")
 
@@ -307,7 +311,7 @@ async def test_no_marker_lands_on_the_next_occurrence(env):
         return True
 
     env.enqueue.side_effect = redated
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert "notesRunId" not in env.meta["meeting"] and "notesMailedAt" not in env.meta["meeting"]
 
 
@@ -319,14 +323,14 @@ async def test_a_redate_during_the_wait_keeps_todays_key_and_tomorrows_run(env):
         env.meta["meeting"].pop("inCallAt")
 
     env.sleep.side_effect = redate
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert env.sleep.await_count == 1  # stopped waiting on the other occurrence's read
     assert env.line.await_args.args[2] == f"meeting:{ROOM}:{today}:no-transcript"
     assert "notesRunId" not in env.meta["meeting"]
     # Tomorrow's call happens: its own notes run goes out under its own key.
     env.meta["meeting"].update(status="ended", inCallAt=1, transcriptAttachedAt=1)
     env.claim.return_value = "tok2"
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert env.enqueue.await_args.args[1].trigger_id == f"meeting-notes:{ROOM}:{tomorrow}"
     assert env.enqueue.await_count == 1
 
@@ -334,16 +338,16 @@ async def test_a_redate_during_the_wait_keeps_todays_key_and_tomorrows_run(env):
 async def test_three_failed_notes_attempts_still_advance_the_series(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.enqueue.side_effect = RuntimeError("ddb")
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert env.enqueue.await_count == 3 and "notesMailedAt" not in env.meta["meeting"]
     env.send.assert_not_awaited()
     env.release.assert_awaited_once()
-    env.advance.assert_awaited_once_with(ROOM)
+    env.advance.assert_awaited_once_with("org_1", ROOM)
 
 
 async def test_a_retry_does_not_wait_for_the_transcript_again(env):
     env.line.side_effect = [RuntimeError("ddb"), {"messageId": "msg-1"}]
-    await mod.on_ended(ROOM)  # no transcript: the 60 s wait once, then one 10 s retry gap
+    await mod.on_ended("org_1", ROOM)  # no transcript: the 60 s wait once, then one 10 s retry gap
     assert [c.args for c in env.sleep.await_args_list] == [(2,)] * 30 + [(10,)]
 
 
@@ -368,8 +372,8 @@ async def test_a_repeated_task_end_keeps_the_notes_once(env):
 
 async def test_no_agent_to_write_the_notes_is_counted_and_marked(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.front.side_effect = mod.task_conversation.NoFrontAgent("no seat")
-    await mod.on_ended(ROOM)
+    env.front.side_effect = task_conversation.NoFrontAgent("no seat")
+    await mod.on_ended("org_1", ROOM)
     env.enqueue.assert_not_awaited()
     env.metric.assert_any_call("meeting.notes.skipped", dimensions={"why": "no_agent"})
     assert env.meta["meeting"]["notesSkipped"] == "no_agent" and "notesRunId" not in env.meta["meeting"]
@@ -380,18 +384,18 @@ async def test_no_agent_to_write_the_notes_is_counted_and_marked(env):
 async def test_a_failed_enqueue_is_retried_and_the_notes_are_kept_once(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.enqueue.side_effect = [RuntimeError("ddb"), True]
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     assert env.enqueue.await_count == 2 and env.meta["meeting"]["notesRunId"] == TASK
     assert "notes" not in env.meta["meeting"]  # they wait for the task
     await task_done(env)
     assert env.meta["meeting"]["notes"] == NOTES and env.meta["meeting"]["notesMailedAt"]
     env.sleep.assert_awaited_once_with(10)
-    env.advance.assert_awaited_once_with(ROOM)
+    env.advance.assert_awaited_once_with("org_1", ROOM)
 
 
 async def test_notes_task_done_keeps_notes(env, remember):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await mod.on_task_moved(notes_task(status="working"), "working")  # not an end
     await mod.on_task_moved({**notes_task(), "triggerId": "chat:other"}, "idle")  # not a notes task
     await mod.on_task_moved({**notes_task(), "taskId": "another-task"}, "idle")  # not this request's task
@@ -409,7 +413,7 @@ async def test_notes_task_done_keeps_notes(env, remember):
 
 async def test_notes_task_failed_marks_meeting(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await task_done(env, to="failed")
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
     assert not env.requests[TRIG].get("mailAttemptedAt")  # left for a Retry's follow-ups
@@ -417,7 +421,7 @@ async def test_notes_task_failed_marks_meeting(env):
 
 async def test_a_person_stopped_notes_task_marks_meeting(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await task_done(env, to="resolved")  # Stop, Close or Dismiss
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
     assert not env.requests[TRIG].get("mailAttemptedAt")
@@ -425,7 +429,7 @@ async def test_a_person_stopped_notes_task_marks_meeting(env):
 
 async def test_a_done_task_without_output_marks_no_notes(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await task_done(env, "  ")
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
 
@@ -438,7 +442,7 @@ async def test_unsaid_answers_reach_the_notes_task(env):
 
 async def test_a_recurring_series_that_advanced_still_gets_its_notes_kept(env):
     env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1")
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     # advance(): the next occurrence replaces the live keys, the finished one moves into history
     env.meta["meeting"] = {
         "title": "Next week", "startAt": 1791577200, "status": "scheduled",
@@ -455,7 +459,7 @@ async def test_the_notes_request_asks_for_action_items_not_paperclip_tasks(env):
     """8 Nov prod Meet: the request asked for "Paperclip tasks"; the writer refused ("Nova is not on the current
     Lightbulb team roster") and no action item became a thread."""
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     text = started(env)[1]["brief"]
     assert "Paperclip" not in text and "Action items:" in text and "do not create" in text
 
@@ -559,11 +563,12 @@ async def test_the_meeting_tasks_are_the_rooms_threads_since_the_call(monkeypatc
     for task in tasks.values():
         task.update(origin="meeting", audience={"kind": "room", "roomId": ROOM, "userIds": []})
     rooms = AsyncMock(return_value=threads)
-    monkeypatch.setattr(mod.tasks_repo, "list_room_threads", rooms)
+    monkeypatch.setattr(tasks_repo, "list_room_threads", rooms)
     monkeypatch.setattr(
-        mod.tasks_repo, "batch_get", AsyncMock(side_effect=lambda _w, sks: [tasks[k] for k in sks if k in tasks])
+        tasks_repo, "batch_get", AsyncMock(side_effect=lambda _w, sks: [tasks[k] for k in sks if k in tasks])
     )
-    monkeypatch.setattr(mod.tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=AssertionError("no scan")))
+    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", AsyncMock(side_effect=AssertionError("no scan")))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1"}))
     since = 1794146120  # 2026-11-08T13:55:20Z, when Recall joined
     assert sorted(r["title"] for r in await mod._meeting_tasks("org_1", ROOM, since, since + 3600)) == [
         "Holiday post",
@@ -580,7 +585,7 @@ def test_the_assistants_lines_are_marked_and_never_action_items():
 
 async def test_the_notes_request_says_the_assistants_lines_are_not_action_items(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     text = " ".join(started(env)[1]["brief"].split())
     assert "never from a line marked (the assistant)" in text
 
@@ -589,7 +594,7 @@ async def test_stored_notes_recover_admission_failure_before_consuming_completio
     from core.voice.meetings import meeting_followups
 
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     request = env.requests[TRIG]
     enqueue = AsyncMock(side_effect=[OSError("admission unavailable"), True])
     monkeypatch.setattr(meeting_followups, "enqueue", enqueue)
@@ -618,7 +623,7 @@ def remember(monkeypatch):
 
 async def test_the_notes_request_asks_for_a_decisions_section(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     text = started(env)[1]["brief"]
     assert '"Decisions:"' in text and "decided by <who>" in text
 
@@ -681,7 +686,7 @@ async def test_a_meeting_with_no_decisions_writes_nothing_to_memory(env, remembe
 
 async def test_late_decisions_land_on_the_original_occurrence(env, remember):
     env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1")
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     env.meta["meeting"] = {
         "title": "Next week", "startAt": 1791577200, "status": "scheduled",
         "history": [{"startAt": 1790972400, "transcriptId": "att-1"}],
@@ -697,7 +702,7 @@ async def test_the_worker_reads_the_transcript_by_reference(env, monkeypatch):
     env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1", transcriptRoomId=DEFAULT)
     load = MagicMock(return_value=b"[20:23] Pat: Hi all\n")
     monkeypatch.setattr(mod.transcripts, "get", load)
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     block = await mod.worker_transcript("org_1", TRIG)
     load.assert_called_once_with("org_1", DEFAULT, "att-1")
     assert block == "## Transcript\n[20:23] Pat: Hi all\n"
@@ -711,7 +716,7 @@ async def test_long_transcript_is_cut_from_start_and_flagged(env, monkeypatch, c
     assert len(raw) > mod.TRANSCRIPT_MAX_BYTES
     monkeypatch.setattr(mod.transcripts, "get", MagicMock(return_value=raw))
     monkeypatch.setattr(mod.transcripts, "size", MagicMock(return_value=len(raw)))
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     with caplog.at_level("WARNING", logger=mod.logger.name):
         block = await mod.worker_transcript("org_1", TRIG)
     head, body = block.split("\n", 2)[1], block.split("\n", 2)[2]
@@ -728,7 +733,7 @@ async def test_long_transcript_is_cut_from_start_and_flagged(env, monkeypatch, c
 async def test_retry_after_failure_keeps_notes(env):
     """A failed notes task spends the claim with no notes; a person's Retry that succeeds still stores them."""
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await task_done(env, to="failed")
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
     await task_done(env, DECIDED)  # the Retry's attempt is done
@@ -739,7 +744,7 @@ async def test_retry_after_failure_keeps_notes(env):
 
 async def test_a_notes_trigger_the_router_never_started_marks_no_notes(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await mod.on_not_started("org_1", {"triggerId": "chat:other"})  # not a notes trigger
     assert "notesMailedAt" not in env.meta["meeting"]
     await mod.on_not_started("org_1", {"triggerId": TRIG})
@@ -755,7 +760,7 @@ async def test_retry_after_failure_admits_followups(env, monkeypatch):
     enqueue = AsyncMock(side_effect=lambda _o, _r, request: seen.append(dict(request)) or True)
     monkeypatch.setattr(meeting_followups, "enqueue", enqueue)
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     await task_done(env, to="failed")
     enqueue.assert_not_awaited()
     await task_done(env)  # the Retry's attempt is done
@@ -776,7 +781,7 @@ def _record_followups(monkeypatch):
 async def test_keep_retries_then_succeeds(env, monkeypatch):
     enqueue, _ = _record_followups(monkeypatch)
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     enqueue.side_effect = [OSError("admission unavailable"), True]
     await task_done(env)
     assert env.meta["meeting"]["notes"] == NOTES and env.requests[TRIG]["mailAttemptedAt"]
@@ -789,7 +794,7 @@ async def test_keep_is_safe_to_repeat(env, monkeypatch, remember):
     items, each decision remembered once."""
     enqueue, seen = _record_followups(monkeypatch)
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     request = dict(env.requests[TRIG])  # the request as read before either keep
     assert await mod._keep_notes("org_1", TRIG, request, DECIDED)
     assert await mod._keep_notes("org_1", TRIG, request, DECIDED + "\n- Nova: one more")
@@ -802,7 +807,7 @@ async def test_keep_is_safe_to_repeat(env, monkeypatch, remember):
 
 async def test_keep_failure_after_retries_marks_no_notes(env, caplog):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     env.patch_failures = 3  # every try fails to write the meeting
     with caplog.at_level("ERROR", logger=mod.logger.name):
         await task_done(env)
@@ -836,7 +841,7 @@ async def test_keep_total_time_is_bounded(env, monkeypatch, caplog):
     monkeypatch.setattr(mod, "_keep_notes", hangs)
     monkeypatch.setattr(mod, "KEEP_TOTAL_S", 0.05)
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     with caplog.at_level("ERROR", logger=mod.logger.name):
         await task_done(env)  # returns: never raises into the activity
     assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
@@ -846,7 +851,7 @@ async def test_keep_total_time_is_bounded(env, monkeypatch, caplog):
 
 async def test_an_unreadable_transcript_says_try_again(env, monkeypatch):
     env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1", transcriptRoomId=DEFAULT)
-    await mod.on_ended(ROOM)
+    await mod.on_ended("org_1", ROOM)
     monkeypatch.setattr(mod.transcripts, "get", MagicMock(side_effect=OSError("s3 timeout")))
     with pytest.raises(mod.TranscriptUnavailable, match="couldn't be read just now"):
         await mod.worker_transcript("org_1", TRIG)
@@ -864,5 +869,5 @@ async def test_the_no_notes_mark_is_bounded_and_never_raises(monkeypatch, caplog
     monkeypatch.setattr(mod, "_MARK_S", 0.01)
     for patch in (AsyncMock(side_effect=RuntimeError("ddb")), hang):
         monkeypatch.setattr(mod.meeting_invites, "_patch_meeting", patch)
-        await mod._mark_no_notes({"roomId": ROOM, "occurrence": 1})  # returns: no raise, no hang
+        await mod._mark_no_notes("org_1", {"roomId": ROOM, "occurrence": 1})  # returns: no raise, no hang
     assert sum("no-notes mark failed" in r.getMessage() for r in caplog.records) == 2

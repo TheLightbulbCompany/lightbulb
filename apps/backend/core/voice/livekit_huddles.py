@@ -15,7 +15,7 @@ from livekit.protocol import models as lk_models
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo
+from core.engine import api as engine
 
 logger = logging.getLogger(__name__)
 AGENT_IDENTITY = "agent-ceo"
@@ -77,10 +77,11 @@ def meet_room_name(room_id: str) -> str:
     return f"meet-{settings.ENVIRONMENT}-{room_id}"
 
 
-async def live_room_name(room_id: str) -> str:
+async def live_room_name(owner_id: str, room_id: str) -> str:
     """Where the room's voice worker is now: the meeting's room while a meeting is in call, else
     the Live huddle's."""
-    meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+    conv = await engine.get_conversation(owner_id, room_id)
+    meeting = (conv.annotations.get("meeting") if conv else None) or {}
     return meet_room_name(room_id) if meeting.get("status") == "in_call" else room_name(room_id)
 
 
@@ -144,9 +145,10 @@ async def _identities(room: str) -> list[str]:
     return [p.identity for p in res.participants]
 
 
-async def has_ceo(room_id: str, *, live: bool = False) -> bool:
+async def has_ceo(owner_id: str, room_id: str, *, live: bool = False) -> bool:
     """Is the room's voice worker up -- wherever it is now, or (``live``) in the Live huddle."""
-    return AGENT_IDENTITY in await _identities(room_name(room_id) if live else await live_room_name(room_id))
+    room = room_name(room_id) if live else await live_room_name(owner_id, room_id)
+    return AGENT_IDENTITY in await _identities(room)
 
 
 async def participants(room_id: str) -> list[str]:
@@ -246,11 +248,11 @@ def _packets(events: list[dict]) -> list[bytes]:
     return [b'{"events":[' + b",".join(p) + b"]}" for p in packets]
 
 
-async def send_frames(room_id: str, events: list[dict]) -> None:
+async def send_frames(owner_id: str, room_id: str, events: list[dict]) -> None:
     packets = _packets(events)
     if not packets:
         return
-    room = await live_room_name(room_id)
+    room = await live_room_name(owner_id, room_id)
     async with _api() as lk:
         for data in packets:  # in order: the worker's reorder window keys on frame seq, not arrival
             await lk.room.send_data(

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from main import app  # noqa: E402
 from routers import meet_bot as mod  # noqa: E402
+from core.repositories import messaging_repo
 
 lk = mod.livekit_huddles
 ROOM = "11111111-1111-4111-8111-111111111111"
@@ -26,7 +27,9 @@ def env():
         patch.object(lk.settings, "LIVEKIT_API_SECRET", "s" * 32),
         patch.object(lk.settings, "ENVIRONMENT", "dev"),
         patch.object(
-            mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: {"meeting": meeting} if r == ROOM else None)
+            messaging_repo,
+            "get_room",
+            AsyncMock(side_effect=lambda r: {"ownerId": "org_a", "meeting": meeting} if r == ROOM else None),
         ),
         patch.object(mod.rooms, "room_agents", AsyncMock(return_value=AGENTS)),
     ):
@@ -92,3 +95,13 @@ def test_an_audio_ticket_opens_no_page_seat(env):
     client, _ = env
     exp = int(time.time()) + 3600
     assert _exchange(client, lk.meet_ticket(ROOM, "nonce-1", exp, lk.AUDIO_TICKET)).status_code == 401
+
+
+def test_a_deleted_meeting_rooms_ticket_is_refused_as_any_bad_ticket(env):
+    """The ticket's room was deleted: the same 401 and body as a forged ticket, so nothing says the room was there."""
+    client, meeting = env
+    gone = {"ownerId": "org_a", "meeting": meeting, "deletedAt": "2026-11-01T00:00:00Z"}
+    with patch.object(messaging_repo, "get_room", AsyncMock(return_value=gone)):
+        resp = _exchange(client, _ticket())
+    assert (resp.status_code, resp.json()) == (401, {"detail": "invalid ticket"})
+    assert _exchange(client, _ticket(room="22222222-2222-4222-8222-222222222222")).json() == resp.json()

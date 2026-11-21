@@ -533,7 +533,7 @@ async def test_meeting_chat_whitespace_is_invalid_without_effects(api, monkeypat
     from core.voice.meetings import meeting_chat
 
     lookup, provider = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(meeting_chat.tasks_repo, "get_trigger", lookup)
+    monkeypatch.setattr("core.repositories.tasks_repo.get_trigger", lookup)
     monkeypatch.setattr(meeting_chat.meeting_bots, "say", provider)
     response = await api.post(
         f"/api/v1/internal/runtime/{WS}/meeting-chat",
@@ -563,10 +563,9 @@ async def test_meeting_context_authenticates_hook_before_access_and_bounds_curso
 
 async def test_owner_hook_cannot_read_private_meeting_without_current_batch_grant(api, monkeypatch):
     from unittest.mock import AsyncMock
-    from core.voice.meetings import meeting_context
 
     lookup = AsyncMock()
-    monkeypatch.setattr(meeting_context.tasks_repo, "get_trigger", lookup)
+    monkeypatch.setattr("core.repositories.tasks_repo.get_trigger", lookup)
     response = await api.post(
         f"/api/v1/internal/runtime/{WS}/meeting-context",
         json={"runId": "other-run", "triggerId": "known-private-trigger", "section": "transcript"},

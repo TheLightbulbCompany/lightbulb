@@ -16,8 +16,10 @@ _clock, room, bots, now = fixtures._clock, fixtures.room, fixtures.bots, fixture
 def store(room, bots):
     rows = {}
 
-    def create(**kw):
-        rows.setdefault(kw["room_id"], {"roomId": kw["room_id"], "ownerId": kw["owner_id"], **deepcopy(kw["extra"])})
+    def create(**kw):  # META written, and returned
+        return rows.setdefault(
+            kw["room_id"], {"roomId": kw["room_id"], "ownerId": kw["owner_id"], **deepcopy(kw["extra"])}
+        )
 
     def get(r):
         return deepcopy(rows.get(r))
@@ -36,7 +38,7 @@ def store(room, bots):
     room.create.side_effect = create
     room.get.side_effect = get
     room.patch.side_effect = patch
-    mi.messaging_repo.set_meeting_field_if_absent.side_effect = absent
+    fixtures.messaging_repo.set_meeting_field_if_absent.side_effect = absent
     bots.create.side_effect = lambda **kw: "bot-" + kw["room_id"]
     return rows
 
@@ -87,7 +89,7 @@ async def test_future_override_is_skipped_when_parent_advances(store, bots, now)
     await mi.handle_team_mail("org_1", _mail(cal), TEAM)
     store[PARENT]["meeting"]["status"] = "ended"
     now["t"] = _epoch(2026, 11, 7, 16, 0)
-    await mi.advance(PARENT)
+    await mi.advance("org_1", PARENT)
     assert store[PARENT]["meeting"]["startAt"] == _epoch(2026, 11, 21, 15, 0)
 
 

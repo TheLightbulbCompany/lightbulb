@@ -176,6 +176,7 @@ async def lifespan(app: FastAPI):
     from core.services.browser_control import run_autosave_sweeper
     from core.services.memory_api import run_memory_sweeper
     from core.voice.voice_calls import voice_call_sweeper
+    from core.voice.os_voice import os_voice_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     idle_sweeper_stop = asyncio.Event()
@@ -186,6 +187,8 @@ async def lifespan(app: FastAPI):
     browser_autosave_task = asyncio.create_task(run_autosave_sweeper(browser_autosave_stop))
     voice_sweeper_stop = asyncio.Event()
     voice_sweeper_task = asyncio.create_task(voice_call_sweeper(voice_sweeper_stop))
+    os_voice_stop = asyncio.Event()
+    os_voice_task = asyncio.create_task(os_voice_sweeper(os_voice_stop))
     memory_sweeper_stop = asyncio.Event()
     memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
     digest_stop = asyncio.Event()
@@ -205,6 +208,7 @@ async def lifespan(app: FastAPI):
             "run_ledger_sweeper": run_sweeper_task,
             "browser_autosave_sweeper": browser_autosave_task,
             "voice_call_sweeper": voice_sweeper_task,
+            "os_voice_sweeper": os_voice_task,
             "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
@@ -241,6 +245,7 @@ async def lifespan(app: FastAPI):
     run_sweeper_stop.set()
     browser_autosave_stop.set()
     voice_sweeper_stop.set()
+    os_voice_stop.set()
     memory_sweeper_stop.set()
     digest_stop.set()
     away_stop.set()
@@ -256,6 +261,7 @@ async def lifespan(app: FastAPI):
                 run_sweeper_task,
                 browser_autosave_task,
                 voice_sweeper_task,
+                os_voice_task,
                 memory_sweeper_task,
                 digest_task,
                 away_task,
@@ -270,6 +276,7 @@ async def lifespan(app: FastAPI):
             run_sweeper_task,
             browser_autosave_task,
             voice_sweeper_task,
+            os_voice_task,
             memory_sweeper_task,
             digest_task,
             away_task,
@@ -282,6 +289,7 @@ async def lifespan(app: FastAPI):
             run_sweeper_task,
             browser_autosave_task,
             voice_sweeper_task,
+            os_voice_task,
             memory_sweeper_task,
             digest_task,
             away_task,

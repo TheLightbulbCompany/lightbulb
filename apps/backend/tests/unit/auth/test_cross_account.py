@@ -396,8 +396,14 @@ async def seed_users(a, b, mp, calls) -> dict:
 
 
 async def seed_os(a, b, mp, calls) -> dict:
+    from core.voice import os_voice
+
     await ok(a, "GET", "/api/v1/os/account")  # A's Spark account
-    return {}
+    mp.setattr(settings, "OPENAI_API_KEY", "sk-test-not-real")
+    fake(mp, calls, "core.voice.os_voice._create_live", ("live_fake", "v=0\r\nanswer"))  # OpenAI
+    mp.setattr(os_voice, "start_sideband", lambda sid: None)
+    voice = await ok(a, "POST", "/api/v1/os/voice-session", {"sdp": f"v=0\r\n{MARKER}", "kind": "hold", "dcid": 4})
+    return {"a_voice": voice["sessionId"], "_needles": [voice["sessionId"]]}
 
 
 async def seed_runtime_rpc(a, b, mp, calls) -> dict:
@@ -735,6 +741,8 @@ CASES = [
     # which is the point of a code, so test_os covers that one)
     Case("os", "GET", "/api/v1/os/account"),
     Case("os", "POST", "/api/v1/os/referral", {"code": "nobody"}),
+    Case("os", "POST", "/api/v1/os/voice-session", {"sdp": "v=0\r\n", "kind": "hold", "dcid": 4}),  # B's own
+    Case("os", "GET", "/api/v1/os/voice-session/{a_voice}", a_id=True),
     # devices, support, desktop sign-in: the caller's own
     Case(
         "devices", "POST", "/api/v1/devices", {"token": "ExponentPushToken[b]", "platform": "ios", "deviceId": "dev-b"}

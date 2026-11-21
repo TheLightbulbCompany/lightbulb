@@ -75,6 +75,8 @@ class FakeStripe:
         self.calls: list[tuple[str, dict]] = []
         self.subs: dict[str, str] = {}
         self.trial_ends: dict[str, int] = {}
+        self.period_ends: dict[str, int] = {}
+        self.ending: set[str] = set()  # cancel_at_period_end
         self.sessions: dict[str, dict] = {}
         self.by_key: dict[str, str] = {}
         self.customers = 0
@@ -115,6 +117,8 @@ class FakeStripe:
             "status": self.subs[sub_id],
             "customer": "cus_1",
             "trial_end": self.trial_ends.get(sub_id),
+            "cancel_at_period_end": sub_id in self.ending,
+            "items": {"data": [{"current_period_end": self.period_ends.get(sub_id)}]},
         }
 
     def sub_list(self, **kw):
@@ -554,6 +558,42 @@ async def test_a_referral_for_a_paying_subscriber_calls_no_stripe(ddb, clock, fa
     subscribe(ddb, status="active")
     await refer_b_to_a(ddb, clock)
     assert fake.calls == []
+
+
+async def test_a_paying_subscribers_referral_gives_the_friend_the_day_and_calls_no_stripe(ddb, clock, fake):
+    assert await refer_b_to_a(ddb, clock) == START + 4 * DAY  # not paying: the referrer earns it
+    await account(A)
+    subscribe(ddb, status="active")
+    fake.calls.clear()
+    clock[0] += 100
+    c = Tenant("user_c", None)
+    await account(c)
+    assert (await req("POST", "/os/referral", c, json={"code": "a"})).json() == {"applied": True}
+    assert fake.calls == []
+    assert (await account(c))["trialEndsAt"] == clock[0] + 4 * DAY
+    a = await account(A)
+    assert a["trialEndsAt"] == START + 4 * DAY and a["referralCount"] == 2 and a["referralDaysEarned"] == 1
+
+
+async def test_next_charge_follows_the_subscription(ddb, clock, webhook, fake):
+    await account()
+    fake.trial_ends["sub_1"], fake.period_ends["sub_1"] = START + 3 * DAY, START + 33 * DAY
+    await webhook.send("created", "sub_1", "trialing")
+    assert (await account())["nextChargeAt"] == START + 3 * DAY
+    await webhook.send("updated", "sub_1", "active")
+    assert (await account())["nextChargeAt"] == START + 33 * DAY
+    fake.ending.add("sub_1")
+    await webhook.send("updated", "sub_1", "active")
+    assert (await account())["nextChargeAt"] is None
+    fake.ending.clear()
+    await webhook.send("updated", "sub_1", "active")
+    await webhook.send("updated", "sub_1", "past_due")
+    assert (await account())["nextChargeAt"] is None and "os_next_charge_at" not in ddb.users.get_item(
+        Key={"user_id": "user_a"}
+    )["Item"]
+    await webhook.send("updated", "sub_1", "active")
+    await webhook.send("deleted", "sub_1", "canceled")
+    assert (await account())["nextChargeAt"] is None
 
 
 async def test_a_referral_stands_when_stripe_fails(ddb, clock, fake, monkeypatch, metrics):

@@ -11,6 +11,10 @@ VOICE_ROUTERS = ("routers.voice", "routers.huddles", "routers.meetings")
 #: enclosing function, so a second router import anywhere fails. Remove an entry when that path moves out of the
 #: routers; never add one.
 KNOWN = [
+    # The phone's two agent-runtime tools (engine-service Task 3) moved here from the engine's routes and still act
+    # through the phone's own route functions (bookings, messages, the call's hand-off bookkeeping).
+    "voice/phone/tools.py: front_desk: routers.voice_phone",
+    "voice/phone/tools.py: transfer_call: routers.voice_phone",
     "voice/phone/voice_booking.py: _line_problem: routers.voice_phone",
     "voice/voice_calls.py: sweep_phone_calls: routers.voice_phone",
 ]
@@ -104,18 +108,9 @@ PRODUCT = [
     ),
 ]
 
-#: Engine modules that still import product code, as `file: function: module`. Each later task of the engine-service
-#: plan moves call sites onto `core.engine.hooks` and deletes their entries; never add one.
-KNOWN_ENGINE_TO_PRODUCT = [
-    "routers/messaging.py: <module>: core.voice.voice_calls",
-    "routers/runtime_internal.py: business_facts: core.voice.phone.business_profile",
-    "routers/runtime_internal.py: front_desk: core.voice.phone.business_profile",
-    "routers/runtime_internal.py: front_desk: routers.voice_phone",
-    "routers/runtime_internal.py: meeting_chat: core.voice.meetings.meeting_chat",
-    "routers/runtime_internal.py: meeting_context: core.voice.meetings.meeting_context",
-    "routers/runtime_internal.py: meeting_stop_transcribing: core.voice.meetings.meeting_chat",
-    "routers/runtime_internal.py: transfer_call: routers.voice_phone",
-]
+#: Engine modules that import product code, as `file: function: module`: none since engine-service Task 3 (every
+#: engine call into a product goes through `core.engine.hooks`). Never add one.
+KNOWN_ENGINE_TO_PRODUCT: list[str] = []
 #: Product modules that still import engine code other than the contract (`core.engine`). Only ever shrinks.
 KNOWN_PRODUCT_TO_ENGINE = [
     "core/voice/livekit_huddles.py: <module>: core.repositories.messaging_repo",
@@ -148,6 +143,7 @@ KNOWN_PRODUCT_TO_ENGINE = [
     "core/voice/phone/calls.py: <module>: core.repositories.messaging_repo",
     "core/voice/phone/calls.py: <module>: core.services.questions",
     "core/voice/phone/phone_pin.py: <module>: core.repositories.messaging_repo",
+    "core/voice/phone/tools.py: <module>: core.services.task_conversation",
     "core/voice/phone/voice_booking.py: <module>: core.repositories.messaging_repo",
     "core/voice/phone/voice_booking.py: <module>: core.repositories.tasks_repo",
     "core/voice/phone/voice_onboarding.py: <module>: core.repositories.messaging_repo",

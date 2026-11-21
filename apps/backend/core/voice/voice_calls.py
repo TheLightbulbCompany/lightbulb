@@ -19,6 +19,7 @@ from core.billing import metronome_client, voice_billing
 from core.billing import metronome_fast_gate
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
+from core.engine.contract import VOICE_NOTE_TEXT_MAX
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
 from core.services import hermes_profiles, messaging
@@ -245,7 +246,6 @@ async def _open_windows(owner_id: str, now: int) -> list[dict]:
 
 RENAME_DAILY_LIMIT = 3
 NOTE_DAILY_LIMIT = 10
-NOTE_TEXT_MAX = 300
 
 
 async def send_voice_notices(owner_id: str, notices: dict[str, dict]) -> None:
@@ -301,6 +301,11 @@ async def send_renamed_notices(
     await send_voice_notices(owner_id, notices)
 
 
+async def voice_run(owner_id: str, run_id: str) -> dict | None:
+    """The VOICERUN row the phone (or Live) wrote when it dispatched the run: its room, agent and requester."""
+    return await messaging_repo.get_voice_run(owner_id, run_id)
+
+
 async def edit_voice_profile(
     owner_id: str, *, agent_id: str, run_id: str, action: str, name: str | None, text: str | None
 ) -> dict:
@@ -338,7 +343,7 @@ async def edit_voice_profile(
         )
         return {"ok": True, "agentId": agent_id, "name": new, "notes": notes}
     said = (text or "").strip()
-    if action != "clear_notes" and not 1 <= len(said) <= NOTE_TEXT_MAX:
+    if action != "clear_notes" and not 1 <= len(said) <= VOICE_NOTE_TEXT_MAX:
         raise _problem(422, code="invalid_text")
     if not await messaging_repo.count_voice_edit(owner_id, agent_id, "notes", NOTE_DAILY_LIMIT):
         raise _problem(429, code="rate_limited")

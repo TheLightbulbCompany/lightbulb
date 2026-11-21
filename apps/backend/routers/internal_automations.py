@@ -17,6 +17,7 @@ from ulid import ULID
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
+from core.engine import hooks
 from core.repositories import automations_repo, messaging_repo, tasks_repo, user_repo
 from core.services import admission, automation_schedule, task_conversation
 from core.temporal import client as temporal
@@ -199,7 +200,7 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
 
 # --- voice: work asked aloud becomes a task (Task 10) --------------------------------------------------
 # The requester and the room come from the VOICERUN row the backend wrote when it dispatched the turn (the
-# Mac tool's authority), never from the model. One utterance = one run id = one trigger: a retried tool call
+# Mac tool's authority), never from the model: the product's row, read by `context("voice_run")`. One utterance = one run id = one trigger: a retried tool call
 # is the same task.
 
 
@@ -230,10 +231,10 @@ async def start_voice_work(
     """The task behind voice-start, for callers already authorized another way (the phone worker). `origin`
     (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task.
     `ask` (`task_asks.open_ask`'s arguments): the Router opens that Question on the new task instead of starting it."""
-    run = await messaging_repo.get_voice_run(owner_id, body.run_id)
-    if run is None or run.get("roomId") != body.room_id:
+    run = await hooks.context(hooks.ContextAsk(tenant_id=owner_id, purpose="voice_run", run_id=body.run_id))
+    if run.conversation_id != body.room_id:
         raise _err(404, "unknown_run")
-    requester = run.get("requesterUserId")
+    requester = run.requester_user_id
     if not requester:
         raise _err(403, "no_requester")  # a guest on a call starts nothing
     meta = await messaging_repo.get_room(body.room_id) or {}
@@ -264,7 +265,7 @@ async def start_voice_work(
             "deliverRoomId": body.room_id,
             "callId": body.call_id,
             "utteranceId": body.run_id,
-            "agentId": run.get("agentId"),
+            "agentId": run.agent_id,
             "taskId": task_id,
             "start": start.model_dump(by_alias=True),
             **({"origin": origin} if origin else {}),

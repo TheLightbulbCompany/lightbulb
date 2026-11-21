@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from core.engine import hooks
 from core.engine.hooks import ContextAnswer, ContextAsk, EngineEvent, ToolCall, ToolName
-from core.voice import livekit_huddles
+from core.voice import livekit_huddles, voice_calls
 from core.voice.meetings import meeting_context, meeting_followups, meeting_invites, meeting_notes, records
+from core.voice.meetings import tools as meeting_tools
 from core.voice.phone import business_profile, calls
+from core.voice.phone import tools as phone_tools
 
 #: Meetings' part of the Router's instructions (`router_prompt.instructions`).
 ROUTER_TOOLS = ", meeting_chat, meeting_stop_transcribing, meeting_context"
@@ -148,6 +150,11 @@ async def _context(ask: ContextAsk) -> ContextAnswer:
         return _admit(ask)
     if ask.purpose == "post_target":
         return await _post_target(ask)
+    if ask.purpose == "voice_run":  # who asked for a voice-start's work, from the row the backend wrote at dispatch
+        run = await voice_calls.voice_run(ask.tenant_id, ask.run_id) or {}
+        return ContextAnswer(
+            conversation_id=run.get("roomId"), requester_user_id=run.get("requesterUserId"), agent_id=run.get("agentId")
+        )
     raise ValueError(f"no product context for {ask.purpose}")
 
 
@@ -173,9 +180,24 @@ async def _event(e: EngineEvent) -> None:
         await _question_answered(e)
 
 
+async def _voice_profile(call: ToolCall) -> dict:
+    """C8: the agent's ``lightbulb_voice_profile`` tool -- rename or voice notes, asked by voice."""
+    return await voice_calls.edit_voice_profile(call.tenant_id, agent_id=call.agent_id, run_id=call.run_id, **call.args)
+
+
+_TOOLS = {
+    "front_desk": phone_tools.front_desk,
+    "transfer_call": phone_tools.transfer_call,
+    "business_facts": phone_tools.business_facts,
+    "meeting_context": meeting_tools.meeting_context,
+    "meeting_chat": meeting_tools.meeting_chat,
+    "meeting_stop_transcribing": meeting_tools.meeting_stop_transcribing,
+    "voice_profile": _voice_profile,
+}
+
+
 async def _tool(name: ToolName, call: ToolCall) -> dict:
-    # ponytail: the runtime's tool routes still call the product directly; Task 3 moves them onto this hook.
-    raise NotImplementedError(f"product tool {name} is not on the hook yet")
+    return await _TOOLS[name](call)
 
 
 def register() -> None:

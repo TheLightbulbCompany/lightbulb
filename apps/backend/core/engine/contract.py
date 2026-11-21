@@ -27,6 +27,8 @@ PRODUCT_REF_KEYS: frozenset[str] = frozenset(
 
 #: The header that carries a run's `authorize` grant (`ContextAnswer.grant`) to the agent's product tools.
 GRANT_HEADER = "X-Lightbulb-Meeting-Context-Grant"
+#: The longest voice note the `voice_profile` tool takes (its route's request model checks it first).
+VOICE_NOTE_TEXT_MAX = 300
 
 
 def product_ref(trigger: dict | None) -> bool:

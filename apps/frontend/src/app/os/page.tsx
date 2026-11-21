@@ -5,7 +5,6 @@ import { Navbar } from "@/components/landing/Navbar";
 import { pageMetadata } from "@/lib/seo";
 
 import { OsInvite } from "./OsInvite";
-import { SparkDownload } from "./SparkDownload";
 
 export const metadata = pageMetadata({
   title: "Spark, a Voice App for the Mac | Lightbulb",
@@ -15,7 +14,8 @@ export const metadata = pageMetadata({
 
 // The page stays at /os: invite links (/os?ref=CODE) already point here.
 // Every line is a VERIFIED row in .agents/product-marketing.md ("Spark").
-export default function OsPage() {
+export default async function OsPage() {
+  const ready = await installerPublished();
   return (
     <main className="ld-page min-h-screen">
       <Navbar />
@@ -24,11 +24,8 @@ export default function OsPage() {
         <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
           One-click voice interface for your Mac.
         </p>
-        <div className="mt-12">
-          <SparkDownload />
-        </div>
         <Suspense>
-          <OsInvite />
+          <OsInvite ready={ready} />
         </Suspense>
         <p className="mt-6 text-sm text-[var(--lb-ink-soft)]">
           For Mac with Apple silicon (M1 or later). Requires macOS 14 or later.
@@ -37,4 +34,19 @@ export default function OsPage() {
       <Footer />
     </main>
   );
+}
+
+// Whether the installer is published yet: the release asset answers 302 (or 200) once uploaded. Checked
+// at most every five minutes, so the button appears without a deploy.
+async function installerPublished(): Promise<boolean> {
+  try {
+    const r = await fetch("https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark/Spark.dmg", {
+      method: "HEAD",
+      redirect: "manual",
+      next: { revalidate: 300 },
+    });
+    return r.status === 302 || r.status === 200;
+  } catch {
+    return false;
+  }
 }

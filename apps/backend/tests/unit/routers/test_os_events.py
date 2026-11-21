@@ -33,11 +33,10 @@ VALID = {
     "onboarding_completed": {"skipped_sign_in": False, "seconds_total": 120},
     "first_conversation": {},
     "task_completed": {},
-    "task_failed": {"reason": "brain_timeout"},
+    "task_failed": {"reason": "unreachable"},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},
     "referral_link_copied": {},
-    "referral_code_entered": {},
     "update_installed": {"from_version": "2.1.0", "to_version": "2.1.1"},
 }
 
@@ -138,7 +137,7 @@ async def test_unknown_keys_and_bad_values_are_dropped_and_the_event_still_goes(
     await send("signin_completed", props)
     await send("signin_started", {"method": "carrier pigeon"})
     await send("onboarding_completed", {"seconds_total": 86401, "skipped_sign_in": 1})
-    await send("task_failed", {"reason": "Bad Reason"})
+    await send("task_failed", {"reason": "brain_timeout"})
     got = [
         {
             k: v
@@ -150,12 +149,17 @@ async def test_unknown_keys_and_bad_values_are_dropped_and_the_event_still_goes(
     assert got == [{"method": "apple"}, {}, {}, {}]
 
 
+async def test_retired_referral_code_entered_is_dropped(ph, ddb):
+    assert (await send("referral_code_entered")).status_code == 204
+    assert ph.captures == []
+
+
 async def test_bad_versions_are_omitted(ph, ddb):
     await send("app_first_launch", appVersion=SENTENCE, osVersion=3)
     assert {"app_version", "os_version"}.isdisjoint(ph.captures[0]["properties"])
 
 
-# Letters-only text is mixed case: `task_failed.reason` takes lowercase snake_case codes until the fixed list.
+# Free text in every shape: none of it is an enum value or a version.
 SHORT = ["call my wife at 5 about rent", "rent due friday", "CallMyWife", "2.1 call wife", "1.2.3 beta"]
 
 
@@ -272,6 +276,17 @@ async def test_referral_captures_both_events(ph, ddb):
     assert r.json() == {"applied": True}
     assert [c["distinct_id"] for c in ph.named("referral_applied")] == ["user_a"]
     assert [c["distinct_id"] for c in ph.named("referred_by_applied")] == ["user_b"]
+
+
+async def test_web_signup_referral_events_fire_at_record_and_at_credit(ph, ddb):
+    await req("GET", "/os/account", A)
+    assert (await req("POST", "/os/referral", B, {"code": "a"})).json() == {"applied": True}
+    assert [c["distinct_id"] for c in ph.named("referred_by_applied")] == ["user_b"]
+    assert ph.named("referral_applied") == []
+    for _ in range(2):
+        await req("GET", "/os/account", B)
+    assert [c["distinct_id"] for c in ph.named("referral_applied")] == ["user_a"]
+    assert len(ph.named("referred_by_applied")) == 1
 
 
 async def test_voice_session_ended_once(ph, ddb):

@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 PRODUCT = "spark"
 VERSION = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){0,3}([-+][0-9A-Za-z.]{1,16})?")
-_REASON = re.compile(r"[a-z0-9_]{1,40}")
 NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:spark")
 
 
@@ -51,11 +50,10 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "onboarding_completed": {"skipped_sign_in": _bool, "seconds_total": _seconds},
     "first_conversation": {},
     "task_completed": {},
-    "task_failed": {"reason": _match(_REASON)},
+    "task_failed": {"reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other")},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},
     "referral_link_copied": {},
-    "referral_code_entered": {},
     "update_installed": {"from_version": _match(VERSION), "to_version": _match(VERSION)},
 }
 

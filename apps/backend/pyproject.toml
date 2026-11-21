@@ -6,7 +6,7 @@ dependencies = [
     "fastapi>=0.142.2,<0.143.0",
     "starlette>=0.47.2",
     "uvicorn>=0.54.0,<1.0.0",
-    "pydantic[email]>=2.13.5,<3.0.0",
+    "pydantic[email]>=2.14.3,<3.0.0",
     "pydantic-settings>=2.15.0",
     "python-dotenv==1.2.4",
     "python-multipart>=0.0.32",

@@ -169,7 +169,7 @@ async def _on_status(
                 audio = await meeting_invites.adopted_audio(room_id, bot_id)
                 fields = {"recallBotId": bot_id, "status": "bot_created", **({"audio": audio} if audio else {})}
                 drop = ("botError", "lastBotStatus", *(() if audio else ("audio",)))
-                meeting = await meeting_invites._patch_meeting(room_id, fields, drop=drop) or meeting
+                meeting = await meeting_invites._patch_meeting(room_id, fields, drop=drop)
                 status = "bot_created"
             else:
                 if target == "in_call":

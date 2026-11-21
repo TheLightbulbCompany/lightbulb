@@ -1818,12 +1818,48 @@ def _deleted(room):
     room.state["meta"] = {**room.state["meta"], "deletedAt": "2026-10-02T00:00:00+00:00"}
 
 
-async def test_patch_meeting_on_deleted_room_returns_none(room):
+async def test_patch_meeting_on_deleted_room_writes_nothing(room):
+    """The stored map comes back unchanged, so no caller dereferences None; one that would act opts into None."""
     room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 1, "meeting": {"status": "scheduled"}}
     _deleted(room)
-    assert await meeting_invites._patch_meeting("r", {"status": "ended"}) is None
+    assert await meeting_invites._patch_meeting("r", {"status": "ended"}) == {"status": "scheduled"}
+    assert await meeting_invites._patch_meeting("r", {"status": "ended"}, stop_if_gone=True) is None
     room.patch.assert_not_awaited()
     assert room.state["meta"]["meeting"] == {"status": "scheduled"}
+
+
+async def test_reschedule_on_deleted_room_is_quiet(room, now):
+    _ended_series(room)
+    _deleted(room)
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    before = dict(room.state["meta"]["meeting"])
+    assert await meeting_invites._reschedule_locked("org_1", "r", before, now=now["t"]) == "not_due"
+    assert room.state["meta"]["meeting"] == before
+    room.sync.assert_not_awaited()  # no bot booked, moved or pulled
+    room.upsert.assert_not_awaited()  # no agents seated into the deleted room
+
+
+async def test_advance_on_deleted_room_is_quiet(room, now, metrics):
+    _ended_series(room)
+    _deleted(room)
+    now["t"] = _epoch(2026, 11, 7, 15, 40)
+    await meeting_invites.advance("r")
+    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "not_due"}})]  # not "error"
+    room.sync.assert_not_awaited()
+
+
+async def test_team_mail_for_room_deleted_mid_flight_is_acknowledged(room, bots, monkeypatch):
+    """Deleted after `_apply`'s own check, before its write: the engine refuses the write and the delivery ends
+    with an outcome (SES inbound answers it 2xx), with no line, no bot move and no RSVP."""
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    lines, before = len(_lines(room)), dict(room.state["meta"]["meeting"])
+    room.accept.reset_mock()
+    monkeypatch.setattr(meeting_invites.api, "_owned", AsyncMock(side_effect=meeting_invites.api._not_found()))
+    assert await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM) == "meeting_stale"
+    assert room.state["meta"]["meeting"] == before and len(_lines(room)) == lines
+    bots.create.assert_awaited_once()  # the first delivery's bot only
+    bots.reschedule.assert_not_awaited()
+    room.accept.assert_not_awaited()
 
 
 async def test_sync_bot_on_deleted_room_is_quiet(room, bots):

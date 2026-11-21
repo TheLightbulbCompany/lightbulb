@@ -262,6 +262,20 @@ async def test_trial_ended_is_402_and_openai_is_not_called(ddb, clock, no_sideba
     assert not openai.called
 
 
+async def test_a_subscribed_person_passes_the_trial_check(ddb, clock, no_sideband, openai, users):
+    from core.voice import os_voice
+
+    assert (await req("GET", "/os/account")).status_code == 200
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_subscription_status = :s",
+        ExpressionAttributeValues={":s": "active"},
+    )
+    clock[0] += 3 * 86400
+    assert (await create()).status_code == 201
+    assert await os_voice._trial_ends_at("user_a") is None  # a live session is never closed as trial_ended
+
+
 async def test_first_call_creates_the_account_then_proceeds(ddb, clock, no_sideband, openai, users):
     assert (await create()).status_code == 201
     row = users.get_item(Key={"user_id": "user_a"})["Item"]

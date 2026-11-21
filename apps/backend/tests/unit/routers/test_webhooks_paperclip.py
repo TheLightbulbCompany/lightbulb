@@ -416,6 +416,7 @@ async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
     with (
         patch("core.services.workspace_memory.delete_person_memory", new=person_wipe),
         patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=repo_delete),
+        patch("core.services.os_billing.cancel_for_deleted_user", new=AsyncMock()),
     ):
         resp = await async_client.post(
             "/api/v1/webhooks/clerk",
@@ -795,6 +796,7 @@ async def test_user_deleted_fails_the_event_when_the_person_wipe_fails(async_cli
     with (
         patch("core.services.workspace_memory.delete_person_memory", new=AsyncMock(side_effect=RuntimeError("down"))),
         patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=AsyncMock()),
+        patch("core.services.os_billing.cancel_for_deleted_user", new=AsyncMock()),
         pytest.raises(RuntimeError, match="down"),  # the app error reaches the client: no 200 to ack
     ):
         await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())

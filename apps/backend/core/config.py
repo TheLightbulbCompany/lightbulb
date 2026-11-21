@@ -322,6 +322,8 @@ class Settings(BaseSettings):
     STRIPE_WORKSPACE_PRICE_ID: str = ""
     #: The $250/month voice plan's flat fee (one licensed price); Metronome bills only its overage minutes.
     STRIPE_VOICE_PLAN_PRICE_ID: str = ""
+    #: Spark's $20/month subscription (one licensed price); empty: no checkout link.
+    STRIPE_SPARK_PRICE_ID: str = ""
     STRIPE_BASE_PRICE_ID: str = ""
     # Stripe price for the Ultra runtime tier. Empty default so the app boots
     # without it; CDK-wired in dev/prod. This is the billing source of truth
@@ -345,6 +347,8 @@ class Settings(BaseSettings):
     SEAT_PRICE_USD: int = 20
     # Display dollars for STRIPE_FRONT_DESK_PRICE_ID (Photon's $250/month line price); lockstep with its unit amount.
     FRONT_DESK_PRICE_USD: int = 250
+    # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.
+    SPARK_PRICE_USD: int = 20
 
     # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also
     # be buyable inside the iOS app). ALL default empty, and the feature is off

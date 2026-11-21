@@ -1773,6 +1773,11 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_VOICE_PLAN_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_VOICE_PLAN_PRICE_ID_DEV ?? ""),
+      // Spark's $20/month subscription (the Mac app's person-keyed plan).
+      STRIPE_SPARK_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_SPARK_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_SPARK_PRICE_ID_DEV ?? ""),
       METRONOME_VOICE_METRIC_ID: env === "dev"
         ? "17a42d84-c10c-4c6a-907d-feb2ab02d080"
         : "8065419d-79f8-4b8e-ad1d-d933479521cc",

@@ -3250,13 +3250,6 @@ async def get_voice_agent(owner_id: str) -> dict | None:
     return voice_agent_config(json.loads(row["config"])) if row else None
 
 
-async def put_voice_agent(owner_id: str, config: dict, updated_by: str) -> None:
-    """The whole document, as the product writes it (`core.voice.store.put_voice_agent`); kept for tests that seed it."""
-    item = {"pk": owner_pk(owner_id), "sk": "VOICEAGENT", "config": json.dumps(voice_agent_config(config)),
-            "updatedAt": utc_now_iso(), "updatedBy": updated_by}  # fmt: skip
-    await run_in_thread(_table().put_item, Item=item)
-
-
 async def list_owner_room_ids(owner_id: str) -> list[str]:
     rows = await _query(owner_pk(owner_id), begins_with="ROOM#")
     return [r["roomId"] for r in rows]

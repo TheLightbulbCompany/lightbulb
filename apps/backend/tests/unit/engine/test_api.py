@@ -1,7 +1,7 @@
 """The engine's operations for products (`core.engine.api`, engine-service plan Task 4), against the moved bodies.
 
 The `*_base` tests drive the entry points products call today (`caller_turn`, `create_human_message`,
-`start_voice_work`, the answer and action routes) and pin what they store: they pass on the code before the move and
+the answer and action routes) and pin what they store: they pass on the code before the move and
 after it. The others call `core.engine.api` and assert the same ids, rows and answers, so a call or meeting that spans
 the deploy replays rather than doubles."""
 
@@ -439,34 +439,10 @@ def _voice_start_expected(lane: str) -> dict:
     }
 
 
-@pytest.fixture
-def voice_run(tables, monkeypatch):
-    from core.voice import voice_calls
-
-    monkeypatch.setattr(
-        voice_calls,
-        "voice_run",
-        AsyncMock(return_value={"roomId": DM, "requesterUserId": OWNER, "agentId": FRONT}),
-    )
-
-
 def _picked(row: dict, expected: dict) -> dict:
     out = {k: row.get(k) for k in expected}
     out["ref"] = {**out["ref"], "start": {k: out["ref"]["start"].get(k) for k in expected["ref"]["start"]}}
     return out
-
-
-@pytest.mark.parametrize("kind,lane", [("dm", ts.router_lane_key(OWNER)), ("channel", "shared")])
-async def test_start_voice_work_base(voice_run, kind, lane):
-    from routers.internal_automations import VoiceStartIn, start_voice_work
-
-    await _room(DM, kind)
-    body = VoiceStartIn(run_id="run-9", call_id="call-9", room_id=DM, title=" Find a slot ", brief="Caller asks. ")
-    out = await start_voice_work(WS, body, origin="phone_contact")
-    tid = "voice:call-9:run-9"
-    assert out == {"triggerId": tid, "taskId": ts.router_task_id(tid, 0, 0), "created": True}
-    expected = _voice_start_expected(lane)
-    assert _picked(await tasks_repo.get_trigger(WS, tid), expected) == expected
 
 
 def _notes_args():
@@ -904,12 +880,6 @@ async def test_get_conversation_reads_the_record_and_its_members(tables):
     assert (await engine.get_conversation(WS, CALL)).members == []  # members only when asked
 
 
-async def test_get_conversation_refuses_another_tenants_conversation(tables):
-    await _room(CALL, "call")
-    assert await engine.get_conversation(OTHER, CALL, with_members=True) is None
-    assert await engine.get_conversation(WS, DM) is None  # missing
-
-
 async def test_find_conversation_names_the_tenant_and_never_a_deleted_one(tables):
     await _room(CALL, "call", extra={"callToken": "t"})
     conv = await engine.find_conversation(CALL)
@@ -932,11 +902,6 @@ async def test_list_conversations_is_the_tenants_newest_of_a_kind(tables):
         await engine.list_conversations(WS, ["call", "dm"], 1)
         and len(await engine.list_conversations(WS, ["dm"], 5)) == 1
     )
-
-
-async def test_list_conversations_refuses_another_tenants_conversation(tables):
-    await _room(CALL, "call")
-    assert await engine.list_conversations(OTHER, ["call"], 10) == []
 
 
 async def test_open_conversation_is_idempotent(tables, front):
@@ -1013,24 +978,11 @@ async def test_read_lines_says_the_agent_lines_and_the_cursor(tables):
     assert [m["text"] for m in out["messages"]] == ["Hello."] and out["after"] == int(first["messageSeq"])
 
 
-async def test_read_lines_refuses_another_tenants_conversation(tables):
-    await _room(CALL, "call")
-    with pytest.raises(EngineError) as e:
-        await engine.read_lines(OTHER, CALL, 0)
-    assert e.value.status == 404
-
-
 async def test_read_history_is_the_newest_messages_oldest_first(tables):
     await _room(CALL, "call")
     for i in range(3):
         await _agent_line(CALL, f"line {i}", f"IDEMP#AGENT#h{i}")
     assert [r["text"] for r in await engine.read_history(WS, CALL, 2)] == ["line 1", "line 2"]
-
-
-async def test_read_history_refuses_another_tenants_conversation(tables):
-    await _room(CALL, "call")
-    with pytest.raises(EngineError):
-        await engine.read_history(OTHER, CALL, 50)
 
 
 async def test_get_task_reads_only_the_tenants_task(tables):
@@ -1061,3 +1013,36 @@ async def test_start_task_names_the_opening_questions_qid(tables, monkeypatch):
     assert (await engine.start_task(req)).qid == out.qid  # a retried start opens the same Question
     given = await engine.start_task(req.model_copy(update={"ask": {**req.ask, "qid": "q-own"}}))
     assert given.qid == "q-own"
+
+
+_READS = {
+    "get_conversation": lambda tenant: engine.get_conversation(tenant, CALL, with_members=True),
+    "list_conversations": lambda tenant: engine.list_conversations(tenant, ["call"], 10),
+    "read_lines": lambda tenant: engine.read_lines(tenant, CALL, 0),
+    "read_history": lambda tenant: engine.read_history(tenant, CALL, 50),
+}
+
+
+@pytest.mark.parametrize("op", sorted(_READS))
+async def test_reads_refuse_another_tenants_conversation(tables, op):
+    """The owner reads it; another tenant gets nothing (None or empty) or 404, never the conversation."""
+    await _room(CALL, "call")
+    await _agent_line(CALL, "Hi.", "IDEMP#AGENT#r1")
+    assert await _READS[op](WS)
+    try:
+        assert not await _READS[op](OTHER)
+    except EngineError as e:
+        assert e.status == 404
+
+
+@pytest.mark.parametrize("kind", ["call", "dm"])
+async def test_a_call_room_cannot_be_deleted(tables, kind):
+    """The one door that tombstones a room (`messaging.delete_room`, DELETE /messaging/rooms/{id}) deletes only a
+    channel: a call's room, and the owner's DM with the assistant, are refused, so no Phone route meets a deleted
+    conversation while the product owns it."""
+    room = CALL if kind == "call" else DM
+    await _room(room, kind)
+    with pytest.raises(messaging.ApiProblem) as e:
+        await messaging.delete_room(AuthContext(user_id=OWNER, org_id=WS, org_role="org:admin"), room)
+    assert e.value.error.code == "ROOM_NOT_DELETABLE"
+    assert not (await messaging_repo.get_room(room)).get("deletedAt")

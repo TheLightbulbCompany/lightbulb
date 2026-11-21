@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from core.repositories import messaging_repo
+from core.voice import store
 from tests.unit.services.conftest import repos  # noqa: F401
 
 WS = "org_test_456"
@@ -277,7 +278,7 @@ async def test_usage_overage_rate(repos, async_client_org_admin):  # noqa: F811
 @pytest.mark.asyncio
 async def test_usage_run_out_comes_from_the_agent_page(repos, async_client_org_admin):  # noqa: F811
     assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["runOut"] == "keep"
-    await messaging_repo.put_voice_agent(WS, {"runOut": "forward"}, "u")
+    await store.put_voice_agent(WS, {"runOut": "forward"}, "u")
     assert (await async_client_org_admin.get("/api/v1/voice/usage")).json()["runOut"] == "forward"
 
 
@@ -327,7 +328,7 @@ async def test_front_agent_selection_is_scoped_and_preserves_other_fields(async_
 async def test_unavailable_or_foreign_selection_has_no_saved_effect(async_client_org_admin, monkeypatch, agent):
     from routers import voice
 
-    await messaging_repo.put_voice_agent(WS, {"name": "Unchanged"}, "admin")
+    await store.put_voice_agent(WS, {"name": "Unchanged"}, "admin")
     monkeypatch.setattr(voice.agent_registry, "get", AsyncMock(return_value=agent))
     response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"frontAgentId": "foreign"}})
     assert response.status_code == 422
@@ -347,7 +348,7 @@ async def test_member_cannot_designate_front_agent(async_client_org_member, monk
 
 @pytest.mark.usefixtures("repos")
 async def test_missing_selected_agent_is_visible_without_rewriting_the_selection(async_client_org_admin):
-    await messaging_repo.put_voice_agent(WS, {"frontAgentId": "deleted-founder-worker", "name": "Preserved"}, "admin")
+    await store.put_voice_agent(WS, {"frontAgentId": "deleted-founder-worker", "name": "Preserved"}, "admin")
     response = await async_client_org_admin.get("/api/v1/voice/agent")
     assert response.status_code == 200
     assert response.json()["config"]["frontAgentId"] == "deleted-founder-worker"

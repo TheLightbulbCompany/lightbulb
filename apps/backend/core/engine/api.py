@@ -175,8 +175,8 @@ async def open_conversation(req: OpenIn) -> ConversationOut:
         )
     except messaging_repo.MessagingRepoError:
         meta = await messaging_repo.get_room(req.conversation_id)  # a replay keeps the conversation it opened
-        if not meta or meta.get("ownerId") != ws:
-            raise
+        if not meta or meta.get("ownerId") != ws or meta.get("deletedAt"):
+            raise  # missing, deleted or another tenant's: the create's own error
     return _conversation(req.conversation_id, meta)
 
 

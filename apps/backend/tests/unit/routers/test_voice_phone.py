@@ -90,7 +90,7 @@ A = "TN-Validation-Passed-A"  # the carrier attests the caller owns the number (
 async def _start(client, caller="+14155550133", room="phone-dev-_x_1", ago=3600, verstat=A, **config):
     """A started call, begun `ago` seconds back (the billed duration is capped by the time since start, M4)."""
     await voice_phone.put_line(NUMBER, LINE)
-    await messaging_repo.put_voice_agent("org_1", {**CONFIG, **config}, "user_owner")
+    await store.put_voice_agent("org_1", {**CONFIG, **config}, "user_owner")
     r = client.post(
         "/api/v1/internal/voice/calls",
         json={"calledNumber": NUMBER, "callerNumber": caller, "livekitRoom": room, "verstat": verstat},
@@ -616,7 +616,7 @@ def _slots(client, call, service: str) -> list[str]:
 
 
 async def _staff_now(staff: list[dict]) -> None:  # the owner edits the staff list on the Agent page
-    await messaging_repo.put_voice_agent("org_1", {**CONFIG, **STAFFED, "staff": staff}, "user_owner")
+    await store.put_voice_agent("org_1", {**CONFIG, **STAFFED, "staff": staff}, "user_owner")
 
 
 async def test_two_staff_take_two_bookings_at_once_and_refuse_a_third(client):
@@ -933,7 +933,7 @@ async def test_inbound_probe_marks_forwarding_ok_and_ends(client):
     await voice_phone.put_line(NUMBER, LINE)
     with patch.object(voice_outbound, "end_probe", AsyncMock()) as end:
         for caller, room in ((NUMBER, "phone-dev-_p1"), ("+14155550177", "phone-dev-_p2")):  # either caller id
-            await messaging_repo.put_voice_agent("org_1", {**CONFIG, **probe}, "user_owner")
+            await store.put_voice_agent("org_1", {**CONFIG, **probe}, "user_owner")
             r = client.post("/api/v1/internal/voice/calls", headers=W,
                             json={"calledNumber": NUMBER, "callerNumber": caller, "livekitRoom": room})  # fmt: skip
             assert r.status_code == 409 and r.json()["detail"]["code"] == "forward_check"
@@ -1467,7 +1467,7 @@ async def test_a_caller_write_never_undoes_an_owner_save_made_meanwhile(client):
         row = await real_get(table, pk, sk)
         if sk == "VOICEAGENT" and not raced:  # the owner saves after the caller read, before its write
             raced.append(1)
-            await messaging_repo.put_voice_agent("org_1", {**CONFIG, "paused": True}, "user_owner")
+            await store.put_voice_agent("org_1", {**CONFIG, "paused": True}, "user_owner")
         return row
 
     with patch.object(store, "get_item", get_then_owner_saves):
@@ -1542,7 +1542,7 @@ async def test_two_interleaved_starts_for_one_room_both_return_the_stored_token(
         return await real(**kw)
 
     await voice_phone.put_line(NUMBER, LINE)
-    await messaging_repo.put_voice_agent("org_1", CONFIG, "user_owner")
+    await store.put_voice_agent("org_1", CONFIG, "user_owner")
     body = voice_phone.StartIn(calledNumber=NUMBER, callerNumber="+14155550133", livekitRoom="phone-interleaved")
     with patch.object(messaging_repo, "create_room", held_until_both_minted):
         a, b = await asyncio.gather(voice_phone.start_call(body), voice_phone.start_call(body))

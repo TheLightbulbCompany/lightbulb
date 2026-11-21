@@ -245,18 +245,29 @@ FIND_CONVERSATION_ENTRY_POINTS = [
 
 
 def test_find_conversation_is_called_only_from_entry_points():
-    found = []
+    """Per function: any use of the name (`api.find_conversation`, a bare `find_conversation`) inside a function
+    names that function; importing the name itself, or a use outside any function, fails outright."""
+    found: set[str] = set()
     for path in _files(PRODUCT):
         tree = ast.parse(path.read_text(), filename=str(path))
+        where = str(path.relative_to(BACKEND))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and any(a.name == "find_conversation" for a in node.names):
+                found.add(f"{where}: <import>")
+        uses = [
+            n
+            for n in ast.walk(tree)
+            if (isinstance(n, ast.Attribute) and n.attr == "find_conversation")
+            or (isinstance(n, ast.Name) and n.id == "find_conversation")
+        ]
+        in_functions = set()
         for fn in ast.walk(tree):
             if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for node in ast.walk(fn):
-                    if isinstance(node, ast.Attribute) and node.attr == "find_conversation":
-                        found.append(f"{path.relative_to(BACKEND)}: {fn.name}")
-    module_level = [
-        str(path.relative_to(BACKEND))
-        for path in _files(PRODUCT)
-        if "find_conversation" in path.read_text()
-        and not any(f.startswith(str(path.relative_to(BACKEND))) for f in found)
-    ]
-    assert sorted(set(found)) == FIND_CONVERSATION_ENTRY_POINTS and not module_level
+                inner = {id(n) for n in ast.walk(fn)}
+                for n in uses:
+                    if id(n) in inner:
+                        found.add(f"{where}: {fn.name}")
+                        in_functions.add(id(n))
+        if any(id(n) not in in_functions for n in uses):
+            found.add(f"{where}: <module>")
+    assert sorted(found) == FIND_CONVERSATION_ENTRY_POINTS

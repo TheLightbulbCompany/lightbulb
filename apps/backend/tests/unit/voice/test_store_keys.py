@@ -135,3 +135,19 @@ def test_disjoint_sort_keys():
 
 def test_engine_repo_has_no_product_keys():
     assert _keys(ENGINE_REPO, re.compile(r"\b((?:VOICE|PHONE|CALLPUSH|MEETNOTES)[A-Z]*#?)")) == ENGINE_KEEPS
+
+
+async def test_the_engine_and_product_readers_of_the_agent_page_agree(table):
+    """One stored VOICEAGENT row, two readers: the product's (`store`) and the engine's (front agent, metering). They
+    return the same normalised document, so they cannot drift."""
+    from core.repositories import messaging_repo
+
+    doc = {
+        "name": "Nova",
+        "timezone": "America/Chicago",
+        "frontAgentId": "a1",
+        "meetings": {"emailNotes": True, "x": 1},
+    }
+    await store.put_voice_agent(OWNER, doc, "user_a")
+    product, engine = await store.get_voice_agent(OWNER), await messaging_repo.get_voice_agent(OWNER)
+    assert product == engine == {**doc, "meetings": {"x": 1}}

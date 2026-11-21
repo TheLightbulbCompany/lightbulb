@@ -54,6 +54,7 @@ from core.services import hermes_profiles, messaging, workspace_provisioning
 from core.services.credentials import integration_secret_store
 from core.services.provision_dispatch import dispatch_provision
 from core.temporal import client as temporal_client
+from core.voice import store
 from core.voice.phone import phone_pin
 from main import app
 from tests.unit.auth.conftest import MARKER, Tenant, mentions, snapshot
@@ -180,7 +181,7 @@ async def seed_huddles(a, b, mp, calls) -> dict:
 
 async def seed_voice(a, b, mp, calls) -> dict:
     await workspaces(a, b)
-    await messaging_repo.put_voice_agent(a.tenant, {"greeting": f"{MARKER} greeting"}, a.user_id)
+    await store.put_voice_agent(a.tenant, {"greeting": f"{MARKER} greeting"}, a.user_id)
     await phone_pin.save(a.tenant, a.user_id, "+15550100001", "4321")
     pk = messaging_repo.owner_pk(a.tenant)
     await put_row({"pk": pk, "sk": "VOICEWAIT#2026-11-20#call_a", "id": "call_a", "name": f"{MARKER} waiter"})

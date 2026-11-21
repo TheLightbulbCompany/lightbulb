@@ -80,3 +80,20 @@ async def test_phone_sweep_reads_every_page_of_the_open_call_index():
     ):
         assert await vc.sweep_phone_calls(10**9) == 2
     assert [c.args[0] for c in end.await_args_list] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_phone_sweep_drops_an_index_row_naming_no_owner():
+    from unittest.mock import MagicMock
+
+    table = MagicMock()
+    table.query.return_value = {"Items": [{"pk": "p", "sk": "a", "startedAtEpoch": 0}]}
+    from routers import voice_phone
+
+    with (
+        patch.object(vc, "messaging_table", return_value=table),
+        patch.object(voice_phone, "end_call", AsyncMock()) as end,
+    ):
+        assert await vc.sweep_phone_calls(10**9) == 0
+    end.assert_not_awaited()
+    table.delete_item.assert_called_once_with(Key={"pk": "p", "sk": "a"})

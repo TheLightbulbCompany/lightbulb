@@ -115,15 +115,18 @@ def made(api, monkeypatch):
 
 
 async def _voice_work(api, origin: str, run=RUN) -> str:
-    from routers.internal_automations import VoiceStartIn, start_voice_work
+    """A caller's or a meeting's task, started as the phone and meetings start theirs (`api.start_task`)."""
+    from core.engine import api as engine
+    from core.engine.contract import Principal, StartIn
 
-    api.rows[run] = {"runId": run, "roomId": "call-1", "requesterUserId": "user_owner"}
-    out = await start_voice_work(
-        WS,
-        VoiceStartIn(run_id=run, call_id="call-1", room_id="call-1", title="Find a Tuesday slot", brief="Caller asks."),
-        origin=origin,
-    )
-    return out["triggerId"]
+    out = await engine.start_task(
+        StartIn(
+            tenant_id=WS, principal=Principal(kind="member", id="user_owner"), conversation_id="call-1",
+            trigger_id=ts.trigger_id("voice", "call-1", run), source="voice", title="Find a Tuesday slot",
+            brief="Caller asks.", origin=origin, product_ref={"callId": "call-1", "utteranceId": run},
+        )
+    )  # fmt: skip
+    return out.trigger_id
 
 
 async def _router_child(parent: dict, trigger_id: str) -> dict:
@@ -148,7 +151,7 @@ async def test_subtask_inherits_contact_origin(api, made):
 
 async def test_grandchild_inherits_contact_origin(api, made):
     """Two levels: a Router sub-task, then work started from that sub-task's room through the Hermes start_work tool
-    (POST /voice-start, which reaches start_voice_work with no origin of its own)."""
+    (POST /voice-start, which sets no origin of its own)."""
     child = await _router_child(await made(await _voice_work(api, "phone_contact")), "chat:c1")
     room = ts.task_room_id(child["taskId"])
     api.rows[RUN] = {"runId": RUN, "roomId": room, "agentId": "ceo-1", "requesterUserId": "user_owner"}

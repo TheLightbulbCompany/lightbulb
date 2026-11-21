@@ -166,8 +166,9 @@ def _next(artifact: str, section: str, offset: int, length: int) -> str | None:
 
 async def context(
     owner_id: str, run_id: str, trigger_id: str, section: str, cursor: str | None = None, *, grant: str | None
-) -> dict:
-    """Bounded pages from the original artifact/tasks; cursor data is never an authorization source."""
+) -> dict | None:
+    """Bounded pages from the original artifact/tasks, None when the transcript is gone; cursor data is never an
+    authorization source."""
     from core.voice.meetings.meeting_notes import _meeting_tasks
 
     verify_grant(grant, owner_id, run_id, trigger_id)
@@ -186,7 +187,7 @@ async def context(
         room_id = snapshot.get("transcriptRoomId") or request["roomId"]
         raw = await run_in_thread(transcripts.get, owner_id, room_id, transcript_id)
         if raw is None:
-            raise LookupError("transcript_gone")
+            return None  # the transcript is gone
         text = raw.decode("utf-8", "replace")
         offset = _cursor(cursor, artifact, section, len(text))
         end = min(offset + PAGE_CHARS, len(text))

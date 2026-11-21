@@ -32,20 +32,21 @@ def _keys(s3) -> list[str]:
 
 
 def test_transcript_round_trip(s3):
-    transcript_id = transcripts.put("org_a", ROOM, b"[10:00] Pat: hi\n")
+    transcript_id = transcripts.put("org_a", ROOM, b"[10:00] Pat: hi\n", name="m|1")
     assert _keys(s3) == [f"org_a/voice/transcripts/{ROOM}/{transcript_id}.txt"]
     assert transcripts.get("org_a", ROOM, transcript_id) == b"[10:00] Pat: hi\n"
     assert transcripts.size("org_a", ROOM, transcript_id) == 16
+    assert transcripts.put("org_a", ROOM, b"[10:00] Pat: hi!\n", name="m|1") == transcript_id  # a retry
+    assert len(_keys(s3)) == 1 and transcripts.size("org_a", ROOM, transcript_id) == 17
 
 
 def test_get_missing_is_gone(s3):
-    assert transcripts.get("org_a", ROOM, str(uuid.uuid4())) is None
-    assert transcripts.get("org_a", ROOM, "not-a-uuid") is None  # an id from before the move
+    assert transcripts.get("org_a", ROOM, "not-a-uuid") is None  # a non-UUID id
     assert transcripts.size("org_a", ROOM, str(uuid.uuid4())) is None
 
 
 def test_get_failed_read_is_unreadable(s3, monkeypatch):
-    transcript_id = transcripts.put("org_a", ROOM, b"hi\n")
+    transcript_id = transcripts.put("org_a", ROOM, b"hi\n", name="m|1")
 
     def denied(*_a, **_k):
         raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject")
@@ -56,12 +57,12 @@ def test_get_failed_read_is_unreadable(s3, monkeypatch):
 
 
 def test_one_owner_cannot_read_anothers_transcript(s3):
-    transcript_id = transcripts.put("org_a", ROOM, b"secret\n")
+    transcript_id = transcripts.put("org_a", ROOM, b"secret\n", name="m|1")
     assert transcripts.get("org_b", ROOM, transcript_id) is None
 
 
 def test_oversized_transcript_is_bounded(s3):
     with pytest.raises(ValueError):
-        transcripts.put("org_a", ROOM, b"x" * (transcripts.MAX_BYTES + 1))
+        transcripts.put("org_a", ROOM, b"x" * (transcripts.MAX_BYTES + 1), name="m|1")
     assert _keys(s3) == []
-    transcripts.put("org_a", ROOM, b"x" * transcripts.MAX_BYTES)
+    transcripts.put("org_a", ROOM, b"x" * transcripts.MAX_BYTES, name="m|1")

@@ -86,9 +86,9 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
     owner_id, occurrence = meta["ownerId"], meeting.get("startAt")
     target = await meeting_invites.output_room(owner_id, room_id)
     data = _render(sorted(lines, key=lambda x: int(x["mark"]))).encode()
-    # Write, then mark: a crash in between leaves an orphaned S3 object and a retried final writes another, never a
-    # meeting marked with a transcript that is not there. A failed write raises and the meeting has no transcript.
-    transcript_id = await run_in_thread(transcripts.put, owner_id, target, data)
+    # Write, then mark: a retried final rewrites the same object (its id is the occurrence's), never a meeting marked
+    # with a transcript that is not there. A failed write raises and the meeting has no transcript.
+    transcript_id = await run_in_thread(transcripts.put, owner_id, target, data, name=f"{room_id}|{occurrence}")
     await meeting_invites._patch_meeting(
         room_id,
         {"transcriptAttachedAt": int(time.time()), "transcriptId": transcript_id, "transcriptRoomId": target},

@@ -77,6 +77,14 @@ def world(monkeypatch):
     return state
 
 
+async def test_a_gone_transcript_reads_as_none(world):
+    world["load"].return_value = None
+    assert (
+        await mod.context("org_a", world["runId"], world["trigger"]["triggerId"], "transcript", grant=world["grant"])
+        is None
+    )
+
+
 async def test_superseded_series_reads_only_the_original_occurrences_artifact(world):
     result = await mod.context(
         "org_a", world["runId"], world["trigger"]["triggerId"], "transcript", grant=world["grant"]

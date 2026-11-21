@@ -8,7 +8,9 @@ import pytest
 from botocore.exceptions import ClientError
 
 from core.services import messaging, ses_email
-from core.voice.meetings import meeting_notes as mod
+from core.voice.meetings import meeting_notes as mod, transcripts
+
+real_put = transcripts.put
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 CEO = "22222222-2222-4222-8222-222222222222"
@@ -136,7 +138,7 @@ async def test_a_final_transcript_is_kept_once_and_never_posted(env):
     await mod.on_transcript(ROOM, whole, True)
     env.store.assert_called_once()
     owner, room, data = env.store.call_args.args
-    assert (owner, room) == ("org_1", DEFAULT)
+    assert (owner, room, env.store.call_args.kwargs) == ("org_1", DEFAULT, {"name": f"{ROOM}|1790972400"})
     assert data.decode() == "[20:23] Pat: Hi all\n[20:24] Ada: Hello\n"  # UTC, by mark
     env.line.assert_not_awaited()  # not in chat: the owner opens it from the meeting view
     assert env.meta["meeting"]["transcriptAttachedAt"]
@@ -150,11 +152,16 @@ async def test_an_empty_final_attaches_nothing(env):
     env.store.assert_not_called()
 
 
-async def test_a_denied_transcript_write_ends_in_no_notes(env):
-    """A write refused by S3 (a role without the grant) raises to the worker and leaves no transcript mark, so the
-    notes take the existing "no transcript" path."""
-    env.store.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "PutObject")
-    with pytest.raises(ClientError):
+@pytest.mark.parametrize("refused", ["denied", "over_cap"])
+async def test_a_refused_transcript_write_ends_in_no_notes(env, monkeypatch, refused):
+    """A write refused by S3 (a role without the grant) or by the size cap raises to the route (an error answer the
+    worker retries) and leaves no transcript mark, so the notes take the existing "no transcript" path."""
+    if refused == "denied":
+        env.store.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "PutObject")
+    else:
+        monkeypatch.setattr(transcripts, "MAX_BYTES", 4)
+        env.store.side_effect = real_put  # the cap refuses before any S3 call
+    with pytest.raises((ClientError, ValueError)):
         await mod.on_transcript(ROOM, [_line(0, "Pat", "Hi", 1.0)], True)
     assert "transcriptId" not in env.meta["meeting"] and "transcriptAttachedAt" not in env.meta["meeting"]
     await mod.on_ended(ROOM)

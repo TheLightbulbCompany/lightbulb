@@ -191,7 +191,7 @@ async def test_only_a_terminal_wipe_deletes_meeting_transcripts(monkeypatch, ter
     with mock_aws():
         s3 = boto3.client("s3", region_name="us-east-1")
         s3.create_bucket(Bucket="test-bucket")
-        mine, theirs = transcripts.put("org_a", room, b"hi\n"), transcripts.put("org_b", room, b"hi\n")
+        mine, theirs = (transcripts.put(o, room, b"hi\n", name="m|1") for o in ("org_a", "org_b"))
 
         await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=terminal)
 

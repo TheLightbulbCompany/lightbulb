@@ -288,6 +288,7 @@ async def test_owner_epoch_uses_existing_settlement_once_without_live_call_workf
     ledger = MagicMock(ingest=AsyncMock())
     with (
         patch.object(voice_billing.messaging_repo, "_table", return_value=messaging),
+        patch.object(vc, "messaging_table", return_value=messaging),
         patch.object(voice_billing.billing_repo, "get_by_owner_id", AsyncMock(return_value=account)),
         patch.object(voice_billing, "report_minutes", AsyncMock()),
         patch.object(vc, "_metronome", return_value=ledger),

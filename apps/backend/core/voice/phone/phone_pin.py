@@ -19,8 +19,7 @@ from datetime import UTC, datetime
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from core.dynamodb import run_in_thread, utc_now_iso
-from core.repositories import messaging_repo
+from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
 
 DAY_TRIES = 5  # PINs tried (right or wrong) for one member in a UTC day; then it stops working until tomorrow
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}
@@ -31,23 +30,23 @@ def _hash(pin: str, salt: bytes) -> bytes:
 
 
 def _pin_key(owner_id: str, user_id: str) -> dict:
-    return {"pk": messaging_repo.owner_pk(owner_id), "sk": f"PHONEPIN#{user_id}"}
+    return {"pk": owner_pk(owner_id), "sk": f"PHONEPIN#{user_id}"}
 
 
 def _fail_key(owner_id: str, user_id: str) -> dict:
-    return {"pk": messaging_repo.owner_pk(owner_id), "sk": f"PHONEPINFAIL#{user_id}#{datetime.now(UTC):%Y-%m-%d}"}
+    return {"pk": owner_pk(owner_id), "sk": f"PHONEPINFAIL#{user_id}#{datetime.now(UTC):%Y-%m-%d}"}
 
 
 async def save(owner_id: str, user_id: str, mobile: str, pin: str) -> None:
     salt = secrets.token_bytes(16)
     item = {**_pin_key(owner_id, user_id), "mobile": mobile, "salt": salt.hex(), "hash": _hash(pin, salt).hex(),
             "updatedAt": utc_now_iso()}  # fmt: skip
-    await run_in_thread(messaging_repo._table().put_item, Item=item)
+    await run_in_thread(messaging_table().put_item, Item=item)
 
 
 async def get(owner_id: str, user_id: str) -> dict | None:
     """The member's saved mobile, or None. Never the hash."""
-    row = await messaging_repo._get(**_pin_key(owner_id, user_id))
+    row = await get_item(messaging_table(), **_pin_key(owner_id, user_id))
     return {"mobile": row["mobile"], "updatedAt": row.get("updatedAt")} if row else None
 
 
@@ -56,12 +55,12 @@ async def holders(owner_id: str, caller: str) -> list[dict]:
     if not caller:
         return []
     args = {
-        "KeyConditionExpression": Key("pk").eq(messaging_repo.owner_pk(owner_id)) & Key("sk").begins_with("PHONEPIN#"),
+        "KeyConditionExpression": Key("pk").eq(owner_pk(owner_id)) & Key("sk").begins_with("PHONEPIN#"),
         "ConsistentRead": True,
     }
     rows = []
     while True:
-        out = await run_in_thread(messaging_repo._table().query, **args)
+        out = await run_in_thread(messaging_table().query, **args)
         rows += [r for r in out.get("Items", []) if r.get("mobile") == caller]
         if not out.get("LastEvaluatedKey"):
             return rows
@@ -73,7 +72,7 @@ async def _reserve(key: dict, limit: int) -> bool:
     can never check more PINs than the limit. Every attempt counts, right or wrong."""
     try:
         await run_in_thread(
-            messaging_repo._table().update_item,
+            messaging_table().update_item,
             Key=key,
             UpdateExpression="ADD tries :one SET expiresAt = :exp",
             ConditionExpression="attribute_not_exists(tries) OR tries < :limit",

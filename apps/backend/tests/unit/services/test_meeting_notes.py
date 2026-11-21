@@ -71,11 +71,11 @@ def env(monkeypatch):
         request["mailAttemptedAt"] = 1
         return True
 
-    monkeypatch.setattr(mod.messaging_repo, "put_meeting_notes_request", put_request)
-    monkeypatch.setattr(mod.messaging_repo, "claim_meeting_notes_mail", claim_mail)
+    monkeypatch.setattr(mod.store, "put_meeting_notes_request", put_request)
+    monkeypatch.setattr(mod.store, "claim_meeting_notes_mail", claim_mail)
     monkeypatch.setattr(mod.messaging_repo, "list_messages", AsyncMock(side_effect=lambda *_a: (m.posted, None)))
     monkeypatch.setattr(
-        mod.messaging_repo, "get_meeting_notes_request", AsyncMock(side_effect=lambda _o, mid: m.requests.get(mid))
+        mod.store, "get_meeting_notes_request", AsyncMock(side_effect=lambda _o, mid: m.requests.get(mid))
     )
     monkeypatch.setattr(mod.messaging_repo, "list_members", m.members)
     monkeypatch.setattr(mod.task_conversation, "front_agent_id", m.front)
@@ -819,7 +819,7 @@ async def test_keep_failure_after_retries_marks_no_notes(env, caplog):
 
 
 async def test_an_expired_notes_request_ends_quietly(env, monkeypatch):
-    monkeypatch.setattr(mod.messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))
+    monkeypatch.setattr(mod.store, "get_meeting_notes_request", AsyncMock(return_value=None))
     with pytest.raises(mod.TranscriptUnavailable):
         await mod.worker_transcript("org_1", TRIG)
     await task_done(env, to="failed")  # the meeting record's request is gone: nothing to mark, no error

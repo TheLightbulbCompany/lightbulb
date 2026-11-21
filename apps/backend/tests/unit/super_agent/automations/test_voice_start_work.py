@@ -31,7 +31,7 @@ def api(table, monkeypatch):
 
     with (
         patch("routers.internal_automations._require_hook_token", AsyncMock(return_value={})),
-        patch("core.repositories.messaging_repo.get_voice_run", side_effect=get_voice_run),
+        patch("core.voice.store.get_voice_run", side_effect=get_voice_run),
         patch("core.repositories.messaging_repo.get_room", side_effect=get_room),
         patch("core.repositories.messaging_repo.put_admit_trigger", AsyncMock()) as outbox,
     ):

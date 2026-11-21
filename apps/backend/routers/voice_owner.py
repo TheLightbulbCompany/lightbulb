@@ -20,6 +20,7 @@ from core.auth import AuthContext
 from core.billing import voice_billing
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
+from core.voice import store
 from core.services import messaging
 from core.voice.rooms import _voice_requester
 from core.voice.worker_api import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
@@ -58,7 +59,7 @@ async def start(room_id: str, body: OwnerIn) -> dict:
     voice-run TTL, so a message posted while the worker reconnected is still said once; else the newest."""
     room, member, agent = await _owner(room_id, body)
     name, row = await asyncio.gather(
-        assistant_name(body.ownerId), messaging_repo.get_voice_run(body.ownerId, _cursor_key(room, member))
+        assistant_name(body.ownerId), store.get_voice_run(body.ownerId, _cursor_key(room, member))
     )
     after = int(row["spoken"]) if row and row.get("spoken") is not None else await latest_seq(room)
     return {"assistantName": name, "agentId": agent, "after": after}
@@ -106,7 +107,7 @@ async def events(room_id: str, body: EventsIn) -> dict:
     oldest first, and the next cursor. The worker polls this while a talk is live and says each one."""
     room, member, _agent = await _owner(room_id, body)
     if body.spoken is not None:
-        await messaging_repo.put_voice_run(body.ownerId, _cursor_key(room, member), {"spoken": body.spoken})
+        await store.put_voice_run(body.ownerId, _cursor_key(room, member), {"spoken": body.spoken})
     return await agent_lines(room, body.after)
 
 

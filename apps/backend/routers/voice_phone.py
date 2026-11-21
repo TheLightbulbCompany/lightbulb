@@ -35,12 +35,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext
-from core.dynamodb import run_in_thread, utc_now_iso
+from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
 from core.engine import api
 from core.engine.contract import LineIn, Principal
 from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
 from core.repositories import agent_registry_repo, messaging_repo, billing_repo
+from core.voice import store
 from core.services import push_service, clerk_admin, messaging, task_conversation
 from core.voice import rooms
 from core.voice.phone import phone_pin, voice_booking, voice_outbound, voice_preferences
@@ -127,11 +128,11 @@ _warming: set[asyncio.Task] = set()  # held so the Google warm-up is not garbage
 
 
 async def get_line(number: str) -> dict | None:
-    return await messaging_repo._get(f"PHONE#{number}", "LINE")
+    return await get_item(messaging_table(), f"PHONE#{number}", "LINE")
 
 
 async def put_line(number: str, line: dict) -> None:
-    await run_in_thread(messaging_repo._table().put_item, Item={"pk": f"PHONE#{number}", "sk": "LINE", **line})
+    await run_in_thread(messaging_table().put_item, Item={"pk": f"PHONE#{number}", "sk": "LINE", **line})
 
 
 def _line_state(cfg: dict, caller: str) -> Literal["live", "message_only"]:
@@ -154,11 +155,11 @@ def _allowed(cfg: dict, call: dict, *caps: str) -> None:
 
 
 def _caller_key(owner_id: str, caller: str) -> dict:
-    return {"pk": messaging_repo.owner_pk(owner_id), "sk": f"VOICECALLER#{caller}"}
+    return {"pk": owner_pk(owner_id), "sk": f"VOICECALLER#{caller}"}
 
 
 async def _seen(owner_id: str, caller: str) -> dict | None:
-    return await messaging_repo._get(**_caller_key(owner_id, caller)) if caller else None
+    return await get_item(messaging_table(), **_caller_key(owner_id, caller)) if caller else None
 
 
 # --- the call -------------------------------------------------------------------------------------------
@@ -315,7 +316,7 @@ async def start_call(body: StartIn) -> dict:
         if (room := await messaging_repo.get_room(call_id)) is None:  # a replay keeps the room it made
             raise
     await run_in_thread(  # the stale-call sweep's index: removed by end_call (voice_calls.sweep_phone_calls)
-        messaging_repo._table().put_item,
+        messaging_table().put_item,
         Item={"pk": OPEN_CALLS_PK, "sk": call_id, "ownerId": owner_id, "startedAtEpoch": int(time.time())},
     )
     # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes,
@@ -354,7 +355,7 @@ async def _live_slot(owner_id: str, line: str, call_id: str) -> str | None:
     """One of the line's LIVE_CALLS_PER_LINE slots for this call (end_call frees it; an unended call's expires)."""
     for i in range(LIVE_CALLS_PER_LINE):
         sk = f"VOICELIVE#{line}#{i}"
-        if await messaging_repo.claim_voice_slot(owner_id, sk, call_id, LIVE_SLOT_S):
+        if await store.claim_voice_slot(owner_id, sk, call_id, LIVE_SLOT_S):
             return sk
     return None
 
@@ -530,7 +531,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     out = await _patch_call(call_id, change)
     if meta.get("liveSlot"):
         try:  # best-effort: the slot's lease expires on its own, and billing below must always run
-            await messaging_repo.release_voice_slot(meta["ownerId"], meta["liveSlot"], call_id)
+            await store.release_voice_slot(meta["ownerId"], meta["liveSlot"], call_id)
         except Exception:
             logger.warning("live slot release failed for %s", call_id, exc_info=True)
     # Every step below runs on a retried end too, each once: a first end that failed part-way finishes here.
@@ -568,7 +569,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             item["facts"] = list(dict.fromkeys([*out.get("remembered", [])[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
             if name := out.get("callerName") or real_name(seen.get("name")):
                 item["name"] = name  # a placeholder kept before this fix is dropped here
-        await run_in_thread(messaging_repo._table().put_item, Item=item)
+        await run_in_thread(messaging_table().put_item, Item=item)
     try:  # best-effort: the one outcome metric must never fail the route
         put_metric("VoiceCallOutcome", dimensions={"outcome": out["outcome"]})
     except Exception:
@@ -585,7 +586,7 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     for kind, question in asks if meta.get("ownerUserId") else ():
         ask = call_ask(call_id, out, kind, question)
         await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
-    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": OPEN_CALLS_PK, "sk": call_id})
+    await run_in_thread(messaging_table().delete_item, Key={"pk": OPEN_CALLS_PK, "sk": call_id})
     return out
 
 
@@ -599,8 +600,8 @@ async def _first_calls_push(user_id: str, ws: str, call_id: str, call: dict) -> 
     """One conditional write both admits a call to the first three and dedupes a retried end (the id is in the set)."""
     try:
         await run_in_thread(
-            messaging_repo._table().update_item,
-            Key={"pk": messaging_repo.owner_pk(ws), "sk": "CALLPUSH"},
+            messaging_table().update_item,
+            Key={"pk": owner_pk(ws), "sk": "CALLPUSH"},
             UpdateExpression="ADD calls :c",
             ConditionExpression="attribute_not_exists(calls) OR (size(calls) < :n AND NOT contains(calls, :id))",
             ExpressionAttributeValues={":c": {call_id}, ":n": CALL_PUSHES, ":id": call_id},
@@ -773,7 +774,7 @@ async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
     name = real_name(body.name) or call.get("callerName") or ""
     service = body.service.strip()
     row = {
-        "pk": messaging_repo.owner_pk(owner_id),
+        "pk": owner_pk(owner_id),
         "sk": f"VOICEWAIT#{body.date}#{call_id}",
         "id": call_id,
         "date": body.date,
@@ -785,7 +786,7 @@ async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
         "createdAt": utc_now_iso(),
         "expiresAt": int(datetime.combine(day, datetime.min.time(), tzinfo=_tz(cfg)).timestamp()) + 2 * 86400,
     }  # TTL: a day after the date
-    await run_in_thread(messaging_repo._table().put_item, Item=row)
+    await run_in_thread(messaging_table().put_item, Item=row)
     line = f"Waitlisted for {body.date}" + (f" · {service}" if service else "")
     await _patch_call(call_id, lambda c: {"callerName": c.get("callerName") or name, "steps": _step(c, line)})
     return {"waitlisted": True, "date": body.date, "service": service}
@@ -887,7 +888,7 @@ async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: s
     if not requester:
         raise _err(403, "no_requester")
     run_id = hashlib.sha256(f"{call_id}:{title.strip().lower()}".encode()).hexdigest()[:32]
-    await messaging_repo.put_voice_run(
+    await store.put_voice_run(
         meta["ownerId"], run_id, {"roomId": call_id, "requesterUserId": requester, "agentId": None}
     )
     brief = f"{CONTACT_NOTE}\nCaller: {call.get('caller') or 'unknown'}\n\n{brief}"

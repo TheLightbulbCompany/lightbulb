@@ -18,8 +18,9 @@ from google.protobuf.duration_pb2 import Duration
 from livekit import api
 
 from core.config import settings
-from core.dynamodb import utc_now_iso
+from core.dynamodb import get_item, messaging_table, utc_now_iso
 from core.repositories import messaging_repo
+from core.voice import store
 from core.voice import livekit_huddles
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,11 @@ async def forward_check(ws: str, cfg: dict) -> dict:
         return {"ok": False, "reason": "no_business_line"}
     if not to:
         return {"ok": False, "reason": "us_only"}  # US/CA only: never dial abroad, the Caribbean or a premium line
-    if not line or ((await messaging_repo._get(f"PHONE#{line}", "LINE")) or {}).get("ownerId") != ws:
+    if not line or ((await get_item(messaging_table(), f"PHONE#{line}", "LINE")) or {}).get("ownerId") != ws:
         return {"ok": False, "reason": "no_line"}  # the call coming back must reach this workspace's line
     call_id = uuid.uuid4().hex
     # One dial per window per workspace: the lock is a conditional write, so two POSTs in the same instant dial once.
-    if age_s(cfg.get("forwardingCheck")) <= WINDOW_S or not await messaging_repo.claim_voice_slot(
+    if age_s(cfg.get("forwardingCheck")) <= WINDOW_S or not await store.claim_voice_slot(
         ws, "VOICEFWDCHECK#lock", call_id, WINDOW_S
     ):
         return {"ok": False, "reason": "check_in_progress"}

@@ -951,7 +951,7 @@ async def test_retry_without_notes_request_fails_without_running_worker(world, m
     from core.voice.meetings import meeting_notes
 
     monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))
+    monkeypatch.setattr(meeting_notes.store, "get_meeting_notes_request", AsyncMock(return_value=None))
     tid = await _task(triggerId=f"meeting-notes:{ROOM}:1")
     ref = await _attempt(tid)
     out = await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))

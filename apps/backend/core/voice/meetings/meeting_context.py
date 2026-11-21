@@ -17,6 +17,7 @@ import jwt
 from core.dynamodb import run_in_thread
 from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
 from core.repositories import messaging_repo, tasks_repo
+from core.voice import store
 from core.services import clerk_admin, messaging
 from core.services.service_token import _signing_key
 
@@ -129,7 +130,7 @@ async def authorize(owner_id: str, trigger: dict) -> dict:
     request_id = completion.get("requestId")
     if not isinstance(request_id, str) or not request_id:
         raise NotAuthorized("not_meeting_completion")
-    request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
+    request = await store.get_meeting_notes_request(owner_id, request_id)
     return await _authorize(owner_id, trigger, request)
 
 

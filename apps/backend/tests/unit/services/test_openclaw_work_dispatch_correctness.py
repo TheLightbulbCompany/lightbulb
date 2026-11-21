@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from core.services import openclaw_work as work
+from core.voice import store
 from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S, OpenClawWorkWorker
 
 ROOM = "11111111-1111-4111-8111-111111111111"
@@ -196,8 +197,8 @@ async def test_chat_never_steers_into_a_voice_run(monkeypatch):
         return {"Attributes": rows[-1]}  # as DynamoDB answers ReturnValues="ALL_NEW"
 
     table.update_item.side_effect = upsert
-    monkeypatch.setattr(work.messaging_repo, "_table", lambda: table)
-    await work.messaging_repo.put_voice_run(
+    monkeypatch.setattr(store, "messaging_table", lambda: table)
+    await store.put_voice_run(
         "owner_test", "run-v", {"roomId": ROOM, "agentId": AGENT, "speakerUserId": "u", "speakerName": "Bea"}
     )
     assert rows[0]["sk"] == "VOICERUN#run-v" and rows[0]["expiresAt"] > 0

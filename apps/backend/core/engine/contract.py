@@ -7,7 +7,7 @@ imports engine or product code.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -152,3 +152,14 @@ class EventIn(Model):
 class EventOut(Model):
     trigger_id: str
     created: bool
+
+
+class AnnotateIn(Model):
+    tenant_id: str
+    conversation_id: str
+    #: product fields of the conversation's record (`PRODUCT_META_FIELDS`), each to its whole new value
+    set: dict[str, Any]
+    #: the record revision the caller read: the write lands only over it (a read-merge-write)
+    expected_revision: int | None = None
+    #: a claim: `set`'s one map (`meeting`) is merged in only while the stored map has no such key; False otherwise
+    if_absent: str | None = None

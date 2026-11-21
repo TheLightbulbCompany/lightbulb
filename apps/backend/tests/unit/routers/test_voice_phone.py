@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from moto import mock_aws
 
 from core.repositories import messaging_repo, tasks_repo
+from core.voice import store
 from core.services import admission
 from core.voice.phone import calls as phone_calls
 from routers import voice_phone
@@ -351,7 +352,7 @@ async def test_unknown_creates_question_and_to_add(client):
         "firstName": "",
     }
     assert [o["id"] for o in ask["options"]] == ["answer", "call_myself", "done"]
-    run = await messaging_repo.get_voice_run("org_1", args[1].run_id)
+    run = await store.get_voice_run("org_1", args[1].run_id)
     assert run["requesterUserId"] == "user_owner" and run["roomId"] == call["callId"]
 
 
@@ -728,16 +729,16 @@ async def test_a_concurrent_double_book_on_the_last_person_lets_exactly_one_win(
     b = await _start(client, caller="+14155550182", room="phone-dev-_k2", **STAFFED)
     cfg = await voice_phone.agent_config("org_1")
     at = f"{_tomorrow()}T11:00"
-    real, raced = messaging_repo._transact, []
+    real, raced = phone_calls.transact, []
 
-    async def interleaved(items):
+    async def interleaved(table, items):
         # Both callers saw Mei free; the other caller's write lands between this one's choice and its write.
         if not raced:
             raced.append(True)
             await phone_calls._book("org_1", b["callId"], {"caller": "+14155550182"}, cfg, at, "pedicure", "Bo")
-        return await real(items)
+        return await real(table, items)
 
-    with patch.object(messaging_repo, "_transact", interleaved):
+    with patch.object(phone_calls, "transact", interleaved):
         with pytest.raises(voice_phone.HTTPException) as lost:
             await phone_calls._book("org_1", a["callId"], {"caller": "+14155550181"}, cfg, at, "pedicure", "Al")
     assert lost.value.status_code == 409 and lost.value.detail["code"] == "slot_taken"
@@ -751,15 +752,15 @@ async def test_concurrent_bookings_beside_an_old_booking_never_exceed_capacity(c
     assert _book_as(client, calls[0], at).status_code == 200
     await _staff_now([ANA, MEI])
     cfg = await voice_phone.agent_config("org_1")
-    real, raced = messaging_repo._transact, []
+    real, raced = phone_calls.transact, []
 
-    async def interleaved(items):
+    async def interleaved(table, items):
         if not raced:
             raced.append(True)
             await phone_calls._book("org_1", calls[2]["callId"], {"caller": "+14155550212"}, cfg, at, "gel", "Bo")
-        return await real(items)
+        return await real(table, items)
 
-    with patch.object(messaging_repo, "_transact", interleaved):
+    with patch.object(phone_calls, "transact", interleaved):
         with pytest.raises(voice_phone.HTTPException) as lost:
             await phone_calls._book("org_1", calls[1]["callId"], {"caller": "+14155550211"}, cfg, at, "gel", "Al")
     assert lost.value.detail["code"] == "slot_taken"
@@ -806,15 +807,15 @@ async def test_a_booking_that_lands_first_does_not_refuse_a_free_person(client):
     b = await _start(client, caller="+14155550272", room="phone-dev-_t2", **STAFFED)
     cfg = await voice_phone.agent_config("org_1")
     at = f"{_tomorrow()}T11:00"
-    real, raced = messaging_repo._transact, []
+    real, raced = phone_calls.transact, []
 
-    async def interleaved(items):
+    async def interleaved(table, items):
         if not raced:
             raced.append(True)
             await phone_calls._book("org_1", b["callId"], {"caller": "+14155550272"}, cfg, at, "pedicure", "Bo")
-        return await real(items)
+        return await real(table, items)
 
-    with patch.object(messaging_repo, "_transact", interleaved):
+    with patch.object(phone_calls, "transact", interleaved):
         row = await phone_calls._book("org_1", a["callId"], {"caller": "+14155550271"}, cfg, at, "gel", "Al")
     assert row["staff"] == "Ana" and (await _row(at, "#m1"))["name"] == "Bo"
 
@@ -824,16 +825,16 @@ async def test_two_identical_books_at_once_make_one_booking(client):
     the first's idempotency row and returns that booking instead of taking Mei."""
     a = await _start(client, caller="+14155550281", room="phone-dev-_u1", **STAFFED)
     cfg = await voice_phone.agent_config("org_1")
-    at, real, raced, inner = f"{_tomorrow()}T11:00", messaging_repo._transact, [], []
+    at, real, raced, inner = f"{_tomorrow()}T11:00", phone_calls.transact, [], []
     args = ("org_1", a["callId"], {"caller": "+14155550281"}, cfg, at, "gel", "Priya")
 
-    async def interleaved(items):
+    async def interleaved(table, items):
         if not raced:
             raced.append(True)
             inner.append(await phone_calls._book(*args))
-        return await real(items)
+        return await real(table, items)
 
-    with patch.object(messaging_repo, "_transact", interleaved):
+    with patch.object(phone_calls, "transact", interleaved):
         outer = await phone_calls._book(*args)
     assert inner[0]["staff"] == outer["staff"] == "Ana" and outer["_repeat"]
     assert outer["bookingId"] == inner[0]["bookingId"] and await _row(at, "#m1") is None
@@ -1550,7 +1551,7 @@ async def test_a_failed_slot_release_still_bills_and_a_retried_end_finishes_once
 
     call = await _start(client)
     url = f"/api/v1/internal/voice/calls/{call['callId']}/end"
-    with patch.object(voice_phone.messaging_repo, "release_voice_slot", AsyncMock(side_effect=RuntimeError("ddb"))):
+    with patch.object(voice_phone.store, "release_voice_slot", AsyncMock(side_effect=RuntimeError("ddb"))):
         assert client.post(url, json={"durationSec": 60}, headers=W).status_code == 200
     assert client.post(url, json={"durationSec": 60}, headers=W).status_code == 200
     assert await voice_billing.counted_seconds("org_1", None) == 60

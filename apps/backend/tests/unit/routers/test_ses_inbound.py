@@ -1109,7 +1109,9 @@ def _team(monkeypatch, members):
         "list_organization_members",
         AsyncMock(return_value=[{"user_id": f"user_{i}", **m} for i, m in enumerate(members)]),
     )
-    monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(side_effect=[None, {}, {}]))
+    monkeypatch.setattr(
+        meeting_invites.messaging_repo, "get_room", AsyncMock(side_effect=[None, *[{"ownerId": OWNER_ID}] * 3])
+    )
     monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok"))
     monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock())
     put = AsyncMock()

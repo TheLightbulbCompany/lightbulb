@@ -28,6 +28,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.engine.contract import GRANT_HEADER
 from core.repositories import messaging_repo, tasks_repo
+from core.voice import store
 from core.services import memory_tags, runtime_runs, runtime_transport
 from core.voice.meetings import meeting_context
 from core.temporal import activities
@@ -122,7 +123,7 @@ async def fixture(ctx: Ctx, label: str) -> dict:
         },
     )
     request_id = "synthetic-context-receipt:" + str(uuid.uuid4())
-    await messaging_repo.put_meeting_notes_request(
+    await store.put_meeting_notes_request(
         ctx.ws,
         request_id,
         {

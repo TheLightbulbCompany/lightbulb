@@ -37,7 +37,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.billing import voice_billing
-from core.dynamodb import run_in_thread
+from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services import link_preview
@@ -208,10 +208,10 @@ async def release_number(ws: str) -> str:
     (the Agent page's `number` is how a bought number is found). A lapsed voice plan's number goes back through
     `release_lapsed_numbers` instead."""
     cfg = await messaging_repo.get_voice_agent(ws) or {}
-    provision_key = {"pk": messaging_repo.owner_pk(ws), "sk": "VOICENUMBER"}
-    pending = await messaging_repo._get(**provision_key) or {}
+    provision_key = {"pk": owner_pk(ws), "sk": "VOICENUMBER"}
+    pending = await get_item(messaging_table(), **provision_key) or {}
     number = str(cfg.get("number") or pending.get("number") or "") or settings.VOICE_LINE_NUMBER
-    line = await messaging_repo._get(f"PHONE#{number}", "LINE") if number else None
+    line = await get_item(messaging_table(), f"PHONE#{number}", "LINE") if number else None
     if not line and pending.get("number") == number and pending.get("sid"):
         line = {"ownerId": ws, "sid": pending["sid"]}  # purchase succeeded before config/line save failed
     if not line or line.get("ownerId") != ws:
@@ -224,8 +224,8 @@ async def release_number(ws: str) -> str:
                 raise
         if settings.VOICE_INBOUND_TRUNK_ID:
             await _route_number(number, remove=True)
-    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": f"PHONE#{number}", "sk": "LINE"})
-    await run_in_thread(messaging_repo._table().delete_item, Key=provision_key)
+    await run_in_thread(messaging_table().delete_item, Key={"pk": f"PHONE#{number}", "sk": "LINE"})
+    await run_in_thread(messaging_table().delete_item, Key=provision_key)
     return number
 
 
@@ -252,8 +252,8 @@ def _lapsed(account: dict, now: datetime) -> bool:
 
 async def _release_lapsed(ws: str, now: datetime) -> str:
     """Give one lapsed workspace's bought number back to Twilio. The outcome (logged; the number never is)."""
-    key = {"pk": messaging_repo.owner_pk(ws), "sk": "VOICENUMBER"}
-    receipt = await messaging_repo._get(**key) or {}
+    key = {"pk": owner_pk(ws), "sk": "VOICENUMBER"}
+    receipt = await get_item(messaging_table(), **key) or {}
     number, sid = receipt.get("number"), receipt.get("sid")
     if not (number and sid):
         return "none"  # nothing bought, or a choice never paid for
@@ -275,7 +275,7 @@ async def _release_lapsed(ws: str, now: datetime) -> str:
             await _route_number(number, remove=True)
         try:
             await run_in_thread(
-                messaging_repo._table().delete_item,
+                messaging_table().delete_item,
                 Key={"pk": f"PHONE#{number}", "sk": "LINE"},
                 ConditionExpression="ownerId = :ws",
                 ExpressionAttributeValues={":ws": ws},
@@ -288,7 +288,7 @@ async def _release_lapsed(ws: str, now: datetime) -> str:
             lambda cfg: {**cfg, "live": False, "number": ""} if cfg.get("number") == number else None,
             SYSTEM_ACTOR_ID,
         )
-        await run_in_thread(messaging_repo._table().delete_item, Key=key)  # last, so any failed step above retries
+        await run_in_thread(messaging_table().delete_item, Key=key)  # last, so any failed step above retries
         return "released"
     finally:
         await container_repo.release_owner_lifecycle_claim(lease, token=token)
@@ -323,7 +323,7 @@ async def assign_number(ws: str, user_id: str) -> str:
     number = settings.VOICE_LINE_NUMBER
     if not number:
         raise NoNumber("not_available")  # this environment has no line
-    line = await messaging_repo._get(f"PHONE#{number}", "LINE")
+    line = await get_item(messaging_table(), f"PHONE#{number}", "LINE")
     if line and line.get("ownerId") != ws:
         raise NoNumber("taken")  # the line already answers another workspace
     item = {
@@ -334,7 +334,7 @@ async def assign_number(ws: str, user_id: str) -> str:
     }
     try:
         await run_in_thread(
-            messaging_repo._table().put_item,
+            messaging_table().put_item,
             Item=item,
             ConditionExpression="attribute_not_exists(pk) OR ownerId = :ws",
             ExpressionAttributeValues={":ws": ws},
@@ -375,7 +375,7 @@ async def provision_at_go_live(ws: str, cfg: dict, user_id: str) -> str:
     """Serialize paid provisioning; recover provider outcomes before buying another number on retry."""
     if not settings.VOICE_BUY_NUMBERS:
         have = cfg.get("number")
-        if have and ((await messaging_repo._get(f"PHONE#{have}", "LINE")) or {}).get("ownerId") == ws:
+        if have and ((await get_item(messaging_table(), f"PHONE#{have}", "LINE")) or {}).get("ownerId") == ws:
             return have
         return await assign_number(ws, user_id)
     lease = f"voice-number#{ws}"
@@ -393,14 +393,14 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
     if (
         isinstance(have, str)
         and have
-        and ((await messaging_repo._get(f"PHONE#{have}", "LINE")) or {}).get("ownerId") == ws
+        and ((await get_item(messaging_table(), f"PHONE#{have}", "LINE")) or {}).get("ownerId") == ws
     ):
         return have
-    key = {"pk": messaging_repo.owner_pk(ws), "sk": "VOICENUMBER"}
-    pending = await messaging_repo._get(**key) or {}
+    key = {"pk": owner_pk(ws), "sk": "VOICENUMBER"}
+    pending = await get_item(messaging_table(), **key) or {}
     if (
         pending.get("number")
-        and ((await messaging_repo._get(f"PHONE#{pending['number']}", "LINE")) or {}).get("ownerId") == ws
+        and ((await get_item(messaging_table(), f"PHONE#{pending['number']}", "LINE")) or {}).get("ownerId") == ws
     ):
         return pending["number"]  # an earlier config-save failure must not purchase or gate a second number
     paid = voice_billing.has_voice_plan(await billing_repo.get_by_owner_id(ws, consistent_read=True))
@@ -446,7 +446,7 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
                 raise NoNumber("none_in_area_code")
             number = found["available_phone_numbers"][0]["phone_number"]
             await run_in_thread(
-                messaging_repo._table().put_item,
+                messaging_table().put_item,
                 Item={**key, "number": number, "friendlyName": tag, "ownerUserId": user_id},
             )
         try:
@@ -478,7 +478,7 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
                     bought = rows[0]
                 else:
                     await run_in_thread(
-                        messaging_repo._table().delete_item,
+                        messaging_table().delete_item,
                         Key=key,
                         ConditionExpression="attribute_not_exists(sid) AND #n = :number",
                         ExpressionAttributeNames={"#n": "number"},
@@ -492,7 +492,7 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
     if bought["phone_number"] != number:
         raise NoNumber("provider_ownership_mismatch")
     await run_in_thread(
-        messaging_repo._table().put_item,
+        messaging_table().put_item,
         Item={
             **key,
             "number": number,
@@ -507,7 +507,7 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
         if bought_now:
             try:  # Compensate unroutable purchases; retain receipt if release fails for later recovery.
                 await _twilio("DELETE", f"IncomingPhoneNumbers/{bought['sid']}.json")
-                await run_in_thread(messaging_repo._table().delete_item, Key=key)
+                await run_in_thread(messaging_table().delete_item, Key=key)
             except Exception:
                 logger.exception("unroutable number release failed")
         raise NoNumber("route_failed") from exc
@@ -520,7 +520,7 @@ async def _provision_number(ws: str, cfg: dict, user_id: str) -> str:
     }
     try:
         await run_in_thread(
-            messaging_repo._table().put_item,
+            messaging_table().put_item,
             Item=item,
             ConditionExpression="attribute_not_exists(pk) OR ownerId = :ws",
             ExpressionAttributeValues={":ws": ws},

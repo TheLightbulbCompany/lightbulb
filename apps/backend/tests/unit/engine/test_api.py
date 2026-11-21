@@ -774,3 +774,110 @@ async def test_act_version_conflict(monkeypatch):
     assert await api.act(ActIn(tenant_id=WS, task_id=TASK, action="stop", principal=me, version=3)) == {"id": TASK}
     ws, task_id, action, request = update.await_args.args
     assert (ws, task_id, action, request.by_user_id) == (WS, TASK, "stop", OWNER)
+
+
+# --- annotate: a product's own fields on the conversation's record -------------------------------------------------
+
+
+def _annotate(**kw):
+    from core.engine.contract import AnnotateIn
+
+    return AnnotateIn(tenant_id=WS, conversation_id=CALL, **kw)
+
+
+def _spy_transact(monkeypatch) -> list[list[dict]]:
+    real, seen = messaging_repo._transact, []
+
+    async def spy(items):
+        seen.append(items)
+        return await real(items)
+
+    monkeypatch.setattr(messaging_repo, "_transact", spy)
+    return seen
+
+
+def _same_request(items: list[dict], room_id: str) -> list[dict]:
+    """A transaction with its room id and clock values blanked: two writes on twin rooms compare equal."""
+    import json
+
+    text = json.dumps(items, default=str).replace(room_id, "<room>")
+    out = json.loads(text)
+    for item in out:
+        item["Update"]["ExpressionAttributeValues"].pop(":now", None)
+    return out
+
+
+async def test_annotate_rejects_engine_fields(tables):
+    from core.engine import api
+    from core.engine.contract import EngineError
+
+    await _room(CALL, "call", extra={"call": {"status": "live"}})
+    for field in ("name", "hidden", "frontAgentId", "archivedAt", "revision"):
+        with pytest.raises(EngineError) as refused:
+            await api.annotate(_annotate(set={"call": {}, field: "x"}))
+        assert (refused.value.status, refused.value.detail) == (400, {"code": "not_product_field", "fields": [field]})
+    assert (await messaging_repo.get_room(CALL))["call"] == {"status": "live"}  # nothing written
+
+
+async def test_annotate_another_tenants_room_is_not_found(tables):
+    from core.engine import api
+    from core.engine.contract import AnnotateIn, EngineError
+
+    await _room(CALL, "call", extra={"call": {"status": "live"}})
+    for tenant, room in (("org_other", CALL), (WS, "no-such-room")):
+        with pytest.raises(EngineError) as refused:
+            await api.annotate(AnnotateIn(tenant_id=tenant, conversation_id=room, set={"call": {"status": "x"}}))
+        assert refused.value.status == 404
+    assert (await messaging_repo.get_room(CALL))["call"] == {"status": "live"}
+
+
+async def test_annotate_set_is_patch_room_meta(tables, monkeypatch):
+    """The same transaction `patch_room_meta` writes, CAS on the revision the caller read included."""
+    from botocore.exceptions import ClientError
+
+    from core.engine import api
+
+    twin = "c0000000-0000-4000-8000-000000000002"
+    for room in (CALL, twin):
+        await _room(room, "call", extra={"call": {"status": "live"}})
+    revision = (await messaging_repo.get_room(CALL))["revision"]
+    seen = _spy_transact(monkeypatch)
+    await messaging_repo.patch_room_meta(twin, {"call": {"status": "done"}}, expected_revision=revision)
+    assert await api.annotate(_annotate(set={"call": {"status": "done"}}, expected_revision=revision)) is True
+    assert _same_request(seen[1], CALL) == _same_request(seen[0], twin)
+    assert (await messaging_repo.get_room(CALL))["call"] == {"status": "done"}
+    with pytest.raises(ClientError) as lost:  # a writer since the caller's read: the caller retries, as today
+        await api.annotate(_annotate(set={"call": {"status": "stale"}}, expected_revision=revision))
+    assert messaging_repo.is_cancelled(lost.value)
+
+
+async def test_annotate_if_absent(tables, monkeypatch):
+    """`set_meeting_field_if_absent`'s claim: written once, False for the second writer; the same transaction."""
+    from core.engine import api
+
+    twin = "c0000000-0000-4000-8000-000000000002"
+    for room in (CALL, twin):
+        await _room(room, "channel", extra={"meeting": {"uid": "u1"}})
+    seen = _spy_transact(monkeypatch)
+    assert await messaging_repo.set_meeting_field_if_absent(twin, "ticketNonce", "n1", {"botClaimAt": 5})
+    claim = {"meeting": {"ticketNonce": "n1", "botClaimAt": 5}}
+    assert await api.annotate(_annotate(set=claim, if_absent="ticketNonce")) is True
+    assert _same_request(seen[1], CALL) == _same_request(seen[0], twin)
+    assert (await messaging_repo.get_room(CALL))["meeting"] == {"uid": "u1", "ticketNonce": "n1", "botClaimAt": 5}
+    again = {"meeting": {"ticketNonce": "n2", "botClaimAt": 6}}
+    assert await api.annotate(_annotate(set=again, if_absent="ticketNonce")) is False
+    assert (await messaging_repo.get_room(CALL))["meeting"]["ticketNonce"] == "n1"
+
+
+@pytest.mark.parametrize("field", ["callToken", "liveSlot", "ownerUserId"])
+async def test_annotate_rejects_fields_the_store_would_drop(tables, field):
+    """Product fields the record's writer would silently drop are refused, so `annotate` never answers True for
+    nothing written."""
+    from core.engine import api
+    from core.engine.contract import EngineError
+
+    await _room(CALL, "call", extra={"call": {"status": "live"}})
+    with pytest.raises(EngineError) as refused:
+        await api.annotate(_annotate(set={field: "x"}))
+    assert (refused.value.status, refused.value.detail) == (400, {"code": "not_product_field", "fields": [field]})
+    assert field not in await messaging_repo.get_room(CALL)

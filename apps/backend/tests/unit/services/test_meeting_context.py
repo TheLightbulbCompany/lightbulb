@@ -51,9 +51,7 @@ def world(monkeypatch):
         "config": {"meetings": {"followUps": True}},
     }
     monkeypatch.setattr(mod.messaging_repo, "get_voice_agent", AsyncMock(side_effect=lambda _: state["config"]))
-    monkeypatch.setattr(
-        mod.messaging_repo, "get_meeting_notes_request", AsyncMock(side_effect=lambda *_: state["request"])
-    )
+    monkeypatch.setattr(mod.store, "get_meeting_notes_request", AsyncMock(side_effect=lambda *_: state["request"]))
     monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _: state["meta"]))
     monkeypatch.setattr(mod.messaging_repo, "get_member", AsyncMock(side_effect=lambda *_: state["member"]))
     monkeypatch.setattr(

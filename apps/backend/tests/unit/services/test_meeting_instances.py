@@ -51,8 +51,8 @@ def override(*, hour=16, sequence=1, cancel=False, day="20261107"):
     return cal.replace("METHOD:REQUEST", "METHOD:CANCEL") if cancel else cal
 
 
-PARENT = mi.messaging_repo.meeting_room_id("org_1", UID)
-CHILD = mi.messaging_repo.meeting_room_id("org_1", f"{UID}#{_epoch(2026, 11, 7, 15, 0)}")
+PARENT = mi.store.meeting_room_id("org_1", UID)
+CHILD = mi.store.meeting_room_id("org_1", f"{UID}#{_epoch(2026, 11, 7, 15, 0)}")
 
 
 @pytest.mark.parametrize("hour", [14, 16])

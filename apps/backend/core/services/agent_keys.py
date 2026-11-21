@@ -107,7 +107,7 @@ async def create_key(owner_id: str, user_id: str, name: str, expires_in_days: in
             ]
         )
     except ClientError as exc:
-        if not repo._is_cancelled(exc):
+        if not repo.is_cancelled(exc):
             raise
         raise AgentKeyError(f"You can have at most {MAX_KEYS_PER_PERSON} agent keys. Revoke one first.") from exc
     logger.info("agent key created owner=%s user=%s keyId=%s", owner_id, user_id, key_id)
@@ -143,7 +143,7 @@ async def revoke_key(owner_id: str, user_id: str, key_id: str) -> bool:
             ]
         )
     except ClientError as exc:
-        if not repo._is_cancelled(exc):
+        if not repo.is_cancelled(exc):
             raise
         return False  # a concurrent revoke won
     logger.info("agent key revoked owner=%s user=%s keyId=%s", owner_id, user_id, key_id)

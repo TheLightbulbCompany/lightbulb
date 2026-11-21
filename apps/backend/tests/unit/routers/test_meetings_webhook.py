@@ -821,17 +821,24 @@ def test_a_status_for_a_deleted_meeting_room_is_answered_2xx(env, code):
     assert env["meta"]["meeting"] == before
 
 
-@pytest.mark.parametrize("code", ["in_call_recording", "call_ended", "fatal"])
-def test_a_deleted_meeting_rooms_status_webhook_is_acknowledged_and_does_nothing(env, code):
-    """Recall redelivers only a non-2xx: a deleted room's status is answered 200 as a room this environment lacks."""
-    env["meta"]["meeting"].update(status="in_call" if code != "in_call_recording" else "bot_created", inCallAt=1)
+def test_meeting_deleted_mid_call_is_still_metered(env):
+    """The room was deleted while its bot was in the call: Recall's `call_ended` still ends it (minutes reported
+    under the occurrence's key, the Meet's LiveKit room closed) and is answered 2xx."""
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1000)
     env["meta"]["deletedAt"] = "2026-11-01T00:00:00Z"
-    before = dict(env["meta"]["meeting"])
-    assert _post(env["client"], _status(code)).status_code == 200
-    assert env["meta"]["meeting"] == before
-    env["dispatch"].assert_not_awaited()
-    env["notes"].assert_not_called()
-    env["line"].assert_not_awaited()
+    stamp = "2026-10-03T00:00:00Z"
+    assert _post(env["client"], _at_time(_status("call_ended"), stamp)).status_code == 200
+    owner, key, _at, seconds, kind = env["reported_minutes"].await_args.args
+    assert (owner, key, kind) == ("org_a", f"meeting:{ROOM}:1000", "meeting") and seconds > 0
+    env["close"].assert_awaited_with(ROOM, meet=True)
+
+
+def test_idle_leave_on_a_deleted_room_pulls_the_bot(env):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 60)
+    env["meta"]["deletedAt"] = "2026-11-01T00:00:00Z"
+    assert _leave(env["client"]).status_code == 200
+    env["bot_leave"].assert_awaited_once_with("bot-1")
+    assert env["reported_minutes"].await_args.args[1] == f"meeting:{ROOM}:{env['meta']['meeting']['inCallAt']}"
 
 
 def test_a_deleted_meeting_rooms_realtime_events_are_acknowledged_and_relay_nothing(env):

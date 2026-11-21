@@ -323,7 +323,7 @@ async def test_the_line_after_a_said_question_answers_it_like_a_typed_answer(m):
 
     with (
         patch.object(messaging_repo, "list_messages_before", AsyncMock(return_value=[QROW])),
-        patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
+        patch.object(question_routes, "_submit_answer", AsyncMock()) as sa,
         patch.object(
             engine_messaging,
             "create_human_message",
@@ -352,14 +352,14 @@ async def test_a_refused_or_foreign_question_falls_back_to_a_message(m):
     refused = AsyncMock(side_effect=EngineError("not_answerer", 403, {"code": "not_answerer"}))
     with (
         patch.object(messaging_repo, "list_messages_before", AsyncMock(return_value=[QROW])),
-        patch.object(question_routes, "submit_answer", refused),
+        patch.object(question_routes, "_submit_answer", refused),
         patch.object(engine_messaging, "create_human_message", posted),
     ):
         assert (await voice_meet.ask(ROOM, _ask()))["posted"] is True
     other = {**QROW, "taskRefs": [{"taskId": "k2", "qid": "q-other"}]}
     with (
         patch.object(messaging_repo, "list_messages_before", AsyncMock(return_value=[other])),
-        patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
+        patch.object(question_routes, "_submit_answer", AsyncMock()) as sa,
         patch.object(engine_messaging, "create_human_message", posted),
     ):
         assert (await voice_meet.ask(ROOM, _ask()))["posted"] is True  # not a question said in this room

@@ -105,7 +105,7 @@ async def stop_transcribing(owner_id: str, trigger_ids: list[str], participant_i
     _, refs, room_id = await _current(owner_id, trigger_ids)
     async with meeting_invites.meeting_lease(room_id):
         _, meeting = await _live(owner_id, room_id, refs)
-        rows = [await api.get_line(owner_id, room_id, r.get("messageId")) or {} for r in refs]
+        rows = [row or {} for row in await api.get_lines(owner_id, room_id, [r.get("messageId") for r in refs])]
         speakers = {(meeting.get("askSpeakers") or {}).get(row.get("clientMessageId")) for row in rows}
         if len(speakers) != 1 or not (pid := next(iter(speakers))) or participant_id not in ("", pid):
             raise NotCurrentMeeting("not_the_speaker")

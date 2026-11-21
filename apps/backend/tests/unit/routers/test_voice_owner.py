@@ -253,7 +253,7 @@ async def test_the_orbs_line_after_a_said_question_answers_it(m):
     )
     with (
         patch.object(messaging_repo, "list_messages_before", AsyncMock(return_value=[qrow])),
-        patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
+        patch.object(question_routes, "_submit_answer", AsyncMock()) as sa,
         patch.object(
             messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m7", message_seq=1))
         ) as ch,

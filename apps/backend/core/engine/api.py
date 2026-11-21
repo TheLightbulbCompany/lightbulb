@@ -76,11 +76,12 @@ def _not_found() -> EngineError:
     return EngineError("not_found", 404, {"code": "not_found"})
 
 
-async def _owned(tenant_id: str, conversation_id: str) -> dict:
-    """The conversation's record, when it is this tenant's and not deleted; else not found. An operation names a
-    conversation only after this, so one tenant's line or task never lands in another's room."""
+async def _owned(tenant_id: str, conversation_id: str, *, include_deleted: bool = False) -> dict:
+    """The conversation's record, when it is this tenant's and not deleted (`include_deleted`: a read that asks for
+    a deleted one too); else not found. An operation names a conversation only after this, so one tenant's line or
+    task never lands in another's room."""
     meta = await messaging_repo.get_room(conversation_id)
-    if not meta or meta.get("ownerId") != tenant_id or meta.get("deletedAt"):
+    if not meta or meta.get("ownerId") != tenant_id or (meta.get("deletedAt") and not include_deleted):
         raise _not_found()
     return meta
 
@@ -97,15 +98,22 @@ def _conversation(conversation_id: str, meta: dict, members: list[dict] | None =
         created_at=meta.get("createdAt"),
         front_agent_id=meta.get("frontAgentId"),
         archived=bool(meta.get("archivedAt")),
+        deleted=bool(meta.get("deletedAt")),
         members=members or [],
         annotations={k: meta[k] for k in PRODUCT_META_FIELDS if k in meta},
     )
 
 
 async def get_conversation(
-    tenant_id: str, conversation_id: str, *, with_members: bool = False, member: str | None = None
+    tenant_id: str,
+    conversation_id: str,
+    *,
+    with_members: bool = False,
+    member: str | None = None,
+    include_deleted: bool = False,
 ) -> ConversationOut | None:
-    """The tenant's conversation (its members too, `with_members`), or None: missing, deleted or another tenant's.
+    """The tenant's conversation (its members too, `with_members`), or None: missing, deleted (unless
+    `include_deleted`: then returned with `deleted`) or another tenant's.
     With `member`, only as that person may open it in the app: the room door's refusal (not found, no longer a
     member) is raised, with its status and body."""
     if member is not None:
@@ -119,7 +127,7 @@ async def get_conversation(
             conversation_id, meta, await messaging_repo.list_members(conversation_id) if with_members else []
         )
     reads = [
-        _owned(tenant_id, conversation_id),
+        _owned(tenant_id, conversation_id, include_deleted=include_deleted),
         *([messaging_repo.list_members(conversation_id)] if with_members else []),
     ]
     try:
@@ -138,12 +146,13 @@ async def get_front_agent(tenant_id: str, conversation_id: str | None = None) ->
         return None
 
 
-async def find_conversation(conversation_id: str) -> ConversationOut | None:
-    """The one read keyed without a tenant: a conversation by id alone, or None (missing or deleted). Only for a
-    product's entry point that is handed nothing but the id and authenticates it with a credential the product stored
-    on the conversation (a call's token); the tenant it returns is passed to every later operation."""
+async def find_conversation(conversation_id: str, *, include_deleted: bool = False) -> ConversationOut | None:
+    """The one read keyed without a tenant: a conversation by id alone, or None (missing, or deleted unless
+    `include_deleted`). Only for a product's entry point that is handed nothing but the id and authenticates it with
+    a credential the product stored on the conversation (a call's token); the tenant it returns is passed to every
+    later operation."""
     meta = await messaging_repo.get_room(conversation_id)
-    return _conversation(conversation_id, meta) if meta and not meta.get("deletedAt") else None
+    return _conversation(conversation_id, meta) if meta and (include_deleted or not meta.get("deletedAt")) else None
 
 
 async def list_conversations(tenant_id: str, kinds: list[str], limit: int) -> list[ConversationOut]:
@@ -423,7 +432,7 @@ async def _open_thread(ws: str, call_id: str, before_seq: int, origin: str | Non
 async def _answer_said_question(owner_id: str, room_id: str, member: str, ref: QuestionRef | None, text: str,
                                key: str) -> bool:  # fmt: skip
     """The line said right after the voice said a Worker's question answers it, as `member`, through the card's own
-    path (`submit_answer`): a message in the room never answers a Question (task_questions.py). False (the line
+    path (`_submit_answer`): a message in the room never answers a Question (task_questions.py). False (the line
     then goes to the Router as a message): no ref, a question this room never got, or a refused answer (closed, not
     an answerer, an approval: a spoken yes never approves)."""
     if ref is None:
@@ -436,7 +445,7 @@ async def _answer_said_question(owner_id: str, room_id: str, member: str, ref: Q
                     option_id="answer", text=text[:4000],
                     client_answer_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex)  # fmt: skip
     try:
-        await submit_answer(owner_id, ref.task_id, ref.qid, member, body)
+        await _submit_answer(owner_id, ref.task_id, ref.qid, member, body)
     except (EngineError, HTTPException) as e:  # a refusal, or a product hook's HTTPException (a call gone)
         logger.info("voice room %s: question %s not answered by voice (%s)", room_id, ref.qid, e.detail)
         return False
@@ -578,14 +587,12 @@ async def read_history(tenant_id: str, conversation_id: str, limit: int) -> list
 # --- tasks ---------------------------------------------------------------------------------------------------------
 
 
-async def get_task(tenant_id: str, task_id: str) -> dict | None:
-    """The tenant's task, or None (tasks are keyed by tenant: another tenant's reads as missing)."""
+async def get_task(tenant_id: str, task_id: str, *, tree: bool = False) -> dict | None:
+    """The tenant's task, or None (tasks are keyed by tenant: another tenant's reads as missing). With `tree`, the
+    task with its attempts and questions (`task` None when missing)."""
+    if tree:
+        return await tasks_repo.get_task_tree(tenant_id, task_id)
     return await tasks_repo.get_task(tenant_id, task_id)
-
-
-async def get_task_tree(tenant_id: str, task_id: str) -> dict:
-    """The tenant's task with its attempts and questions (`task` None when missing)."""
-    return await tasks_repo.get_task_tree(tenant_id, task_id)
 
 
 async def get_trigger(tenant_id: str, trigger_id: str) -> dict | None:
@@ -601,10 +608,10 @@ async def list_conversation_tasks(tenant_id: str, conversation_id: str) -> list[
     return await tasks_repo.batch_get(tenant_id, [ts.task_sk(tid) for tid in ids])
 
 
-async def get_line(tenant_id: str, conversation_id: str, message_id: str) -> dict | None:
-    """One stored message of the conversation, or None."""
+async def get_lines(tenant_id: str, conversation_id: str, message_ids: list[str | None]) -> list[dict | None]:
+    """The conversation's stored messages by id, in order (None for an unknown id)."""
     await _owned(tenant_id, conversation_id)
-    return await messaging_repo.get_message_by_id(conversation_id, message_id)
+    return list(await asyncio.gather(*(messaging_repo.get_message_by_id(conversation_id, m) for m in message_ids)))
 
 
 # --- answer --------------------------------------------------------------------------------------------------------
@@ -613,8 +620,8 @@ _STYLES = {"deny": "danger", "request_changes": "secondary"}
 
 
 async def answer(req: AnswerIn) -> dict:
-    """`principal` answers Question `qid` of `task_id` (`submit_answer`): the question's view and the task's summary."""
-    return await submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req)
+    """`principal` answers Question `qid` of `task_id` (`_submit_answer`): the question's view and the task's summary."""
+    return await _submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req)
 
 
 async def _people(ids: list[str | None]) -> dict[str, str]:
@@ -713,7 +720,7 @@ def _not_open(q: dict) -> EngineError:
     return _problem(409, "not_open", state=q["state"], by=q.get("answeredBy"), at=q.get("answeredAt"))
 
 
-async def submit_answer(ws: str, task_id: str, qid: str, me: str, body: Any) -> dict[str, Any]:
+async def _submit_answer(ws: str, task_id: str, qid: str, me: str, body: Any) -> dict[str, Any]:
     """`me` answers Question `qid`: the card's press, and a line said to the voice right after it said the question
     (`_answer_said_question`). `body`: `option_id`, `text`, `client_answer_id`, `expect_version`. Raises the answer
     route's refusals as EngineError."""

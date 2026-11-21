@@ -102,5 +102,5 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
 
 
 async def submit_answer(ws: str, task_id: str, qid: str, me: str, body: AnswerBody) -> dict[str, Any]:
-    """`me` answers Question `qid` (`core.engine.api.submit_answer`). Raises the route's HTTPExceptions."""
-    return await api.http(api.submit_answer(ws, task_id, qid, me, body))
+    """`me` answers Question `qid` (`core.engine.api._submit_answer`). Raises the route's HTTPExceptions."""
+    return await api.http(api._submit_answer(ws, task_id, qid, me, body))

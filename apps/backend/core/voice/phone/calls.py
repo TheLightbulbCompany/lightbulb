@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from fastapi import HTTPException
 
 from core.billing import voice_billing
 from core.config import settings
@@ -23,6 +22,7 @@ from core.engine.contract import AnnotateIn, ConversationOut, EngineError
 from core.repositories import billing_repo
 from core.voice import store
 from core.voice.phone import voice_booking, voice_preferences
+from core.voice.worker_api import _problem as _err
 
 # The name these lines always logged under (routers/voice_phone.py): the W85 alarm matches loggers `routers.voice*`.
 # Kept on the old router name: alarm W85 (observability-stack.ts) filters on loggers named routers.voice*.
@@ -57,10 +57,6 @@ _TZ = ZoneInfo("America/New_York")  # the call clock (startedAt, step times); bo
 
 
 _GRID = timedelta(minutes=30)  # slot starts every half hour
-
-
-def _err(status: int, code: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code})
 
 
 async def agent_config(owner_id: str) -> dict:

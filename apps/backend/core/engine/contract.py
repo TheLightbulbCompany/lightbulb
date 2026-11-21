@@ -195,6 +195,8 @@ class ConversationOut(Model):
     #: the front agent the conversation seats, when it pins one
     front_agent_id: str | None = None
     archived: bool = False
+    #: only ever True for a read that asked for deleted conversations too (`include_deleted`)
+    deleted: bool = False
     #: only when asked for (`with_members`)
     members: list[dict] = []
     #: the product fields on the record (`PRODUCT_META_FIELDS`)

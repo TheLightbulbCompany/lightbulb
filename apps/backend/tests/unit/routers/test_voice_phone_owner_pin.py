@@ -119,7 +119,7 @@ async def test_an_owner_mode_answer_to_a_workers_question_answers_it(client, rou
     from core.engine import api
 
     with (
-        patch.object(api, "submit_answer", AsyncMock()) as answer,
+        patch.object(api, "_submit_answer", AsyncMock()) as answer,
         patch.object(messaging, "create_human_message", sent),
     ):
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn",

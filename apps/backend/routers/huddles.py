@@ -167,7 +167,7 @@ async def transcript(room_id: str, body: TranscriptBody):
     )
     logger.info("live transcript room=%s huddle=%s owner=%s\n%s", room_id, body.huddleId, body.ownerId, rendered)
     put_metric("voice.huddle.transcript_lines", len(body.lines))
-    conv = await api.get_conversation(body.ownerId, room_id)
+    conv = await api.get_conversation(body.ownerId, room_id, include_deleted=True)  # a meeting's end, deleted or not
     if conv and conv.annotations.get("meeting"):
         lines = [x.model_dump(exclude={"ready"}) for x in body.lines]
         await meeting_notes.on_transcript(body.ownerId, room_id, lines, body.final)

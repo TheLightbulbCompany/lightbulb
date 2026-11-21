@@ -191,3 +191,19 @@ async def test_equivalent_timezone_representation_updates_same_occurrence(store,
     assert len(store) == 2
     assert bots.create.await_count == count
     assert store[CHILD]["meeting"]["startAt"] == _epoch(2026, 11, 7, 17, 0)
+
+
+async def test_a_series_deleted_while_its_occurrence_is_split_off_is_ignored(store, bots, now):
+    """The series' room is deleted between the exclusion write and the cancel of its slot: the delivery ends
+    `meeting_ignored` (answered 2xx), never a 5xx that SES redelivers."""
+    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    real = fixtures.messaging_repo.patch_room_meta.side_effect
+
+    def patch_then_delete(r, updates, expected_revision=None):
+        real(r, updates, expected_revision)
+        if "instanceRooms" in (updates.get("meeting") or {}):
+            store[r]["deletedAt"] = "2026-11-01T00:00:00Z"
+
+    fixtures.messaging_repo.patch_room_meta.side_effect = patch_then_delete
+    assert await mi.handle_team_mail("org_1", _mail(override()), TEAM) == "meeting_ignored"
+    assert CHILD not in store

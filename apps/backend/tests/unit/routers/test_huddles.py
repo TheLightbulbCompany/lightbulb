@@ -473,7 +473,8 @@ def test_owner_mode_join_is_402_without_plan_or_free_minutes(client):
     dispatch.assert_not_awaited()
 
 
-def test_a_deleted_meeting_rooms_transcript_is_logged_and_acknowledged(client):
+def test_a_deleted_meeting_rooms_final_transcript_is_still_kept(client):
+    """A meeting's end runs for a room deleted mid-call: its final transcript reaches the notes path."""
     line = {"mark": 7, "kind": "person", "name": "Pat", "text": "Ship it", "at": 1.0, "to": ""}
     body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line], "final": True}
     gone = {"ownerId": "org_a", "meeting": {"status": "in_call"}, "deletedAt": "2026-11-01T00:00:00Z"}
@@ -483,4 +484,4 @@ def test_a_deleted_meeting_rooms_transcript_is_logged_and_acknowledged(client):
     ):
         resp = client.post(TRANSCRIPT, json=body, headers=W)
     assert (resp.status_code, resp.json()) == (200, {"ok": True})
-    notes.assert_not_awaited()
+    notes.assert_awaited_once_with("org_a", ROOM, [line], True)

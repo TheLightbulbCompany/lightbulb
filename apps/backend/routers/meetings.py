@@ -159,9 +159,10 @@ async def _on_status(
     cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
     target = _TARGET[code]
     async with meeting_invites.meeting_lease(room_id):
-        conv = await api.find_conversation(room_id)
+        # a room deleted mid-call still runs its end (metered, notes, the LiveKit room closed); its writes are refused
+        conv = await api.find_conversation(room_id, include_deleted=True)
         if not conv:
-            return  # a room this environment lacks (another environment's untagged bot, never ejected), or deleted
+            return  # a room this environment lacks: another environment's (untagged) bot, never ejected
         owner_id, meeting = conv.tenant_id, conv.annotations.get("meeting") or {}
         status = meeting.get("status")
         if meeting.get("recallBotId") != bot_id:
@@ -480,7 +481,7 @@ async def leave(room_id: str, body: RoomBody):
     owner_id = body.ownerId
     try:
         async with meeting_invites.meeting_lease(room_id):
-            conv = await api.get_conversation(owner_id, room_id)
+            conv = await api.get_conversation(owner_id, room_id, include_deleted=True)  # deleted mid-call: still ends
             if not conv:
                 raise _problem(404, "room_not_found")
             meeting = conv.annotations.get("meeting") or {}

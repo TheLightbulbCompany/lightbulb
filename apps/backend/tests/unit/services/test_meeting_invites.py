@@ -1829,11 +1829,10 @@ def _deleted(room):
 
 
 async def test_patch_meeting_on_deleted_room_writes_nothing(room):
-    """A gone room has no record to read: {} comes back, so no caller dereferences None; one that would act opts
-    into None."""
+    """The stored map comes back unchanged, so no caller dereferences None; one that would act opts into None."""
     room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 1, "meeting": {"status": "scheduled"}}
     _deleted(room)
-    assert await meeting_invites._patch_meeting("org_1", "r", {"status": "ended"}) == {}
+    assert await meeting_invites._patch_meeting("org_1", "r", {"status": "ended"}) == {"status": "scheduled"}
     assert await meeting_invites._patch_meeting("org_1", "r", {"status": "ended"}, stop_if_gone=True) is None
     room.patch.assert_not_awaited()
     assert room.state["meta"]["meeting"] == {"status": "scheduled"}
@@ -1855,7 +1854,7 @@ async def test_advance_on_deleted_room_is_quiet(room, now, metrics):
     _deleted(room)
     now["t"] = _epoch(2026, 11, 7, 15, 40)
     await meeting_invites.advance("org_1", "r")
-    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "not_series"}})]  # not "error": no meeting
+    assert metrics == [("meeting.advance", {"dimensions": {"outcome": "not_due"}})]  # not "error"
     room.sync.assert_not_awaited()
 
 
@@ -1894,3 +1893,21 @@ async def test_a_redelivered_invite_for_a_deleted_meeting_room_ends_quietly(room
     assert room.state["meta"]["meeting"] == before
     bots.create.assert_awaited_once()  # the first delivery's bot only
     bots.reschedule.assert_not_awaited()
+
+
+async def test_changed_occurrence_of_a_deleted_series_is_ignored(room, bots):
+    """A member deleted the series' room: its occurrences stay its own, so a changed one is ignored (no room, no
+    bot), as it was before the room reads moved behind the engine."""
+    room.state["meta"] = {"roomId": "series", "meeting": {"uid": UID, "status": "scheduled"}, "deletedAt": "2026-10-02"}
+    assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_ignored"
+    room.create.assert_not_awaited()
+    bots.create.assert_not_awaited()
+
+
+async def test_changed_occurrence_of_an_unknown_series_is_booked_standalone(room, bots):
+    """A series never forwarded: the occurrence is a meeting of its own (its own room and bot)."""
+    assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_scheduled"
+    assert room.create.await_args.kwargs["room_id"] == meeting_invites.store.meeting_room_id(
+        "org_1", f"{UID}#{_epoch(2026, 10, 10, 15, 0)}"
+    )
+    bots.create.assert_awaited_once()

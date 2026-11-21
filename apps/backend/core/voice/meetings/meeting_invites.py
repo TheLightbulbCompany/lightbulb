@@ -229,9 +229,10 @@ def _when_text(start: datetime) -> str:
     return f"{start:%a %b %-d, %-I:%M %p %Z}"
 
 
-async def stored_meeting(owner_id: str, room_id: str) -> dict:
-    """The meeting record of the owner's room, or {} (no meeting, or the room is gone)."""
-    conv = await api.get_conversation(owner_id, room_id)
+async def stored_meeting(owner_id: str, room_id: str, *, include_deleted: bool = False) -> dict:
+    """The meeting record of the owner's room, or {} (no meeting, or the room is gone: deleted, unless
+    `include_deleted`)."""
+    conv = await api.get_conversation(owner_id, room_id, include_deleted=include_deleted)
     return (conv.annotations.get("meeting") if conv else None) or {}
 
 
@@ -265,7 +266,7 @@ async def _organizer_dm(owner_id: str, room_id: str) -> str | None:
     owner) and the agent that writes its notes (the meeting's front agent, as the notes writer is
     picked). Found or created; None when either is missing or it cannot be opened. A DM
     passed in (a line already resolved here) resolves to itself."""
-    conv = await api.get_conversation(owner_id, room_id, with_members=True)
+    conv = await api.get_conversation(owner_id, room_id, with_members=True, include_deleted=True)
     members = conv.members if conv else []
     creator = next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
     if not creator:
@@ -360,16 +361,13 @@ async def _patch_meeting(
     from the map read on each attempt (a transcript written after the caller's read is kept).
     ``fields`` may be a function of the stored map, called on every attempt: a read-modify-write
     (the roster, the unsaid answers) that a racing writer cannot undo.
-    A room that is gone (deleted, or never the owner's) writes nothing and returns {}, so a caller goes on
-    as if nothing changed; one that would act on it (book, re-date, RSVP) passes ``stop_if_gone`` and gets
-    None. So None comes only from ``when``, an older ``sequence`` or ``stop_if_gone``. Three lost races
-    raise, so SES redelivers. Returns the map as written."""
+    A deleted room (the engine refuses the write) writes nothing and returns the stored map unchanged, so a
+    caller goes on as if nothing changed; one that would act on a deleted room (book, re-date, RSVP) passes
+    ``stop_if_gone`` and gets None. So None comes only from ``when``, an older ``sequence`` or ``stop_if_gone``.
+    Three lost races raise, so SES redelivers. Returns the map as written."""
     for attempt in (1, 2, 3):
-        conv = await api.get_conversation(owner_id, room_id)
-        if conv is None:
-            logger.info("meeting room %s: gone, nothing written", room_id)
-            return None if stop_if_gone else {}
-        stored = conv.annotations.get("meeting") or {}
+        conv = await api.get_conversation(owner_id, room_id, include_deleted=True)
+        stored = (conv.annotations.get("meeting") if conv else None) or {}
         if when is not None and not when(stored):
             return None
         own = fields(stored) if callable(fields) else fields
@@ -388,7 +386,7 @@ async def _patch_meeting(
                     tenant_id=owner_id,
                     conversation_id=room_id,
                     set={"meeting": merged},
-                    expected_revision=conv.revision,
+                    expected_revision=conv.revision if conv else 0,
                 )
             )
         except ClientError as exc:
@@ -396,9 +394,9 @@ async def _patch_meeting(
                 raise  # a throttle, access error, or a third lost race: SES retries the whole mail
             continue
         except EngineError as exc:
-            if exc.status != 404:
-                raise
-            logger.info("meeting room %s: gone, nothing written", room_id)  # deleted since the read
+            if exc.status != 404 or conv is None:
+                raise  # a room that never was raises, as a missing room always has
+            logger.info("meeting room %s: gone, nothing written", room_id)
             return None if stop_if_gone else stored
         await agent_email.mail_changed(owner_id)
         return merged
@@ -460,8 +458,6 @@ def _over(start_at: float | None, end_at: float | None, now: float) -> bool:
 async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | None) -> dict:
     """Books, moves or pulls the meeting's Recall bot and returns the meeting as written. A Recall
     failure never raises into the mail route; a lost META race past three tries does (SES retries)."""
-    if not meeting:
-        return meeting  # the room went (deleted) under the caller: nothing to book, move or pull
     bot_id = meeting.get("recallBotId")
     if meeting["status"] == "cancelled":
         if not bot_id:
@@ -603,7 +599,8 @@ async def handle_team_mail(
         put_metric("meeting.invite.stale")
         return "meeting_ignored"
     series_room = store.meeting_room_id(owner_id, invite.instance_of) if invite.instance_of else None
-    if series_room and await stored_meeting(owner_id, series_room):
+    # a deleted series still owns its occurrences: _apply_instance ignores them
+    if series_room and await stored_meeting(owner_id, series_room, include_deleted=True):
         return await _apply_instance(owner_id, series_room, invite, creator, team, sender)
     room_id = store.meeting_room_id(owner_id, invite.uid)
     # The lease serializes everything below (sequence check, META, line, bot, RSVP) across
@@ -622,7 +619,7 @@ async def _apply_instance(
     """
     room_id = store.meeting_room_id(owner_id, invite.uid)
     async with meeting_lease(parent_room), meeting_lease(room_id):
-        parent = await api.get_conversation(owner_id, parent_room)
+        parent = await api.get_conversation(owner_id, parent_room, include_deleted=True)
         meeting = (parent.annotations.get("meeting") if parent else None) or {}
         if (
             parent is None
@@ -630,6 +627,7 @@ async def _apply_instance(
             or meeting.get("uid") != invite.instance_of
             or not meeting.get("recurrence")
             or parent.archived
+            or parent.deleted
         ):
             return "meeting_ignored"
         child = await stored_meeting(owner_id, room_id)
@@ -655,11 +653,15 @@ async def _apply_instance(
         if int(meeting.get("startAt", 0)) == original:
             # Stop/adopt the old bot through its existing cancellation transition. A failed
             # leave keeps its identity and retries; no child is booked while it might still join.
-            cancelled = await _patch_meeting(owner_id, parent_room, {"status": "cancelled"})
+            cancelled = await _patch_meeting(owner_id, parent_room, {"status": "cancelled"}, stop_if_gone=True)
+            if cancelled is None:
+                return "meeting_ignored"  # the series' room was deleted under the lease
             cancelled = await _sync_bot(owner_id, parent_room, cancelled, meeting)
             if cancelled.get("recallBotId"):
                 raise MeetingBusy(parent_room)
-            ended = await _patch_meeting(owner_id, parent_room, {"status": "ended"})
+            ended = await _patch_meeting(owner_id, parent_room, {"status": "ended"}, stop_if_gone=True)
+            if ended is None:
+                return "meeting_ignored"
             await _reschedule_locked(owner_id, parent_room, ended, now=time.time())
         if invite.method == "CANCEL" and not child:
             # Keep the cancellation sequence even when the REQUEST is late or never delivered.
@@ -702,8 +704,8 @@ _ENDED = ("ended", "bot_failed")  # an occurrence is over; only advance() schedu
 
 
 async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team: dict, sender: str) -> str | None:
-    room = await api.get_conversation(owner_id, room_id)
-    if room and room.archived:
+    room = await api.get_conversation(owner_id, room_id, include_deleted=True)
+    if room and (room.archived or room.deleted):
         return "meeting_ignored"  # a member closed this meeting's room; a move/cancel must not reopen it
     current = room.annotations.get("meeting") if room else None
     if invite.recurrence and current and current.get("instanceRooms"):
@@ -993,12 +995,13 @@ async def advance(owner_id: str, room_id: str) -> None:
 
 
 async def _advance(owner_id: str, room_id: str) -> str:
-    if not (await stored_meeting(owner_id, room_id)).get("recurrence"):
-        return "not_series"  # the common one-off, or a room that is gone: no lease taken
+    if not (await stored_meeting(owner_id, room_id, include_deleted=True)).get("recurrence"):
+        return "not_series"  # the common one-off: no lease taken
     try:
         async with meeting_lease(room_id, tries=4):  # an end path may hold it for a moment
-            meeting = await stored_meeting(owner_id, room_id)
-            if not meeting.get("recurrence") or meeting.get("status") not in _ENDED:
+            conv = await api.get_conversation(owner_id, room_id, include_deleted=True)
+            meeting = (conv.annotations.get("meeting") if conv else None) or {}
+            if not conv or conv.deleted or not meeting.get("recurrence") or meeting.get("status") not in _ENDED:
                 return "not_due"
             return await _reschedule_locked(owner_id, room_id, meeting, now=time.time())
     except MeetingBusy:

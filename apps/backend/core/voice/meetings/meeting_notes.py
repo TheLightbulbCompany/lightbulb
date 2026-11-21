@@ -76,7 +76,7 @@ async def on_transcript(owner_id: str, room_id: str, lines: list[dict], final: b
     route."""
     if not final or not lines:
         return
-    meeting = await meeting_invites.stored_meeting(owner_id, room_id)
+    meeting = await meeting_invites.stored_meeting(owner_id, room_id, include_deleted=True)
     if not meeting or meeting.get("transcriptAttachedAt"):
         return
     if meeting.get("status") not in ("in_call", "ended", "bot_failed") or not meeting.get("inCallAt"):
@@ -116,7 +116,7 @@ async def on_ended(owner_id: str, room_id: str) -> None:
 
 async def _on_ended(owner_id: str, room_id: str) -> bool:
     """False only when another end path holds the notes."""
-    meeting = await meeting_invites.stored_meeting(owner_id, room_id)
+    meeting = await meeting_invites.stored_meeting(owner_id, room_id, include_deleted=True)
     if not owed(meeting):
         return True  # not a meeting, no call happened, or its notes are done
     # A lease, released only on a failure: a crash mid-way frees it after _CLAIM_S and the next
@@ -159,7 +159,7 @@ async def _wait_for_transcript(owner_id: str, room_id: str, meeting: dict) -> di
         if meeting.get("transcriptAttachedAt"):
             break
         await asyncio.sleep(_POLL_S)
-        fresh = await meeting_invites.stored_meeting(owner_id, room_id) or meeting
+        fresh = await meeting_invites.stored_meeting(owner_id, room_id, include_deleted=True) or meeting
         if not this_occurrence(fresh):
             break
         meeting = fresh
@@ -193,7 +193,7 @@ async def _notes(owner_id: str, room_id: str, meeting: dict, occurrence) -> None
 
             principal = None
             if meeting.get("invitedBy"):
-                conv = await api.get_conversation(owner_id, room_id, with_members=True)
+                conv = await api.get_conversation(owner_id, room_id, with_members=True, include_deleted=True)
                 principal = inviting_member(meeting, conv.members if conv else [])
             trigger_id = f"{NOTES_PREFIX}{room_id}:{occurrence}"
             task_id = start_task_id(trigger_id)
@@ -334,7 +334,7 @@ async def on_task_moved(task: dict, to: str) -> None:
             return  # not this task's, or its notes are kept (the claim is spent only then)
         notes = None
         if to == "idle":
-            tree = await api.get_task_tree(owner_id, task["taskId"])
+            tree = await api.get_task(owner_id, task["taskId"], tree=True)
             done = [
                 a for a in tree.get("attempts") or []
                 if a.get("outcome") == "completed" and (a.get("output") or "").strip()

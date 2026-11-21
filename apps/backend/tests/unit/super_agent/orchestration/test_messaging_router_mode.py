@@ -9,6 +9,7 @@ import pytest
 from core import tasks_schema as ts
 from core.auth import AuthContext
 from core.repositories import messaging_repo as repo
+from core.voice import store
 
 from core.services import messaging
 from core.services.messaging import ApiProblem
@@ -110,7 +111,7 @@ def world(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(side_effect=lambda r: list(w["members"])))
     monkeypatch.setattr(messaging.messaging_repo, "has_foreign_members", AsyncMock(return_value=False))
     monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", get_message_by_id)
-    monkeypatch.setattr(messaging.messaging_repo, "get_voice_run", AsyncMock(return_value=None))
+    monkeypatch.setattr(store, "get_voice_run", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging.messaging_repo, "list_messages_before", AsyncMock(return_value=[]))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create_message)
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=ROSTER))

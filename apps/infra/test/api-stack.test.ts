@@ -59,19 +59,16 @@ describe("ApiStack — ws-connections owner-keyed fan-out", () => {
 });
 
 describe("ApiStack — dead WebSocket API removed", () => {
-  test("no WebSocket Lambdas, stage or domain; the bare API id stays exported one deploy", () => {
+  test("no WebSocket API, Lambdas, stage, domain or export", () => {
     const names = Object.values(API_TEMPLATE.findResources("AWS::Lambda::Function")).map(
       (r: any) => JSON.stringify(r.Properties?.FunctionName ?? ""),
     );
     expect(names.filter((n) => /ws-(authorizer|connect|disconnect|message)/.test(n))).toEqual([]);
-    const onWsApi = Object.values(API_TEMPLATE.toJSON().Resources).filter(
-      (r: any) => r.Type !== "AWS::ApiGatewayV2::Api" && JSON.stringify(r).includes('"WebSocketApi'),
+    const wsApis = Object.values(API_TEMPLATE.findResources("AWS::ApiGatewayV2::Api")).filter(
+      (r: any) => r.Properties?.ProtocolType === "WEBSOCKET",
     );
-    expect(onWsApi).toEqual([]); // no route, integration, stage, authorizer or mapping
-    const pinned = Object.values(API_TEMPLATE.toJSON().Outputs ?? {}).some(
-      (o: any) => JSON.stringify(o.Value).includes("WebSocketApi"),
-    );
-    expect(pinned).toBe(true);
+    expect(wsApis).toEqual([]);
+    expect(Object.keys(API_TEMPLATE.toJSON().Outputs ?? {}).filter((k) => /WebSocketApi/.test(k))).toEqual([]);
   });
 });
 

@@ -190,7 +190,7 @@ async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
     with (
         patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
         patch.object(voice_owner, "latest_seq", AsyncMock(return_value=41)) as seq,
-        patch.object(voice_owner.messaging_repo, "get_voice_run", AsyncMock(side_effect=[None, {"spoken": 37}])) as gv,
+        patch.object(voice_owner.store, "get_voice_run", AsyncMock(side_effect=[None, {"spoken": 37}])) as gv,
     ):
         assert await voice_owner.start(ROOM, body) == {"assistantName": "Nova", "agentId": "a1", "after": 41}
         # a reconnect: the last handled seq, so what was posted in the gap is still said
@@ -203,7 +203,7 @@ async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
     lines = {"messages": [{"id": "a1", "text": "Checking GitHub."}], "after": 6}
     with (
         patch.object(voice_owner, "agent_lines", AsyncMock(return_value=lines)) as al,
-        patch.object(voice_owner.messaging_repo, "put_voice_run", AsyncMock()) as put,
+        patch.object(voice_owner.store, "put_voice_run", AsyncMock()) as put,
     ):
         body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5, spoken=5)
         assert await voice_owner.events(ROOM, body) == lines
@@ -238,7 +238,7 @@ async def test_only_a_dm_is_owner_mode_and_the_worker_secret_is_required(m):
 async def test_the_orbs_line_after_a_said_question_answers_it(m):
     from types import SimpleNamespace
 
-    from routers import questions as question_routes
+    from core.engine import api as question_routes  # the answer path moved there (engine-service Task 4)
 
     qrow = {"kind": "question", "taskRefs": [{"taskId": "k1", "qid": "q-2"}]}
     body = voice_owner.TurnIn(

@@ -19,7 +19,7 @@ export const revalidate = 300;
 export async function generateMetadata() {
   const p = await getPricing();
   return pageMetadata({
-    title: "AI Receptionist Pricing for Salons & Spas | Lightbulb",
+    title: "Lightbulb Phone Pricing for Salons & Spas | Lightbulb",
     description: `One monthly plan for your AI receptionist. ${voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL} Month to month, no setup fee.`,
     path: "/pricing",
   });

@@ -14,6 +14,7 @@ from core.repositories import messaging_repo, tasks_repo
 from core.services import chat_gate, runtime_runs, task_conversation
 from core.temporal import client as temporal_client
 from core.temporal.types import ActionRequest, StopRequest, StopResult
+from core.engine import api  # the answer and action bodies moved there (engine-service Task 4)
 from routers import tasks as router_mod
 
 from .test_tasks_repo import table  # noqa: F401
@@ -25,7 +26,7 @@ ROOM = "11111111-2222-4333-8444-555555555555"
 
 @pytest.fixture
 def world(table, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(router_mod, "human_display_name", AsyncMock(side_effect=lambda u: u))
+    monkeypatch.setattr(api, "human_display_name", AsyncMock(side_effect=lambda u: u))
     fakes = {
         "update": AsyncMock(return_value=None),
         "start": AsyncMock(),

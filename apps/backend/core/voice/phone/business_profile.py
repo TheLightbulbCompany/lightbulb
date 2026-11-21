@@ -173,13 +173,11 @@ async def _upcoming(ws: str, now: str) -> list[dict]:
     """`VOICEBOOK#` rows from now on (never the whole history)."""
     from boto3.dynamodb.conditions import Key
 
-    from core.dynamodb import run_in_thread
-    from core.repositories import messaging_repo
+    from core.dynamodb import messaging_table, owner_pk, run_in_thread
 
     r = await run_in_thread(
-        messaging_repo._table().query,
-        KeyConditionExpression=Key("pk").eq(messaging_repo.owner_pk(ws))
-        & Key("sk").between(f"VOICEBOOK#{now}", "VOICEBOOK#\uffff"),
+        messaging_table().query,
+        KeyConditionExpression=Key("pk").eq(owner_pk(ws)) & Key("sk").between(f"VOICEBOOK#{now}", "VOICEBOOK#\uffff"),
     )
     return r.get("Items", [])
 

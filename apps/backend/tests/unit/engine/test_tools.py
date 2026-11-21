@@ -288,6 +288,7 @@ async def test_voice_start_requester_from_context(monkeypatch):
     from core import tasks_schema as ts
     from core.engine.hooks import ContextAnswer
     from core.repositories import messaging_repo
+    from core.voice import store
     from core.services import admission
     from routers.internal_automations import VoiceStartIn, start_voice_work
 
@@ -299,8 +300,8 @@ async def test_voice_start_requester_from_context(monkeypatch):
         return answer
 
     _with(monkeypatch, context=context)
-    monkeypatch.setattr(messaging_repo, "get_voice_run", AsyncMock(side_effect=AssertionError("engine read")))
-    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"}))
+    monkeypatch.setattr(store, "get_voice_run", AsyncMock(side_effect=AssertionError("engine read")))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm", "ownerId": WS}))
     enqueue = AsyncMock(return_value=True)
     monkeypatch.setattr(admission, "enqueue_trigger", enqueue)
     body = VoiceStartIn(run_id="run-1", call_id="c1", room_id="room-1", title="Mail", brief="Write it.")

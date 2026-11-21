@@ -21,7 +21,7 @@ BODY = {"runId": RUN, "callId": CALL, "roomId": ROOM, "title": "Draft the launch
 @pytest.fixture
 def api(table, monkeypatch):
     rows = {RUN: {"runId": RUN, "roomId": ROOM, "agentId": "ceo-1", "requesterUserId": "user_sam"}}
-    meta = {"roomId": ROOM, "kind": "channel"}
+    meta = {"roomId": ROOM, "kind": "channel", "ownerId": WS}
 
     async def get_voice_run(owner_id, run_id):
         return rows.get(run_id)
@@ -31,7 +31,7 @@ def api(table, monkeypatch):
 
     with (
         patch("routers.internal_automations._require_hook_token", AsyncMock(return_value={})),
-        patch("core.repositories.messaging_repo.get_voice_run", side_effect=get_voice_run),
+        patch("core.voice.store.get_voice_run", side_effect=get_voice_run),
         patch("core.repositories.messaging_repo.get_room", side_effect=get_room),
         patch("core.repositories.messaging_repo.put_admit_trigger", AsyncMock()) as outbox,
     ):

@@ -82,8 +82,10 @@ def test_core_services_and_temporal_do_not_import_voice_routers():
 
 BACKEND = CORE.parent
 #: The engine: the Temporal Router and Workers, admission, tasks and questions, the conversation record and the agent
-#: runtime plumbing. `core/engine` (the contract) is neither side: both import it.
+#: runtime plumbing, and its face to the products, `core/engine` (the contract, the hooks and the operations in
+#: `core.engine.api`). That face is engine code (it imports no product) and the one part products may import.
 ENGINE = [
+    "core/engine",
     "core/temporal",
     "core/tasks_schema.py",
     *(
@@ -111,7 +113,7 @@ PRODUCT = [
 #: Engine modules that import product code, as `file: function: module`: none since engine-service Task 3 (every
 #: engine call into a product goes through `core.engine.hooks`). Never add one.
 KNOWN_ENGINE_TO_PRODUCT: list[str] = []
-#: Product modules that still import engine code other than the contract (`core.engine`). Only ever shrinks.
+#: Product modules that still import engine code other than `core.engine` (contract, hooks, api). Only ever shrinks.
 KNOWN_PRODUCT_TO_ENGINE = [
     "core/voice/livekit_huddles.py: <module>: core.repositories.messaging_repo",
     "core/voice/meetings/meeting_chat.py: <module>: core.repositories.messaging_repo",
@@ -137,21 +139,15 @@ KNOWN_PRODUCT_TO_ENGINE = [
     "core/voice/meetings/records.py: <module>: core.repositories.messaging_repo",
     "core/voice/meetings/records.py: <module>: core.repositories.tasks_repo",
     "core/voice/phone/business_profile.py: _build: core.repositories.messaging_repo",
-    "core/voice/phone/business_profile.py: _upcoming: core.repositories.messaging_repo",
     "core/voice/phone/business_profile.py: caller_of: core.repositories.messaging_repo",
     "core/voice/phone/business_profile.py: facts_text: core.repositories.messaging_repo",
     "core/voice/phone/calls.py: <module>: core.repositories.messaging_repo",
     "core/voice/phone/calls.py: <module>: core.services.questions",
-    "core/voice/phone/phone_pin.py: <module>: core.repositories.messaging_repo",
-    "core/voice/phone/tools.py: <module>: core.services.task_conversation",
-    "core/voice/phone/voice_booking.py: <module>: core.repositories.messaging_repo",
     "core/voice/phone/voice_booking.py: <module>: core.repositories.tasks_repo",
     "core/voice/phone/voice_onboarding.py: <module>: core.repositories.messaging_repo",
     "core/voice/phone/voice_outbound.py: <module>: core.repositories.messaging_repo",
     "core/voice/room_lines.py: <module>: core.repositories.messaging_repo",
-    "core/voice/room_lines.py: agent_lines: core.repositories.questions_repo",
     "core/voice/rooms.py: <module>: core.repositories.messaging_repo",
-    "core/voice/rooms.py: <module>: core.services.container_rpc",
     "core/voice/rooms.py: <module>: core.services.messaging",
     "core/voice/voice_calls.py: <module>: core.repositories.messaging_repo",
     "core/voice/voice_calls.py: <module>: core.services.messaging",
@@ -166,15 +162,11 @@ KNOWN_PRODUCT_TO_ENGINE = [
     "routers/voice.py: <module>: core.services.task_conversation",
     "routers/voice_meet.py: <module>: core.repositories.messaging_repo",
     "routers/voice_meet.py: <module>: core.services.messaging",
-    "routers/voice_meet.py: answer_said_question: routers.questions",
     "routers/voice_owner.py: <module>: core.repositories.messaging_repo",
     "routers/voice_owner.py: <module>: core.services.messaging",
     "routers/voice_phone.py: <module>: core.repositories.messaging_repo",
-    "routers/voice_phone.py: <module>: core.repositories.tasks_repo",
-    "routers/voice_phone.py: <module>: core.services.admission",
     "routers/voice_phone.py: <module>: core.services.messaging",
     "routers/voice_phone.py: <module>: core.services.task_conversation",
-    "routers/voice_phone.py: <module>: core.tasks_schema",
     "routers/voice_phone.py: <module>: routers.internal_automations",
     "routers/voice_phone.py: callers_own_words: core.temporal.router_prompt",
 ]
@@ -258,4 +250,4 @@ def test_engine_does_not_import_product():
 
 
 def test_product_imports_only_the_contract():
-    assert _crossing(PRODUCT, ENGINE) == KNOWN_PRODUCT_TO_ENGINE
+    assert _crossing(PRODUCT, [p for p in ENGINE if p != "core/engine"]) == KNOWN_PRODUCT_TO_ENGINE

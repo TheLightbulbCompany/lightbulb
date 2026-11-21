@@ -1517,7 +1517,7 @@ async def test_paused_room_drop_in_router_marks_notes_not_started(world, monkeyp
     monkeypatch.setattr(acts.messaging_repo, "get_room", paused_room)
     request = AsyncMock(return_value={"roomId": ROOM, "occurrence": 1})
     patch = AsyncMock(side_effect=RuntimeError("ddb down"))
-    monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", request)
+    monkeypatch.setattr(meeting_notes.store, "get_meeting_notes_request", request)
     monkeypatch.setattr(meeting_invites, "_patch_meeting", patch)
     tid = f"meeting-notes:{ROOM}:1" if notes else "chat:p1"
     t1 = await _trig(tid, source="webhook" if notes else "chat", ref={"deliverRoomId": ROOM, "roomId": ROOM})

@@ -108,7 +108,7 @@ async def open_ask(
     except (temporal.TemporalUnavailable, RPCError) as exc:
         raise AskRefused("temporal_unavailable") from exc
     except Exception as exc:  # noqa: BLE001 -- the update was refused (stopped task, nobody can answer)
-        from routers.questions import _failure_codes  # walks the update failure's cause chain
+        from core.engine.api import _failure_codes  # walks the update failure's cause chain
 
         raise AskRefused("task_closed" if "task_closed" in _failure_codes(exc) else "not_opened") from exc
     opened = await questions_repo.get_question(ws, task["taskId"], qid)

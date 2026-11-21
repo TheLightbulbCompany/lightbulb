@@ -16,7 +16,10 @@ from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
 from core.billing import voice_billing
-from core.dynamodb import run_in_thread, utc_now_iso
+from core.config import settings
+from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact, utc_now_iso
+from core.engine import api
+from core.engine.contract import AnnotateIn, EngineError
 from core.repositories import billing_repo, messaging_repo
 from core.services import questions
 from core.voice.phone import voice_booking, voice_preferences
@@ -163,13 +166,22 @@ async def _patch_call(call_id: str, change) -> dict:
         merged = _scrub({**call, **change(call)})
         merged["callerName"] = real_name(merged.get("callerName"))
         try:
-            await messaging_repo.patch_room_meta(
-                call_id, {"call": merged}, expected_revision=int(meta.get("revision", 0))
+            await api.annotate(
+                AnnotateIn(
+                    tenant_id=meta.get("ownerId") or "",
+                    conversation_id=call_id,
+                    set={"call": merged},
+                    expected_revision=int(meta.get("revision", 0)),
+                )
             )
             return merged
         except ClientError:
             if attempt == 3:
                 raise
+        except EngineError as exc:
+            if exc.status != 404:
+                raise
+            raise _err(404, "call_not_found") from None  # the call's room is gone, as `_call` answers
     raise AssertionError("unreachable")
 
 
@@ -431,12 +443,12 @@ def free_slots(cfg: dict, date: str, taken: list[tuple[datetime, datetime]], now
 
 async def _booking_rows(owner_id: str, prefix: str) -> list[dict]:
     args = {
-        "KeyConditionExpression": Key("pk").eq(messaging_repo.owner_pk(owner_id)) & Key("sk").begins_with(prefix),
+        "KeyConditionExpression": Key("pk").eq(owner_pk(owner_id)) & Key("sk").begins_with(prefix),
         "ConsistentRead": True,
     }
     rows = []
     while True:
-        result = await run_in_thread(messaging_repo._table().query, **args)
+        result = await run_in_thread(messaging_table().query, **args)
         rows.extend(result.get("Items", []))
         if not result.get("LastEvaluatedKey"):
             return rows
@@ -491,8 +503,8 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
     being moved: its row and cells go in the same transaction. Returns the booking row written."""
     minutes, pk, table = (
         _minutes(cfg, service),
-        messaging_repo.owner_pk(owner_id),
-        messaging_repo.settings.MESSAGING_TABLE,
+        owner_pk(owner_id),
+        settings.MESSAGING_TABLE,
     )
     if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and _start(old) == start):
         raise _err(400, "slot_unavailable")
@@ -522,10 +534,10 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
             if len(items) + len(guards) > 100:
                 raise _err(400, "booking_too_long")
             try:
-                await messaging_repo._transact(items + guards)
+                await transact(messaging_table(), items + guards)
                 return items[0]["Put"]["Item"]
             except ClientError as exc:
-                if not messaging_repo.is_cancelled(exc):
+                if not is_cancelled(exc):
                     raise
                 if key and (same := await _same_booking(owner_id, key)):
                     return same
@@ -535,15 +547,15 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
 async def _same_booking(owner_id: str, key: str) -> dict | None:
     """The booking an identical request already made, or None. A key whose booking is gone (cancelled or moved)
     is removed, so the same booking can be made again."""
-    pk = messaging_repo.owner_pk(owner_id)
-    hit = await messaging_repo._get(pk, key)
+    pk = owner_pk(owner_id)
+    hit = await get_item(messaging_table(), pk, key)
     if not hit:
         return None
-    row = await messaging_repo._get(pk, hit["booking"])
+    row = await get_item(messaging_table(), pk, hit["booking"])
     if row and row.get("bookingId") == hit["bookingId"]:
         return {**row, "_repeat": True}
     try:
-        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": pk, "sk": key},
+        await run_in_thread(messaging_table().delete_item, Key={"pk": pk, "sk": key},
                             ConditionExpression="bookingId = :bid", ExpressionAttributeValues={":bid": hit["bookingId"]})  # fmt: skip
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -553,13 +565,12 @@ async def _same_booking(owner_id: str, key: str) -> dict | None:
 
 async def _query_range(owner_id: str, first: str, last: str) -> list[dict]:
     args = {
-        "KeyConditionExpression": Key("pk").eq(messaging_repo.owner_pk(owner_id))
-        & Key("sk").between(first, last + "\uffff"),
+        "KeyConditionExpression": Key("pk").eq(owner_pk(owner_id)) & Key("sk").between(first, last + "\uffff"),
         "ConsistentRead": True,
     }
     out: list[dict] = []
     while True:
-        result = await run_in_thread(messaging_repo._table().query, **args)
+        result = await run_in_thread(messaging_table().query, **args)
         out.extend(result.get("Items", []))
         if not result.get("LastEvaluatedKey"):
             return out
@@ -591,7 +602,7 @@ async def _capacity_items(owner_id: str, cfg: dict, adding: list[str], mine: set
             count[c["sk"][10:26]] = count.get(c["sk"][10:26], 0) + 1
     if any(count.get(t, 0) >= _capacity(cfg) for t in times):
         raise _err(409, "slot_taken")
-    table, pk = messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(owner_id)
+    table, pk = settings.MESSAGING_TABLE, owner_pk(owner_id)
     out = []
     for t in times:
         v = int(seen[t]["v"]) if t in seen else 0

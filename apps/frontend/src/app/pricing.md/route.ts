@@ -10,7 +10,7 @@ export async function GET() {
   const body = [
     "# Lightbulb pricing",
     "",
-    "Lightbulb is an AI receptionist for salons, spas and barbershops in the US. One plan per business.",
+    "Lightbulb Phone is an AI receptionist for salons, spas and barbershops in the US. One plan per business.",
     "",
     `**${voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL}**`,
     "",

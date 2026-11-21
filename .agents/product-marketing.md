@@ -308,7 +308,7 @@ Confidence: **low.** No first-party salon interviews exist yet, and Reddit was b
 11. how to stop missing calls at my salon
 12. salon phone answering service 24/7
 
-**Current site state (what other agents must fix, copy only):** the homepage (`apps/frontend/src/app/page.tsx` and `components/landing/*`), `/pricing`, `/pricing.md`, `/compare`, `/request-setup`, `llms.txt` and `llms-full.txt` still describe the retired messaging product (six AI employees, channels, seats, founding teams). `/voice` layout metadata is "Your assistant's calls and meetings".
+**Current site state:** one site for three products. `/` is the company home. `/phone` sells Lightbulb Phone (the receptionist), and `/pricing` is its one plan. `/meetings` (Lightbulb Meetings) and `/os` (Lightbulb OS) are waitlist pages that sell nothing and show no price. The shared nav lists Phone, Meetings, OS and Pricing; its sign-up button and the footer's say "Set up Lightbulb Phone". The footer, sitemap, `llms.txt` and the facts in `lib/seo.tsx` name all three products. `/voice` layout metadata is "Your assistant's calls and meetings".
 
 ## What from the old product is kept (do not delete these routes)
 

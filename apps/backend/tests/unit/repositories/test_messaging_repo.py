@@ -1340,18 +1340,8 @@ async def test_patch_room_meta_bound_to_a_stale_revision_is_cancelled(table):
     await repo.patch_room_meta(room_id, {"topic": "first"}, expected_revision=meta["revision"])
     with pytest.raises(ClientError) as lost:  # someone wrote since the caller's read
         await repo.patch_room_meta(room_id, {"topic": "stale"}, expected_revision=meta["revision"])
-    assert repo._is_cancelled(lost.value)
+    assert repo.is_cancelled(lost.value)
     assert (await repo.get_room(room_id))["topic"] == "first"
-
-
-async def test_a_meeting_notes_mail_is_claimed_once(table):
-    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")  # no request: nothing to mail
-    await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})
-    assert (await repo.get_meeting_notes_request("owner_1", "msg-1"))["roomId"] == "r1"
-    assert await repo.claim_meeting_notes_mail("owner_1", "msg-1")
-    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
-    await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})  # a retry
-    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
 
 
 @pytest.mark.asyncio

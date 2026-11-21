@@ -238,7 +238,7 @@ async def set_pickup(
         try:
             await repo.put_session(updated, row, enrollment, extra=extra)
         except ClientError as exc:
-            if not store._is_cancelled(exc):
+            if not store.is_cancelled(exc):
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
@@ -264,7 +264,7 @@ async def _turn_off(auth: AuthContext, owner: str, session_id: str) -> sessions.
                 await retire(owner, sid, row, auth=auth, action="pickup_off", keep_link=True), auth.user_id
             )
         except ClientError as exc:
-            if not store._is_cancelled(exc):
+            if not store.is_cancelled(exc):
                 raise
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

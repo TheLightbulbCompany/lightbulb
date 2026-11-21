@@ -107,7 +107,7 @@ describe('root layout default', () => {
       expect(s).not.toMatch(/salon|receptionist/i);
     }
     const layout = readFileSync(join(__dirname, '../../app/layout.tsx'), 'utf8');
-    expect(layout).toMatch(/import \{ SITE_DESCRIPTION, SITE_TITLE \} from "@\/lib\/seo";/);
+    expect(layout).toMatch(/import \{ OG_IMAGE, SITE_DESCRIPTION, SITE_TITLE \} from "@\/lib\/seo";/);
     expect(layout).not.toMatch(/HOME_TITLE|HOME_DESCRIPTION/);
   });
 });

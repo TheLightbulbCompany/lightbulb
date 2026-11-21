@@ -26,8 +26,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from boto3.dynamodb.conditions import Key
 from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
-from core.dynamodb import run_in_thread, utc_now_iso
+from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
 from core.services import agent_registry, task_conversation
@@ -178,7 +179,12 @@ async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
 @router.get("/voice/waitlist")
 async def waitlist(auth: AuthContext = Depends(get_current_user)) -> dict:
     """Callers waiting for a day (any member reads), soonest day first. Rows expire a day after their date."""
-    rows = await messaging_repo._query(messaging_repo.owner_pk(resolve_owner_id(auth)), begins_with="VOICEWAIT#")
+    rows = await query_all(
+        messaging_table(),
+        KeyConditionExpression=Key("pk").eq(owner_pk(resolve_owner_id(auth))) & Key("sk").begins_with("VOICEWAIT#"),
+        ConsistentRead=True,
+        ScanIndexForward=True,
+    )
     keep = ("id", "date", "name", "phone", "service", "note", "createdAt")
     return {"entries": [{k: r.get(k, "") for k in keep} for r in rows]}
 
@@ -186,10 +192,10 @@ async def waitlist(auth: AuthContext = Depends(get_current_user)) -> dict:
 @router.delete("/voice/waitlist/{date}/{entry_id}")
 async def remove_waitlist(date: str, entry_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     require_org_admin(auth)
-    key = {"pk": messaging_repo.owner_pk(resolve_owner_id(auth)), "sk": f"VOICEWAIT#{date}#{entry_id}"}
-    if not await messaging_repo._get(**key):
+    key = {"pk": owner_pk(resolve_owner_id(auth)), "sk": f"VOICEWAIT#{date}#{entry_id}"}
+    if not await get_item(messaging_table(), **key):
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    await run_in_thread(messaging_repo._table().delete_item, Key=key)
+    await run_in_thread(messaging_table().delete_item, Key=key)
     return {"ok": True}
 
 
@@ -197,11 +203,11 @@ async def remove_waitlist(date: str, entry_id: str, auth: AuthContext = Depends(
 async def forget_caller(e164: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Forget: clear what the assistant remembers of one caller (facts and name)."""
     number, ws = _e164(e164), resolve_owner_id(auth)
-    key = {"pk": messaging_repo.owner_pk(ws), "sk": f"VOICECALLER#{number}"}
-    if not number or not await messaging_repo._get(**key):
+    key = {"pk": owner_pk(ws), "sk": f"VOICECALLER#{number}"}
+    if not number or not await get_item(messaging_table(), **key):
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     await run_in_thread(
-        messaging_repo._table().update_item, Key=key, UpdateExpression="SET facts = :f, forgottenAt = :t REMOVE #n",
+        messaging_table().update_item, Key=key, UpdateExpression="SET facts = :f, forgottenAt = :t REMOVE #n",
         ExpressionAttributeNames={"#n": "name"}, ExpressionAttributeValues={":f": [], ":t": utc_now_iso()},
     )  # fmt: skip
     return {"ok": True}

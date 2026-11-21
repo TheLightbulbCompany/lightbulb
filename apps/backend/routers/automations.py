@@ -496,7 +496,7 @@ async def get_automation(sid: str, auth: AuthContext = Depends(get_current_user)
 @router.get("/{sid}/runs")
 async def list_runs(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     """History = the run tasks (newest first), as the viewer may see them. ponytail: the row keeps ≤50 ids."""
-    from routers.tasks import _summary  # O's TaskSummary builder (names open answerers)
+    from core.engine.api import _summary  # O's TaskSummary builder (names open answerers)
 
     ws = await _ws(auth)
     row = await _row(ws, sid, auth)

@@ -1117,7 +1117,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
                 logger.warning("Local session register left without a user stream for %s", user_id)
             return row
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
@@ -1686,7 +1686,7 @@ async def submit_command(
                 await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
             return _public(CommandReceipt, receipt)
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry the same requestId.")
 
@@ -1791,7 +1791,7 @@ async def _change_session(
                 updated, row, enrollment, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
             )
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
@@ -2159,7 +2159,7 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
             updated = {**row, "shareLink": new, "revision": str(uuid.uuid4())}
             await repo.put_session(updated, row, enrollment, extra=extra)
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
             continue
         if not link:
@@ -2212,7 +2212,7 @@ async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool 
                 ]
             )
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"], session_id=row["sessionId"])
@@ -2286,7 +2286,7 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
                 ]
             )
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
             continue
         break

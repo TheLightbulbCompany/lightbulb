@@ -78,12 +78,19 @@ describe("/os without an invite", () => {
     expect(capture.mock.calls).toEqual([["spark_download_clicked", { source: "os_page" }]]);
   });
 
-  it.each([404, 500])("installer not published (%s): coming soon, no button", async (status) => {
-    installer(status);
+  it("no release yet (404): coming soon, no button", async () => {
+    installer(404);
     s.query = "";
     await page();
     expect(screen.getByText("Download coming soon.")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: DOWNLOAD })).toBeNull();
+  });
+
+  it.each([429, 500])("GitHub answers %s: the download stays", async (status) => {
+    installer(status);
+    s.query = "";
+    await page();
+    expect(await screen.findByRole("link", { name: DOWNLOAD })).toBeInTheDocument();
   });
 });
 

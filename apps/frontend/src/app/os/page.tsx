@@ -64,7 +64,8 @@ function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
 
 // Whether the installer is published yet: the `spark` release page answers 200 once the release exists.
 // The page, not the installer file, because replacing the file for a new version deletes it for a few
-// seconds. Checked at most every five minutes, so the button appears without a deploy.
+// seconds. Only a plain 404 (no such release) hides the button: a rate limit, an error or a timeout at
+// GitHub must not take the download away. Checked at most every five minutes.
 async function installerPublished(): Promise<boolean> {
   try {
     const r = await fetch("https://github.com/TheLightbulbCompany/lightbulb/releases/tag/spark", {
@@ -72,9 +73,9 @@ async function installerPublished(): Promise<boolean> {
       redirect: "manual",
       next: { revalidate: 300 },
     });
-    return r.status === 302 || r.status === 200;
+    return r.status !== 404;
   } catch {
-    return false;
+    return true;
   }
 }
 

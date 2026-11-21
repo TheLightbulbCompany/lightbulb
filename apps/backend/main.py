@@ -58,6 +58,7 @@ from routers import (
     oauth,
     ops,
     orgs,
+    os as os_router,
     photon_inbound,
     platform_info,
     runtime_rpc,
@@ -493,6 +494,7 @@ app.openapi = custom_openapi
 # Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(devices.router, prefix="/api/v1/devices", tags=["devices"])
+app.include_router(os_router.router, prefix="/api/v1/os", tags=["os"])
 
 # Clerk webhook events (user lifecycle)
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])

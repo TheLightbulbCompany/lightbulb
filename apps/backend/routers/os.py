@@ -187,13 +187,15 @@ def _input_text(item: Any) -> str | None:
     parts, role = item.get("content"), item.get("role")
     part = parts[0] if isinstance(parts, list) and len(parts) == 1 else None
     if (
-        role not in _PART_TYPES
+        not isinstance(role, str)
+        or role not in _PART_TYPES
         or item.get("type", "message") != "message"
         or item.get("status") not in (None, "incomplete", "completed")
         or not isinstance(item.get("id", ""), str | None)
         or not isinstance(part, dict)
         or not set(part) <= {"text", "type"}
-        or part.get("type", "text" if role == "assistant" else "input_text") not in _PART_TYPES[role]
+        or not isinstance(part_type := part.get("type", "text" if role == "assistant" else "input_text"), str)
+        or part_type not in _PART_TYPES[role]
         or not isinstance(part.get("text"), str)
     ):
         return None
@@ -251,10 +253,15 @@ async def create_voice_session(
     if not isinstance(sdp, str) or not sdp.startswith("v=0") or len(sdp) > SDP_MAX:
         raise _bad("invalid_sdp")
     model = body.get("model", MODELS[0])
-    if model not in MODELS:
+    if not isinstance(model, str) or model not in MODELS:
         raise _bad("model_not_allowed")
     kind = body.get("kind")
-    if kind not in KINDS or body.get("dcid", 4) != 4:
+    if (
+        not isinstance(kind, str)
+        or kind not in KINDS
+        or type(body.get("dcid", 4)) is not int
+        or body.get("dcid", 4) != 4
+    ):
         raise _bad("invalid_config")
     config = _live_session(body.get("session", {}))
     client = body.get("client") if isinstance(body.get("client"), dict) else {}

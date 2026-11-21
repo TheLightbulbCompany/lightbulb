@@ -488,6 +488,7 @@ async def test_the_sweep_closes_a_session_past_the_hard_cap(ddb, clock, openai, 
     clock[0] += os_voice.MAX_SESSION_S
     await os_voice.sweep_once()  # the lease lapsed: this task attaches, and the attach closes it
     await until(lambda: len(sockets) == 2 and {"type": "session.close"} in sockets[1].sent)
+    assert rec(ddb, sid)["status"] == os_voice.ACTIVE  # the slot stays taken until OpenAI confirms
     sockets[1].push(closed(7200))
     await until(lambda: rec(ddb, sid).get("endedReason") == "expired")
 
@@ -545,9 +546,9 @@ async def test_an_attach_refusal(ddb, clock, openai, metrics, monkeypatch, error
     monkeypatch.setattr(os_voice, "_connect", refuse)
     sid = await opened_session()
     await until(idle)
-    if ended:  # OpenAI no longer has it
+    if ended:  # OpenAI no longer has it: over, nothing left running
         assert rec(ddb, sid)["endedReason"] == ended
-        assert metrics == [("os_voice.session.reaped_unconfirmed", None)]
+        assert metrics == []
         return
     # OpenAI may still have it: counted, loud, and the lease is free for the next sweep
     assert metrics == [("os_voice.sideband.attach_failed", dims)]
@@ -555,10 +556,14 @@ async def test_an_attach_refusal(ddb, clock, openai, metrics, monkeypatch, error
     await os_voice.sweep_once()
     await until(idle)
     assert rec(ddb, sid)["attachFailures"] == 2
-    clock[0] += os_voice.MAX_SESSION_S + os_voice.LEASE_S  # the cap passes with no task able to close it
+    attempts = []
+    monkeypatch.setattr(os_voice, "_connect", lambda url, **kw: attempts.append(url) or refuse(url))
+    clock[0] += os_voice.MAX_SESSION_S  # due: the sweep tries once to attach and close it, which fails
     await os_voice.sweep_once()
+    await until(idle)
+    assert len(attempts) == 1
     assert rec(ddb, sid)["endedReason"] == "upstream"
-    assert metrics[-1] == ("os_voice.session.reaped_unconfirmed", None)
+    assert metrics[-2:] == [("os_voice.sideband.attach_failed", dims), ("os_voice.session.reaped_unconfirmed", None)]
 
 
 async def test_a_close_with_no_session_closed_is_reaped_unconfirmed(ddb, clock, openai, sockets, metrics, users):
@@ -585,3 +590,111 @@ async def test_an_unexpected_event_is_skipped_not_fatal(ddb, clock, openai, sock
     sockets[0].push({"type": "session.closed", "reason": "close_requested"})  # no usage: the last seen counts
     await until(lambda: rec(ddb, sid).get("endedReason") == "client_closed")
     assert rec(ddb, sid)["usageSeconds"] == 9
+
+
+ITEM = {"role": "user", "content": [{"type": "input_text", "text": "x"}]}
+JUNK = [[], {}, None, 1, True]
+
+
+def _with(path: tuple, value) -> dict:
+    """The happy-path body with one field (a key path; ints index lists) set to `value`."""
+    b = json.loads(json.dumps(body() | {"model": "gpt-live-1.1"}))
+    b["session"]["input"] = [json.loads(json.dumps(ITEM))]
+    node = b
+    for step in path[:-1]:
+        node = node[step]
+    node[path[-1]] = value
+    return b
+
+
+FIELDS = {
+    ("sdp",): "invalid_sdp",
+    ("model",): "model_not_allowed",
+    ("kind",): "invalid_config",
+    ("dcid",): "invalid_config",
+    ("session",): "invalid_config",
+    ("session", "instructions"): "invalid_config",
+    ("session", "input"): "invalid_config",
+    ("session", "audio"): "invalid_config",
+    ("session", "audio", "output"): "invalid_config",
+    ("session", "audio", "output", "voice"): "invalid_config",
+    ("session", "delegation"): "invalid_config",
+    ("session", "delegation", "type"): "invalid_config",
+    ("session", "delegation", "acknowledgement_delay_ms"): "invalid_config",
+    ("session", "input", 0): "invalid_config",
+    ("session", "input", 0, "role"): "invalid_config",
+    ("session", "input", 0, "type"): "invalid_config",
+    ("session", "input", 0, "status"): "invalid_config",
+    ("session", "input", 0, "id"): "invalid_config",
+    ("session", "input", 0, "content"): "invalid_config",
+    ("session", "input", 0, "content", 0): "invalid_config",
+    ("session", "input", 0, "content", 0, "type"): "invalid_config",
+    ("session", "input", 0, "content", 0, "text"): "invalid_config",
+}
+# Values the reference allows: an empty session or history; null instructions, item id and status; a 1 ms
+# acknowledgement delay.
+VALID = {
+    (("session",), "{}"),
+    (("session", "input"), "[]"),
+    (("session", "instructions"), "None"),
+    (("session", "input", 0, "status"), "None"),
+    (("session", "input", 0, "id"), "None"),
+    (("session", "delegation", "acknowledgement_delay_ms"), "1"),
+}
+
+
+@pytest.mark.parametrize("path,value", [(p, v) for p in FIELDS for v in JUNK], ids=repr)
+async def test_any_value_in_any_field_is_a_contract_answer(ddb, clock, no_sideband, openai, path, value):
+    r = await req("POST", "/os/voice-session", A, _with(path, value))
+    if (path, repr(value)) in VALID:
+        assert r.status_code == 201, r.text
+    else:
+        assert (r.status_code, r.json()) == (400, {"detail": FIELDS[path]})
+
+
+@pytest.mark.parametrize(
+    "role,part",
+    [
+        ("developer", {"type": "input_text", "text": "x"}),
+        ("user", {"type": "input_text", "text": "x"}),
+        ("assistant", {"type": "output_text", "text": "x"}),
+        ("assistant", {"type": "text", "text": "x"}),
+        ("assistant", {"text": "x"}),  # type omitted: the reference's default
+    ],
+)
+async def test_each_role_with_the_part_types_the_reference_allows(ddb, clock, no_sideband, openai, role, part):
+    r = await req("POST", "/os/voice-session", A, session(input=[{"role": role, "content": [part]}]))
+    assert r.status_code == 201, r.text
+
+
+@pytest.mark.parametrize(
+    "role,part_type", [("developer", "output_text"), ("user", "text"), ("assistant", "input_text")]
+)
+async def test_a_part_type_the_role_does_not_allow_is_refused(ddb, clock, no_sideband, openai, role, part_type):
+    r = await req(
+        "POST", "/os/voice-session", A, session(input=[{"role": role, "content": [{"type": part_type, "text": "x"}]}])
+    )
+    assert (r.status_code, r.json()) == (400, {"detail": "invalid_config"})
+
+
+@pytest.mark.parametrize(
+    "delegation,ok",
+    [
+        ({"type": "client", "acknowledgement_delay_ms": 800}, True),
+        ({"type": "client", "acknowledgement_delay_ms": 0}, True),
+        ({"type": "client"}, True),
+        ({"type": "client", "acknowledgement_delay_ms": 801}, False),
+        ({"type": "client", "acknowledgement_delay_ms": -1}, False),
+        ({"type": "client", "acknowledgement_delay_ms": "800"}, False),
+        ({"type": "client", "acknowledgement_delay_ms": 800.0}, False),
+        ({"type": "client", "acknowledgement_delay_ms": True}, False),
+        ({"type": "client", "acknowledgement_delay_ms": 800, "x": 1}, False),
+        ({"type": "decisions"}, False),
+        ({}, False),
+    ],
+)
+async def test_delegation(ddb, clock, no_sideband, openai, delegation, ok):
+    r = await req("POST", "/os/voice-session", A, session(delegation=delegation))
+    assert r.status_code == (201 if ok else 400), r.text
+    if ok:
+        assert sent(openai)["session"]["delegation"] == delegation

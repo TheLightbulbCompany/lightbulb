@@ -378,12 +378,16 @@ async def run_sideband(sid: str) -> None:
         if connected:
             logger.info("os voice session %s: sideband dropped", sid)
         elif isinstance(e, websockets.exceptions.InvalidStatus) and e.response.status_code in (404, 410):
-            await _reap_unconfirmed(sid, int(s["usageSeconds"]))  # OpenAI no longer has it
+            # OpenAI no longer has it: it is over
+            await end_session(sid, s.get("closeReason") or await _due(s, now()) or "upstream", int(s["usageSeconds"]))
             return
         else:
             put_metric("os_voice.sideband.attach_failed", dimensions={"status": _status_class(e)})
             logger.warning("os voice session %s: attach failed (%s)", sid, _status_class(e))
-            await _release(sid, attach_failed=True)
+            if s.get("closeReason") or await _due(s, now()):  # due, and this attempt to close it failed
+                await _reap_unconfirmed(sid, int(s["usageSeconds"]))
+            else:
+                await _release(sid, attach_failed=True)
             return
     except websockets.ConnectionClosed:
         logger.info("os voice session %s: sideband dropped", sid)
@@ -401,8 +405,9 @@ def start_sideband(sid: str) -> None:
 
 
 async def sweep_once() -> None:
-    """Attach every active session nobody holds. A session whose creating task died before recording
-    OpenAI's id, or one past the cap that no task could attach, is ended as unconfirmed."""
+    """Attach every active session nobody holds; the attach closes one that is due, and retires it as
+    unconfirmed only if that attempt fails. A session whose creating task died before recording OpenAI's id
+    cannot be attached, so it is ended as unconfirmed."""
     at = now()
     for row in await container_repo.get_by_status(ACTIVE):
         sid = row.get("sessionId")
@@ -412,10 +417,7 @@ async def sweep_once() -> None:
             if int(row["startedAt"]) < at - PENDING_S:
                 await _reap_unconfirmed(sid, 0)
         elif int(row.get("leaseUntil", 0)) < at:
-            if at >= int(row["startedAt"]) + MAX_SESSION_S + LEASE_S:
-                await _reap_unconfirmed(sid, int(row.get("usageSeconds", 0)))
-            else:
-                start_sideband(sid)
+            start_sideband(sid)
 
 
 async def os_voice_sweeper(stop: asyncio.Event) -> None:

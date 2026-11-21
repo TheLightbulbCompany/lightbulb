@@ -1,0 +1,510 @@
+"""Spark voice (/os/voice-session): the backend creates the GPT-Live WebRTC session with the company key and
+returns OpenAI's SDP answer; a sideband per session meters it and can end it. OpenAI is always faked: the
+create call through respx, the sideband through a fake socket."""
+
+import asyncio
+import json
+import logging
+from dataclasses import replace
+
+import boto3
+import httpx
+import pytest
+import websockets
+from httpx import ASGITransport, AsyncClient
+from moto import mock_aws
+
+from core import dynamodb
+from core.config import settings
+from core.voice import os_voice
+from main import app
+from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
+
+A, B = Tenant("user_a", None), Tenant("user_b", None)
+START = 1_800_000_000
+LAN = "192.168.7.23"
+OFFER = (
+    "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+    "a=group:BUNDLE 0 1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+    f"a=candidate:1 1 udp 2122260223 {LAN} 50123 typ host\r\n"
+    "a=rtpmap:111 opus/48000/2\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "a=sctp-port:5000\r\na=sctp-init:AQAAHgpaMf8AAAAA\r\n"
+)
+ANSWER = "v=0\r\no=- 99 2 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\na=candidate:9 1 udp 1 203.0.113.9 3478 typ host\r\n"
+SECRET_INSTRUCTIONS = "You are Spark. The person's private note: zebra-secret-91."
+LIVE = "https://api.openai.com/v1/live/sessions"
+
+
+def body(**over):
+    b = {
+        "sdp": OFFER,
+        "dcid": 4,
+        "kind": "hold",
+        "session": {
+            "instructions": SECRET_INSTRUCTIONS,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "audio": {"output": {"voice": "marin"}},
+            "delegation": {"type": "client", "acknowledgement_delay_ms": 800},
+        },
+        "client": {"appVersion": "1.0.0", "protocol": 2},
+    }
+    return b | over
+
+
+def session(**over):
+    return body(session=body()["session"] | over)
+
+
+@pytest.fixture
+def ddb(monkeypatch, jwks):  # noqa: F811
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        resource.create_table(
+            TableName=dynamodb.table_name("users"),
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        resource.create_table(
+            TableName=dynamodb.table_name("containers"),
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "owner_id", "AttributeType": "S"},
+                {"AttributeName": "status", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "status-index",
+                    "KeySchema": [{"AttributeName": "status", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setattr(dynamodb, "_dynamodb_resource", resource)
+        yield resource
+
+
+@pytest.fixture(autouse=True)
+async def no_leftover_sidebands():
+    yield
+    tasks = list(os_voice._TASKS.values())
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    os_voice._TASKS.clear()
+
+
+@pytest.fixture
+def users(ddb):
+    return ddb.Table(dynamodb.table_name("users"))
+
+
+@pytest.fixture
+def key(monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test-not-real")
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [START]
+    monkeypatch.setattr("routers.os._now", lambda: now[0])
+    monkeypatch.setattr("core.voice.os_voice._now", lambda: now[0])
+    return now
+
+
+@pytest.fixture
+def no_sideband(monkeypatch):
+    started = []
+    monkeypatch.setattr(os_voice, "start_sideband", started.append)
+    return started
+
+
+class FakeOpenAI:
+    """POST /v1/live/sessions: each call gets a new session, unless `answer` is set (a response or an error)."""
+
+    def __init__(self):
+        self.requests: list[httpx.Request] = []
+        self.answer: httpx.Response | Exception | None = None
+
+    @property
+    def called(self) -> bool:
+        return bool(self.requests)
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        assert (request.method, str(request.url).split("?")[0]) == ("POST", LIVE)
+        self.requests.append(request)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        n = len(self.requests)
+        return self.answer or httpx.Response(
+            201, json={"session": {"id": f"live_{n}"}, "transport": {"type": "webrtc", "sdp": ANSWER}}
+        )
+
+
+@pytest.fixture
+def openai(key, monkeypatch):
+    fake = FakeOpenAI()
+    monkeypatch.setattr(os_voice, "_transport", httpx.MockTransport(fake))
+    return fake
+
+
+async def req(method, path, who: Tenant | None = A, json_body=None):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        return await c.request(method, f"/api/v1{path}", headers=who.headers if who else {}, json=json_body)
+
+
+async def create(who=A, **over):
+    return await req("POST", "/os/voice-session", who, body(**over))
+
+
+def sent(fake) -> dict:
+    return json.loads(fake.requests[-1].content)
+
+
+async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, openai, no_sideband):
+    r = await create(model="gpt-live-1")
+    assert r.status_code == 201, r.text
+    out = r.json()
+    assert out["sdp"] == ANSWER and out["expiresAt"] is None and out["sessionId"]
+    req_ = openai.requests[-1]
+    assert req_.headers["authorization"] == "Bearer sk-test-not-real"
+    sent_body = sent(openai)
+    assert sent_body["transport"] == {"type": "webrtc", "sdp": OFFER, "dcid": 4}
+    assert "a=sctp-init:AQAAHgpaMf8AAAAA\r\n" in sent_body["transport"]["sdp"]
+    assert req_.url.query == b""  # dcid never as a query parameter
+    s = sent_body["session"]
+    assert s["model"] == "gpt-live-1" and s["store"] is False
+    assert s["client"] == {
+        "data_channel": {
+            "allowed_client_events": [
+                "session.input_audio.mute",
+                "session.input_audio.unmute",
+                "session.instructions.append",
+                "session.thinking.append",
+                "session.commentary.append",
+                "session.close",
+            ]
+        }
+    }
+    assert s["instructions"] == SECRET_INSTRUCTIONS and s["audio"] == {"output": {"voice": "marin"}}
+    assert s["delegation"] == {"type": "client", "acknowledgement_delay_ms": 800}
+    assert no_sideband == [out["sessionId"]]
+    got = await req("GET", f"/os/voice-session/{out['sessionId']}")
+    assert got.status_code == 200 and got.json() == {"status": "active", "endedReason": None}
+
+
+async def test_model_defaults_and_is_allow_listed(ddb, clock, no_sideband, openai):
+    assert (await create()).status_code == 201
+    assert sent(openai)["session"]["model"] == "gpt-live-1.1"
+    r = await create(model="gpt-realtime")
+    assert (r.status_code, r.json()) == (400, {"detail": "model_not_allowed"})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        session(audio={"output": {"voice": "nova"}}),
+        session(audio={"output": {"voice": "marin", "speed": 2}}),
+        session(tools=[{"type": "function", "name": "x"}]),
+        session(store=True),
+        session(delegation={"type": "responses", "responses": {"model": "gpt-5"}}),
+        session(delegation={"type": "client", "acknowledgement_delay_ms": 801}),
+        session(instructions="x" * (16_384 + 1)),
+        session(instructions="é" * 8_193),  # 16,386 UTF-8 bytes
+        session(input=[{"role": "user", "content": [{"type": "input_text", "text": "x"}]}] * 129),
+        session(input="hi"),
+        body(kind="shout"),
+        body(dcid=5),
+        body(session="x"),
+    ],
+)
+async def test_invalid_config_never_reaches_openai(ddb, clock, no_sideband, openai, bad):
+    r = await req("POST", "/os/voice-session", A, bad)
+    assert (r.status_code, r.json()) == (400, {"detail": "invalid_config"})
+    assert not openai.called
+
+
+async def test_instructions_at_the_byte_limit_pass(ddb, clock, no_sideband, openai):
+    r = await req("POST", "/os/voice-session", A, session(instructions="x" * 16_384))
+    assert r.status_code == 201
+
+
+@pytest.mark.parametrize("sdp", ["", "   ", "hello", 7, None, "v=0\r\n" + "a" * 70_000])
+async def test_invalid_sdp(ddb, clock, no_sideband, openai, sdp):
+    r = await create(sdp=sdp)
+    assert (r.status_code, r.json()) == (400, {"detail": "invalid_sdp"})
+    assert not openai.called
+
+
+async def test_trial_ended_is_402_and_openai_is_not_called(ddb, clock, no_sideband, openai):
+    assert (await req("GET", "/os/account")).status_code == 200
+    clock[0] += 3 * 86400
+    r = await create()
+    assert (r.status_code, r.json()) == (402, {"detail": "trial_ended"})
+    assert not openai.called
+
+
+async def test_first_call_creates_the_account_then_proceeds(ddb, clock, no_sideband, openai, users):
+    assert (await create()).status_code == 201
+    row = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert row["os_trial_ends_at"] == START + 3 * 86400
+    assert (await req("GET", "/os/account")).json()["status"] == "trial"
+
+
+async def test_a_third_session_is_429(ddb, clock, no_sideband, openai):
+    assert (await create()).status_code == 201
+    assert (await create()).status_code == 201
+    r = await create()
+    assert (r.status_code, r.json()) == (429, {"detail": "too_many_sessions"})
+    assert len(openai.requests) == 2
+    assert (await create(B)).status_code == 201  # per person
+
+
+async def test_two_concurrent_posts_for_the_last_slot_admit_one(ddb, clock, no_sideband, openai):
+    assert (await create()).status_code == 201
+    rs = await asyncio.gather(create(), create())
+    assert sorted(r.status_code for r in rs) == [201, 429]
+
+
+async def test_an_ended_session_frees_its_slot(ddb, clock, no_sideband, openai):
+    first = (await create()).json()["sessionId"]
+    await create()
+    assert await os_voice.end_session(first, "client_closed", 30)
+    assert (await create()).status_code == 201
+    got = await req("GET", f"/os/voice-session/{first}")
+    assert got.json() == {"status": "ended", "endedReason": "client_closed"}
+
+
+@pytest.mark.parametrize(
+    "answer,status,detail,retry",
+    [
+        (httpx.Response(429, headers={"Retry-After": "7"}, json={"error": {"code": "rate_limit_exceeded"}}), 429, "capacity", 7),
+        (httpx.Response(429, json={"error": {"code": "concurrency"}}), 429, "capacity", os_voice.RETRY_AFTER_S),
+        (httpx.Response(500, json={"error": {}}), 502, "upstream", None),
+        (httpx.Response(400, json={"error": {"code": "invalid_sdp"}}), 502, "upstream", None),
+        (httpx.Response(201, json={"session": {}}), 502, "upstream", None),
+        (httpx.ConnectError("refused"), 502, "upstream", None),
+        (httpx.ReadTimeout("slow"), 504, "upstream", None),
+    ],
+)  # fmt: skip
+async def test_openai_failures_map_and_free_the_slot(
+    ddb, clock, no_sideband, openai, users, answer, status, detail, retry
+):
+    openai.answer = answer
+    r = await create()
+    assert r.status_code == status
+    assert r.json() == {"detail": detail} | ({"retryAfterS": retry} if retry else {})
+    assert "os_voice_active" not in users.get_item(Key={"user_id": "user_a"})["Item"]
+
+
+async def test_key_not_configured_is_503(ddb, clock, no_sideband, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "lightbulb-placeholder")
+    r = await create()
+    assert (r.status_code, r.json()) == (503, {"detail": "voice_unavailable"})
+
+
+async def test_only_the_opener_reads_a_session(ddb, clock, no_sideband, openai):
+    sid = (await create()).json()["sessionId"]
+    other = await req("GET", f"/os/voice-session/{sid}", B)
+    unknown = await req("GET", "/os/voice-session/vs_nope", B)
+    assert other.status_code == unknown.status_code == 404
+    assert other.json() == unknown.json()
+
+
+@pytest.mark.parametrize("token", ["oauth", "template"])
+async def test_voice_requires_a_human_session(ddb, clock, no_sideband, openai, token):
+    assert (await create(replace(A, token=token))).status_code == 403
+    assert (await req("POST", "/os/voice-session", None, body())).status_code in (401, 403)
+    assert not openai.called
+
+
+async def test_nothing_private_is_logged(ddb, clock, no_sideband, openai, caplog):
+    caplog.set_level(logging.DEBUG)
+    r = await create()
+    assert r.status_code == 201
+    openai.answer = httpx.Response(500, text=f"echo {OFFER} {SECRET_INSTRUCTIONS}")
+    await create()
+    bearer = A.headers["Authorization"].split()[1]
+    for record in caplog.records:
+        text = record.getMessage() + str(record.args) + str(record.exc_info)
+        for secret in (LAN, "203.0.113.9", "zebra-secret-91", bearer, "sk-test-not-real", "sctp-init"):
+            assert secret not in text, (secret, record.name)
+
+
+# --- the sideband ------------------------------------------------------------------------------------
+
+
+class FakeSocket:
+    """One sideband connection: the test feeds server events; `sent` is what the backend sent."""
+
+    def __init__(self):
+        self.inbox: asyncio.Queue = asyncio.Queue()
+        self.sent: list[dict] = []
+        self.url = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, text):
+        self.sent.append(json.loads(text))
+
+    async def recv(self):
+        event = await self.inbox.get()
+        if event is None:
+            raise websockets.ConnectionClosedOK(None, None)
+        return json.dumps(event)
+
+    def push(self, *events):
+        for e in events:
+            self.inbox.put_nowait(e)
+
+
+@pytest.fixture
+def sockets(monkeypatch):
+    opened: list[FakeSocket] = []
+
+    def connect(url, **kwargs):
+        assert kwargs["additional_headers"]["Authorization"] == "Bearer sk-test-not-real"
+        ws = FakeSocket()
+        ws.url = url
+        opened.append(ws)
+        return ws
+
+    monkeypatch.setattr(os_voice, "_connect", connect)
+    monkeypatch.setattr(os_voice, "TICK_S", 0.01)
+    return opened
+
+
+def rec(ddb, sid) -> dict:
+    return ddb.Table(dynamodb.table_name("containers")).get_item(Key={"owner_id": f"__osvoice__#{sid}"}).get("Item")
+
+
+def usage(s):
+    return {"type": "session.usage.updated", "event_id": f"u{s}", "usage": {"seconds": s}}
+
+
+def closed(s, reason="close_requested"):
+    return {"type": "session.closed", "event_id": "c", "reason": reason, "usage": {"seconds": s}, "session": {}}
+
+
+def idle() -> bool:
+    return all(t.done() for t in os_voice._TASKS.values())
+
+
+async def until(predicate, timeout=5.0):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+async def opened_session(who=A) -> str:
+    r = await create(who)
+    assert r.status_code == 201, r.text
+    return r.json()["sessionId"]
+
+
+async def replaced(sid):
+    """The backend task that held the sideband goes away (a deploy): its socket task just stops."""
+    task = os_voice._TASKS[sid]
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_usage_is_recorded_and_the_close_counts_once(ddb, clock, openai, sockets, users):
+    sid = await opened_session()  # the creating task attaches
+    await until(lambda: sockets)
+    assert sockets[0].url == "wss://api.openai.com/v1/live/sessions/live_1/attach"
+    sockets[0].push(
+        {"type": "session.started", "session": {"id": "live_1", "expires_at": START + 3600}}, usage(5), usage(12)
+    )
+    await until(lambda: rec(ddb, sid).get("usageSeconds") == 12)
+    assert rec(ddb, sid)["expiresAt"] == START + 3600
+    assert (await create()).json()["expiresAt"] is None  # not known until session.started
+    sockets[0].push(closed(15), closed(15))
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    row = rec(ddb, sid)
+    assert row["endedReason"] == "client_closed" and row["usageSeconds"] == 15
+    assert await os_voice.end_session(sid, "upstream", 99) is False  # a replayed close adds nothing
+    person = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert person["os_voice_seconds"] == 15 and len(person["os_voice_active"]) == 1
+    sockets[1].push(closed(0))
+    await until(idle)
+
+
+async def test_account_ending_mid_session_closes_it(ddb, clock, openai, sockets, users):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    clock[0] += 3 * 86400
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    sockets[0].push(closed(40))
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    assert rec(ddb, sid)["endedReason"] == "trial_ended"
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_voice_seconds"] == 40
+
+
+async def test_the_sweep_closes_a_session_past_the_hard_cap(ddb, clock, openai, sockets):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    await replaced(sid)
+    clock[0] += os_voice.MAX_SESSION_S
+    await os_voice.sweep_once()  # the lease lapsed: this task attaches, and the attach closes it
+    await until(lambda: len(sockets) == 2 and {"type": "session.close"} in sockets[1].sent)
+    sockets[1].push(closed(7200))
+    await until(lambda: rec(ddb, sid).get("endedReason") == "expired")
+
+
+async def test_a_lapsed_lease_is_reattached_and_not_double_counted(ddb, clock, openai, sockets, users, monkeypatch):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(10))
+    await until(lambda: rec(ddb, sid).get("usageSeconds") == 10)
+    await replaced(sid)
+    await os_voice.sweep_once()
+    assert len(sockets) == 1  # the lease is still live: nobody else attaches yet
+    clock[0] += os_voice.LEASE_S + 1
+    monkeypatch.setattr(os_voice, "TASK_ID", "another-task")
+    await os_voice.sweep_once()
+    await until(lambda: len(sockets) == 2)
+    sockets[1].push(usage(10), closed(20))  # the 3 s replay repeats the old usage
+    await until(lambda: rec(ddb, sid).get("endedReason") == "client_closed")
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_voice_seconds"] == 20
+
+
+async def test_a_dropped_sideband_releases_its_lease_for_another_task(ddb, clock, openai, sockets):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(None)  # the socket closes without session.closed
+    await until(idle)
+    assert rec(ddb, sid)["status"] == os_voice.ACTIVE
+    await os_voice.sweep_once()
+    await until(lambda: len(sockets) == 2)
+    sockets[1].push(closed(3))
+    await until(lambda: rec(ddb, sid).get("endedReason") == "client_closed")
+
+
+async def test_the_sweep_ends_a_session_that_never_got_an_openai_id(ddb, clock, key, users):
+    assert await os_voice.reserve("user_a", "vs_dead", "hold", {}, START)
+    clock[0] += os_voice.PENDING_S + 1
+    await os_voice.sweep_once()
+    assert rec(ddb, "vs_dead")["endedReason"] == "upstream"
+    assert "os_voice_active" not in users.get_item(Key={"user_id": "user_a"})["Item"]
+
+
+@pytest.mark.parametrize("status,ended", [(404, "upstream"), (500, None)])
+async def test_an_attach_refusal(ddb, clock, openai, monkeypatch, status, ended):
+    def refuse(url, **kwargs):
+        raise websockets.exceptions.InvalidStatus(httpx.Response(status))
+
+    monkeypatch.setattr(os_voice, "_connect", refuse)
+    sid = await opened_session()
+    await until(idle)
+    assert rec(ddb, sid).get("endedReason") == ended
+    if ended is None:  # OpenAI still has it: the lease is free for the next sweep, and the cap still ends it
+        assert "leaseOwner" not in rec(ddb, sid)
+        clock[0] += os_voice.MAX_SESSION_S + os_voice.UNATTACHED_GRACE_S
+        await os_voice.sweep_once()
+        assert rec(ddb, sid)["endedReason"] == "expired"

@@ -107,9 +107,7 @@ async def _account(auth: AuthContext, now: int) -> dict:
     old = written.get("Attributes") or {}
     row = {_DEFAULTS[k]: v for k, v in values.items()} | old  # every SET is if_not_exists
     if "os_created_at" not in old:
-        spark_events.server_event(
-            auth.user_id, "account_created", auth.user_id, set_person=spark_events.facts(row, now)
-        )
+        spark_events.server_event(auth.user_id, "account_created", auth.user_id, row=row, now=now)
     return row
 
 

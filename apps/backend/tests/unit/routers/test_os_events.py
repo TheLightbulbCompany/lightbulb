@@ -155,11 +155,25 @@ async def test_bad_versions_are_omitted(ph, ddb):
     assert {"app_version", "os_version"}.isdisjoint(ph.captures[0]["properties"])
 
 
+# Letters-only text is mixed case: `task_failed.reason` takes lowercase snake_case codes until the fixed list.
+SHORT = ["call my wife at 5 about rent", "rent due friday", "CallMyWife", "2.1 call wife", "1.2.3 beta"]
+
+
+@pytest.mark.parametrize("text", [SENTENCE, *SHORT])
 @pytest.mark.parametrize("event", sorted(VALID))
-async def test_no_free_text_reaches_posthog(event, ph, ddb):
-    props = dict.fromkeys(spark_events.APP_EVENTS[event], SENTENCE) | {"note": SENTENCE}
-    await send(event, props, appVersion=SENTENCE, osVersion=SENTENCE)
-    assert SENTENCE not in json.dumps(ph.captures + ph.aliases)
+async def test_no_free_text_reaches_posthog(event, text, ph, ddb):
+    props = dict.fromkeys(spark_events.APP_EVENTS[event], text) | {"note": text}
+    r = await send(event, props, appVersion=text, osVersion=text)
+    assert r.status_code == 204
+    assert [c["event"] for c in ph.captures] == [event]
+    assert text not in json.dumps(ph.captures + ph.aliases)
+
+
+@pytest.mark.parametrize("version", ["2.1.1", "15.1", "26.0", "2.1.2-beta.1", "1+build.7"])
+async def test_numeric_versions_pass(version, ph, ddb):
+    await send("update_installed", {"from_version": version, "to_version": version}, appVersion=version)
+    p = ph.captures[0]["properties"]
+    assert p["app_version"] == p["from_version"] == p["to_version"] == version
 
 
 async def test_a_bad_bearer_is_anonymous(ph, ddb):
@@ -290,6 +304,32 @@ async def test_subscription_events_once_each_under_redelivery(ph, ddb, monkeypat
         "subscription_started", "subscription_cancelled"
     ]  # fmt: skip
     assert ph.named("subscription_cancelled")[0]["properties"]["$set"]["spark_status"] in ("trial", "ended")
+
+
+async def test_past_due_and_back_is_not_a_new_start(ph, ddb, monkeypatch):
+    await req("GET", "/os/account", A)
+    status = {"sub_1": "active"}
+    monkeypatch.setattr(
+        stripe.Subscription, "retrieve", lambda sid, **kw: {"id": sid, "status": status[sid], "customer": "c"}
+    )
+    event = {"data": {"object": {"id": "sub_1", "metadata": {"product": "spark", "user_id": "user_a"}}}}
+    for s in ("active", "past_due", "active"):
+        status["sub_1"] = s
+        await os_billing.sync_subscription(event)
+    assert len(ph.named("subscription_started")) == 1 and ph.named("subscription_cancelled") == []
+
+
+async def test_facts_raising_fails_nothing(ph, ddb, monkeypatch):
+    def boom(row, now):
+        raise RuntimeError("facts")
+
+    monkeypatch.setattr(spark_events, "facts", boom)
+    monkeypatch.setattr(
+        stripe.Subscription, "retrieve", lambda sid, **kw: {"id": sid, "status": "active", "customer": "c"}
+    )
+    assert (await req("GET", "/os/account", A)).status_code == 200
+    await os_billing.sync_subscription({"data": {"object": {"id": "sub_1", "metadata": {"user_id": "user_a"}}}})
+    assert ddb.get_item(Key={"user_id": "user_a"})["Item"]["os_subscription_status"] == "active"
 
 
 async def _noop():

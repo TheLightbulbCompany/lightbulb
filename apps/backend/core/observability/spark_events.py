@@ -15,7 +15,7 @@ from core.observability import product_analytics
 logger = logging.getLogger(__name__)
 
 PRODUCT = "spark"
-VERSION = re.compile(r"[0-9A-Za-z.\-+ ]{1,32}")
+VERSION = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){0,3}([-+][0-9A-Za-z.]{1,16})?")
 _REASON = re.compile(r"[a-z0-9_]{1,40}")
 NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:spark")
 
@@ -79,15 +79,18 @@ def facts(row: dict, now: int) -> dict:
     }
 
 
-def server_event(user_id: str, event: str, key: str, properties: dict | None = None, set_person=None) -> None:
-    """One server-side Spark event on the person. `key` makes the event uuid deterministic, so a retried
-    request or a redelivered webhook is dropped by PostHog. Never raises."""
+def server_event(
+    user_id: str, event: str, key: str, properties: dict | None = None, row: dict | None = None, now: int = 0
+) -> None:
+    """One server-side Spark event on the person, with `facts(row, now)` set on them when a row is given.
+    `key` makes the event uuid deterministic, so a retried request or a redelivered webhook is dropped by
+    PostHog. Never raises."""
     try:
         product_analytics.capture_product_event(
             distinct_id=user_id,
             event=event,
             properties={**(properties or {}), "product": PRODUCT},
-            set_person=set_person,
+            set_person=facts(row, now) if row is not None else None,
             event_uuid=str(uuid.uuid5(NS, f"{event}:{key}")),
         )
     except Exception:  # noqa: BLE001  analytics never fails the caller

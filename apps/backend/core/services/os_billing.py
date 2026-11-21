@@ -286,17 +286,17 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
 
 
 def _subscription_events(user_id: str, old: dict, current: dict) -> None:
-    """Product events for the status change this webhook wrote: going live, or becoming canceled."""
+    """Product events for the status change this webhook wrote: a start when the stored status had no live
+    subscription behind it (absent, canceled or incomplete), so past_due and back is not a new start; a
+    cancel when a stored subscription becomes canceled."""
     before, after = old.get("os_subscription_status"), current["status"]
-    if after in LIVE and before not in LIVE:
-        events = ("subscription_started",)
-    elif after == "canceled" and before != "canceled":
-        events = ("subscription_cancelled",)
+    if after in LIVE and (before is None or before == "canceled" or before.startswith("incomplete")):
+        event = "subscription_started"
+    elif after == "canceled" and before not in (None, "canceled"):
+        event = "subscription_cancelled"
     else:
         return
-    row = old | {"os_subscription_status": after}
-    for event in events:
-        spark_events.server_event(user_id, event, current["id"], set_person=spark_events.facts(row, _now()))
+    spark_events.server_event(user_id, event, current["id"], row=old | {"os_subscription_status": after}, now=_now())
 
 
 async def extend_trial(user_id: str) -> None:

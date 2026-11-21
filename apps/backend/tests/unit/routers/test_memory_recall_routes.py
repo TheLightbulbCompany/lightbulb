@@ -117,21 +117,6 @@ def test_recall_rejects_a_bad_question_before_recall(member, q):
     rec.assert_not_awaited()
 
 
-async def test_hosted_remember_tool_raises_the_refusal_as_a_tool_error(monkeypatch):
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    from core.services import hosted_mcp
-
-    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_: AuthContext(user_id="user_me", org_id="org_a"))
-    refused = {"stored": False, "refused": "too_long", "neighbours": []}
-    with (
-        patch.object(memory_api, "neighbours", AsyncMock(return_value=[])),
-        patch.object(memory_api.network_member, "call_op", AsyncMock(return_value=refused)),
-        pytest.raises(ToolError, match="too_long"),
-    ):
-        await hosted_mcp.remember.__wrapped__("s", "f", "fact")
-
-
 def test_forget_queues_when_parked():
     call, queue = AsyncMock(return_value=None), AsyncMock()
     with (
@@ -214,16 +199,6 @@ def test_internal_remember_takes_on_behalf_of_from_the_payload(hook):
         )
     assert r.json() == {"queued": False, "neighbours": []}
     assert call.await_args.args[2]["on_behalf_of"] == "Ana"
-
-
-async def test_hosted_recall_tool_rejects_a_bad_question_as_a_tool_error(monkeypatch):
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    from core.services import hosted_mcp
-
-    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_: AuthContext(user_id="user_me", org_id="org_a"))
-    with pytest.raises(ToolError):
-        await hosted_mcp.recall.__wrapped__("")
 
 
 async def test_forget_queues_when_the_call_raises():

@@ -62,26 +62,6 @@ def test_exception_row_allows_within_window():
     assert (d.effect, d.rule) == ("allow", "exception:exc-9")
 
 
-def test_exception_repo_roundtrip_and_expiry(repos):
-    import asyncio
-
-    from core.repositories import a2a_repo
-
-    eid = asyncio.run(
-        a2a_repo.put_exception(
-            "org_1", "session:abc", "ask_session", "user_x", "sha256:aa", holder="user_owner", task_id="t1", now=1_000
-        )
-    )
-
-    def get(skill="ask_session", requester="user_x", now=1_001):
-        return asyncio.run(a2a_repo.get_exception("org_1", "session:abc", skill, requester, "sha256:aa", now))
-
-    assert get()["id"] == eid
-    assert get(skill="message") is None
-    assert get(requester="user_bob") is None  # scoped to the requester the holder approved
-    assert get(now=1_000 + 86_401) is None
-
-
 def test_matching_deny_beats_an_exception():
     rules = R.model_copy(
         update={
@@ -106,7 +86,7 @@ def test_rules_roundtrip_through_repo(repos):
 
     from core.repositories import a2a_repo
 
-    asyncio.run(a2a_repo.put_rules("org_1", R.model_dump(by_alias=True)))
+    assert asyncio.run(a2a_repo.put_rules_if("org_1", R.model_dump(by_alias=True), None))
     got = asyncio.run(a2a_repo.get_rules("org_1"))
     assert r.Rules.model_validate(got) == R
 

@@ -51,7 +51,6 @@ def policy(monkeypatch):
         ("provider_consent", {}, {}, ["user_ada", "user_bo"], "admins"),
         ("publish", {}, {"app": {"created_by": "user_priya"}}, ["user_priya", "user_ada", "user_bo"], "creator+admins"),
         ("review", {}, {}, ["user_sam", "user_ada", "user_bo"], "requester+admins"),
-        ("a2a_hold", {}, {"holders": ["user_bo", "user_zed"]}, ["user_bo", "user_zed"], "holders"),
     ],
 )
 async def test_answerers_by_subkind(clerk, policy, subkind, policy_over, extra, expected, rule):

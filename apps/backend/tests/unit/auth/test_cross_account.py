@@ -50,7 +50,7 @@ from core.repositories import (
     tasks_repo,
     user_repo,
 )
-from core.services import hermes_profiles, messaging, network_route, workspace_provisioning
+from core.services import hermes_profiles, messaging, workspace_provisioning
 from core.services.credentials import integration_secret_store
 from core.services.provision_dispatch import dispatch_provision
 from core.temporal import client as temporal_client
@@ -315,12 +315,6 @@ def clerk(mp, a: Tenant, b: Tenant) -> None:
     mp.setattr("core.services.clerk_admin.list_organization_members", members_of)
 
 
-async def seed_agent_keys(a, b, mp, calls) -> dict:
-    clerk(mp, a, b)
-    key = await ok(a, "POST", "/api/v1/settings/agent-keys", {"name": f"{MARKER} key"})
-    return {"key": key["keyId"]}
-
-
 async def _mail(t: Tenant, slug: str) -> str:
     assert await company_slug_repo.hold(slug=slug, user_id=t.user_id)
     assert await company_slug_repo.claim(slug=slug, user_id=t.user_id, owner_id=t.tenant)
@@ -384,21 +378,6 @@ async def seed_connections(a, b, mp, calls) -> dict:
     return {}
 
 
-async def seed_network_route(a, b, mp, calls) -> dict:
-    from core.services import app_wake
-
-    await network_route._connections().put_route(key="key_a", user_id=a.user_id, generation="g1", name=f"{MARKER} mac")
-    await put_row({**app_wake._key(a.user_id, "app-a"), "app": "app-a", "client": MARKER, "state": "needs_key"})
-    await network_route.set_pin(b.user_id, "app-b", {"kind": "computer", "key": "key_b", "name": "b"}, "app-b", "b")
-    return {"key": "key_a"}
-
-
-async def seed_sessions(a, b, mp, calls) -> dict:
-    upload = {"mode": "metadata", "sessions": [{"id": "claude:s-a", "harness": MARKER, "started": "2026-11-20"}]}
-    await ok(a, "POST", "/api/v1/sessions", upload)
-    return {"session": "claude:s-a"}
-
-
 async def seed_container(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     await billing_rows(a, b)
@@ -427,17 +406,6 @@ async def seed_runtime_rpc(a, b, mp, calls) -> dict:
         owner_id=a.tenant, operation_id=op, requester_user_id=a.user_id, method="health", params={"q": MARKER}
     )
     return {"op": op}
-
-
-async def seed_network(a, b, mp, calls) -> dict:
-    """A's computer asked to bring A's agents onto a network (a bearer code: describing it shows the computer's
-    name, by design of a device flow; approving it is A's alone)."""
-    from core.services import device_login, network_login
-
-    fields = {"kind": network_login.KIND, "purpose": "agents", "computerKey": "key_a", "ticket": MARKER}
-    fields |= {"machineName": "a-mac", "startedAt": 1, "sourceIp": "", "computerUser": a.user_id}
-    code = await device_login.create(fields, network_login.PAGE, code_in_url=False)
-    return {"code": code["userCode"]}
 
 
 async def seed_oauth(a, b, mp, calls) -> dict:
@@ -495,18 +463,14 @@ SEEDS = {
     "teams.agents": seed_teams_agents,
     "workspace_files": seed_workspace_files,
     "memory": seed_memory,
-    "agent_keys": seed_agent_keys,
     "agent_mail": seed_agent_mail,
     "agent_text": seed_agent_text,
     "company_slug": seed_company_slug,
     "connections": seed_connections,
-    "network_route": seed_network_route,
-    "sessions": seed_sessions,
     "container": seed_container,
     "users": seed_users,
     "os": seed_os,
     "runtime_rpc": seed_runtime_rpc,
-    "network": seed_network,
     "oauth": seed_oauth,
     "devices": seed_devices,
     "debug": seed_debug,
@@ -680,42 +644,8 @@ CASES = [
         ok=(200,),
         org_only=True,
     ),
-    # memory: tenant = caller; drafts are the caller's own
+    # memory: tenant = caller
     Case("memory", "POST", "/api/v1/memory/recall", {"question": "what"}, org_only=True),
-    Case("memory", "GET", "/api/v1/memory/drafts"),
-    Case("memory", "POST", "/api/v1/memory/drafts/{draft}/approve", a_id=True),
-    Case("memory", "POST", "/api/v1/memory/drafts/{draft}/dismiss", a_id=True),
-    # network: person mode is the signed-in person
-    Case("network", "POST", "/api/v1/network/device/describe", {"userCode": "{code}"}, says="agents"),  # bearer code
-    Case(
-        "network",
-        "POST",
-        "/api/v1/network/device/approve",
-        {"userCode": "{code}"},
-        ok=(409,),
-        says="lightbulb login",
-        org_only=True,
-    ),  # A's computer, not B's
-    Case("network", "POST", "/api/v1/network/leave", ok=(409,), says="not on a network", org_only=True),
-    # network_route: the person's own apps, wakes and computers
-    Case("network_route", "GET", "/api/v1/network/apps"),
-    Case(
-        "network_route",
-        "PUT",
-        "/api/v1/network/apps/route",
-        {"clientId": "app-b", "key": "{key}"},
-        a_id=True,
-        ok=(409,),
-        says="offline",
-    ),  # B's own app, pinned to A's computer: not one of B's
-    Case("network_route", "POST", "/api/v1/network/computers/{key}/sign-out", a_id=True),
-    Case("network_route", "GET", "/api/v1/network/wakes"),
-    Case("network_route", "PUT", "/api/v1/network/wakes/app-a", {"key": "k"}, a_id=True),  # A's app asked A
-    Case("network_route", "DELETE", "/api/v1/network/wakes/app-a"),
-    # agent_keys: the caller's own keys
-    Case("agent_keys", "GET", "/api/v1/settings/agent-keys"),
-    Case("agent_keys", "POST", "/api/v1/settings/agent-keys", {"name": "b key"}),
-    Case("agent_keys", "DELETE", "/api/v1/settings/agent-keys/{key}", a_id=True),
     # agent_text: tenant = caller
     Case("agent_text", "GET", "/api/v1/agent-text/line"),
     Case("agent_text", "POST", "/api/v1/agent-text/me/phone/code"),
@@ -802,10 +732,6 @@ CASES = [
     Case("users", "POST", "/api/v1/users/me/delete", {"confirm_email": "{b}@example.com"}),
     # os: a Spark ticket for the caller's own account (the app-token doors take no Clerk session)
     Case("os", "POST", "/api/v1/os/ticket"),
-    # sessions: the caller's own sessions
-    Case("sessions", "GET", "/api/v1/sessions"),
-    Case("sessions", "POST", "/api/v1/sessions", {"mode": "metadata", "sessions": []}),
-    Case("sessions", "DELETE", "/api/v1/sessions/{session}", a_id=True),
     # devices, support, desktop sign-in: the caller's own
     Case(
         "devices", "POST", "/api/v1/devices", {"token": "ExponentPushToken[b]", "platform": "ios", "deviceId": "dev-b"}
@@ -825,12 +751,6 @@ CASES = [
         org_only=True,
     ),  # B has no runtime
     Case("runtime_rpc", "GET", "/api/v1/runtime/operations/{op}", a_id=True),
-    # a2a: the path's workspace must be the caller's
-    Case("a2a", "POST", "/a2a/{a_tenant}/{agent}", {}, a_id=True),
-    Case("a2a", "GET", "/a2a/{a_tenant}/rules", a_id=True),
-    Case("a2a", "PUT", "/a2a/{a_tenant}/rules", {"holders": {}, "rules": []}, a_id=True),
-    Case("a2a", "GET", "/a2a/{a_tenant}/{agent}/tasks/t-a/record", a_id=True),
-    Case("a2a", "POST", "/a2a/{a_tenant}/{agent}/tasks/t-a/decide", {"verdict": "allow"}, a_id=True),
     # main: the signed-in person
     Case("main", "GET", "/protected"),
 ]
@@ -838,8 +758,6 @@ CASES = [
 
 # Routers with tenant doors and no seed for A, each with why there is nothing of A's to seed.
 NO_SEED = {
-    "a2a": "the path names a workspace; any caller not in it is refused before a row is read (in user mode A "
-    "itself is refused: A2A is org-only until Task 9)",
     "main": "/protected echoes the caller's own id",
     "support_tickets": "one POST: it reads the caller's own billing and container rows, emails support and stores "
     "nothing; it takes no id",
@@ -887,11 +805,9 @@ def test_every_router_seeds_a():
 def _tenant_doors() -> set[tuple[str, str]]:
     """(method, path) of every route whose dependencies reach a Clerk sign-in, platform-admin doors excepted
     (they read across tenants by design and are guarded by PLATFORM_ADMIN_USER_IDS)."""
-    from core.services import a2a_auth
-    from routers import messaging as messaging_router, questions, sessions
+    from routers import questions
 
-    signed_in = {get_current_user, get_human_session, sessions.caller, messaging_router.person_or_computer}
-    signed_in |= {questions.person_only, a2a_auth.a2a_caller}  # these call get_current_user in their body
+    signed_in = {get_current_user, get_human_session, questions.person_only}  # person_only calls it in its body
 
     def deps(d):
         for s in d.dependencies:
@@ -989,14 +905,12 @@ async def test_org_claim_still_wins_interim(tenants):
     assert resolve_owner_id(ctx) == (b.org_id or b.user_id)
 
 
-# Every door that would provision, buy, bill or join a network for a person with no org, and what it answers.
+# Every door that would provision, buy or bill for a person with no org, and what it answers.
 REFUSED = [
     ("GET", "/api/v1/container/status", None, 409),
     ("POST", "/api/v1/container/provision", None, 403),
     ("POST", "/api/v1/container/retry", None, 403),
     ("POST", "/api/v1/debug/provision", None, 200),  # answers "provisioning"; dispatch_provision refuses
-    ("POST", "/api/v1/network/device/approve", {"userCode": "{code}"}, 409),  # the person's own `agents` code
-    ("POST", "/api/v1/network/leave", None, 409),
     ("POST", "/api/v1/billing/checkout", {"plan": "workspace"}, 409),
     ("POST", "/api/v1/billing/front-desk", {}, 409),
     ("POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, 409),
@@ -1035,10 +949,8 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
     method, path, body, status, ddb, calls, jwks, monkeypatch
 ):
     """Accepted exposure until user tenants provision (Task 2): a session with no org is the person's tenant on
-    every door. It reads its own, empty data; every door that would provision it, mint it a key or a line, bill
-    it or join its agents to a network refuses, and nothing is written or sent for it."""
-    from core.services import device_login, network_login
-
+    every door. It reads its own, empty data; every door that would provision it, mint it a key or a line, or bill
+    it refuses, and nothing is written or sent for it."""
     for name in ("LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"):  # the wallet doors exist
         monkeypatch.setattr(settings, name, "test")
     person = Tenant("user_solo", None)
@@ -1046,14 +958,10 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
     timeline = await ok(person, "GET", "/api/v1/voice/timeline")
     assert not any(v for v in timeline.values() if isinstance(v, list))
     assert (await ok(person, "GET", "/api/v1/tasks"))["tasks"] == []
-    fields = {"kind": network_login.KIND, "purpose": "agents", "computerKey": "k", "ticket": "t"}
-    fields |= {"machineName": "m", "startedAt": 1, "sourceIp": "", "computerUser": person.user_id}
-    code = (await device_login.create(fields, network_login.PAGE, code_in_url=False))["userCode"]
-    fake(monkeypatch, calls, "core.services.network_member.join_network")
     calls.clear()
     room = await ok(person, "POST", "/api/v1/messaging/rooms", {"clientRoomId": str(uuid.uuid4()), "name": "mine",
                                                                "kind": "channel", "members": []})  # fmt: skip
-    ids = {"code": code, "b_tenant": person.user_id, "room": room["roomId"], "new": str(uuid.uuid4())}
+    ids = {"b_tenant": person.user_id, "room": room["roomId"], "new": str(uuid.uuid4())}
     r = await call(person, method, fill(path, ids), fill(body, ids))
     assert r.status_code == status, r.text[:300]
     if status == 409:

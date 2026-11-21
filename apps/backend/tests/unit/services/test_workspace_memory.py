@@ -233,17 +233,17 @@ def no_evaluator_wipe(monkeypatch):
     """The member wipe also clears sessions, drafts and episodes (tests/unit/services/test_evaluator.py)."""
     from unittest.mock import AsyncMock
 
-    from core.services import evaluator, memory_api, network_login, session_store
+    from core.services import evaluator, memory_api, session_store
 
     for mod, name in (
         (session_store, "delete_sessions"),
         (evaluator, "delete_drafts"),
         (evaluator, "delete_episodes"),
-        (network_login, "computer_keys"),  # no signed-in computer: no forget_author forward
-        (network_login, "forget_keys"),
+        (workspace_memory, "_computer_keys"),  # no signed-in computer: no forget_author forward
+        (workspace_memory, "_forget_keys"),
         (memory_api, "forget_on_behalf_of"),
     ):
-        monkeypatch.setattr(mod, name, AsyncMock(return_value=[] if name == "computer_keys" else 0))
+        monkeypatch.setattr(mod, name, AsyncMock(return_value=[] if name == "_computer_keys" else 0))
 
 
 @pytest.mark.usefixtures("no_evaluator_wipe")
@@ -273,14 +273,13 @@ async def test_member_wipe_runs_every_step_when_one_fails(monkeypatch):
 
 @pytest.mark.usefixtures("no_evaluator_wipe")
 async def test_member_wipe_forwards_forget_author(monkeypatch):
-    from core.services import memory_api, network_login, session_store
+    from core.services import memory_api, session_store
 
     sent = []
 
     async def boom(*a, **k):
         raise OSError("down")
 
-    # k1 is linked now; k2 only in the registry (offline, never signed out); k3 signed out.
     async def keys(user_id):
         assert user_id == "user_a"
         return ["k1", "k2", "k3"]
@@ -290,7 +289,7 @@ async def test_member_wipe_forwards_forget_author(monkeypatch):
 
     monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
     monkeypatch.setattr(session_store, "delete_sessions", boom)  # an earlier step raises
-    monkeypatch.setattr(network_login, "computer_keys", keys)
+    monkeypatch.setattr(workspace_memory, "_computer_keys", keys)
     monkeypatch.setattr(memory_api, "forget_author", forward)
     with pytest.raises(RuntimeError, match="OSError"):
         await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)

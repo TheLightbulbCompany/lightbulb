@@ -75,7 +75,6 @@ TEMPORAL_SURFACE = {
         "release_slot": "(ws: 'str', task_id: 'str') -> 'None'",
         "remind_question": "(ws: 'str', task_id: 'str', qid: 'str') -> 'None'",
         "renew_google_watch": "(ws: 'str', public_id: 'str') -> 'int | None'",
-        "report_a2a": "(ws: 'str', task_id: 'str', outcome: 'str') -> 'None'",
         "router_turn": "(inp: 'RouterTurnIn') -> 'RouterTurnOut'",
         "set_watch_until": "(ws: 'str', task_id: 'str', until: 'str | None') -> 'None'",
         "stop_attempt": "(ws: 'str', task_id: 'str', n: 'int') -> 'None'",

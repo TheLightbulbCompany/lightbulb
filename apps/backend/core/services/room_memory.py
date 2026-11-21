@@ -79,12 +79,7 @@ async def group_room_by_id(owner_id: str, room_id: str | None) -> str | None:
 
 
 def _skip(message: dict) -> bool:
-    author = message.get("author") or {}
-    return (
-        not (message.get("text") or "").strip()
-        or message.get("progress") is True
-        or str(author.get("id") or "").startswith("a2a:")  # network/A2A turns stay out (28 Oct ruling)
-    )
+    return not (message.get("text") or "").strip() or message.get("progress") is True
 
 
 def _write(

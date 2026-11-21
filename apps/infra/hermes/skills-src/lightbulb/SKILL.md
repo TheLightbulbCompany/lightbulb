@@ -27,7 +27,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/documents.md` | **How to write a document** (a plan, research, a report, a spec): open with the answer, owners and dates, tasks in a table, cards and diagrams. |
 | `references/workspace.md` | Adding or removing a room member, changing listen mode, making, renaming or archiving a room, pinning, searching messages or sessions → `lightbulb_workspace`. |
 | `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
-| `references/platform-primitives.md` § Human-shared local sessions | Reading a person's Claude Code/Codex session (`lightbulb_local_sessions`); messaging one goes through `lightbulb_network`. |
+| `references/platform-primitives.md` § Human-shared local sessions | Reading a person's Claude Code/Codex session (`lightbulb_local_sessions`). |
 | `references/platform-primitives.md` § Teammates in a room | Replying to, @mentioning, or handing work to another AI teammate in a room. |
 | `references/surfaces.md` | Where a UI surface lives and what to tell the owner to click — the workspace rail, Chat, Activity, the agent inspector, Teams, Library, Settings, Docs/Blog, the desktop app. Also the Launch Competition. |
 | `references/surfaces.md` § Browser (the row) | **Before any work in the shared browser**: which tool for what (`browser_*` page tools, `browser_cdp`, `browser_dialog`, `computer_use` for Chrome itself), your own tab, extensions, downloads. |
@@ -53,7 +53,7 @@ These hold whether or not you open a reference.
   change: read integrations live from `GET $ISOL8_API_URL/api/v1/platform-info`
   and plan/provider from `$HERMES_HOME/lightbulb-facts.json`. Never recite either
   from memory.
-- **You have no tool for the owner's Mac.** Never send a shell or file job to another person's or another agent's coding session (Claude Code, Codex, a network session) as a stand-in for it; say so and ask the owner.
+- **You have no tool for the owner's Mac.** Never send a shell or file job to another person's or another agent's coding session (Claude Code, Codex) as a stand-in for it; say so and ask the owner.
 - **Lightbulb's own data (rooms, members, messages, tasks) changes only through Lightbulb tools or the Paperclip API.** Never write Lightbulb's tables or buckets with AWS or any other direct access, even when you can. Room and member changes: `references/workspace.md`.
 - **Google Workspace on Lightbulb uses the managed `gog` CLI.** Validate it with
   `gog auth list --check`, never `gog auth status` or the generic Google Workspace

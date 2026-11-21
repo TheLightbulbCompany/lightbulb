@@ -1,9 +1,8 @@
-"""The workspace as one computer on the lightbulb network: sessions.json and its publishing."""
+"""The workspace's cloud member: sessions.json and its publishing."""
 
 # ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
 
 import json
-import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,7 +18,7 @@ A2 = "22222222-2222-2222-2222-222222222222"
 @pytest.fixture
 def store(monkeypatch, table):
     """The owner-state bucket as a dict, plus an org name and a two-agent roster (and the
-    messaging table, which holds the doorbell's token hash)."""
+    messaging table, which holds the wake row)."""
     objects: dict[str, bytes] = {}
     monkeypatch.setattr(network_member.settings, "OWNER_STATE_BUCKET", "bucket")
     monkeypatch.setattr("core.services.hermes_profiles.put_owner_object", lambda k, b: objects.__setitem__(k, b))
@@ -39,27 +38,34 @@ def _doc(objects):
 
 
 @pytest.mark.asyncio
-async def test_sessions_json_lists_every_agent_and_keeps_app_entries(store):
-    app = {"name": "github-1a2b3c4d", "agent": "app", "title": "GitHub"}
-    await network_member.write_sessions("org_a", apps=[app])
-    await network_member.write_sessions("org_a")  # apps=None keeps the earlier app entry
+async def test_sessions_json_lists_every_agent_and_the_members(store, table):
+    await network_member.write_sessions("org_a")
 
     assert network_member.sessions_key("org_a") == "org_a/network/sessions.json"
-    token = _doc(store)["wake"]["token"]
-    assert token.startswith("org_a.")
     assert _doc(store) == {
         "workspace": "Acme Builders",
         "sessions": [
             {"name": "friday", "agent": "Friday", "title": "Friday", "agentId": A1},
             {"name": "ops-lead", "agent": "Ops Lead", "title": "Ops Lead", "agentId": A2},
-            app,
         ],
-        "wake": {"url": "http://localhost:8000/api/v1/network/wake", "token": token},
         "members": ["user_1", "user_2"],
         "revoked_keys": [],
     }
-    assert network_member.app_person("user_1") == network_member.app_person("user_1")
-    assert len(network_member.app_person("user_1")) == 8
+    key = {"pk": "OWNER#org_a", "sk": "NETWAKE"}
+    armed = table.get_item(Key=key)["Item"]["tokenHash"]
+    await network_member.write_sessions("org_a")
+    assert table.get_item(Key=key)["Item"]["tokenHash"] == armed  # set once, kept: wake conditions on it
+
+
+@pytest.mark.asyncio
+async def test_a_signed_out_computer_stays_revoked_until_its_proof_expires(store, table):
+    import time
+
+    now = int(time.time())
+    table.put_item(Item={"pk": "NETREVOKED#user_1", "sk": "k" * 52, "ttl": now + 3600})
+    table.put_item(Item={"pk": "NETREVOKED#user_2", "sk": "x" * 52, "ttl": now - 1})  # its proof has expired
+    await network_member.write_sessions("org_a")
+    assert _doc(store)["revoked_keys"] == ["k" * 52]
 
 
 @pytest.mark.asyncio
@@ -67,32 +73,21 @@ async def test_agents_whose_names_and_id_prefixes_collide_get_distinct_names(sto
     ids = [f"abcd1111-0000-0000-0000-00000000000{i}" for i in range(4)]
     roster = [{"id": i, "name": "Friday"} for i in ids]
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
-    await network_member.write_sessions("org_a", apps=[])
+    await network_member.write_sessions("org_a")
     first = [s["name"] for s in _doc(store)["sessions"]]
     assert first == ["friday", "friday-abcd", "friday-idabcd1111", f"friday-id{ids[3]}"]
-    assert not any(network_member.app_target(n) for n in first)  # an agent never reads as an app
-    await network_member.write_sessions("org_a", apps=[])  # deterministic for an unchanged roster
+    await network_member.write_sessions("org_a")  # deterministic for an unchanged roster
     assert [s["name"] for s in _doc(store)["sessions"]] == first
 
 
 @pytest.mark.asyncio
-async def test_an_agent_named_like_an_app_address_gets_a_suffix(store, monkeypatch):
-    roster = [{"id": A1, "name": "Ops deadbeef"}]
+async def test_a_101st_session_is_refused_with_a_clear_error(store, monkeypatch):
+    roster = [{"id": f"{i:08d}-0000-0000-0000-000000000000", "name": f"Agent {i}"} for i in range(101)]
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
-    await network_member.write_sessions("org_a", apps=[])
-    assert [s["name"] for s in _doc(store)["sessions"]] == ["ops-deadbeef-1111"]
-
-
-@pytest.mark.asyncio
-async def test_a_101st_session_is_refused_with_a_clear_error(store):
-    apps = [{"name": f"app-{i}", "agent": "app", "title": f"App {i}"} for i in range(98)]
-    await network_member.write_sessions("org_a", apps=apps)  # 2 agents + 98 apps = 100
-    assert len(_doc(store)["sessions"]) == 100
-
     with pytest.raises(ApiProblem) as exc:
-        await network_member.write_sessions("org_a", apps=[*apps, {"name": "one-more", "agent": "app"}])
+        await network_member.write_sessions("org_a")
     assert str(exc.value) == "This workspace has reached 100 network addresses."
-    assert len(_doc(store)["sessions"]) == 100  # nothing written
+    assert network_member.sessions_key("org_a") not in store  # nothing written
 
 
 def _session(monkeypatch, *, arn="arn:r", warm_for=600, session_arn="arn:r"):
@@ -267,66 +262,6 @@ async def test_an_agent_delete_republishes_sessions(monkeypatch, published):
 
 
 @pytest.mark.asyncio
-async def test_join_network_makes_a_new_member_first_then_asks_the_bridge(store, monkeypatch):
-    order = []
-    monkeypatch.setattr(
-        "core.services.hermes_provisioning._delete_prefixes", lambda prefixes: order.append(("delete", prefixes))
-    )
-    monkeypatch.setattr(
-        "core.services.hermes_provisioning.prepare_hermes_workspace",
-        AsyncMock(side_effect=lambda o: order.append("prepare") or False),
-    )
-
-    async def _rpc(owner_id, method, params=None, **kw):
-        order.append((method, params, network_member.sessions_key(owner_id) in store))
-        return {"state": "joining"}
-
-    monkeypatch.setattr(network_member.container_rpc, "call", _rpc)
-    assert await network_member.join_network("org_a", "TICKET") == {"state": "joining"}
-    assert order == [("delete", ["org_a/network/state.db"]), "prepare", ("network.join", {"ticket": "TICKET"}, True)]
-
-    order.clear()  # a member already: straight to the bridge
-    await network_member.join_network("org_a", "TICKET")
-    assert order == [("network.join", {"ticket": "TICKET"}, True)]
-
-
-@pytest.mark.asyncio
-async def test_join_network_maps_the_bridges_refusals(store, monkeypatch):
-    await network_member.write_sessions("org_a")
-    for code, problem in (("already_in_team", "NETWORK_ALREADY_JOINED"), ("UNAVAILABLE", "RUNTIME_UNAVAILABLE")):
-        error = RuntimeError(json.dumps({"code": code, "message": "x"}))
-        monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=error))
-        with pytest.raises(ApiProblem) as raised:
-            await network_member.join_network("org_a", "TICKET")
-        assert raised.value.error.code == problem
-
-
-@pytest.mark.asyncio
-async def test_the_joined_mark_survives_rewrites_and_leave_clears_it(store, monkeypatch):
-    await network_member.write_sessions("org_a")
-    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))
-    await network_member.join_network("org_a", "TICKET")
-    assert _doc(store)["joined"] is True
-    await network_member.publish_sessions("org_a")
-    assert _doc(store)["joined"] is True
-    await network_member.leave_network("org_a")
-    assert "joined" not in _doc(store)
-    network_member.container_rpc.call.assert_awaited_with("org_a", "network.leave", {})
-
-
-@pytest.mark.asyncio
-async def test_a_write_with_no_prior_keeps_the_wake_token_and_hash(store, table):
-    await network_member.write_sessions("org_a", apps=[])
-    token = _doc(store)["wake"]["token"]
-    key = {"pk": "OWNER#org_a", "sk": "NETWAKE"}
-    hashed = table.get_item(Key=key)["Item"]["tokenHash"]
-
-    await network_member._write("org_a", [])  # a writer with no prior in hand
-    assert _doc(store)["wake"]["token"] == token
-    assert table.get_item(Key=key)["Item"]["tokenHash"] == hashed
-
-
-@pytest.mark.asyncio
 async def test_members_follow_the_workspace_on_join_and_leave(store, monkeypatch):
     humans = AsyncMock(return_value=["user_1"])
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", humans)
@@ -343,115 +278,7 @@ async def test_members_follow_the_workspace_on_join_and_leave(store, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_a_members_signed_out_computer_is_in_revoked_keys(store):
-    from core.services import network_login
-
-    key = "a" * 52
-    await network_login.revoke("user_2", key)
-    await network_login.revoke("user_9", "b" * 52)  # not a member: not this workspace's to refuse
-    await network_member.write_sessions("org_a")
-    assert _doc(store)["revoked_keys"] == [key]
-
-
-@pytest.mark.asyncio
-async def test_team_id_survives_write(store):
-    await network_member.write_sessions("org_a")
-    doc = _doc(store)
-    store[network_member.sessions_key("org_a")] = json.dumps({**doc, "teamId": "tm1"}).encode()
-    await network_member.publish_sessions("org_a")
-    assert _doc(store)["teamId"] == "tm1"
-    await network_member._write("org_a", [])  # a writer with no prior in hand
-    assert _doc(store)["teamId"] == "tm1"
-
-
-@pytest.mark.asyncio
-async def test_join_and_leave_clear_the_stored_team_id(store, monkeypatch):
-    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(return_value={"state": "joining"}))
-    for move in (lambda: network_member.join_network("org_a", "T"), lambda: network_member.leave_network("org_a")):
-        await network_member.write_sessions("org_a")
-        store[network_member.sessions_key("org_a")] = json.dumps({**_doc(store), "teamId": "tm1"}).encode()
-        await move()
-        assert "teamId" not in _doc(store)
-
-
-def _line(monkeypatch, *, warm, doorbell, rpc=None):
-    call = rpc or AsyncMock(return_value={"ticket": "T", "team_id": "tm1", "expires_at": 5})
-    monkeypatch.setattr(network_member.container_rpc, "call", call)
-    monkeypatch.setattr(network_member, "_session_is_warm", AsyncMock(return_value=warm))
-    wake = AsyncMock(return_value=doorbell)
-    monkeypatch.setattr(network_member, "wake", wake)
-    return call, wake
-
-
-@pytest.mark.asyncio
-async def test_mint_line_warm_calls_rpc(store, monkeypatch):
-    await network_member.write_sessions("org_a")
-    call, wake = _line(monkeypatch, warm=True, doorbell=True)
-    assert await network_member.mint_line("org_a") == {"ticket": "T", "teamId": "tm1", "expiresAt": 5}
-    assert call.await_args.args[:3] == ("org_a", "network.invite", {}) and "timeout_s" not in call.await_args.kwargs
-    wake.assert_not_awaited()
-    assert await network_member.stored_team_id("org_a") == "tm1"
-
-
-@pytest.mark.asyncio
-async def test_mint_line_cold_rings_and_answers_503_without_rpc(store, monkeypatch):
-    call, wake = _line(monkeypatch, warm=False, doorbell=True)
-    with pytest.raises(ApiProblem) as raised:
-        await network_member.mint_line("org_a")
-    assert raised.value.status_code == 503 and raised.value.error.retry_after == 15
-    wake.assert_awaited_once_with("org_a")
-    call.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_mint_line_no_doorbell_calls_rpc(store, monkeypatch):
-    await network_member.write_sessions("org_a")
-    call, wake = _line(monkeypatch, warm=False, doorbell=False)
-    assert (await network_member.mint_line("org_a"))["ticket"] == "T"
-    wake.assert_awaited_once_with("org_a")
-    call.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_mint_line_unavailable_is_503(store, monkeypatch):
-    await network_member.write_sessions("org_a")
-    for error in (RuntimeError(json.dumps({"code": "UNAVAILABLE", "message": "x"})), TimeoutError()):
-        _line(monkeypatch, warm=True, doorbell=False, rpc=AsyncMock(side_effect=error))
-        with pytest.raises(ApiProblem) as raised:
-            await network_member.mint_line("org_a")
-        assert raised.value.status_code == 503
-
-
-@pytest.mark.asyncio
-async def test_mint_line_leaks_the_ticket_nowhere(store, monkeypatch, caplog):
-    await network_member.write_sessions("org_a")
-    caplog.set_level(logging.DEBUG)
-    secret = "TICKET-secret-abc"
-    _line(monkeypatch, warm=True, doorbell=False, rpc=AsyncMock(return_value={"ticket": secret, "team_id": "tm1"}))
-    await network_member.mint_line("org_a")
-    # a refused call whose error text carries the ticket must not reach the raised error
-    failing = RuntimeError(json.dumps({"code": "boom", "message": secret}))
-    _line(monkeypatch, warm=True, doorbell=False, rpc=AsyncMock(side_effect=failing))
-    with pytest.raises(ApiProblem) as raised:
-        await network_member.mint_line("org_a")
-    assert secret not in caplog.text and secret not in str(raised.value) and secret not in repr(raised.value.body())
-    assert raised.value.__cause__ is None and raised.value.__suppress_context__
-
-
-@pytest.mark.asyncio
-async def test_already_joined_message(store, monkeypatch):
-    await network_member.write_sessions("org_a")
-    error = RuntimeError(json.dumps({"code": "already_in_team", "message": "x"}))
-    monkeypatch.setattr(network_member.container_rpc, "call", AsyncMock(side_effect=error))
-    with pytest.raises(ApiProblem) as raised:
-        await network_member.join_network("org_a", "T")
-    assert raised.value.error.message == (
-        "Your workspace's agents are already on a network. Sign in with lightbulb login to join it."
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_live_old_runtime_still_receives_network_revocation_during_drain(store, monkeypatch, rpc):
+async def test_a_live_old_runtime_still_receives_the_sessions_rpc_during_drain(store, monkeypatch, rpc):
     _session(monkeypatch, session_arn="arn:old", warm_for=-100)
     await network_member.write_sessions("org_a")
     await network_member.publish_sessions("org_a")

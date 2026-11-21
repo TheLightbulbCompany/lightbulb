@@ -1,5 +1,7 @@
-"""Per-workspace A2A rules and the deterministic decision over them (no model in the loop)."""
+"""The workspace's approval Rules document (Always allow) and the deterministic decision over it."""
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Literal
 
@@ -26,7 +28,7 @@ class Rule(ContractModel):
 
 
 class Rules(ContractModel):
-    revision: str = ""  # assigned by the server on store (a2a_tasks.put_rules); a client's is ignored
+    revision: str = ""  # assigned by the server on store (``revision``); a client's is ignored
     holders: dict[str, list[str]]
     rules: list[Rule]
     default: Effect = "hold"
@@ -37,6 +39,13 @@ class Decision:
     effect: Literal["allow", "deny", "hold"]
     rule: str
     holders: list[str]
+
+
+def revision(rules: Rules) -> str:
+    """The server's revision: sha256 hex of the document's canonical JSON without ``revision`` and
+    without unset fields."""
+    doc = rules.model_dump(exclude={"revision"}, exclude_none=True)
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def default_rules(org: str, admin_ids: list[str]) -> Rules:

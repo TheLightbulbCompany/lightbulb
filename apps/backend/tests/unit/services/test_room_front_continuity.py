@@ -315,7 +315,6 @@ async def _human_message(room_id, key):
         dispatch_targets=[],
         source_agent_id=None,
         client_message_id=key,
-        acting_human_id=HUMAN,
     )
     return msg
 

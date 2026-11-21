@@ -98,7 +98,6 @@ async def _post(
     author=None,
     thread_root=None,
     mentions=None,
-    acting_human_id=None,
 ):
     """The message only — ``_post_write`` keeps the replay flag."""
     return (
@@ -110,7 +109,6 @@ async def _post(
             author,
             thread_root,
             mentions,
-            acting_human_id,
         )
     )[0]
 
@@ -123,7 +121,6 @@ async def _post_write(
     author=None,
     thread_root=None,
     mentions=None,
-    acting_human_id=None,
 ):
     author = author or {"kind": "human", "id": USER_A, "displayName": "Ann"}
     return await repo.create_message(
@@ -141,7 +138,6 @@ async def _post_write(
         dispatch_targets=targets if targets is not None else [{"agentId": FRIDAY, "eventKind": "room_event"}],
         source_agent_id=None,
         client_message_id=client_id,
-        acting_human_id=acting_human_id,
     )
 
 
@@ -689,30 +685,6 @@ async def test_read_cursor_is_monotonic_and_bounded(table):
 
 
 @pytest.mark.asyncio
-async def test_delegated_system_post_marks_accountable_human_read_without_self_mention(table):
-    room_id, _ = await _room(
-        members=[
-            _member("human", USER_A, "owner"),
-            _member("human", USER_B),
-            _member("agent", FRIDAY, handle="friday"),
-        ]
-    )
-    message = await _post(
-        room_id,
-        author={"kind": "system", "id": "native-session", "displayName": "Codex session"},
-        mentions=[
-            {"kind": "human", "id": USER_A, "displayName": "Ann"},
-            {"kind": "human", "id": USER_B, "displayName": "Bob"},
-        ],
-        acting_human_id=USER_A,
-    )
-
-    assert await repo.get_read_cursor(room_id, USER_A) == message["messageSeq"]
-    assert await repo.mention_count(room_id, USER_A, 0) == 0
-    assert await repo.mention_count(room_id, USER_B, 0) == 1
-
-
-@pytest.mark.asyncio
 async def test_mark_unread_only_lowers_cursor_to_one_before_latest(table):
     room_id, _ = await _room()
     for index in range(1, 5):
@@ -829,19 +801,6 @@ async def test_wipe_deletes_room_partitions_owner_rows_and_streams_only_for_that
     assert len(remaining) == 3 and all(f"#{OWNER}_other#" in r["pk"] for r in remaining)
     assert await repo.delete_owner_partition(OWNER) == 0
     assert await repo.delete_room_partition(room_id) == 0  # idempotent retry
-
-
-@pytest.mark.asyncio
-async def test_workspace_wipe_removes_hosted_mcp_send_receipts(table):
-    import uuid
-
-    from core.auth import AuthContext
-    from core.services import hosted_mcp
-
-    pk, sk = hosted_mcp._sent_key(AuthContext(user_id=USER_A, org_id=OWNER), uuid.uuid4())
-    table.put_item(Item={"pk": pk, "sk": sk, "destination": "room:r"})
-    assert await repo.delete_owner_partition(OWNER) > 0
-    assert await repo._get(pk, sk) is None
 
 
 @pytest.mark.asyncio

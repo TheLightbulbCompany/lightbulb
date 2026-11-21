@@ -16,8 +16,7 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `request_approval`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — read-only, `resources` and `read`;
-an agent messages a session with `lightbulb_network`, through the engine).
+(`send_room_message`, `hire_suggestion`, `request_approval`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — read-only, `resources` and `read`).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   code. This skill is the fleet's knowledge of the platform. It is SPLIT: a
@@ -167,7 +166,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               "A DM you read stays private" non-negotiable)
                               <- apps/infra/hermes/plugins/lightbulb/__init__.py (lightbulb_read_rooms);
                                  apps/backend/routers/messaging.py (agent_reader, /messaging/agent-read/*);
-                                 apps/backend/core/services/hosted_mcp.py (rooms_for, messages_for: the MCP's own reads);
                                  apps/backend/core/services/local_session_grants.py (the requester);
                                  apps/backend/core/services/local_sessions.py (require_caller).
   - Shared local sessions ... references/platform-primitives.md + references/surfaces.md

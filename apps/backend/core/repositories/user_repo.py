@@ -94,8 +94,7 @@ async def delete(user_id: str) -> None:
 async def set_push_token(user_id: str, device_id: str, entry: dict) -> None:
     """Write one Expo push token into the user's ``push_tokens`` map.
 
-    Scoped, server-atomic UpdateItem touching only its one map key (mirrors
-    container_repo._put_paired_device) so a concurrent write of another device
+    Scoped, server-atomic UpdateItem touching only its one map key so a concurrent write of another device
     or another attribute can't clobber it. ``entry`` = {token, platform, updatedAt}.
     Requires the users row to exist (it always does for a signed-in user who
     hit /users/sync); no-op if it doesn't.

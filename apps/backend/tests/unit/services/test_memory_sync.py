@@ -589,37 +589,38 @@ async def test_import_sends_entries_in_batches(table, agentcore):
     assert sizes == [memory_sync._BATCH, memory_sync._BATCH, 5]
 
 
-async def test_proof_registers_member_key(table):
-    from core.services import network_login
+async def test_computer_keys_read_and_forget_the_registry(table):
+    from core.services import workspace_memory
 
-    k1, k2 = "a" * 52, "b" * 52
-    await network_login.register_key("user_a", k1)
-    first = table.get_item(Key=network_login._registry_key("user_a", k1))["Item"]["first_seen"]
-    with patch("time.time", return_value=first + 500):
-        await network_login.register_key("user_a", k1)
-        await network_login.register_key("user_a", k2)
-    rows = table.scan()["Items"]
-    assert sorted(r["sk"] for r in rows) == [f"NETKEY#{k1}", f"NETKEY#{k2}"]
-    assert table.get_item(Key=network_login._registry_key("user_a", k1))["Item"]["first_seen"] == first
-
-
-async def test_computer_keys_union_registry_live_and_signed_out(table):
-    from core.services import network_login
-
-    reg, live, out = "r" * 52, "a" * 52, "b" * 52
-    await network_login.register_key("user_a", reg)
-
-    class Conn:
-        async def routes_for_user(self, user_id):
-            return [{"key": live}]
-
-    with (
-        patch("core.services.network_route._connections", return_value=Conn()),
-        patch.object(network_login, "revoked_keys", return_value=[out, live]),
-    ):
-        assert await network_login.computer_keys("user_a") == sorted([reg, live, out])
-    await network_login.forget_keys("user_a")
+    a, b = "a" * 52, "b" * 52
+    for key in (b, a):
+        table.put_item(Item={"pk": "NETKEY#user_a", "sk": f"NETKEY#{key}", "first_seen": 1})
+    assert await workspace_memory._computer_keys("user_a") == [a, b]
+    await workspace_memory._forget_keys("user_a")
     assert table.scan()["Items"] == []
+
+
+async def test_a_revoked_key_with_no_registry_row_is_still_forgotten(table):
+    import time
+
+    from core.services import workspace_memory
+
+    key = "r" * 52
+    table.put_item(Item={"pk": "NETREVOKED#user_a", "sk": key, "ttl": int(time.time()) + 3600})
+    from unittest.mock import AsyncMock
+
+    from core.services import evaluator, memory_api, session_store
+
+    forgot = AsyncMock()
+    with (
+        patch.object(workspace_memory.settings, "AGENTCORE_MEMORY_ID", ""),
+        patch.object(session_store, "delete_sessions", AsyncMock(return_value=0)),
+        patch.object(evaluator, "delete_drafts", AsyncMock(return_value=0)),
+        patch.object(memory_api, "forward_on_behalf_of", AsyncMock()),
+        patch.object(memory_api, "forget_author", forgot),
+    ):
+        await workspace_memory.delete_member_memory(OWNER, "user_a", resweep_after_s=0)
+    forgot.assert_awaited_once_with(OWNER, key)
 
 
 # --- the CLI's real shapes and idempotency (final review #2-#5, #18, #19) -----------------------
@@ -812,7 +813,9 @@ async def test_owner_wipe_forgets_what_the_cloud_member_signed_by_its_public_key
     import base64
     from unittest.mock import AsyncMock
 
-    from core.services import agentcore_runtime, memory_api, network_login, workspace_memory
+    import re
+
+    from core.services import agentcore_runtime, memory_api, workspace_memory
 
     secret = {"networkKey": base64.b64encode(RFC_SEED).decode()}
     monkeypatch.setattr(agentcore_runtime, "_read_secret", lambda sm, name: secret)
@@ -821,7 +824,7 @@ async def test_owner_wipe_forgets_what_the_cloud_member_signed_by_its_public_key
     await workspace_memory.forget_workspace_authored(OWNER)
     key = base64.b32encode(RFC_PUBLIC).decode().lower().rstrip("=")  # the engine's member key spelling
     forward.assert_awaited_once_with(OWNER, key)
-    assert network_login.KEY_RE.match(key)
+    assert re.fullmatch(r"[a-z2-7]{52}", key)  # lowercase base32 of 32 bytes
 
     secret = None  # no boot secret: never a member, nothing to forget, and never a raise
     monkeypatch.setattr(agentcore_runtime, "_read_secret", lambda sm, name: secret)
@@ -874,6 +877,5 @@ async def test_the_sweep_retries_owed_wipes_for_every_workspace(monkeypatch):
     monkeypatch.setattr(memory_api.container_repo, "scan_all", AsyncMock(return_value=[{"owner_id": "org_1"}]))
     retry = AsyncMock(return_value=1)
     monkeypatch.setattr(memory_api, "retry_member_wipes", retry)
-    monkeypatch.setattr(memory_api.evaluator, "collect_due", AsyncMock(return_value=0))
     await memory_api.sweep_once()
     retry.assert_awaited_once_with("org_1")

@@ -2,7 +2,7 @@
 
 import os
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
@@ -349,148 +349,17 @@ async def test_get_by_owner_id_alias(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_upsert_paired_devices_merges_and_preserves_row(dynamodb_table):
-    """Device pubkeys land on the owner row without clobbering existing fields,
-    and multiple members' devices coexist in a shared org row."""
+async def test_member_revocation_writes_touch_only_that_members_devices(dynamodb_table):
     from core.repositories import container_repo
 
-    await _seed("owner_1", {"gateway_token": "t", "status": "running"})
-
-    await container_repo.upsert_paired_devices(
-        "owner_1",
-        {"dev_a": {"publicKey": "ka", "userId": "u1", "clientId": "node-host"}},
-    )
-    row = await container_repo.get_by_owner_id("owner_1")
-    assert row["paired_devices"] == {"dev_a": {"publicKey": "ka", "userId": "u1", "clientId": "node-host"}}
-    assert row["gateway_token"] == "t"  # row-level merge, not overwrite
-
-    await container_repo.upsert_paired_devices(
-        "owner_1",
-        {"dev_b": {"publicKey": "kb", "userId": "u2", "clientId": "openclaw-macos"}},
-    )
-    row = await container_repo.get_by_owner_id("owner_1")
-    assert set(row["paired_devices"]) == {"dev_a", "dev_b"}
-
-
-@pytest.mark.asyncio
-async def test_concurrent_pairing_retries_a_transaction_conflict_instead_of_raising(dynamodb_table):
-    """Load 3b (dev 2026-10-08): 25 Macs of one workspace paired at once and the owner-row
-    UpdateItem raised TransactionConflictException -> 500. It now backs off and lands."""
-    from core.repositories import container_repo
-
-    await _seed("owner_1", {"status": "running"})
-    real = container_repo.run_in_thread
-    conflicts = iter([True, True])
-
-    async def flaky(fn, *args, **kwargs):
-        if "#did" in kwargs.get("ExpressionAttributeNames", {}) and next(conflicts, False):
-            raise ClientError(
-                {"Error": {"Code": "TransactionConflictException", "Message": "Transaction is ongoing"}}, "UpdateItem"
-            )
-        return await real(fn, *args, **kwargs)
-
-    sleep = AsyncMock()
-    with patch.object(container_repo, "run_in_thread", flaky), patch("asyncio.sleep", sleep):
-        await container_repo.upsert_paired_devices("owner_1", {"dev_a": {"publicKey": "ka", "userId": "u1"}})
-    assert sleep.await_count == 2
-    assert (await container_repo.get_by_owner_id("owner_1"))["paired_devices"]["dev_a"]["userId"] == "u1"
-
-
-@pytest.mark.asyncio
-async def test_upsert_paired_devices_missing_container_returns_none(dynamodb_table):
-    from core.repositories import container_repo
-
-    assert await container_repo.upsert_paired_devices("ghost", {"d": {"publicKey": "k"}}) is None
-
-
-@pytest.mark.asyncio
-async def test_upsert_paired_devices_refuses_cross_member_relabel(dynamodb_table):
-    """Security: deviceId=sha256(pubkey) and pairing doesn't prove key
-    possession, so a co-tenant could submit another member's PUBLIC key and
-    collide their deviceId. The row must NOT relabel a device already owned by
-    a different member (else the authorizer would attribute the real owner's
-    device to the attacker). Idempotent same-owner re-writes still apply."""
-    from core.repositories import container_repo
-
-    await _seed("owner_org", {"gateway_token": "t"})
-    # Bob's device paired first.
-    await container_repo.upsert_paired_devices("owner_org", {"dev_b": {"publicKey": "pk_b", "userId": "bob"}})
-    # Alice submits Bob's PUBLIC key -> same deviceId, tries to relabel as alice.
-    await container_repo.upsert_paired_devices("owner_org", {"dev_b": {"publicKey": "pk_b", "userId": "alice"}})
-    row = await container_repo.get_by_owner_id("owner_org")
-    assert row["paired_devices"]["dev_b"]["userId"] == "bob"  # incumbent preserved
-
-    # But Bob re-pairing his own device (same userId) still updates fine.
-    await container_repo.upsert_paired_devices(
-        "owner_org", {"dev_b": {"publicKey": "pk_b", "userId": "bob", "clientId": "node-host"}}
-    )
-    row = await container_repo.get_by_owner_id("owner_org")
-    assert row["paired_devices"]["dev_b"]["clientId"] == "node-host"
-
-
-@pytest.mark.asyncio
-async def test_upsert_paired_device_wont_resurrect_row_deleted_mid_write(dynamodb_table, monkeypatch):
-    """Race guard: the row exists when step 1 (ensure paired_devices map) runs,
-    then a concurrent deprovision deletes it before step 2 (set the device).
-    Step 2's attribute_exists(owner_id) condition must prevent recreating a
-    partial zombie row that later get_by_owner_id consumers would choke on."""
-    from core.repositories import container_repo
-
-    await _seed("owner_1", {"gateway_token": "t", "status": "running"})
-
-    real_run = container_repo.run_in_thread
-    calls = {"n": 0}
-
-    async def racing_run(fn, *args, **kwargs):
-        result = await real_run(fn, *args, **kwargs)
-        calls["n"] += 1
-        if calls["n"] == 1:  # after step-1 ensure-map: simulate concurrent delete
-            dynamodb_table.delete_item(Key={"owner_id": "owner_1"})
-        return result
-
-    monkeypatch.setattr(container_repo, "run_in_thread", racing_run)
-    await container_repo.upsert_paired_devices("owner_1", {"dev_x": {"publicKey": "kx", "userId": "u1"}})
-    # Row was deleted mid-write; step 2 must NOT have recreated it.
-    assert dynamodb_table.get_item(Key={"owner_id": "owner_1"}).get("Item") is None
-
-
-@pytest.mark.asyncio
-async def test_remove_paired_device_deletes_only_target(dynamodb_table):
-    from core.repositories import container_repo
-
-    await _seed("owner_1", {"gateway_token": "t"})
-    await container_repo.upsert_paired_devices(
-        "owner_1",
-        {"dev_a": {"publicKey": "ka"}, "dev_b": {"publicKey": "kb"}},
-    )
-
-    await container_repo.remove_paired_device("owner_1", "dev_a")
-    row = await container_repo.get_by_owner_id("owner_1")
-    assert set(row["paired_devices"]) == {"dev_b"}
-
-    # Removing a non-present device (and removing on a missing row) is a no-op.
-    await container_repo.remove_paired_device("owner_1", "dev_a")
-    await container_repo.remove_paired_device("ghost", "dev_a")
-    row = await container_repo.get_by_owner_id("owner_1")
-    assert set(row["paired_devices"]) == {"dev_b"}
-
-
-@pytest.mark.asyncio
-async def test_member_revocation_writes_spare_a_re_paired_device(dynamodb_table):
-    from core.repositories import container_repo
-
-    await _seed("owner_1", {"gateway_token": "t"})
-    await container_repo.upsert_paired_devices(
-        "owner_1", {"dev_a": {"userId": "u1"}, "dev_b": {"userId": "u1"}, "dev_c": {"userId": "u2"}}
-    )
+    paired = {"dev_a": {"userId": "u1"}, "dev_b": {"userId": "u1"}, "dev_c": {"userId": "u2"}}
+    await _seed("owner_1", {"gateway_token": "t", "paired_devices": paired})
     assert await container_repo.mark_paired_device_revoking("owner_1", "dev_a", user_id="u1")
-    assert await container_repo.mark_paired_device_revoking("owner_1", "dev_b", user_id="u1")
     assert not await container_repo.mark_paired_device_revoking("owner_1", "dev_c", user_id="u1")  # someone else's
     assert not await container_repo.mark_paired_device_revoking("owner_1", "ghost", user_id="u1")
-    await container_repo.upsert_paired_devices("owner_1", {"dev_b": {"userId": "u1"}})  # re-paired: flag gone
 
     assert await container_repo.remove_revoked_paired_device("owner_1", "dev_a", "u1")
-    assert not await container_repo.remove_revoked_paired_device("owner_1", "dev_b", "u1")
+    assert not await container_repo.remove_revoked_paired_device("owner_1", "dev_b", "u1")  # never marked
     assert not await container_repo.remove_revoked_paired_device("owner_1", "dev_c", "u1")
     row = await container_repo.get_by_owner_id("owner_1")
     assert set(row["paired_devices"]) == {"dev_b", "dev_c"}

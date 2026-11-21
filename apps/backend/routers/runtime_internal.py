@@ -475,8 +475,8 @@ class AskBody(BaseModel):
     run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
     tool_call_id: str = Field(alias="toolCallId", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     kind: Literal["question", "approval"]
-    # Context-free subkinds only (spec 05 §3.3): `publish` needs the app and `a2a_hold` governance's holders, which
-    # a Worker's ask cannot carry, so they are refused here rather than failing after the trigger is written.
+    # Context-free subkinds only (spec 05 §3.3): `publish` needs the app, which a Worker's ask cannot carry, so it
+    # is refused here rather than failing after the trigger is written.
     subkind: Literal["question", "tool", "send", "spend", "purchase", "provider_consent", "review"]
     title: str = Field(min_length=1, max_length=200)
     text: str = Field("", max_length=500)

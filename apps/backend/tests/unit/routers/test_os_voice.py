@@ -33,6 +33,7 @@ OFFER = (
 ANSWER = "v=0\r\no=- 99 2 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\na=candidate:9 1 udp 1 203.0.113.9 3478 typ host\r\n"
 SECRET_INSTRUCTIONS = "You are Spark. The person's private note: zebra-secret-91."
 LIVE = "https://api.openai.com/v1/live/sessions"
+USER = {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
 
 
 def body(**over):
@@ -42,7 +43,7 @@ def body(**over):
         "kind": "hold",
         "session": {
             "instructions": SECRET_INSTRUCTIONS,
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "input": [USER],
             "audio": {"output": {"voice": "marin"}},
             "delegation": {"type": "client", "acknowledgement_delay_ms": 800},
         },
@@ -109,8 +110,15 @@ def key(monkeypatch):
 def clock(monkeypatch):
     now = [START]
     monkeypatch.setattr("routers.os._now", lambda: now[0])
-    monkeypatch.setattr("core.voice.os_voice._now", lambda: now[0])
+    monkeypatch.setattr("core.voice.os_voice.now", lambda: now[0])
     return now
+
+
+@pytest.fixture
+def metrics(monkeypatch):
+    seen = []
+    monkeypatch.setattr(os_voice, "put_metric", lambda name, **kw: seen.append((name, kw.get("dimensions"))))
+    return seen
 
 
 @pytest.fixture
@@ -162,11 +170,12 @@ def sent(fake) -> dict:
     return json.loads(fake.requests[-1].content)
 
 
-async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, openai, no_sideband):
-    r = await create(model="gpt-live-1")
+@pytest.mark.parametrize("model,chosen", [(None, "gpt-live-1.1"), ("gpt-live-1", "gpt-live-1")])
+async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, openai, no_sideband, model, chosen):
+    r = await create(**({"model": model} if model else {}))
     assert r.status_code == 201, r.text
     out = r.json()
-    assert out["sdp"] == ANSWER and out["expiresAt"] is None and out["sessionId"]
+    assert out["sdp"] == ANSWER and out["expiresAt"] == START + os_voice.MAX_SESSION_S and out["sessionId"]
     req_ = openai.requests[-1]
     assert req_.headers["authorization"] == "Bearer sk-test-not-real"
     sent_body = sent(openai)
@@ -174,7 +183,7 @@ async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, 
     assert "a=sctp-init:AQAAHgpaMf8AAAAA\r\n" in sent_body["transport"]["sdp"]
     assert req_.url.query == b""  # dcid never as a query parameter
     s = sent_body["session"]
-    assert s["model"] == "gpt-live-1" and s["store"] is False
+    assert s["model"] == chosen and s["store"] is False
     assert s["client"] == {
         "data_channel": {
             "allowed_client_events": [
@@ -194,11 +203,10 @@ async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, 
     assert got.status_code == 200 and got.json() == {"status": "active", "endedReason": None}
 
 
-async def test_model_defaults_and_is_allow_listed(ddb, clock, no_sideband, openai):
-    assert (await create()).status_code == 201
-    assert sent(openai)["session"]["model"] == "gpt-live-1.1"
+async def test_a_model_off_the_list_is_refused(ddb, clock, no_sideband, openai):
     r = await create(model="gpt-realtime")
     assert (r.status_code, r.json()) == (400, {"detail": "model_not_allowed"})
+    assert not openai.called
 
 
 @pytest.mark.parametrize(
@@ -210,10 +218,16 @@ async def test_model_defaults_and_is_allow_listed(ddb, clock, no_sideband, opena
         session(store=True),
         session(delegation={"type": "responses", "responses": {"model": "gpt-5"}}),
         session(delegation={"type": "client", "acknowledgement_delay_ms": 801}),
-        session(instructions="x" * (16_384 + 1)),
-        session(instructions="é" * 8_193),  # 16,386 UTF-8 bytes
-        session(input=[{"role": "user", "content": [{"type": "input_text", "text": "x"}]}] * 129),
+        session(instructions="x" * (65_536 + 1)),
+        session(instructions="é" * 32_769),  # 65,538 UTF-8 bytes
+        session(input=[USER] * 129),
         session(input="hi"),
+        session(input=[{"role": "system", "content": [{"type": "input_text", "text": "x"}]}]),  # role
+        session(input=[{"role": "user", "content": [{"type": "input_image", "image_url": "x"}]}]),  # not text
+        session(input=[{"role": "user", "content": [{"type": "input_text", "text": "x"}] * 2}]),  # two parts
+        session(input=[{"role": "assistant", "content": [{"type": "input_text", "text": "x"}]}]),  # wrong part
+        session(input=[{"role": "user", "content": [{"type": "input_text", "text": "x"}], "tools": []}]),
+        session(input=[{"role": "user", "content": [{"type": "input_text", "text": "x" * 40_000}]}] * 2),  # total
         body(kind="shout"),
         body(dcid=5),
         body(session="x"),
@@ -225,9 +239,12 @@ async def test_invalid_config_never_reaches_openai(ddb, clock, no_sideband, open
     assert not openai.called
 
 
-async def test_instructions_at_the_byte_limit_pass(ddb, clock, no_sideband, openai):
-    r = await req("POST", "/os/voice-session", A, session(instructions="x" * 16_384))
-    assert r.status_code == 201
+async def test_the_largest_allowed_config_passes(ddb, clock, no_sideband, openai):
+    assistant = {"role": "assistant", "content": [{"type": "output_text", "text": "x" * 1_000}], "status": "completed"}
+    big = [USER, assistant, {"role": "developer", "content": [{"text": "y" * 63_535}], "type": "message", "id": None}]
+    r = await req("POST", "/os/voice-session", A, session(instructions="x" * 65_536, input=big))
+    assert r.status_code == 201, r.text
+    assert sent(openai)["session"]["input"] == big
 
 
 @pytest.mark.parametrize("sdp", ["", "   ", "hello", 7, None, "v=0\r\n" + "a" * 70_000])
@@ -252,19 +269,13 @@ async def test_first_call_creates_the_account_then_proceeds(ddb, clock, no_sideb
     assert (await req("GET", "/os/account")).json()["status"] == "trial"
 
 
-async def test_a_third_session_is_429(ddb, clock, no_sideband, openai):
+async def test_two_sessions_per_person_even_when_concurrent(ddb, clock, no_sideband, openai):
     assert (await create()).status_code == 201
-    assert (await create()).status_code == 201
-    r = await create()
-    assert (r.status_code, r.json()) == (429, {"detail": "too_many_sessions"})
+    rs = await asyncio.gather(create(), create())  # two POSTs for the last slot
+    assert sorted(r.status_code for r in rs) == [201, 429]
+    assert [r.json() for r in rs if r.status_code == 429] == [{"detail": "too_many_sessions"}]
     assert len(openai.requests) == 2
     assert (await create(B)).status_code == 201  # per person
-
-
-async def test_two_concurrent_posts_for_the_last_slot_admit_one(ddb, clock, no_sideband, openai):
-    assert (await create()).status_code == 201
-    rs = await asyncio.gather(create(), create())
-    assert sorted(r.status_code for r in rs) == [201, 429]
 
 
 async def test_an_ended_session_frees_its_slot(ddb, clock, no_sideband, openai):
@@ -282,7 +293,9 @@ async def test_an_ended_session_frees_its_slot(ddb, clock, no_sideband, openai):
         (httpx.Response(429, headers={"Retry-After": "7"}, json={"error": {"code": "rate_limit_exceeded"}}), 429, "capacity", 7),
         (httpx.Response(429, json={"error": {"code": "concurrency"}}), 429, "capacity", os_voice.RETRY_AFTER_S),
         (httpx.Response(500, json={"error": {}}), 502, "upstream", None),
-        (httpx.Response(400, json={"error": {"code": "invalid_sdp"}}), 502, "upstream", None),
+        (httpx.Response(400, json={"error": {"code": "string_above_max_length", "message": "x"}}), 400, "invalid_config", None),
+        (httpx.Response(422, json={"error": {"type": "invalid_request_error"}}), 400, "invalid_config", None),
+        (httpx.Response(503, text="<html>"), 502, "upstream", None),
         (httpx.Response(201, json={"session": {}}), 502, "upstream", None),
         (httpx.ConnectError("refused"), 502, "upstream", None),
         (httpx.ReadTimeout("slow"), 504, "upstream", None),
@@ -298,6 +311,25 @@ async def test_openai_failures_map_and_free_the_slot(
     assert "os_voice_active" not in users.get_item(Key={"user_id": "user_a"})["Item"]
 
 
+async def test_a_failed_record_write_after_openai_answered_is_502(
+    ddb, clock, no_sideband, openai, users, metrics, monkeypatch
+):
+    from botocore.exceptions import EndpointConnectionError
+
+    real = os_voice.run_in_thread
+
+    async def failing(fn, *args, **kwargs):
+        if kwargs.get("UpdateExpression") == "SET liveId = :l":
+            raise EndpointConnectionError(endpoint_url="x")
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(os_voice, "run_in_thread", failing)
+    r = await create()
+    assert (r.status_code, r.json()) == (502, {"detail": "upstream"})
+    assert "os_voice_active" not in users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert metrics == [("os_voice.session.reaped_unconfirmed", None)]
+
+
 async def test_key_not_configured_is_503(ddb, clock, no_sideband, monkeypatch):
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "lightbulb-placeholder")
     r = await create()
@@ -307,9 +339,10 @@ async def test_key_not_configured_is_503(ddb, clock, no_sideband, monkeypatch):
 async def test_only_the_opener_reads_a_session(ddb, clock, no_sideband, openai):
     sid = (await create()).json()["sessionId"]
     other = await req("GET", f"/os/voice-session/{sid}", B)
-    unknown = await req("GET", "/os/voice-session/vs_nope", B)
-    assert other.status_code == unknown.status_code == 404
-    assert other.json() == unknown.json()
+    unknown = await req("GET", f"/os/voice-session/vs_{'0' * 32}", B)
+    malformed = await req("GET", "/os/voice-session/__call__", B)
+    assert other.status_code == unknown.status_code == malformed.status_code == 404
+    assert other.json() == unknown.json() == malformed.json()
 
 
 @pytest.mark.parametrize("token", ["oauth", "template"])
@@ -325,6 +358,8 @@ async def test_nothing_private_is_logged(ddb, clock, no_sideband, openai, caplog
     assert r.status_code == 201
     openai.answer = httpx.Response(500, text=f"echo {OFFER} {SECRET_INSTRUCTIONS}")
     await create()
+    openai.answer = httpx.Response(400, json={"error": {"code": "bad", "message": f"{OFFER} {SECRET_INSTRUCTIONS}"}})
+    assert (await create()).status_code == 400
     bearer = A.headers["Authorization"].split()[1]
     for record in caplog.records:
         text = record.getMessage() + str(record.args) + str(record.exc_info)
@@ -356,7 +391,7 @@ class FakeSocket:
         event = await self.inbox.get()
         if event is None:
             raise websockets.ConnectionClosedOK(None, None)
-        return json.dumps(event)
+        return event if isinstance(event, str) else json.dumps(event)  # a str is a raw frame
 
     def push(self, *events):
         for e in events:
@@ -423,7 +458,7 @@ async def test_usage_is_recorded_and_the_close_counts_once(ddb, clock, openai, s
     )
     await until(lambda: rec(ddb, sid).get("usageSeconds") == 12)
     assert rec(ddb, sid)["expiresAt"] == START + 3600
-    assert (await create()).json()["expiresAt"] is None  # not known until session.started
+    await create()
     sockets[0].push(closed(15), closed(15))
     await until(lambda: rec(ddb, sid).get("endedReason"))
     row = rec(ddb, sid)
@@ -494,17 +529,59 @@ async def test_the_sweep_ends_a_session_that_never_got_an_openai_id(ddb, clock, 
     assert "os_voice_active" not in users.get_item(Key={"user_id": "user_a"})["Item"]
 
 
-@pytest.mark.parametrize("status,ended", [(404, "upstream"), (500, None)])
-async def test_an_attach_refusal(ddb, clock, openai, monkeypatch, status, ended):
+@pytest.mark.parametrize(
+    "error,ended,dims",
+    [
+        (websockets.exceptions.InvalidStatus(httpx.Response(404)), "upstream", None),
+        (websockets.exceptions.InvalidStatus(httpx.Response(500)), None, {"status": "5xx"}),
+        (websockets.exceptions.InvalidStatus(httpx.Response(403)), None, {"status": "4xx"}),
+        (OSError("unreachable"), None, {"status": "network"}),
+    ],
+)
+async def test_an_attach_refusal(ddb, clock, openai, metrics, monkeypatch, error, ended, dims):
     def refuse(url, **kwargs):
-        raise websockets.exceptions.InvalidStatus(httpx.Response(status))
+        raise error
 
     monkeypatch.setattr(os_voice, "_connect", refuse)
     sid = await opened_session()
     await until(idle)
-    assert rec(ddb, sid).get("endedReason") == ended
-    if ended is None:  # OpenAI still has it: the lease is free for the next sweep, and the cap still ends it
-        assert "leaseOwner" not in rec(ddb, sid)
-        clock[0] += os_voice.MAX_SESSION_S + os_voice.UNATTACHED_GRACE_S
-        await os_voice.sweep_once()
-        assert rec(ddb, sid)["endedReason"] == "expired"
+    if ended:  # OpenAI no longer has it
+        assert rec(ddb, sid)["endedReason"] == ended
+        assert metrics == [("os_voice.session.reaped_unconfirmed", None)]
+        return
+    # OpenAI may still have it: counted, loud, and the lease is free for the next sweep
+    assert metrics == [("os_voice.sideband.attach_failed", dims)]
+    assert rec(ddb, sid)["attachFailures"] == 1 and "leaseOwner" not in rec(ddb, sid)
+    await os_voice.sweep_once()
+    await until(idle)
+    assert rec(ddb, sid)["attachFailures"] == 2
+    clock[0] += os_voice.MAX_SESSION_S + os_voice.LEASE_S  # the cap passes with no task able to close it
+    await os_voice.sweep_once()
+    assert rec(ddb, sid)["endedReason"] == "upstream"
+    assert metrics[-1] == ("os_voice.session.reaped_unconfirmed", None)
+
+
+async def test_a_close_with_no_session_closed_is_reaped_unconfirmed(ddb, clock, openai, sockets, metrics, users):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(30))
+    clock[0] += 3 * 86400
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    clock[0] += os_voice.CLOSE_WAIT_S + 1  # OpenAI never answers the close
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    assert rec(ddb, sid)["endedReason"] == "upstream"
+    assert metrics == [("os_voice.session.reaped_unconfirmed", None)]
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_voice_seconds"] == 30
+
+
+async def test_an_unexpected_event_is_skipped_not_fatal(ddb, clock, openai, sockets, metrics, monkeypatch):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push("{not json", "[1]", {"type": "session.usage.updated"})
+    sockets[0].push({"type": "session.usage.updated", "usage": {"seconds": "9"}}, usage(9))
+    await until(lambda: rec(ddb, sid).get("usageSeconds") == 9)
+    assert metrics == [("os_voice.sideband.bad_event", None)] * 4
+    assert not idle()  # still attached
+    sockets[0].push({"type": "session.closed", "reason": "close_requested"})  # no usage: the last seen counts
+    await until(lambda: rec(ddb, sid).get("endedReason") == "client_closed")
+    assert rec(ddb, sid)["usageSeconds"] == 9

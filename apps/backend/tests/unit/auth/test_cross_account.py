@@ -400,7 +400,7 @@ async def seed_os(a, b, mp, calls) -> dict:
 
     await ok(a, "GET", "/api/v1/os/account")  # A's Spark account
     mp.setattr(settings, "OPENAI_API_KEY", "sk-test-not-real")
-    fake(mp, calls, "core.voice.os_voice.create_live", ("live_fake", "v=0\r\nanswer"))  # OpenAI
+    fake(mp, calls, "core.voice.os_voice._create_live", ("live_fake", "v=0\r\nanswer"))  # OpenAI
     mp.setattr(os_voice, "start_sideband", lambda sid: None)
     voice = await ok(a, "POST", "/api/v1/os/voice-session", {"sdp": f"v=0\r\n{MARKER}", "kind": "hold", "dcid": 4})
     return {"a_voice": voice["sessionId"], "_needles": [voice["sessionId"]]}

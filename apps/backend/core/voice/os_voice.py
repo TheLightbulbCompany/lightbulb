@@ -1,23 +1,21 @@
 """Spark voice: GPT-Live WebRTC sessions on the company key, and the sideband that meters and ends them.
 
-The Mac sends its SDP offer; `create_live` creates the session with OpenAI and the Mac's audio then flows
+The Mac sends its SDP offer; `open_session` creates the session with OpenAI and the Mac's audio then flows
 directly to OpenAI. Each session is one containers-table row (`__osvoice__#<id>`) on the sparse
 `status-index` while active; the person's users row holds the set of their active session ids
 (`os_voice_active`, at most MAX_ACTIVE, enforced by the condition of the write that adds one) and their
 running total of voice seconds (`os_voice_seconds`).
 
-One backend task holds each session's sideband WebSocket under a short lease on its row. Every task runs
-`os_voice_sweeper`, which attaches any active session whose lease lapsed, so a replaced task's sessions are
-picked up by another. The attached task closes a session whose person's account ended, that passed its
-`expires_at`, or that reached MAX_SESSION_S.
+One task holds each session's sideband under a lease on its row; every task's sweep re-attaches lapsed ones.
 
-Never log an SDP (host candidates carry the Mac's LAN addresses), the instructions or the input: ids, sizes
-and outcomes only."""
+Never log an SDP (host candidates carry the Mac's LAN addresses), the instructions, the input or an OpenAI
+error message (it can quote the request): ids, sizes, statuses and outcomes only."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -26,10 +24,13 @@ import uuid
 
 import httpx
 import websockets
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact
+from core.observability.metrics import put_metric
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,14 @@ ATTACH_URL = "wss://api.openai.com/v1/live/sessions/{}/attach"
 KEY_PREFIX = "__osvoice__#"
 ACTIVE = "os_voice_active"
 MAX_ACTIVE = 2
+ALLOWED_CLIENT_EVENTS = [
+    "session.input_audio.mute",
+    "session.input_audio.unmute",
+    "session.instructions.append",
+    "session.thinking.append",
+    "session.commentary.append",
+    "session.close",
+]
 CREATE_TIMEOUT_S = 20.0  # under API Gateway's 30 s
 RETRY_AFTER_S = 5  # OpenAI refused for capacity without a Retry-After
 TICK_S = 10.0  # lease renewal, usage write and close checks while attached
@@ -49,27 +58,22 @@ SWEEP_S = 15
 PENDING_S = 60  # a reserved session with no OpenAI id after this: its creating task died
 CLOSE_WAIT_S = 30  # after our session.close, end it ourselves if session.closed never arrives
 ENDED_TTL_S = 7 * 86400
-# Unmeasured: OpenAI documents no WebRTC session length (2 hours is its SIP call limit). The docs say billing
-# accrues through silence ("Active time includes speech, silence before the idle timeout expires", voice-latency-cost)
-# but not how often session.usage.updated arrives, so usage not advancing is no evidence of a dead session; the
-# reaper uses `expires_at` and this cap only.
-MAX_SESSION_S = 2 * 3600
-UNATTACHED_GRACE_S = 600  # past the cap with no task able to attach: end it here so its slot frees
+MAX_SESSION_S = 2 * 3600  # unmeasured: OpenAI documents no WebRTC length (2 h is its SIP limit)
 TASK_ID = f"{os.getenv('HOSTNAME') or 'local'}-{uuid.uuid4().hex[:8]}"
 
 # The OpenAI close reasons, as the reasons GET /os/voice-session reports.
 _REASONS = {"close_requested": "client_closed", "remote_hangup": "client_closed", "expired": "expired"}
 _TASKS: dict[str, asyncio.Task] = {}
 _connect = websockets.connect
-_transport: httpx.AsyncBaseTransport | None = None
+_transport: httpx.AsyncBaseTransport | None = None  # tests swap in httpx.MockTransport
 
 
-class Upstream(Exception):
-    def __init__(self, status: int, retry_after: int | None = None):
-        self.status, self.retry_after = status, retry_after
+class _Upstream(Exception):
+    def __init__(self, status: int, detail: str = "upstream", retry_after: int | None = None):
+        self.status, self.detail, self.retry_after = status, detail, retry_after
 
 
-def _now() -> int:
+def now() -> int:
     return int(time.time())
 
 
@@ -85,7 +89,7 @@ def _auth() -> dict:
     return {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
 
 
-async def create_live(body: dict) -> tuple[str, str]:
+async def _create_live(body: dict) -> tuple[str, str]:
     """POST /v1/live/sessions. Returns (OpenAI session id, SDP answer)."""
     try:
         async with httpx.AsyncClient(
@@ -93,25 +97,31 @@ async def create_live(body: dict) -> tuple[str, str]:
         ) as http:
             r = await http.post(LIVE_URL, json=body, headers=_auth())
     except httpx.TimeoutException:
-        raise Upstream(504) from None
+        raise _Upstream(504) from None
     except httpx.HTTPError:
-        raise Upstream(502) from None
+        raise _Upstream(502) from None
+    if r.status_code == 201:
+        with contextlib.suppress(ValueError, KeyError, TypeError):
+            out = r.json()
+            return out["session"]["id"], out["transport"]["sdp"]
+    error = {}
+    with contextlib.suppress(ValueError, AttributeError):
+        error = r.json().get("error") or {}
+    error = error if isinstance(error, dict) else {}
+    logger.warning("os voice create refused: http %s %s %s", r.status_code, error.get("type"), error.get("code"))
     if r.status_code == 429:
         after = r.headers.get("retry-after", "")
-        raise Upstream(429, int(after) if after.isdigit() else RETRY_AFTER_S)
-    try:
-        out = r.json() if r.status_code == 201 else {}
-        return out["session"]["id"], out["transport"]["sdp"]
-    except (ValueError, KeyError, TypeError):
-        logger.warning("os voice create refused: http %s", r.status_code)
-        raise Upstream(502) from None
+        raise _Upstream(429, "capacity", int(after) if after.isdigit() else RETRY_AFTER_S)
+    if r.status_code in (400, 422):  # ours to get right, or a limit only OpenAI measures (instruction tokens)
+        raise _Upstream(400, "invalid_config")
+    raise _Upstream(502)
 
 
-async def reserve(user_id: str, sid: str, kind: str, client: dict, now: int) -> bool:
+async def reserve(user_id: str, sid: str, kind: str, client: dict, started_at: int) -> bool:
     """Take one of the person's MAX_ACTIVE slots and write the session row, in one transaction."""
     users = get_table("users")
     row = {**_key(sid), "status": ACTIVE, "sessionId": sid, "userId": user_id, "kind": kind, "client": client}
-    row |= {"startedAt": now, "usageSeconds": 0, "session_ttl": now + MAX_SESSION_S + ENDED_TTL_S}
+    row |= {"startedAt": started_at, "usageSeconds": 0, "session_ttl": started_at + MAX_SESSION_S + ENDED_TTL_S}
     try:
         await transact(
             users,
@@ -135,13 +145,44 @@ async def reserve(user_id: str, sid: str, kind: str, client: dict, now: int) -> 
     return True
 
 
-async def set_live(sid: str, live_id: str) -> None:
-    await run_in_thread(
-        _table().update_item,
-        Key=_key(sid),
-        UpdateExpression="SET liveId = :l",
-        ExpressionAttributeValues={":l": live_id},
-    )
+async def open_session(
+    user_id: str, kind: str, client: dict, model: str, config: dict, sdp: str
+) -> dict | JSONResponse:
+    """Reserve a slot, create the Live session with the backend-owned settings, and start its sideband.
+    Returns the 201 body; raises the contract's error, or returns a JSONResponse for `capacity`."""
+    started_at, sid = now(), f"vs_{uuid.uuid4().hex}"
+    if not await reserve(user_id, sid, kind, client, started_at):
+        raise HTTPException(status_code=429, detail="too_many_sessions")
+    config |= {
+        "model": model,
+        "store": False,
+        "client": {"data_channel": {"allowed_client_events": ALLOWED_CLIENT_EVENTS}},
+        "safety_identifier": hashlib.sha256(user_id.encode()).hexdigest(),  # OpenAI's per-user abuse signal
+    }
+    transport = {"type": "webrtc", "sdp": sdp, "dcid": 4}  # dcid in the body: OpenAI rejects query parameters
+    try:
+        live_id, answer = await _create_live({"session": config, "transport": transport})
+    except _Upstream as e:
+        await end_session(sid, "upstream", 0)
+        if e.detail == "capacity":
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "capacity", "retryAfterS": e.retry_after},
+                headers={"Retry-After": str(e.retry_after)},
+            )
+        raise HTTPException(status_code=e.status, detail=e.detail) from None
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key=_key(sid),
+            UpdateExpression="SET liveId = :l",
+            ExpressionAttributeValues={":l": live_id},
+        )
+    except (ClientError, BotoCoreError):  # OpenAI's session exists, but nothing can attach to it
+        await _reap_unconfirmed(sid, 0)
+        raise HTTPException(status_code=502, detail="upstream") from None
+    start_sideband(sid)
+    return {"sessionId": sid, "sdp": answer, "expiresAt": started_at + MAX_SESSION_S}
 
 
 async def get(sid: str) -> dict | None:
@@ -154,7 +195,7 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
     row = await get(sid)
     if not row or row.get("status") != ACTIVE:
         return False
-    now, users = _now(), get_table("users")
+    at, users = now(), get_table("users")
     seconds = max(int(seconds), int(row.get("usageSeconds", 0)))
     try:
         await transact(
@@ -169,7 +210,7 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
                         "ConditionExpression": "#st = :active",
                         "ExpressionAttributeNames": {"#st": "status"},
                         "ExpressionAttributeValues": {
-                            ":now": now, ":r": reason, ":s": seconds, ":ttl": now + ENDED_TTL_S, ":active": ACTIVE,
+                            ":now": at, ":r": reason, ":s": seconds, ":ttl": at + ENDED_TTL_S, ":active": ACTIVE,
                         },
                     }
                 },
@@ -191,17 +232,24 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
     return True
 
 
-async def _lease(sid: str, now: int, sets: str = "", values: dict | None = None) -> bool:
+async def _reap_unconfirmed(sid: str, seconds: int) -> None:
+    """End a session OpenAI never confirmed closing: it may still be running untracked, so it is counted."""
+    if await end_session(sid, "upstream", seconds):
+        put_metric("os_voice.session.reaped_unconfirmed")
+        logger.warning("os voice session %s reaped without session.closed; final usage unconfirmed", sid)
+
+
+async def _lease(sid: str, at: int, expression: str = "", values: dict | None = None) -> bool:
     """Take or renew the session's lease; False when another task holds it or the session ended."""
     try:
         await run_in_thread(
             _table().update_item,
             Key=_key(sid),
-            UpdateExpression="SET leaseOwner = :me, leaseUntil = :until" + sets,
+            UpdateExpression="SET leaseOwner = :me, leaseUntil = :until" + expression,
             ConditionExpression="#st = :active AND (attribute_not_exists(leaseUntil) OR leaseUntil < :now "
             "OR leaseOwner = :me)",
             ExpressionAttributeNames={"#st": "status"},
-            ExpressionAttributeValues={":me": TASK_ID, ":until": now + LEASE_S, ":now": now, ":active": ACTIVE}
+            ExpressionAttributeValues={":me": TASK_ID, ":until": at + LEASE_S, ":now": at, ":active": ACTIVE}
             | (values or {}),
         )
     except ClientError as e:
@@ -211,14 +259,15 @@ async def _lease(sid: str, now: int, sets: str = "", values: dict | None = None)
     return True
 
 
-async def _release(sid: str) -> None:
+async def _release(sid: str, attach_failed: bool = False) -> None:
+    """Free the lease so the next sweep re-attaches; an attach failure is counted on the row."""
     with contextlib.suppress(ClientError):
         await run_in_thread(
             _table().update_item,
             Key=_key(sid),
-            UpdateExpression="REMOVE leaseOwner, leaseUntil",
+            UpdateExpression="REMOVE leaseOwner, leaseUntil" + (" ADD attachFailures :one" if attach_failed else ""),
             ConditionExpression="leaseOwner = :me",
-            ExpressionAttributeValues={":me": TASK_ID},
+            ExpressionAttributeValues={":me": TASK_ID} | ({":one": 1} if attach_failed else {}),
         )
 
 
@@ -227,83 +276,93 @@ async def _trial_ends_at(user_id: str) -> int:
     return int(row.get("os_trial_ends_at", 0))
 
 
-class _Attached:
-    """What the attached task knows about its session between ticks."""
-
-    def __init__(self, row: dict, trial_ends_at: int):
-        self.sid, self.user_id = row["sessionId"], row["userId"]
-        self.started_at = int(row["startedAt"])
-        self.seconds = int(row.get("usageSeconds", 0))
-        self.expires_at = int(row["expiresAt"]) if row.get("expiresAt") else None
-        self.close_reason = row.get("closeReason")
-        self.close_sent_at: int | None = None
-        self.trial_ends_at = trial_ends_at
-
-
-async def _due(s: _Attached, now: int) -> str | None:
+async def _due(s: dict, at: int) -> str | None:
     """Why the backend should close this session now, if it should."""
-    if now >= s.trial_ends_at:
-        s.trial_ends_at = await _trial_ends_at(s.user_id)  # a referral may have extended it
-        if now >= s.trial_ends_at:
+    if at >= s["trialEndsAt"]:
+        s["trialEndsAt"] = await _trial_ends_at(s["userId"])  # a referral may have extended it
+        if at >= s["trialEndsAt"]:
             return "trial_ended"
-    if (s.expires_at and now >= s.expires_at) or now >= s.started_at + MAX_SESSION_S:
+    if (s.get("expiresAt") and at >= int(s["expiresAt"])) or at >= int(s["startedAt"]) + MAX_SESSION_S:
         return "expired"
     return None
 
 
-async def _tick(ws, s: _Attached) -> bool:
+async def _tick(ws, s: dict) -> bool:
     """Renew the lease, store the latest usage, and close the session when it is due. False: stop."""
-    now = _now()
-    if s.close_reason is None and (reason := await _due(s, now)):
-        s.close_reason = reason
-    sets, values = ", usageSeconds = :s", {":s": s.seconds}
-    if s.expires_at:
-        sets, values = sets + ", expiresAt = :e", values | {":e": s.expires_at}
-    if s.close_reason:
-        sets, values = sets + ", closeReason = :c", values | {":c": s.close_reason}
-    if not await _lease(s.sid, now, sets, values):
+    at = now()
+    if not s.get("closeReason") and (reason := await _due(s, at)):
+        s["closeReason"] = reason
+    expression, values = ", usageSeconds = :s", {":s": s["usageSeconds"]}
+    for field in ("expiresAt", "closeReason"):
+        if s.get(field):
+            expression, values = f"{expression}, {field} = :{field}", values | {f":{field}": s[field]}
+    if s.pop("attachFailures", None):
+        expression += " REMOVE attachFailures"
+    if not await _lease(s["sessionId"], at, expression, values):
         return False
-    if s.close_reason and s.close_sent_at is None:
+    if s.get("closeReason") and not s.get("closeSentAt"):
         await ws.send(json.dumps({"type": "session.close"}))
-        s.close_sent_at = now
-        logger.info("os voice session %s: close sent (%s)", s.sid, s.close_reason)
-    elif s.close_sent_at is not None and now - s.close_sent_at > CLOSE_WAIT_S:
-        logger.warning("os voice session %s: no session.closed after close; final usage unconfirmed", s.sid)
-        await end_session(s.sid, s.close_reason, s.seconds)
+        s["closeSentAt"] = at
+        logger.info("os voice session %s: close sent (%s)", s["sessionId"], s["closeReason"])
+    elif s.get("closeSentAt") and at - s["closeSentAt"] > CLOSE_WAIT_S:
+        await _reap_unconfirmed(s["sessionId"], s["usageSeconds"])
         return False
     return True
 
 
-async def _event(s: _Attached, raw) -> bool:
-    """Read one server event. True when the session closed."""
-    event = json.loads(raw)
-    kind = event.get("type")
+def _seconds(event: dict) -> int | None:
+    usage = event.get("usage")
+    seconds = usage.get("seconds") if isinstance(usage, dict) else None
+    return seconds if type(seconds) is int else None
+
+
+async def _event(s: dict, raw) -> bool:
+    """Read one server event. True when the session closed. An event of an unexpected shape is skipped
+    and counted; it never drops the socket."""
+    try:
+        event = json.loads(raw)
+        kind = event.get("type")
+    except (ValueError, TypeError, AttributeError):
+        put_metric("os_voice.sideband.bad_event")
+        return False
     if kind == "session.usage.updated":
-        s.seconds = max(s.seconds, int(event["usage"]["seconds"]))  # cumulative: never summed
-    elif kind == "session.started" and event.get("session", {}).get("expires_at"):
-        s.expires_at = int(event["session"]["expires_at"])
+        if (seconds := _seconds(event)) is None:
+            put_metric("os_voice.sideband.bad_event")
+        else:
+            s["usageSeconds"] = max(int(s["usageSeconds"]), seconds)  # cumulative: never summed
+    elif kind == "session.started":
+        session = event.get("session")
+        if isinstance(session, dict) and type(session.get("expires_at")) is int:
+            s["expiresAt"] = session["expires_at"]
     elif kind == "session.closed":
-        s.seconds = max(s.seconds, int((event.get("usage") or {}).get("seconds", 0)))
-        reason = s.close_reason or _REASONS.get(event.get("reason"), "upstream")
-        await end_session(s.sid, reason, s.seconds)
+        seconds = max(int(s["usageSeconds"]), _seconds(event) or 0)
+        reason = s.get("closeReason") or _REASONS.get(event.get("reason"), "upstream")
+        await end_session(s["sessionId"], reason, seconds)
         return True
     elif kind == "error":
-        logger.info("os voice session %s: error event %s", s.sid, (event.get("error") or {}).get("code"))
+        error = event.get("error") if isinstance(event.get("error"), dict) else {}
+        logger.info("os voice session %s: error event %s", s["sessionId"], error.get("code"))
     return False
+
+
+def _status_class(e: Exception) -> str:
+    if isinstance(e, websockets.exceptions.InvalidStatus):
+        return f"{e.response.status_code // 100}xx"
+    return "network"
 
 
 async def run_sideband(sid: str) -> None:
     """Hold this session's sideband until it closes or another task takes it. Cancelling it (shutdown) just
     stops: the lease lapses and another task's sweep re-attaches."""
-    if not await _lease(sid, _now()):
+    if not await _lease(sid, now()):
         return
-    row = await get(sid)
-    s = _Attached(row, await _trial_ends_at(row["userId"]))
+    s = await get(sid)
+    s["trialEndsAt"] = await _trial_ends_at(s["userId"])
+    connected = False
     try:
-        url = ATTACH_URL.format(row["liveId"])
+        url = ATTACH_URL.format(s["liveId"])
         async with _connect(url, additional_headers=_auth(), open_timeout=10, logger=_WS_LOG) as ws:
-            loop = asyncio.get_running_loop()
-            next_tick = 0.0
+            connected, loop, next_tick = True, asyncio.get_running_loop(), 0.0
             while True:
                 if loop.time() >= next_tick:
                     if not await _tick(ws, s):
@@ -315,12 +374,18 @@ async def run_sideband(sid: str) -> None:
                     continue
                 if await _event(s, raw):
                     return
-    except websockets.exceptions.InvalidStatus as e:
-        if e.response.status_code in (404, 410):  # OpenAI no longer has it; its final usage is unconfirmed
-            await end_session(sid, s.close_reason or "upstream", s.seconds)
+    except (OSError, TimeoutError, websockets.exceptions.InvalidStatus) as e:
+        if connected:
+            logger.info("os voice session %s: sideband dropped", sid)
+        elif isinstance(e, websockets.exceptions.InvalidStatus) and e.response.status_code in (404, 410):
+            await _reap_unconfirmed(sid, int(s["usageSeconds"]))  # OpenAI no longer has it
             return
-        logger.warning("os voice session %s: attach refused: http %s", sid, e.response.status_code)
-    except (OSError, websockets.ConnectionClosed, TimeoutError):
+        else:
+            put_metric("os_voice.sideband.attach_failed", dimensions={"status": _status_class(e)})
+            logger.warning("os voice session %s: attach failed (%s)", sid, _status_class(e))
+            await _release(sid, attach_failed=True)
+            return
+    except websockets.ConnectionClosed:
         logger.info("os voice session %s: sideband dropped", sid)
     except Exception as e:  # noqa: BLE001 -- the type only: an event's text is never logged
         logger.warning("os voice session %s: sideband failed: %s", sid, type(e).__name__)
@@ -336,19 +401,19 @@ def start_sideband(sid: str) -> None:
 
 
 async def sweep_once() -> None:
-    """Attach every active session nobody holds. End one whose creating task died before OpenAI answered, and
-    one long past the cap that no task could attach (its final usage is unconfirmed)."""
-    now = _now()
+    """Attach every active session nobody holds. A session whose creating task died before recording
+    OpenAI's id, or one past the cap that no task could attach, is ended as unconfirmed."""
+    at = now()
     for row in await container_repo.get_by_status(ACTIVE):
         sid = row.get("sessionId")
         if not sid or (sid in _TASKS and not _TASKS[sid].done()):
             continue
         if not row.get("liveId"):
-            if int(row["startedAt"]) < now - PENDING_S:
-                await end_session(sid, "upstream", 0)
-        elif int(row.get("leaseUntil", 0)) < now:
-            if now >= int(row["startedAt"]) + MAX_SESSION_S + UNATTACHED_GRACE_S:
-                await end_session(sid, "expired", int(row.get("usageSeconds", 0)))
+            if int(row["startedAt"]) < at - PENDING_S:
+                await _reap_unconfirmed(sid, 0)
+        elif int(row.get("leaseUntil", 0)) < at:
+            if at >= int(row["startedAt"]) + MAX_SESSION_S + LEASE_S:
+                await _reap_unconfirmed(sid, int(row.get("usageSeconds", 0)))
             else:
                 start_sideband(sid)
 

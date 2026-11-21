@@ -53,14 +53,14 @@ def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | 
     api.warm(owner_id, [member["id"] for member in team or ()], room_id)
 
 
-def _live_configured() -> bool:
+def live_configured() -> bool:
     # CDK seeds the secret with a random non-sk- value; that counts as unset (voice stays dark).
     return settings.OPENAI_API_KEY.startswith("sk-")
 
 
 async def _gate(owner_id: str) -> tuple[str, int]:
     """Plan + free-budget gates shared by every call start. Returns (billing mode, free budget seconds)."""
-    if not _live_configured():
+    if not live_configured():
         raise _problem(503, code="voice_unavailable")
     mode = voice_billing.billing_mode(await billing_repo.get_by_owner_id(owner_id))
     if mode is None:

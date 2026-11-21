@@ -61,14 +61,24 @@ describe("/os", () => {
 const HUB_H1_AI_EXCEPTION = "The voice AI application company.";
 
 describe("/", () => {
-  it("leads with the company line and links to all three products", () => {
+  it("leads with the company line and gives each product its own card and door", () => {
     const { container } = render(<HubPage />);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(HUB_H1_AI_EXCEPTION);
-    const hrefs = [...container.querySelectorAll("main a")].map((a) => a.getAttribute("href"));
-    expect(hrefs).toEqual(expect.arrayContaining(["/phone", "/meetings", "/os", "/sign-up", "/request-setup"]));
-    expect(screen.getByRole("link", { name: "See Lightbulb Phone" }).getAttribute("href")).toBe("/phone");
-    expect(screen.getByRole("link", { name: "Join the Meetings waitlist" }).getAttribute("href")).toBe("/meetings");
-    expect(screen.getByRole("link", { name: "Join the OS waitlist" }).getAttribute("href")).toBe("/os");
+    const cards = container.querySelectorAll(".lb-hub-card");
+    expect([...cards].map((c) => c.querySelector("h2")?.textContent)).toEqual([
+      "Lightbulb Phone",
+      "Lightbulb Meetings",
+      "Lightbulb OS",
+    ]);
+    expect(screen.getByRole("link", { name: "Set up Lightbulb Phone" }).getAttribute("href")).toBe("/sign-up");
+    expect(screen.getAllByRole("link", { name: "Join the waitlist" }).map((a) => a.getAttribute("href"))).toEqual([
+      "/meetings",
+      "/os",
+    ]);
+    expect(screen.getByRole("link", { name: "See how it works" }).getAttribute("href")).toBe("/phone");
+    expect(screen.getByRole("link", { name: "Talk to a founder" }).getAttribute("href")).toBe("/request-setup");
+    // The salon mock-up lives on /phone only.
+    expect(container.querySelector(".lb-art")).toBeNull();
   });
 
   it("keeps AI out of every other bold headline", () => {

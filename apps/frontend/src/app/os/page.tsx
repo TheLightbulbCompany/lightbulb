@@ -5,6 +5,7 @@ import { Navbar } from "@/components/landing/Navbar";
 import { pageMetadata } from "@/lib/seo";
 
 import { OsInvite } from "./OsInvite";
+import { SparkDownload } from "./SparkDownload";
 
 export const metadata = pageMetadata({
   title: "Spark, a Voice App for the Mac | Lightbulb",
@@ -24,9 +25,7 @@ export default function OsPage() {
           One-click voice interface for your Mac.
         </p>
         <div className="mt-12">
-          <a href="/download/spark" className="lb-btn lb-btn-p lb-btn-xl">
-            Download for Mac
-          </a>
+          <SparkDownload />
         </div>
         <Suspense>
           <OsInvite />

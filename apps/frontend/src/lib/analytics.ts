@@ -131,6 +131,7 @@ export type AnalyticsEvent =
   | "landing_download_clicked"
   | "landing_viewed"
   | "setup_cta_clicked"
+  | "spark_download_clicked"
   // Integrations
   | "integration_access_requested"
   // MCP

@@ -5,7 +5,7 @@ A call is a hidden room with META `kind == "call"` whose `call` map is the recor
 (routers/voice.py): caller, callerName, returning, startedAt, durationSec, outcome, summary, booking, steps,
 transcript, callerMemory, ownerMode, resolvedAt (plus calledNumber, bookings, messages, work, unknown). Who called
 comes from that record, never from the model. The assistant's settings are the Agent page document
-(`messaging_repo.get_voice_agent`); its `allow.*` and `paused` gate the tools here, server-side.
+(`store.get_voice_agent`); its `allow.*` and `paused` gate the tools here, server-side.
 
 Rows in the messaging table:
     PHONE#<e164>    LINE                  the number's workspace (ownerId) and the member tasks run as (ownerUserId)
@@ -34,15 +34,15 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext
 from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
 from core.engine import api
-from core.engine.contract import LineIn, Principal
+from core.engine.contract import EngineError, LineIn, OpenIn, Principal
+from core.engine.contract import QuestionRef as AnswerRef, StartIn as TaskIn
 from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
-from core.repositories import agent_registry_repo, messaging_repo, billing_repo
+from core.repositories import agent_registry_repo, billing_repo
 from core.voice import store
-from core.services import push_service, clerk_admin, messaging, task_conversation
+from core.services import push_service, clerk_admin
 from core.voice import rooms
 from core.voice.phone import phone_pin, voice_booking, voice_outbound, voice_preferences
 from core.voice.worker_api import _Worker
@@ -75,9 +75,7 @@ from core.voice.phone.calls import (
 )
 from core.voice.phone.numbers import _E164, _e164, us_number
 from routers.voice import month_seconds
-from core.voice.room_lines import QuestionRef, agent_lines, latest_seq
-from routers.voice_meet import answer_said_question
-from routers.internal_automations import VoiceStartIn, start_voice_work
+from core.voice.room_lines import QuestionRef
 
 logger = logging.getLogger(__name__)
 
@@ -92,16 +90,22 @@ WITHHELD = frozenset({"anonymous", "restricted", "unknown", "private", "unavaila
 CALL_TOKEN_HEADER = "X-Lightbulb-Call-Token"
 
 
-async def _require_call_token(request: Request, x_lightbulb_call_token: Annotated[str, Header()] = "") -> None:
-    """Every per-call route needs the token `start_call` returned for that call, not just the worker secret (M4)."""
+async def _require_call_token(request: Request, x_lightbulb_call_token: Annotated[str, Header()] = "") -> str | None:
+    """Every per-call route needs the token `start_call` returned for that call, not just the worker secret (M4). The
+    worker names the call only by its id, so the call is found by id alone (`api.find_conversation`) and the token
+    stored on it authenticates it; its tenant is the call's owner for the rest of the request (`_Owner`)."""
     call_id = request.path_params.get("call_id")
     if call_id is None:
-        return
-    expected = str((await messaging_repo.get_room(call_id) or {}).get("callToken") or "")
+        return None
+    conv = await api.find_conversation(call_id)
+    expected = str((conv.annotations.get("callToken") if conv else None) or "")
     if not expected or not hmac.compare_digest(x_lightbulb_call_token.encode(), expected.encode()):
         raise HTTPException(status_code=401, detail={"code": "invalid_call_token"})
+    return conv.tenant_id
 
 
+#: The call's owner, from the call its token authenticated (FastAPI runs `_require_call_token` once per request).
+_Owner = Annotated[str, Depends(_require_call_token)]
 router = APIRouter(dependencies=[_Worker, Depends(_require_call_token)])
 
 
@@ -198,7 +202,7 @@ async def start_call(body: StartIn) -> dict:
     cfg = await agent_config(owner_id)
     if _is_probe(cfg, body):
         # Our own forwarding check came back: no caller is on it, so no greeting is owed.
-        await messaging_repo.modify_voice_agent(
+        await store.modify_voice_agent(
             owner_id,
             lambda raw: {
                 **{k: v for k, v in raw.items() if k != "forwardingCheck"},
@@ -225,13 +229,12 @@ async def start_call(body: StartIn) -> dict:
     )  # B, C, none, failed: the number may be spoofed
     seen = await _seen(owner_id, caller) if verified else None  # no name or memory by a spoofable number
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
-    existing = await messaging_repo.get_room(call_id)  # a replayed start: its token and its caps, counted once
-    token = (existing or {}).get("callToken") or secrets.token_urlsafe(32)
-    slot = (existing or {}).get("liveSlot") or (
-        None if existing else await _live_slot(owner_id, body.calledNumber, call_id)
-    )
+    existing = await api.get_conversation(owner_id, call_id)  # a replayed start: its token and caps, counted once
+    stored = existing.annotations if existing else {}
+    token = stored.get("callToken") or secrets.token_urlsafe(32)
+    slot = stored.get("liveSlot") or (None if existing else await _live_slot(owner_id, body.calledNumber, call_id))
     if existing:
-        limited = (existing.get("call") or {}).get("limited") or ""
+        limited = (stored.get("call") or {}).get("limited") or ""
     elif not slot:
         limited = "too many calls on the line at once"
     else:
@@ -283,51 +286,41 @@ async def start_call(body: StartIn) -> dict:
         "unknown": [],
         **({"limited": limited} if limited else {}),
     }
-    name = f"Call · {call['callerName'] or caller or 'unknown'}"[:60]
-    members = [{"kind": "human", "id": line["ownerUserId"], "displayName": business, "mentionHandle": None,
-                "role": "owner", "listenMode": None}]  # fmt: skip
-    front = None
-    if not forward_to:
-        try:  # Lightbulb (the Router's voice) is seated, so its replies and the Front desk's answers land here
-            front = await task_conversation._front_agent(owner_id)
-            members.append(front)
-        except Exception:  # noqa: BLE001 -- no front agent yet: the call is still answered; the caller's lines wait
-            logger.warning("call room without Lightbulb ws=%s", owner_id, exc_info=True)
-    try:
-        room = await messaging_repo.create_room(
-            owner_id=owner_id,
-            room_id=call_id,
-            client_room_id=f"call:{body.livekitRoom}",
-            creator_user_id=line["ownerUserId"],
-            name=name,
+    room = await api.open_conversation(
+        OpenIn(
+            tenant_id=owner_id,
+            conversation_id=call_id,
+            client_key=f"call:{body.livekitRoom}",
             kind="call",
-            members=members,
-            req_hash=messaging_repo.request_hash(name, "call", body.livekitRoom),
-            extra={
+            name=f"Call · {call['callerName'] or caller or 'unknown'}"[:60],
+            creator=Principal(kind="member", id=line["ownerUserId"], display_name=business),
+            hidden=True,
+            # Lightbulb (the Router's voice) is seated, so its replies and the Front desk's answers land here
+            seat_front_agent=not forward_to,
+            annotations={
                 "call": call,
-                "hidden": True,
                 "ownerUserId": line["ownerUserId"],
                 "callToken": token,  # beside the record, never in it: the Home reads META.call
                 **({"liveSlot": slot} if slot else {}),
-                **({"frontAgentId": front["id"]} if front else {}),
             },
         )
-    except messaging_repo.MessagingRepoError:
-        if (room := await messaging_repo.get_room(call_id)) is None:  # a replay keeps the room it made
-            raise
+    )
+    front = room.front_agent_id
+    if not forward_to and not front:  # no front agent yet: the call is still answered; the caller's lines wait
+        logger.warning("call room without Lightbulb ws=%s", owner_id)
     await run_in_thread(  # the stale-call sweep's index: removed by end_call (voice_calls.sweep_phone_calls)
         messaging_table().put_item,
         Item={"pk": OPEN_CALLS_PK, "sk": call_id, "ownerId": owner_id, "startedAtEpoch": int(time.time())},
     )
     # Two overlapping starts for one LiveKit room each minted a token; only the stored one opens the call's routes,
     # so the answer is always the persisted META's, never this request's candidate.
-    token = str(room.get("callToken") or "")
+    token = str(room.annotations.get("callToken") or "")
     if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
-        rooms.prewake_owner(owner_id, team=[front])
+        api.warm(owner_id, [front])
     allow, mode = cfg["allow"], call_mode(cfg, call)
     paused = mode != "live"
     return {
-        "after": await latest_seq(call_id),  # the first `/events` cursor: a replayed start says nothing twice
+        "after": await _cursor(owner_id, call_id),  # the first `/events` cursor: a replayed start says nothing twice
         "mode": mode,
         "callId": call_id,
         "callToken": token,  # the worker sends it on every later route for this call (CALL_TOKEN_HEADER)
@@ -367,77 +360,76 @@ class PinIn(BaseModel):
     pin: Annotated[str, Field(pattern=r"^\d{4,8}$")]
 
 
+async def _cursor(ws: str, room_id: str) -> int:
+    """The room's first `/events` cursor: its newest seq, so the voice says only what comes after."""
+    return (await api.read_lines(ws, room_id, None))["after"]
+
+
 async def owner_dm(ws: str, member: str) -> str:
     """The member's DM with the assistant, where the orb talks (found or created, as /voice/lightbulb opens it)."""
-    front = await task_conversation._front_agent(ws)
-    room = await messaging.create_room(
-        AuthContext(user_id=member, org_id=ws),
-        messaging.CreateRoomRequest(
-            client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-owner-dm|{ws}|{member}|{front['id']}"),
-            name=None,
+    room = await api.open_conversation(
+        OpenIn(
+            tenant_id=ws,
+            client_key=f"lightbulb-owner-dm|{ws}|{member}",
             kind="dm",
-            members=[messaging.CreateRoomMember(kind="agent", id=front["id"], role="member", listen_mode="active")],
-        ),
+            creator=Principal(kind="member", id=member),
+        )
     )
-    return str(room.room_id)
+    return room.conversation_id
 
 
 @router.post("/internal/voice/calls/{call_id}/owner-pin")
-async def owner_pin(call_id: str, body: PinIn) -> dict:
+async def owner_pin(call_id: str, body: PinIn, ws: _Owner) -> dict:
     """The digits the caller typed (DTMF, read by the worker; the model never sees them). Right, from the saved
     mobile of a member who set that PIN: the call becomes that member's owner mode, and `/turn` and `/events` use
     their DM from now on (`after` is its first cursor). Anything else: `{ok: false}`, the same for a wrong PIN, an
     unknown number or a lockout; `locked` says only that this call has no tries left."""
-    meta, call = await _call(call_id)
-    ws = meta["ownerId"]
+    _, call = await _call(ws, call_id)
     if call.get("ownerMode") and await _owner_seated(call_id, ws, call):
-        return {"ok": True, "after": await latest_seq(call["dmRoomId"])}
+        return {"ok": True, "after": await _cursor(ws, call["dmRoomId"])}
     if call.get("status") != "live":
         return {"ok": False}
     member = await phone_pin.check(ws, call.get("caller") or "", body.pin)
     if member:
         try:
             dm = await owner_dm(ws, member)
-        except (messaging.ApiProblem, task_conversation.NoFrontAgent):  # a removed member, or no assistant yet
+        except EngineError:  # a removed member, or no assistant yet
             member = None
     if not member:
-        await _patch_call(call_id, lambda c: {"steps": _step(c, "A phone PIN was entered and refused")})
+        await _patch_call(ws, call_id, lambda c: {"steps": _step(c, "A phone PIN was entered and refused")})
         return {"ok": False}
-    await _patch_call(call_id, lambda c: {"ownerMode": True, "ownerModeUserId": member, "dmRoomId": dm,
+    await _patch_call(ws, call_id, lambda c: {"ownerMode": True, "ownerModeUserId": member, "dmRoomId": dm,
                                           "steps": _step(c, "The owner's PIN was right: owner mode")})  # fmt: skip
-    return {"ok": True, "after": await latest_seq(dm)}
+    return {"ok": True, "after": await _cursor(ws, dm)}
 
 
 async def _owner_turn(call_id: str, ws: str, call: dict, body: "TurnIn") -> dict:
     """An owner-mode line: the member's own message in their DM, exactly as the orb posts it (voice_owner.turn), so
     the DM's Router decides it with the member as the principal. A line that answers the Worker question the voice
     just said answers it through the card's own path and wakes nobody (an approval stays card-only)."""
-    member, dm, key = call["ownerModeUserId"], call["dmRoomId"], f"call-owner-turn:{call_id}:{body.n}"
-    answered = await answer_said_question(ws, dm, member, body.answers, body.text, key)
-    msg = await messaging.create_human_message(
-        AuthContext(user_id=member, org_id=ws),
-        dm,
-        messaging.CreateMessageRequest(
-            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+    line = await api.append_line(
+        LineIn(
+            tenant_id=ws,
+            conversation_id=call["dmRoomId"],
+            principal=Principal(kind="member", id=call["ownerModeUserId"]),
             text=body.text,
-            reply_to_message_id=None,
-            thread_root_message_id=None,
-        ),
-        via="voice",
-        **({"wake": False} if answered else {}),
+            idempotency_key=f"call-owner-turn:{call_id}:{body.n}",
+            via="voice",
+            answers=AnswerRef(task_id=body.answers.taskId, qid=body.answers.qid) if body.answers else None,
+        )
     )
-    out = {"messageId": str(msg.message_id)}
-    return {**out, "answered": body.answers.qid} if answered else out
+    out = {"messageId": line.message_id}
+    return {**out, "answered": body.answers.qid} if line.answered else out
 
 
 async def _owner_seated(call_id: str, ws: str, call: dict) -> bool:
     """The owner-mode member is still a member seated in their DM (voice_owner._owner's check), re-read on every
     owner-mode turn and poll. Not any more: owner mode ends and the call is a caller's again."""
-    members = await messaging_repo.list_members(call["dmRoomId"])
-    if rooms._voice_requester(members, ws, call["ownerModeUserId"]):
+    dm = await api.get_conversation(ws, call["dmRoomId"], with_members=True)
+    if dm and rooms._voice_requester(dm.members, ws, call["ownerModeUserId"]):
         return True
     await _patch_call(
-        call_id, lambda c: {"ownerMode": False, "steps": _step(c, "Owner mode ended: no longer a member")}
+        ws, call_id, lambda c: {"ownerMode": False, "steps": _step(c, "Owner mode ended: no longer a member")}
     )
     return False
 
@@ -499,10 +491,10 @@ def call_summary(call: dict, lines: list[dict], worker: str = "") -> str:
 
 
 @router.post("/internal/voice/calls/{call_id}/end")
-async def end_call(call_id: str, body: EndIn) -> dict:
+async def end_call(call_id: str, body: EndIn, ws: _Owner) -> dict:
     lines = transcript_lines(body.transcript)
-    meta, _ = await _call(call_id)
-    forwarded_to = (await agent_config(meta["ownerId"]))["handoff"]["number"] if body.forwarded else None
+    conv, _ = await _call(ws, call_id)
+    forwarded_to = (await agent_config(ws))["handoff"]["number"] if body.forwarded else None
     before: dict = {}
 
     def change(call: dict) -> dict:
@@ -528,10 +520,10 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             "transcript": lines,
         }
 
-    out = await _patch_call(call_id, change)
-    if meta.get("liveSlot"):
+    out = await _patch_call(ws, call_id, change)
+    if conv.annotations.get("liveSlot"):
         try:  # best-effort: the slot's lease expires on its own, and billing below must always run
-            await store.release_voice_slot(meta["ownerId"], meta["liveSlot"], call_id)
+            await store.release_voice_slot(ws, conv.annotations["liveSlot"], call_id)
         except Exception:
             logger.warning("live slot release failed for %s", call_id, exc_info=True)
     # Every step below runs on a retried end too, each once: a first end that failed part-way finishes here.
@@ -541,23 +533,23 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             before["claimed"] = not c.get("monthCounted")
             return {"monthCounted": True} if before["claimed"] else {}
 
-        out = await _patch_call(call_id, claim)
+        out = await _patch_call(ws, call_id, claim)
         if before["claimed"]:
             try:  # the record is written: a counter failure must not 500 away caller memory, asks and the outcome
                 await voice_billing.add_month_seconds(
-                    meta["ownerId"], int(out["durationSec"]), datetime.fromisoformat(out["startedAt"])
+                    ws, int(out["durationSec"]), datetime.fromisoformat(out["startedAt"])
                 )
             except Exception:
                 logger.warning("voice minutes counter failed for %s", call_id, exc_info=True)
     # This awaited write is the durable source + outbox admission. If it fails,
     # return an error so the worker retries; terminal retries keep the first
     # stored duration/start time rather than trusting a new request body.
-    await voice_billing.report_minutes(meta["ownerId"], call_id, out["startedAt"], int(out["durationSec"]), "phone")
+    await voice_billing.report_minutes(ws, call_id, out["startedAt"], int(out["durationSec"]), "phone")
     # An unattested call never writes a name, facts or a visit onto that number's row.
-    seen = await _seen(meta["ownerId"], out["caller"]) if _verified(out) else None
+    seen = await _seen(ws, out["caller"]) if _verified(out) else None
     if _verified(out) and (seen or {}).get("lastCallId") != call_id:  # a retried end counts the visit once
         seen = seen or {}
-        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
+        item = {**_caller_key(ws, out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
                 "visits": int(seen.get("visits", 0)) + (seen.get("lastCallId") != call_id)}  # a retried end counts once  # fmt: skip
         if seen.get("forgottenAt"):
             item["forgottenAt"] = seen["forgottenAt"]
@@ -574,8 +566,8 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         put_metric("VoiceCallOutcome", dimensions={"outcome": out["outcome"]})
     except Exception:
         logger.warning("VoiceCallOutcome metric failed", exc_info=True)
-    if out["outcome"] not in NO_CALL_PUSH and meta.get("ownerUserId"):
-        await _first_calls_push(meta["ownerUserId"], meta["ownerId"], call_id, out)
+    if out["outcome"] not in NO_CALL_PUSH and conv.annotations.get("ownerUserId"):
+        await _first_calls_push(conv.annotations["ownerUserId"], ws, call_id, out)
     asks = [("didnt_know", q) for q in dict.fromkeys(out.get("unknown", []))]
     asks += [  # every taken message is the owner's to call back: a card in Needs you, not only a Home row
         ("message", m["text"] + (f" (call back on {m['callbackNumber']})" if m.get("callbackNumber") else ""))
@@ -583,9 +575,17 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     ]
     if out.get("handoffMissed"):
         asks.append(("handoff", ""))  # nobody free or the transfer failed: line_problem is for system issues
-    for kind, question in asks if meta.get("ownerUserId") else ():
+    for kind, question in asks if conv.annotations.get("ownerUserId") else ():
         ask = call_ask(call_id, out, kind, question)
-        await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
+        await _start_task(
+            ws,
+            call_id,
+            conv.annotations.get("ownerUserId"),
+            out,
+            ask["title"],
+            f"{ask['title']}\n{ask['text']}",
+            ask=ask,
+        )
     await run_in_thread(messaging_table().delete_item, Key={"pk": OPEN_CALLS_PK, "sk": call_id})
     return out
 
@@ -639,12 +639,12 @@ class DateIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/availability")
-async def availability(call_id: str, body: DateIn) -> dict:
-    meta, call = await _call(call_id)
-    cfg = await agent_config(meta["ownerId"])
+async def availability(call_id: str, body: DateIn, ws: _Owner) -> dict:
+    _, call = await _call(ws, call_id)
+    cfg = await agent_config(ws)
     _allowed(cfg, call, "book", "move")
     minutes, lanes = _minutes(cfg, body.service), _lanes(cfg, body.service)
-    slots = await voice_booking.free(meta["ownerId"], cfg, call_id, body.date, minutes, lanes)
+    slots = await voice_booking.free(ws, cfg, call_id, body.date, minutes, lanes)
     return {"date": body.date, "slots": slots}
 
 
@@ -655,20 +655,19 @@ class BookIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/book")
-async def book(call_id: str, body: BookIn) -> dict:
-    meta, call = await _call(call_id)
-    cfg = await agent_config(meta["ownerId"])
+async def book(call_id: str, body: BookIn, ws: _Owner) -> dict:
+    _, call = await _call(ws, call_id)
+    cfg = await agent_config(ws)
     _allowed(cfg, call, "book")
-    ws = meta["ownerId"]
     result = await voice_booking.book(ws, cfg, call_id, call, body.start, body.service, body.name)
     if result["state"] != "confirmed":
-        await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
+        await _patch_call(ws, call_id, lambda c: {"steps": _step(c, f"Booking not confirmed: {result['code']}")})
         return {"booked": False, **result}
     entry = {"start": body.start, "service": body.service, "name": body.name}
     who = f" with {result['staff']}" if result.get("staff") else ""
     line = f"{body.service} · {_pretty(body.start)} for {body.name}{who}"
     if not result.get("repeat"):  # a retry already has its line on the record
-        await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
+        await _patch_call(ws, call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
                                           "callerName": c.get("callerName") or body.name,
                                           "steps": _step(c, f"Booked {line}")})  # fmt: skip
     return {"booked": True, **entry, **({"staff": result["staff"]} if result.get("staff") else {})}
@@ -681,14 +680,14 @@ class ChangeIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/change")
-async def change_booking(call_id: str, body: ChangeIn) -> dict:
+async def change_booking(call_id: str, body: ChangeIn, ws: _Owner) -> dict:
     """Move or cancel a booking -- only one made from this caller's number (a contact never touches another's)."""
-    meta, call = await _call(call_id)
-    cfg = await agent_config(meta["ownerId"])
+    _, call = await _call(ws, call_id)
+    cfg = await agent_config(ws)
     _allowed(cfg, call, "move")
     # Every person's booking at that start (VOICEBOOK#<start>[#<id>]), only this caller's (_callers).
     # One caller can hold two at one start (two people): then `bookingId` says which, or the model is asked to.
-    mine = _callers(await _bookings(meta["ownerId"], body.start), call_id, call)
+    mine = _callers(await _bookings(ws, body.start), call_id, call)
     if body.bookingId:
         mine = [r for r in mine if body.bookingId == _booking_id(r)]
     if not mine:
@@ -699,11 +698,11 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
         raise HTTPException(status_code=409, detail={"code": "ambiguous_booking", "options": options})
     row = mine[0]
     if body.newStart:
-        result = await voice_booking.move(meta["ownerId"], cfg, call_id, call, row, body.newStart)
+        result = await voice_booking.move(ws, cfg, call_id, call, row, body.newStart)
     else:
-        result = await voice_booking.cancel(meta["ownerId"], cfg, call_id, row)
+        result = await voice_booking.cancel(ws, cfg, call_id, row)
     if result["state"] != "confirmed":
-        await _patch_call(call_id, lambda c: {"steps": _step(c, f"Booking change not confirmed: {result['code']}")})
+        await _patch_call(ws, call_id, lambda c: {"steps": _step(c, f"Booking change not confirmed: {result['code']}")})
         return {"moved" if body.newStart else "cancelled": False, **result}
     entry = {"start": body.start, "newStart": body.newStart, "service": row["service"], "name": row["name"]}
     line = (
@@ -711,7 +710,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
         if body.newStart
         else f"{row['service']} on {_pretty(body.start)} cancelled"
     )
-    await _patch_call(call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
+    await _patch_call(ws, call_id, lambda c: {"bookings": [*c.get("bookings", []), entry], "booking": line,
                                           "steps": _step(c, line[0].upper() + line[1:])})  # fmt: skip
     return {"moved" if body.newStart else "cancelled": True, **entry}
 
@@ -722,10 +721,10 @@ def _booking_id(row: dict) -> str:
 
 
 @router.post("/internal/voice/calls/{call_id}/my-bookings")
-async def my_bookings(call_id: str) -> dict:
-    meta, call = await _call(call_id)
-    _allowed(await agent_config(meta["ownerId"]), call, "move")
-    rows = _callers(await _bookings(meta["ownerId"], ""), call_id, call)
+async def my_bookings(call_id: str, ws: _Owner) -> dict:
+    _, call = await _call(ws, call_id)
+    _allowed(await agent_config(ws), call, "move")
+    rows = _callers(await _bookings(ws, ""), call_id, call)
 
     def public_booking(b: dict) -> dict:
         out = {"start": _start(b), "service": b["service"], "bookingId": _booking_id(b)}
@@ -754,12 +753,12 @@ class WaitlistIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/waitlist")
-async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
+async def join_waitlist(call_id: str, body: WaitlistIn, ws: _Owner) -> dict:
     """Put this call's caller on the waitlist for a day. Keyed to the call's caller number, never to the model.
     One entry per call per day (the key), so a retry rewrites it.
     ponytail: no per-caller daily cap; add one if a caller is seen filling the list."""
-    meta, call = await _call(call_id)
-    owner_id = meta["ownerId"]
+    _, call = await _call(ws, call_id)
+    owner_id = ws
     cfg = await agent_config(owner_id)
     _allowed(cfg, call, "waitlist")
     phone = _e164(call.get("caller") or "")
@@ -788,7 +787,7 @@ async def join_waitlist(call_id: str, body: WaitlistIn) -> dict:
     }  # TTL: a day after the date
     await run_in_thread(messaging_table().put_item, Item=row)
     line = f"Waitlisted for {body.date}" + (f" · {service}" if service else "")
-    await _patch_call(call_id, lambda c: {"callerName": c.get("callerName") or name, "steps": _step(c, line)})
+    await _patch_call(ws, call_id, lambda c: {"callerName": c.get("callerName") or name, "steps": _step(c, line)})
     return {"waitlisted": True, "date": body.date, "service": service}
 
 
@@ -802,26 +801,31 @@ class MessageIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/message")
-async def take_message(call_id: str, body: MessageIn) -> dict:
+async def take_message(call_id: str, body: MessageIn, ws: _Owner) -> dict:
     """Always open, paused or not: a message is what every refused tool falls back to."""
-    await _call(call_id)
+    await _call(ws, call_id)
     entry = {**body.model_dump(), "name": real_name(body.name), "at": utc_now_iso()}
-    await _patch_call(call_id, lambda c: {"messages": [*c.get("messages", []), entry],
+    await _patch_call(ws, call_id, lambda c: {"messages": [*c.get("messages", []), entry],
                                           "callerName": c.get("callerName") or body.name,
                                           "steps": _step(c, f"Took a message: {body.text}")})  # fmt: skip
     return {"taken": True}
 
 
-async def callers_own_words(call_id: str, text: str) -> bool:
+#: Words that carry no content, left out of the overlap below (as the Router's own check does).
+_STOP = frozenset(
+    "a an and are as at be both by for from has have i in is it its of on or so that the their this to was we will "
+    "with you your".split()
+)
+
+
+async def callers_own_words(ws: str, call_id: str, text: str) -> bool:
     """A Front desk thread's message is the caller's: most of its words are words the caller said on this call (prod
     call: the thread filed its own answer, the open times, as a message nobody left, and the owner got a task for it).
     ponytail: content-word overlap with the caller's lines, as router_prompt.restates; an intent check if a real
     message that is all paraphrase gets refused (the thread is told to write it in the caller's words)."""
-    from core.temporal.router_prompt import _STOP
-
     word = re.compile(r"[a-z0-9]+")  # digits count: a message that is a number or a time is still the caller's
 
-    rows = await messaging_repo.list_messages_before(call_id, 10**19, 50)
+    rows = await api.read_history(ws, call_id, 50)
     said = " ".join(r.get("text") or "" for r in rows if (r.get("author") or {}).get("id") == f"caller:{call_id}")
     words, heard = set(word.findall(text.lower())) - _STOP, set(word.findall(said.lower()))
     return len(words & heard) * 2 >= len(words)  # nothing to check ("call me") is not an invented answer
@@ -832,20 +836,20 @@ class UnknownIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/unknown")
-async def didnt_know(call_id: str, body: UnknownIn) -> dict:
+async def didnt_know(call_id: str, body: UnknownIn, ws: _Owner) -> dict:
     """A question the assistant couldn't answer: the call lands in Needs you."""
-    meta, _ = await _call(call_id)
+    conv, _ = await _call(ws, call_id)
     body = UnknownIn(question=redact_cards(body.question))  # it also lands in the Agent page's toAdd
-    await _patch_call(call_id, lambda c: {"unknown": [*c.get("unknown", []), body.question],
+    await _patch_call(ws, call_id, lambda c: {"unknown": [*c.get("unknown", []), body.question],
                                           "steps": _step(c, f"Didn't know: {body.question[:160]}")})  # fmt: skip
-    await messaging_repo.modify_voice_agent(
-        meta["ownerId"],
+    await store.modify_voice_agent(
+        ws,
         lambda cfg: (
             None
             if body.question[:TO_ADD_CHARS] in (cfg.get("toAdd") or [])
             else {**cfg, "toAdd": _to_add(cfg, body.question)}
         ),
-        meta.get("ownerUserId") or "",
+        conv.annotations.get("ownerUserId") or "",
     )
     return {"noted": True}
 
@@ -864,40 +868,51 @@ class TransferIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/transfer")
-async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
+async def transfer(call_id: str, ws: _Owner, body: TransferIn | None = None) -> dict:
     """The number to hand the caller to (Agent page `handoff`), or none: after hours, unset, or a failed transfer
     is `handoff_missed`. The worker does the SIP transfer."""
-    meta, call = await _call(call_id)
-    cfg = await agent_config(meta["ownerId"])
+    _, call = await _call(ws, call_id)
+    cfg = await agent_config(ws)
     if call_mode(cfg, call) != "live":
         raise _err(403, "not_allowed")
     to = handoff_to(cfg)
     if (body and body.failed) or not to:
         why = "the transfer didn't connect" if body and body.failed else "nobody was available"
-        await _patch_call(call_id, lambda c: {"handoffMissed": True, "steps": _step(c, f"Asked for a person; {why}")})
+        await _patch_call(
+            ws, call_id, lambda c: {"handoffMissed": True, "steps": _step(c, f"Asked for a person; {why}")}
+        )
         return {"transferTo": None}
-    await _patch_call(call_id, lambda c: {"transferredTo": to, "steps": _step(c, "Transferred to a person")})
+    await _patch_call(ws, call_id, lambda c: {"transferredTo": to, "steps": _step(c, "Transferred to a person")})
     return {"transferTo": to}
 
 
-async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: str, ask: dict | None = None) -> dict:
-    """A Worker task for this call (the existing voice-start path), `origin: phone_contact`, requested by the line's
-    owner user (written by start_call, never the model). The same title in one call is the same task. `ask`: the
-    task opens waiting on that Question instead of running first (call_ask)."""
-    requester = meta.get("ownerUserId")
+async def _start_task(
+    ws: str, call_id: str, requester: str | None, call: dict, title: str, brief: str, ask: dict | None = None
+) -> dict:
+    """A Worker task for this call, `origin: phone_contact`, requested by the line's owner user (written by
+    start_call, never the model). The same title in one call is the same task. `ask`: the task opens waiting on that
+    Question instead of running first (call_ask)."""
     if not requester:
         raise _err(403, "no_requester")
     run_id = hashlib.sha256(f"{call_id}:{title.strip().lower()}".encode()).hexdigest()[:32]
-    await store.put_voice_run(
-        meta["ownerId"], run_id, {"roomId": call_id, "requesterUserId": requester, "agentId": None}
-    )
     brief = f"{CONTACT_NOTE}\nCaller: {call.get('caller') or 'unknown'}\n\n{brief}"
-    return await start_voice_work(
-        meta["ownerId"],
-        VoiceStartIn(run_id=run_id, call_id=call_id, room_id=call_id, title=title, brief=brief),
-        origin="phone_contact",
-        **({"ask": ask} if ask else {}),
+    out = await api.http(
+        api.start_task(
+            TaskIn(
+                tenant_id=ws,
+                principal=Principal(kind="member", id=requester),
+                conversation_id=call_id,
+                trigger_id=f"voice:{call_id}:{run_id}",
+                source="voice",
+                title=title.strip(),
+                brief=brief.strip(),
+                origin="phone_contact",
+                ask=ask,
+                product_ref={"callId": call_id, "utteranceId": run_id, "agentId": None},
+            )
+        )
     )
+    return {"triggerId": out.trigger_id, "taskId": out.task_id, "created": out.created}
 
 
 class WorkIn(BaseModel):
@@ -905,15 +920,15 @@ class WorkIn(BaseModel):
     brief: Annotated[str, Field(min_length=1, max_length=8000)]
 
 
-async def start_work(call_id: str, body: WorkIn) -> dict:
-    """Open-ended work becomes a Worker task (the existing voice-start path), marked `origin: phone_contact` so
+async def start_work(call_id: str, body: WorkIn, ws: str) -> dict:
+    """Open-ended work becomes a Worker task (`_start_task`), marked `origin: phone_contact` so
     effect_check asks the owner before any outside action. Called by voice_booking's line problem; no HTTP route
     (the worker never called `/start-work`). The same title in one call is the same task (a retried call)."""
-    meta, call = await _call(call_id)
-    if call_mode(await agent_config(meta["ownerId"]), call) != "live":
+    conv, call = await _call(ws, call_id)
+    if call_mode(await agent_config(ws), call) != "live":
         raise _err(403, "not_allowed")
-    out = await _start_task(call_id, meta, call, body.title, body.brief)
-    await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
+    out = await _start_task(ws, call_id, conv.annotations.get("ownerUserId"), call, body.title, body.brief)
+    await _patch_call(ws, call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
                                           "steps": _step(c, f"Handed to the team: {body.title}")})  # fmt: skip
     return out
 
@@ -935,21 +950,21 @@ class TurnIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/turn")
-async def caller_turn(call_id: str, body: TurnIn) -> dict:
+async def caller_turn(call_id: str, body: TurnIn, ws: _Owner) -> dict:
     """One delegated caller line: a message in the call's room, authored by the caller (a non-member: no admission
     row, no memory), and a `phone_contact` trigger for that room, so the Router decides it with the caller's scope
     and the Business profile, and its Front desk threads run as the caller. Keyed on (call, n): a retry is the same."""
-    meta, call = await _call(call_id)
+    conv, call = await _call(ws, call_id)
     body = body.model_copy(update={"text": redact_cards(body.text)})  # the room message and the Router's trigger
     # the PIN was right (owner_pin) and the member is still seated: the orb's owner path, not the caller's
     ended: dict = {}
     if call.get("ownerMode"):
-        if await _owner_seated(call_id, meta["ownerId"], call):
-            return await _owner_turn(call_id, meta["ownerId"], call, body)
+        if await _owner_seated(call_id, ws, call):
+            return await _owner_turn(call_id, ws, call, body)
         # removed mid-call, found here before any poll: this answer carries the transition `/events` would have
         # (the worker's cursor goes back to the call room, just before this line)
-        ended = {"ownerModeEnded": True, "after": await latest_seq(call_id)}
-    ws, requester = meta["ownerId"], meta.get("ownerUserId")
+        ended = {"ownerModeEnded": True, "after": await _cursor(ws, call_id)}
+    requester = conv.annotations.get("ownerUserId")
     if not requester:
         raise _err(403, "no_requester")
     if call_mode(await agent_config(ws), call) != "live":
@@ -980,31 +995,27 @@ class CallEventsIn(BaseModel):
 
 
 @router.post("/internal/voice/calls/{call_id}/events")
-async def call_events(call_id: str, body: CallEventsIn) -> dict:
+async def call_events(call_id: str, body: CallEventsIn, ws: _Owner) -> dict:
     """Lightbulb's messages in the call's room after seq `after` (the Router's ack and replies, the Front desk's
     answers), oldest first: the phone voice says each once (huddle-agent mouth.py)."""
-    meta, call = await _call(call_id)
+    _, call = await _call(ws, call_id)
     if call.get("ownerMode"):  # the member's DM, as the orb's /events: the cursor is the DM's (owner_pin's after)
-        if await _owner_seated(call_id, meta["ownerId"], call):
-            return await agent_lines(call["dmRoomId"], body.after)
+        if await _owner_seated(call_id, ws, call):
+            return await api.read_lines(ws, call["dmRoomId"], body.after)
         # removed mid-call: nothing from the DM; the worker goes back to the call room's cursor and the caller prompt
-        return {"messages": [], "after": await latest_seq(call_id), "ownerModeEnded": True}
-    out = await agent_lines(call_id, body.after)
+        return {"messages": [], "after": await _cursor(ws, call_id), "ownerModeEnded": True}
+    out = await api.read_lines(ws, call_id, body.after)
     if out["messages"]:
-        await _caller_words(meta["ownerId"], out["messages"])
+        await _caller_words(ws, out["messages"])
     claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]
-    if (
-        claimed
-        and not call.get("bookings")
-        and not await _has_upcoming(meta["ownerId"], call["caller"] if _verified(call) else "")
-    ):
+    if claimed and not call.get("bookings") and not await _has_upcoming(ws, call["caller"] if _verified(call) else ""):
         for m in claimed:
             m["text"] = " ".join(
                 NOT_BOOKED if BOOKING_NOW.search(_plain(s)) else s for s in re.split(r"(?<=[.?!])\s+", m["text"])
             )
     for m in out["messages"]:
         if _PHONE.search(m["text"]):  # the caller's own, or the hand-off number while it takes calls, may be said
-            ok = {call.get("caller") or "", handoff_to(await agent_config(meta["ownerId"])) or ""}
+            ok = {call.get("caller") or "", handoff_to(await agent_config(ws)) or ""}
             m["text"] = no_other_number(m["text"], ok)
     return out
 

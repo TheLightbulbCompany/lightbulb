@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.repositories import messaging_repo
+from core.voice import store
 from core.services import link_preview
 from core.voice.phone import voice_onboarding as vo
 from tests.unit.services.conftest import repos  # noqa: F401
@@ -475,7 +476,7 @@ async def test_release_returns_number(repos, monkeypatch):  # noqa: F811
     _buying(monkeypatch, True)
     twilio = _fake_twilio(monkeypatch)
     number = await vo.provision_at_go_live(WS, {"numberChoice": {"path": "new", "areaCode": "610"}}, "user_a")
-    await messaging_repo.put_voice_agent(WS, {"number": number}, "user_a")
+    await store.put_voice_agent(WS, {"number": number}, "user_a")
     assert await vo.release_number("org_other") == ""  # never another workspace's line
     assert await vo.release_number(WS) == NEW
     assert twilio.await_args_list[-1].args == ("DELETE", "IncomingPhoneNumbers/PN123.json")

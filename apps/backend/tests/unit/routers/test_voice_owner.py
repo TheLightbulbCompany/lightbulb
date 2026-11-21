@@ -6,6 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
+from core.engine.contract import ConversationOut
+from core.repositories import messaging_repo
+from core.services import messaging
 from routers import voice_owner
 
 ROOM = "7f1d2c3b-0000-4000-8000-000000000002"
@@ -17,9 +20,9 @@ META = {"ownerId": "org_1", "kind": "dm"}
 def m():
     with (
         patch.object(voice_owner, "_require_room_token", lambda *a: None),
-        patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(return_value=META)),
-        patch.object(voice_owner.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
-        patch.object(voice_owner.messaging_repo, "member_home", lambda m, o: o),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value=META)),
+        patch.object(messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
+        patch.object(messaging_repo, "member_home", lambda m, o: o),
     ):
         yield
 
@@ -37,7 +40,7 @@ async def test_owner_end_creates_yours_item(m):
                     {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1},
                     {"who": "nobody", "text": "dropped"}],
     )  # fmt: skip
-    with patch.object(voice_owner.messaging_repo, "create_room", AsyncMock()) as create:
+    with patch.object(messaging_repo, "create_room", AsyncMock(return_value=META)) as create:
         out = await voice_owner.end(ROOM, body)
     kw = create.await_args.kwargs
     assert (kw["owner_id"], kw["kind"], kw["room_id"]) == ("org_1", "call", out["roomId"])
@@ -47,7 +50,9 @@ async def test_owner_end_creates_yours_item(m):
     assert call["transcript"] == [{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
                                   {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1}]  # fmt: skip
     assert call["summary"] == "“Anything I need to handle?”" and call["followUps"] == []
-    item = voice._items({"roomId": out["roomId"], "kind": "call", "createdAt": "2026-11-07T08:02:00Z", "call": call})[0]
+    talk = ConversationOut(conversation_id=out["roomId"], tenant_id="org_1", kind="call",
+                           created_at="2026-11-07T08:02:00Z", annotations={"call": call})  # fmt: skip
+    item = voice._items(talk)[0]
     assert item["type"] == "call" and item["ownerMode"] is True  # the "Yours" chip's test
 
 
@@ -55,7 +60,7 @@ async def test_a_talk_with_nothing_said_is_not_kept(m):
     body = voice_owner.EndIn(
         ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_2", durationSec=3
     )
-    with patch.object(voice_owner.messaging_repo, "create_room", AsyncMock()) as create:
+    with patch.object(messaging_repo, "create_room", AsyncMock(return_value=META)) as create:
         assert await voice_owner.end(ROOM, body) == {"kept": False}
     create.assert_not_awaited()
 
@@ -71,7 +76,7 @@ async def test_billing_receipt_failure_cannot_lose_nonempty_transcript(m):
         usageSessions=[{"id": "0", "seconds": 10, "startedAt": "2026-11-08T16:00:00Z"}],
     )
     with (
-        patch.object(voice_owner.messaging_repo, "create_room", AsyncMock()) as create,
+        patch.object(messaging_repo, "create_room", AsyncMock(return_value=META)) as create,
         patch.object(
             voice_owner.voice_billing, "report_owner_minutes", AsyncMock(side_effect=RuntimeError("DDB down"))
         ),
@@ -133,12 +138,12 @@ async def test_a_retried_end_keeps_the_row_it_made(m):
         ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=5,
         transcript=[{"who": "caller", "text": "Hi", "t": 0.1}],
     )  # fmt: skip
-    conflict = AsyncMock(side_effect=voice_owner.messaging_repo.MessagingRepoError("exists"))
-    with patch.object(voice_owner.messaging_repo, "create_room", conflict):
+    conflict = AsyncMock(side_effect=messaging_repo.MessagingRepoError("exists"))
+    with patch.object(messaging_repo, "create_room", conflict):
         first = await voice_owner.end(ROOM, body)  # get_room (the fixture) finds the row: a replay
         assert first["kept"] is True
-        with patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(side_effect=[META, None])):
-            with pytest.raises(voice_owner.messaging_repo.MessagingRepoError):
+        with patch.object(messaging_repo, "get_room", AsyncMock(side_effect=[META, None])):
+            with pytest.raises(messaging_repo.MessagingRepoError):
                 await voice_owner.end(ROOM, body)  # no row behind the error: it is raised
 
 
@@ -150,7 +155,7 @@ async def test_a_spoken_line_is_the_members_message_and_wakes_the_router(m):
     from types import SimpleNamespace
 
     with patch.object(
-        voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m1"))
+        messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m1", message_seq=1))
     ) as ch:
         assert await voice_owner.turn(ROOM, _turn()) == {"messageId": "m1"}
         await voice_owner.turn(ROOM, _turn())  # a retry
@@ -162,7 +167,7 @@ async def test_a_spoken_line_is_the_members_message_and_wakes_the_router(m):
         ROOM,
         "What have we shipped in the last week?",
     )
-    assert first.kwargs == {"via": "voice"}  # exactly a typed message: wake defaults on, so admission → Router
+    assert first.kwargs == {"via": "voice", "wake": True}  # exactly a typed message: admission → Router
     assert again.args[2].client_message_id == req.client_message_id  # the same message, never a double
 
 
@@ -172,7 +177,7 @@ async def test_a_fragment_is_only_a_message_and_approves_nothing(m):
     from types import SimpleNamespace
 
     with patch.object(
-        voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m2"))
+        messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m2", message_seq=1))
     ) as ch:
         await voice_owner.turn(ROOM, _turn("Is"))
     assert ch.await_args.args[2].text == "Is"
@@ -189,7 +194,7 @@ async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
     body = voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
     with (
         patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
-        patch.object(voice_owner, "latest_seq", AsyncMock(return_value=41)) as seq,
+        patch.object(voice_owner.api, "latest_seq", AsyncMock(return_value=41)) as seq,
         patch.object(voice_owner.store, "get_voice_run", AsyncMock(side_effect=[None, {"spoken": 37}])) as gv,
     ):
         assert await voice_owner.start(ROOM, body) == {"assistantName": "Nova", "agentId": "a1", "after": 41}
@@ -202,7 +207,7 @@ async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
 async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
     lines = {"messages": [{"id": "a1", "text": "Checking GitHub."}], "after": 6}
     with (
-        patch.object(voice_owner, "agent_lines", AsyncMock(return_value=lines)) as al,
+        patch.object(voice_owner.api, "agent_lines", AsyncMock(return_value=lines)) as al,
         patch.object(voice_owner.store, "put_voice_run", AsyncMock()) as put,
     ):
         body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5, spoken=5)
@@ -223,7 +228,7 @@ async def test_only_a_dm_is_owner_mode_and_the_worker_secret_is_required(m):
     import httpx
     from fastapi import FastAPI
 
-    with patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(return_value={**META, "kind": "channel"})):
+    with patch.object(messaging_repo, "get_room", AsyncMock(return_value={**META, "kind": "channel"})):
         with pytest.raises(HTTPException) as e:
             await voice_owner.turn(ROOM, _turn())
     assert e.value.status_code == 404
@@ -245,10 +250,10 @@ async def test_the_orbs_line_after_a_said_question_answers_it(m):
         **_turn("Nail gels.").model_dump(exclude={"answers"}), answers={"taskId": "k1", "qid": "q-2"}
     )
     with (
-        patch.object(voice_owner.messaging_repo, "list_messages_before", AsyncMock(return_value=[qrow])),
+        patch.object(messaging_repo, "list_messages_before", AsyncMock(return_value=[qrow])),
         patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
         patch.object(
-            voice_owner.messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m7"))
+            messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m7", message_seq=1))
         ) as ch,
     ):
         assert await voice_owner.turn(ROOM, body) == {"messageId": "m7", "answered": "q-2"}

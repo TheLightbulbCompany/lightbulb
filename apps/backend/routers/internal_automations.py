@@ -218,19 +218,6 @@ class VoiceStartIn(BaseModel):
 @router.post("/internal/automations/{owner_id}/voice-start", status_code=202)
 async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
-    return await start_voice_work(owner_id, body)
-
-
-async def start_voice_work(
-    owner_id: str,
-    body: VoiceStartIn,
-    origin: str | None = None,
-    confirm_all: bool = False,
-    ask: dict | None = None,
-) -> dict:
-    """The task behind voice-start, for callers already authorized another way (the phone worker). `origin`
-    (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task.
-    `ask` (`task_asks.open_ask`'s arguments): the Router opens that Question on the new task instead of starting it."""
     run = await hooks.context(hooks.ContextAsk(tenant_id=owner_id, purpose="voice_run", run_id=body.run_id))
     if run.conversation_id != body.room_id:
         raise _err(404, "unknown_run")
@@ -249,9 +236,6 @@ async def start_voice_work(
                 title=body.title.strip(),
                 brief=body.brief.strip(),
                 specialist=body.specialist,
-                origin=origin,
-                confirm_all=confirm_all,  # a meeting's task: every effect gets a card
-                ask=ask,
                 product_ref={"callId": body.call_id, "utteranceId": body.run_id, "agentId": run.agent_id},
             )
         )

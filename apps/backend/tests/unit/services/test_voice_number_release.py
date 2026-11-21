@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from core.repositories import messaging_repo
+from core.voice import store
 from core.voice.phone import voice_onboarding as vo
 from tests.unit.services.conftest import repos  # noqa: F401
 
@@ -44,7 +45,7 @@ def _setup(monkeypatch, account: dict, *, number: str = NUM, tag: str | None = N
 
 
 async def _seed_agent(number: str = NUM) -> None:
-    await messaging_repo.put_voice_agent(WS, {"number": number, "live": True}, "user_a")
+    await store.put_voice_agent(WS, {"number": number, "live": True}, "user_a")
 
 
 async def _kept(number: str = NUM) -> bool:

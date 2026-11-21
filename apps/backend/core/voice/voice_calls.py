@@ -434,10 +434,13 @@ async def sweep_phone_calls(now: int) -> int:
         started = int(row.get("startedAtEpoch", now))
         if now - started < PHONE_STALE_S:
             continue
+        if not row.get("ownerId"):  # an index row naming no call owner: nothing to end, so it goes
+            await run_in_thread(table.delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
+            continue
         try:
             # duration unknown (the worker died): bill 0 rather than guess
             note = "Closed by cleanup: the call's worker never reported its end"
-            await voice_phone.end_call(row["sk"], voice_phone.EndIn(durationSec=0, summary=note))
+            await voice_phone.end_call(row["sk"], voice_phone.EndIn(durationSec=0, summary=note), row["ownerId"])
             done += 1
         except HTTPException as exc:
             if exc.status_code != 404:

@@ -8,6 +8,7 @@ import pytest
 
 from core.auth import AuthContext
 from core.repositories import messaging_repo
+from core.services import messaging
 from routers import voice, voice_phone
 from tests.unit.routers import test_voice_phone as vp
 
@@ -88,7 +89,7 @@ async def test_concurrent_guesses_never_exceed_the_day_limit(client, router_seat
 
     with patch.object(voice_phone.phone_pin, "_hash", counting):
         calls = [await _start(client, room=f"phone-{i}") for i in range(4)]
-        outs = await asyncio.gather(*(voice_phone.owner_pin(c["callId"], voice_phone.PinIn(pin=f"{i}{j}{j}{j}"))
+        outs = await asyncio.gather(*(voice_phone.owner_pin(c["callId"], voice_phone.PinIn(pin=f"{i}{j}{j}{j}"), "org_1")
                                       for i, c in enumerate(calls) for j in range(3)))  # fmt: skip
     assert sum(o["ok"] for o in outs) == 0 and len(checked) == voice_phone.phone_pin.DAY_TRIES
     last = await _start(client, room="phone-last")
@@ -114,12 +115,12 @@ async def test_an_owner_mode_answer_to_a_workers_question_answers_it(client, rou
         source_agent_id=None, client_message_id=None, author_member_check=False,
         attrs={"kind": "question", "taskRefs": [ref]},
     )  # fmt: skip
-    sent = AsyncMock(return_value=type("M", (), {"message_id": "m-a"})())
+    sent = AsyncMock(return_value=type("M", (), {"message_id": "m-a", "message_seq": 1})())
     from core.engine import api
 
     with (
         patch.object(api, "submit_answer", AsyncMock()) as answer,
-        patch.object(voice_phone.messaging, "create_human_message", sent),
+        patch.object(messaging, "create_human_message", sent),
     ):
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn",
                         json={"n": 1, "text": "Tuesday", "answers": ref}, headers=W)  # fmt: skip
@@ -149,8 +150,8 @@ async def test_removing_the_member_mid_call_ends_owner_mode(client, router_seat,
                                        live_events=[])  # fmt: skip
     sent = AsyncMock()
     with (
-        patch.object(voice_phone, "agent_lines", AsyncMock(return_value={"messages": [{"id": "x"}], "after": 9})),
-        patch.object(voice_phone.messaging, "create_human_message", sent),
+        patch.object(voice_phone.api, "agent_lines", AsyncMock(return_value={"messages": [{"id": "x"}], "after": 9})),
+        patch.object(messaging, "create_human_message", sent),
     ):
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/events", json={"after": 5}, headers=W)
         out = r.json()
@@ -189,14 +190,14 @@ async def test_the_right_pin_flips_the_call_and_the_next_line_is_the_members_own
     rec = (await messaging_repo.get_room(call["callId"]))["call"]
     assert (rec["ownerMode"], rec["ownerModeUserId"], rec["dmRoomId"]) == (True, "user_owner", DM)
     dm.assert_awaited_once_with("org_1", "user_owner")
-    sent = AsyncMock(return_value=type("M", (), {"message_id": "m-owner"})())
-    with patch.object(voice_phone.messaging, "create_human_message", sent):
+    sent = AsyncMock(return_value=type("M", (), {"message_id": "m-owner", "message_seq": 1})())
+    with patch.object(messaging, "create_human_message", sent):
         assert _turn(client, call, n=3).json() == {"messageId": "m-owner"}
     auth, room, request = sent.await_args.args
     # the orb's owner path (voice_owner.turn): the member's message in their DM, which wakes the DM's Router
     assert (auth.user_id, auth.org_id, room) == ("user_owner", "org_1", DM)
-    assert request.text == "What's on my calendar today?" and sent.await_args.kwargs == {"via": "voice"}
+    assert request.text == "What's on my calendar today?" and sent.await_args.kwargs == {"via": "voice", "wake": True}
     enq.assert_not_awaited()  # no caller trigger
-    with patch.object(voice_phone, "agent_lines", AsyncMock(return_value={"messages": [], "after": 7})) as lines:
+    with patch.object(voice_phone.api, "agent_lines", AsyncMock(return_value={"messages": [], "after": 7})) as lines:
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/events", json={"after": 5}, headers=W)
     assert r.json() == {"messages": [], "after": 7} and lines.await_args.args == (DM, 5)

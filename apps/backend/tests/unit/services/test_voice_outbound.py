@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from core.config import settings
 from core.repositories import messaging_repo
+from core.voice import store
 from core.voice import livekit_huddles
 from core.voice.phone import voice_outbound
 from routers import voice_phone
@@ -38,7 +39,7 @@ async def test_forward_check_unconfigured_returns_reason(repos, async_client_org
 async def test_forward_check_dials_business_line(repos, monkeypatch):  # noqa: F811
     lk = fake_livekit(monkeypatch)
     monkeypatch.setattr(settings, "VOICE_OUTBOUND_TRUNK_ID", "ST_out")
-    await messaging_repo.put_voice_agent(WS, {**CFG, "forwardingOk": True}, "u")
+    await store.put_voice_agent(WS, {**CFG, "forwardingOk": True}, "u")
     assert (await voice_outbound.forward_check(WS, CFG))["reason"] == "no_line"  # no line row: nothing dialed
     lk.sip.create_sip_participant.assert_not_called()
     await voice_phone.put_line("+14155550100", {"ownerId": WS, "ownerUserId": "u"})
@@ -55,7 +56,7 @@ async def test_forward_check_dials_business_line(repos, monkeypatch):  # noqa: F
 async def test_forward_check_owner_only(repos, async_client_org_member, monkeypatch):  # noqa: F811
     lk = fake_livekit(monkeypatch)
     monkeypatch.setattr(settings, "VOICE_OUTBOUND_TRUNK_ID", "ST_out")
-    await messaging_repo.put_voice_agent(WS, CFG, "u")
+    await store.put_voice_agent(WS, CFG, "u")
     assert (await async_client_org_member.post("/api/v1/voice/forward-check")).status_code == 403
     lk.sip.create_sip_participant.assert_not_called()
 
@@ -64,7 +65,7 @@ async def _ready(monkeypatch, **cfg) -> MagicMock:
     lk = fake_livekit(monkeypatch)
     monkeypatch.setattr(settings, "VOICE_OUTBOUND_TRUNK_ID", "ST_out")
     await voice_phone.put_line("+14155550100", {"ownerId": WS, "ownerUserId": "u"})
-    await messaging_repo.put_voice_agent(WS, {**CFG, **cfg}, "u")
+    await store.put_voice_agent(WS, {**CFG, **cfg}, "u")
     return lk
 
 

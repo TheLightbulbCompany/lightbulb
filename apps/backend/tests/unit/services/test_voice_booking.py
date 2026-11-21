@@ -12,6 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from core.repositories import messaging_repo
+from core.voice import store
 from core.voice.phone import voice_booking as booking
 from core.voice.phone import calls
 from routers import voice_phone as vp
@@ -170,7 +171,7 @@ async def test_move_reconciles_lost_response_preserving_provider_identity_after_
     google.commit_then_fail = True
     assert change(client, base, old, new).json()["moved"] is False
     cfg = await messaging_repo.get_voice_agent("org_1")
-    await messaging_repo.put_voice_agent("org_1", {**cfg, "bookingsGo": "own"}, "owner")
+    await store.put_voice_agent("org_1", {**cfg, "bookingsGo": "own"}, "owner")
     assert change(client, base, old, new).json()["moved"] is True
     assert (await row(new))["eventId"] == original["eventId"]
     assert await row(old) is None
@@ -386,7 +387,7 @@ async def test_changed_configuration_does_not_rebind_confirmed_google_booking(cl
     start = f"{_tomorrow()}T14:00"
     assert create(client, base, start).json()["booked"]
     cfg = await messaging_repo.get_voice_agent("org_1")
-    await messaging_repo.put_voice_agent("org_1", {**cfg, "bookingsGo": "own"}, "owner")
+    await store.put_voice_agent("org_1", {**cfg, "bookingsGo": "own"}, "owner")
     assert change(client, base, start).json()["cancelled"] is True
     assert not google.events
 
@@ -604,9 +605,9 @@ async def test_line_problem_counts_a_pending_move_as_unconfirmed(client, google,
     o = await row(old)
     titles, real = [], vp.start_work
 
-    async def spy(call_id, body):
+    async def spy(call_id, body, ws):
         titles.append(body.title)
-        return await real(call_id, body)
+        return await real(call_id, body, ws)
 
     monkeypatch.setattr(vp, "start_work", spy)
     google.failures[("PATCH", f"/calendars/{CALENDAR}/events/{o['eventId']}")] = (500, {})
@@ -618,10 +619,10 @@ async def test_concurrent_failures_raise_one_line_problem(client, google, monkey
     call, _ = await begin(client)
     titles, real = [], vp.start_work
 
-    async def spy(call_id, body):
+    async def spy(call_id, body, ws):
         titles.append(body.title)
         await asyncio.sleep(0)
-        return await real(call_id, body)
+        return await real(call_id, body, ws)
 
     monkeypatch.setattr(vp, "start_work", spy)
     cfg = await vp.agent_config("org_1")

@@ -103,7 +103,7 @@ async def test_end_keeps_the_record(m):
 
 
 async def test_assistant_name_from_the_agent_page(m):
-    with patch.object(voice_meet.messaging_repo, "get_voice_agent", AsyncMock(side_effect=[{"name": " Nova "}, None])):
+    with patch.object(room_lines.store, "get_voice_agent", AsyncMock(side_effect=[{"name": " Nova "}, None])):
         assert await room_lines.assistant_name("org_1") == "Nova"
         assert await room_lines.assistant_name("org_1") == "Lightbulb"
 

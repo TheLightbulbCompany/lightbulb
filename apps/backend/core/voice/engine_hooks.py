@@ -38,14 +38,18 @@ ROUTER_HEADS = {
 
 async def _router(ask: ContextAsk) -> ContextAnswer:
     if ask.trigger is not None:  # a phone caller's batch
-        profile = await business_profile.business_profile(ask.tenant_id, await business_profile.caller_of(ask.trigger))
+        profile = await business_profile.business_profile(
+            ask.tenant_id, await business_profile.caller_of(ask.tenant_id, ask.trigger)
+        )
         return ContextAnswer(text=profile or None)
     return ContextAnswer(text=ROUTER_RULES, flags={"tools": ROUTER_TOOLS, "heads": ROUTER_HEADS})
 
 
 async def _worker(ask: ContextAsk) -> ContextAnswer:
     if ask.trigger is not None:  # a phone caller's Front desk thread: the business's facts in hand
-        profile = await business_profile.business_profile(ask.tenant_id, await business_profile.caller_of(ask.trigger))
+        profile = await business_profile.business_profile(
+            ask.tenant_id, await business_profile.caller_of(ask.tenant_id, ask.trigger)
+        )
         return ContextAnswer(text=profile or None)
     trigger_id = str((ask.task or {}).get("triggerId") or "")
     if not trigger_id.startswith(meeting_notes.NOTES_PREFIX):
@@ -175,7 +179,7 @@ async def _event(e: EngineEvent) -> None:
     elif e.type == "member.removed":  # a removed member stops hearing the room's huddle. Never raises.
         await livekit_huddles.remove_participant(e.conversation_id, e.member_id)
     elif e.type == "line.posted":  # sent only for a call room: an answer after hang-up goes on the call's record
-        await calls.after_call(e.conversation_id, e.message)
+        await calls.after_call(e.tenant_id, e.conversation_id, e.message)
     elif e.type == "question.answered":
         await _question_answered(e)
 

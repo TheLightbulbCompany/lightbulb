@@ -41,8 +41,10 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
                                                        messaging projector after the message commits; 90-day TTL
     ACTIVITY#<home>#<user>  SEEN                       the reader's Activity ``seenUpTo`` (monotonic)
     OWNER#<owner>   VOICEAGENT                         the voice assistant's settings (Agent page), one JSON
-                                                       document in ``config``; no TTL. Here because the engine reads
-                                                       its ``frontAgentId`` (``task_conversation``)
+                                                       document in ``config``; no TTL. The product owns and writes
+                                                       it (``core/voice/store``); the engine reads its
+                                                       ``frontAgentId`` (``task_conversation``) and metering its
+                                                       ``timezone``, through ``get_voice_agent`` here
     OWNER#<owner>   VOICEUSAGE#<transaction>           immutable voice metering event; never TTL'd
     OWNER#<owner>   WORK#VOICEUSAGE#<transaction>      one-shot outbox for Metronome + allowance notice work (rides
                                                        the engine's stream -> Pipe -> FIFO)
@@ -3246,40 +3248,6 @@ def voice_agent_config(config: dict) -> dict:
 async def get_voice_agent(owner_id: str) -> dict | None:
     row = await _get(owner_pk(owner_id), "VOICEAGENT")
     return voice_agent_config(json.loads(row["config"])) if row else None
-
-
-async def put_voice_agent(owner_id: str, config: dict, updated_by: str) -> None:
-    item = {"pk": owner_pk(owner_id), "sk": "VOICEAGENT", "config": json.dumps(voice_agent_config(config)),
-            "updatedAt": utc_now_iso(), "updatedBy": updated_by}  # fmt: skip
-    await run_in_thread(_table().put_item, Item=item)
-
-
-async def modify_voice_agent(owner_id: str, change, updated_by: str) -> bool:
-    """Read-modify-write for the phone paths, which must not undo an owner's save made in between (a Pause, a
-    permission): the put is conditional on the `updatedAt` it read, and on a clash re-reads and re-applies.
-    `change(cfg)` returns the new config, or None for nothing to write. False: no Agent page, or nothing to write.
-    The owner's own save (`put_voice_agent`) stays unconditional. ponytail: 5 tries, then the write is dropped."""
-    for _ in range(5):
-        row = await _get(owner_pk(owner_id), "VOICEAGENT")
-        if not row:
-            return False
-        new = change(voice_agent_config(json.loads(row["config"])))
-        if new is None:
-            return False
-        item = {"pk": owner_pk(owner_id), "sk": "VOICEAGENT", "config": json.dumps(voice_agent_config(new)),
-                "updatedAt": utc_now_iso(), "updatedBy": updated_by}  # fmt: skip
-        try:
-            await run_in_thread(
-                _table().put_item,
-                Item=item,
-                ConditionExpression="updatedAt = :u",
-                ExpressionAttributeValues={":u": row["updatedAt"]},
-            )
-            return True
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
-    return False
 
 
 async def list_owner_room_ids(owner_id: str) -> list[str]:

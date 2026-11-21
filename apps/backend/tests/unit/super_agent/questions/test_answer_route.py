@@ -268,17 +268,18 @@ async def test_answer_writes_knowledge_as_member(world, monkeypatch):
     a member who is not an admin: the answer lands in the Agent page's Knowledge server-side and leaves `toAdd`."""
     from core.repositories import messaging_repo
     from core.services import task_asks
+    from core.voice import store
     from routers import voice_phone
 
     q = "Do you do bridal parties?"
     docs = {WS: {"name": "Nova", "knowledge": [], "toAdd": [q, "Parking?"]}}
-    monkeypatch.setattr(messaging_repo, "get_voice_agent", AsyncMock(side_effect=lambda ws: docs.get(ws)))
+    monkeypatch.setattr(store, "get_voice_agent", AsyncMock(side_effect=lambda ws: docs.get(ws)))
 
     async def modify(ws, change, by):
         if (new := change(docs[ws])) is not None:
             docs[ws] = new
 
-    monkeypatch.setattr(messaging_repo, "modify_voice_agent", modify)
+    monkeypatch.setattr(store, "modify_voice_agent", modify)
     room = {"roomId": "call-1", "ownerId": WS, "kind": "call", "revision": 3, "call": {"resolvedAt": None}}
     monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: room if r == "call-1" else None))
 
@@ -294,7 +295,7 @@ async def test_answer_writes_knowledge_as_member(world, monkeypatch):
 
     monkeypatch.setattr(temporal_client, "update_task", ask_update)
     ask = voice_phone.call_ask("call-1", {"caller": "+14155550133"}, "didnt_know", q)
-    opened = await task_asks.open_ask(WS, await tasks_repo.get_task(WS, TASK), **ask)
+    opened = await task_asks.open_ask(WS, await tasks_repo.get_task(WS, TASK), **ask, qid="q-call-1")
     monkeypatch.setattr(temporal_client, "update_task", answer_update)
     assert opened["answerers"] == [SAM] and opened["subkind"] == "didnt_know"  # the requester, an org:member
 

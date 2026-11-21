@@ -9,9 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 from moto import mock_aws
 
+from core.engine.contract import StartOut
 from core.repositories import messaging_repo, tasks_repo
 from core.voice import store
-from core.services import admission
+from core.services import admission, task_conversation
 from core.voice.phone import calls as phone_calls
 from routers import voice_phone
 
@@ -63,7 +64,9 @@ def client():
             patch.object(messaging_repo.settings, "MESSAGING_TABLE", "test-messaging"),
             patch.object(messaging_repo.settings, "HUDDLE_WORKER_SECRET", SECRET),
             patch.object(
-                voice_phone, "start_voice_work", AsyncMock(return_value={"triggerId": "t", "taskId": "k"})
+                voice_phone.api,
+                "start_task",
+                AsyncMock(return_value=StartOut(trigger_id="t", task_id="k", created=True)),
             ) as sw,
             patch.object(
                 voice_phone.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Maya's Nail Studio"})
@@ -87,7 +90,7 @@ A = "TN-Validation-Passed-A"  # the carrier attests the caller owns the number (
 async def _start(client, caller="+14155550133", room="phone-dev-_x_1", ago=3600, verstat=A, **config):
     """A started call, begun `ago` seconds back (the billed duration is capped by the time since start, M4)."""
     await voice_phone.put_line(NUMBER, LINE)
-    await messaging_repo.put_voice_agent("org_1", {**CONFIG, **config}, "user_owner")
+    await store.put_voice_agent("org_1", {**CONFIG, **config}, "user_owner")
     r = client.post(
         "/api/v1/internal/voice/calls",
         json={"calledNumber": NUMBER, "callerNumber": caller, "livekitRoom": room, "verstat": verstat},
@@ -273,7 +276,7 @@ async def test_every_taken_message_is_a_needs_you_card_with_its_whole_text(clien
     assert client.post(f"{base}/message", json=body, headers=W).json() == {"taken": True}
     rec = client.post(f"{base}/end", json={"durationSec": 30}, headers=W).json()
     assert rec["outcome"] == "message" and rec["steps"][-1]["text"] == f"Took a message: {text}"
-    ask = client.start_work.await_args.kwargs["ask"]
+    ask = client.start_work.await_args.args[0].ask
     assert ask["subkind"] == "message" and ask["title"].startswith("Message from Sam: Sam Tester would like")
     assert len(ask["title"]) <= 200 and ask["text"].startswith(text) and "+18565550123" in ask["text"]
     assert [o["id"] for o in ask["options"]] == ["call_myself", "done"]
@@ -287,8 +290,8 @@ async def test_two_messages_on_one_call_are_two_cards(client):
         client.post(f"{base}/message", json={"text": text, "name": "Sam"}, headers=W)
     client.start_work.reset_mock()
     client.post(f"{base}/end", json={"durationSec": 30}, headers=W)
-    runs = {c.args[1].run_id for c in client.start_work.await_args_list}
-    titles = [c.kwargs["ask"]["title"] for c in client.start_work.await_args_list]
+    runs = {c.args[0].trigger_id for c in client.start_work.await_args_list}
+    titles = [c.args[0].ask["title"] for c in client.start_work.await_args_list]
     assert len(runs) == 2 and titles == ["Message from Sam: Please call me about Saturday.",
                                          "Message from Sam: Also, do you sell gift cards?"]  # fmt: skip
 
@@ -339,10 +342,10 @@ async def test_unknown_creates_question_and_to_add(client):
     assert client.post(f"{base}/unknown", json={"question": q}, headers=W).status_code == 200  # a retried tool call
     assert (await messaging_repo.get_voice_agent("org_1"))["toAdd"] == [q]
     assert client.post(f"{base}/end", json={"durationSec": 30}, headers=W).json()["outcome"] == "needs_you"
-    [(args, kwargs)] = [(c.args, c.kwargs) for c in client.start_work.await_args_list]
-    assert args[0] == "org_1" and args[1].title == f"Answer +14155550133: {q}" and kwargs["origin"] == "phone_contact"
-    assert voice_phone.CONTACT_NOTE in args[1].brief and q in args[1].brief
-    ask = kwargs["ask"]
+    [start] = [c.args[0] for c in client.start_work.await_args_list]
+    assert start.tenant_id == "org_1" and start.title == f"Answer +14155550133: {q}" and start.origin == "phone_contact"
+    assert voice_phone.CONTACT_NOTE in start.brief and q in start.brief
+    ask = start.ask
     assert ask["kind"] == "question" and ask["subkind"] == "didnt_know" and ask["blocking"] is True
     assert ask["preview"] == {
         "kind": "didnt_know",
@@ -352,8 +355,7 @@ async def test_unknown_creates_question_and_to_add(client):
         "firstName": "",
     }
     assert [o["id"] for o in ask["options"]] == ["answer", "call_myself", "done"]
-    run = await store.get_voice_run("org_1", args[1].run_id)
-    assert run["requesterUserId"] == "user_owner" and run["roomId"] == call["callId"]
+    assert start.principal.id == "user_owner" and start.conversation_id == call["callId"]
 
 
 async def test_handoff_missed_creates_question(client):
@@ -361,7 +363,7 @@ async def test_handoff_missed_creates_question(client):
     base = f"/api/v1/internal/voice/calls/{missed['callId']}"
     assert client.post(f"{base}/transfer", headers=W).json() == {"transferTo": None}
     assert client.post(f"{base}/end", json={"durationSec": 30}, headers=W).json()["outcome"] == "handoff_missed"
-    ask = client.start_work.await_args.kwargs["ask"]
+    ask = client.start_work.await_args.args[0].ask
     assert ask["subkind"] == "handoff" and ask["preview"]["roomId"] == missed["callId"]
     assert [o["id"] for o in ask["options"]] == ["call_myself", "done"]
 
@@ -369,7 +371,7 @@ async def test_handoff_missed_creates_question(client):
     fbase = f"/api/v1/internal/voice/calls/{failed['callId']}"
     assert client.post(f"{fbase}/transfer", json={"failed": True}, headers=W).json() == {"transferTo": None}
     client.post(f"{fbase}/end", json={"durationSec": 30}, headers=W)
-    assert client.start_work.await_args.kwargs["ask"]["subkind"] == "handoff"  # line_problem is for system issues
+    assert client.start_work.await_args.args[0].ask["subkind"] == "handoff"  # line_problem is for system issues
 
 
 async def test_to_add_is_capped_oldest_first(client):
@@ -428,8 +430,11 @@ async def test_an_unattested_caller_books_and_leaves_messages_but_gets_nothing_b
     row = await voice_phone._seen("org_1", "+14155550133")
     assert row["name"] == "Priya" and row["visits"] == 1
     trigger = {"ref": {"origin": "phone_contact", "callId": spoof["callId"]}}
-    assert await business_profile.caller_of(trigger) is None  # no "This caller's upcoming bookings"
-    assert await business_profile.caller_of({"ref": {**trigger["ref"], "callId": victim["callId"]}}) == "+14155550133"
+    assert await business_profile.caller_of("org_1", trigger) is None  # no "This caller's upcoming bookings"
+    assert (
+        await business_profile.caller_of("org_1", {"ref": {**trigger["ref"], "callId": victim["callId"]}})
+        == "+14155550133"
+    )
     assert (await _start(client, room="phone-dev-_s_2"))["callerName"] == "Priya"  # A keeps every capability
 
 
@@ -611,7 +616,7 @@ def _slots(client, call, service: str) -> list[str]:
 
 
 async def _staff_now(staff: list[dict]) -> None:  # the owner edits the staff list on the Agent page
-    await messaging_repo.put_voice_agent("org_1", {**CONFIG, **STAFFED, "staff": staff}, "user_owner")
+    await store.put_voice_agent("org_1", {**CONFIG, **STAFFED, "staff": staff}, "user_owner")
 
 
 async def test_two_staff_take_two_bookings_at_once_and_refuse_a_third(client):
@@ -928,14 +933,14 @@ async def test_inbound_probe_marks_forwarding_ok_and_ends(client):
     await voice_phone.put_line(NUMBER, LINE)
     with patch.object(voice_outbound, "end_probe", AsyncMock()) as end:
         for caller, room in ((NUMBER, "phone-dev-_p1"), ("+14155550177", "phone-dev-_p2")):  # either caller id
-            await messaging_repo.put_voice_agent("org_1", {**CONFIG, **probe}, "user_owner")
+            await store.put_voice_agent("org_1", {**CONFIG, **probe}, "user_owner")
             r = client.post("/api/v1/internal/voice/calls", headers=W,
                             json={"calledNumber": NUMBER, "callerNumber": caller, "livekitRoom": room})  # fmt: skip
             assert r.status_code == 409 and r.json()["detail"]["code"] == "forward_check"
             cfg = await messaging_repo.get_voice_agent("org_1")
             assert cfg["forwardingOk"] is True and cfg["forwardingOkAt"] and "forwardingCheck" not in cfg
             end.assert_awaited_with(room, "abc")
-    assert not await voice_phone.messaging_repo.list_owner_rooms("org_1")  # no call record was made
+    assert not await messaging_repo.list_owner_rooms("org_1")  # no call record was made
     # the owner's own test call with no check pending is an ordinary call
     owner = await _start(client, caller="+14155550177", room="phone-dev-_p3", forwardFrom="(415) 555-0177")
     assert owner["mode"] == "live"
@@ -1044,8 +1049,8 @@ FRONT = {"kind": "agent", "id": "agent_front", "displayName": "Lightbulb", "ment
 @pytest.fixture
 def router_seat():
     with (
-        patch.object(voice_phone.task_conversation, "_front_agent", AsyncMock(return_value=FRONT)),
-        patch.object(voice_phone.rooms, "prewake_owner") as wake,
+        patch.object(task_conversation, "_front_agent", AsyncMock(return_value=FRONT)),
+        patch.object(voice_phone.api, "warm") as wake,
         patch.object(admission, "enqueue_trigger", AsyncMock(return_value=True)) as enq,
     ):
         yield wake, enq
@@ -1057,7 +1062,7 @@ async def test_a_call_seats_lightbulb_and_prewarms_the_router(client, router_sea
     members = await messaging_repo.list_members(call["callId"])
     assert {(m["kind"], m["id"]) for m in members} == {("human", "user_owner"), ("agent", "agent_front")}
     assert (await messaging_repo.get_room(call["callId"]))["frontAgentId"] == FRONT["id"]
-    wake.assert_called_once_with("org_1", team=[FRONT])
+    wake.assert_called_once_with("org_1", [FRONT["id"]])
     assert call["after"] == 0
 
 
@@ -1121,7 +1126,7 @@ async def test_a_callers_next_line_goes_to_the_calls_open_thread_not_a_new_one(c
     with (
         patch.object(tasks_repo, "get_task", AsyncMock(return_value=task)),
         patch.object(tasks_repo, "put_trigger", AsyncMock(return_value=({}, True))) as put,
-        patch.object(voice_phone.task_conversation, "gate_input", AsyncMock(return_value=None)),
+        patch.object(task_conversation, "gate_input", AsyncMock(return_value=None)),
         patch.object(admission, "_to_task", AsyncMock()) as to_task,
     ):
         out = client.post(url, json={"n": 1, "text": "The first time works."}, headers=W).json()
@@ -1160,7 +1165,7 @@ async def test_a_booking_under_way_is_said_only_once_the_call_has_one(client, ro
     said = [m["text"] for m in client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]]
     nb = voice_phone.NOT_BOOKED
     assert said == [nb, f"Thanks, Taylor. {nb} Anything else?", *lines[2:]]
-    await voice_phone._patch_call(cid, lambda c: {"bookings": [{"start": "2026-11-14T13:00"}]})
+    await voice_phone._patch_call("org_1", cid, lambda c: {"bookings": [{"start": "2026-11-14T13:00"}]})
     said = [m["text"] for m in client.post(f"{base}/events", json={"after": 0}, headers=W).json()["messages"]]
     assert said == lines
 
@@ -1253,7 +1258,7 @@ async def test_call_events_are_lightbulbs_lines_only(client, router_seat):
     call = await _start(client)
     base = f"/api/v1/internal/voice/calls/{call['callId']}"
     client.post(f"{base}/turn", json={"n": 0, "text": "Open Sunday?"}, headers=W)
-    with patch.object(voice_phone, "agent_lines", AsyncMock(return_value={"messages": [], "after": 1})) as lines:
+    with patch.object(voice_phone.api, "agent_lines", AsyncMock(return_value={"messages": [], "after": 1})) as lines:
         assert client.post(f"{base}/events", json={"after": 0}, headers=W).json() == {"messages": [], "after": 1}
     lines.assert_awaited_once_with(call["callId"], 0)
     real = client.post(f"{base}/events", json={"after": 0}, headers=W).json()
@@ -1310,11 +1315,13 @@ async def test_an_answer_after_hang_up_is_kept_on_the_record_home_reads(client):
     call = await _start(client)
     cid = call["callId"]
     late = {"messageId": "m5", "text": "There's no deposit to pay. You'll securely put a card on file at setup."}
-    await phone_calls.after_call(cid, late)  # during the call: nothing (the voice says it)
+    await phone_calls.after_call("org_1", cid, late)  # during the call: nothing (the voice says it)
     assert "afterCall" not in (await messaging_repo.get_room(cid))["call"]
     client.post(f"/api/v1/internal/voice/calls/{cid}/end", json={"durationSec": 56}, headers=W)
-    await phone_calls.after_call(cid, {"messageId": "m6", "text": "x", "progress": True})  # progress: not an answer
-    await phone_calls.after_call(cid, late)
+    await phone_calls.after_call(
+        "org_1", cid, {"messageId": "m6", "text": "x", "progress": True}
+    )  # progress: not an answer
+    await phone_calls.after_call("org_1", cid, late)
     rec = (await messaging_repo.get_room(cid))["call"]
     assert rec["afterCall"] == [{"messageId": "m5", "text": late["text"]}]
     assert rec["steps"][-1]["text"].startswith("After the call, not heard by the caller: There's no deposit")
@@ -1454,16 +1461,16 @@ def test_call_card_push_carries_the_kind_and_a_first_name_only():
 async def test_a_caller_write_never_undoes_an_owner_save_made_meanwhile(client):
     """The phone paths re-read on a clash: an owner's Pause between their read and write survives."""
     call = await _start(client)
-    real_get, raced = messaging_repo._get, []
+    real_get, raced = store.get_item, []
 
-    async def get_then_owner_saves(pk, sk):
-        row = await real_get(pk, sk)
+    async def get_then_owner_saves(table, pk, sk):
+        row = await real_get(table, pk, sk)
         if sk == "VOICEAGENT" and not raced:  # the owner saves after the caller read, before its write
             raced.append(1)
-            await messaging_repo.put_voice_agent("org_1", {**CONFIG, "paused": True}, "user_owner")
+            await store.put_voice_agent("org_1", {**CONFIG, "paused": True}, "user_owner")
         return row
 
-    with patch.object(messaging_repo, "_get", get_then_owner_saves):
+    with patch.object(store, "get_item", get_then_owner_saves):
         r = client.post(
             f"/api/v1/internal/voice/calls/{call['callId']}/unknown", json={"question": "Parking?"}, headers=W
         )
@@ -1488,9 +1495,9 @@ async def test_the_sweep_ends_a_call_left_live_past_the_cap(client):
 
     call = await _start(client)
     await voice_calls.sweep_phone_calls(int(time.time()))  # fresh: left alone
-    assert (await voice_phone._call(call["callId"]))[1]["status"] == "live"
+    assert (await voice_phone._call("org_1", call["callId"]))[1]["status"] == "live"
     await voice_calls.sweep_phone_calls(int(time.time()) + voice_calls.PHONE_STALE_S + 1)
-    ended = (await voice_phone._call(call["callId"]))[1]
+    ended = (await voice_phone._call("org_1", call["callId"]))[1]
     assert ended["status"] == "ended" and ended["durationSec"] == 0  # duration unknown: bills nothing
     assert "Closed by cleanup" in ended["summary"]
     await voice_calls.sweep_phone_calls(int(time.time()) + 10_000)  # index row gone: nothing to repeat
@@ -1508,7 +1515,7 @@ async def test_overlapping_starts_for_one_room_return_the_stored_token(client):
             return None  # the loser's replay check ran before the winner's create landed
         return await real(room_id)
 
-    with patch.object(voice_phone.messaging_repo, "get_room", racing):
+    with patch.object(messaging_repo, "get_room", racing):
         loser = client.post("/api/v1/internal/voice/calls", headers=W,
                             json={"calledNumber": NUMBER, "callerNumber": "+14155550133", "livekitRoom": "phone-race"})  # fmt: skip
     assert missed and loser.json()["callToken"] == first["callToken"]
@@ -1535,9 +1542,9 @@ async def test_two_interleaved_starts_for_one_room_both_return_the_stored_token(
         return await real(**kw)
 
     await voice_phone.put_line(NUMBER, LINE)
-    await messaging_repo.put_voice_agent("org_1", CONFIG, "user_owner")
+    await store.put_voice_agent("org_1", CONFIG, "user_owner")
     body = voice_phone.StartIn(calledNumber=NUMBER, callerNumber="+14155550133", livekitRoom="phone-interleaved")
-    with patch.object(voice_phone.messaging_repo, "create_room", held_until_both_minted):
+    with patch.object(messaging_repo, "create_room", held_until_both_minted):
         a, b = await asyncio.gather(voice_phone.start_call(body), voice_phone.start_call(body))
     stored = (await messaging_repo.get_room(a["callId"]))["callToken"]
     assert len(set(arrived)) == 2  # two candidates were minted

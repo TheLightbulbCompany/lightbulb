@@ -39,9 +39,9 @@ from core.constants import SYSTEM_ACTOR_ID
 from core.billing import voice_billing
 from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, container_repo, messaging_repo
+from core.repositories import billing_repo, container_repo
 from core.services import link_preview
-from core.voice import livekit_huddles
+from core.voice import livekit_huddles, store
 from livekit import api
 
 logger = logging.getLogger(__name__)
@@ -207,7 +207,7 @@ async def release_number(ws: str) -> str:
     Twilio. The number released, or "" when the workspace had none. Wipes call it before the owner partition goes
     (the Agent page's `number` is how a bought number is found). A lapsed voice plan's number goes back through
     `release_lapsed_numbers` instead."""
-    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    cfg = await store.get_voice_agent(ws) or {}
     provision_key = {"pk": owner_pk(ws), "sk": "VOICENUMBER"}
     pending = await get_item(messaging_table(), **provision_key) or {}
     number = str(cfg.get("number") or pending.get("number") or "") or settings.VOICE_LINE_NUMBER
@@ -283,7 +283,7 @@ async def _release_lapsed(ws: str, now: datetime) -> str:
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise  # missing, or another workspace's line: nothing of ours to delete
-        await messaging_repo.modify_voice_agent(
+        await store.modify_voice_agent(
             ws,
             lambda cfg: {**cfg, "live": False, "number": ""} if cfg.get("number") == number else None,
             SYSTEM_ACTOR_ID,
@@ -351,8 +351,8 @@ async def reserve(ws: str, path: Literal["keep", "new"], area_code: str | None, 
     """Onboarding step 4: keep the business's number and forward it, or get a new one. Stored on the Agent page as
     `numberChoice` (`number` stays the E.164 string the page shows). Nothing is bought here."""
     choice = {"path": path, "areaCode": area_code, "carrier": carrier, "mode": mode}
-    cfg = await messaging_repo.get_voice_agent(ws) or {}
-    await messaging_repo.put_voice_agent(ws, {**cfg, "numberChoice": choice}, user_id)
+    cfg = await store.get_voice_agent(ws) or {}
+    await store.put_voice_agent(ws, {**cfg, "numberChoice": choice}, user_id)
     return choice
 
 

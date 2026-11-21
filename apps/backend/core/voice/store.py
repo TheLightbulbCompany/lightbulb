@@ -5,10 +5,13 @@ OWNER#<owner>   VOICERUN#<runId>                    a Live voice run's room, age
 OWNER#<owner>   VOICEEDIT#<agent>#<kind>#<day>      a day's count of voice edits per agent (2-day TTL)
 OWNER#<owner>   <slot sk>                           a held slot (a live-call slot, the forwarding check's lock)
 OWNER#<owner>   MEETNOTES#<messageId>               a meeting's notes request (2-day TTL)
+OWNER#<owner>   VOICEAGENT                          the Agent page's document (JSON `config`). The engine reads one
+                                                   key of it, `frontAgentId` (its own reader); the product writes it
 """
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -16,7 +19,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread
+from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
 
 
 def _voice_run_sk(run_id: str) -> str:
@@ -152,3 +155,56 @@ async def release_voice_slot(owner_id: str, sk: str, holder: str) -> None:
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
+
+
+# --- the Agent page's document -----------------------------------------------------------------------------------
+
+
+def voice_agent_config(config: dict) -> dict:
+    """The current app-only meeting settings; a retired email toggle has no behavior or promise."""
+    meetings = config.get("meetings")
+    return (
+        {**config, "meetings": {k: v for k, v in meetings.items() if k != "emailNotes"}}
+        if isinstance(meetings, dict)
+        else dict(config)
+    )
+
+
+async def get_voice_agent(owner_id: str) -> dict | None:
+    row = await get_item(messaging_table(), owner_pk(owner_id), "VOICEAGENT")
+    return voice_agent_config(json.loads(row["config"])) if row else None
+
+
+def _voice_agent_item(owner_id: str, config: dict, updated_by: str) -> dict:
+    return {"pk": owner_pk(owner_id), "sk": "VOICEAGENT", "config": json.dumps(voice_agent_config(config)),
+            "updatedAt": utc_now_iso(), "updatedBy": updated_by}  # fmt: skip
+
+
+async def put_voice_agent(owner_id: str, config: dict, updated_by: str) -> None:
+    await run_in_thread(messaging_table().put_item, Item=_voice_agent_item(owner_id, config, updated_by))
+
+
+async def modify_voice_agent(owner_id: str, change, updated_by: str) -> bool:
+    """Read-modify-write for the phone paths, which must not undo an owner's save made in between (a Pause, a
+    permission): the put is conditional on the `updatedAt` it read, and on a clash re-reads and re-applies.
+    `change(cfg)` returns the new config, or None for nothing to write. False: no Agent page, or nothing to write.
+    The owner's own save (`put_voice_agent`) stays unconditional. ponytail: 5 tries, then the write is dropped."""
+    for _ in range(5):
+        row = await get_item(messaging_table(), owner_pk(owner_id), "VOICEAGENT")
+        if not row:
+            return False
+        new = change(voice_agent_config(json.loads(row["config"])))
+        if new is None:
+            return False
+        try:
+            await run_in_thread(
+                messaging_table().put_item,
+                Item=_voice_agent_item(owner_id, new, updated_by),
+                ConditionExpression="updatedAt = :u",
+                ExpressionAttributeValues={":u": row["updatedAt"]},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    return False

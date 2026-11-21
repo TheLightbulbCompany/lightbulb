@@ -233,7 +233,7 @@ async def get_current_user(
             org_permissions=org["org_permissions"],
             email=payload.get("email"),
             verified_issuer=payload.get("iss"),
-            human_session=_session_token(token),
+            human_session=_session_token(jwt.get_unverified_header(token), payload),
         )
         bind_request_context(request_id_var.get() or "", payload["sub"])
         return ctx
@@ -261,12 +261,10 @@ async def get_current_user(
 HUMAN_SESSION_REQUIRED = "human_session_required"
 
 
-def _session_token(token: str) -> bool:
+def _session_token(header: dict, claims: dict) -> bool:
     """A first-party Clerk session token: it carries `sid`, and is neither an OAuth access token issued as a JWT
     (`typ: at+jwt`, a `client_id` claim) nor a JWT-template token (no `sid`). Verified elsewhere; this only
     classifies it."""
-    header = jwt.get_unverified_header(token)
-    claims = jwt.decode(token, options={"verify_signature": False})
     return not (
         str(header.get("typ", "")).lower() in ("at+jwt", "application/at+jwt")
         or "client_id" in claims
@@ -283,7 +281,8 @@ async def get_human_session(
     claim) and a JWT-template token (no `sid`) are refused with 403. The web, desktop webview
     and mobile call these routes with Clerk's default session token (no template)."""
     ctx = await get_current_user(credentials)
-    if not _session_token(credentials.credentials):
+    token = credentials.credentials
+    if not _session_token(jwt.get_unverified_header(token), jwt.decode(token, options={"verify_signature": False})):
         put_metric("auth.human_session.refused")
         logger.warning("AUTH REFUSED: not a first-party session token")
         raise HTTPException(status_code=403, detail=HUMAN_SESSION_REQUIRED)

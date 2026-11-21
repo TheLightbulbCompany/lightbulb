@@ -17,6 +17,7 @@ from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
 A = Tenant("user_a", None)
 B = Tenant("user_b", None)
 DAY = 86400
+STATE = "state-from-the-app_0123"
 
 
 @pytest.fixture
@@ -47,16 +48,20 @@ async def req(method, path, *, who: Tenant | None = None, token: str | None = No
 
 
 async def ticket(who: Tenant = A) -> str:
-    r = await req("POST", "/os/ticket", who=who)
+    r = await req("POST", "/os/ticket", who=who, body={"state": STATE})
     assert r.status_code == 200, r.text
     assert set(r.json()) == {"ticket"}
     return r.json()["ticket"]
 
 
 async def session(who: Tenant = A) -> str:
-    r = await req("POST", "/os/session", body={"ticket": await ticket(who)})
+    r = await redeem(await ticket(who))
     assert r.status_code == 200, r.text
     return r.json()["token"]
+
+
+async def redeem(t: str, state: str = STATE):
+    return await req("POST", "/os/session", body={"ticket": t, "state": state})
 
 
 async def account(token: str):
@@ -72,7 +77,7 @@ def answer(r):
 
 
 async def test_ticket_then_session_then_account_round_trip(users, clock):
-    r = await req("POST", "/os/session", body={"ticket": await ticket()})
+    r = await redeem(await ticket())
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {"token", "accountId", "expiresAt"}
@@ -95,29 +100,29 @@ async def test_ticket_then_session_then_account_round_trip(users, clock):
 
 async def test_ticket_is_one_time(users, clock):
     t = await ticket()
-    assert (await req("POST", "/os/session", body={"ticket": t})).status_code == 200
-    assert answer(await req("POST", "/os/session", body={"ticket": t})) == TICKET_INVALID
+    assert (await redeem(t)).status_code == 200
+    assert answer(await redeem(t)) == TICKET_INVALID
 
 
 async def test_ticket_expires_after_60s(users, clock):
     t = await ticket()
     clock[0] += 60
-    assert answer(await req("POST", "/os/session", body={"ticket": t})) == TICKET_INVALID
+    assert answer(await redeem(t)) == TICKET_INVALID
     t = await ticket()
     clock[0] += 59
-    assert (await req("POST", "/os/session", body={"ticket": t})).status_code == 200
+    assert (await redeem(t)).status_code == 200
 
 
 async def test_ticket_unknown_user_and_wrong_secret_look_identical(users, clock):
     t = await ticket()
     secret = t.split(".", 1)[1]
     for bad in [f"user_nobody.{secret}", "user_a.wrongsecret", "nonsense", "", "user_a.", ".x", "user_a"]:
-        assert answer(await req("POST", "/os/session", body={"ticket": bad})) == TICKET_INVALID, bad
+        assert answer(await redeem(bad)) == TICKET_INVALID, bad
 
 
 async def test_concurrent_redeem_yields_one_token(users, clock):
     t = await ticket()
-    rs = await asyncio.gather(*[req("POST", "/os/session", body={"ticket": t}) for _ in range(2)])
+    rs = await asyncio.gather(*[redeem(t) for _ in range(2)])
     assert sorted(r.status_code for r in rs) == [200, 401]
 
 
@@ -169,7 +174,7 @@ async def test_one_persons_token_cannot_read_anothers_account(users, clock):
 
 @pytest.mark.parametrize("token", ["oauth", "template"])
 async def test_ticket_requires_a_human_session(users, clock, token):
-    r = await req("POST", "/os/ticket", who=replace(A, token=token))
+    r = await req("POST", "/os/ticket", who=replace(A, token=token), body={"state": STATE})
     assert r.status_code == 403
     assert users.scan()["Items"] == []
 
@@ -233,7 +238,7 @@ D = Tenant("user_d", None)
 
 
 async def sign_in(who: Tenant, ref=None):
-    r = await req("POST", "/os/ticket", who=who, body=None if ref is None else {"ref": ref})
+    r = await req("POST", "/os/ticket", who=who, body={"state": STATE} | ({} if ref is None else {"ref": ref}))
     assert r.status_code == 200, r.text
     return r
 
@@ -333,3 +338,35 @@ async def test_response_is_identical_with_and_without_valid_ref(users, clock):
         r = await sign_in(who, ref=ref)
         shapes.append((r.status_code, set(r.json()), dict(r.headers).get("content-type")))
     assert shapes[0] == shapes[1] == shapes[2]
+
+
+async def test_session_requires_matching_state(users, clock):
+    t = await ticket()
+    for wrong in ["another-state-0123456", STATE + "x", STATE.upper()]:
+        assert answer(await redeem(t, wrong)) == TICKET_INVALID, wrong
+    assert (await redeem(t)).status_code == 200
+
+
+async def test_session_without_state_is_ticket_invalid(users, clock):
+    t = await ticket()
+    for body in [
+        {"ticket": t},
+        {"ticket": t, "state": ""},
+        {"ticket": t, "state": "short"},
+        {"ticket": t, "state": 7},
+        {"ticket": t, "state": "bad state with spaces!"},
+        {"state": STATE},
+        {"ticket": 7, "state": STATE},
+        {},
+        [],
+        "x",
+        None,
+    ]:
+        assert answer(await req("POST", "/os/session", body=body)) == TICKET_INVALID, body
+    assert (await redeem(t)).status_code == 200
+
+
+async def test_ticket_requires_state(users, clock):
+    for body in [None, {}, {"ref": "a"}, {"state": "short"}, {"state": "x" * 129}, {"state": "has space in it 012"}]:
+        assert (await req("POST", "/os/ticket", who=A, body=body)).status_code == 422, body
+    assert users.scan()["Items"] == []

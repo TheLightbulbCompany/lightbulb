@@ -395,7 +395,7 @@ async def seed_users(a, b, mp, calls) -> dict:
 
 
 async def seed_os(a, b, mp, calls) -> dict:
-    await ok(a, "POST", "/api/v1/os/ticket")  # A's Spark account and pending ticket
+    await ok(a, "POST", "/api/v1/os/ticket", {"state": "a" * 16})  # A's Spark account and pending ticket
     return {}
 
 
@@ -731,7 +731,7 @@ CASES = [
     Case("users", "PUT", "/api/v1/users/me/prefs", {"timezone": "Europe/London"}),
     Case("users", "POST", "/api/v1/users/me/delete", {"confirm_email": "{b}@example.com"}),
     # os: a Spark ticket for the caller's own account (the app-token doors take no Clerk session)
-    Case("os", "POST", "/api/v1/os/ticket"),
+    Case("os", "POST", "/api/v1/os/ticket", {"state": "b" * 16}),
     # devices, support, desktop sign-in: the caller's own
     Case(
         "devices", "POST", "/api/v1/devices", {"token": "ExponentPushToken[b]", "platform": "ios", "deviceId": "dev-b"}

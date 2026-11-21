@@ -12,13 +12,18 @@ import { REF_KEY, REF_PATTERN } from "@/app/os/RefCapture";
 // handed back to the app on its own URL scheme, which the app trades for its token.
 
 const SCHEMES = new Set(["spark", "spark-dev", "eve"]);
+// The app's one-time value for this sign-in: the ticket redeems only with it, so a ticket from someone
+// else's sign-in cannot be pushed into this person's app.
+const STATE = /^[A-Za-z0-9_-]{16,128}$/;
 
 function SparkSignIn() {
   const { isLoaded, isSignedIn } = useAuth();
   const clerk = useClerk();
   const api = useApi();
-  const scheme = useSearchParams().get("scheme") ?? "";
-  const allowed = SCHEMES.has(scheme);
+  const params = useSearchParams();
+  const scheme = params.get("scheme") ?? "";
+  const state = params.get("state") ?? "";
+  const allowed = SCHEMES.has(scheme) && STATE.test(state);
   const [link, setLink] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   // One ticket per page load: the account holds one ticket, so a second request would void the first.
@@ -27,8 +32,9 @@ function SparkSignIn() {
   useEffect(() => {
     if (!allowed || !isLoaded) return;
     if (!isSignedIn) {
-      // The app's own sign-in and sign-up pages, which return here (scheme checked again on return).
-      clerk.redirectToSignIn({ redirectUrl: `${window.location.origin}/auth/spark?scheme=${scheme}` });
+      // The app's own sign-in and sign-up pages, which return here (scheme and state checked again on return).
+      const back = new URLSearchParams({ scheme, state });
+      clerk.redirectToSignIn({ redirectUrl: `${window.location.origin}/auth/spark?${back}` });
       return;
     }
     if (asked.current) return;
@@ -39,7 +45,7 @@ function SparkSignIn() {
     } catch {
       // storage blocked: sign in without a referral
     }
-    const body = ref && REF_PATTERN.test(ref) ? { ref } : {};
+    const body = ref && REF_PATTERN.test(ref) ? { state, ref } : { state };
     (api.post("/os/ticket", body) as Promise<{ ticket: string }>)
       .then(({ ticket }) => {
         try {
@@ -47,13 +53,13 @@ function SparkSignIn() {
         } catch {
           // storage blocked: nothing was stored
         }
-        const url = `${scheme}://auth?ticket=${encodeURIComponent(ticket)}`;
+        const url = `${scheme}://auth?ticket=${encodeURIComponent(ticket)}&state=${encodeURIComponent(state)}`;
         setLink(url);
         // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- the app's URL scheme, not a page
         window.location.href = url;
       })
       .catch(() => setFailed(true));
-  }, [allowed, isLoaded, isSignedIn, scheme, api, clerk]);
+  }, [allowed, isLoaded, isSignedIn, scheme, state, api, clerk]);
 
   let body: React.ReactNode;
   if (!allowed) {

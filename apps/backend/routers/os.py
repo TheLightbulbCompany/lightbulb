@@ -14,9 +14,9 @@ import time
 from typing import Any
 
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_human_session
 from core.config import settings
@@ -29,6 +29,7 @@ TICKET_TTL_S = 60
 TRIAL_S = 3 * 86400
 MAX_TOKENS = 10
 _USER_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
+_STATE = r"[A-Za-z0-9_-]{16,128}"  # minted by the app per sign-in; binds a ticket to the sign-in it started
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -59,14 +60,11 @@ def _split(credential: str) -> tuple[str, str] | None:
 
 
 class TicketRequest(BaseModel):
+    state: str = Field(pattern=f"^{_STATE}$")
     ref: Any = None  # a referral code; anything that is not one is ignored, never refused
 
 
 class TicketResponse(BaseModel):
-    ticket: str
-
-
-class SessionRequest(BaseModel):
     ticket: str
 
 
@@ -113,22 +111,24 @@ async def _credit(referrer: str) -> None:
 
 
 @router.post("/ticket", response_model=TicketResponse, operation_id="os_ticket")
-async def create_ticket(
-    body: TicketRequest | None = None, auth: AuthContext = Depends(get_human_session)
-) -> TicketResponse:
+async def create_ticket(body: TicketRequest, auth: AuthContext = Depends(get_human_session)) -> TicketResponse:
     """A one-time ticket for the signed-in person, valid 60 seconds. Creates the person's account (trial
-    ending three days from now) on first sign-in; a later sign-in never moves the trial. A referral code on
+    ending three days from now) on first sign-in; the ticket redeems only with the same `state`; a later sign-in never moves the trial. A referral code on
     the sign-in that creates the account gives the referrer one more day."""
     ticket, h = _mint(auth.user_id)
     now = _now()
     sets = ["os_ticket = :t", "os_trial_ends_at = if_not_exists(os_trial_ends_at, :trial)"]
     sets.append("created_at = if_not_exists(created_at, :created)")
-    values = {":t": {"h": h, "exp": now + TICKET_TTL_S}, ":trial": now + TRIAL_S, ":created": utc_now_iso()}
+    values = {
+        ":t": {"h": h, "s": _hash(body.state), "exp": now + TICKET_TTL_S},
+        ":trial": now + TRIAL_S,
+        ":created": utc_now_iso(),
+    }
     if auth.email:
         sets.append("email = if_not_exists(email, :e)")
         values[":e"] = auth.email
     key, expr = {"user_id": auth.user_id}, "SET " + ", ".join(sets)
-    referrer = _referrer(body.ref if body else None, auth.user_id)
+    referrer = _referrer(body.ref, auth.user_id)
     if referrer:
         # Only the write that creates the account records the referrer: a retry or a concurrent second
         # first sign-in fails this condition and takes the plain write below, so a person counts once.
@@ -155,11 +155,13 @@ async def create_ticket(
 
 
 @router.post("/session", response_model=SessionResponse, operation_id="os_create_session")
-async def create_session(body: SessionRequest) -> SessionResponse:
-    """Redeem a ticket for an app token. Unauthenticated: every refusal is the same 401, so the door says
-    nothing about whether a person exists."""
-    parts = _split(body.ticket)
-    if not parts:
+async def create_session(body: Any = Body(None)) -> SessionResponse:
+    """Redeem a ticket and its sign-in's `state` for an app token. Unauthenticated: every refusal, a missing
+    or malformed field included, is the same 401, so the door says nothing about what was wrong."""
+    fields = body if isinstance(body, dict) else {}
+    ticket, state = fields.get("ticket"), fields.get("state")
+    parts = _split(ticket) if isinstance(ticket, str) else None
+    if not parts or not isinstance(state, str) or not re.fullmatch(_STATE, state):
         raise HTTPException(status_code=401, detail="ticket_invalid")
     user_id, h = parts
     token, token_hash = _mint(user_id)
@@ -169,8 +171,13 @@ async def create_session(body: SessionRequest) -> SessionResponse:
             _table().update_item,
             Key={"user_id": user_id},
             UpdateExpression="REMOVE os_ticket ADD os_tokens :tok",
-            ConditionExpression="os_ticket.h = :h AND os_ticket.exp > :now",
-            ExpressionAttributeValues={":h": h, ":now": _now(), ":tok": {f"{time.time_ns()}:{token_hash}"}},
+            ConditionExpression="os_ticket.h = :h AND os_ticket.s = :s AND os_ticket.exp > :now",
+            ExpressionAttributeValues={
+                ":h": h,
+                ":s": _hash(state),
+                ":now": _now(),
+                ":tok": {f"{time.time_ns()}:{token_hash}"},
+            },
             ReturnValues="ALL_NEW",
         )
     except ClientError as e:

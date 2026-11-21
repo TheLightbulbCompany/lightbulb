@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.observability.metrics import put_metric
 from core.dynamodb import run_in_thread
+from core.engine import hooks
+from core.engine.contract import VOICE_NOTE_TEXT_MAX
 from core.auth import (
     AuthContext,
     get_current_user,
@@ -38,7 +40,6 @@ from core.services import (
 )
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
-from core.voice import voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
 from core.services.hook_grants import require_hook_token
 from core.services.messaging import (
@@ -796,15 +797,21 @@ class VoiceProfileRequest(ContractModel):
     run_id: str = Field(max_length=64)
     action: Literal["rename", "add_note", "replace_notes", "clear_notes"]
     name: str | None = Field(default=None, max_length=40)
-    text: str | None = Field(default=None, max_length=voice_calls.NOTE_TEXT_MAX)
+    text: str | None = Field(default=None, max_length=VOICE_NOTE_TEXT_MAX)
 
 
 @router.post("/internal/agents/voice-profile/{owner_id}")
 async def post_voice_profile(owner_id: str, body: VoiceProfileRequest, request: Request):
     """C8: the agent's ``lightbulb_voice_profile`` tool -- rename or voice notes, asked by voice."""
     await require_hook_token(owner_id, request)
-    return await voice_calls.edit_voice_profile(
-        owner_id, agent_id=body.agent_id, run_id=body.run_id, action=body.action, name=body.name, text=body.text
+    return await hooks.tool(
+        "voice_profile",
+        hooks.ToolCall(
+            tenant_id=owner_id,
+            agent_id=body.agent_id,
+            run_id=body.run_id,
+            args={"action": body.action, "name": body.name, "text": body.text},
+        ),
     )
 
 

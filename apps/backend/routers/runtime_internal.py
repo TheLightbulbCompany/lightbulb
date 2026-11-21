@@ -33,6 +33,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.engine import hooks
 from core.engine.contract import GRANT_HEADER
 from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
 from core.services import (
@@ -541,69 +542,34 @@ class FrontDeskBody(BaseModel):
 
 @router.post("/{owner_id}/front-desk")
 async def front_desk(owner_id: str, body: FrontDeskBody, request: Request) -> dict:
-    """A phone caller's thread acts for that caller (governance P2, the caller case): the call comes from the task's
-    own trigger, never the model, and each action is the phone's own route, which keeps a caller to their own
-    bookings and honours the Agent page's allow switches. 403 for any task that is not a caller's."""
-    from pydantic import ValidationError
-
-    from core.voice.phone import business_profile
-    from routers import voice_phone as vp
-
+    """A phone caller's thread acts for that caller (governance P2, the caller case): the product's `front_desk`
+    tool, after the run is this task's live attempt. 403 for any task that is not a caller's."""
     await _gate(owner_id, request)
     att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
     task = await _current_task(owner_id, att, body.task_id, body.attempt)
     trig = await tasks_repo.get_trigger(owner_id, task["triggerId"]) if task.get("triggerId") else None
-    call_id = ((trig or {}).get("ref") or {}).get("callId")
-    meta = await vp.messaging_repo.get_room(call_id) if call_id else None
-    if (
-        not await tasks_repo.from_contact(owner_id, task)
-        or (meta or {}).get("kind") != "call"
-        or meta.get("ownerId") != owner_id
-    ):
+    if not await tasks_repo.from_contact(owner_id, task):
         raise HTTPException(status_code=403, detail="not_a_caller_thread")
-    try:
-        if body.action == "availability":
-            return await vp.availability(call_id, vp.DateIn(date=body.date, service=body.service))
-        if body.action == "my_bookings":
-            return await vp.my_bookings(call_id)
-        if body.action == "waitlist":
-            # The waitlist has no owner screen (founder 10 Nov: hidden), so the ask is also a message: the owner
-            # sees it in Needs you, and the caller is told what was recorded, never a spot nobody sees.
-            try:
-                await vp.join_waitlist(
-                    call_id, vp.WaitlistIn(date=body.date, service=body.service, name=body.name, note=body.note)
-                )
-            except (HTTPException, ValidationError):
-                pass  # off on the Agent page, a bad or past date, no caller number: the message below still goes
-            want = " ".join(x for x in (body.service, body.date, body.note) if x)
-            text = f"Wants a waitlist spot{': ' + want if want else ''}"[:500]
-            await vp.take_message(call_id, vp.MessageIn(name=body.name, text=text))
-            return {
-                "messageTaken": True,
-                "say": "A message was taken for the owner, who will call back about a "
-                "spot. Nobody is on a waitlist yet: do not promise one.",
-            }
-        if body.action == "message":
-            if not await vp.callers_own_words(call_id, body.text):
-                return {
-                    "taken": False,
-                    "say": "Not taken: a message is what the caller asked to pass on to the owner, in their own "
-                    "words. Answer the caller in your reply; take a message only when they ask to leave one.",
-                }
-            return await vp.take_message(
-                call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)
-            )
-        try:
-            if body.action == "book":
-                return await vp.book(call_id, vp.BookIn(start=body.start, service=body.service, name=body.name))
-            new = body.new_start if body.action == "move" else None
-            return await vp.change_booking(
-                call_id, vp.ChangeIn(start=body.start, newStart=new, bookingId=body.booking_id)
-            )
-        finally:  # the caller's batch and thread see the change at once, not after the 60 s cache
-            business_profile.forget(owner_id)
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+    return await hooks.tool(
+        "front_desk",
+        hooks.ToolCall(
+            tenant_id=owner_id,
+            task_id=body.task_id,
+            run_id=body.run_id,
+            trigger_ids=[task["triggerId"]] if trig else [],
+            triggers=[trig] if trig else [],
+            args=body.model_dump(exclude={"task_id", "run_id", "attempt", "run_secret"}),
+        ),
+    )
+
+
+async def _routed(owner_id: str, triggers: list[dict], out: dict) -> dict:
+    """A product tool's line answers its triggers (`routedTo` in its answer, never sent): mark them, so the Router
+    posts no second line for them."""
+    added = out.pop("routedTo", None)
+    for t in (x for x in triggers if x) if added else []:  # a trigger gone on the re-read: the line still went
+        await tasks_repo.set_trigger_routed_to(owner_id, t["triggerId"], {**(t.get("routedTo") or {}), **added})
+    return out
 
 
 class MeetingContextBody(BaseModel):
@@ -615,22 +581,16 @@ class MeetingContextBody(BaseModel):
 
 @router.post("/{owner_id}/meeting-context")
 async def meeting_context(owner_id: str, body: MeetingContextBody, request: Request) -> dict:
-    from core.voice.meetings import meeting_context as source
-
     await _gate(owner_id, request)
-    try:
-        return await source.context(
-            owner_id,
-            body.run_id,
-            body.trigger_id,
-            body.section,
-            body.cursor,
-            grant=request.headers.get(GRANT_HEADER),
-        )
-    except source.NotAuthorized as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+    return await hooks.tool(
+        "meeting_context",
+        hooks.ToolCall(
+            tenant_id=owner_id,
+            run_id=body.run_id,
+            trigger_ids=[body.trigger_id],
+            args={"section": body.section, "cursor": body.cursor, "grant": request.headers.get(GRANT_HEADER)},
+        ),
+    )
 
 
 class MeetingChatBody(BaseModel):
@@ -640,17 +600,12 @@ class MeetingChatBody(BaseModel):
 
 @router.post("/{owner_id}/meeting-chat")
 async def meeting_chat(owner_id: str, body: MeetingChatBody, request: Request) -> dict:
-    from core.voice.meetings import meeting_chat as delivery
-
     await _gate(owner_id, request)
-    try:
-        return await delivery.send(owner_id, body.trigger_ids, body.text)
-    except delivery.NotCurrentMeeting as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except delivery.meeting_invites.MeetingBusy as exc:
-        raise HTTPException(status_code=503, detail="meeting_busy") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid_arguments") from exc
+    out = await hooks.tool(
+        "meeting_chat", hooks.ToolCall(tenant_id=owner_id, trigger_ids=body.trigger_ids, args={"text": body.text})
+    )
+    triggers = [await tasks_repo.get_trigger(owner_id, t) for t in body.trigger_ids] if "routedTo" in out else []
+    return await _routed(owner_id, triggers, out)
 
 
 class MeetingStopTranscribingBody(BaseModel):
@@ -660,15 +615,11 @@ class MeetingStopTranscribingBody(BaseModel):
 
 @router.post("/{owner_id}/meeting-stop-transcribing")
 async def meeting_stop_transcribing(owner_id: str, body: MeetingStopTranscribingBody, request: Request) -> dict:
-    from core.voice.meetings import meeting_chat as delivery
-
     await _gate(owner_id, request)
-    try:
-        return await delivery.stop_transcribing(owner_id, body.trigger_ids, body.participant_id)
-    except delivery.NotCurrentMeeting as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except delivery.meeting_invites.MeetingBusy as exc:
-        raise HTTPException(status_code=503, detail="meeting_busy") from exc
+    return await hooks.tool(
+        "meeting_stop_transcribing",
+        hooks.ToolCall(tenant_id=owner_id, trigger_ids=body.trigger_ids, args={"participant_id": body.participant_id}),
+    )
 
 
 class TransferCallBody(BaseModel):
@@ -678,43 +629,15 @@ class TransferCallBody(BaseModel):
 
 @router.post("/{owner_id}/transfer-call")
 async def transfer_call(owner_id: str, body: TransferCallBody, request: Request) -> dict:
-    """The Router's transfer_call (a phone caller asked for a person): one Lightbulb line in the call room marked
-    `action: "transfer"`, the trigger's answer. The phone worker sees it on /events and runs /transfer and the SIP
-    transfer itself (huddle-agent phone.py `hand_off`); nothing is transferred here. Only a caller's triggers, all
-    from one call, in that call's own room while the line is live."""
-    from routers import voice_phone as vp
-
+    """The Router's transfer_call (a phone caller asked for a person): the product's `transfer_call` tool posts the
+    call room's transfer line, which answers the triggers."""
     await _gate(owner_id, request)
     triggers = [await tasks_repo.get_trigger(owner_id, t) for t in body.trigger_ids]
-    refs = [(t or {}).get("ref") or {} for t in triggers]
-    calls = {r.get("callId") if r.get("origin") == "phone_contact" else None for r in refs}
-    call_id = next(iter(calls)) if len(calls) == 1 else None
-    if not call_id or any(r.get("roomId") != call_id for r in refs):
-        raise HTTPException(status_code=403, detail="not_a_caller")
-    meta = await vp.messaging_repo.get_room(call_id) if call_id else None
-    if not meta or meta.get("kind") != "call" or meta.get("ownerId") != owner_id:
-        raise HTTPException(status_code=403, detail="not_a_caller")
-    cfg = await vp.agent_config(owner_id)
-    if vp.call_mode(cfg, meta.get("call") or {}) != "live":
-        raise HTTPException(status_code=403, detail="not_allowed")  # a paused line only takes messages
-    if not vp.handoff_to(cfg):  # closed or no number: refuse BEFORE the caller hears "hang on"
-        await vp._patch_call(  # the same bookkeeping /transfer does, so /end raises the hand-off Question
-            call_id, lambda c: {"handoffMissed": True, "steps": vp._step(c, "Asked for a person; nobody was available")}
-        )
-        raise HTTPException(status_code=403, detail={"code": "nobody_available"})
-    message_id = await task_conversation.post_as_lightbulb(
-        owner_id,
-        call_id,
-        text=vp.redact_cards(body.text),
-        event_id=f"call-transfer:{body.trigger_ids[0]}",
-        attrs={"action": "transfer"},
-        remember=False,
+    out = await hooks.tool(
+        "transfer_call",
+        hooks.ToolCall(tenant_id=owner_id, trigger_ids=body.trigger_ids, triggers=triggers, args={"text": body.text}),
     )
-    for t in triggers:  # the line is this ask's answer: the Router posts no second line for it
-        await tasks_repo.set_trigger_routed_to(
-            owner_id, t["triggerId"], {**(t.get("routedTo") or {}), "transfer": message_id}
-        )
-    return {"messageId": message_id}
+    return await _routed(owner_id, triggers, out)
 
 
 NOTE_CAP = 20  # notes per attempt
@@ -759,8 +682,8 @@ async def business_facts(owner_id: str, body: RunRef, request: Request) -> dict:
     """A Worker's `business_facts`: its own workspace's Agent page (services, prices, hours, the Knowledge answers),
     without the abbreviated profile's character cap; later saved answers must remain readable.
     Read-only; the workspace is the path's, proven by the hook token and the attempt's secret."""
-    from core.voice.phone import business_profile
-
     await _gate(owner_id, request)
     await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
-    return {"facts": await business_profile.facts_text(owner_id)}
+    return await hooks.tool(
+        "business_facts", hooks.ToolCall(tenant_id=owner_id, task_id=body.task_id, run_id=body.run_id)
+    )

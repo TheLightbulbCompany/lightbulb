@@ -68,6 +68,7 @@ async def send(owner_id: str, trigger_ids: list[str], text: str) -> dict:
             )
         else:
             status = (await webhook_dedup._read_event(key)).get("chat_status", "unknown")
+        out = {"status": status, "replayed": fresh is webhook_dedup.WebhookDedupResult.ALREADY_SEEN}
         if status == "sent":
             message_id = await task_conversation.post_as_lightbulb(
                 owner_id,
@@ -77,11 +78,8 @@ async def send(owner_id: str, trigger_ids: list[str], text: str) -> dict:
                 attrs={"voiceDelivery": "context", "meetingChat": {"status": "sent", "botId": bot_id}},
                 in_reply_to=refs[0].get("messageId"),
             )
-            for trig in triggers:
-                await tasks_repo.set_trigger_routed_to(
-                    owner_id, trig["triggerId"], {**(trig.get("routedTo") or {}), "meetingChat": message_id}
-                )
-        return {"status": status, "replayed": fresh is webhook_dedup.WebhookDedupResult.ALREADY_SEEN}
+            out["routedTo"] = {"meetingChat": message_id}  # the triggers' answer: the engine marks them
+        return out
 
 
 async def stop_transcribing(owner_id: str, trigger_ids: list[str], participant_id: str = "") -> dict:

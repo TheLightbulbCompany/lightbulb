@@ -59,7 +59,8 @@ async def test_concurrent_retry_sends_once_and_records_context_only_delivery(wor
     assert {first["replayed"], again["replayed"]} == {False, True}
     world["send"].assert_awaited_once_with("b", "The link")
     assert world["post"].await_args.kwargs["attrs"]["voiceDelivery"] == "context"
-    assert world["routed"].await_args.args[2] == {"meetingChat": "posted"}
+    # the line answers the triggers; the engine's route writes that (`routedTo`), never the product
+    assert first["routedTo"] == again["routedTo"] == {"meetingChat": "posted"} and world["routed"].await_count == 0
 
 
 async def test_lost_provider_response_is_unknown_and_never_resent(world):
@@ -155,3 +156,26 @@ async def test_stop_transcribing_is_for_a_live_meeting_only(optout, world):
     with pytest.raises(mod.NotCurrentMeeting, match="not_current_meeting"):
         await mod.stop_transcribing("org_a", ["chat:t"])
     optout.assert_not_awaited()
+
+
+async def test_the_route_marks_its_triggers_answered_by_the_chat_line(world, monkeypatch):
+    """Through the runtime's route: a sent line is the triggers' answer (`routedTo.meetingChat`), so the Router posts
+    no second line for them; the body is unchanged."""
+    import httpx
+    from fastapi import FastAPI
+
+    from routers import runtime_internal as ri
+
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"hook_token": "tok"})
+    )
+    app = FastAPI()
+    app.include_router(ri.router, prefix="/rt")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        r = await client.post(
+            "/rt/org_a/meeting-chat",
+            json={"triggerIds": ["chat:t"], "text": "The link"},
+            headers={"Authorization": "Bearer tok"},
+        )
+    assert (r.status_code, r.json()) == (200, {"status": "sent", "replayed": False})
+    assert world["routed"].await_args.args == ("org_a", "chat:t", {"meetingChat": "posted"})

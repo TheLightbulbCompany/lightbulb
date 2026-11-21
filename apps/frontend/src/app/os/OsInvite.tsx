@@ -32,15 +32,19 @@ function Invite({ code, ready, download }: { code: string; ready: boolean; downl
   const api = useApi();
   const [recorded, setRecorded] = useState(false);
   const sent = useRef(false);
+  const started = useRef(false);
   const here = `/os?ref=${code}`;
 
   useEffect(() => {
-    if (!isLoaded || sent.current) return;
-    sent.current = true;
+    if (!isLoaded) return;
     if (!isSignedIn) {
-      capture("spark_invite_signup_started");
+      if (!started.current) capture("spark_invite_signup_started");
+      started.current = true;
       return;
     }
+    // Signing up on this page flips isSignedIn in place, so only the signed-in request is guarded.
+    if (sent.current) return;
+    sent.current = true;
     // The answer does not change what the page shows; a failure still shows the download.
     api
       .post("/os/referral", { code })

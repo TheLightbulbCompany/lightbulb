@@ -280,9 +280,7 @@ async def _organizer_dm(owner_id: str, room_id: str) -> str | None:
     return str(room.room_id)
 
 
-async def _post_line(
-    owner_id: str, room_id: str, key: str, text: str, *, attachments: list | None = None, dispatch_targets: list = ()
-) -> dict | None:
+async def _post_line(owner_id: str, room_id: str, key: str, text: str, *, dispatch_targets: list = ()) -> dict | None:
     """One system line about the meeting ``room_id``, posted to its ``output_room`` and returned
     (None when that room is gone). The key is the receipt: an SES retry, or a resend whose wording
     differs under the same key, replays it instead of doubling it or raising. Keys carry the
@@ -304,7 +302,6 @@ async def _post_line(
             dispatch_targets=list(dispatch_targets),
             source_agent_id=None,
             client_message_id=None,
-            attachments=attachments,
         )
         return message
     except (messaging_repo.IdempotencyConflict, messaging_repo.RoomArchived, messaging_repo.RoomNotFound):

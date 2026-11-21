@@ -27,6 +27,8 @@ async def meeting_context(call: ToolCall) -> dict:
         )
     except source.NotAuthorized as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="invalid_arguments") from exc
 

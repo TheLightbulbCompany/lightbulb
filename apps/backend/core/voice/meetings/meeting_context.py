@@ -1,7 +1,7 @@
 """Scoped, read-only source pages for a Router meeting-completion input.
 
 The immutable stored notes request supplies the original principal, room, occurrence and
-attachment. Model arguments supply only a trigger ID, section and bounded cursor.
+transcript. Model arguments supply only a trigger ID, section and bounded cursor.
 """
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ from core.dynamodb import run_in_thread
 from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
 from core.repositories import messaging_repo, tasks_repo
 from core.voice import store
-from core.services import clerk_admin, messaging
+from core.services import clerk_admin
+from core.voice.meetings import transcripts
 from core.services.service_token import _signing_key
 
 PAGE_CHARS = 8192
@@ -177,14 +178,15 @@ async def context(
         raise NotAuthorized("not_meeting_completion")
     request = await authorize(owner_id, trigger)
     snapshot = request["meeting"]
-    attachment_id = snapshot["transcriptId"]
+    transcript_id = snapshot["transcriptId"]
     artifact = hashlib.sha256(
-        json.dumps([owner_id, request["roomId"], request["occurrence"], attachment_id]).encode()
+        json.dumps([owner_id, request["roomId"], request["occurrence"], transcript_id]).encode()
     ).hexdigest()
     if section == "transcript":
-        _, raw = await run_in_thread(
-            messaging.load_attachment, owner_id, snapshot.get("transcriptRoomId") or request["roomId"], attachment_id
-        )
+        room_id = snapshot.get("transcriptRoomId") or request["roomId"]
+        raw = await run_in_thread(transcripts.get, owner_id, room_id, transcript_id)
+        if raw is None:
+            raise LookupError("transcript_gone")
         text = raw.decode("utf-8", "replace")
         offset = _cursor(cursor, artifact, section, len(text))
         end = min(offset + PAGE_CHARS, len(text))
@@ -196,7 +198,7 @@ async def context(
             "totalCharacters": len(text),
             "truncated": end < len(text),
             "nextCursor": _next(artifact, section, end, len(text)),
-            "artifact": {"id": attachment_id, "roomId": snapshot.get("transcriptRoomId") or request["roomId"]},
+            "artifact": {"id": transcript_id, "roomId": room_id},
         }
     tasks = await _meeting_tasks(
         owner_id,

@@ -257,6 +257,7 @@ describe("hermes runtime wiring", () => {
     expect(flatten(profiles!.Resource)).toEqual([
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/network/*",
+      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/voice/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/browser-state/*",
     ]);

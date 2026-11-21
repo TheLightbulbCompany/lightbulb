@@ -60,8 +60,8 @@ def world(monkeypatch):
     monkeypatch.setattr(mod.tasks_repo, "get_trigger", AsyncMock(side_effect=lambda *_: state["trigger"]))
     state["enqueue"] = AsyncMock(return_value=True)
     monkeypatch.setattr(admission, "enqueue_trigger", state["enqueue"])
-    state["load"] = MagicMock(return_value=({}, b"human source " * 3000))
-    monkeypatch.setattr(mod.messaging, "load_attachment", state["load"])
+    state["load"] = MagicMock(return_value=b"human source " * 3000)
+    monkeypatch.setattr(mod.transcripts, "get", state["load"])
     state["tasks"] = [
         {
             "taskId": f"task-{i:02}",

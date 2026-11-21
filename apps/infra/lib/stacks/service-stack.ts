@@ -901,6 +901,9 @@ export class ServiceStack extends cdk.Stack {
           // whole prefix on teardown. The runtime reads and writes the same prefix under its
           // own per-owner role; nothing else of the owner's state is opened to the backend.
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/network/*`,
+          // Lightbulb Meetings' transcripts, <owner>/voice/transcripts/<room>/<id>.txt: written by the
+          // backend's huddle route, read by it and the Temporal worker, deleted by the account wipe.
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/voice/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
         ],

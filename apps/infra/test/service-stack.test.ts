@@ -274,6 +274,17 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(grant.Resource).toContain("arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/network/*");
   });
 
+  test("backend reads, writes and wipes meeting transcripts under the owner's voice prefix", () => {
+    const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap(
+      (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+    );
+    const grant = statements.find((statement: any) => statement.Sid === "HermesProfilesRW");
+    expect(grant.Action).toEqual(expect.arrayContaining(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]));
+    expect(grant.Resource).toContain("arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/voice/*");
+    const list = statements.find((statement: any) => statement.Sid === "LitestreamReplicaLifecycle");
+    expect(list.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas");  // the wipe's ListBucket
+  });
+
   test("lets StartBrowserSession read workspace browser extensions with the backend's credentials", () => {
     const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap(
       (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],

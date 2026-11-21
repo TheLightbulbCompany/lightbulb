@@ -1,7 +1,7 @@
-"""After a meeting: its transcript lands in the meeting's output room (the workspace's default
-room) as ``transcript.txt`` (never as messages), one Router task writes the notes there (a scripted
-start, its Worker reading the transcript by reference), and the notes stay in the app; nothing is
-emailed automatically. A series then moves on to its next occurrence.
+"""After a meeting: its transcript is kept in the product's store (``transcripts``, never in chat), one Router task
+writes the notes in the meeting's output room (the workspace's default room; a scripted start, its Worker reading
+the transcript by reference), and the notes stay in the app; nothing is emailed automatically. A series then moves
+on to its next occurrence.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from core.observability.metrics import put_metric
 from core import tasks_schema as ts
 from core.repositories import container_repo, messaging_repo, tasks_repo
 from core.voice import store
-from core.services import admission, messaging, task_conversation
-from core.voice.meetings import meeting_invites
+from core.services import admission, task_conversation
+from core.voice.meetings import meeting_invites, transcripts
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,8 @@ def _render(lines: list[dict]) -> str:
 
 
 async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
-    """Attach a meeting's whole transcript (its ``final`` request) to the room as
-    ``transcript.txt``, once. Rolling flushes are only logged by the route."""
+    """Keep a meeting's whole transcript (its ``final`` request), once. Rolling flushes are only logged by the
+    route."""
     if not final or not lines:
         return
     meta = await messaging_repo.get_room(room_id) or {}
@@ -86,19 +86,12 @@ async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
     owner_id, occurrence = meta["ownerId"], meeting.get("startAt")
     target = await meeting_invites.output_room(owner_id, room_id)
     data = _render(sorted(lines, key=lambda x: int(x["mark"]))).encode()
-    # Upload, post, then mark: a crash in between retries into a replayed post (one message), at
-    # worst leaving an orphaned S3 object -- never a meeting with no transcript.
-    attachment = await run_in_thread(messaging.store_attachment, owner_id, target, "transcript.txt", "text/plain", data)
-    await meeting_invites._post_line(
-        owner_id,
-        target,
-        f"meeting:{room_id}:{occurrence}:transcript",
-        f"Transcript of **{meeting.get('title') or 'Meeting'}** attached.",
-        attachments=[attachment.model_dump(mode="json", by_alias=True)],
-    )
+    # Write, then mark: a crash in between leaves an orphaned S3 object and a retried final writes another, never a
+    # meeting marked with a transcript that is not there. A failed write raises and the meeting has no transcript.
+    transcript_id = await run_in_thread(transcripts.put, owner_id, target, data)
     await meeting_invites._patch_meeting(
         room_id,
-        {"transcriptAttachedAt": int(time.time()), "transcriptId": str(attachment.id), "transcriptRoomId": target},
+        {"transcriptAttachedAt": int(time.time()), "transcriptId": transcript_id, "transcriptRoomId": target},
         when=lambda m: m.get("startAt") == occurrence,
     )
 
@@ -243,7 +236,7 @@ def _notes_trigger(
     owner_id: str, trigger_id: str, task_id: str, title: str, writer: str, principal: str | None, meeting: dict
 ) -> ts.Trigger:
     """A scripted StartTask (``ref.start``, applied without a Router model turn, as voice-start does). The
-    transcript goes by reference (``meetingNotes.requestId`` names the request, which names the attachment):
+    transcript goes by reference (``meetingNotes.requestId`` names the request, which names the transcript):
     a trigger row never carries it."""
     start = ts.StartTask(
         kind="start_task",
@@ -288,24 +281,22 @@ def _transcript_room(request: dict) -> str:
 
 
 async def worker_transcript(owner_id: str, request_id: str) -> str | None:
-    """The notes Worker's ``## Transcript`` (activities._request), read from the attachment the request names.
+    """The notes Worker's ``## Transcript`` (activities._request), read from the transcript the request names.
     Over ``TRANSCRIPT_MAX_BYTES`` the start is cut at a line and the end kept whole (decisions and action items
     come late), and the Worker is told. None for any other task. Raises ``TranscriptUnavailable`` when the request
-    has expired (2 days) or the attachment cannot be read: notes written without it would be invented."""
+    has expired (2 days) or the transcript cannot be read: notes written without it would be invented."""
     if not request_id.startswith(NOTES_PREFIX):
         return None
     request = await store.get_meeting_notes_request(owner_id, request_id)
-    attachment = ((request or {}).get("meeting") or {}).get("transcriptId")
-    if not attachment:
+    transcript_id = ((request or {}).get("meeting") or {}).get("transcriptId")
+    if not transcript_id:
         raise TranscriptUnavailable()
     try:
-        _, raw = await run_in_thread(messaging.load_attachment, owner_id, _transcript_room(request), attachment)
-    except messaging.ApiProblem as exc:
-        # load_attachment says "not found" for a failed read too; its cause (an OSError) tells the two apart.
-        gone = exc.error.code == "MESSAGE_NOT_FOUND" and not isinstance(exc.__cause__, OSError)
-        raise TranscriptUnavailable(TRANSCRIPT_GONE if gone else TRANSCRIPT_UNREAD) from exc
+        raw = await run_in_thread(transcripts.get, owner_id, _transcript_room(request), transcript_id)
     except Exception as exc:  # an S3 or network error: the transcript is there, the read failed for now
         raise TranscriptUnavailable(TRANSCRIPT_UNREAD) from exc
+    if raw is None:
+        raise TranscriptUnavailable()
     if len(raw) <= TRANSCRIPT_MAX_BYTES:
         return f"## Transcript\n{raw.decode('utf-8', 'replace')}"
     # ponytail: a meeting over ~150 KB of talk (about 3 hours) loses its start; a paged reader tool if that bites.
@@ -319,17 +310,15 @@ async def worker_transcript(owner_id: str, request_id: str) -> str | None:
 
 
 async def _was_cut(owner_id: str, request: dict) -> bool:
-    attachment = (request.get("meeting") or {}).get("transcriptId")
-    if not attachment:
+    transcript_id = (request.get("meeting") or {}).get("transcriptId")
+    if not transcript_id:
         return False
     try:
-        meta, _ = await run_in_thread(
-            messaging.load_attachment_head, owner_id, _transcript_room(request), attachment, 1
-        )
-    except (messaging.ApiProblem, ValueError):  # the notes are kept either way; only their first line is lost
+        size = await run_in_thread(transcripts.size, owner_id, _transcript_room(request), transcript_id)
+    except Exception:  # noqa: BLE001 -- the notes are kept either way; only their first line is lost
         logger.warning("meeting room %s: transcript size unreadable", request["roomId"], exc_info=True)
         return False
-    return meta.size > TRANSCRIPT_MAX_BYTES
+    return (size or 0) > TRANSCRIPT_MAX_BYTES
 
 
 def _unsaid_text(meeting: dict) -> str:

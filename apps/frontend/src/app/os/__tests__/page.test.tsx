@@ -15,8 +15,17 @@ const INVITE = "Open Spark to apply this invite";
 describe("/os invite link", () => {
   it("a valid referral code links to the app with it", () => {
     s.query = "ref=abc123XYZ";
+    vi.stubGlobal("location", { hostname: "thelightbulb.company" });
     render(<OsPage />);
     expect(screen.getByRole("link", { name: INVITE })).toHaveAttribute("href", "spark://referral?code=abc123XYZ");
+  });
+
+  it("the dev site links to the dev build", () => {
+    s.query = "ref=abc123XYZ";
+    vi.stubGlobal("location", { hostname: "dev.thelightbulb.company" });
+    render(<OsPage />);
+    expect(screen.getByRole("link", { name: INVITE })).toHaveAttribute("href", "spark-dev://referral?code=abc123XYZ");
+    vi.unstubAllGlobals();
   });
 
   it.each(["", "ref=", "ref=a.b", "ref=user_a", "ref=%3Cx%3E", `ref=${"x".repeat(65)}`])("%s: no invite link", (query) => {

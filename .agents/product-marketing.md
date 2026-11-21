@@ -139,8 +139,8 @@ Paths are relative to the repo root `/Users/prasiddhaparthsarthy/Desktop/lb-mark
 | Download: `/download/spark` (DMG) and update feed `/spark/appcast.xml` | VERIFIED as redirects | `apps/frontend/next.config.ts` `redirects()` to the `spark` GitHub release. The download works only once the app team uploads `Spark.dmg` and `appcast.xml` to that release and prod is deployed. |
 | Requires macOS 14 or later | VERIFIED | The app's sign-in library needs macOS 14 (app team, 21 Nov 2026). |
 | Apple silicon only (M1 or later); no Intel build | VERIFIED | The app team's build is arm64 only (21 Nov 2026). Say "For Mac with Apple silicon (M1 or later)". |
-| On an invite link (`/os?ref=CODE`), signed out: "You've been invited to Spark. Create your account, then download." with the sign-up form and "Skip, just download"; signed in: the download and "Open Spark and sign in with the same Apple, Google or email." Before the installer is published: "Download coming soon." No referrer name, no price. | VERIFIED | Founder, 21 Nov 2026: record the referral at web sign-up; the referred person gets nothing extra. `app/os/OsInvite.tsx`. |
-| A price or trial for Spark | DO NOT CLAIM on the page | Founder removed the price line from the app's sign-in screen, 21 Nov 2026 ("Get rid of the price line for now"); `/os` shows none. |
+| On an invite link (`/os?ref=CODE`), signed out: "You've been invited to Spark. Create your account, then download." with the sign-up form and "Skip, just download"; signed in: the download and "Open Spark and sign in with the same Apple, Google or email." Before the installer is published: "Download coming soon." No referrer name. | VERIFIED | Founder, 21 Nov 2026: record the referral at web sign-up; the referred person gets nothing extra. `app/os/OsInvite.tsx`. |
+| Price and trial on `/os`: one small line under the download, "Free for 3 days, then $20/month. Renews monthly until you cancel.", built from the backend's public `GET /os/config` (no line when it cannot be read), followed by "Terms" (`/terms`) and "Privacy" (`/privacy`) links, always shown. Nowhere else on the page | VERIFIED | Founder, 21 Nov 2026. `app/os/page.tsx`. Spark's Stripe Checkout asks for Terms of Service consent when the Stripe account has a terms URL. |
 
 ### Billing, trial, compliance
 
@@ -314,7 +314,7 @@ Confidence: **low.** No first-party salon interviews exist yet, and Reddit was b
 11. how to stop missing calls at my salon
 12. salon phone answering service 24/7
 
-**Current site state:** one site for three products. `/` is the company home. `/phone` sells Lightbulb Phone (the receptionist), and `/pricing` is its one plan. `/meetings` (Lightbulb Meetings) is a waitlist page that sells nothing and shows no price. `/os` (Spark, the Mac app) says "Meet Spark" and offers the Mac download, with no price. The shared nav lists Phone, Meetings, Spark and Pricing; its sign-up button and the footer's say "Set up Lightbulb Phone". The footer, sitemap, `llms.txt` and the facts in `lib/seo.tsx` name all three products. `/voice` layout metadata is "Your assistant's calls and meetings".
+**Current site state:** one site for three products. `/` is the company home. `/phone` sells Lightbulb Phone (the receptionist), and `/pricing` is its one plan. `/meetings` (Lightbulb Meetings) is a waitlist page that sells nothing and shows no price. `/os` (Spark, the Mac app) says "Meet Spark" and offers the Mac download, with one price line from the backend and Terms and Privacy links. The shared nav lists Phone, Meetings, Spark and Pricing; its sign-up button and the footer's say "Set up Lightbulb Phone". The footer, sitemap, `llms.txt` and the facts in `lib/seo.tsx` name all three products. `/voice` layout metadata is "Your assistant's calls and meetings".
 
 ## What from the old product is kept (do not delete these routes)
 

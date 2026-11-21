@@ -8,6 +8,7 @@ unsubscribe links use; `kind` keeps it from opening anything else. The users row
 the Spark branch of the Stripe webhook, and `os_checkout_session_id` (the last Checkout Session issued)."""
 
 import logging
+import re
 import time
 
 import jwt as pyjwt
@@ -173,8 +174,7 @@ async def checkout(user_id: str) -> str:
         {"subscription_status": "trial_local", "trial_end": int(row["os_trial_ends_at"])}, bucket
     )
     metadata = {"product": "spark", "user_id": user_id}
-    session = await run_in_thread(
-        stripe.checkout.Session.create,
+    params = dict(
         mode="subscription",
         customer=customer,
         line_items=[{"price": settings.STRIPE_SPARK_PRICE_ID, "quantity": 1}],
@@ -184,10 +184,24 @@ async def checkout(user_id: str) -> str:
         success_url=page("success"),
         cancel_url=page("cancelled"),
         expires_at=bucket + 300 + CHECKOUT_TTL_S,  # 30 to 35 minutes out, identical within the bucket
-        # The earlier session is in the key: after expiring it, a retry in this bucket must get a new one.
-        idempotency_key=_checkout_idempotency_key("spark", user_id, f"{trial_end}:{pending_id}"),
         api_key=settings.STRIPE_SECRET_KEY,
     )
+    # The earlier session is in the key: after expiring it, a retry in this bucket must get a new one.
+    key = _checkout_idempotency_key("spark", user_id, f"{trial_end}:{pending_id}")
+    try:
+        session = await run_in_thread(
+            stripe.checkout.Session.create,
+            **params,
+            consent_collection={"terms_of_service": "required"},
+            idempotency_key=key,
+        )
+    except stripe.InvalidRequestError as e:
+        # Stripe refuses the consent box while the account has no Terms of Service URL: check out without it.
+        if not re.search(r"terms of service|consent_collection", str(e), re.IGNORECASE):
+            raise
+        put_metric("os_billing.checkout.tos_consent_unavailable")
+        logger.warning("spark checkout without terms consent: Stripe has no terms of service URL")
+        session = await run_in_thread(stripe.checkout.Session.create, **params, idempotency_key=f"{key}:no-tos")
     try:
         await run_in_thread(
             _users().update_item,

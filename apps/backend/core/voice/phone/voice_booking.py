@@ -24,8 +24,9 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from core.dynamodb import run_in_thread
-from core.repositories import messaging_repo, tasks_repo
+from core.config import settings
+from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact
+from core.repositories import tasks_repo
 from core.services.credentials import access_token
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,8 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
     """One existing question per workspace for external booking failures/uncertainty.
     ponytail: it rides the existing phone Questions path (start_work -> a Worker task that asks the owner, kind
     `question`); Task 6 adds the `line_problem` kind and renames it."""
-    vp, pk, table, now_s = _vp(), messaging_repo.owner_pk(ws), messaging_repo._table(), int(time.time())
-    pointer = await messaging_repo._get(pk, _PROBLEM_SK)
+    vp, pk, table, now_s = _vp(), owner_pk(ws), messaging_table(), int(time.time())
+    pointer = await get_item(table, pk, _PROBLEM_SK)
     if pointer and pointer.get("taskId"):
         if (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:
             return
@@ -229,9 +230,7 @@ def _result(row: dict | None, state: str, code: str = "", *, action: str = "crea
 
 async def _read(ws: str, sk: str) -> dict | None:
     return (
-        await run_in_thread(
-            messaging_repo._table().get_item, Key={"pk": messaging_repo.owner_pk(ws), "sk": sk}, ConsistentRead=True
-        )
+        await run_in_thread(messaging_table().get_item, Key={"pk": owner_pk(ws), "sk": sk}, ConsistentRead=True)
     ).get("Item")
 
 
@@ -239,9 +238,9 @@ async def _transaction(items: list[dict]) -> None:
     if len(items) > 100:
         raise _vp()._err(400, "booking_too_long")
     try:
-        await messaging_repo._transact(items)
+        await transact(messaging_table(), items)
     except ClientError as exc:
-        if messaging_repo.is_cancelled(exc):
+        if is_cancelled(exc):
             raise _vp()._err(409, "booking_changed") from None
         raise
 
@@ -253,7 +252,7 @@ async def _save(row: dict, new: dict, extra: list[dict] | None = None) -> dict:
         [
             {
                 "Put": {
-                    "TableName": messaging_repo.settings.MESSAGING_TABLE,
+                    "TableName": settings.MESSAGING_TABLE,
                     "Item": new,
                     "ConditionExpression": condition,
                     "ExpressionAttributeValues": values,
@@ -323,7 +322,7 @@ _OURS = "attribute_not_exists(sk) OR (bookingId = :bid AND booking = :old)"
 def _drop_target(row: dict) -> dict:
     return {
         "Delete": {
-            "TableName": messaging_repo.settings.MESSAGING_TABLE,
+            "TableName": settings.MESSAGING_TABLE,
             "Key": {"pk": row["pk"], "sk": row["pending"]["targetHold"]},
             "ConditionExpression": "bookingId = :bid AND operationId = :op",
             "ExpressionAttributeValues": {":bid": row["bookingId"], ":op": row["pending"]["id"]},
@@ -334,7 +333,7 @@ def _drop_target(row: dict) -> dict:
 async def _settle(row: dict, event: dict | None) -> dict:
     """Only exact provider evidence reaches here; all row/cell changes are one CAS transaction."""
     vp, pending = _vp(), row["pending"]
-    action, table, pk = pending["action"], messaging_repo.settings.MESSAGING_TABLE, row["pk"]
+    action, table, pk = pending["action"], settings.MESSAGING_TABLE, row["pk"]
     if action == "cancel":
         await _transaction(vp._release(table, pk, row))
         return _result(row, "confirmed", action=action)
@@ -372,7 +371,7 @@ async def _settle(row: dict, event: dict | None) -> dict:
 
 async def _fail(row: dict, cfg: dict, call_id: str, *, rejected: bool) -> dict:
     vp, pending = _vp(), row["pending"]
-    table, pk, action = messaging_repo.settings.MESSAGING_TABLE, row["pk"], pending["action"]
+    table, pk, action = settings.MESSAGING_TABLE, row["pk"], pending["action"]
     if rejected:
         if action == "create":
             await _transaction(vp._release(table, pk, row))
@@ -654,7 +653,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
     if not target_free:
         raise vp._err(409, "slot_taken")
     lane = row["sk"][26:]  # a move keeps its person
-    cells, table = vp._cells(cfg, new_start, minutes, lane), messaging_repo.settings.MESSAGING_TABLE
+    cells, table = vp._cells(cfg, new_start, minutes, lane), settings.MESSAGING_TABLE
     # Refuse upfront if either prepare (with its capacity guards) or final transfer would exceed DDB's cap.
     if len(set(row["cells"]) | set(cells)) + len(cells) + 3 > 100:
         raise vp._err(400, "booking_too_long")
@@ -735,7 +734,7 @@ async def cancel(ws: str, cfg: dict, call_id: str, row: dict) -> dict:
     if row.get("pending"):
         return await _resume(ws, cfg, call_id, row, "cancel")
     if _own(row) or not row.get("eventId"):  # a Google hold never prepared has no event: no POST precedes that save
-        await _transaction(_vp()._release(messaging_repo.settings.MESSAGING_TABLE, messaging_repo.owner_pk(ws), row))
+        await _transaction(_vp()._release(settings.MESSAGING_TABLE, owner_pk(ws), row))
         return {"state": "confirmed", "provider": "own"}
     try:
         event = await _observe(ws, row)

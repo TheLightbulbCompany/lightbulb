@@ -26,7 +26,9 @@ from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.engine import hooks
 from core.engine.contract import (
+    PRODUCT_META_FIELDS,
     ActIn,
+    AnnotateIn,
     AnswerIn,
     EngineError,
     EventIn,
@@ -73,6 +75,28 @@ async def _owned(tenant_id: str, conversation_id: str) -> dict:
     if not meta or meta.get("ownerId") != tenant_id or meta.get("deletedAt"):
         raise _not_found()
     return meta
+
+
+# --- annotate -------------------------------------------------------------------------------------------------------
+
+
+async def annotate(req: AnnotateIn) -> bool:
+    """Write a product's own fields on its conversation's record; the engine stores them and never reads them. With
+    `expected_revision`, a writer since the caller's read cancels it (botocore's `TransactionCanceledException`, as
+    `patch_room_meta` raises it, so the caller's merge loop retries). With `if_absent`, False when the key is there."""
+    if fields := sorted(set(req.set) - PRODUCT_META_FIELDS):
+        raise _problem(400, "not_product_field", fields=fields)
+    await _owned(req.tenant_id, req.conversation_id)
+    if req.if_absent is None:
+        await messaging_repo.patch_room_meta(req.conversation_id, req.set, expected_revision=req.expected_revision)
+        return True
+    claim = req.set.get("meeting")
+    if set(req.set) != {"meeting"} or not isinstance(claim, dict) or req.if_absent not in claim:
+        raise _problem(400, "bad_claim")
+    also = {k: v for k, v in claim.items() if k != req.if_absent}
+    return await messaging_repo.set_meeting_field_if_absent(
+        req.conversation_id, req.if_absent, claim[req.if_absent], also
+    )
 
 
 # --- append_line ---------------------------------------------------------------------------------------------------

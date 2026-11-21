@@ -75,7 +75,7 @@ async def test_phone_sweep_reads_every_page_of_the_open_call_index():
     from routers import voice_phone
 
     with (
-        patch.object(vc.messaging_repo, "_table", return_value=table),
+        patch.object(vc, "messaging_table", return_value=table),
         patch.object(voice_phone, "end_call", AsyncMock()) as end,
     ):
         assert await vc.sweep_phone_calls(10**9) == 2

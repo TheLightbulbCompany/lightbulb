@@ -197,7 +197,7 @@ def room(monkeypatch):
         return {"messageId": kw["idemp_sk"]}, False
 
     def create(**kw):
-        state["meta"] = {"roomId": kw["room_id"], **kw["extra"]}
+        state["meta"] = {"roomId": kw["room_id"], "ownerId": kw["owner_id"], **kw["extra"]}
 
     def patch(room_id, updates, expected_revision=None):  # the repo's CAS on the revision the caller read
         if expected_revision != state["meta"].get("revision", 0):
@@ -269,7 +269,7 @@ async def test_a_members_invite_opens_the_meeting_room(room):
     assert await meeting_invites.handle_team_mail("org_1", _mail(WITH_DANA), TEAM) == "meeting_scheduled"
     room.create.assert_awaited_once()
     kw = room.create.await_args.kwargs
-    assert kw["room_id"] == meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    assert kw["room_id"] == meeting_invites.store.meeting_room_id("org_1", UID)
     assert kw["kind"] == "channel" and kw["name"] == "Acme weekly sync" and kw["creator_user_id"] == "user_p"
     # Hidden; the inviter is its one human (Dana, a member attendee, is not seated); every agent listens.
     assert kw["extra"]["hidden"] is True
@@ -841,13 +841,13 @@ def test_a_multi_address_organizer_is_dropped():
 
 async def test_a_write_is_bound_to_the_revision_it_read(room):
     """A transcript write that read ``in_call`` must not put it back over a webhook's ``ended``."""
-    room.state["meta"] = {"roomId": "r", "revision": 1, "meeting": {"status": "in_call"}}
+    room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 1, "meeting": {"status": "in_call"}}
     reads = iter([dict(room.state["meta"])])  # A's first read, then B commits before A writes
 
     def get(room_id):
         stale = next(reads, None)
         if stale is not None:
-            room.state["meta"] = {"roomId": "r", "revision": 2, "meeting": {"status": "ended"}}
+            room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 2, "meeting": {"status": "ended"}}
             return stale
         return room.state["meta"]
 
@@ -859,13 +859,18 @@ async def test_a_write_is_bound_to_the_revision_it_read(room):
 
 async def test_a_function_of_the_map_is_redone_over_the_racing_write(room):
     """A read-modify-write (the roster) applied over the lost race's state, not the first read."""
-    room.state["meta"] = {"roomId": "r", "revision": 1, "meeting": {"roster": {"1": "Pat"}}}
+    room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 1, "meeting": {"roster": {"1": "Pat"}}}
     reads = iter([dict(room.state["meta"])])
 
     def get(room_id):
         stale = next(reads, None)
         if stale is not None:
-            room.state["meta"] = {"roomId": "r", "revision": 2, "meeting": {"roster": {"1": "Pat", "2": "Dan"}}}
+            room.state["meta"] = {
+                "roomId": "r",
+                "ownerId": "org_1",
+                "revision": 2,
+                "meeting": {"roster": {"1": "Pat", "2": "Dan"}},
+            }
             return stale
         return room.state["meta"]
 
@@ -1016,11 +1021,9 @@ async def test_one_occurrence_alone_books_its_own_meeting(room):
 
     room.get.side_effect = get
     assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_scheduled"
-    assert reads[0] == meeting_invites.messaging_repo.meeting_room_id("org_1", UID)  # the series looked up first
+    assert reads[0] == meeting_invites.store.meeting_room_id("org_1", UID)  # the series looked up first
     kw = room.create.await_args.kwargs
-    assert kw["room_id"] == meeting_invites.messaging_repo.meeting_room_id(
-        "org_1", f"{UID}#{_epoch(2026, 10, 10, 15, 0)}"
-    )
+    assert kw["room_id"] == meeting_invites.store.meeting_room_id("org_1", f"{UID}#{_epoch(2026, 10, 10, 15, 0)}")
 
 
 async def test_a_series_invite_stores_its_rule_and_says_so(room, now):
@@ -1044,7 +1047,7 @@ async def test_a_re_invite_after_the_meeting_ended_is_not_a_move(room):
 
 async def test_lines_go_to_the_default_room_else_the_meetings_own(room):
     default = meeting_invites.messaging.default_room_id("org_1")
-    meeting_room = meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    meeting_room = meeting_invites.store.meeting_room_id("org_1", UID)
     rooms = {default: {"roomId": default}}
     room.get.side_effect = lambda room_id: rooms.get(room_id) if room_id == default else room.state["meta"]
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
@@ -1414,7 +1417,7 @@ async def test_every_standing_delivery_records_the_meeting_on_the_team_row(room)
     await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM)
     moved = GOOGLE.replace("SEQUENCE:0", "SEQUENCE:1").replace("T150000", "T160000")
     await meeting_invites.handle_team_mail("org_1", _mail(moved), TEAM)
-    room_id = meeting_invites.messaging_repo.meeting_room_id("org_1", UID)
+    room_id = meeting_invites.store.meeting_room_id("org_1", UID)
     assert room.add_meeting.await_args_list == [((TEAM["address"], room_id),)] * 2  # an idempotent ADD
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_stale"
     assert room.add_meeting.await_count == 2  # a stale delivery records nothing

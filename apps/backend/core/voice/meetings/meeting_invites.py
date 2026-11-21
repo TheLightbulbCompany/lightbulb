@@ -21,9 +21,13 @@ from botocore.exceptions import ClientError
 from dateutil.rrule import DAILY, rruleset, rrulestr
 
 from core.config import settings
+from core.dynamodb import is_cancelled
+from core.engine import api
+from core.engine.contract import AnnotateIn
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo, messaging_repo
+from core.voice import store
 from core.services import agent_email, clerk_admin, messaging
 from core.voice.meetings import meeting_bots, meeting_rsvp
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
@@ -403,11 +407,16 @@ async def _patch_meeting(
         if merged == stored:
             return stored
         try:
-            await messaging_repo.patch_room_meta(
-                room_id, {"meeting": merged}, expected_revision=int(meta.get("revision", 0))
+            await api.annotate(
+                AnnotateIn(
+                    tenant_id=meta.get("ownerId") or "",
+                    conversation_id=room_id,
+                    set={"meeting": merged},
+                    expected_revision=int(meta.get("revision", 0)),
+                )
             )
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc) or attempt == 3:
+            if not is_cancelled(exc) or attempt == 3:
                 raise  # a throttle, access error, or a third lost race: SES retries the whole mail
             continue
         if meta.get("ownerId"):
@@ -524,7 +533,10 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
     # behind. A nonce claimed just now has no bot, and List Bots is 60/min for the whole workspace.
     nonce, now = secrets.token_urlsafe(32), int(time.time())
     bot_id = None
-    if not await messaging_repo.set_meeting_field_if_absent(room_id, "ticketNonce", nonce, {"botClaimAt": now}):
+    claim = {"meeting": {"ticketNonce": nonce, "botClaimAt": now}}
+    if not await api.annotate(
+        AnnotateIn(tenant_id=owner_id, conversation_id=room_id, set=claim, if_absent="ticketNonce")
+    ):
         stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
         if stored.get("recallBotId"):
             return stored
@@ -598,10 +610,10 @@ async def handle_team_mail(
         # series ("All events"), or a move into the past. No record, no line, no bot, no RSVP.
         put_metric("meeting.invite.stale")
         return "meeting_ignored"
-    series_room = messaging_repo.meeting_room_id(owner_id, invite.instance_of) if invite.instance_of else None
+    series_room = store.meeting_room_id(owner_id, invite.instance_of) if invite.instance_of else None
     if series_room and ((await messaging_repo.get_room(series_room)) or {}).get("meeting"):
         return await _apply_instance(owner_id, series_room, invite, creator, team, sender)
-    room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
+    room_id = store.meeting_room_id(owner_id, invite.uid)
     # The lease serializes everything below (sequence check, META, line, bot, RSVP) across
     # concurrent deliveries; the loser 503s and SES redelivers after the holder is done.
     async with meeting_lease(room_id):
@@ -616,7 +628,7 @@ async def _apply_instance(
     Always acquire parent before child. Advancing the parent and a master resend therefore
     observe the exclusion before either can book the original slot again.
     """
-    room_id = messaging_repo.meeting_room_id(owner_id, invite.uid)
+    room_id = store.meeting_room_id(owner_id, invite.uid)
     async with meeting_lease(parent_room), meeting_lease(room_id):
         parent = await messaging_repo.get_room(parent_room) or {}
         meeting = parent.get("meeting") or {}

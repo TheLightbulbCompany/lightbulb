@@ -17,6 +17,7 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.observability.metrics import put_metric
 from core import tasks_schema as ts
 from core.repositories import container_repo, messaging_repo, tasks_repo
+from core.voice import store
 from core.services import admission, messaging, task_conversation
 from core.voice.meetings import meeting_invites
 
@@ -208,7 +209,7 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
             # What the keep reads travels with the request: a recurring series rewrites the meeting
             # record as it advances, before the notes come back. Written first: the task's end reads it.
             snapshot = {k: meeting[k] for k in _MAIL_FIELDS if meeting.get(k) is not None}
-            await messaging_repo.put_meeting_notes_request(owner_id, trigger_id, {
+            await store.put_meeting_notes_request(owner_id, trigger_id, {
                 "roomId": room_id, "occurrence": occurrence, "targetRoomId": target, "agentId": writer,
                 "taskId": task_id, "meeting": snapshot, **({"principalUserId": principal} if principal else {}),
             })  # fmt: skip
@@ -293,7 +294,7 @@ async def worker_transcript(owner_id: str, request_id: str) -> str | None:
     has expired (2 days) or the attachment cannot be read: notes written without it would be invented."""
     if not request_id.startswith(NOTES_PREFIX):
         return None
-    request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
+    request = await store.get_meeting_notes_request(owner_id, request_id)
     attachment = ((request or {}).get("meeting") or {}).get("transcriptId")
     if not attachment:
         raise TranscriptUnavailable()
@@ -362,7 +363,7 @@ async def on_task_moved(task: dict, to: str) -> None:
     if not request_id.startswith(NOTES_PREFIX) or to not in _ENDS or not owner_id:
         return
     try:
-        request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
+        request = await store.get_meeting_notes_request(owner_id, request_id)
         if request is None or request.get("taskId") != task.get("taskId") or request.get("mailAttemptedAt"):
             return  # not this task's, or its notes are kept (the claim is spent only then)
         notes = None
@@ -441,7 +442,7 @@ async def on_not_started(owner_id: str, trigger: dict) -> None:
     if not request_id.startswith(NOTES_PREFIX):
         return
     try:
-        request = await messaging_repo.get_meeting_notes_request(owner_id, request_id)
+        request = await store.get_meeting_notes_request(owner_id, request_id)
         if request is not None and not request.get("mailAttemptedAt"):
             await _mark_no_notes(request)
     except Exception:  # noqa: BLE001
@@ -612,7 +613,7 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
             return False  # incomplete: the claim stays unspent and the caller retries (each step is repeat-safe)
         # Spent only with notes kept: a failed or stopped task leaves it unspent (the meeting's notesMailedAt says
         # "no notes"), so a Retry that succeeds still admits the follow-ups (meeting_followups.enqueue reads it).
-        await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
+        await store.claim_meeting_notes_mail(owner_id, message_id)
     return True
 
 

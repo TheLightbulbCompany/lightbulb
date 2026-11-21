@@ -18,10 +18,11 @@ from fastapi import HTTPException
 from core.billing import metronome_client, voice_billing
 from core.billing import metronome_fast_gate
 from core.config import settings
-from core.dynamodb import get_table, run_in_thread
+from core.dynamodb import get_table, messaging_table, run_in_thread
 from core.engine.contract import VOICE_NOTE_TEXT_MAX
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
+from core.voice import store
 from core.services import hermes_profiles, messaging
 from core.voice import livekit_huddles
 from core.services.live_events import get_live_event_publisher
@@ -149,7 +150,7 @@ async def _bill(call: dict, seconds: int) -> None:
         # Atomically mark it settled alongside the same counter/credit debit used by calls.
         delete = {
             "Update": {
-                "TableName": messaging_repo._table().name,
+                "TableName": messaging_table().name,
                 "Key": receipt,
                 "UpdateExpression": "SET billingSettled = :yes",
                 "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(billingSettled)",
@@ -303,7 +304,7 @@ async def send_renamed_notices(
 
 async def voice_run(owner_id: str, run_id: str) -> dict | None:
     """The VOICERUN row the phone (or Live) wrote when it dispatched the run: its room, agent and requester."""
-    return await messaging_repo.get_voice_run(owner_id, run_id)
+    return await store.get_voice_run(owner_id, run_id)
 
 
 async def edit_voice_profile(
@@ -311,7 +312,7 @@ async def edit_voice_profile(
 ) -> dict:
     """C8: an agent renames itself or edits its voice notes because a person asked it to on Live.
     Who asked comes from the VOICERUN row the backend wrote, never from the agent."""
-    run = await messaging_repo.get_voice_run(owner_id, run_id)
+    run = await store.get_voice_run(owner_id, run_id)
     if not run or run.get("agentId") != agent_id:
         raise _problem(404, code="voice_run_not_found")
     speaker = run.get("speakerUserId")
@@ -330,7 +331,7 @@ async def edit_voice_profile(
             raise _problem(409, code="name_taken")
         # ponytail: counted before the rename, so a failed write costs one of the 3; counting after
         # would let a burst rename past the limit. A refund on failure if that ever matters.
-        if not await messaging_repo.count_voice_edit(owner_id, agent_id, "rename", RENAME_DAILY_LIMIT):
+        if not await store.count_voice_edit(owner_id, agent_id, "rename", RENAME_DAILY_LIMIT):
             raise _problem(429, code="rate_limited")
         from core.services import agent_registry
 
@@ -345,7 +346,7 @@ async def edit_voice_profile(
     said = (text or "").strip()
     if action != "clear_notes" and not 1 <= len(said) <= VOICE_NOTE_TEXT_MAX:
         raise _problem(422, code="invalid_text")
-    if not await messaging_repo.count_voice_edit(owner_id, agent_id, "notes", NOTE_DAILY_LIMIT):
+    if not await store.count_voice_edit(owner_id, agent_id, "notes", NOTE_DAILY_LIMIT):
         raise _problem(429, code="rate_limited")
     _, current = hermes_profiles.parse_voice_notes_md(
         await run_in_thread(hermes_profiles.read_voice_notes, owner_id, agent_id)
@@ -420,7 +421,7 @@ async def sweep_phone_calls(now: int) -> int:
     from core.voice.phone.calls import OPEN_CALLS_PK
     from routers import voice_phone
 
-    table = messaging_repo._table()
+    table = messaging_table()
     rows, kw = [], {"KeyConditionExpression": Key("pk").eq(OPEN_CALLS_PK)}
     while True:
         page = await run_in_thread(table.query, **kw)

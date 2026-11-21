@@ -462,7 +462,7 @@ async def test_paused_room_drop_at_admission_marks_notes_not_started(world, monk
     world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
     request = AsyncMock(return_value={"roomId": ROOM, "occurrence": 1})
     patch = AsyncMock()
-    monkeypatch.setattr(meeting_notes.messaging_repo, "get_meeting_notes_request", request)
+    monkeypatch.setattr(meeting_notes.store, "get_meeting_notes_request", request)
     monkeypatch.setattr(meeting_invites, "_patch_meeting", patch)
     await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": tid})
     assert world["router"] == []

@@ -8,6 +8,7 @@ from temporalio.testing import ActivityEnvironment
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo, questions_repo, tasks_repo
+from core.voice import store
 from core.services import task_asks
 from core.voice.meetings import meeting_followups
 from core.temporal import activities, task_questions
@@ -105,7 +106,7 @@ async def test_answer_before_restart_replays_actual_answer_once_into_first_attem
 ):  # noqa: F811
     task, question = initial_task
     if future != "unchanged":
-        monkeypatch.setattr(messaging_repo, "get_meeting_notes_request", AsyncMock(return_value=None))
+        monkeypatch.setattr(store, "get_meeting_notes_request", AsyncMock(return_value=None))
     if future == "followups_disabled":
         world["config"]["meetings"]["followUps"] = False
     await _open(task, question)
@@ -150,7 +151,7 @@ async def test_admitted_task_question_outlives_notes_request_and_future_preferen
 ):  # noqa: F811
     task, _ = initial_task
     lookup = AsyncMock(return_value=None)
-    monkeypatch.setattr(messaging_repo, "get_meeting_notes_request", lookup)
+    monkeypatch.setattr(store, "get_meeting_notes_request", lookup)
     if future == "followups_disabled":
         world["config"]["meetings"]["followUps"] = False
     result = await activities.begin_attempt("org_a", task["taskId"], ["chat:after-seven-days"])

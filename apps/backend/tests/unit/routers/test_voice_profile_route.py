@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 
 from core.repositories import container_repo, messaging_repo  # noqa: E402
+from core.voice import store  # noqa: E402
 from core.services import hermes_profiles, messaging
 from core.voice import livekit_huddles  # noqa: E402
 from core.services.agent_registry import RegistryUnavailable  # noqa: E402
@@ -39,7 +40,7 @@ def world(monkeypatch):
         "run-guest": {"roomId": R_LIVE, "agentId": AGENT, "speakerUserId": "user_guest", "speakerName": "Gus"},
         "run-other": {"roomId": R_LIVE, "agentId": OTHER, "speakerUserId": "user_1", "speakerName": "Aden"},
     }
-    monkeypatch.setattr(messaging_repo, "get_voice_run", AsyncMock(side_effect=lambda owner, run_id: runs.get(run_id)))
+    monkeypatch.setattr(store, "get_voice_run", AsyncMock(side_effect=lambda owner, run_id: runs.get(run_id)))
     members = {
         "user_1": {"kind": "human", "id": "user_1", "homeOwnerId": OWNER},
         "user_guest": {"kind": "human", "id": "user_guest", "homeOwnerId": "org_vendor"},
@@ -52,7 +53,7 @@ def world(monkeypatch):
         counts[(agent_id, kind)] = counts.get((agent_id, kind), 0) + 1
         return counts[(agent_id, kind)] <= limit
 
-    monkeypatch.setattr(messaging_repo, "count_voice_edit", count)
+    monkeypatch.setattr(store, "count_voice_edit", count)
     roster = [{"id": AGENT, "name": "Ada", "role": "ceo"}, {"id": OTHER, "name": "Forge", "role": "engineer"}]
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(side_effect=lambda owner: [dict(r) for r in roster]))
     monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value="front-agent"))  # not the renamed one
@@ -189,13 +190,13 @@ def test_a_wrong_hook_token_is_401(world):
 async def test_count_voice_edit_is_a_conditional_add_per_agent_kind_and_day():
     with (
         patch.object(messaging_repo.settings, "MESSAGING_TABLE", "test-messaging"),
-        patch("core.repositories.messaging_repo.run_in_thread", new_callable=AsyncMock) as run,
+        patch("core.voice.store.run_in_thread", new_callable=AsyncMock) as run,
     ):
-        assert await messaging_repo.count_voice_edit(OWNER, AGENT, "rename", 3) is True
+        assert await store.count_voice_edit(OWNER, AGENT, "rename", 3) is True
         kwargs = run.await_args.kwargs
         assert kwargs["Key"]["pk"] == f"OWNER#{OWNER}"
         assert kwargs["Key"]["sk"].startswith(f"VOICEEDIT#{AGENT}#rename#")
         assert kwargs["ConditionExpression"] == "attribute_not_exists(edits) OR edits < :limit"
         assert "expiresAt" in kwargs["UpdateExpression"]
         run.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
-        assert await messaging_repo.count_voice_edit(OWNER, AGENT, "rename", 3) is False
+        assert await store.count_voice_edit(OWNER, AGENT, "rename", 3) is False

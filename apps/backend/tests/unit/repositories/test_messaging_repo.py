@@ -1344,16 +1344,6 @@ async def test_patch_room_meta_bound_to_a_stale_revision_is_cancelled(table):
     assert (await repo.get_room(room_id))["topic"] == "first"
 
 
-async def test_a_meeting_notes_mail_is_claimed_once(table):
-    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")  # no request: nothing to mail
-    await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})
-    assert (await repo.get_meeting_notes_request("owner_1", "msg-1"))["roomId"] == "r1"
-    assert await repo.claim_meeting_notes_mail("owner_1", "msg-1")
-    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
-    await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})  # a retry
-    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
-
-
 @pytest.mark.asyncio
 async def test_an_ended_run_waits_for_its_followup_label_then_leaves_the_index(table):
     """T35: end_run parks the row as ``followup``; it is not open, and the label is written once."""

@@ -33,8 +33,6 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
                                                        person send's DM is known); no TTL, the receipt index
     OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
     OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
-    OWNER#<owner>   VOICERUN#<runId>                    a Live voice run's room, agent and speaker (2 h TTL; NOT RUN#:
-                                                       chat never steers into a voice run)
     ROOM#<room>     FOLLOWUP#<followUpId>               a finished async delegation owed back to its agent
     ROOM#<room>     WORK#FOLLOWUP#<agent>#<followUpId>  one-shot outbox for that follow-up turn
     ROOM#<room>     DECISION#<messageId>                Jev routing decision, claim-first (NOT WORK#:
@@ -43,9 +41,14 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
                                                        messaging projector after the message commits; 90-day TTL
     ACTIVITY#<home>#<user>  SEEN                       the reader's Activity ``seenUpTo`` (monotonic)
     OWNER#<owner>   VOICEAGENT                         the voice assistant's settings (Agent page), one JSON
-                                                       document in ``config``; no TTL
+                                                       document in ``config``; no TTL. Here because the engine reads
+                                                       its ``frontAgentId`` (``task_conversation``)
     OWNER#<owner>   VOICEUSAGE#<transaction>           immutable voice metering event; never TTL'd
-    OWNER#<owner>   WORK#VOICEUSAGE#<transaction>      one-shot outbox for Metronome + allowance notice work
+    OWNER#<owner>   WORK#VOICEUSAGE#<transaction>      one-shot outbox for Metronome + allowance notice work (rides
+                                                       the engine's stream -> Pipe -> FIFO)
+
+The products' own rows in this table (voice runs, phone numbers, PINs, bookings, meeting notes requests) are
+``core.voice.store``'s and its modules'; their sort keys never meet these.
 
 ``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#``, ``FOLLOWUP#`` and ``DECISION#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
@@ -63,14 +66,22 @@ import re
 import time
 import uuid
 import weakref
-from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 from botocore.exceptions import ClientError
 
 from core.config import settings
-from core.dynamodb import _get_resource, run_in_thread, utc_now_iso
+from core.dynamodb import (
+    get_item,
+    is_cancelled,
+    messaging_table,
+    owner_pk,
+    query_all,
+    run_in_thread,
+    transact,
+    utc_now_iso,
+)
 from core.dynamodb import ddb_safe as _ddb_safe
 from core.dynamodb import plain as _plain
 
@@ -166,10 +177,6 @@ class ThreadRootMismatch(MessagingRepoError):
 
 def room_pk(room_id: str) -> str:
     return f"ROOM#{room_id}"
-
-
-def owner_pk(owner_id: str) -> str:
-    return f"OWNER#{owner_id}"
 
 
 def msg_sk(seq: int) -> str:
@@ -394,10 +401,6 @@ def run_sk(run_id: str) -> str:
     return f"RUN#{run_id}"
 
 
-def voice_run_sk(run_id: str) -> str:
-    return f"VOICERUN#{run_id}"
-
-
 def run_id_for(agent_id: str, message_id: str) -> str:
     """Deterministic per dispatch event so an SQS redelivery lands on the same row."""
     return str(uuid.uuid5(RUN_NS, f"{agent_id}:{message_id}"))
@@ -440,11 +443,6 @@ def feed_room_id(owner_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-feed-room|{owner_id}"))
 
 
-def meeting_room_id(owner_id: str, uid: str) -> str:
-    """The channel a calendar invite (by its UID) opens in the owner's workspace."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-meeting|{owner_id}|{uid}"))
-
-
 def request_hash(*parts: Any) -> str:
     """SHA-256 over canonical JSON request fields."""
     return _sha256(json.dumps(list(parts), sort_keys=True, separators=(",", ":"), default=str))
@@ -462,14 +460,11 @@ def _expires_at() -> int:
 def _table():
     if not settings.MESSAGING_TABLE:
         raise MessagingRepoError("MESSAGING_TABLE is not configured")
-    return _get_resource().Table(settings.MESSAGING_TABLE)
+    return messaging_table()
 
 
 async def _get(pk: str, sk: str) -> dict | None:
-    table = _table()
-    response = await run_in_thread(table.get_item, Key={"pk": pk, "sk": sk}, ConsistentRead=True)
-    item = response.get("Item")
-    return _plain(item) if item else None
+    return await get_item(_table(), pk, sk)
 
 
 async def ensure_workspace_id(owner_id: str) -> str:
@@ -568,32 +563,14 @@ async def _transact(items: list[dict]) -> None:
     caller can triage the reasons."""
     if len(items) > _TRANSACT_LIMIT:
         raise MessagingRepoError(f"transaction has {len(items)} actions (limit {_TRANSACT_LIMIT})")
-    table = _table()
-    # Every caller's values, not just ours: a shared session's tool call input is free JSON, and
-    # one `"scale": 0.6` made boto3 refuse the whole batch -- which the Mac then resent forever
-    # (prod 2026-10-12..13, ~16k failures in three hours, each session's history frozen there).
-    await run_in_thread(table.meta.client.transact_write_items, TransactItems=_ddb_safe(items))
+    await transact(_table(), items)
 
 
-def _is_cancelled(exc: ClientError) -> bool:
-    return exc.response.get("Error", {}).get("Code") == "TransactionCanceledException"
-
-
-is_cancelled = _is_cancelled  # the public name for callers outside this module
+_is_cancelled = is_cancelled  # this module's own name for it
 
 
 async def _paginate(**kwargs: Any) -> list[dict]:
-    """Drain one table query, following ``LastEvaluatedKey`` and honouring ``Limit``."""
-    table = _table()
-    limit = kwargs.get("Limit")
-    items: list[dict] = []
-    while True:
-        response = await run_in_thread(table.query, **kwargs)
-        items.extend(_plain(response.get("Items", [])))
-        last = response.get("LastEvaluatedKey")
-        if not last or (limit is not None and len(items) >= limit):
-            return items[:limit] if limit is not None else items
-        kwargs["ExclusiveStartKey"] = last
+    return await query_all(_table(), **kwargs)
 
 
 async def _query(
@@ -2845,132 +2822,6 @@ async def create_run(
 
 async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
-
-
-VOICE_RUN_TTL_S = 2 * 3600
-
-
-async def put_voice_run(
-    owner_id: str, run_id: str, fields: dict[str, Any], once: frozenset[str] = frozenset()
-) -> dict[str, Any]:
-    """Create the run row, or set ``fields`` on it, and return the row. One atomic SET, never a whole-row
-    put: a /turns retry writes the same fields again and cannot drop what another writer set in between.
-    A field in ``once`` is written only if the row has none yet (a lowered ``None`` counts),
-    so a retry can never undo what a steer lowered."""
-    fields = {"runId": run_id, **fields, "expiresAt": int(time.time()) + VOICE_RUN_TTL_S}
-    response = await run_in_thread(
-        _table().update_item,
-        Key={"pk": owner_pk(owner_id), "sk": voice_run_sk(run_id)},
-        UpdateExpression="SET "
-        + ", ".join(
-            f"#f{i} = if_not_exists(#f{i}, :v{i})" if k in once else f"#f{i} = :v{i}" for i, k in enumerate(fields)
-        ),
-        ExpressionAttributeNames={f"#f{i}": k for i, k in enumerate(fields)},
-        ExpressionAttributeValues={f":v{i}": v for i, v in enumerate(fields.values())},
-        ReturnValues="ALL_NEW",
-    )
-    return response.get("Attributes") or {}
-
-
-#: A meeting's "write the notes" request message -> everything its after-meeting mail needs (the
-#: meeting room, occurrence, where the request sits, and a snapshot of the meeting), so the mail no
-#: longer depends on the live meeting record, which a recurring series rewrites when it advances.
-#: Its own once-only markers live here too. Kept a day longer than any notes run.
-MEETING_NOTES_TTL_S = 2 * 86400
-
-
-def meeting_notes_sk(message_id: str) -> str:
-    return f"MEETNOTES#{message_id}"
-
-
-async def put_meeting_notes_request(owner_id: str, message_id: str, fields: dict[str, Any]) -> None:
-    item = {
-        "pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id), **fields,
-        "expiresAt": int(time.time()) + MEETING_NOTES_TTL_S,
-    }  # fmt: skip
-    try:  # first write wins: a retried dispatch must not clear a mail claim already taken
-        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(pk)")
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-
-async def get_meeting_notes_request(owner_id: str, message_id: str) -> dict | None:
-    row = await _get(owner_pk(owner_id), meeting_notes_sk(message_id))
-    return row if row and int(row.get("expiresAt", 0)) > time.time() else None
-
-
-async def claim_meeting_notes_mail(owner_id: str, message_id: str) -> bool:
-    """True once per notes request: the mail is attempted at most once (a lost mail beats a double)."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id)},
-            UpdateExpression="SET mailAttemptedAt = :now",
-            ConditionExpression="attribute_exists(pk) AND attribute_not_exists(mailAttemptedAt)",
-            ExpressionAttributeValues={":now": int(time.time())},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-    return True
-
-
-async def get_voice_run(owner_id: str, run_id: str) -> dict | None:
-    row = await _get(owner_pk(owner_id), voice_run_sk(run_id))
-    # DynamoDB TTL deletes lazily: an expired row must not authorize anything.
-    return row if row and int(row.get("expiresAt", 0)) > time.time() else None
-
-
-async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) -> bool:
-    """One voice edit of ``kind`` for this agent today (UTC); False once ``limit`` are used.
-    Not WORK#/LIVE#: neither the projector nor the Pipe reads this sk."""
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": f"VOICEEDIT#{agent_id}#{kind}#{day}"},
-            UpdateExpression="ADD edits :one SET expiresAt = :exp",
-            ConditionExpression="attribute_not_exists(edits) OR edits < :limit",
-            ExpressionAttributeValues={":one": 1, ":limit": limit, ":exp": int(time.time()) + 2 * 86400},
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-
-
-async def claim_voice_slot(owner_id: str, sk: str, holder: str, hold_s: int) -> bool:
-    """Hold the row ``sk`` for ``holder`` for ``hold_s`` seconds: free, expired, or already this holder's (a replay).
-    A live-call slot or the forwarding check's in-progress lock; ``expiresAt`` is the lease and the TTL alike."""
-    now = int(time.time())
-    try:
-        await run_in_thread(
-            _table().put_item,
-            Item={"pk": owner_pk(owner_id), "sk": sk, "holder": holder, "expiresAt": now + hold_s},
-            ConditionExpression="attribute_not_exists(sk) OR expiresAt < :now OR holder = :h",
-            ExpressionAttributeValues={":now": now, ":h": holder},
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-
-
-async def release_voice_slot(owner_id: str, sk: str, holder: str) -> None:
-    try:
-        await run_in_thread(
-            _table().delete_item,
-            Key={"pk": owner_pk(owner_id), "sk": sk},
-            ConditionExpression="holder = :h",
-            ExpressionAttributeValues={":h": holder},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
 
 
 async def set_agent_names(room_id: str, agent_id: str, display_name: str, mention_handle: str | None) -> bool:

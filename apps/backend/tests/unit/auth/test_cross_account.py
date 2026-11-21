@@ -155,17 +155,12 @@ async def seed_messaging(a, b, mp, calls) -> dict:
         {"clientRoomId": str(uuid.uuid4()), "name": f"{MARKER} room", "kind": "channel", "members": []},
     )
     rid = room["roomId"]
-    message = await ok(
-        a,
-        "POST",
-        f"/api/v1/messaging/rooms/{rid}/messages",
-        {
-            "clientMessageId": str(uuid.uuid4()),
-            "text": f"{MARKER} hi",
-            "replyToMessageId": None,
-            "threadRootMessageId": None,
-        },
+    text = {"clientMessageId": str(uuid.uuid4()), "text": f"{MARKER} hi", "replyToMessageId": None}
+    as_a = AuthContext(user_id=a.user_id, org_id=a.org_id, human_session=True)  # the send door is org-only
+    message = await messaging.create_human_message(
+        as_a, rid, messaging.CreateMessageRequest(**text, threadRootMessageId=None)
     )
+    message = {"messageId": str(message.message_id)}
     image = await ok(
         a, "POST", f"/api/v1/messaging/rooms/{rid}/attachments", files={"image": ("a.png", PNG, "image/png")}
     )
@@ -273,13 +268,16 @@ async def seed_automations(a, b, mp, calls) -> dict:
     await billing_rows(a, b)  # both paid: B's webhook automation reaches the seed
     fake(mp, calls, "core.services.automation_schedule.upsert")
     fake(mp, calls, "core.services.automation_schedule.delete")
-    made = await ok(a, "POST", "/api/v1/automations", {"name": f"{MARKER} auto", "instructions": f"{MARKER} do it"})
+    made, _ = await automations_repo.create_schedule(  # what POST /automations writes (org-only)
+        a.tenant, {"scheduleId": "sched-a", "name": f"{MARKER} auto", "ownerUserId": a.user_id,
+                   "policyText": f"{MARKER} do it", "cron": [], "tz": "UTC"},
+    )  # fmt: skip
     hook = {
-        "publicId": "hookaaaa", "scheduleId": made["id"], "provider": "stripe",
+        "publicId": "hookaaaa", "scheduleId": made["scheduleId"], "provider": "stripe",
         "signingMode": "stripe", "secretRef": f"hooks/{a.tenant}/hookaaaa",
     }  # fmt: skip
     await automations_repo.put_hook(a.tenant, hook)
-    return {"sid": made["id"], "hook": "hookaaaa"}
+    return {"sid": made["scheduleId"], "hook": "hookaaaa"}
 
 
 async def seed_teams_agents(a, b, mp, calls) -> dict:
@@ -538,7 +536,7 @@ CASES = [
     Case("messaging", "DELETE", "/api/v1/messaging/rooms/{room}/members/human/{member}", a_id=True),
     Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/leave", a_id=True),
     Case("messaging", "GET", "/api/v1/messaging/rooms/{room}/messages", a_id=True),
-    Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/messages", MSG, a_id=True),
+    Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/messages", MSG, a_id=True, org_only=True),
     Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/attachments", a_id=True, files=True),
     Case("messaging", "GET", "/api/v1/messaging/rooms/{room}/attachments/{attachment}", a_id=True),
     Case("messaging", "GET", "/api/v1/messaging/rooms/{room}/attachments/{attachment}/url", a_id=True),
@@ -550,7 +548,7 @@ CASES = [
     Case("messaging", "POST", "/api/v1/messaging/runs/{run}/steer", {"text": "go"}, a_id=True),
     # huddles: a room member of a room the caller's tenant owns
     Case("huddles", "GET", "/api/v1/huddles/{room}", a_id=True),
-    Case("huddles", "POST", "/api/v1/huddles/{room}/join", a_id=True),
+    Case("huddles", "POST", "/api/v1/huddles/{room}/join", a_id=True, org_only=True),
     # voice: tenant = caller; the owner sets the agent, number, forward check and draft
     Case("voice", "GET", "/api/v1/voice/timeline"),
     Case("voice", "GET", "/api/v1/voice/usage"),
@@ -561,8 +559,8 @@ CASES = [
     Case("voice", "PUT", "/api/v1/voice/phone-pin", {"mobile": "+15550100003", "pin": "8765"}),
     Case("voice", "GET", "/api/v1/voice/agent"),
     Case("voice", "PUT", "/api/v1/voice/agent", {"config": {"greeting": "b greeting"}}),
-    Case("voice", "POST", "/api/v1/voice/forward-check", {"forwardFrom": "+15550100004"}),
-    Case("voice", "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}),
+    Case("voice", "POST", "/api/v1/voice/forward-check", {"forwardFrom": "+15550100004"}, org_only=True),
+    Case("voice", "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}, org_only=True),
     Case("voice", "POST", "/api/v1/voice/number", {"path": "new", "areaCode": "415"}, org_only=True),
     # billing: tenant = caller; the owner checks out, opens the portal, cancels
     Case("billing", "GET", "/api/v1/billing/account"),
@@ -586,7 +584,7 @@ CASES = [
     ),  # no Apple keys in tests: the org case proves only that nothing of A's moves
     # company_link_wallet: tenant = caller
     Case("company_link_wallet", "GET", "/api/v1/company/link-wallet/status"),
-    Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/connect"),
+    Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/connect", org_only=True),
     Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/disconnect"),
     Case("company_link_wallet", "GET", "/api/v1/company/link-wallet/limits"),
     Case(
@@ -594,9 +592,16 @@ CASES = [
         "PUT",
         "/api/v1/company/link-wallet/limits",
         {"perPurchaseCents": 5, "projectMonthlyCents": 9},
+        org_only=True,
     ),
     Case("company_link_wallet", "GET", "/api/v1/company/link-wallet/purchases"),
-    Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/purchases/{request}/approval-link", a_id=True),
+    Case(
+        "company_link_wallet",
+        "POST",
+        "/api/v1/company/link-wallet/purchases/{request}/approval-link",
+        a_id=True,
+        org_only=True,
+    ),
     # tasks: tenant = caller; the owner exports
     Case("tasks", "GET", "/api/v1/tasks"),
     Case("tasks", "GET", "/api/v1/tasks/outputs"),
@@ -617,14 +622,22 @@ CASES = [
     ),
     # automations: tenant = caller; the owner wires triggers
     Case("automations", "GET", "/api/v1/automations"),
-    Case("automations", "POST", "/api/v1/automations", {"name": "b", "instructions": "b"}),
+    Case("automations", "POST", "/api/v1/automations", {"name": "b", "instructions": "b"}, org_only=True),
     Case(
         "automations",
         "POST",
         "/api/v1/automations/from-integration",
         {"provider": "stripe", "event_ids": ["invoice.payment_failed"]},
+        org_only=True,
     ),
-    Case("automations", "PUT", "/api/v1/automations/{hook}/webhook-secret", {"webhook_secret": "whsec_b"}, a_id=True),
+    Case(
+        "automations",
+        "PUT",
+        "/api/v1/automations/{hook}/webhook-secret",
+        {"webhook_secret": "whsec_b"},
+        a_id=True,
+        org_only=True,
+    ),
     Case("automations", "GET", "/api/v1/automations/{sid}", a_id=True),
     Case("automations", "GET", "/api/v1/automations/{sid}/runs", a_id=True),
     Case("automations", "PATCH", "/api/v1/automations/{sid}", {"version": 1, "name": "taken"}, a_id=True),
@@ -659,9 +672,10 @@ CASES = [
         {"path": "USER.md", "content": "taken", "tab": "config"},
         a_id=True,
         ok=(200,),
+        org_only=True,
     ),
     # memory: tenant = caller; drafts are the caller's own
-    Case("memory", "POST", "/api/v1/memory/recall", {"question": "what"}),
+    Case("memory", "POST", "/api/v1/memory/recall", {"question": "what"}, org_only=True),
     Case("memory", "GET", "/api/v1/memory/drafts"),
     Case("memory", "POST", "/api/v1/memory/drafts/{draft}/approve", a_id=True),
     Case("memory", "POST", "/api/v1/memory/drafts/{draft}/dismiss", a_id=True),
@@ -732,7 +746,7 @@ CASES = [
     Case("container", "POST", "/api/v1/browser/input", {"type": "key", "key": "a"}, ok=(409,)),  # no live page
     # connections: tenant = caller; the owner manages connections
     Case("connections", "GET", "/api/v1/connections"),
-    Case("connections", "POST", "/api/v1/connections/parallel", {"token": "b"}),
+    Case("connections", "POST", "/api/v1/connections/parallel", {"token": "b"}, org_only=True),
     Case("connections", "DELETE", "/api/v1/connections/github"),
     Case(
         "connections", "GET", "/api/v1/connections/github/authorize", ok=(503,), org_only=True
@@ -745,8 +759,11 @@ CASES = [
         {"role_arn": "arn:aws:iam::123456789012:role/lightbulb-connector"},
         ok=(409,),
         says="aws-setup",
+        org_only=True,
     ),  # A ran aws-setup, B did not: A's external id is not B's
-    Case("connections", "PUT", "/api/v1/connections/x/byo-app", {"client_id": "b", "client_secret": "b"}),
+    Case(
+        "connections", "PUT", "/api/v1/connections/x/byo-app", {"client_id": "b", "client_secret": "b"}, org_only=True
+    ),
     Case("connections", "DELETE", "/api/v1/connections/x/byo-app"),
     # oauth: tenant = caller; the ChatGPT binding belongs to the tenant that started it
     Case("oauth", "GET", "/api/v1/oauth/chatgpt/status"),
@@ -761,7 +778,7 @@ CASES = [
     Case("debug", "DELETE", "/api/v1/debug/user-data"),
     # config: tenant = caller
     Case("config", "GET", "/api/v1/config"),
-    Case("config", "PATCH", "/api/v1/config", {"patch": {"x": 1}}),
+    Case("config", "PATCH", "/api/v1/config", {"patch": {"x": 1}}, org_only=True),
     # orgs: unchanged for orgs; a user id in /orgs/{id}/... is not an org anyone joins or manages
     Case("orgs", "GET", "/api/v1/orgs/{a_tenant}/join-link", a_id=True),
     Case("orgs", "POST", "/api/v1/orgs/{a_tenant}/join-link", a_id=True),
@@ -797,6 +814,7 @@ CASES = [
         "/api/v1/runtime/rpc",
         {"requestId": "{new}", "method": "health", "params": {}},
         ok=(503,),
+        org_only=True,
     ),  # B has no runtime
     Case("runtime_rpc", "GET", "/api/v1/runtime/operations/{op}", a_id=True),
     # a2a: the path's workspace must be the caller's
@@ -981,6 +999,23 @@ REFUSED = [
     ("POST", "/api/v1/company/slug/claim", {"slug": "solo-co"}, 409),
     ("GET", "/api/v1/connections/aws/aws-setup", None, 409),  # mints the STS ExternalId
     ("GET", "/api/v1/connections/github/authorize", None, 409),  # starts a provider OAuth grant
+    ("POST", "/api/v1/connections/parallel", {"token": "t"}, 409),  # stores a credential
+    ("PUT", "/api/v1/connections/x/byo-app", {"client_id": "c", "client_secret": "s"}, 409),
+    ("POST", "/api/v1/connections/aws/aws-complete", {"role_arn": "arn:aws:iam::1:role/lightbulb-connector"}, 409),
+    ("POST", "/api/v1/company/link-wallet/connect", None, 409),  # links an outside wallet
+    ("PUT", "/api/v1/company/link-wallet/limits", {"perPurchaseCents": 1, "projectMonthlyCents": 1}, 409),
+    ("POST", "/api/v1/company/link-wallet/purchases/" + "0" * 32 + "/approval-link", None, 409),
+    ("POST", "/api/v1/messaging/rooms/{room}/messages", MSG, 409),  # addressing reaches the model
+    ("POST", "/api/v1/huddles/{room}/join", None, 409),  # a LiveKit room and the voice worker
+    ("POST", "/api/v1/memory/recall", {"question": "q"}, 409),  # AgentCore memory retrieval
+    ("PUT", "/api/v1/container/workspace/ceo/file", {"path": "USER.md", "content": "x", "tab": "config"}, 409),
+    ("POST", "/api/v1/automations", {"name": "n", "instructions": "i"}, 409),  # a Temporal Schedule
+    ("POST", "/api/v1/automations/from-integration", {"provider": "stripe", "event_ids": ["x"]}, 409),
+    ("POST", "/api/v1/voice/forward-check", {}, 409),  # rings a phone
+    ("POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}, 409),  # a model call
+    ("POST", "/api/v1/runtime/rpc", {"requestId": "{new}", "method": "agents.create", "params": {}}, 409),
+    ("PATCH", "/api/v1/config", {"patch": {"x": 1}}, 409),  # writes every agent's config.yaml
+    ("PUT", "/api/v1/automations/hook1/webhook-secret", {"webhook_secret": "whsec_x"}, 409),
     ("POST", "/api/v1/voice/number", {}, 409),
     ("PUT", "/api/v1/voice/agent", {"config": {"live": True}}, 409),  # going live gives a number
     ("POST", "/api/v1/oauth/chatgpt/start", None, 402),  # needs a paid plan, which a person cannot buy yet
@@ -996,6 +1031,8 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
     it or join its agents to a network refuses, and nothing is written or sent for it."""
     from core.services import device_login, network_login
 
+    for name in ("LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"):  # the wallet doors exist
+        monkeypatch.setattr(settings, name, "test")
     person = Tenant("user_solo", None)
     await company_slug_repo.hold(slug="solo-co", user_id=person.user_id)  # a held slug a claim would bind
     timeline = await ok(person, "GET", "/api/v1/voice/timeline")
@@ -1006,7 +1043,10 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
     code = (await device_login.create(fields, network_login.PAGE, code_in_url=False))["userCode"]
     fake(monkeypatch, calls, "core.services.network_member.join_network")
     calls.clear()
-    r = await call(person, method, path, fill(body, {"code": code, "b_tenant": person.user_id}))
+    room = await ok(person, "POST", "/api/v1/messaging/rooms", {"clientRoomId": str(uuid.uuid4()), "name": "mine",
+                                                               "kind": "channel", "members": []})  # fmt: skip
+    ids = {"code": code, "b_tenant": person.user_id, "room": room["roomId"], "new": str(uuid.uuid4())}
+    r = await call(person, method, fill(path, ids), fill(body, ids))
     assert r.status_code == status, r.text[:300]
     if status == 409:
         assert r.json()["detail"]["code"] == "workspace_required"

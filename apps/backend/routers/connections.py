@@ -574,6 +574,7 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
 @router.post("/{provider}")
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
     started_ms = int(time.time() * 1000)
+    require_org(auth)  # stores a credential for the tenant
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -713,6 +714,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     The vend endpoint (POST /aws/credentials) assumes EXACTLY the stored ARN;
     this validation is the gate that keeps a bad ARN from ever being stored."""
     started_ms = int(time.time() * 1000)
+    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -1026,6 +1028,7 @@ async def put_byo_app(
     """Store the owner's OWN OAuth app for a byo-required provider. Once stored,
     `_byo_active` returns True for this owner — the prerequisite for connecting a
     BYO-required provider via their own app."""
+    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)

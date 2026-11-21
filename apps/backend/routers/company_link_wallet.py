@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo, oauth_state_repo
 from core.services import effect_doors, link_wallet, purchases
@@ -52,6 +52,7 @@ async def get_status(auth: Annotated[AuthContext, Depends(get_current_user)]):
 
 @router.post("/connect")
 async def connect(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    require_org(auth)  # links an outside wallet
     owner_id = _owner(auth)
     try:
         return {"authorizeUrl": await link_wallet.start_connect(owner_id, auth.user_id)}
@@ -99,6 +100,7 @@ async def get_limits(auth: Annotated[AuthContext, Depends(get_current_user)]):
 
 @router.put("/limits")
 async def put_limits(body: LimitsBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    require_org(auth)
     owner_id = _owner(auth)
     merchants = []
     for m in body.merchants:
@@ -127,6 +129,7 @@ async def get_purchases(auth: Annotated[AuthContext, Depends(get_current_user)])
 @router.post("/purchases/{request_id}/approval-link")
 async def approval_link(request_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
     """The "Approve in Link" click. The URL is minted here, per click; no card or row stores it."""
+    require_org(auth)
     try:
         return await purchases.approval_link(_owner(auth), request_id)
     except purchases.PurchaseRefused as exc:

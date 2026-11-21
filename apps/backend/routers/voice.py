@@ -316,6 +316,7 @@ class ForwardCheckIn(BaseModel):
 async def forward_check(body: ForwardCheckIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Onboarding "Keep my number": ring the business line once; the page polls GET /voice/agent for forwardingOk.
     `forwardFrom` is the line the owner just typed (step 4 saves only on Continue); it is kept on the document."""
+    require_org(auth)
     require_org_admin(auth)
     ws = resolve_owner_id(auth)
     cfg = await messaging_repo.get_voice_agent(ws) or {}
@@ -332,6 +333,7 @@ class DraftIn(BaseModel):
 
 @router.post("/voice/onboarding/draft")
 async def onboarding_draft(body: DraftIn, auth: AuthContext = Depends(get_current_user)) -> dict:
+    require_org(auth)
     require_org_admin(auth)
     return {"draft": await voice_onboarding.draft(body.website, body.business, body.city)}
 

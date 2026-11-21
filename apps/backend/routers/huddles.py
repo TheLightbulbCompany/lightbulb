@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
@@ -53,6 +53,7 @@ class TranscriptBody(BaseModel):
 @router.post("/huddles/{room_id}/join")
 async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
     room_id = _room_id(room_id)
+    require_org(auth)  # a LiveKit room and the voice worker
     if not livekit_huddles.configured():
         raise _problem(503, "huddles_unavailable")
     owner_id = resolve_owner_id(auth)

@@ -20,7 +20,6 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
 from core.services import (
-    evaluator,
     memory_links,
     memory_recall,
     memory_stages,
@@ -124,7 +123,7 @@ def _synced(task: asyncio.Task) -> None:
 
 async def sweep_once() -> int:
     """Sync every workspace whose last sync is older than ``SWEEP_INTERVAL_S`` (returns how many ran),
-    then collect due drafts. One at a time, each behind its owner's lease, and one failure never
+    one at a time, each behind its owner's lease, and one failure never
     stops the rest."""
     from core.services import hermes_provisioning  # lazy: import cycle
 
@@ -147,15 +146,6 @@ async def sweep_once() -> int:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("memory sweep failed owner=%s error=%s", owner_id, type(exc).__name__)
-    return await _collect_due(ran)
-
-
-async def _collect_due(ran: int) -> int:
-    """The evaluator's half of the sweep: reflections that were not ready at ingest become drafts."""
-    try:
-        await evaluator.collect_due()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("memory sweep draft collect failed: %s", type(exc).__name__)
     return ran
 
 

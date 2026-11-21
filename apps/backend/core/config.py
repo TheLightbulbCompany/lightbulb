@@ -53,12 +53,6 @@ class Settings(BaseSettings):
 
     # Clerk Auth
     CLERK_ISSUER: str = "https://your-clerk-domain.clerk.accounts.dev"
-    # The A2A door also accepts a grant for the /mcp audience that carries an A2A scope: only if Clerk
-    # does not echo the requested /a2a resource into `aud` (checked once against the dev instance).
-    A2A_ACCEPT_MCP_AUDIENCE: bool = False
-    # Hosted A2A sends to laptop sessions ride the workspace's cloud member first: it signs in as the
-    # workspace (CLI v0.9.11+). A laptop that refuses what it relays falls back to the person's link.
-    A2A_DISPATCH_VIA_MEMBER: bool = True
     # SEC-8 token-origin fence. Clerk session tokens carry NO `aud` claim (all
     # our clients call plain getToken(), no JWT template), so the origin check
     # is the `azp` (authorized party) claim — the frontend origin that minted
@@ -96,10 +90,6 @@ class Settings(BaseSettings):
     # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
     # CDK service-stack environment block per environment.
     PUBLIC_API_BASE: str = "http://localhost:8000"
-
-    # OpenAI's plugin portal token, served at /.well-known/openai-apps-challenge to prove we own the
-    # MCP host. Public by design. Empty: the path 404s. CDK sets it from OPENAI_APPS_CHALLENGE_TOKEN_{ENV}.
-    OPENAI_APPS_CHALLENGE_TOKEN: str = ""
 
     @property
     def frontend_host(self) -> str:
@@ -199,8 +189,6 @@ class Settings(BaseSettings):
     # confirm the header is arriving, then flip enforcement on. Enforcement is a
     # no-op until WS_ENFORCE_INTERNAL_SECRET is true AND a secret is configured.
     WS_INTERNAL_SECRET: str = ""
-    # Seeds the Ed25519 key that signs lightbulb login proofs (network_proof).
-    NETWORK_PROOF_KEY: str = ""
     WS_ENFORCE_INTERNAL_SECRET: bool = False
 
     # OAuth tables (set by CDK)
@@ -405,8 +393,8 @@ class Settings(BaseSettings):
     # workspace's sessions run there (runtime_transport.runtime_arn), each its own microVM, and a
     # new workspace gets no runtime, role or boot secret of its own. Names infra, not a flag.
     HERMES_SHARED_RUNTIME_ARN: str = ""
-    # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): the evaluator's
-    # episodes and reflections, apart from the workspace memory. Empty = no evaluator.
+    # The env's uploaded-sessions AgentCore Memory (CDK ContainerStack.sessionsMemory): what the wipes delete of
+    # the evaluator's episodes and reflections. Empty = nothing to delete.
     AGENTCORE_SESSIONS_MEMORY_ID: str = ""
     # Haiku-class model that splits a recall question into the facts it needs (memory_models.expand);
     # the same id container-stack.ts gives AgentCore extraction (MEMORY_EXTRACT_MODEL).
@@ -433,9 +421,6 @@ class Settings(BaseSettings):
 
     # Connect platform client id (ca_…), used to deauthorize a company's Stripe account. Public, not a secret.
     STRIPE_CONNECT_CLIENT_ID: str = ""
-
-    # Hosted assistants are offered network workers' assign tools (off: hidden, as in the engine).
-    HOSTED_NETWORK_WORKERS: bool = False
 
     # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
     # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client

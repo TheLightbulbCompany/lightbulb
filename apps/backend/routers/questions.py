@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -78,14 +78,9 @@ def _problem(status: int, code: str, **extra: Any) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
-async def person_only(
-    request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security_optional)
-) -> AuthContext:
-    """A person pressing a button: a computer's proof header is refused before any token is read; then only a
-    first-party Clerk session token (`get_human_session` refuses OAuth/hosted-MCP and template tokens; a hook
-    token is not a Clerk JWT and fails as 401)."""
-    if request.headers.get("X-Lightbulb-Proof"):
-        raise _problem(403, "computer_caller")
+async def person_only(credentials: HTTPAuthorizationCredentials | None = Depends(security_optional)) -> AuthContext:
+    """A person pressing a button: only a first-party Clerk session token (`get_human_session` refuses OAuth and
+    template tokens; a hook token is not a Clerk JWT and fails as 401)."""
     if credentials is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return await get_human_session(credentials)

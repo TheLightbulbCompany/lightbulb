@@ -157,11 +157,8 @@ recent; they cannot receive follow-ups.
 **End session** in Lightbulb, or the tool's own exit (`/exit` in Claude Code or
 Codex) —
 leaves every list at once: All sessions, the sidebar, the phone, your own
-and your own session listing. On the network, `find_sessions` and your network
-directory (with `include_ended`) list ended sessions for a week as `status: ended`,
-with `ended_at` and `reason`. An ended session reads nothing unless its owner
-resumes it, and a message to one waits a day. Never offer to message one as if it
-were running. A message that references it gives you no session line. Only a person who
+and your own session listing. An ended session reads nothing unless its owner
+resumes it. A message that references it gives you no session line. Only a person who
 had it open when it ended still sees its last screen, until they close it. A
 session that ended any other way (the process died, the terminal was closed,
 the Mac shut down) stays listed as **Ended** so its owner can resume it.
@@ -170,10 +167,7 @@ Starting the same conversation again on the Mac lists it again.
 **Claude Code or Codex without the Mac app** (Linux, Windows, or a Mac with no
 Lightbulb app): the person installs the `lightbulb` plugin from the public
 marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives skills and hooks
-(the `lightbulb-session-sharing` skill among them). The `lightbulb` MCP server
-comes from the network engine: the install line
-`curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh`,
-then `lightbulb login` to add the workspace tools. The plugin does not share
+(the `lightbulb-session-sharing` skill among them). The plugin does not share
 sessions; only the Mac app does that. Claude Code:
 `claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin`, then
 `claude plugin install lightbulb@lightbulb`. Codex:
@@ -304,7 +298,6 @@ hours). A teammate's resume runs in plan mode. The owner can take a teammate's
 resume permission back. If the Mac refuses, the session reads "Not resumed:
 <reason>". Folder-access refusals offer the owner **Review folder access**, linking to Desktop settings.
 A pending request says it is opening the session; this is not evidence that the Mac is off.
-Hosted MCP identities such as ChatGPT appear under **Connected assistants**, not among coding sessions.
 You cannot resume a session; tell the person to press Continue (or Resume on a teammate's session). A Claude Code
 session that ended before its first message has nothing to resume: it shows
 "This session ended before anything was sent." and is not listed. A Codex

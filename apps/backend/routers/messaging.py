@@ -6,7 +6,6 @@ import asyncio
 import logging
 import math
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from urllib.parse import quote
@@ -14,7 +13,7 @@ from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import Field, ValidationError
 
 from core.observability.metrics import put_metric
 from core.dynamodb import run_in_thread
@@ -25,19 +24,15 @@ from core.auth import (
     get_current_user,
     require_org,
     resolve_owner_id,
-    security_optional,
 )
 from core.config import settings
 from core.repositories import container_repo, messaging_repo, user_repo
 from core.services import chat_gate
 from core.services import messaging as service
 from core.services import (
-    a2a_tasks,
-    hosted_mcp,
-    network_login,
+    clerk_admin,
     local_sessions,
     openclaw_work,
-    task_board,
 )
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
@@ -82,68 +77,79 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def computer_human(caller=Depends(network_login.computer_person)) -> AuthContext:
-    """A signed-in computer's person (``lightbulb login``): the engine's workspace tools."""
-    return caller[0]
-
-
-@router.get("/local-sessions/device/rooms")
-async def device_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(computer_human)):
-    return await hosted_mcp.rooms_for(auth, query, limit)
-
-
-@router.get("/local-sessions/device/rooms/{room_id}/messages")
-async def device_read_messages(
-    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(computer_human)
-):
-    return await hosted_mcp.messages_for(auth, room_id, after_seq, limit)
-
-
-@router.get("/local-sessions/device/receipt")
-async def device_message_receipt(room_id: str, request_id: uuid.UUID, auth: AuthContext = Depends(computer_human)):
-    return await hosted_mcp.receipt_for(auth, room_id, request_id)
-
-
-@router.get("/local-sessions/device/tasks")
-async def device_find_tasks(
-    query: str = "", status: str = "", assignee: str = "", limit: int = 25, auth: AuthContext = Depends(computer_human)
-):
-    return await task_board.find_tasks(auth, query, status, assignee, limit)
-
-
-@router.get("/local-sessions/device/tasks/{task}")
-async def device_read_task(task: str, comments: int = 10, auth: AuthContext = Depends(computer_human)):
-    return await task_board.read_task(auth, task, comments)
-
-
-class DeviceTaskUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    status: str | None = None
-    priority: str | None = None
-    append_note: str | None = None
-
-
-@router.patch("/local-sessions/device/tasks/{task}")
-async def device_update_task(task: str, body: DeviceTaskUpdate, auth: AuthContext = Depends(computer_human)):
-    return await task_board.update_task(auth, task, body.status, body.priority, body.append_note)
-
-
-async def person_or_computer(
-    request: Request, credentials=Depends(security_optional)
-) -> tuple[AuthContext, str | None]:
-    """The web's Clerk person, or a signed-in computer's (``computer_person``) with its session's label."""
-    if request.headers.get("X-Lightbulb-Proof"):
-        return await network_login.computer_person(request)
-    if credentials is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return await get_current_user(credentials), None
-
-
 async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:
     authorization = request.headers.get("Authorization", "")
     return local_session_grants.verify(
         authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
     )
+
+
+async def workspace_people(owner_id: str) -> frozenset[str]:
+    """Everyone in the workspace (Clerk). Empty when Clerk cannot say: nothing is workspace-wide then."""
+    try:
+        return frozenset(m["user_id"] for m in await clerk_admin.list_organization_members(owner_id, strict=True))
+    except Exception:  # noqa: BLE001 -- fails closed
+        logger.warning("workspace member list unavailable owner=%s", owner_id, exc_info=True)
+        return frozenset()
+
+
+def workspace_wide(room, people: frozenset[str]) -> bool:
+    """A channel every person in the workspace is in: what any teammate could already read. Every room
+    is private to its members (no channel can be browsed or joined), so this is the only public one."""
+    seated = {m.id for m in room.members if m.kind == "human"}
+    return room.kind == "channel" and bool(people) and people <= seated
+
+
+async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30, workspace_only: bool = False) -> dict:
+    """`workspace_only`: a Google Meet's read as its inviter (owner ruling 2026-10-13): workspace-wide
+    channels only. Filtered before the limit and the total, so neither says anything about the rest."""
+    rooms = (await service.list_rooms(auth)).rooms
+    people = await workspace_people(auth.org_id) if workspace_only else frozenset()
+    needle = query.casefold().strip()
+    matches = [
+        room
+        for room in rooms
+        if (not workspace_only or workspace_wide(room, people))
+        and (
+            not needle
+            or needle in (room.name or "").casefold()
+            or any(needle in member.display_name.casefold() for member in room.members)
+        )
+    ]
+    return {
+        "rooms": [
+            {
+                "roomId": str(room.room_id),
+                "name": room.name,
+                "kind": room.kind,
+                "members": [
+                    {
+                        "id": m.id,
+                        "kind": m.kind,
+                        "displayName": m.display_name,
+                        "mentionHandle": m.mention_handle,
+                    }
+                    for m in room.members
+                ],
+            }
+            for room in matches[: max(1, min(limit, 50))]
+        ],
+        "total": len(matches),
+    }
+
+
+async def messages_for(auth: AuthContext, room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
+    count = max(1, min(limit, 50))
+    if after_seq is None:
+        room = await service.get_room(auth, room_id)
+        page = await service.list_messages(auth, room_id, 0, count, room.last_message_seq + 1)
+    else:
+        page = await service.list_messages(auth, room_id, max(0, after_seq), count)
+    out = page.model_dump(mode="json", by_alias=True)
+    for message in out.get("messages") or []:
+        if isinstance(message.get("text"), str):
+            message["text"] = messaging_repo.agent_text(message["text"])
+    return out
 
 
 @dataclass(frozen=True)
@@ -159,8 +165,7 @@ class AgentRead:
 async def agent_reader(
     auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
 ) -> AgentRead:
-    """An agent turn reads rooms as the person who asked it, with exactly that person's access (the
-    hosted MCP's find_rooms/read_messages). The person is the turn grant's requester, set by the
+    """An agent turn reads rooms as the person who asked it, with exactly that person's access. The person is the turn grant's requester, set by the
     backend from the canonical trigger -- the human author of a typed message, the signed-in speaker
     of a Live run -- never by the agent. A Google Meet's turn reads as the member who invited the agents
     (the grant's reader, owner ruling 2026-10-13). Neither (a voice run another member steered,
@@ -179,18 +184,18 @@ async def agent_reader(
 
 @router.get("/messaging/agent-read/rooms")
 async def agent_find_rooms(query: str = "", limit: int = 30, read: AgentRead = Depends(agent_reader)):
-    return await hosted_mcp.rooms_for(read.auth, query, limit, workspace_only=read.workspace_only)
+    return await rooms_for(read.auth, query, limit, workspace_only=read.workspace_only)
 
 
 @router.get("/messaging/agent-read/messages")
 async def agent_read_messages(
     room_id: str, after_seq: int | None = None, limit: int = 25, read: AgentRead = Depends(agent_reader)
 ):
-    if read.workspace_only and not hosted_mcp.workspace_wide(
-        await service.get_room(read.auth, room_id), await hosted_mcp.workspace_people(read.auth.org_id)
+    if read.workspace_only and not workspace_wide(
+        await service.get_room(read.auth, room_id), await workspace_people(read.auth.org_id)
     ):
         raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels the whole workspace is in can be read.")
-    return await hosted_mcp.messages_for(read.auth, room_id, after_seq, limit)
+    return await messages_for(read.auth, room_id, after_seq, limit)
 
 
 async def agent_actor(
@@ -311,10 +316,7 @@ async def list_rooms(auth: AuthContext = Depends(get_current_user)):
 
 
 @router.post("/messaging/rooms", response_model=RoomDetail, status_code=201)
-async def create_room(request: CreateRoomRequest, caller=Depends(person_or_computer)):
-    auth, label = caller
-    if label is not None and request.kind != "dm":
-        raise ApiProblem("ROOM_FORBIDDEN", "A computer opens direct messages only.")
+async def create_room(request: CreateRoomRequest, auth: AuthContext = Depends(get_current_user)):
     return await service.create_room(auth, request)
 
 
@@ -388,40 +390,10 @@ async def list_room_messages(
 async def create_room_message(
     room_id: str,
     request: CreateMessageRequest,
-    caller=Depends(person_or_computer),
+    auth: AuthContext = Depends(get_current_user),
 ):
-    auth, label = caller
     require_org(auth)  # a message can reach the model (addressing) and wake agents
-    if label is None:
-        try:  # a holder's Approve/Deny press on an A2A hold card decides it and wakes nobody
-            # no workspace (resolve_owner_id's 409) is never a hold card
-            handled = bool(auth.org_id) and await a2a_tasks.answer_from_message(
-                auth, resolve_owner_id(auth), room_id, request
-            )
-        except Exception:
-            logger.exception("a2a card answer failed", extra={"room": room_id})
-            handled = False
-        return await service.create_human_message(auth, room_id, request, wake=not handled)
-    # A coding session's send through its signed-in computer: authored "<label> via <person>",
-    # accountable to the person, exactly as the hosted MCP's room send is. The engine names only the
-    # message it replies to; its thread is that message's (as the hosted send resolves it).
-    if request.reply_to_message_id and not request.thread_root_message_id:
-        parent = await messaging_repo.get_message_by_id(room_id, str(request.reply_to_message_id))
-        if parent is None:
-            raise ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.")
-        root = parent.get("threadRootMessageId") or parent["messageId"]
-        request = request.model_copy(update={"thread_root_message_id": uuid.UUID(root)})
-    return await service.create_human_message(
-        auth,
-        room_id,
-        request,
-        via="lightbulb_mcp",
-        author_override={
-            "kind": "system",
-            "id": f"mcp:{auth.user_id}:engine",
-            "displayName": f"{label} via {await service.human_display_name(auth.user_id)}"[:256],
-        },
-    )
+    return await service.create_human_message(auth, room_id, request)
 
 
 @router.post("/messaging/rooms/{room_id}/attachments", response_model=MessageAttachment, status_code=201)
@@ -704,21 +676,6 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
 async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: Request):
     await require_hook_token(owner_id, request)
     receipt = await service.create_agent_message(owner_id, body)
-    if not body.progress:
-        # An A2A task waiting in this DM completes with this reply; never break the reply path.
-        from core.services import a2a_tasks
-
-        try:
-            await a2a_tasks.on_agent_reply(
-                owner_id,
-                room_id=str(body.room_id),
-                agent_id=str(body.agent_id),
-                message_id=str(receipt.message_id),
-                text=body.text,
-                reply_to_message_id=str(body.reply_to_message_id) if body.reply_to_message_id else None,
-            )
-        except Exception:
-            logger.exception("a2a reply link failed", extra={"owner_id": owner_id, "room_id": str(body.room_id)})
     return receipt
 
 

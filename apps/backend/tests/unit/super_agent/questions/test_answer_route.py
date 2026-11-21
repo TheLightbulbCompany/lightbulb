@@ -241,18 +241,6 @@ def bare():
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
 
 
-async def test_computer_caller_403(bare, monkeypatch):
-    spy = AsyncMock()
-    monkeypatch.setattr(router_mod, "get_human_session", spy)
-    resp = await bare.post(
-        _url("q-1"),
-        json={"optionId": "allow_once", "clientAnswerId": "c"},
-        headers={"X-Lightbulb-Proof": "proof", "Authorization": "Bearer x"},
-    )
-    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "computer_caller"
-    spy.assert_not_awaited()
-
-
 async def test_hosted_mcp_token_403(bare, monkeypatch):
     """OAuth / hosted-MCP and template tokens are refused by `get_human_session` before anything is read."""
     monkeypatch.setattr(

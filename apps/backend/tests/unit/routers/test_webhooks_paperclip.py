@@ -37,7 +37,6 @@ def lifecycle_io(monkeypatch):
 
     monkeypatch.setattr("core.services.messaging.revoke_human_membership", revoke)
     monkeypatch.setattr("core.services.text_lines.unlink_member", AsyncMock())
-    monkeypatch.setattr("core.services.agent_keys.delete_for_member", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_event_processing", AsyncMock(return_value="claim_test"))
     monkeypatch.setattr(_webhook_dedup, "complete_event_processing", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_membership_lifecycle", AsyncMock(side_effect=begin_membership))
@@ -140,9 +139,6 @@ async def test_membership_delete_unlinks_the_members_phone_from_the_texting_line
 
     await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"})
     unlink.assert_awaited_once_with("org_acme", "member")
-    from core.services import agent_keys
-
-    agent_keys.delete_for_member.assert_awaited_once_with("org_acme", "member")  # a rejoin gets no old keys
 
 
 @pytest.mark.asyncio
@@ -379,10 +375,10 @@ async def test_membership_deleted_removes_the_member(async_client, monkeypatch, 
     wipe = request.getfixturevalue("no_evaluator_wipe")
     wipe["delete_sessions"].assert_awaited_once_with("user_member", workspace_id="org_acme")
     wipe["delete_drafts"].assert_awaited_once_with("user_member", workspace_id="org_acme")
-    wipe["computer_keys"].assert_awaited_once_with("user_member")
+    wipe["_computer_keys"].assert_awaited_once_with("user_member")
     wipe["forget_on_behalf_of"].assert_awaited_once_with("org_acme", "user_member")
     wipe["delete_episodes"].assert_not_awaited()  # the person's, not the workspace's
-    wipe["forget_keys"].assert_not_awaited()
+    wipe["_forget_keys"].assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -775,15 +771,15 @@ def no_evaluator_wipe(monkeypatch):
     the entries written on their behalf (tests/unit/services/test_workspace_memory.py). Returns the mocks."""
     from unittest.mock import AsyncMock
 
-    from core.services import evaluator, memory_api, network_login, session_store
+    from core.services import evaluator, memory_api, session_store, workspace_memory
 
     mocks = {}
     for mod, name, value in (
         (session_store, "delete_sessions", 0),
         (evaluator, "delete_drafts", 0),
         (evaluator, "delete_episodes", 0),
-        (network_login, "computer_keys", []),  # no signed-in computer: no forget_author forward
-        (network_login, "forget_keys", None),
+        (workspace_memory, "_computer_keys", []),  # no signed-in computer: no forget_author forward
+        (workspace_memory, "_forget_keys", None),
         (memory_api, "forget_on_behalf_of", 0),
     ):
         mocks[name] = AsyncMock(return_value=value)

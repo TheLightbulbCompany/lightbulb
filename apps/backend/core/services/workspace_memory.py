@@ -330,11 +330,29 @@ async def forget_workspace_authored(owner_id: str) -> str | None:
     return None
 
 
-async def _forget_authored(owner_id: str, user_id: str, memory_api, network_login) -> None:
+async def _computer_keys(user_id: str) -> list[str]:
+    """Member keys of this person's computers: the registry (``NETKEY#<user>``, every key that signed in)
+    and the signed-out keys still in force (a registry write is best effort)."""
+    from core.repositories import messaging_repo
+    from core.services.network_member import revoked_keys
+
+    registered = [r["sk"].removeprefix("NETKEY#") for r in await messaging_repo._query(f"NETKEY#{user_id}")]
+    return sorted({*registered, *await revoked_keys([user_id])})
+
+
+async def _forget_keys(user_id: str) -> None:
+    """Drop the person's key registry rows (after the wipe's forwards were sent or queued)."""
+    from core.repositories import messaging_repo
+
+    for row in await messaging_repo._query(f"NETKEY#{user_id}"):
+        await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
+
+
+async def _forget_authored(owner_id: str, user_id: str, memory_api) -> None:
     """Tombstone, in the network log, every entry written from this person's signed-in computers,
-    and every entry the workspace wrote on their behalf (their own notes from DMs, hosted tools,
-    the member route). The key registry stays: it is the person's, for their other workspaces."""
-    for key in await network_login.computer_keys(user_id):
+    and every entry the workspace wrote on their behalf (their own notes from DMs and the member
+    route). The key registry stays: it is the person's, for their other workspaces."""
+    for key in await _computer_keys(user_id):
         await memory_api.forget_author(owner_id, key)
     await memory_api.forward_on_behalf_of(owner_id, user_id)  # never raises: a parked member is owed it
 
@@ -355,14 +373,14 @@ async def delete_member_memory(
     owner_namespace(owner_id)
     if not _MEMBER_ID.fullmatch(user_id or ""):
         return
-    from core.services import evaluator, memory_api, network_login, session_store  # lazy: import cycles
+    from core.services import evaluator, memory_api, session_store  # lazy: import cycles
 
     memory_id = settings.AGENTCORE_MEMORY_ID
     actor = f"{owner_id}:{user_id}"
     steps = [
         lambda: session_store.delete_sessions(user_id, workspace_id=owner_id),
         lambda: evaluator.delete_drafts(user_id, workspace_id=owner_id),
-        lambda: _forget_authored(owner_id, user_id, memory_api, network_login),
+        lambda: _forget_authored(owner_id, user_id, memory_api),
     ]
     if memory_id:
         steps.insert(
@@ -380,7 +398,7 @@ async def delete_person_memory(user_id: str, *, resweep_after_s: float = RESWEEP
     registry of their computers' keys."""
     if not user_id:
         return
-    from core.services import evaluator, network_login, session_store  # lazy: import cycles
+    from core.services import evaluator, session_store  # lazy: import cycles
 
     await _run_all(
         f"person wipe for {user_id}",
@@ -388,7 +406,7 @@ async def delete_person_memory(user_id: str, *, resweep_after_s: float = RESWEEP
             lambda: session_store.delete_sessions(user_id),
             lambda: evaluator.delete_drafts(user_id),
             lambda: evaluator.delete_episodes(user_id, resweep_after_s=resweep_after_s),
-            lambda: network_login.forget_keys(user_id),
+            lambda: _forget_keys(user_id),
         ],
     )
 

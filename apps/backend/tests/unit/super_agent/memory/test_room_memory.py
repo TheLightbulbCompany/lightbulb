@@ -143,9 +143,7 @@ async def test_another_workspaces_group_chat_is_never_a_scope(table, core):
     assert await room_memory.group_room("org_2", _room("group-dm")) is None
 
 
-async def test_network_and_a2a_messages_never_written(table, core):
-    a2a = {"kind": "system", "id": "a2a:user_x", "displayName": "A2A via user_x"}
-    assert await room_memory.ingest_message(OWNER, _room("dm", (SAM, LB)), _msg(author=a2a)) is False
+async def test_progress_messages_never_written(table, core):
     assert await room_memory.ingest_message(OWNER, _room(), _msg(progress=True)) is False
     assert core.events == []
 

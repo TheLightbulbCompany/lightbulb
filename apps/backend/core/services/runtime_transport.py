@@ -422,12 +422,6 @@ def _boot_header(container: dict) -> dict[str, str]:
             logger.warning("network seed for owner %s unavailable: %s", owner_id, type(exc).__name__)
     if seed := _NETWORK_SEEDS.get((owner_id, row_id)):
         boot["networkKey"] = seed
-    from core.config import settings
-
-    if settings.NETWORK_PROOF_KEY:  # PUBLIC: the sidecar verifies members' sign-in proofs (build_hermes_runtime_env)
-        from core.services import network_proof
-
-        boot["issuerKey"] = network_proof.public_key()["env"]
     if container.get("browser_profile_id"):
         boot["browserProfileId"] = container["browser_profile_id"]
     if container.get("network_workers"):

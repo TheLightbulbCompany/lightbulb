@@ -58,7 +58,7 @@ class VoiceSessionResponse(BaseModel):
 
 class VoiceSessionStatus(BaseModel):
     status: Literal["active", "ended"]
-    endedReason: str | None = None
+    endedReason: Literal["client_closed", "trial_ended", "signed_out", "expired", "upstream", "replaced"] | None = None
 
 
 async def _account(auth: AuthContext, now: int) -> dict:

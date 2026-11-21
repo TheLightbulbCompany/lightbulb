@@ -269,22 +269,30 @@ async def test_first_call_creates_the_account_then_proceeds(ddb, clock, no_sideb
     assert (await req("GET", "/os/account")).json()["status"] == "trial"
 
 
-async def test_two_sessions_per_person_even_when_concurrent(ddb, clock, no_sideband, openai):
-    assert (await create()).status_code == 201
-    rs = await asyncio.gather(create(), create())  # two POSTs for the last slot
-    assert sorted(r.status_code for r in rs) == [201, 429]
-    assert [r.json() for r in rs if r.status_code == 429] == [{"detail": "too_many_sessions"}]
-    assert len(openai.requests) == 2
-    assert (await create(B)).status_code == 201  # per person
+def active_rows(ddb) -> list[dict]:
+    rows = ddb.Table(dynamodb.table_name("containers")).scan()["Items"]
+    return [r for r in rows if r.get("status") == os_voice.ACTIVE]
 
 
-async def test_an_ended_session_frees_its_slot(ddb, clock, no_sideband, openai):
+async def test_a_new_session_replaces_the_open_one(ddb, clock, no_sideband, openai, users):
     first = (await create()).json()["sessionId"]
-    await create()
-    assert await os_voice.end_session(first, "client_closed", 30)
-    assert (await create()).status_code == 201
-    got = await req("GET", f"/os/voice-session/{first}")
-    assert got.json() == {"status": "ended", "endedReason": "client_closed"}
+    second = await create()
+    assert second.status_code == 201  # never too_many_sessions
+    second = second.json()["sessionId"]
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_voice_active"] == {second}
+    assert rec(ddb, first)["closeRequested"] == "replaced" and "closeRequested" not in rec(ddb, second)
+    assert (await create(B)).status_code == 201  # per person: B replaces nothing of A's
+    assert "closeRequested" not in rec(ddb, second)
+
+
+@pytest.mark.parametrize("n", [2, 3])
+async def test_concurrent_opens_leave_exactly_one(ddb, clock, no_sideband, openai, users, n):
+    rs = await asyncio.gather(*[create() for _ in range(n)])
+    assert [r.status_code for r in rs] == [201] * n
+    ids = {r.json()["sessionId"] for r in rs}
+    keep = users.get_item(Key={"user_id": "user_a"})["Item"]["os_voice_active"]
+    assert len(keep) == 1 and keep < ids
+    assert {i for i in ids if not rec(ddb, i).get("closeRequested")} == keep  # every other one is told to close
 
 
 @pytest.mark.parametrize(
@@ -458,16 +466,13 @@ async def test_usage_is_recorded_and_the_close_counts_once(ddb, clock, openai, s
     )
     await until(lambda: rec(ddb, sid).get("usageSeconds") == 12)
     assert rec(ddb, sid)["expiresAt"] == START + 3600
-    await create()
     sockets[0].push(closed(15), closed(15))
     await until(lambda: rec(ddb, sid).get("endedReason"))
     row = rec(ddb, sid)
     assert row["endedReason"] == "client_closed" and row["usageSeconds"] == 15
     assert await os_voice.end_session(sid, "upstream", 99) is False  # a replayed close adds nothing
     person = users.get_item(Key={"user_id": "user_a"})["Item"]
-    assert person["os_voice_seconds"] == 15 and len(person["os_voice_active"]) == 1
-    sockets[1].push(closed(0))
-    await until(idle)
+    assert person["os_voice_seconds"] == 15 and "os_voice_active" not in person
 
 
 async def test_account_ending_mid_session_closes_it(ddb, clock, openai, sockets, users):
@@ -523,7 +528,7 @@ async def test_a_dropped_sideband_releases_its_lease_for_another_task(ddb, clock
 
 
 async def test_the_sweep_ends_a_session_that_never_got_an_openai_id(ddb, clock, key, users):
-    assert await os_voice.reserve("user_a", "vs_dead", "hold", {}, START)
+    await os_voice.reserve("user_a", "vs_dead", "hold", {}, START)
     clock[0] += os_voice.PENDING_S + 1
     await os_voice.sweep_once()
     assert rec(ddb, "vs_dead")["endedReason"] == "upstream"
@@ -573,7 +578,7 @@ async def test_a_close_with_no_session_closed_is_reaped_unconfirmed(ddb, clock, 
     clock[0] += 3 * 86400
     await until(lambda: {"type": "session.close"} in sockets[0].sent)
     clock[0] += os_voice.CLOSE_WAIT_S + 1  # OpenAI never answers the close
-    await until(lambda: rec(ddb, sid).get("endedReason"))
+    await until(lambda: metrics)  # emitted after the row is ended
     assert rec(ddb, sid)["endedReason"] == "upstream"
     assert metrics == [("os_voice.session.reaped_unconfirmed", None)]
     assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_voice_seconds"] == 30
@@ -698,3 +703,80 @@ async def test_delegation(ddb, clock, no_sideband, openai, delegation, ok):
     assert r.status_code == (201 if ok else 400), r.text
     if ok:
         assert sent(openai)["session"]["delegation"] == delegation
+
+
+async def test_a_replaced_session_is_closed_by_its_sideband_and_counted_once(ddb, clock, openai, sockets, users):
+    first = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(25))
+    await until(lambda: rec(ddb, first).get("usageSeconds") == 25)
+    second = await opened_session()
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)  # within a tick of being replaced
+    assert "session.close" not in str(sockets[1].sent)
+    sockets[0].push(closed(27))
+    await until(lambda: rec(ddb, first).get("endedReason"))
+    got = await req("GET", f"/os/voice-session/{first}")
+    assert got.json() == {"status": "ended", "endedReason": "replaced"}
+    person = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert person["os_voice_seconds"] == 27 and person["os_voice_active"] == {second}
+    assert await os_voice.end_session(first, "upstream", 99) is False
+    assert [r["sessionId"] for r in active_rows(ddb)] == [second]
+
+
+@pytest.mark.parametrize("attach", ["works", "fails"])
+async def test_a_replaced_session_with_no_sideband_is_closed_by_the_sweep(
+    ddb, clock, openai, sockets, metrics, monkeypatch, attach
+):
+    first = await opened_session()
+    await until(lambda: sockets)
+    await replaced(first)  # its task is gone
+    clock[0] += os_voice.LEASE_S + 1
+    if attach == "fails":
+        monkeypatch.setattr(os_voice, "_connect", lambda url, **kw: (_ for _ in ()).throw(OSError("down")))
+    await create()  # replaces it; its new sideband is the fake (or fails)
+    await os_voice.sweep_once()  # picked up at once, not at the cap
+    if attach == "works":
+        await until(lambda: any({"type": "session.close"} in ws.sent for ws in sockets[1:]))
+        ws = next(ws for ws in sockets[1:] if {"type": "session.close"} in ws.sent)
+        assert ws.url.endswith("/live_1/attach")
+        ws.push(closed(4))
+        await until(lambda: rec(ddb, first).get("endedReason") == "replaced")
+    else:
+        await until(lambda: ("os_voice.session.reaped_unconfirmed", None) in metrics)
+        assert rec(ddb, first)["endedReason"] == "upstream"
+
+
+@pytest.mark.parametrize("trial", ["missing", "extended"])
+async def test_a_trial_is_read_consistently_and_a_missing_one_never_closes(
+    ddb, clock, openai, sockets, users, monkeypatch, trial
+):
+    reads = []
+    real = os_voice.run_in_thread
+
+    async def spy(fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "get_item" and "user_id" in kwargs.get("Key", {}):
+            reads.append(kwargs.get("ConsistentRead"))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(os_voice, "run_in_thread", spy)
+    assert (await req("GET", "/os/account")).status_code == 200
+    users.update_item(  # a trial that ends in a minute: the sideband caches this end
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_trial_ends_at = :t",
+        ExpressionAttributeValues={":t": START + 60},
+    )
+    sid = await opened_session()
+    await until(lambda: sockets)
+    if trial == "missing":
+        users.update_item(Key={"user_id": "user_a"}, UpdateExpression="REMOVE os_trial_ends_at")
+    else:  # a referral moved it past now, after the sideband cached the old end
+        users.update_item(
+            Key={"user_id": "user_a"},
+            UpdateExpression="SET os_trial_ends_at = :t",
+            ExpressionAttributeValues={":t": START + 30 * 86400},
+        )
+    clock[0] += 61  # past the cached end: the tick re-reads the row before closing
+    for _ in range(20):
+        await asyncio.sleep(os_voice.TICK_S)
+    assert sockets[0].sent == [] and rec(ddb, sid)["status"] == os_voice.ACTIVE
+    assert reads and all(r is True for r in reads)

@@ -3,8 +3,8 @@
 The Mac sends its SDP offer; `open_session` creates the session with OpenAI and the Mac's audio then flows
 directly to OpenAI. Each session is one containers-table row (`__osvoice__#<id>`) on the sparse
 `status-index` while active; the person's users row holds the set of their active session ids
-(`os_voice_active`, at most MAX_ACTIVE, enforced by the condition of the write that adds one) and their
-running total of voice seconds (`os_voice_seconds`).
+(`os_voice_active`: one per person, newest wins, the older one is marked `closeRequested` in the same
+write) and their running total of voice seconds (`os_voice_seconds`).
 
 One task holds each session's sideband under a lease on its row; every task's sweep re-attaches lapsed ones.
 
@@ -41,7 +41,6 @@ LIVE_URL = "https://api.openai.com/v1/live/sessions"
 ATTACH_URL = "wss://api.openai.com/v1/live/sessions/{}/attach"
 KEY_PREFIX = "__osvoice__#"
 ACTIVE = "os_voice_active"
-MAX_ACTIVE = 2
 ALLOWED_CLIENT_EVENTS = [
     "session.input_audio.mute",
     "session.input_audio.unmute",
@@ -52,7 +51,7 @@ ALLOWED_CLIENT_EVENTS = [
 ]
 CREATE_TIMEOUT_S = 20.0  # under API Gateway's 30 s
 RETRY_AFTER_S = 5  # OpenAI refused for capacity without a Retry-After
-TICK_S = 10.0  # lease renewal, usage write and close checks while attached
+TICK_S = 2.0  # lease renewal (which reads closeRequested), usage write and close checks while attached
 LEASE_S = 30
 SWEEP_S = 15
 PENDING_S = 60  # a reserved session with no OpenAI id after this: its creating task died
@@ -117,42 +116,54 @@ async def _create_live(body: dict) -> tuple[str, str]:
     raise _Upstream(502)
 
 
-async def reserve(user_id: str, sid: str, kind: str, client: dict, started_at: int) -> bool:
-    """Take one of the person's MAX_ACTIVE slots and write the session row, in one transaction."""
+async def reserve(user_id: str, sid: str, kind: str, client: dict, started_at: int) -> None:
+    """Make `sid` the person's one session, in one transaction: write its row, set their active set to
+    exactly {sid}, and mark every previous one `closeRequested: replaced` (its sideband then closes it).
+    The write is conditional on the set being what was read, so of two concurrent opens the later one
+    replaces the earlier: exactly one stays active."""
     users = get_table("users")
     row = {**_key(sid), "status": ACTIVE, "sessionId": sid, "userId": user_id, "kind": kind, "client": client}
     row |= {"startedAt": started_at, "usageSeconds": 0, "session_ttl": started_at + MAX_SESSION_S + ENDED_TTL_S}
-    try:
-        await transact(
-            users,
-            [
-                {
-                    "Update": {
-                        "TableName": users.name,
-                        "Key": {"user_id": user_id},
-                        "UpdateExpression": "ADD os_voice_active :sid",
-                        "ConditionExpression": "attribute_not_exists(os_voice_active) OR size(os_voice_active) < :max",
-                        "ExpressionAttributeValues": {":sid": {sid}, ":max": MAX_ACTIVE},
-                    }
-                },
-                {"Put": {"TableName": _table().name, "Item": row}},
-            ],
-        )
-    except ClientError as e:
-        if is_cancelled(e):
-            return False
-        raise
-    return True
+    for _ in range(5):
+        person = (await run_in_thread(users.get_item, Key={"user_id": user_id}, ConsistentRead=True)).get("Item") or {}
+        previous = person.get("os_voice_active") or set()
+        replaced = [
+            {
+                "Update": {
+                    "TableName": _table().name,
+                    "Key": _key(old),
+                    "UpdateExpression": "SET closeRequested = :r",
+                    "ConditionExpression": "#st = :active",
+                    "ExpressionAttributeNames": {"#st": "status"},
+                    "ExpressionAttributeValues": {":r": "replaced", ":active": ACTIVE},
+                }
+            }
+            for old in previous
+        ]
+        set_new = {
+            "TableName": users.name,
+            "Key": {"user_id": user_id},
+            "UpdateExpression": "SET os_voice_active = :sid",
+            "ConditionExpression": "os_voice_active = :prev" if previous else "attribute_not_exists(os_voice_active)",
+            "ExpressionAttributeValues": {":sid": {sid}} | ({":prev": previous} if previous else {}),
+        }
+        try:
+            await transact(users, [{"Update": set_new}, {"Put": {"TableName": _table().name, "Item": row}}, *replaced])
+            return
+        except ClientError as e:
+            if not is_cancelled(e):
+                raise
+    raise HTTPException(status_code=503, detail="voice_unavailable")  # the set kept changing under us
 
 
 async def open_session(
     user_id: str, kind: str, client: dict, model: str, config: dict, sdp: str
 ) -> dict | JSONResponse:
-    """Reserve a slot, create the Live session with the backend-owned settings, and start its sideband.
-    Returns the 201 body; raises the contract's error, or returns a JSONResponse for `capacity`."""
+    """Make this the person's one session (replacing any other), create the Live session with the
+    backend-owned settings, and start its sideband. Returns the 201 body; raises the contract's error, or
+    returns a JSONResponse for `capacity`."""
     started_at, sid = now(), f"vs_{uuid.uuid4().hex}"
-    if not await reserve(user_id, sid, kind, client, started_at):
-        raise HTTPException(status_code=429, detail="too_many_sessions")
+    await reserve(user_id, sid, kind, client, started_at)
     config |= {
         "model": model,
         "store": False,
@@ -186,7 +197,7 @@ async def open_session(
 
 
 async def get(sid: str) -> dict | None:
-    return (await run_in_thread(_table().get_item, Key=_key(sid))).get("Item")
+    return (await run_in_thread(_table().get_item, Key=_key(sid), ConsistentRead=True)).get("Item")
 
 
 async def end_session(sid: str, reason: str, seconds: int) -> bool:
@@ -239,10 +250,11 @@ async def _reap_unconfirmed(sid: str, seconds: int) -> None:
         logger.warning("os voice session %s reaped without session.closed; final usage unconfirmed", sid)
 
 
-async def _lease(sid: str, at: int, expression: str = "", values: dict | None = None) -> bool:
-    """Take or renew the session's lease; False when another task holds it or the session ended."""
+async def _lease(sid: str, at: int, expression: str = "", values: dict | None = None) -> dict | None:
+    """Take or renew the session's lease and return the row; None when another task holds it or the
+    session ended."""
     try:
-        await run_in_thread(
+        out = await run_in_thread(
             _table().update_item,
             Key=_key(sid),
             UpdateExpression="SET leaseOwner = :me, leaseUntil = :until" + expression,
@@ -251,12 +263,13 @@ async def _lease(sid: str, at: int, expression: str = "", values: dict | None = 
             ExpressionAttributeNames={"#st": "status"},
             ExpressionAttributeValues={":me": TASK_ID, ":until": at + LEASE_S, ":now": at, ":active": ACTIVE}
             | (values or {}),
+            ReturnValues="ALL_NEW",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
+            return None
         raise
-    return True
+    return out["Attributes"]
 
 
 async def _release(sid: str, attach_failed: bool = False) -> None:
@@ -271,16 +284,23 @@ async def _release(sid: str, attach_failed: bool = False) -> None:
         )
 
 
-async def _trial_ends_at(user_id: str) -> int:
-    row = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id})).get("Item") or {}
-    return int(row.get("os_trial_ends_at", 0))
+async def _trial_ends_at(user_id: str) -> int | None:
+    """The person's trial end, read consistently: it decides whether to close a live session. None (no row,
+    or no trial attribute) is never an ended trial."""
+    row = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ConsistentRead=True)).get(
+        "Item"
+    ) or {}
+    ends = row.get("os_trial_ends_at")
+    return None if ends is None else int(ends)
 
 
 async def _due(s: dict, at: int) -> str | None:
     """Why the backend should close this session now, if it should."""
-    if at >= s["trialEndsAt"]:
+    if s.get("closeRequested"):
+        return "replaced"
+    if s["trialEndsAt"] is not None and at >= s["trialEndsAt"]:
         s["trialEndsAt"] = await _trial_ends_at(s["userId"])  # a referral may have extended it
-        if at >= s["trialEndsAt"]:
+        if s["trialEndsAt"] is not None and at >= s["trialEndsAt"]:
             return "trial_ended"
     if (s.get("expiresAt") and at >= int(s["expiresAt"])) or at >= int(s["startedAt"]) + MAX_SESSION_S:
         return "expired"
@@ -290,16 +310,17 @@ async def _due(s: dict, at: int) -> str | None:
 async def _tick(ws, s: dict) -> bool:
     """Renew the lease, store the latest usage, and close the session when it is due. False: stop."""
     at = now()
-    if not s.get("closeReason") and (reason := await _due(s, at)):
-        s["closeReason"] = reason
     expression, values = ", usageSeconds = :s", {":s": s["usageSeconds"]}
     for field in ("expiresAt", "closeReason"):
         if s.get(field):
             expression, values = f"{expression}, {field} = :{field}", values | {f":{field}": s[field]}
     if s.pop("attachFailures", None):
         expression += " REMOVE attachFailures"
-    if not await _lease(s["sessionId"], at, expression, values):
+    if (row := await _lease(s["sessionId"], at, expression, values)) is None:
         return False
+    s["closeRequested"] = row.get("closeRequested")
+    if not s.get("closeReason") and (reason := await _due(s, at)):
+        s["closeReason"] = reason
     if s.get("closeReason") and not s.get("closeSentAt"):
         await ws.send(json.dumps({"type": "session.close"}))
         s["closeSentAt"] = at

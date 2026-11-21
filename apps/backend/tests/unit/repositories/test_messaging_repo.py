@@ -1340,7 +1340,7 @@ async def test_patch_room_meta_bound_to_a_stale_revision_is_cancelled(table):
     await repo.patch_room_meta(room_id, {"topic": "first"}, expected_revision=meta["revision"])
     with pytest.raises(ClientError) as lost:  # someone wrote since the caller's read
         await repo.patch_room_meta(room_id, {"topic": "stale"}, expected_revision=meta["revision"])
-    assert repo._is_cancelled(lost.value)
+    assert repo.is_cancelled(lost.value)
     assert (await repo.get_room(room_id))["topic"] == "first"
 
 

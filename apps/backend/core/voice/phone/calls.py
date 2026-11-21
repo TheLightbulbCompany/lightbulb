@@ -19,7 +19,7 @@ from core.billing import voice_billing
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact, utc_now_iso
 from core.engine import api
-from core.engine.contract import AnnotateIn
+from core.engine.contract import AnnotateIn, EngineError
 from core.repositories import billing_repo, messaging_repo
 from core.services import questions
 from core.voice.phone import voice_booking, voice_preferences
@@ -168,7 +168,7 @@ async def _patch_call(call_id: str, change) -> dict:
         try:
             await api.annotate(
                 AnnotateIn(
-                    tenant_id=meta["ownerId"],
+                    tenant_id=meta.get("ownerId") or "",
                     conversation_id=call_id,
                     set={"call": merged},
                     expected_revision=int(meta.get("revision", 0)),
@@ -178,6 +178,10 @@ async def _patch_call(call_id: str, change) -> dict:
         except ClientError:
             if attempt == 3:
                 raise
+        except EngineError as exc:
+            if exc.status != 404:
+                raise
+            raise _err(404, "call_not_found") from None  # the call's room is gone, as `_call` answers
     raise AssertionError("unreachable")
 
 

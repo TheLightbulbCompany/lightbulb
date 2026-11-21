@@ -867,3 +867,17 @@ async def test_annotate_if_absent(tables, monkeypatch):
     again = {"meeting": {"ticketNonce": "n2", "botClaimAt": 6}}
     assert await api.annotate(_annotate(set=again, if_absent="ticketNonce")) is False
     assert (await messaging_repo.get_room(CALL))["meeting"]["ticketNonce"] == "n1"
+
+
+@pytest.mark.parametrize("field", ["callToken", "liveSlot", "ownerUserId"])
+async def test_annotate_rejects_fields_the_store_would_drop(tables, field):
+    """Product fields the record's writer would silently drop are refused, so `annotate` never answers True for
+    nothing written."""
+    from core.engine import api
+    from core.engine.contract import EngineError
+
+    await _room(CALL, "call", extra={"call": {"status": "live"}})
+    with pytest.raises(EngineError) as refused:
+        await api.annotate(_annotate(set={field: "x"}))
+    assert (refused.value.status, refused.value.detail) == (400, {"code": "not_product_field", "fields": [field]})
+    assert field not in await messaging_repo.get_room(CALL)

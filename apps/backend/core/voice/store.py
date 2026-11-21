@@ -1,15 +1,10 @@
-"""Lightbulb Phone's and Meetings' own rows. They live in the messaging table beside the engine's conversation rows
-(``core.repositories.messaging_repo``), under their own sort keys, so nothing moved when the engine's repository
-stopped holding them: the keys, attributes and TTLs are the ones the rows were written with.
+"""Lightbulb Phone's and Meetings' own rows in the messaging table, under their own sort keys:
 
-    OWNER#<owner>   VOICERUN#<runId>                    a Live voice run's room, agent and speaker (2 h TTL; NOT RUN#:
-                                                       chat never steers into a voice run)
-    OWNER#<owner>   VOICEEDIT#<agent>#<kind>#<day>      a day's count of voice edits per agent (2-day TTL)
-    OWNER#<owner>   <slot sk>                           a held slot (a live-call slot, the forwarding check's lock)
-    OWNER#<owner>   MEETNOTES#<messageId>               a meeting's notes request (2-day TTL)
-
-The product modules write their other rows (numbers, PINs, callers, bookings, the waitlist) themselves, through the
-table helpers in ``core.dynamodb``.
+OWNER#<owner>   VOICERUN#<runId>                    a Live voice run's room, agent and speaker (2 h TTL; NOT RUN#:
+                                                   chat never steers into a voice run)
+OWNER#<owner>   VOICEEDIT#<agent>#<kind>#<day>      a day's count of voice edits per agent (2-day TTL)
+OWNER#<owner>   <slot sk>                           a held slot (a live-call slot, the forwarding check's lock)
+OWNER#<owner>   MEETNOTES#<messageId>               a meeting's notes request (2-day TTL)
 """
 
 from __future__ import annotations
@@ -24,7 +19,7 @@ from botocore.exceptions import ClientError
 from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread
 
 
-def voice_run_sk(run_id: str) -> str:
+def _voice_run_sk(run_id: str) -> str:
     return f"VOICERUN#{run_id}"
 
 
@@ -33,7 +28,7 @@ def meeting_room_id(owner_id: str, uid: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-meeting|{owner_id}|{uid}"))
 
 
-VOICE_RUN_TTL_S = 2 * 3600
+_VOICE_RUN_TTL_S = 2 * 3600
 
 
 async def put_voice_run(
@@ -43,10 +38,10 @@ async def put_voice_run(
     put: a /turns retry writes the same fields again and cannot drop what another writer set in between.
     A field in ``once`` is written only if the row has none yet (a lowered ``None`` counts),
     so a retry can never undo what a steer lowered."""
-    fields = {"runId": run_id, **fields, "expiresAt": int(time.time()) + VOICE_RUN_TTL_S}
+    fields = {"runId": run_id, **fields, "expiresAt": int(time.time()) + _VOICE_RUN_TTL_S}
     response = await run_in_thread(
         messaging_table().update_item,
-        Key={"pk": owner_pk(owner_id), "sk": voice_run_sk(run_id)},
+        Key={"pk": owner_pk(owner_id), "sk": _voice_run_sk(run_id)},
         UpdateExpression="SET "
         + ", ".join(
             f"#f{i} = if_not_exists(#f{i}, :v{i})" if k in once else f"#f{i} = :v{i}" for i, k in enumerate(fields)
@@ -62,17 +57,17 @@ async def put_voice_run(
 #: meeting room, occurrence, where the request sits, and a snapshot of the meeting), so the mail no
 #: longer depends on the live meeting record, which a recurring series rewrites when it advances.
 #: Its own once-only markers live here too. Kept a day longer than any notes run.
-MEETING_NOTES_TTL_S = 2 * 86400
+_MEETING_NOTES_TTL_S = 2 * 86400
 
 
-def meeting_notes_sk(message_id: str) -> str:
+def _meeting_notes_sk(message_id: str) -> str:
     return f"MEETNOTES#{message_id}"
 
 
 async def put_meeting_notes_request(owner_id: str, message_id: str, fields: dict[str, Any]) -> None:
     item = {
-        "pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id), **fields,
-        "expiresAt": int(time.time()) + MEETING_NOTES_TTL_S,
+        "pk": owner_pk(owner_id), "sk": _meeting_notes_sk(message_id), **fields,
+        "expiresAt": int(time.time()) + _MEETING_NOTES_TTL_S,
     }  # fmt: skip
     try:  # first write wins: a retried dispatch must not clear a mail claim already taken
         await run_in_thread(messaging_table().put_item, Item=item, ConditionExpression="attribute_not_exists(pk)")
@@ -82,7 +77,7 @@ async def put_meeting_notes_request(owner_id: str, message_id: str, fields: dict
 
 
 async def get_meeting_notes_request(owner_id: str, message_id: str) -> dict | None:
-    row = await get_item(messaging_table(), owner_pk(owner_id), meeting_notes_sk(message_id))
+    row = await get_item(messaging_table(), owner_pk(owner_id), _meeting_notes_sk(message_id))
     return row if row and int(row.get("expiresAt", 0)) > time.time() else None
 
 
@@ -91,7 +86,7 @@ async def claim_meeting_notes_mail(owner_id: str, message_id: str) -> bool:
     try:
         await run_in_thread(
             messaging_table().update_item,
-            Key={"pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id)},
+            Key={"pk": owner_pk(owner_id), "sk": _meeting_notes_sk(message_id)},
             UpdateExpression="SET mailAttemptedAt = :now",
             ConditionExpression="attribute_exists(pk) AND attribute_not_exists(mailAttemptedAt)",
             ExpressionAttributeValues={":now": int(time.time())},
@@ -104,7 +99,7 @@ async def claim_meeting_notes_mail(owner_id: str, message_id: str) -> bool:
 
 
 async def get_voice_run(owner_id: str, run_id: str) -> dict | None:
-    row = await get_item(messaging_table(), owner_pk(owner_id), voice_run_sk(run_id))
+    row = await get_item(messaging_table(), owner_pk(owner_id), _voice_run_sk(run_id))
     # DynamoDB TTL deletes lazily: an expired row must not authorize anything.
     return row if row and int(row.get("expiresAt", 0)) > time.time() else None
 

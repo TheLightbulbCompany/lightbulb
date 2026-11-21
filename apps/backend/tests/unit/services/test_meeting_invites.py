@@ -1809,3 +1809,41 @@ async def test_new_meeting_uses_selected_uuid_for_reserved_front_handle(room, mo
     assert room.create.await_args.kwargs["extra"]["frontAgentId"] == ENG
     assert seats[ENG]["mentionHandle"] == "lightbulb"
     assert seats[CEO]["mentionHandle"] != "lightbulb"
+
+
+# --- a deleted meeting room: the engine refuses the write, the product ends quietly ---------------------------------
+
+
+def _deleted(room):
+    room.state["meta"] = {**room.state["meta"], "deletedAt": "2026-10-02T00:00:00+00:00"}
+
+
+async def test_patch_meeting_on_deleted_room_returns_none(room):
+    room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 1, "meeting": {"status": "scheduled"}}
+    _deleted(room)
+    assert await meeting_invites._patch_meeting("r", {"status": "ended"}) is None
+    room.patch.assert_not_awaited()
+    assert room.state["meta"]["meeting"] == {"status": "scheduled"}
+
+
+async def test_sync_bot_on_deleted_room_is_quiet(room, bots):
+    room.state["meta"] = {"roomId": "r", "ownerId": "org_1", "revision": 1, "meeting": {"status": "scheduled"}}
+    _deleted(room)
+    meeting = {"uid": UID, "sequence": 0, "status": "scheduled", "title": "Sync", "meetingUrl": "https://meet.google.com/x",
+               "startAt": int(BEFORE_THE_INVITES) + 86400, "endAt": int(BEFORE_THE_INVITES) + 90000}  # fmt: skip
+    assert await meeting_invites._sync_bot("org_1", "r", meeting, None) == meeting
+    bots.create.assert_not_awaited()  # no claim, so no bot booked into a deleted room
+    bots.find.assert_not_awaited()
+    assert "ticketNonce" not in room.state["meta"]["meeting"]
+
+
+async def test_a_redelivered_invite_for_a_deleted_meeting_room_ends_quietly(room, bots):
+    """What SES inbound acts on: a non-None outcome is answered 2xx (`_final`), so SES does not redeliver. `_apply`
+    refuses a deleted room before any write; `_patch_meeting`'s None covers a delete that lands after that read."""
+    assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
+    _deleted(room)
+    before = dict(room.state["meta"]["meeting"])
+    assert await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM) == "meeting_ignored"
+    assert room.state["meta"]["meeting"] == before
+    bots.create.assert_awaited_once()  # the first delivery's bot only
+    bots.reschedule.assert_not_awaited()

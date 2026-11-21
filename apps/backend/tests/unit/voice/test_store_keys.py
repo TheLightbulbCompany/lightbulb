@@ -1,6 +1,5 @@
-"""The product's rows in the messaging table: the exact items each store function writes (written first against the
-engine repo, before the move, and run unchanged after it but for the import), and that the product's key prefixes and
-the engine's never meet."""
+"""The exact items each product store function writes, and that the product's key prefixes and the engine's never
+meet."""
 
 import re
 import uuid
@@ -45,11 +44,11 @@ def _rows(table) -> list[dict]:
 
 
 def test_key_builders():
-    assert store.voice_run_sk("r1") == "VOICERUN#r1"
-    assert store.meeting_notes_sk("m1") == "MEETNOTES#m1"
+    assert store._voice_run_sk("r1") == "VOICERUN#r1"
+    assert store._meeting_notes_sk("m1") == "MEETNOTES#m1"
     assert store.meeting_room_id(OWNER, "uid-1") == str(uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb-meeting|org_1|uid-1"))
     assert store.meeting_room_id(OWNER, "uid-1") == "9d830369-06b9-5d16-8d23-319e332ed77b"
-    assert (store.VOICE_RUN_TTL_S, store.MEETING_NOTES_TTL_S) == (7200, 172800)
+    assert (store._VOICE_RUN_TTL_S, store._MEETING_NOTES_TTL_S) == (7200, 172800)
 
 
 async def test_voice_run(table):

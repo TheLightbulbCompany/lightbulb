@@ -82,7 +82,7 @@ async def _set_archived(meta: dict, archived: bool) -> dict:
         try:
             meta = await messaging_repo.patch_room_meta(meta["roomId"], updates)
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc) or attempt == 3:
+            if not messaging_repo.is_cancelled(exc) or attempt == 3:
                 raise
             meta = await messaging_repo.get_room(meta["roomId"]) or meta
             if archived == bool(meta.get("archivedAt")):
@@ -114,7 +114,7 @@ async def _follow_lifecycle(owner_id: str, session_id: str, meta: dict) -> dict:
         try:
             meta = await messaging_repo.patch_room_meta(meta["roomId"], {"name": name})
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
             return meta  # lost a revision race: the next open names it
         await messaging._publish_room_metadata(meta)
@@ -146,7 +146,7 @@ async def _seat(owner_id: str, meta: dict, user_id: str, *, full: str = "This se
             logger.warning("session chat full; %s not seated in %s", user_id, meta["roomId"])
             raise ApiProblem("MEMBER_LIMIT", full) from exc
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc) or attempt == 2:
+            if not messaging_repo.is_cancelled(exc) or attempt == 2:
                 raise
             meta = await messaging_repo.get_room(meta["roomId"]) or meta
             if await messaging_repo.get_member(meta["roomId"], "human", user_id) is not None:
@@ -168,7 +168,7 @@ async def _unseat(room_id: str, user_id: str) -> bool:
             await messaging._remove_member_with_notices(meta, "human", user_id)
             return True
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc):
+            if not messaging_repo.is_cancelled(exc):
                 raise
             if await messaging_repo.get_member(room_id, "human", user_id) is None:
                 return False

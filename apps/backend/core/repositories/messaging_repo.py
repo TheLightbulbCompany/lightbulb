@@ -324,7 +324,7 @@ async def put_voice_usage_event(owner_id: str, transaction_id: str, event: dict)
                 ]
             )
         except ClientError as exc:
-            if not _is_cancelled(exc) or not await _get(**work_key):
+            if not is_cancelled(exc) or not await _get(**work_key):
                 raise
         return prior
     try:
@@ -370,7 +370,7 @@ async def put_voice_usage_event(owner_id: str, transaction_id: str, event: dict)
         )
         return source
     except ClientError as exc:
-        if not _is_cancelled(exc):
+        if not is_cancelled(exc):
             raise
         winner = await _get(**key)
         if winner and winner.get("voiceUsageEvent") is not None:
@@ -564,9 +564,6 @@ async def _transact(items: list[dict]) -> None:
     if len(items) > _TRANSACT_LIMIT:
         raise MessagingRepoError(f"transaction has {len(items)} actions (limit {_TRANSACT_LIMIT})")
     await transact(_table(), items)
-
-
-_is_cancelled = is_cancelled  # this module's own name for it
 
 
 async def _paginate(**kwargs: Any) -> list[dict]:
@@ -980,7 +977,7 @@ async def create_room(
         await _transact(items)
         return meta
     except ClientError as exc:
-        if not _is_cancelled(exc):
+        if not is_cancelled(exc):
             raise
     existing = await _get(room_pk(room_id), human_idemp_sk(creator_user_id, client_room_id))
     if existing is None:
@@ -1422,7 +1419,7 @@ async def create_message(
                 await _transact(items)
                 return _plain(message), False
             except ClientError as exc:
-                if not _is_cancelled(exc):
+                if not is_cancelled(exc):
                     raise
                 reasons = exc.response.get("CancellationReasons", [])
                 if (
@@ -1574,7 +1571,7 @@ async def update_message(
                 ]
             )
         except ClientError as exc:
-            if not _is_cancelled(exc):
+            if not is_cancelled(exc):
                 raise
             receipt = await _get(room_pk(room_id), receipt_sk)
             if receipt:
@@ -1647,7 +1644,7 @@ async def set_reaction(
             )
             return {**message, "reactions": reactions, "reactionRevision": revision + 1}
         except ClientError as exc:
-            if not _is_cancelled(exc):
+            if not is_cancelled(exc):
                 raise
     raise MessagingRepoError("Reaction could not be updated. Refresh and try again.")
 
@@ -2042,7 +2039,7 @@ async def delete_room(*, meta: dict, deleted_by: str, new_delivery_key: str, liv
     try:
         await _transact(items)
     except ClientError as exc:
-        if _is_cancelled(exc):
+        if is_cancelled(exc):
             raise RoomNotFound(room_id) from exc
         raise
     return {
@@ -2055,7 +2052,7 @@ async def delete_room(*, meta: dict, deleted_by: str, new_delivery_key: str, liv
     }
 
 
-_ROOM_META_FIELDS = (
+ROOM_META_FIELDS = (
     "name", "topic", "archivedAt", "archivedBy", "meeting", "icon", "color", "pausedAt", "pausedBy", "firstRun", "call",
 )  # fmt: skip
 # Cleared by REMOVE, not SET null: create_message's fence is attribute_not_exists(archivedAt).
@@ -2075,7 +2072,7 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any], *, expected_rev
     meta = await get_room(room_id)
     if meta is None:
         raise RoomNotFound(room_id)
-    named = {k: v for k, v in updates.items() if k in _ROOM_META_FIELDS}
+    named = {k: v for k, v in updates.items() if k in ROOM_META_FIELDS}
     removed = [k for k in _ROOM_META_REMOVABLE if k in named and named[k] is None]
     named = {k: v for k, v in named.items() if k not in removed}
     now = utc_now_iso()
@@ -2141,7 +2138,7 @@ async def set_meeting_field_if_absent(room_id: str, field: str, value: Any, also
         )
         return True
     except ClientError as exc:
-        if _is_cancelled(exc):
+        if is_cancelled(exc):
             return False
         raise
 
@@ -2491,7 +2488,7 @@ async def ensure_user_stream(owner_id: str, user_id: str, *, rejoin: bool = Fals
         await _transact(items)
         return key
     except ClientError as exc:
-        if not _is_cancelled(exc):
+        if not is_cancelled(exc):
             raise
     # Lost the race to a concurrent allocation — read the winner.
     winner = await get_user_stream(owner_id, user_id)
@@ -2557,7 +2554,7 @@ async def enroll_sessions_member(owner_id: str, user_id: str, channel_key: str) 
 
 
 def _condition_failed(exc: ClientError) -> bool:
-    return _is_cancelled(exc) and any(
+    return is_cancelled(exc) and any(
         r.get("Code") == "ConditionalCheckFailed" for r in exc.response.get("CancellationReasons", [])
     )
 
@@ -2938,7 +2935,7 @@ async def create_follow_up(
         )
         return True
     except ClientError as exc:
-        if not _is_cancelled(exc):
+        if not is_cancelled(exc):
             raise
     if await get_follow_up(room_id, follow_up_id) is None:
         raise MessagingRepoError("follow-up create cancelled without a durable row")

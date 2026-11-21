@@ -2917,7 +2917,7 @@ async def _remove_human_seat(owner_id: str, room_id: str, user_id: str) -> None:
             await _remove_member_with_notices(meta, "human", user_id)
             return
         except ClientError as exc:
-            if not messaging_repo._is_cancelled(exc) or attempt == 2:
+            if not messaging_repo.is_cancelled(exc) or attempt == 2:
                 raise
 
 

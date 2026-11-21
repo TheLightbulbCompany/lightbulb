@@ -23,7 +23,7 @@ from dateutil.rrule import DAILY, rruleset, rrulestr
 from core.config import settings
 from core.dynamodb import is_cancelled
 from core.engine import api
-from core.engine.contract import AnnotateIn
+from core.engine.contract import AnnotateIn, EngineError
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo, messaging_repo
@@ -419,6 +419,11 @@ async def _patch_meeting(
             if not is_cancelled(exc) or attempt == 3:
                 raise  # a throttle, access error, or a third lost race: SES retries the whole mail
             continue
+        except EngineError as exc:
+            if exc.status != 404:
+                raise
+            logger.info("meeting room %s: gone, nothing written", room_id)
+            return None
         if meta.get("ownerId"):
             await agent_email.mail_changed(meta["ownerId"])
         return merged
@@ -526,7 +531,7 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
                 f"Couldn't move the bot for **{_title(meeting)}**; it will join at the old time.",
             )
             return await _patch_meeting(room_id, {"status": "bot_failed", "botError": code})
-        meeting = await _patch_meeting(room_id, {"status": "scheduled"}, drop=_BOT_KEYS)
+        meeting = await _patch_meeting(room_id, {"status": "scheduled"}, drop=_BOT_KEYS) or meeting
     # One booking per meeting: the nonce is claimed with a conditional write and rides in the bot's
     # metadata. Recall does not deduplicate a create, so a create under a nonce an EARLIER attempt
     # claimed is preceded by a lookup that adopts the bot a lost answer or a dead process left
@@ -534,9 +539,16 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
     nonce, now = secrets.token_urlsafe(32), int(time.time())
     bot_id = None
     claim = {"meeting": {"ticketNonce": nonce, "botClaimAt": now}}
-    if not await api.annotate(
-        AnnotateIn(tenant_id=owner_id, conversation_id=room_id, set=claim, if_absent="ticketNonce")
-    ):
+    try:
+        claimed = await api.annotate(
+            AnnotateIn(tenant_id=owner_id, conversation_id=room_id, set=claim, if_absent="ticketNonce")
+        )
+    except EngineError as exc:
+        if exc.status != 404:
+            raise
+        logger.info("meeting room %s: gone, no bot booked", room_id)
+        return meeting
+    if not claimed:
         stored = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
         if stored.get("recallBotId"):
             return stored

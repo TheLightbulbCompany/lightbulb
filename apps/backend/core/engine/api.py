@@ -81,10 +81,11 @@ async def _owned(tenant_id: str, conversation_id: str) -> dict:
 
 
 async def annotate(req: AnnotateIn) -> bool:
-    """Write a product's own fields on its conversation's record; the engine stores them and never reads them. With
+    """Write a product's own fields on its conversation's record (those of `PRODUCT_META_FIELDS` the record's writer
+    keeps; any other key is refused, never dropped); the engine stores them and never reads them. With
     `expected_revision`, a writer since the caller's read cancels it (botocore's `TransactionCanceledException`, as
     `patch_room_meta` raises it, so the caller's merge loop retries). With `if_absent`, False when the key is there."""
-    if fields := sorted(set(req.set) - PRODUCT_META_FIELDS):
+    if fields := sorted(set(req.set) - (PRODUCT_META_FIELDS & set(messaging_repo.ROOM_META_FIELDS))):
         raise _problem(400, "not_product_field", fields=fields)
     await _owned(req.tenant_id, req.conversation_id)
     if req.if_absent is None:

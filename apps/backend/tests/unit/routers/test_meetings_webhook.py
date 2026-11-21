@@ -18,6 +18,8 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from main import app  # noqa: E402
 from routers import meetings as mod  # noqa: E402
 
+_REAL_PATCH_MEETING = mod.meeting_invites._patch_meeting
+
 ROOM = "11111111-1111-4111-8111-111111111111"
 SECRET = "whsec_" + base64.b64encode(b"k" * 24).decode()
 WORKER = "worker-secret"
@@ -804,3 +806,14 @@ def test_chat_store_failure_is_retryable_instead_of_acknowledged_and_lost(env):
         patch.object(mod.messaging, "create_human_message", AsyncMock(side_effect=RuntimeError("down"))),
     ):
         assert _post(env["client"], _chat_event(), path="/api/v1/webhooks/recall/realtime").status_code == 503
+
+
+@pytest.mark.parametrize("code", ["in_call_recording", "call_ended"])
+def test_a_status_for_a_deleted_meeting_room_is_answered_2xx(env, code):
+    """The engine refuses a write to a deleted room; the real `_patch_meeting` writes nothing and the webhook is
+    acknowledged, so Recall does not retry for 24 h."""
+    env["meta"]["deletedAt"] = "2026-10-02T00:00:00+00:00"
+    before = dict(env["meta"]["meeting"])
+    with patch.object(mod.meeting_invites, "_patch_meeting", _REAL_PATCH_MEETING):
+        assert _post(env["client"], _status(code)).status_code == 200
+    assert env["meta"]["meeting"] == before

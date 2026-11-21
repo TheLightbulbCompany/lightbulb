@@ -181,6 +181,7 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
     except BotoCoreError:
         logger.warning("os referral not written for %s: transport", auth.user_id)
         raise HTTPException(status_code=503, detail="referral_unavailable")
+    await os_billing.extend_trial(referrer)
     return ReferralResponse(applied=True)
 
 

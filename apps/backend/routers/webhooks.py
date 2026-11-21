@@ -800,15 +800,15 @@ async def handle_clerk_webhook(request: Request):
         # membership cleanup is handled via the organizationMembership
         # event stream — we don't enumerate orgs here.
         await _handle_user_deleted_paperclip(user_id)
-        # A live Spark subscription would keep charging; a failure fails the event so the redelivery retries it.
-        from core.services.os_billing import cancel_for_deleted_user
-
-        await cancel_for_deleted_user(user_id)
         # Their own memory data (sessions, drafts, episodes, computer keys). Memory records never
         # expire, so a failure fails the event and the redelivery retries it.
         from core.services.workspace_memory import delete_person_memory
 
         await delete_person_memory(user_id)
+        # A live Spark subscription would keep charging; a failure fails the event so the redelivery retries it.
+        from core.services.os_billing import cancel_for_deleted_user
+
+        await cancel_for_deleted_user(user_id)
 
     elif event_type == "organization.created":
         await _handle_organization_created(data)  # never deduped (above): a redelivery retries it

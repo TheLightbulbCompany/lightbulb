@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.config import settings
-from core.repositories import messaging_repo
+from core.engine import api
 from core.voice import livekit_huddles, rooms
 
 router = APIRouter()
@@ -23,7 +23,8 @@ async def session(body: SessionBody):
     if not found:
         raise HTTPException(status_code=401, detail="invalid ticket")
     room_id, nonce = found
-    meeting = ((await messaging_repo.get_room(room_id)) or {}).get("meeting") or {}
+    conv = await api.find_conversation(room_id)
+    meeting = (conv.annotations.get("meeting") if conv else None) or {}
     if meeting.get("ticketNonce") != nonce or meeting.get("status") not in ("bot_created", "in_call"):
         raise HTTPException(status_code=401, detail="invalid ticket")
     # "separate": Recall's audio socket seats each Meet person (meet_bridge), so the page's mic must stay off.
@@ -32,6 +33,6 @@ async def session(body: SessionBody):
         "serverUrl": settings.LIVEKIT_URL,
         "roomName": livekit_huddles.meet_room_name(room_id),
         "token": livekit_huddles.mint_meet_token(room_id, mixed=mixed),
-        "agents": await rooms.room_agents(room_id),
+        "agents": await rooms.room_agents(conv.tenant_id, room_id),
         "mixedAudio": mixed,
     }

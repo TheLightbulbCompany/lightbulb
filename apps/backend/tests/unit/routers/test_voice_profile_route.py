@@ -47,6 +47,7 @@ def world(monkeypatch):
         AGENT: {"kind": "agent", "id": AGENT, "role": "member", "displayName": "Ada"},
     }
     monkeypatch.setattr(messaging_repo, "get_member", AsyncMock(side_effect=lambda room, kind, uid: members.get(uid)))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": OWNER}))  # the Live room
     counts: dict[tuple, int] = {}
 
     async def count(owner, agent_id, kind, limit):
@@ -70,7 +71,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(messaging_repo, "list_rooms_for_member", rooms)
     monkeypatch.setattr(messaging_repo, "set_agent_names", set_names)
-    monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(return_value=list(members.values())))
     monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: SimpleNamespace(publish_user=AsyncMock()))
     monkeypatch.setattr(
         container_repo,
@@ -105,7 +106,9 @@ def _post(world, headers=AUTH, **body):
 
 
 def _notices(send_frames) -> list[tuple[str, dict]]:
-    return [(c.args[0], ev["payload"]) for c in send_frames.await_args_list for ev in c.args[1]]
+    return [
+        (c.args[1], ev["payload"]) for c in send_frames.await_args_list for ev in c.args[2]
+    ]  # (owner, room, events)
 
 
 def test_a_member_renames_by_voice(world):

@@ -7,6 +7,7 @@ import pytest
 from core.services import admission
 from core.voice.meetings import meeting_followups as mod, meeting_context
 from .test_meeting_context import world  # noqa: F401
+from core.repositories import messaging_repo
 
 
 async def test_completion_is_one_stable_nonhuman_trigger_under_original_principal(world):  # noqa: F811
@@ -52,7 +53,7 @@ async def test_admission_rechecks_setting_after_completion_was_enqueued(world, m
 
 def test_current_config_never_promises_automatic_notes_email():
     source = {"name": "Front door", "meetings": {"followUps": False, "emailNotes": True}}
-    config = mod.messaging_repo.voice_agent_config(source)
+    config = messaging_repo.voice_agent_config(source)
     assert config == {"name": "Front door", "meetings": {"followUps": False}}
     assert source["meetings"]["emailNotes"] is True  # no stored-row migration or mutation
 
@@ -75,7 +76,7 @@ async def test_real_task_provenance_links_only_original_history_not_a_matching_c
     original = world["meta"]["meeting"]["history"][0]
     original["followUps"] = [{"id": "human-commitment", "text": "Research", "status": "recorded"}]
 
-    async def patch(room_id, fields):
+    async def patch(owner_id, room_id, fields):
         assert room_id == "meeting-room"
         meeting = world["meta"]["meeting"]
         meeting.update(fields(meeting))
@@ -124,7 +125,7 @@ async def test_personal_completion_task_status_updates_original_meeting_history(
     from core.voice.meetings import meeting_invites
     from core.voice.meetings import records
 
-    async def patch(room_id, fields):
+    async def patch(owner_id, room_id, fields):
         assert room_id == "meeting-room"
         meeting = world["meta"]["meeting"]
         meeting.update(fields(meeting))

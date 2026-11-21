@@ -1448,7 +1448,7 @@ async def test_paused_ask_keeps_the_latest_and_pops_once(table):
 async def test_a_transfer_line_keeps_its_action_on_the_row_and_in_voice_events(table):
     """transfer_call's line (runtime_internal.transfer_call: post_as_lightbulb attrs={"action": "transfer"}) is
     stored with `action` on the message row, and agent_lines (/calls/{id}/events) hands it to the phone worker."""
-    from core.voice.room_lines import agent_lines
+    from core.engine.api import _agent_lines
 
     room_id, _ = await _room()
     await repo.create_message(
@@ -1468,5 +1468,5 @@ async def test_a_transfer_line_keeps_its_action_on_the_row_and_in_voice_events(t
         client_message_id=None,
         attrs={"action": "transfer"},
     )
-    out = await agent_lines(room_id, 0)
+    out = await _agent_lines(OWNER, room_id, 0)
     assert [(m["text"], m.get("action")) for m in out["messages"]] == [("Let me put you through.", "transfer")]

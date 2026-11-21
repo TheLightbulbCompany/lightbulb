@@ -1,13 +1,13 @@
 """The voice worker's auth seam, shared by Phone, Meetings and Talk: the worker secret and the per-room token."""
 
 import hmac
+import uuid
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from core.config import settings
-from core.services import messaging
 from core.voice import livekit_huddles
 
 
@@ -34,8 +34,16 @@ def _require_room_token(presented: str, room_id: str, owner_id: str) -> None:
 
 
 def _room_id(room_id: str) -> str:
-    # One canonical (lowercase) id per channel: an uppercase path must not open a second LiveKit room.
-    return messaging.validate_uuid(room_id, label="room ID")
+    """One canonical (lowercase) id per channel: an uppercase path must not open a second LiveKit room."""
+    try:
+        parsed = str(uuid.UUID(room_id))
+    except ValueError:
+        parsed = None
+    if parsed != room_id.lower():  # the canonical form only: no braces, urn or bare hex
+        raise HTTPException(
+            status_code=400, detail={"code": "INVALID_REQUEST", "message": "Invalid room ID.", "retryable": False}
+        )
+    return parsed
 
 
 class RoomBody(BaseModel):

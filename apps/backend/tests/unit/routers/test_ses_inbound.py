@@ -1097,6 +1097,7 @@ INVITE = "\r\n".join(
 
 
 def _team(monkeypatch, members):
+    from core.repositories import messaging_repo
     from core.voice.meetings import meeting_invites
 
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme")))
@@ -1109,15 +1110,13 @@ def _team(monkeypatch, members):
         "list_organization_members",
         AsyncMock(return_value=[{"user_id": f"user_{i}", **m} for i, m in enumerate(members)]),
     )
-    monkeypatch.setattr(
-        meeting_invites.messaging_repo, "get_room", AsyncMock(side_effect=[None, *[{"ownerId": OWNER_ID}] * 3])
-    )
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=[None, *[{"ownerId": OWNER_ID}] * 3]))
     monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok"))
     monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock())
     put = AsyncMock()
     monkeypatch.setattr(meeting_invites, "_create_room", put)
     monkeypatch.setattr(meeting_invites, "_post_line", AsyncMock())
-    monkeypatch.setattr(meeting_invites.messaging_repo, "patch_room_meta", AsyncMock())
+    monkeypatch.setattr(messaging_repo, "patch_room_meta", AsyncMock())
     monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
     deliver = AsyncMock(return_value="delivered")
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)

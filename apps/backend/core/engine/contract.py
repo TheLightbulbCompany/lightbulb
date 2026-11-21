@@ -7,6 +7,7 @@ imports engine or product code.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -31,6 +32,15 @@ GRANT_HEADER = "X-Lightbulb-Meeting-Context-Grant"
 VOICE_NOTE_TEXT_MAX = 300
 
 
+#: The namespace of the engine's task ids. Fixed forever: changing it re-keys every Router-made task.
+TASK_NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://thelightbulb.company/ns/super-agent/task")
+
+
+def start_task_id(trigger_id: str) -> str:
+    """The task a start (`StartIn.trigger_id`) opens, known before the start: a product may name it first."""
+    return str(uuid.uuid5(TASK_NS, f"{trigger_id}:0:0"))
+
+
 def product_ref(trigger: dict | None) -> bool:
     """The trigger carries a product's `ref` keys."""
     return bool(PRODUCT_REF_KEYS & ((trigger or {}).get("ref") or {}).keys())
@@ -49,7 +59,7 @@ class Model(BaseModel):
 
 
 class Principal(Model):
-    kind: Literal["member", "contact", "system"]
+    kind: Literal["member", "contact", "system", "notice"]
     id: str
     display_name: str | None = None
 
@@ -87,7 +97,7 @@ class LineIn(Model):
 
 class LineOut(Model):
     message_id: str
-    seq: int | None = None  # not reported for a system line
+    seq: int | None = None  # not reported for a system or notice line
     trigger_id: str | None = None
     task_id: str | None = None
     answered: bool = False
@@ -160,10 +170,14 @@ class OpenIn(Model):
     conversation_id: str | None = None
     #: the open's idempotency key: the same key is the same conversation
     client_key: str
-    kind: Literal["call", "dm"]
+    #: a `channel` seats every agent of the tenant listening on mentions (up to the member cap), the one answering
+    #: to @lightbulb as its front agent
+    kind: Literal["call", "dm", "channel"]
     name: str | None = None
     #: the person who opens it, its one human member (the owner). A `dm` is the creator's with the front agent.
     creator: Principal
+    #: a `dm`'s agent, when not the tenant's front agent
+    agent_id: str | None = None
     hidden: bool = False
     #: seat the tenant's front agent. Without one the conversation still opens (`front_agent_id` None), except a
     #: `dm`, which is with the front agent and is refused (`no_front_agent`)
@@ -180,6 +194,9 @@ class ConversationOut(Model):
     created_at: str | None = None
     #: the front agent the conversation seats, when it pins one
     front_agent_id: str | None = None
+    archived: bool = False
+    #: only ever True for a read that asked for deleted conversations too (`include_deleted`)
+    deleted: bool = False
     #: only when asked for (`with_members`)
     members: list[dict] = []
     #: the product fields on the record (`PRODUCT_META_FIELDS`)

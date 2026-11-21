@@ -13,12 +13,12 @@ import time
 import uuid
 from datetime import datetime
 
-from core.dynamodb import run_in_thread, utc_now_iso
+from core.dynamodb import run_in_thread
+from core.engine import api
+from core.engine.contract import Principal, StartIn, start_task_id
 from core.observability.metrics import put_metric
-from core import tasks_schema as ts
-from core.repositories import container_repo, messaging_repo, tasks_repo
+from core.repositories import container_repo
 from core.voice import store
-from core.services import admission, task_conversation
 from core.voice.meetings import meeting_invites, transcripts
 
 logger = logging.getLogger(__name__)
@@ -71,32 +71,32 @@ def _render(lines: list[dict]) -> str:
     )
 
 
-async def on_transcript(room_id: str, lines: list[dict], final: bool) -> None:
+async def on_transcript(owner_id: str, room_id: str, lines: list[dict], final: bool) -> None:
     """Keep a meeting's whole transcript (its ``final`` request), once. Rolling flushes are only logged by the
     route."""
     if not final or not lines:
         return
-    meta = await messaging_repo.get_room(room_id) or {}
-    meeting = meta.get("meeting") or {}
-    if meeting.get("transcriptAttachedAt") or not meta.get("ownerId"):
+    meeting = await meeting_invites.stored_meeting(owner_id, room_id, include_deleted=True)
+    if not meeting or meeting.get("transcriptAttachedAt"):
         return
     if meeting.get("status") not in ("in_call", "ended", "bot_failed") or not meeting.get("inCallAt"):
         put_metric("meeting.transcript.dropped")  # no call, or late: the series moved on to its next occurrence
         return
-    owner_id, occurrence = meta["ownerId"], meeting.get("startAt")
+    occurrence = meeting.get("startAt")
     target = await meeting_invites.output_room(owner_id, room_id)
     data = _render(sorted(lines, key=lambda x: int(x["mark"]))).encode()
     # Write, then mark: a retried final rewrites the same object (its id is the occurrence's), never a meeting marked
     # with a transcript that is not there. A failed write raises and the meeting has no transcript.
     transcript_id = await run_in_thread(transcripts.put, owner_id, target, data, name=f"{room_id}|{occurrence}")
     await meeting_invites._patch_meeting(
+        owner_id,
         room_id,
         {"transcriptAttachedAt": int(time.time()), "transcriptId": transcript_id, "transcriptRoomId": target},
         when=lambda m: m.get("startAt") == occurrence,
     )
 
 
-async def on_ended(room_id: str) -> None:
+async def on_ended(owner_id: str, room_id: str) -> None:
     """One app-only notes run per occurrence, then a series' advance (after the
     attempt, success or failure). Fire-and-forget: never raises.
 
@@ -104,20 +104,20 @@ async def on_ended(room_id: str) -> None:
     failed delivery is redelivered), and the status route calls this again on every terminal webhook
     while the notes are ``owed`` -- so an attempt that failed here is finished by the next one."""
     try:
-        attempted = await _on_ended(room_id)
+        attempted = await _on_ended(owner_id, room_id)
     except Exception:  # noqa: BLE001
         attempted = True
         put_metric("meeting.notes.failed")
         logger.warning("meeting room %s: notes failed", room_id, exc_info=True)
     # Not gated on the notes succeeding: a parked series is worse than one occurrence's lost notes.
     if attempted:  # not while another end path is on the notes: it advances when it is done
-        await meeting_invites.advance(room_id)
+        await meeting_invites.advance(owner_id, room_id)
 
 
-async def _on_ended(room_id: str) -> bool:
+async def _on_ended(owner_id: str, room_id: str) -> bool:
     """False only when another end path holds the notes."""
-    meta = await messaging_repo.get_room(room_id) or {}
-    if not owed(meta.get("meeting") or {}):
+    meeting = await meeting_invites.stored_meeting(owner_id, room_id, include_deleted=True)
+    if not owed(meeting):
         return True  # not a meeting, no call happened, or its notes are done
     # A lease, released only on a failure: a crash mid-way frees it after _CLAIM_S and the next
     # on_ended (a Recall redelivery) finishes -- each step is idempotent on its own marker.
@@ -128,15 +128,15 @@ async def _on_ended(room_id: str) -> bool:
     # Two more tries under the same claim before the series advances past this occurrence; each
     # step of _notes is idempotent on its own marker and key. The transcript wait runs once: a
     # retry reuses what it found, so three attempts stay well inside the claim's _CLAIM_S.
-    occurrence = meta["meeting"].get("startAt")  # fixed before the wait: never mark the next one
+    occurrence = meeting.get("startAt")  # fixed before the wait: never mark the next one
     try:
-        meta = await _wait_for_transcript(room_id, meta)
+        meeting = await _wait_for_transcript(owner_id, room_id, meeting)
     except Exception:
         await container_repo.release_owner_lifecycle_claim(lease, token=token)
         raise
     for attempt in range(_NOTES_TRIES):
         try:
-            await _notes(room_id, meta, occurrence)
+            await _notes(owner_id, room_id, meeting, occurrence)
             return True
         except Exception:
             if attempt == _NOTES_TRIES - 1:
@@ -148,27 +148,26 @@ async def _on_ended(room_id: str) -> bool:
     return True
 
 
-async def _wait_for_transcript(room_id: str, meta: dict) -> dict:
-    """The META to write the notes from: once its transcript is attached, or after the wait."""
-    occurrence = meta["meeting"].get("startAt")
+async def _wait_for_transcript(owner_id: str, room_id: str, meeting: dict) -> dict:
+    """The meeting record to write the notes from: once its transcript is attached, or after the wait."""
+    occurrence = meeting.get("startAt")
     this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731
     # The worker's final transcript POST and Recall's call_ended race: give the transcript a moment.
     # A read of another occurrence (the series was re-dated meanwhile) ends the wait; the last read
     # of this occurrence stands.
     for _ in range(_WAIT_S // _POLL_S):
-        if (meta.get("meeting") or {}).get("transcriptAttachedAt"):
+        if meeting.get("transcriptAttachedAt"):
             break
         await asyncio.sleep(_POLL_S)
-        fresh = await messaging_repo.get_room(room_id) or meta
-        if not this_occurrence(fresh.get("meeting") or {}):
+        fresh = await meeting_invites.stored_meeting(owner_id, room_id, include_deleted=True) or meeting
+        if not this_occurrence(fresh):
             break
-        meta = fresh
-    return meta
+        meeting = fresh
+    return meeting
 
 
-async def _notes(room_id: str, meta: dict, occurrence) -> None:
+async def _notes(owner_id: str, room_id: str, meeting: dict, occurrence) -> None:
     this_occurrence = lambda m: m.get("startAt") == occurrence  # noqa: E731 -- never mark the next one
-    owner_id, meeting = meta["ownerId"], meta["meeting"]
     title = meeting.get("title") or "Meeting"
     target = await meeting_invites.output_room(owner_id, room_id)
     if not meeting.get("transcriptAttachedAt"):
@@ -180,25 +179,24 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
             f"meeting:{room_id}:{occurrence}:no-transcript",
             f"**{title}** ended. No transcript was captured, so there are no notes.",
         )
-        await meeting_invites._patch_meeting(room_id, {"notesSkipped": "no_transcript"}, when=this_occurrence)
+        await meeting_invites._patch_meeting(owner_id, room_id, {"notesSkipped": "no_transcript"}, when=this_occurrence)
     elif not meeting.get("notesRunId") and not meeting.get("notesSkipped"):
         writer = await _notes_writer(owner_id, target)
         if writer is None:
             put_metric("meeting.notes.skipped", dimensions={"why": "no_agent"})
             logger.warning("meeting room %s: no agent in output room %s to write the notes", room_id, target)
             meeting = await meeting_invites._patch_meeting(
-                room_id, {"notesSkipped": "no_agent"}, when=this_occurrence
+                owner_id, room_id, {"notesSkipped": "no_agent"}, when=this_occurrence
             ) or {**meeting, "notesSkipped": "no_agent"}
         else:
             from core.voice.meetings.records import inviting_member
 
-            principal = (
-                inviting_member(meeting, await messaging_repo.list_members(room_id))
-                if meeting.get("invitedBy")
-                else None
-            )
+            principal = None
+            if meeting.get("invitedBy"):
+                conv = await api.get_conversation(owner_id, room_id, with_members=True, include_deleted=True)
+                principal = inviting_member(meeting, conv.members if conv else [])
             trigger_id = f"{NOTES_PREFIX}{room_id}:{occurrence}"
-            task_id = ts.router_task_id(trigger_id, 0, 0)  # a scripted start's task id (activities._apply)
+            task_id = start_task_id(trigger_id)
             # What the keep reads travels with the request: a recurring series rewrites the meeting
             # record as it advances, before the notes come back. Written first: the task's end reads it.
             snapshot = {k: meeting[k] for k in _MAIL_FIELDS if meeting.get(k) is not None}
@@ -206,17 +204,13 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 "roomId": room_id, "occurrence": occurrence, "targetRoomId": target, "agentId": writer,
                 "taskId": task_id, "meeting": snapshot, **({"principalUserId": principal} if principal else {}),
             })  # fmt: skip
-            await admission.enqueue_trigger(
-                owner_id,
-                _notes_trigger(owner_id, trigger_id, task_id, title, writer, principal, meeting),
-                room_id=target,
-            )
-            await meeting_invites._patch_meeting(room_id, {"notesRunId": task_id}, when=this_occurrence)
+            await api.start_task(_notes_start(owner_id, trigger_id, target, title, writer, principal, meeting))
+            await meeting_invites._patch_meeting(owner_id, room_id, {"notesRunId": task_id}, when=this_occurrence)
             return
     if meeting.get("notesRunId"):
         return  # its notes task was started: its end keeps the notes in the app
     # Automatic meeting notes are app-only. Keep the existing completion marker for old rows.
-    await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
+    await meeting_invites._patch_meeting(owner_id, room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
 
 def _notes_brief(title: str, meeting: dict) -> str:
@@ -232,48 +226,31 @@ def _notes_brief(title: str, meeting: dict) -> str:
     )
 
 
-def _notes_trigger(
-    owner_id: str, trigger_id: str, task_id: str, title: str, writer: str, principal: str | None, meeting: dict
-) -> ts.Trigger:
-    """A scripted StartTask (``ref.start``, applied without a Router model turn, as voice-start does). The
-    transcript goes by reference (``meetingNotes.requestId`` names the request, which names the transcript):
-    a trigger row never carries it."""
-    start = ts.StartTask(
-        kind="start_task",
-        trigger_ids=[trigger_id],
+def _notes_start(
+    owner_id: str, trigger_id: str, target: str, title: str, writer: str, principal: str | None, meeting: dict
+) -> StartIn:
+    """A scripted start (no Router model turn, as voice-start does) in the output room `target`. The transcript goes
+    by reference (``meetingNotes.requestId`` names the request, which names the transcript): a trigger row never
+    carries it. confirmAll: the transcript is anyone's speech, so every outside action the Worker tries gets a card."""
+    return StartIn(
+        tenant_id=owner_id,
+        principal=Principal(kind="member", id=principal) if principal else None,
+        conversation_id=target,
+        trigger_id=trigger_id,
+        source="webhook",
+        lane="shared",
         title=f"Meeting notes: {title}"[:200],
         brief=_notes_brief(title, meeting),
         specialist=writer,
         ack=f"Writing the notes for {title}.",
-        visibility="room",
-    )
-    now = utc_now_iso()
-    return ts.Trigger(
-        ws=owner_id,
-        trigger_id=trigger_id,
-        source="webhook",
-        admission="respond",
-        lane="shared",
-        actor_user_id=principal,
-        received_at=now,
-        created_at=now,
-        updated_at=now,
-        # confirmAll: the transcript is anyone's speech, so every outside action the Worker tries gets a card.
-        ref={
-            "taskId": task_id,
-            "meetingNotes": {"requestId": trigger_id},
-            "start": start.model_dump(by_alias=True),
-            "confirmAll": True,
-        },
+        confirm_all=True,
+        product_ref={"meetingNotes": {"requestId": trigger_id}},
     )
 
 
 async def _notes_writer(owner_id: str, room_id: str) -> str | None:
     """The agent the notes task runs as: the output room's front agent (Lightbulb). None when it has none."""
-    try:
-        return await task_conversation.front_agent_id(owner_id, room_id=room_id)
-    except task_conversation.NoFrontAgent:
-        return None
+    return await api.get_front_agent(owner_id, room_id)
 
 
 def _transcript_room(request: dict) -> str:
@@ -357,14 +334,14 @@ async def on_task_moved(task: dict, to: str) -> None:
             return  # not this task's, or its notes are kept (the claim is spent only then)
         notes = None
         if to == "idle":
-            tree = await tasks_repo.get_task_tree(owner_id, task["taskId"])
+            tree = await api.get_task(owner_id, task["taskId"], tree=True)
             done = [
                 a for a in tree.get("attempts") or []
                 if a.get("outcome") == "completed" and (a.get("output") or "").strip()
             ]  # fmt: skip
             notes = max(done, key=lambda a: a["n"])["output"] if done else None
         if not notes:
-            await _mark_no_notes(request)
+            await _mark_no_notes(owner_id, request)
             return
         if await _was_cut(owner_id, request):
             notes = f"{CUT_LINE}\n\n{notes}"
@@ -379,7 +356,7 @@ async def on_task_moved(task: dict, to: str) -> None:
             return
         put_metric("meeting.notes.keep_failed")
         logger.error("meeting room %s task %s: notes not kept after retries", request["roomId"], task["taskId"])
-        await _mark_no_notes(request)
+        await _mark_no_notes(owner_id, request)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
         logger.warning("meeting notes keep failed for %s", request_id, exc_info=True)
@@ -404,7 +381,7 @@ async def _keep_with_retries(owner_id: str, request_id: str, request: dict, note
     return False
 
 
-async def _mark_no_notes(request: dict) -> None:
+async def _mark_no_notes(owner_id: str, request: dict) -> None:
     """The occurrence's notes are over with none kept ("skipped" in the meeting view). The request's claim stays
     unspent, so a Retry that succeeds still keeps the notes and admits their follow-ups. Bounded, logged on
     failure, never raises."""
@@ -412,7 +389,10 @@ async def _mark_no_notes(request: dict) -> None:
     try:
         async with asyncio.timeout(_MARK_S):
             await meeting_invites._patch_meeting(
-                request["roomId"], {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
+                owner_id,
+                request["roomId"],
+                {"notesMailedAt": int(time.time())},
+                when=lambda m: m.get("startAt") == occurrence,
             )
     except Exception:  # noqa: BLE001 -- TimeoutError or a failed write: the meeting reads "pending", nothing breaks
         put_metric("meeting.notes.mail_failed")
@@ -433,7 +413,7 @@ async def on_not_started(owner_id: str, trigger: dict) -> None:
     try:
         request = await store.get_meeting_notes_request(owner_id, request_id)
         if request is not None and not request.get("mailAttemptedAt"):
-            await _mark_no_notes(request)
+            await _mark_no_notes(owner_id, request)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
         logger.warning("meeting notes not-started mark failed for %s", request_id, exc_info=True)
@@ -486,9 +466,7 @@ def same_action(item: str, task: dict) -> bool:
 async def _meeting_tasks(owner_id: str, room_id: str, since: int, until: int) -> list[dict]:
     """The meeting room's tasks started during this occurrence (open or done): the tasks holding, or that
     held, the room's threads (`list_room_threads`), never a workspace-wide scan."""
-    threads = await tasks_repo.list_room_threads(owner_id, room_id)
-    ids = dict.fromkeys(tid for t in threads for tid in (t["taskId"], *(t.get("history") or [])))
-    rows = await tasks_repo.batch_get(owner_id, [ts.task_sk(tid) for tid in ids])
+    rows = await api.list_conversation_tasks(owner_id, room_id)
 
     def in_call(row: dict) -> bool:
         try:
@@ -511,10 +489,9 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
     A unique matching task already started in this call is linked, including finished work; ambiguous or
     unmatched items remain recorded. Identity belongs to the occurrence and text, not the notes retry."""
     room_id = request["roomId"]
-    meta = (await messaging_repo.get_room(room_id)) or {}
-    if meta.get("ownerId") != owner_id or not meta.get("meeting"):
+    meeting = await meeting_invites.stored_meeting(owner_id, room_id)
+    if not meeting:
         return
-    meeting = meta["meeting"]
     occurrence = request.get("occurrence", meeting.get("startAt"))
     entry = (
         meeting
@@ -561,7 +538,7 @@ async def _file_action_items(owner_id: str, message_id: str, request: dict, note
         return {"history": [{**h, **merge(h)} if h.get("startAt") == occurrence else h for h in m.get("history") or []]}
 
     if additions:
-        await meeting_invites._patch_meeting(room_id, lay)
+        await meeting_invites._patch_meeting(owner_id, room_id, lay)
 
 
 async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> bool:
@@ -582,7 +559,7 @@ async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str 
                 for h in m.get("history") or []]  # fmt: skip
         return {"history": past}
 
-    saved = await meeting_invites._patch_meeting(room_id, lay)
+    saved = await meeting_invites._patch_meeting(owner_id, room_id, lay)
     entry = (
         saved
         if saved and saved.get("startAt") == occurrence
@@ -643,5 +620,5 @@ async def _remember_decisions(owner_id: str, request: dict, entry: dict) -> bool
                 return mark
             return {"history": [{**h, **mark} if h.get("startAt") == occurrence else h for h in m.get("history") or []]}
 
-        await meeting_invites._patch_meeting(room_id, lay)
+        await meeting_invites._patch_meeting(owner_id, room_id, lay)
     return ok

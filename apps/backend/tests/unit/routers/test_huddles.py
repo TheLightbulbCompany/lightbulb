@@ -11,6 +11,8 @@ from core.auth import AuthContext, get_current_user  # noqa: E402
 from main import app  # noqa: E402
 from core.voice import room_lines  # noqa: E402
 from routers import huddles as mod  # noqa: E402
+from core.services import messaging as engine_messaging
+from core.repositories import messaging_repo
 
 lk = mod.livekit_huddles
 vc = mod.rooms
@@ -44,6 +46,25 @@ def client():
     app.dependency_overrides.clear()
 
 
+def _conv(meta):
+    """The conversation a room's META reads as through the engine API."""
+    from core.engine.contract import PRODUCT_META_FIELDS, ConversationOut
+
+    annotations = {k: v for k, v in meta.items() if k in PRODUCT_META_FIELDS}
+    return ConversationOut(conversation_id=ROOM, tenant_id=meta["ownerId"], kind=meta.get("kind", ""),
+                           annotations=annotations)  # fmt: skip
+
+
+def _as_conv(room_team):
+    """`room_team`'s (META, team) as (conversation, team): the fakes below are written as META."""
+
+    async def call(*args, **kwargs):
+        meta, team = await room_team(*args, **kwargs)
+        return (_conv(meta) if isinstance(meta, dict) else meta), team
+
+    return AsyncMock(side_effect=call)
+
+
 def _problem(status, code):
     return AsyncMock(side_effect=vc._problem(status, code=code))
 
@@ -64,13 +85,13 @@ def _join(
     with (
         patch.object(repo, "try_claim_owner_lifecycle", AsyncMock(return_value=lease)) as claim,
         patch.object(repo, "release_owner_lifecycle_claim", AsyncMock()) as release,
-        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=fresh_meta)),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value=fresh_meta)),
         patch.object(vc, "prewake_owner", MagicMock()) as wake,
         patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=fresh)),
-        patch.object(vc, "_room_team", room_team or AsyncMock(return_value=(DM, TEAM[:1]))),
+        patch.object(vc, "_room_team", _as_conv(room_team or AsyncMock(return_value=(DM, TEAM[:1])))),
         patch.object(vc, "_gate", gate or AsyncMock(return_value=("paid", 0))),
         patch.object(room_lines.store, "get_voice_agent", AsyncMock(return_value={"name": "Nova"})),
-        patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
+        patch.object(mod, "_display_name", AsyncMock(return_value="Pat")),
         patch.object(lk, "mint_token", MagicMock(return_value="jwt")) as mint,
         patch.object(lk, "has_ceo", has_ceo if isinstance(has_ceo, AsyncMock) else AsyncMock(return_value=has_ceo)),
         patch.object(lk, "dispatch_ceo", AsyncMock(side_effect=dispatch_error)) as dispatch,
@@ -125,7 +146,7 @@ def test_join_skips_dispatch_when_the_ceo_is_there(client):
 
 
 def test_join_non_member_is_404(client):
-    resp, mint, _ = _join(client, room_team=AsyncMock(side_effect=mod.messaging.ApiProblem("ROOM_NOT_FOUND", "x")))
+    resp, mint, _ = _join(client, room_team=AsyncMock(side_effect=engine_messaging.ApiProblem("ROOM_NOT_FOUND", "x")))
     assert resp.status_code == 404
     mint.assert_not_called()
 
@@ -218,7 +239,7 @@ def test_agent_voice_joins_only_in_a_dm(client, kind, status):
     """The real _room_team: a DM's agent is a one-agent team that gets Lightbulb; a group DM's agents 409."""
     meta = {"ownerId": "org_a", "kind": kind}
     with (
-        patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
+        patch.object(engine_messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
         patch.object(vc, "room_agents", AsyncMock(return_value=[{"id": "agent-eng", "name": "Engineering"}])),
     ):
         resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
@@ -229,7 +250,7 @@ def test_agent_voice_joins_only_in_a_dm(client, kind, status):
 def test_people_only_room_joins_without_dispatch_or_wake(client):
     meta = {"ownerId": "org_a", "kind": "group-dm"}
     with (
-        patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
+        patch.object(engine_messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
         patch.object(vc, "room_agents", AsyncMock(return_value=[])),
     ):
         resp, mint, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
@@ -241,7 +262,7 @@ def test_people_only_room_joins_without_dispatch_or_wake(client):
 
 def test_get_flags_a_people_only_room(client):
     with (
-        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(engine_messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(vc, "room_agents", AsyncMock(return_value=[])),
         patch.object(lk, "participants", AsyncMock(return_value=["user_a"])),
     ):
@@ -254,7 +275,7 @@ def test_get_flags_a_people_only_room(client):
 
 def test_get_guest_is_404(client):
     with (
-        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_b"}, {}))),
+        patch.object(engine_messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_b"}, {}))),
         patch.object(lk, "participants", AsyncMock(side_effect=AssertionError("no LiveKit call"))),
     ):
         resp = client.get(f"/api/v1/huddles/{ROOM}")
@@ -263,7 +284,7 @@ def test_get_guest_is_404(client):
 
 def test_get_lists_participants(client):
     with (
-        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(engine_messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(return_value=["user_a", "user_b"])),
     ):
         assert client.get(f"/api/v1/huddles/{ROOM}").json() == {
@@ -276,7 +297,7 @@ def test_get_lists_participants(client):
 def test_get_is_empty_when_not_configured(client):
     with (
         patch.object(mod.settings, "LIVEKIT_URL", ""),
-        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(engine_messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(side_effect=AssertionError("no LiveKit call"))),
     ):
         assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": [], "available": False, "lightbulb": True}
@@ -286,7 +307,7 @@ def test_get_livekit_failure_is_502(client):
     metrics = []
     with (
         patch.object(mod, "put_metric", lambda name, **kw: metrics.append(name)),
-        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(engine_messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(side_effect=RuntimeError("twirp"))),
     ):
         resp = client.get(f"/api/v1/huddles/{ROOM}")
@@ -304,7 +325,7 @@ INTERNAL = [
 
 @pytest.mark.parametrize("path,body", INTERNAL)
 def test_internal_routes_need_the_worker_secret(client, path, body):
-    with patch.object(mod.messaging_repo, "get_room", AsyncMock()) as get_room:
+    with patch.object(messaging_repo, "get_room", AsyncMock()) as get_room:
         assert client.post(path, json=body).status_code == 401
         assert client.post(path, json=body, headers={"X-Lightbulb-Huddle-Secret": "wrong"}).status_code == 401
         with patch.object(mod.settings, "HUDDLE_WORKER_SECRET", ""):
@@ -339,7 +360,7 @@ def test_transcript_batches_are_logged_for_debugging(client, caplog):
     ]
     with (
         caplog.at_level("INFO", logger="routers.huddles"),
-        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
         patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
     ):
         resp = client.post(
@@ -366,7 +387,7 @@ def test_an_answers_wait_to_be_heard_is_logged(client, caplog):
     with (
         caplog.at_level("INFO", logger="routers.huddles"),
         patch.object(
-            mod.messaging_repo,
+            messaging_repo,
             "get_room",
             AsyncMock(return_value={"ownerId": "org_a", "meeting": {"status": "in_call"}}),
         ),
@@ -387,7 +408,7 @@ def test_a_failed_transcript_write_still_logs_and_counts_then_errors(client, cap
     meta = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
     with (
         caplog.at_level("INFO", logger="routers.huddles"),
-        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meta)),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value=meta)),
         patch.object(mod.meeting_notes, "on_transcript", AsyncMock(side_effect=RuntimeError("s3 denied"))),
         patch.object(mod, "put_metric") as metric,
     ):
@@ -402,19 +423,19 @@ def test_a_meeting_rooms_chunks_reach_the_notes_with_the_final_flag(client):
     body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line]}
     meta = {"ownerId": "org_a", "meeting": {"status": "in_call"}}
     with (
-        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meta)),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value=meta)),
         patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
     ):
         assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 200
         assert client.post(TRANSCRIPT, json={**body, "final": True}, headers=W).status_code == 200
-    assert [c.args for c in notes.await_args_list] == [(ROOM, [line], False), (ROOM, [line], True)]
+    assert [c.args for c in notes.await_args_list] == [("org_a", ROOM, [line], False), ("org_a", ROOM, [line], True)]
 
 
 def test_only_a_final_transcript_may_carry_more_than_500_lines(client):
     line = {"mark": 0, "kind": "person", "name": "Pat", "text": "x", "at": 1.0, "to": ""}
     body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line] * 501}
     with (
-        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
         patch.object(mod, "put_metric"),
     ):
         assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 400
@@ -450,3 +471,17 @@ def test_owner_mode_join_is_402_without_plan_or_free_minutes(client):
     assert resp.status_code == 402
     assert resp.json()["detail"] == {"code": "voice_limit", "reason": "free_minutes_used"}
     dispatch.assert_not_awaited()
+
+
+def test_a_deleted_meeting_rooms_final_transcript_is_still_kept(client):
+    """A meeting's end runs for a room deleted mid-call: its final transcript reaches the notes path."""
+    line = {"mark": 7, "kind": "person", "name": "Pat", "text": "Ship it", "at": 1.0, "to": ""}
+    body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line], "final": True}
+    gone = {"ownerId": "org_a", "meeting": {"status": "in_call"}, "deletedAt": "2026-11-01T00:00:00Z"}
+    with (
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value=gone)),
+        patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
+    ):
+        resp = client.post(TRANSCRIPT, json=body, headers=W)
+    assert (resp.status_code, resp.json()) == (200, {"ok": True})
+    notes.assert_awaited_once_with("org_a", ROOM, [line], True)

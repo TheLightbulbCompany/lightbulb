@@ -196,3 +196,70 @@ async def test_removal_and_delete_revoke_the_rooms_huddle(table, monkeypatch):
 
     await messaging.delete_room(_auth(USER_A), room_id)
     closed.assert_awaited_once_with(room_id)
+
+
+async def _meeting_channel(meeting):
+    members = [_member("human", USER_A, "owner"), _member("agent", FRIDAY, handle="friday")]
+    room_id = repo.deterministic_room_id(OWNER, USER_A, "c-meeting")
+    await repo.create_room(
+        owner_id=OWNER, room_id=room_id, client_room_id="c-meeting", creator_user_id=USER_A, name="Weekly",
+        kind="channel", members=members, req_hash=repo.request_hash("meeting"), extra={"meeting": meeting},
+    )  # fmt: skip
+    return room_id
+
+
+@pytest.fixture
+def meet(monkeypatch):
+    """Recall's leave and LiveKit's room deletes, faked at their adapters: the room names LiveKit is told."""
+    from types import SimpleNamespace
+
+    from core.voice.meetings import meeting_bots
+
+    closed: list[str] = []
+
+    class Lk:
+        room = SimpleNamespace(delete_room=AsyncMock(side_effect=lambda req: closed.append(req.room)))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(livekit_huddles, "configured", lambda: True)
+    monkeypatch.setattr(livekit_huddles, "_api", Lk)
+    leave = AsyncMock()
+    monkeypatch.setattr(meeting_bots, "leave", leave)
+    return SimpleNamespace(closed=closed, leave=leave)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_meeting_room_pulls_its_bot_and_closes_the_meet_room(table, meet):
+    room_id = await _meeting_channel({"status": "in_call", "recallBotId": "bot-1", "inCallAt": 100})
+    await messaging.delete_room(_auth(USER_A), room_id)
+    meet.leave.assert_awaited_once_with("bot-1")
+    assert meet.closed == [livekit_huddles.room_name(room_id), livekit_huddles.meet_room_name(room_id)]
+    assert meet.closed[1].startswith("meet-")
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_room_with_a_future_bot_cancels_it(table, meet):
+    """A bot only booked (`bot_created`, not yet dispatched): `meeting_bots.leave` DELETEs the booking."""
+    room_id = await _meeting_channel({"status": "bot_created", "recallBotId": "bot-2", "startAt": 2**40})
+    await messaging.delete_room(_auth(USER_A), room_id)
+    meet.leave.assert_awaited_once_with("bot-2")
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_meeting_room_never_fails_the_delete(table, meet):
+    meet.leave.side_effect = RuntimeError("recall down")
+    room_id = await _meeting_channel({"status": "in_call", "recallBotId": "bot-1"})
+    await messaging.delete_room(_auth(USER_A), room_id)
+    assert (await repo.get_room(room_id))["deletedAt"]
+
+
+@pytest.mark.asyncio
+async def test_an_ended_meetings_room_delete_pulls_nothing(table, meet):
+    room_id = await _meeting_channel({"status": "ended", "recallBotId": "bot-1"})
+    await messaging.delete_room(_auth(USER_A), room_id)
+    meet.leave.assert_not_awaited()

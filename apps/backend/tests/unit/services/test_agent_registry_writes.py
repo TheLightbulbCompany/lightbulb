@@ -182,8 +182,8 @@ async def test_voice_profile_rename_updates_registry(ddb, side_effects, monkeypa
         "get_voice_run",
         AsyncMock(return_value={"agentId": agent["id"], "roomId": "room_1", "speakerUserId": "user_1"}),
     )
-    monkeypatch.setattr(messaging_repo, "get_member", AsyncMock(return_value={"home": WS}))
-    monkeypatch.setattr(messaging_repo, "member_home", lambda member, owner: WS)
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": WS}))  # the Live room
+    monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": "user_1"}]))
     monkeypatch.setattr(store, "count_voice_edit", AsyncMock(return_value=True))
     out = await voice_calls.edit_voice_profile(
         WS, agent_id=agent["id"], run_id="run_1", action="rename", name="Bo", text=None

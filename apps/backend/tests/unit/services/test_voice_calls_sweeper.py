@@ -28,13 +28,28 @@ async def test_sweep_releases_a_huddle_whose_worker_vanished():
         "call_open": [
             {
                 "callId": "orphan",
+                "ownerId": "org_1",
                 "kind": "huddle",
                 "roomId": "11111111-1111-4111-8111-111111111111",
                 "startedAt": 800,
                 "deadline": 10_000,
             },
-            {"callId": "young", "kind": "huddle", "roomId": "r2", "startedAt": 950, "deadline": 10_000},
-            {"callId": "served", "kind": "huddle", "roomId": "r3", "startedAt": 800, "deadline": 10_000},
+            {
+                "callId": "young",
+                "ownerId": "org_1",
+                "kind": "huddle",
+                "roomId": "r2",
+                "startedAt": 950,
+                "deadline": 10_000,
+            },
+            {
+                "callId": "served",
+                "ownerId": "org_1",
+                "kind": "huddle",
+                "roomId": "r3",
+                "startedAt": 800,
+                "deadline": 10_000,
+            },
         ],
         "call_closing": [],
     }
@@ -42,7 +57,7 @@ async def test_sweep_releases_a_huddle_whose_worker_vanished():
     with (
         patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=lambda s: rows[s])),
         patch.object(vc.livekit_huddles, "configured", return_value=True),
-        patch.object(vc.livekit_huddles, "has_ceo", AsyncMock(side_effect=lambda room: room == "r3")),
+        patch.object(vc.livekit_huddles, "has_ceo", AsyncMock(side_effect=lambda owner, room: room == "r3")),
         patch.object(vc.livekit_huddles, "participants", AsyncMock(return_value=["user_a"])),
         patch.object(vc, "get_live_event_publisher", return_value=publisher),
         patch.object(vc, "close_call", AsyncMock(return_value=True)) as close,

@@ -149,7 +149,9 @@ async def _context(ask: ContextAsk) -> ContextAnswer:
     if ask.purpose == "clarification":
         return await _clarification(ask)
     if ask.purpose == "result_line":  # a meeting's thread that made something: its link here and in the Meet's chat
-        return ContextAnswer(text=await records.with_link(ask.conversation_id, ask.task, ask.message["text"]))
+        return ContextAnswer(
+            text=await records.with_link(ask.tenant_id, ask.conversation_id, ask.task, ask.message["text"])
+        )
     if ask.purpose == "admit":
         return _admit(ask)
     if ask.purpose == "post_target":
@@ -176,6 +178,7 @@ async def _event(e: EngineEvent) -> None:
         await meeting_notes.on_not_started(e.tenant_id, e.trigger)
     elif e.type == "conversation.archived":  # an archived or deleted room's huddle ends for everyone. Never raises.
         await livekit_huddles.close_room(e.conversation_id)
+        await records.end_deleted(e.tenant_id, e.conversation_id)  # a deleted meeting room's meeting stops
     elif e.type == "member.removed":  # a removed member stops hearing the room's huddle. Never raises.
         await livekit_huddles.remove_participant(e.conversation_id, e.member_id)
     elif e.type == "line.posted":  # sent only for a call room: an answer after hang-up goes on the call's record

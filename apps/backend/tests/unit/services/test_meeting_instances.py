@@ -16,8 +16,10 @@ _clock, room, bots, now = fixtures._clock, fixtures.room, fixtures.bots, fixture
 def store(room, bots):
     rows = {}
 
-    def create(**kw):
-        rows.setdefault(kw["room_id"], {"roomId": kw["room_id"], "ownerId": kw["owner_id"], **deepcopy(kw["extra"])})
+    def create(**kw):  # META written, and returned
+        return rows.setdefault(
+            kw["room_id"], {"roomId": kw["room_id"], "ownerId": kw["owner_id"], **deepcopy(kw["extra"])}
+        )
 
     def get(r):
         return deepcopy(rows.get(r))
@@ -36,7 +38,7 @@ def store(room, bots):
     room.create.side_effect = create
     room.get.side_effect = get
     room.patch.side_effect = patch
-    mi.messaging_repo.set_meeting_field_if_absent.side_effect = absent
+    fixtures.messaging_repo.set_meeting_field_if_absent.side_effect = absent
     bots.create.side_effect = lambda **kw: "bot-" + kw["room_id"]
     return rows
 
@@ -87,7 +89,7 @@ async def test_future_override_is_skipped_when_parent_advances(store, bots, now)
     await mi.handle_team_mail("org_1", _mail(cal), TEAM)
     store[PARENT]["meeting"]["status"] = "ended"
     now["t"] = _epoch(2026, 11, 7, 16, 0)
-    await mi.advance(PARENT)
+    await mi.advance("org_1", PARENT)
     assert store[PARENT]["meeting"]["startAt"] == _epoch(2026, 11, 21, 15, 0)
 
 
@@ -189,3 +191,19 @@ async def test_equivalent_timezone_representation_updates_same_occurrence(store,
     assert len(store) == 2
     assert bots.create.await_count == count
     assert store[CHILD]["meeting"]["startAt"] == _epoch(2026, 11, 7, 17, 0)
+
+
+async def test_a_series_deleted_while_its_occurrence_is_split_off_is_ignored(store, bots, now):
+    """The series' room is deleted between the exclusion write and the cancel of its slot: the delivery ends
+    `meeting_ignored` (answered 2xx), never a 5xx that SES redelivers."""
+    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    real = fixtures.messaging_repo.patch_room_meta.side_effect
+
+    def patch_then_delete(r, updates, expected_revision=None):
+        real(r, updates, expected_revision)
+        if "instanceRooms" in (updates.get("meeting") or {}):
+            store[r]["deletedAt"] = "2026-11-01T00:00:00Z"
+
+    fixtures.messaging_repo.patch_room_meta.side_effect = patch_then_delete
+    assert await mi.handle_team_mail("org_1", _mail(override()), TEAM) == "meeting_ignored"
+    assert CHILD not in store

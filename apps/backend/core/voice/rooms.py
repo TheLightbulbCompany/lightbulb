@@ -3,40 +3,52 @@ plan gate a call start passes, and the runtime prewake."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from core.billing import voice_billing
 from core.config import settings
 from core.engine import api
-from core.engine.api import _background, _fire  # noqa: F401 -- meetings fire their background work here
-from core.repositories import billing_repo, messaging_repo
-from core.services import messaging
+from core.engine.contract import ConversationOut
+from core.repositories import billing_repo
 from core.voice.voice_calls import _problem
 
 logger = logging.getLogger(__name__)
 
+_background: set[asyncio.Task] = set()
 
-async def room_agents(room_id: str) -> list[dict]:
+
+def _fire(coro) -> None:
+    """Run `coro` after the request, holding a reference until it is done."""
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def room_agents(owner_id: str, room_id: str) -> list[dict]:
     """Every agent member. Listen modes are a chat-traffic setting; Live ignores them (owner ruling 2026-10-02)."""
+    conv = await api.get_conversation(owner_id, room_id, with_members=True)
     return [
         {"id": m["id"], "name": m.get("displayName") or "Agent"}
-        for m in await messaging_repo.list_members(room_id)
+        for m in (conv.members if conv else [])
         if m.get("kind") == "agent"
     ]
 
 
-async def _room_team(owner_id: str, user_id: str, room_id: str, *, need_team: bool = True) -> tuple[dict, list[dict]]:
+async def _room_team(
+    owner_id: str, user_id: str, room_id: str, *, need_team: bool = True
+) -> tuple[ConversationOut, list[dict]]:
     """The room's agents, any listen mode. Any room kind; a DM with an agent is a one-agent team.
     need_team=False (Live join) returns an empty team for a people-only room instead of 409."""
-    meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
-    if meta.get("ownerId") != owner_id:  # a shared-channel guest: the team is another workspace's agents
+    conv = await api.http(api.get_conversation(owner_id, room_id, member=user_id))
+    if conv is None:  # a shared-channel guest: the team is another workspace's agents
         raise _problem(404, code="room_not_found")
-    if meta.get("archivedAt"):
+    if conv.archived:
         raise _problem(409, code="room_archived")
-    team = await room_agents(room_id)
+    team = await room_agents(owner_id, room_id)
     if need_team and not team:
         raise _problem(409, code="no_agents")
-    return meta, team
+    return conv, team
 
 
 def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str | None:
@@ -45,7 +57,8 @@ def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str
     never a member, so its grant names nobody (it reads only workspace-wide rooms); never the inviting
     owner."""
     member = next((m for m in members if m.get("kind") == "human" and m["id"] == speaker_id), None)
-    return speaker_id if member and messaging_repo.member_home(member, owner_id) == owner_id else None
+    home = member and (member.get("homeOwnerId") or owner_id)  # a shared room's guest carries their own workspace
+    return speaker_id if home == owner_id else None
 
 
 def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | None = None) -> None:

@@ -205,7 +205,7 @@ async def test_answer_emits_question_answered_once_on_replay(seen, monkeypatch):
     monkeypatch.setattr(calls, "resolve_call", resolve)
     body = qr.AnswerBody(option_id="answer", text="Yes, out back.", client_answer_id="c1")
 
-    await qr.submit_answer(WS, "t1", "q1", "user_sam", body)
+    await api._submit_answer(WS, "t1", "q1", "user_sam", body)
 
     [e] = seen["events"]
     assert (e.type, e.tenant_id, e.question, e.actor_user_id) == ("question.answered", WS, q, "user_sam")
@@ -214,5 +214,5 @@ async def test_answer_emits_question_answered_once_on_replay(seen, monkeypatch):
     resolve.assert_awaited_once_with(WS, "call-1", "user_sam")
 
     rows["q"] = {**q, "subkind": "purchase", "preview": {"kind": "purchase", "item": "acme.dev"}}
-    await qr.submit_answer(WS, "t1", "q1", "user_sam", body)
+    await api._submit_answer(WS, "t1", "q1", "user_sam", body)
     assert len(seen["events"]) == 1  # a Question that names no conversation tells the products nothing

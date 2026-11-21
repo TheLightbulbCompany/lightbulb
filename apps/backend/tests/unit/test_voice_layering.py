@@ -113,43 +113,8 @@ PRODUCT = [
 #: Engine modules that import product code, as `file: function: module`: none since engine-service Task 3 (every
 #: engine call into a product goes through `core.engine.hooks`). Never add one.
 KNOWN_ENGINE_TO_PRODUCT: list[str] = []
-#: Product modules that still import engine code other than `core.engine` (contract, hooks, api). Only ever shrinks.
-KNOWN_PRODUCT_TO_ENGINE = [
-    "core/voice/livekit_huddles.py: <module>: core.repositories.messaging_repo",
-    "core/voice/meetings/meeting_chat.py: <module>: core.repositories.messaging_repo",
-    "core/voice/meetings/meeting_chat.py: <module>: core.repositories.tasks_repo",
-    "core/voice/meetings/meeting_chat.py: <module>: core.services.task_conversation",
-    "core/voice/meetings/meeting_context.py: <module>: core.repositories.messaging_repo",
-    "core/voice/meetings/meeting_context.py: <module>: core.repositories.tasks_repo",
-    "core/voice/meetings/meeting_followups.py: <module>: core.repositories.messaging_repo",
-    "core/voice/meetings/meeting_followups.py: <module>: core.repositories.tasks_repo",
-    "core/voice/meetings/meeting_followups.py: <module>: core.tasks_schema",
-    "core/voice/meetings/meeting_followups.py: clarification: core.services.questions",
-    "core/voice/meetings/meeting_followups.py: enqueue: core.services.admission",
-    "core/voice/meetings/meeting_invites.py: <module>: core.repositories.messaging_repo",
-    "core/voice/meetings/meeting_invites.py: <module>: core.services.messaging",
-    "core/voice/meetings/meeting_invites.py: _organizer_dm: core.services.task_conversation",
-    "core/voice/meetings/meeting_notes.py: <module>: core.repositories.messaging_repo",
-    "core/voice/meetings/meeting_notes.py: <module>: core.repositories.tasks_repo",
-    "core/voice/meetings/meeting_notes.py: <module>: core.services.admission",
-    "core/voice/meetings/meeting_notes.py: <module>: core.services.task_conversation",
-    "core/voice/meetings/meeting_notes.py: <module>: core.tasks_schema",
-    "core/voice/meetings/records.py: <module>: core.repositories.messaging_repo",
-    "core/voice/meetings/records.py: <module>: core.repositories.tasks_repo",
-    "core/voice/rooms.py: <module>: core.repositories.messaging_repo",
-    "core/voice/rooms.py: <module>: core.services.messaging",
-    "core/voice/voice_calls.py: <module>: core.repositories.messaging_repo",
-    "core/voice/voice_calls.py: <module>: core.services.messaging",
-    "core/voice/worker_api.py: <module>: core.services.messaging",
-    "routers/huddles.py: <module>: core.repositories.messaging_repo",
-    "routers/huddles.py: <module>: core.services.messaging",
-    "routers/meet_audio.py: <module>: core.repositories.messaging_repo",
-    "routers/meet_bot.py: <module>: core.repositories.messaging_repo",
-    "routers/meetings.py: <module>: core.repositories.messaging_repo",
-    "routers/meetings.py: <module>: core.services.messaging",
-    "routers/voice_meet.py: <module>: core.repositories.messaging_repo",
-    "routers/voice_meet.py: <module>: core.services.messaging",
-]
+#: The engine modules products may import: the contract, the operations and the hooks (to register theirs).
+PRODUCT_MAY_IMPORT = {"core.engine.api", "core.engine.contract", "core.engine.hooks"}
 
 
 def _files(paths: list[str]) -> list[Path]:
@@ -230,7 +195,7 @@ def test_engine_does_not_import_product():
 
 
 def test_product_imports_only_the_contract():
-    assert _crossing(PRODUCT, [p for p in ENGINE if p != "core/engine"]) == KNOWN_PRODUCT_TO_ENGINE
+    assert {hit.rsplit(": ", 1)[1].split(" #")[0] for hit in _crossing(PRODUCT, ENGINE)} == PRODUCT_MAY_IMPORT
 
 
 # --- the one tenantless read --------------------------------------------------------------------------------------
@@ -239,6 +204,15 @@ def test_product_imports_only_the_contract():
 #: Each is an entry point handed nothing but the conversation id, and each authenticates that conversation with a
 #: credential the product stored on it before it trusts the tenant the lookup returns.
 FIND_CONVERSATION_ENTRY_POINTS = [
+    # the Recall audio socket's ticket: signed for its purpose, its nonce the meeting's booked `ticketNonce`
+    "routers/meet_audio.py: _authorized",
+    # the Recall bot page's ticket: signed, its nonce the meeting's booked `ticketNonce`
+    "routers/meet_bot.py: session",
+    # the Recall webhooks, signed with the workspace verification secret before the body is read; each then acts
+    # only for the bot (and nonce) the meeting stored
+    "routers/meetings.py: _chat",
+    "routers/meetings.py: _on_status",
+    "routers/meetings.py: _speaker",
     # the per-call token `start_call` minted and keeps on the call (`callToken`), sent on every per-call route
     "routers/voice_phone.py: _require_call_token",
 ]

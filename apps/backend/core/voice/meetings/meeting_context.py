@@ -15,8 +15,8 @@ import uuid
 import jwt
 
 from core.dynamodb import run_in_thread
+from core.engine import api
 from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
-from core.repositories import messaging_repo, tasks_repo
 from core.voice import store
 from core.services import clerk_admin
 from core.voice.meetings import transcripts
@@ -80,7 +80,7 @@ def verify_grant(token: str | None, owner_id: str, run_id: str, trigger_id: str)
 
 
 async def enabled(owner_id: str) -> bool:
-    config = await messaging_repo.get_voice_agent(owner_id) or {}
+    config = await store.get_voice_agent(owner_id) or {}
     meetings = config.get("meetings", {})
     # Match the product's default-on checkbox. Explicit false, or malformed config, is record-only.
     return isinstance(meetings, dict) and meetings.get("followUps", True) is True
@@ -110,12 +110,12 @@ async def _authorize(owner_id: str, trigger: dict, request: dict | None) -> dict
         or not await enabled(owner_id)
     ):
         raise NotAuthorized("meeting_followups_not_authorized")
-    room = await messaging_repo.get_room(request["roomId"]) or {}
-    entry = occurrence_entry(room.get("meeting") or {}, request["occurrence"])
-    if room.get("ownerId") != owner_id or entry.get("transcriptId") != snapshot["transcriptId"]:
+    room = await api.get_conversation(owner_id, request["roomId"], with_members=True)
+    entry = occurrence_entry((room.annotations.get("meeting") if room else None) or {}, request["occurrence"])
+    if room is None or entry.get("transcriptId") != snapshot["transcriptId"]:
         raise NotAuthorized("not_original_meeting_occurrence")
-    member = await messaging_repo.get_member(request["roomId"], "human", principal)
-    if not member or member.get("id") != principal or member.get("kind") != "human" or member.get("role") != "owner":
+    member = next((m for m in room.members if m.get("kind") == "human" and m.get("id") == principal), None)
+    if not member or member.get("role") != "owner":
         raise NotAuthorized("original_inviter_no_longer_authorized")
     if owner_id.startswith("org_"):
         members = await clerk_admin.list_organization_members(owner_id, strict=True)
@@ -174,7 +174,7 @@ async def context(
     verify_grant(grant, owner_id, run_id, trigger_id)
     if section not in {"transcript", "tasks"}:
         raise ValueError("invalid_meeting_context_section")
-    trigger = await tasks_repo.get_trigger(owner_id, trigger_id)
+    trigger = await api.get_trigger(owner_id, trigger_id)
     if not trigger:
         raise NotAuthorized("not_meeting_completion")
     request = await authorize(owner_id, trigger)

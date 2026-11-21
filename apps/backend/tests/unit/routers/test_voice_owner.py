@@ -194,25 +194,27 @@ async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
     body = voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
     with (
         patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
-        patch.object(voice_owner.api, "latest_seq", AsyncMock(return_value=41)) as seq,
+        patch.object(
+            voice_owner.api.messaging_repo, "list_messages_before", AsyncMock(return_value=[{"messageSeq": 41}])
+        ) as seq,
         patch.object(voice_owner.store, "get_voice_run", AsyncMock(side_effect=[None, {"spoken": 37}])) as gv,
     ):
         assert await voice_owner.start(ROOM, body) == {"assistantName": "Nova", "agentId": "a1", "after": 41}
         # a reconnect: the last handled seq, so what was posted in the gap is still said
         assert (await voice_owner.start(ROOM, body))["after"] == 37
-    seq.assert_awaited_once_with(ROOM)
+    seq.assert_awaited_once_with(ROOM, 10**19, 1)  # the room's newest message
     assert gv.await_args.args == ("org_1", f"owner-mouth:{ROOM}:user_maya")
 
 
 async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
     lines = {"messages": [{"id": "a1", "text": "Checking GitHub."}], "after": 6}
     with (
-        patch.object(voice_owner.api, "agent_lines", AsyncMock(return_value=lines)) as al,
+        patch.object(voice_owner.api, "_agent_lines", AsyncMock(return_value=lines)) as al,
         patch.object(voice_owner.store, "put_voice_run", AsyncMock()) as put,
     ):
         body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5, spoken=5)
         assert await voice_owner.events(ROOM, body) == lines
-        al.assert_awaited_once_with(ROOM, 5)
+        al.assert_awaited_once_with("org_1", ROOM, 5)
         put.assert_awaited_once_with("org_1", f"owner-mouth:{ROOM}:user_maya", {"spoken": 5})
         with pytest.raises(HTTPException) as e:
             await voice_owner.events(ROOM, body.model_copy(update={"speakerUserId": "user_other"}))
@@ -251,7 +253,7 @@ async def test_the_orbs_line_after_a_said_question_answers_it(m):
     )
     with (
         patch.object(messaging_repo, "list_messages_before", AsyncMock(return_value=[qrow])),
-        patch.object(question_routes, "submit_answer", AsyncMock()) as sa,
+        patch.object(question_routes, "_submit_answer", AsyncMock()) as sa,
         patch.object(
             messaging, "create_human_message", AsyncMock(return_value=SimpleNamespace(message_id="m7", message_seq=1))
         ) as ch,

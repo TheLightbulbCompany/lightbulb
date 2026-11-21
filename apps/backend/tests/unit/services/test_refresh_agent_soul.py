@@ -72,7 +72,9 @@ def world(monkeypatch):
 
 
 def _notices(send_frames) -> list[tuple[str, dict]]:
-    return [(c.args[0], ev["payload"]) for c in send_frames.await_args_list for ev in c.args[1]]
+    return [
+        (c.args[1], ev["payload"]) for c in send_frames.await_args_list for ev in c.args[2]
+    ]  # (owner, room, events)
 
 
 async def test_rename_rewrites_the_name_line_relabels_members_and_tells_the_open_window(world):

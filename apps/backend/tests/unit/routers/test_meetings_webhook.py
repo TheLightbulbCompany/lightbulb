@@ -17,6 +17,8 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from main import app  # noqa: E402
 from routers import meetings as mod  # noqa: E402
+from core.services import messaging as engine_messaging
+from core.repositories import messaging_repo
 
 _REAL_PATCH_MEETING = mod.meeting_invites._patch_meeting
 
@@ -57,7 +59,7 @@ def env(monkeypatch):
         "meeting": {"uid": "u1", "title": "Sync", "status": "bot_created", "recallBotId": "bot-1", "ticketNonce": "n"},
     }
 
-    async def patch_meeting(room_id, fields, drop=(), when=None):
+    async def patch_meeting(owner_id, room_id, fields, drop=(), when=None):
         if when is not None and not when(meta["meeting"]):
             return None
         fields = fields(meta["meeting"]) if callable(fields) else fields
@@ -67,7 +69,7 @@ def env(monkeypatch):
     async def noop():
         return None
 
-    def notes_done(_room_id):  # the real on_ended marks its own completion
+    def notes_done(_owner_id, _room_id):  # the real on_ended marks its own completion
         meta["meeting"]["notesMailedAt"] = 1
         return noop()
 
@@ -77,7 +79,7 @@ def env(monkeypatch):
     lk = mod.livekit_huddles
     with (
         patch.object(mod.meeting_notes, "on_ended", MagicMock(side_effect=notes_done)) as notes,
-        patch.object(mod.meeting_invites, "advance", MagicMock(side_effect=lambda _r: noop())) as advance,
+        patch.object(mod.meeting_invites, "advance", MagicMock(side_effect=lambda _o, _r: noop())) as advance,
         patch.object(repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok")) as claim,
         patch.object(repo, "release_owner_lifecycle_claim", AsyncMock()) as release,
         patch.object(mod.rooms, "room_agents", AsyncMock(return_value=TEAM)),
@@ -85,7 +87,7 @@ def env(monkeypatch):
         patch.object(mod.settings, "RECALL_API_KEY", "rk"),
         patch.object(mod.meeting_bots.settings, "RECALL_WEBHOOK_SECRET", SECRET),
         patch.object(mod.settings, "HUDDLE_WORKER_SECRET", WORKER),
-        patch.object(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
+        patch.object(messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
         patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting)),
         patch.object(mod.meeting_invites, "_post_line", AsyncMock()) as line,
         patch.object(mod.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"})),
@@ -167,7 +169,7 @@ def test_call_ended_closes_the_room_once(env):
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
     env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "call_ended_by_host"})
-    env["notes"].assert_called_once_with(ROOM)
+    env["notes"].assert_called_once_with("org_a", ROOM)
     env["minutes"].assert_awaited_once()  # the meeting's time goes on the month's voice minutes
     owner, seconds, _at = env["minutes"].await_args.args
     assert owner == "org_a" and seconds > 0
@@ -219,10 +221,10 @@ async def test_failed_meeting_admission_cannot_advance_series_before_terminal_re
     notes_finished = asyncio.Event()
     notes_calls = 0
 
-    async def notes_then_advance(_room_id):
+    async def notes_then_advance(_owner_id, _room_id):
         nonlocal notes_calls
         notes_calls += 1
-        await env["advance"](ROOM)
+        await env["advance"]("org_a", ROOM)
         notes_finished.set()
 
     env["notes"].side_effect = notes_then_advance
@@ -237,7 +239,7 @@ async def test_failed_meeting_admission_cannot_advance_series_before_terminal_re
     await mod._on_status("bot-1", ROOM, "done", "call_ended_by_host")
     await asyncio.wait_for(notes_finished.wait(), timeout=1)
     assert notes_calls == 1
-    env["advance"].assert_called_once_with(ROOM)
+    env["advance"].assert_called_once_with("org_a", ROOM)
     expected = (
         "org_a",
         f"meeting:{ROOM}:{start}",
@@ -251,9 +253,9 @@ async def test_failed_meeting_admission_cannot_advance_series_before_terminal_re
 @pytest.mark.asyncio
 async def test_meeting_metering_id_is_stable_per_occurrence_and_distinct_for_a_reused_room(env):
     start = 1790980000
-    await mod._count_minutes(ROOM, 160, start)
-    await mod._count_minutes(ROOM, 160, start)  # the same occurrence gets Metronome's same dedupe key
-    await mod._count_minutes(ROOM, 120, start + 604800)  # the next week's meeting uses the same room
+    await mod._count_minutes("org_a", ROOM, 160, start)
+    await mod._count_minutes("org_a", ROOM, 160, start)  # the same occurrence gets Metronome's same dedupe key
+    await mod._count_minutes("org_a", ROOM, 120, start + 604800)  # the next week's meeting uses the same room
     reports = env["reported_minutes"].await_args_list
     assert reports[0] == reports[1]
     assert reports[0].args[1] != reports[2].args[1]
@@ -456,7 +458,7 @@ def test_worker_idle_leave_ends_once_even_when_call_ended_lands_mid_leave(env):
     assert env["reported_minutes"].await_count == 2
     assert env["reported_minutes"].await_args_list[0] == env["reported_minutes"].await_args_list[1]
     # The call_ended found the notes not yet done and asked too; on_ended's own claim makes it one run.
-    assert env["notes"].call_args_list == [((ROOM,),), ((ROOM,),)]
+    assert env["notes"].call_args_list == [(("org_a", ROOM),), (("org_a", ROOM),)]
 
 
 def test_a_failed_leave_still_ends_the_meeting(env):
@@ -469,7 +471,7 @@ def test_a_failed_leave_still_ends_the_meeting(env):
     assert leave.await_count == 3 and [c.args for c in sleep.await_args_list] == [(2,), (2,)]
     assert env["meta"]["meeting"]["status"] == "ended"
     env["close"].assert_awaited_once_with(ROOM, meet=True)
-    env["notes"].assert_called_once_with(ROOM)
+    env["notes"].assert_called_once_with("org_a", ROOM)
     assert env["metric"].call_args_list.count((("meeting.leave_failed",),)) == 1
 
 
@@ -489,11 +491,11 @@ def test_the_done_webhook_retries_notes_that_failed_on_call_ended(env):
     async def noop():
         return None
 
-    env["notes"].side_effect = lambda _room: noop()  # the first notes attempt fails: no notesMailedAt
+    env["notes"].side_effect = lambda _owner, _room: noop()  # the first notes attempt fails: no notesMailedAt
     assert _post(env["client"], _status("call_ended")).status_code == 200
     assert mod.meeting_notes.owed(env["meta"]["meeting"])
 
-    def done(_room):
+    def done(_owner, _room):
         env["meta"]["meeting"]["notesMailedAt"] = 1
         return noop()
 
@@ -508,7 +510,7 @@ def test_a_failed_close_room_loses_no_other_end_step(env):
     env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     env["close"].side_effect = RuntimeError("twirp")
     assert _post(env["client"], _status("call_ended", sub_code="x")).status_code == 200
-    env["notes"].assert_called_once_with(ROOM)
+    env["notes"].assert_called_once_with("org_a", ROOM)
     env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "x"})
     env["metric"].assert_any_call("meeting.finish_step_failed", dimensions={"step": "close_room"})
     env["publisher"].publish_room.assert_awaited_once()
@@ -518,7 +520,7 @@ def test_fatal_mid_call_runs_the_notes(env):
     env["meta"]["meeting"].update(status="in_call", inCallAt=1)
     _post(env["client"], _status("fatal", sub_code="bot_kicked_from_call"))
     assert env["meta"]["meeting"]["status"] == "bot_failed"
-    env["notes"].assert_called_once_with(ROOM)
+    env["notes"].assert_called_once_with("org_a", ROOM)
     env["metric"].assert_any_call("meeting.ended", dimensions={"sub_code": "bot_kicked_from_call"})
     env["line"].assert_awaited_once()
     env["reported_minutes"].assert_awaited_once()
@@ -560,7 +562,7 @@ def test_a_busy_lease_is_5xx_so_recall_retries(env):
 def test_a_redelivery_to_an_ended_meeting_retries_unfinished_notes(env):
     env["meta"]["meeting"].update(status="ended", inCallAt=1)
     assert _post(env["client"], _status("done")).status_code == 200
-    env["notes"].assert_called_once_with(ROOM)
+    env["notes"].assert_called_once_with("org_a", ROOM)
     env["close"].assert_not_awaited()
 
 
@@ -597,7 +599,7 @@ def test_an_ended_call_the_bot_never_joined_runs_no_notes_and_advances(env):
     assert _post(env["client"], _status("call_ended", sub_code="bot_kicked_from_waiting_room")).status_code == 200
     assert env["meta"]["meeting"]["status"] == "ended"
     env["notes"].assert_not_called()
-    env["advance"].assert_called_once_with(ROOM)
+    env["advance"].assert_called_once_with("org_a", ROOM)
     env["reported_minutes"].assert_not_awaited()
 
 
@@ -605,7 +607,7 @@ def test_a_terminal_redelivery_retries_a_series_advance(env):
     env["meta"]["meeting"].update(status="ended", inCallAt=1, notesMailedAt=1, recurrence={"rule": "FREQ=WEEKLY"})
     assert _post(env["client"], _status("done")).status_code == 200
     env["notes"].assert_not_called()
-    env["advance"].assert_called_once_with(ROOM)
+    env["advance"].assert_called_once_with("org_a", ROOM)
     env["meta"]["meeting"].pop("recurrence")
     assert _post(env["client"], _status("done")).status_code == 200  # a one-off: nothing to advance
     env["advance"].assert_called_once()
@@ -650,7 +652,7 @@ def test_another_environments_bot_is_ignored_not_ejected(env):
 
 def test_a_bot_for_a_room_this_environment_lacks_is_ignored_not_ejected(env):
     """An untagged bot (booked before the env tag) whose room is not here belongs to another environment."""
-    with patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=None)):
+    with patch.object(messaging_repo, "get_room", AsyncMock(return_value=None)):
         assert _post(env["client"], _status("in_call_recording", bot_id="bot-dev")).status_code == 200
     env["bot_leave"].assert_not_awaited()
     env["dispatch"].assert_not_awaited()
@@ -735,11 +737,11 @@ def test_signed_chat_is_durable_candidate_input_with_stable_replay_identity(env)
     from core.voice.meetings import records
     from types import SimpleNamespace
 
-    store = AsyncMock(return_value=SimpleNamespace(message_id="m"))
+    store = AsyncMock(return_value=SimpleNamespace(message_id="m", message_seq=1))
     with (
         patch.object(records, "inviting_member", return_value="maya"),
-        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
-        patch.object(mod.messaging, "create_human_message", store),
+        patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(engine_messaging, "create_human_message", store),
     ):
         event = _chat_event()
         assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
@@ -772,8 +774,8 @@ def test_stale_or_self_chat_cannot_start_work(env, change):
     store = AsyncMock()
     with (
         patch.object(records, "inviting_member", return_value=None if change == "no_inviter" else "maya"),
-        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
-        patch.object(mod.messaging, "create_human_message", store),
+        patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(engine_messaging, "create_human_message", store),
     ):
         assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
     store.assert_not_awaited()
@@ -785,11 +787,11 @@ def test_chat_from_a_person_named_like_the_brand_is_stored(env):
 
     from core.voice.meetings import records
 
-    store = AsyncMock(return_value=SimpleNamespace(message_id="m"))
+    store = AsyncMock(return_value=SimpleNamespace(message_id="m", message_seq=1))
     with (
         patch.object(records, "inviting_member", return_value="maya"),
-        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
-        patch.object(mod.messaging, "create_human_message", store),
+        patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(engine_messaging, "create_human_message", store),
     ):
         event = _chat_event(name="Sam · Lightbulb")
         assert _post(env["client"], event, path="/api/v1/webhooks/recall/realtime").status_code == 200
@@ -802,8 +804,8 @@ def test_chat_store_failure_is_retryable_instead_of_acknowledged_and_lost(env):
     env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
     with (
         patch.object(records, "inviting_member", return_value="maya"),
-        patch.object(mod.messaging_repo, "list_members", AsyncMock(return_value=[])),
-        patch.object(mod.messaging, "create_human_message", AsyncMock(side_effect=RuntimeError("down"))),
+        patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(engine_messaging, "create_human_message", AsyncMock(side_effect=RuntimeError("down"))),
     ):
         assert _post(env["client"], _chat_event(), path="/api/v1/webhooks/recall/realtime").status_code == 503
 
@@ -816,4 +818,49 @@ def test_a_status_for_a_deleted_meeting_room_is_answered_2xx(env, code):
     before = dict(env["meta"]["meeting"])
     with patch.object(mod.meeting_invites, "_patch_meeting", _REAL_PATCH_MEETING):
         assert _post(env["client"], _status(code)).status_code == 200
+    assert env["meta"]["meeting"] == before
+
+
+def test_meeting_deleted_mid_call_is_still_metered(env):
+    """The room was deleted while its bot was in the call: Recall's `call_ended` still ends it (minutes reported
+    under the occurrence's key, the Meet's LiveKit room closed) and is answered 2xx."""
+    env["meta"]["meeting"].update(status="in_call", inCallAt=1000)
+    env["meta"]["deletedAt"] = "2026-11-01T00:00:00Z"
+    stamp = "2026-10-03T00:00:00Z"
+    assert _post(env["client"], _at_time(_status("call_ended"), stamp)).status_code == 200
+    owner, key, _at, seconds, kind = env["reported_minutes"].await_args.args
+    assert (owner, key, kind) == ("org_a", f"meeting:{ROOM}:1000", "meeting") and seconds > 0
+    env["close"].assert_awaited_with(ROOM, meet=True)
+
+
+def test_idle_leave_on_a_deleted_room_pulls_the_bot(env):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 60)
+    env["meta"]["deletedAt"] = "2026-11-01T00:00:00Z"
+    assert _leave(env["client"]).status_code == 200
+    env["bot_leave"].assert_awaited_once_with("bot-1")
+    assert env["reported_minutes"].await_args.args[1] == f"meeting:{ROOM}:{env['meta']['meeting']['inCallAt']}"
+
+
+def test_a_deleted_meeting_rooms_realtime_events_are_acknowledged_and_relay_nothing(env):
+    from types import SimpleNamespace
+
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
+    env["meta"]["deletedAt"] = "2026-11-01T00:00:00Z"
+    store = AsyncMock(return_value=SimpleNamespace(message_id="m", message_seq=1))
+    with patch.object(engine_messaging, "create_human_message", store):
+        assert _post(env["client"], _chat_event(), path="/api/v1/webhooks/recall/realtime").status_code == 200
+        path = "/api/v1/webhooks/recall/realtime"
+        assert _post(env["client"], _event("join", 1, "Pat"), path).status_code == 200
+    store.assert_not_awaited()
+    env["speaker"].assert_not_awaited()
+
+
+@pytest.mark.parametrize("code", ["in_call_recording", "joining_call"])
+def test_in_call_status_on_a_deleted_room_leaves_the_bot_and_starts_no_worker(env, code):
+    env["meta"]["deletedAt"] = "2026-11-01T00:00:00Z"
+    before = dict(env["meta"]["meeting"])
+    assert _post(env["client"], _status(code)).status_code == 200
+    env["bot_leave"].assert_awaited_once_with("bot-1")
+    env["dispatch"].assert_not_awaited()
+    env["wake"].assert_not_called()
     assert env["meta"]["meeting"] == before

@@ -9,6 +9,9 @@ import pytest
 from moto import mock_aws
 
 from core.voice.meetings import meeting_chat as mod
+from core.repositories import messaging_repo
+from core.services import task_conversation
+from core.repositories import tasks_repo
 
 
 @pytest.fixture
@@ -29,19 +32,19 @@ def world(monkeypatch):
         }
         meta = {"ownerId": "org_a", "meeting": {"status": "in_call", "recallBotId": "b", "inCallAt": 100}}
         monkeypatch.setattr(
-            mod.tasks_repo, "get_trigger", AsyncMock(side_effect=lambda ws, tid: trigger if tid == "chat:t" else None)
+            tasks_repo, "get_trigger", AsyncMock(side_effect=lambda ws, tid: trigger if tid == "chat:t" else None)
         )
         meta["meeting"]["invitedBy"] = "maya"
-        monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(return_value=meta))
+        monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value=meta))
         monkeypatch.setattr(
-            mod.messaging_repo,
+            messaging_repo,
             "list_members",
             AsyncMock(return_value=[{"kind": "human", "role": "owner", "id": "maya"}]),
         )
         send, post, routed = AsyncMock(), AsyncMock(return_value="posted"), AsyncMock()
         monkeypatch.setattr(mod.meeting_bots, "say", send)
-        monkeypatch.setattr(mod.task_conversation, "post_as_lightbulb", post)
-        monkeypatch.setattr(mod.tasks_repo, "set_trigger_routed_to", routed)
+        monkeypatch.setattr(task_conversation, "post_as_lightbulb", post)
+        monkeypatch.setattr(tasks_repo, "set_trigger_routed_to", routed)
         lock = asyncio.Lock()
 
         @asynccontextmanager
@@ -98,7 +101,7 @@ async def test_refuses_cross_scope_and_stale_occurrence_before_any_receipt_or_se
 
 
 async def test_revoked_inviter_and_oversized_url_cannot_send(world, monkeypatch):
-    monkeypatch.setattr(mod.messaging_repo, "list_members", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(return_value=[]))
     with pytest.raises(mod.NotCurrentMeeting, match="no_current_inviter"):
         await mod.send("org_a", ["chat:t"], "A link")
     with pytest.raises(ValueError, match="500"):
@@ -111,7 +114,7 @@ def optout(world, monkeypatch):
     """The meeting's record knows who spoke trigger line `m`; the shared writer is the one #5134 built."""
     world["meta"]["meeting"]["askSpeakers"] = {"cm": "12"}  # keyed by the message's client id
     world["meta"]["meeting"]["roster"] = {"12": {"name": "Sam"}, "11": {"name": "Maya"}}
-    monkeypatch.setattr(mod.messaging_repo, "get_message_by_id", AsyncMock(return_value={"clientMessageId": "cm"}))
+    monkeypatch.setattr(messaging_repo, "get_message_by_id", AsyncMock(return_value={"clientMessageId": "cm"}))
     rec = AsyncMock(return_value={"notTranscribed": [{"id": "12", "name": "Sam"}]})
     monkeypatch.setattr("core.voice.meetings.records.record_transcription", rec)
     return rec
@@ -120,7 +123,7 @@ def optout(world, monkeypatch):
 async def test_stop_transcribing_excludes_the_speaker_of_the_line(optout):
     out = await mod.stop_transcribing("org_a", ["chat:t"])
     assert out == {"notTranscribed": [{"id": "12", "name": "Sam"}]}
-    assert optout.await_args.args[0] == "r" and optout.await_args.args[2:] == ("12", "Sam")
+    assert optout.await_args.args[:2] == ("org_a", "r") and optout.await_args.args[3:] == ("12", "Sam")
 
 
 async def test_stop_transcribing_refuses_another_participant(optout):

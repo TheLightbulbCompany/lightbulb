@@ -6,6 +6,8 @@ import pytest
 
 from core.services import admission
 from core.voice.meetings import meeting_context as mod, meeting_notes
+from core.repositories import messaging_repo
+from core.repositories import tasks_repo
 
 
 @pytest.fixture
@@ -50,14 +52,18 @@ def world(monkeypatch):
         "members": [{"user_id": "original-user", "role": "org:member"}],
         "config": {"meetings": {"followUps": True}},
     }
-    monkeypatch.setattr(mod.messaging_repo, "get_voice_agent", AsyncMock(side_effect=lambda _: state["config"]))
+    monkeypatch.setattr(mod.store, "get_voice_agent", AsyncMock(side_effect=lambda _: state["config"]))
     monkeypatch.setattr(mod.store, "get_meeting_notes_request", AsyncMock(side_effect=lambda *_: state["request"]))
-    monkeypatch.setattr(mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda _: state["meta"]))
-    monkeypatch.setattr(mod.messaging_repo, "get_member", AsyncMock(side_effect=lambda *_: state["member"]))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda _: state["meta"]))
+    monkeypatch.setattr(messaging_repo, "get_member", AsyncMock(side_effect=lambda *_: state["member"]))
+    # the room's members: the original inviter's seat (state["member"]) when there is one
+    monkeypatch.setattr(
+        messaging_repo, "list_members", AsyncMock(side_effect=lambda *_: [state["member"]] if state["member"] else [])
+    )
     monkeypatch.setattr(
         mod.clerk_admin, "list_organization_members", AsyncMock(side_effect=lambda *_, **__: state["members"])
     )
-    monkeypatch.setattr(mod.tasks_repo, "get_trigger", AsyncMock(side_effect=lambda *_: state["trigger"]))
+    monkeypatch.setattr(tasks_repo, "get_trigger", AsyncMock(side_effect=lambda *_: state["trigger"]))
     state["enqueue"] = AsyncMock(return_value=True)
     monkeypatch.setattr(admission, "enqueue_trigger", state["enqueue"])
     state["load"] = MagicMock(return_value=b"human source " * 3000)

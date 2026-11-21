@@ -1,7 +1,11 @@
+import { Suspense } from "react";
+
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
 import { RequestSetupForm } from "@/components/requestSetup/RequestSetupForm";
 import { pageMetadata } from "@/lib/seo";
+
+import { OsInvite } from "./OsInvite";
 
 export const metadata = pageMetadata({
   title: "Lightbulb OS, a Voice App for the Mac | Lightbulb",
@@ -26,6 +30,9 @@ export default function OsPage() {
         <div className="mt-12">
           <RequestSetupForm waitlist="os" />
         </div>
+        <Suspense>
+          <OsInvite />
+        </Suspense>
       </section>
       <Footer />
     </main>

@@ -768,3 +768,40 @@ async def test_a_wipe_of_a_person_without_spark_calls_no_stripe(ddb, clock, fake
     snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
     await _user_rows_run(snap)
     assert fake.calls == [] and "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})
+
+
+# --- edges: a referral during checkout, a deleted account's checkout and subscription -----------------------
+
+
+async def test_a_referral_during_checkout_is_applied_by_the_first_webhook(ddb, clock, webhook, fake):
+    url = (await account(A))["checkoutUrl"]
+    await open_link(url)  # the session carries trial_end = START + 3 days
+    fake.trial_ends["sub_1"] = START + 3 * DAY
+    clock[0] += 100
+    await account(B)
+    assert (await req("POST", "/os/referral", B, json={"code": "a"})).json() == {"applied": True}
+    assert "modify" not in fake.kinds()  # the row is not trialing yet
+    await webhook.send("created", "sub_1", "trialing")
+    assert [c[1]["trial_end"] for c in fake.calls if c[0] == "modify"] == [START + 4 * DAY]
+
+
+async def test_deleting_an_account_expires_its_open_checkout_session(ddb, clock, fake):
+    await open_link((await account())["checkoutUrl"])
+    assert fake.sessions["cs_1"]["status"] == "open"
+    await os_billing.cancel_for_deleted_user("user_a")
+    assert fake.sessions["cs_1"]["status"] == "expired" and "cancel" not in fake.kinds()
+
+
+async def test_deleting_an_account_with_a_completed_checkout_session_goes_on(ddb, clock, fake):
+    await open_link((await account())["checkoutUrl"])
+    fake.sessions["cs_1"] |= {"status": "complete", "subscription": {"id": "sub_1", "status": "active"}}
+    await os_billing.cancel_for_deleted_user("user_a")  # no raise
+
+
+async def test_an_open_subscription_for_a_deleted_account_is_cancelled_and_acknowledged(
+    ddb, clock, webhook, fake, metrics
+):
+    await webhook.send("created", "sub_orphan", "active", {"product": "spark", "user_id": "user_gone"})
+    assert [c for c in fake.calls if c[0] == "cancel"] == [("cancel", {"id": "sub_orphan"})]
+    assert "os_billing.orphan_subscription_cancelled" in metrics
+    assert "Item" not in ddb.users.get_item(Key={"user_id": "user_gone"})

@@ -239,6 +239,27 @@ async def test_invalid_config_never_reaches_openai(ddb, clock, no_sideband, open
     assert not openai.called
 
 
+async def test_client_brain_and_full_access_are_stored(ddb, clock, no_sideband, openai):
+    client = {"appVersion": "2.1.1", "protocol": 2, "brain": "chatgpt", "fullAccess": True}
+    r = await create(client=client)
+    assert r.status_code == 201, r.text
+    assert rec(ddb, r.json()["sessionId"])["client"] == client | {"protocol": "2"}
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        {"appVersion": "1.0.0", "brain": "gpt", "fullAccess": "yes", "device": "mac"},
+        {"appVersion": "1.0.0", "brain": "codex"},
+        {"appVersion": "1.0.0", "brain": ["claude"]},
+    ],
+)
+async def test_unknown_client_keys_and_bad_values_are_dropped(ddb, clock, no_sideband, openai, client):
+    r = await create(client=client)
+    assert r.status_code == 201, r.text
+    assert rec(ddb, r.json()["sessionId"])["client"] == {"appVersion": "1.0.0"}
+
+
 async def test_the_largest_allowed_config_passes(ddb, clock, no_sideband, openai):
     assistant = {"role": "assistant", "content": [{"type": "output_text", "text": "x" * 1_000}], "status": "completed"}
     big = [USER, assistant, {"role": "developer", "content": [{"text": "y" * 63_535}], "type": "message", "id": None}]

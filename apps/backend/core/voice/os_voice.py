@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact
+from core.observability import spark_events
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 
@@ -263,6 +264,11 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
             return False
         raise
     logger.info("os voice session %s ended: %s after %ss", sid, reason, seconds)
+    client = row.get("client") or {}
+    props = {"seconds": seconds, "kind": row.get("kind"), "ended_reason": reason}
+    spark_events.server_event(
+        row["userId"], "voice_session_ended", sid, props | ({"brain": client["brain"]} if "brain" in client else {})
+    )
     return True
 
 

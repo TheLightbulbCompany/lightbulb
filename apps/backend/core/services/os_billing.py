@@ -16,6 +16,7 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
+from core.observability import spark_events
 from core.observability.metrics import put_metric
 from core.repositories import user_repo
 from core.services.billing_service import (
@@ -245,7 +246,7 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
         return None
     customer = current.get("customer")
     try:
-        await run_in_thread(
+        written = await run_in_thread(
             _users().update_item,
             Key={"user_id": user_id},
             UpdateExpression="SET os_subscription_id = :id, os_subscription_status = :st, os_stripe_customer_id = :c",
@@ -257,6 +258,7 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
                 ":c": customer if isinstance(customer, str) else customer["id"],
             }
             | {f":b{i}": s for i, s in enumerate(BILLED)},
+            ReturnValues="ALL_OLD",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -277,9 +279,24 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
         else:
             logger.info("spark subscription %s not written for %s", current["id"], user_id)
     else:
+        _subscription_events(user_id, written.get("Attributes") or {}, current)
         if current["status"] == "trialing":
             await extend_trial(user_id)  # never raises
     return None
+
+
+def _subscription_events(user_id: str, old: dict, current: dict) -> None:
+    """Product events for the status change this webhook wrote: a start when the stored status had no live
+    subscription behind it (absent, canceled or incomplete), so past_due and back is not a new start; a
+    cancel when a stored subscription becomes canceled."""
+    before, after = old.get("os_subscription_status"), current["status"]
+    if after in LIVE and (before is None or before == "canceled" or before.startswith("incomplete")):
+        event = "subscription_started"
+    elif after == "canceled" and before not in (None, "canceled"):
+        event = "subscription_cancelled"
+    else:
+        return
+    spark_events.server_event(user_id, event, current["id"], row=old | {"os_subscription_status": after}, now=_now())
 
 
 async def extend_trial(user_id: str) -> None:

@@ -5,22 +5,28 @@ account is a few attributes on their users row: `os_trial_ends_at`, `os_created_
 they referred), `os_referred_by`, and for voice `os_voice_active` (their open session ids) and
 `os_voice_seconds` (their voice total). Voice sessions themselves are `core.voice.os_voice`."""
 
+import json
 import logging
 import re
+import time
+import uuid
 from typing import Any, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_human_session
+from core.auth import AuthContext, get_human_session, get_optional_human_session
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact, utc_now_iso
+from core.observability import product_analytics, spark_events
 from core.services import os_billing
+from core.services.rate_bucket import RateBucket
 from core.voice import os_voice
 from core.voice.os_voice import now as _now
 from core.voice.rooms import live_configured
+from routers._public_ingress import _extract_caller_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -79,27 +85,30 @@ class VoiceSessionStatus(BaseModel):
     endedReason: Literal["client_closed", "trial_ended", "signed_out", "expired", "upstream", "replaced"] | None = None
 
 
+_DEFAULTS = {":trial": "os_trial_ends_at", ":now": "os_created_at", ":created": "created_at", ":e": "email"}
+
+
 async def _account(auth: AuthContext, now: int) -> dict:
     """The person's users row, creating their Spark account (trial ending three days from now) in the same
     single write every read makes: `if_not_exists` makes concurrent first reads agree, and a later read never
-    moves the trial."""
-    sets = [
-        "os_trial_ends_at = if_not_exists(os_trial_ends_at, :trial)",
-        "os_created_at = if_not_exists(os_created_at, :now)",
-        "created_at = if_not_exists(created_at, :created)",
-    ]
+    moves the trial. The write returns the row as it was, so exactly one call sees no `os_created_at`: that
+    call created the account."""
     values: dict[str, Any] = {":trial": now + TRIAL_S, ":now": now, ":created": utc_now_iso()}
     if auth.email:
-        sets.append("email = if_not_exists(email, :e)")
         values[":e"] = auth.email
+    sets = [f"{_DEFAULTS[k]} = if_not_exists({_DEFAULTS[k]}, {k})" for k in values]
     written = await run_in_thread(
         _table().update_item,
         Key={"user_id": auth.user_id},
         UpdateExpression="SET " + ", ".join(sets),
         ExpressionAttributeValues=values,
-        ReturnValues="ALL_NEW",
+        ReturnValues="ALL_OLD",
     )
-    return written["Attributes"]
+    old = written.get("Attributes") or {}
+    row = {_DEFAULTS[k]: v for k, v in values.items()} | old  # every SET is if_not_exists
+    if "os_created_at" not in old:
+        spark_events.server_event(auth.user_id, "account_created", auth.user_id, row=row, now=now)
+    return row
 
 
 @router.get("/account", response_model=AccountResponse, operation_id="os_account")
@@ -182,6 +191,8 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
         logger.warning("os referral not written for %s: transport", auth.user_id)
         raise HTTPException(status_code=503, detail="referral_unavailable")
     await os_billing.extend_trial(referrer)
+    spark_events.server_event(referrer, "referral_applied", auth.user_id)
+    spark_events.server_event(auth.user_id, "referred_by_applied", auth.user_id)
     return ReferralResponse(applied=True)
 
 
@@ -263,6 +274,19 @@ def _live_session(session: Any) -> dict:
     return out
 
 
+def _client(client: Any) -> dict:
+    """The app's description of itself, stored with the session (never sent to OpenAI): its version and
+    protocol as short strings, which assistant it runs (`brain`) and whether it has full access. Unknown keys
+    and known keys with a bad value are dropped."""
+    client = client if isinstance(client, dict) else {}
+    out = {k: str(client[k])[:64] for k in ("appVersion", "protocol") if k in client}
+    if client.get("brain") in ("chatgpt", "claude"):
+        out["brain"] = client["brain"]
+    if type(client.get("fullAccess")) is bool:
+        out["fullAccess"] = client["fullAccess"]
+    return out
+
+
 @router.post("/voice-session", status_code=201, response_model=VoiceSessionResponse, operation_id="os_voice_session")
 async def create_voice_session(
     body: Any = Body(None), auth: AuthContext = Depends(get_human_session)
@@ -287,8 +311,7 @@ async def create_voice_session(
     ):
         raise _bad("invalid_config")
     config = _live_session(body.get("session", {}))
-    client = body.get("client") if isinstance(body.get("client"), dict) else {}
-    client = {k: str(client[k])[:64] for k in ("appVersion", "protocol") if k in client}
+    client = _client(body.get("client", {}))
     if not live_configured():
         raise HTTPException(status_code=503, detail="voice_unavailable")
     at = _now()
@@ -319,4 +342,83 @@ async def close_voice_session(session_id: str, auth: AuthContext = Depends(get_h
         raise HTTPException(status_code=404, detail="session_not_found")
     if row.get("status") == os_voice.ACTIVE:
         await os_voice.request_close(session_id)
+    return Response(status_code=204)
+
+
+EVENT_MAX_BYTES = 4096
+INSTALL_IDS_MAX = 10
+# ponytail: in-process buckets, per backend task; at 2 to 4 tasks the real ceiling is 2 to 4 times these.
+# Move to a shared counter (a DynamoDB per-minute item) if abuse ever shows.
+_PER_ID = RateBucket(60)
+_PER_IP = RateBucket(600)
+
+
+def _install_id(value: Any) -> str | None:
+    try:
+        return str(uuid.UUID(value)) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+async def _link_install(user_id: str, install_id: str) -> bool:
+    """Remember the install on the person's existing users row, at most INSTALL_IDS_MAX of them. True only
+    when this call added it."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="ADD os_install_ids :iid",
+            ConditionExpression="attribute_exists(user_id) AND (attribute_not_exists(os_install_ids) OR "
+            "(NOT contains(os_install_ids, :one) AND size(os_install_ids) < :cap))",
+            ExpressionAttributeValues={":iid": {install_id}, ":one": install_id, ":cap": INSTALL_IDS_MAX},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("os install link not written: %s", e.response["Error"]["Code"])
+        return False
+    except BotoCoreError:
+        return False
+    return True
+
+
+@router.post("/event", status_code=204, operation_id="os_event")
+async def post_event(request: Request, auth: AuthContext | None = Depends(get_optional_human_session)) -> Response:
+    """One product event from the app, for PostHog. Anyone may call it: with a valid session bearer the event
+    is the person's, otherwise the install's. Only allow-listed events and properties are sent
+    (`spark_events.APP_EVENTS`). A well-formed body is always 204, sent, dropped or rate-limited alike."""
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > EVENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="too_large")
+    raw = b""
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > EVENT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="too_large")
+    try:
+        body = json.loads(raw)
+    except (ValueError, RecursionError):
+        body = None
+    install_id = _install_id(body.get("installId")) if isinstance(body, dict) else None
+    if not install_id:
+        raise HTTPException(status_code=400, detail="invalid_event")
+    distinct_id = auth.user_id if auth else install_id
+    if (not auth and not _PER_IP.allow(_extract_caller_ip(request))) or not _PER_ID.allow(distinct_id):
+        return Response(status_code=204)
+    try:
+        if auth and await _link_install(auth.user_id, install_id):
+            product_analytics.alias_product_person(person_id=auth.user_id, anonymous_id=install_id)
+        event = body.get("event")
+        if isinstance(event, str) and event in spark_events.APP_EVENTS:
+            props = spark_events.allowed_properties(event, body.get("properties"))
+            props |= {"install_id": install_id, "product": spark_events.PRODUCT}
+            for key, prop in (("appVersion", "app_version"), ("osVersion", "os_version")):
+                if isinstance(v := body.get(key), str) and spark_events.VERSION.fullmatch(v):
+                    props[prop] = v
+            day = time.strftime("%Y-%m-%d", time.gmtime())
+            once = str(uuid.uuid5(spark_events.NS, f"app_opened:{install_id}:{day}")) if event == "app_opened" else None
+            product_analytics.capture_product_event(
+                distinct_id=distinct_id, event=event, properties=props, event_uuid=once
+            )
+    except Exception:  # noqa: BLE001  analytics never fails the app
+        logger.warning("os event not captured", exc_info=True)
     return Response(status_code=204)

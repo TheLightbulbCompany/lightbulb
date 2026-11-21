@@ -130,7 +130,8 @@ async def _account(auth: AuthContext, now: int) -> dict:
             if got:
                 row["os_referral_credited"] = True
             if got == "friend":
-                row["os_trial_ends_at"] = int(row["os_trial_ends_at"]) + DAY_S
+                ended = os_billing.status(row, now) == "ended"
+                row["os_trial_ends_at"] = (now if ended else int(row["os_trial_ends_at"])) + DAY_S
                 row["os_invite_bonus_days"] = 1
         except Exception:  # noqa: BLE001  a credit never fails the account read
             logger.warning("os referral credit not written for %s", auth.user_id, exc_info=True)
@@ -263,9 +264,11 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
     """Both rows or neither: the referred person is marked credited (`expr` under `cond`) and the referrer, who
     must have a Spark account, counts one more referral. One friend is one free day: a paying (`active`)
     referrer's friend gets it on their own trial; anyone else earns it, on a running trial's end or, once the
-    trial has ended, from now (an ADD cannot say max(end, now)). The branch comes from the referrer's row read
-    first and is pinned by its condition; a referrer who crossed a line meanwhile is read again, once.
+    trial has ended, from now (an ADD cannot say max(end, now)); the same holds for the friend's own trial. The
+    branch comes from the rows read first and is pinned by conditions; a row that crossed a line meanwhile is
+    read again, once. Whoever got the day has a trialing Stripe subscription moved with it (`extend_trial`).
     Returns "friend" or "referrer" (who got the day), or "" when nothing was written."""
+    refused: bool | None = None
     for _ in range(2):
         now = _now()
         ref = (await run_in_thread(_table().get_item, Key={"user_id": referrer}, ConsistentRead=True)).get("Item")
@@ -276,15 +279,27 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
         every = {":active": "active", ":trialing": "trialing", ":now": now, ":until": now + DAY_S, ":day": DAY_S}
         every |= {":prior": int(ref.get("os_referrals", 0)), ":one": 1}
         ref_values = {k: every[k] for k in set(re.findall(r":\w+", f"{ref_cond} {ref_expr}"))}
-        friend_expr, friend_values = expr, values | {":t": True}
+        friend_cond, friend_expr, friend_values = cond, expr, values | {":t": True}
         if branch == "friend":
-            friend_expr += ", os_invite_bonus_days = :one ADD os_trial_ends_at :day"
-            friend_values |= {":one": 1, ":day": DAY_S}
+            # The friend's own trial: an ended one restarts from now, else the day goes on the end. The choice
+            # is pinned by a condition on the friend's row; a friend who crossed the line meanwhile is read again.
+            mine = (await run_in_thread(_table().get_item, Key={"user_id": user_id}, ConsistentRead=True)).get("Item")
+            ended = "os_trial_ends_at" in (mine or {}) and _branch(mine, now) == "ended"
+            if ended == refused:
+                return ""  # the same choice was refused before: the guard, not the pin
+            pin = _BRANCHES["ended"][0]
+            friend_cond = f"({cond}) AND {pin}" if ended else f"({cond}) AND NOT ({pin})"
+            friend_expr += ", os_invite_bonus_days = :one" + (
+                ", os_trial_ends_at = :until" if ended else " ADD os_trial_ends_at :day"
+            )
+            friend_values |= {
+                k: every[k] for k in (":one", ":active", ":trialing", ":now", ":until" if ended else ":day")
+            }
         try:
             await transact(
                 _table(),
                 [
-                    _item("Update", user_id, cond, friend_values, friend_expr),
+                    _item("Update", user_id, friend_cond, friend_values, friend_expr),
                     _item("Update", referrer, ref_cond, ref_values, ref_expr),
                 ],
             )
@@ -292,11 +307,12 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
             codes = [r.get("Code") for r in e.response.get("CancellationReasons") or []]
             if not is_cancelled(e) or "ConditionalCheckFailed" not in codes:
                 raise
-            if codes[0] == "ConditionalCheckFailed":  # already credited, or not creditable
-                return ""
+            if codes[0] == "ConditionalCheckFailed":  # already credited, not creditable, or the friend moved
+                if branch != "friend":
+                    return ""
+                refused = ended
             continue  # the referrer's row moved across a branch line
-        if branch != "friend":
-            await os_billing.extend_trial(referrer)
+        await os_billing.extend_trial(user_id if branch == "friend" else referrer)
         spark_events.server_event(referrer, "referral_applied", user_id)
         return "friend" if branch == "friend" else "referrer"
     return ""

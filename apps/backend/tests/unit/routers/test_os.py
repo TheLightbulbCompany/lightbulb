@@ -324,7 +324,10 @@ async def test_a_trial_that_ends_between_the_read_and_the_write_is_retried_once(
 async def test_a_paying_referrers_friend_gets_the_day(users, clock, monkeypatch):
     from core.services import os_billing
 
-    monkeypatch.setattr(os_billing, "extend_trial", None)  # no Stripe path is reached at all
+    from unittest.mock import AsyncMock
+
+    extend = AsyncMock()
+    monkeypatch.setattr(os_billing, "extend_trial", extend)  # the friend's Stripe trial moves, never the referrer's
     await account(A)
     set_row("user_a", os_subscription_status="active", os_subscription_id="sub_1")
     clock[0] += 100
@@ -337,6 +340,65 @@ async def test_a_paying_referrers_friend_gets_the_day(users, clock, monkeypatch)
     assert int(a["os_trial_ends_at"]) == START + 3 * DAY
     a = await account(A)
     assert a["referralCount"] == 1 and a["referralDaysEarned"] == 0
+    extend.assert_awaited_once_with("user_b")
+    assert not await refer(B, "a")  # once only
+    assert (await account(B))["trialEndsAt"] == created + 4 * DAY and extend.await_count == 1
+
+
+async def test_a_paying_referrers_trialing_friend_has_their_stripe_trial_moved(users, clock, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services import os_billing
+
+    extend = AsyncMock()
+    monkeypatch.setattr(os_billing, "extend_trial", extend)
+    await account(A), await account(B)
+    set_row("user_a", os_subscription_status="active", os_subscription_id="sub_1")
+    set_row("user_b", os_subscription_status="trialing", os_subscription_id="sub_2")
+    assert await refer(B, "a")
+    extend.assert_awaited_once_with("user_b")
+    assert int(row("user_b")["os_trial_ends_at"]) == START + 4 * DAY
+
+
+async def test_a_paying_referrers_friend_with_an_ended_trial_gets_the_day_from_now(users, clock, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services import os_billing
+
+    monkeypatch.setattr(os_billing, "extend_trial", AsyncMock())
+    await account(A), await account(B)
+    set_row("user_a", os_subscription_status="active", os_subscription_id="sub_1")
+    clock[0] = START + 6 * DAY  # B's trial ended three days ago, inside the 14-day window
+    assert (await account(B))["status"] == "ended"
+    assert await refer(B, "a")
+    b = await account(B)
+    assert b["trialEndsAt"] == clock[0] + DAY and b["status"] == "trial" and b["inviteBonusDays"] == 1
+    assert not await refer(B, "a")
+
+
+async def test_a_friend_whose_trial_ends_between_the_read_and_the_write_is_retried_once(users, clock, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services import os_billing
+    from routers import os as os_router
+
+    monkeypatch.setattr(os_billing, "extend_trial", AsyncMock())
+    await account(A), await account(B)
+    set_row("user_a", os_subscription_status="active", os_subscription_id="sub_1")
+    clock[0] = START + 3 * DAY - 10
+    real, calls = os_router.transact, []
+
+    async def crossing(table, items):
+        calls.append(items[0]["Update"]["UpdateExpression"])
+        if len(calls) == 1:
+            clock[0] = START + 3 * DAY + 10  # the friend's trial ends now
+            items[0]["Update"]["ExpressionAttributeValues"][":now"] = clock[0]
+        await real(table, items)
+
+    monkeypatch.setattr(os_router, "transact", crossing)
+    assert await refer(B, "a")
+    assert len(calls) == 2 and ":until" in calls[1]
+    assert int(row("user_b")["os_trial_ends_at"]) == clock[0] + DAY
 
 
 async def test_a_paying_referrers_web_invite_shows_the_day_on_the_first_read(users, clock, monkeypatch):

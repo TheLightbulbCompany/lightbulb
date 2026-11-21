@@ -6,13 +6,13 @@ from pathlib import Path
 CORE = Path(__file__).resolve().parents[2] / "core"
 VOICE_ROUTERS = ("routers.voice", "routers.huddles", "routers.meetings")
 
-#: The two router imports left in core/voice, both lazy and both for one reason: `end_call` and `start_work` start a
-#: Worker task through `routers.internal_automations.start_voice_work`, which is not voice code. Keyed by file and
-#: enclosing function, so a second router import anywhere fails. Remove an entry when that path moves out of the
-#: routers; never add one.
+#: The router imports left in core/voice, all lazy. `voice_booking` and `voice_calls`: `end_call` and `start_work` start
+#: a Worker task through `routers.internal_automations.start_voice_work`, which is not voice code. `phone/tools.py`: the
+#: front desk and transfer-call tools moved here from the engine's routes (engine-service Task 3), which made the same
+#: lazy `routers.voice_phone` imports; they act through the phone's route functions (`start_call` / `end_call`
+#: bookkeeping and the booking helpers) and go when those leave the router. Keyed by file and enclosing function, so a
+#: new router import anywhere fails. Remove an entry when its path moves out of the routers.
 KNOWN = [
-    # The phone's two agent-runtime tools (engine-service Task 3) moved here from the engine's routes and still act
-    # through the phone's own route functions (bookings, messages, the call's hand-off bookkeeping).
     "voice/phone/tools.py: front_desk: routers.voice_phone",
     "voice/phone/tools.py: transfer_call: routers.voice_phone",
     "voice/phone/voice_booking.py: _line_problem: routers.voice_phone",

@@ -319,3 +319,19 @@ async def test_voice_start_requester_from_context(monkeypatch):
             await start_voice_work(WS, body)
         assert (exc.value.status_code, exc.value.detail) == (status, {"code": code})
     assert enqueue.await_count == 1
+
+
+async def test_meeting_chat_skips_a_trigger_gone_on_the_re_read(api, monkeypatch):
+    """The line was already sent: a trigger missing on the engine's re-read is skipped, never a 500."""
+
+    async def tool(n, call):
+        return {"status": "sent", "replayed": True, "routedTo": {"meetingChat": "m1"}}
+
+    _with(monkeypatch, tool=tool)
+    trig = {"chat:a": {"triggerId": "chat:a"}}
+    monkeypatch.setattr(repo, "get_trigger", AsyncMock(side_effect=lambda _ws, t: trig.get(t)))
+    routed = AsyncMock()
+    monkeypatch.setattr(repo, "set_trigger_routed_to", routed)
+    r = await api.post(f"{BASE}/meeting-chat", json={"triggerIds": ["gone", "chat:a"], "text": "The link"}, headers=H)
+    assert _json(r) == (200, {"status": "sent", "replayed": True})
+    assert [c.args for c in routed.await_args_list] == [(WS, "chat:a", {"meetingChat": "m1"})]

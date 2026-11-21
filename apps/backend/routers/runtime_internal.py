@@ -567,7 +567,7 @@ async def _routed(owner_id: str, triggers: list[dict], out: dict) -> dict:
     """A product tool's line answers its triggers (`routedTo` in its answer, never sent): mark them, so the Router
     posts no second line for them."""
     added = out.pop("routedTo", None)
-    for t in triggers if added else []:
+    for t in (x for x in triggers if x) if added else []:  # a trigger gone on the re-read: the line still went
         await tasks_repo.set_trigger_routed_to(owner_id, t["triggerId"], {**(t.get("routedTo") or {}), **added})
     return out
 

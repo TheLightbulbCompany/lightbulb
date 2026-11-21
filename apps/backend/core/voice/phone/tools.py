@@ -1,6 +1,6 @@
 """Lightbulb Phone's tools for the agent runtime (`core.engine.hooks.tool`): the bodies of the engine's front-desk,
-transfer-call and business-facts routes. The route has already checked the hook token and the run, and hands over the engine rows the
-body needs (`call.triggers`); a refusal raises the HTTPException the route answered with before."""
+transfer-call and business-facts routes. The route has already checked the hook token and the run, and hands over the
+engine rows the body needs (`call.triggers`); a refusal raises the HTTPException the route answered with before."""
 
 from __future__ import annotations
 
@@ -75,7 +75,8 @@ async def transfer_call(call: ToolCall) -> dict:
     """The Router's transfer_call (a phone caller asked for a person): one Lightbulb line in the call room marked
     `action: "transfer"`, the trigger's answer. The phone worker sees it on /events and runs /transfer and the SIP
     transfer itself (huddle-agent phone.py `hand_off`); nothing is transferred here. Only a caller's triggers, all
-    from one call, in that call's own room while the line is live. `routedTo`: the engine marks the triggers answered."""
+    from one call, in that call's own room while the line is live. `routedTo`: the engine marks the triggers
+    answered."""
     from routers import voice_phone as vp
 
     owner_id, body, triggers = call.tenant_id, SimpleNamespace(trigger_ids=call.trigger_ids, **call.args), call.triggers

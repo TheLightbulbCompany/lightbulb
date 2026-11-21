@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Body, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_human_session
@@ -307,3 +307,16 @@ async def voice_session_status(session_id: str, auth: AuthContext = Depends(get_
     if row.get("status") == os_voice.ACTIVE:
         return VoiceSessionStatus(status="active")
     return VoiceSessionStatus(status="ended", endedReason=row.get("endedReason"))
+
+
+@router.delete("/voice-session/{session_id}", status_code=204, operation_id="os_voice_session_close")
+async def close_voice_session(session_id: str, auth: AuthContext = Depends(get_human_session)) -> Response:
+    """The app will not use this session: close it now rather than wait for OpenAI to drop it. Answers at
+    once; the sideband closes it on its next tick. Ended or already closing is 204 too; another person's
+    session and an unknown id are the GET's 404."""
+    row = await os_voice.get(session_id) if _SESSION_ID.fullmatch(session_id) else None
+    if not row or row.get("userId") != auth.user_id:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    if row.get("status") == os_voice.ACTIVE:
+        await os_voice.request_close(session_id)
+    return Response(status_code=204)

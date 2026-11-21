@@ -22,7 +22,7 @@ from core.engine.contract import AnnotateIn, ConversationOut, EngineError
 from core.repositories import billing_repo
 from core.voice import store
 from core.voice.phone import voice_booking, voice_preferences
-from core.voice.worker_api import _problem as _err
+from core.voice.worker_api import _problem
 
 # The name these lines always logged under (routers/voice_phone.py): the W85 alarm matches loggers `routers.voice*`.
 # Kept on the old router name: alarm W85 (observability-stack.ts) filters on loggers named routers.voice*.
@@ -80,7 +80,7 @@ async def _call(owner_id: str, call_id: str) -> tuple[ConversationOut, dict]:
     """The owner's call conversation and its record, or 404."""
     conv = await api.get_conversation(owner_id, call_id)
     if not conv or conv.kind != "call" or not isinstance(conv.annotations.get("call"), dict):
-        raise _err(404, "call_not_found")
+        raise _problem(404, "call_not_found")
     return conv, conv.annotations["call"]
 
 
@@ -175,7 +175,7 @@ async def _patch_call(owner_id: str, call_id: str, change) -> dict:
         except EngineError as exc:
             if exc.status != 404:
                 raise
-            raise _err(404, "call_not_found") from None  # the call's room is gone, as `_call` answers
+            raise _problem(404, "call_not_found") from None  # the call's room is gone, as `_call` answers
     raise AssertionError("unreachable")
 
 
@@ -502,7 +502,7 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
         settings.MESSAGING_TABLE,
     )
     if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and _start(old) == start):
-        raise _err(400, "slot_unavailable")
+        raise _problem(400, "slot_unavailable")
     # A move keeps its person; a new booking takes the first eligible person whose keys are free. The slot's
     # capacity (every lane counted) is checked once and guarded in the same transaction. A lost race on one
     # person's keys (the transaction is cancelled) tries the next person.
@@ -527,7 +527,7 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
                     "pk": pk, "sk": key, "booking": row["sk"], "bookingId": row["bookingId"],
                     "expiresAt": _cell_expiry(row["cells"][-1])}}})  # fmt: skip
             if len(items) + len(guards) > 100:
-                raise _err(400, "booking_too_long")
+                raise _problem(400, "booking_too_long")
             try:
                 await transact(messaging_table(), items + guards)
                 return items[0]["Put"]["Item"]
@@ -536,7 +536,7 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
                     raise
                 if key and (same := await _same_booking(owner_id, key)):
                     return same
-    raise _err(409, "slot_taken")
+    raise _problem(409, "slot_taken")
 
 
 async def _same_booking(owner_id: str, key: str) -> dict | None:
@@ -596,7 +596,7 @@ async def _capacity_items(owner_id: str, cfg: dict, adding: list[str], mine: set
         if c["sk"] not in mine:
             count[c["sk"][10:26]] = count.get(c["sk"][10:26], 0) + 1
     if any(count.get(t, 0) >= _capacity(cfg) for t in times):
-        raise _err(409, "slot_taken")
+        raise _problem(409, "slot_taken")
     table, pk = settings.MESSAGING_TABLE, owner_pk(owner_id)
     out = []
     for t in times:
@@ -612,7 +612,7 @@ def _booking_items(table: str, pk: str, call_id: str, call: dict, cfg: dict, sta
                    minutes: int, lane: str, person: str, old: dict | None) -> list[dict]:  # fmt: skip
     cells = _cells(cfg, start, minutes, lane)
     if len(cells) > 99:  # DynamoDB caps a transaction at 100 items (the booking row is one)
-        raise _err(400, "booking_too_long")
+        raise _problem(400, "booking_too_long")
     sk, mine = f"VOICEBOOK#{start}{lane}", set(old.get("cells", [])) if old else set()
     items = [{"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
         "pk": pk, "sk": sk, "bookingId": (old or {}).get("bookingId") or str(uuid.uuid4()),
@@ -642,7 +642,7 @@ def _booking_items(table: str, pk: str, call_id: str, call: dict, cfg: dict, sta
     if old:
         items += _release(table, pk, old, keep=set(cells))
     if len(items) > 100:
-        raise _err(400, "booking_too_long")
+        raise _problem(400, "booking_too_long")
     return items
 
 

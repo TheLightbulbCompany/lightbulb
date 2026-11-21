@@ -45,7 +45,7 @@ from core.voice import store
 from core.services import push_service, clerk_admin
 from core.voice import rooms
 from core.voice.phone import phone_pin, voice_booking, voice_outbound, voice_preferences
-from core.voice.worker_api import _Worker
+from core.voice.worker_api import _problem, _Worker
 from core.voice.phone.calls import (
     OPEN_CALLS_PK,
     TO_ADD_CHARS,
@@ -53,7 +53,6 @@ from core.voice.phone.calls import (
     _TZ,
     _bookings,
     _call,
-    _err,
     _facts,
     _lanes,
     _minutes,
@@ -155,7 +154,7 @@ def call_mode(cfg: dict, call: dict) -> Literal["live", "message_only"]:
 def _allowed(cfg: dict, call: dict, *caps: str) -> None:
     """Refuse (403) a capability the owner turned off, or everything but a message while the line is message-only."""
     if call_mode(cfg, call) != "live" or not any(cfg["allow"].get(c) for c in caps):
-        raise _err(403, "not_allowed")
+        raise _problem(403, "not_allowed")
 
 
 def _caller_key(owner_id: str, caller: str) -> dict:
@@ -179,7 +178,7 @@ class StartIn(BaseModel):
 
 def _require_verified(call: dict) -> None:
     if not _verified(call):
-        raise _err(403, "caller_not_verified")  # the voice offers a message for the team instead
+        raise _problem(403, "caller_not_verified")  # the voice offers a message for the team instead
 
 
 def _callers(rows: list[dict], call_id: str, call: dict) -> list[dict]:
@@ -197,7 +196,7 @@ def _callers(rows: list[dict], call_id: str, call: dict) -> list[dict]:
 async def start_call(body: StartIn) -> dict:
     line = await get_line(body.calledNumber)
     if not line:
-        raise _err(404, "line_not_found")
+        raise _problem(404, "line_not_found")
     owner_id = line["ownerId"]
     cfg = await agent_config(owner_id)
     if _is_probe(cfg, body):
@@ -212,7 +211,7 @@ async def start_call(body: StartIn) -> dict:
             "voice",
         )
         await voice_outbound.end_probe(body.livekitRoom, cfg["forwardingCheck"]["callId"])
-        raise _err(409, "forward_check")  # the worker leaves without speaking
+        raise _problem(409, "forward_check")  # the worker leaves without speaking
     # The name the owner typed at setup is what callers know; the workspace name is only a fallback.
     business = (cfg.get("business") or "").strip()
     if not business:
@@ -691,7 +690,7 @@ async def change_booking(call_id: str, body: ChangeIn, ws: _Owner) -> dict:
     if body.bookingId:
         mine = [r for r in mine if body.bookingId == _booking_id(r)]
     if not mine:
-        raise _err(404, "booking_not_found")
+        raise _problem(404, "booking_not_found")
     if len(mine) > 1:
         options = [{"bookingId": _booking_id(r), "service": r["service"], "name": r["name"],
                     **({"staff": r["staff"]} if r.get("staff") else {})} for r in mine]  # fmt: skip
@@ -763,13 +762,13 @@ async def join_waitlist(call_id: str, body: WaitlistIn, ws: _Owner) -> dict:
     _allowed(cfg, call, "waitlist")
     phone = _e164(call.get("caller") or "")
     if not phone:  # a withheld number cannot be called back, so it cannot wait
-        raise _err(400, "caller_number_required")
+        raise _problem(400, "caller_number_required")
     try:
         day = datetime.strptime(body.date, "%Y-%m-%d").date()
     except ValueError:
-        raise _err(422, "invalid_date") from None
+        raise _problem(422, "invalid_date") from None
     if day < _now(cfg).date():
-        raise _err(400, "date_in_past")
+        raise _problem(400, "date_in_past")
     name = real_name(body.name) or call.get("callerName") or ""
     service = body.service.strip()
     row = {
@@ -874,7 +873,7 @@ async def transfer(call_id: str, ws: _Owner, body: TransferIn | None = None) -> 
     _, call = await _call(ws, call_id)
     cfg = await agent_config(ws)
     if call_mode(cfg, call) != "live":
-        raise _err(403, "not_allowed")
+        raise _problem(403, "not_allowed")
     to = handoff_to(cfg)
     if (body and body.failed) or not to:
         why = "the transfer didn't connect" if body and body.failed else "nobody was available"
@@ -893,7 +892,7 @@ async def _start_task(
     start_call, never the model). The same title in one call is the same task. `ask`: the task opens waiting on that
     Question instead of running first (call_ask)."""
     if not requester:
-        raise _err(403, "no_requester")
+        raise _problem(403, "no_requester")
     run_id = hashlib.sha256(f"{call_id}:{title.strip().lower()}".encode()).hexdigest()[:32]
     brief = f"{CONTACT_NOTE}\nCaller: {call.get('caller') or 'unknown'}\n\n{brief}"
     out = await api.http(
@@ -926,7 +925,7 @@ async def start_work(call_id: str, body: WorkIn, ws: str) -> dict:
     (the worker never called `/start-work`). The same title in one call is the same task (a retried call)."""
     conv, call = await _call(ws, call_id)
     if call_mode(await agent_config(ws), call) != "live":
-        raise _err(403, "not_allowed")
+        raise _problem(403, "not_allowed")
     out = await _start_task(ws, call_id, conv.annotations.get("ownerUserId"), call, body.title, body.brief)
     await _patch_call(ws, call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
                                           "steps": _step(c, f"Handed to the team: {body.title}")})  # fmt: skip
@@ -966,9 +965,9 @@ async def caller_turn(call_id: str, body: TurnIn, ws: _Owner) -> dict:
         ended = {"ownerModeEnded": True, "after": await _cursor(ws, call_id)}
     requester = conv.annotations.get("ownerUserId")
     if not requester:
-        raise _err(403, "no_requester")
+        raise _problem(403, "no_requester")
     if call_mode(await agent_config(ws), call) != "live":
-        raise _err(403, "not_allowed")  # a paused line only takes messages (/message)
+        raise _problem(403, "not_allowed")  # a paused line only takes messages (/message)
     who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()
     line = await api.append_line(
         LineIn(

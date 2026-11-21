@@ -164,6 +164,14 @@ async def _on_status(
         if not conv:
             return  # a room this environment lacks: another environment's (untagged) bot, never ejected
         owner_id, meeting = conv.tenant_id, conv.annotations.get("meeting") or {}
+        if conv.deleted and target in ("bot_created", "in_call"):
+            # a meeting whose room was deleted stops (records.end_deleted): no worker, the bot leaves; a terminal
+            # status still runs its end below, metered once Recall reports it
+            try:
+                await meeting_bots.leave(bot_id)
+            except Exception:  # noqa: BLE001 -- automatic_leave reaps it anyway; 200 either way
+                logger.warning("meeting room %s: a deleted room's bot did not leave", room_id, exc_info=True)
+            return
         status = meeting.get("status")
         if meeting.get("recallBotId") != bot_id:
             # Recall books a second bot on a repeated create: the one of this booking (its nonce)

@@ -175,6 +175,22 @@ async def with_link(owner_id: str, room_id: str, task: dict, line: str) -> str:
     return linked
 
 
+async def end_deleted(owner_id: str, room_id: str) -> None:
+    """A member deleted the meeting's room: the meeting stops. Its bot leaves the call, or its booking is cancelled
+    (`meeting_bots.leave`), and the Meet's LiveKit room closes; Recall's terminal status then meters the call to that
+    moment (`routers.meetings._on_status`). Never raises: the delete already happened."""
+    try:
+        conv = await api.get_conversation(owner_id, room_id, include_deleted=True)
+        meeting = (conv.annotations.get("meeting") if conv else None) or {}
+        if not conv or not conv.deleted or not meeting:
+            return
+        if (bot := meeting.get("recallBotId")) and meeting.get("status") not in ("ended", "bot_failed", "cancelled"):
+            await meeting_bots.leave(bot)
+        await livekit_huddles.close_room(room_id, meet=True)
+    except Exception:  # noqa: BLE001 -- a RecallError or a transport error: Recall's own leave reaps the bot
+        logger.warning("meeting room %s: deleted, but its bot was not pulled", room_id, exc_info=True)
+
+
 def _same(entry: dict, pid: str, name: str) -> bool:
     return bool((pid and entry.get("id") == pid) or (name and entry.get("name", "").lower() == name.lower()))
 

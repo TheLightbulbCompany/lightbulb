@@ -1895,11 +1895,20 @@ async def test_a_redelivered_invite_for_a_deleted_meeting_room_ends_quietly(room
     bots.reschedule.assert_not_awaited()
 
 
-async def test_changed_occurrence_of_a_deleted_series_is_ignored(room, bots):
+async def test_changed_occurrence_of_a_deleted_series_is_ignored(room, bots, monkeypatch):
     """A member deleted the series' room: its occurrences stay its own, so a changed one is ignored (no room, no
-    bot), as it was before the room reads moved behind the engine."""
-    room.state["meta"] = {"roomId": "series", "meeting": {"uid": UID, "status": "scheduled"}, "deletedAt": "2026-10-02"}
+    bot). Rows per id: the series room is deleted (its record whole, `recurrence` included, so only the delete
+    refuses it) and the occurrence's own room does not exist, so only the series read can find the series."""
+    series = meeting_invites.store.meeting_room_id("org_1", UID)
+    rows = {series: {"roomId": series, "ownerId": "org_1", "deletedAt": "2026-10-02T00:00:00Z", "meeting": {
+        "uid": UID, "status": "scheduled", "organizer": "prasiddha@acme.com",
+        "recurrence": meeting_invites.parse(SERIES).recurrence,
+    }}}  # fmt: skip
+    room.get.side_effect = rows.get
+    write = AsyncMock(wraps=meeting_invites.api.annotate)
+    monkeypatch.setattr(meeting_invites.api, "annotate", write)
     assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_ignored"
+    write.assert_not_awaited()  # refused on the series' deleted record, before any write is tried
     room.create.assert_not_awaited()
     bots.create.assert_not_awaited()
 

@@ -27,6 +27,7 @@ import httpx
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact
 from core.engine import api
+from core.voice import worker_api
 from core.services.credentials import access_token
 
 logger = logging.getLogger(__name__)
@@ -173,7 +174,7 @@ def _blocks(answer: dict | None, tz, calendar_id: str = "primary") -> list[tuple
             blocks.append((start.astimezone(tz).replace(tzinfo=None), end.astimezone(tz).replace(tzinfo=None)))
         return blocks
     except (KeyError, ValueError, TypeError):
-        raise _vp()._err(503, "provider_availability_unknown") from None
+        raise worker_api._problem(503, "provider_availability_unknown") from None
 
 
 async def busy_across(ws: str, cfg: dict, dates: list[str], bound: float) -> list[tuple[datetime, datetime]]:
@@ -191,7 +192,7 @@ async def busy_across(ws: str, cfg: dict, dates: list[str], bound: float) -> lis
         return _blocks(await asyncio.wait_for(_request(ws, "POST", f"{API}/freeBusy", body), bound), tz)
     except Exception as exc:  # noqa: BLE001 -- facts survive; provider availability does not
         logger.info("google freeBusy skipped for the profile ws=%s (%s)", ws, type(exc).__name__)
-        raise _vp()._err(503, "provider_availability_unknown") from None
+        raise worker_api._problem(503, "provider_availability_unknown") from None
 
 
 def row_condition(row: dict) -> tuple[str, dict]:
@@ -235,12 +236,12 @@ async def _read(ws: str, sk: str) -> dict | None:
 
 async def _transaction(items: list[dict]) -> None:
     if len(items) > 100:
-        raise _vp()._err(400, "booking_too_long")
+        raise worker_api._problem(400, "booking_too_long")
     try:
         await transact(messaging_table(), items)
     except ClientError as exc:
         if is_cancelled(exc):
-            raise _vp()._err(409, "booking_changed") from None
+            raise worker_api._problem(409, "booking_changed") from None
         raise
 
 
@@ -278,7 +279,7 @@ async def _busy(ws: str, cfg: dict, start: str, minutes: int, calendar_id: str =
     try:
         return bool(_blocks(await _request(ws, "POST", f"{API}/freeBusy", body), tz, calendar_id))
     except Exception:
-        raise _vp()._err(503, "provider_availability_unknown") from None
+        raise worker_api._problem(503, "provider_availability_unknown") from None
 
 
 async def _problem(ws: str, cfg: dict, call_id: str) -> None:
@@ -488,7 +489,7 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
     if existing is None:
         pass  # none: a new booking below
     elif (existing.get("service"), existing.get("name")) != (service, name):
-        raise vp._err(409, "booking_changed")
+        raise worker_api._problem(409, "booking_changed")
     elif existing.get("pending"):
         return await _resume(ws, cfg, call_id, existing, "create")
     elif confirmed(existing):
@@ -510,7 +511,7 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
         if not isinstance(calendar_id, str) or not calendar_id or calendar_id == "primary":
             raise ValueError("concrete calendar identity required")
         if await _busy(ws, cfg, start, vp._minutes(cfg, service) + int(cfg.get("bufferMin") or 0), calendar_id):
-            raise vp._err(409, "slot_taken")
+            raise worker_api._problem(409, "slot_taken")
     except Exception as exc:
         if getattr(exc, "status_code", None) == 409:
             raise
@@ -551,7 +552,7 @@ async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service
 
 async def _observe(ws: str, row: dict) -> dict:
     if not all(row.get(k) for k in ("bookingId", "calendarId", "eventId", "providerEvent")):
-        raise _vp()._err(409, "booking_binding_unverified")
+        raise worker_api._problem(409, "booking_binding_unverified")
     event = await _request(ws, "GET", f"{_events(row)}/{quote(row['eventId'], safe='')}")
     observed = row["providerEvent"]
     if (
@@ -559,7 +560,7 @@ async def _observe(ws: str, row: dict) -> dict:
         or event.get("status") != "confirmed"
         or any(_instant(event.get(k)) != _instant(observed.get(k)) for k in ("start", "end"))
     ):
-        raise _vp()._err(409, "provider_booking_changed")
+        raise worker_api._problem(409, "provider_booking_changed")
     return event
 
 
@@ -580,7 +581,7 @@ async def _target_events_free(ws: str, row: dict, body: dict, buffer_min: int) -
     for _ in range(20):
         answer = await _request(ws, "GET", f"{_events(row)}?{urlencode(params)}")
         if not isinstance(answer.get("items"), list):
-            raise _vp()._err(503, "provider_availability_unknown")
+            raise worker_api._problem(503, "provider_availability_unknown")
         for event in answer["items"]:
             if (
                 event.get("id") == row["eventId"]
@@ -594,7 +595,7 @@ async def _target_events_free(ws: str, row: dict, body: dict, buffer_min: int) -
         if not answer.get("nextPageToken"):
             return True
         params["pageToken"] = answer["nextPageToken"]
-    raise _vp()._err(503, "provider_availability_unknown")
+    raise worker_api._problem(503, "provider_availability_unknown")
 
 
 def _own(row: dict) -> bool:
@@ -630,7 +631,7 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
     cfg = {**cfg, "timezone": row["timezone"]}
     minutes = int(row["minutes"])
     if new_start not in vp.free_slots(cfg, new_start[:10], [], vp._now(cfg), minutes):
-        raise vp._err(400, "slot_unavailable")
+        raise worker_api._problem(400, "slot_unavailable")
     start = datetime.strptime(new_start, "%Y-%m-%dT%H:%M").replace(tzinfo=vp._tz(cfg))
     end = start + (_instant(event["end"]) - _instant(event["start"]))
     operation_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{row['bookingId']}:{row['generation']}:move:{new_start}").hex
@@ -650,12 +651,12 @@ async def move(ws: str, cfg: dict, call_id: str, call: dict, row: dict, new_star
     except Exception:
         return _result(row, "unavailable", "provider_availability_unknown", action="move")
     if not target_free:
-        raise vp._err(409, "slot_taken")
+        raise worker_api._problem(409, "slot_taken")
     lane = row["sk"][26:]  # a move keeps its person
     cells, table = vp._cells(cfg, new_start, minutes, lane), settings.MESSAGING_TABLE
     # Refuse upfront if either prepare (with its capacity guards) or final transfer would exceed DDB's cap.
     if len(set(row["cells"]) | set(cells)) + len(cells) + 3 > 100:
-        raise vp._err(400, "booking_too_long")
+        raise worker_api._problem(400, "booking_too_long")
     # The target's new cells count against the slot's capacity like a new booking's (the old ones are still held
     # until the move settles). Only the prepare adds cells; settle re-puts the same target cells and fail/cancel
     # only release, so the pending-operation conditions below are unchanged.

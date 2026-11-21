@@ -853,3 +853,14 @@ def test_a_deleted_meeting_rooms_realtime_events_are_acknowledged_and_relay_noth
         assert _post(env["client"], _event("join", 1, "Pat"), path).status_code == 200
     store.assert_not_awaited()
     env["speaker"].assert_not_awaited()
+
+
+@pytest.mark.parametrize("code", ["in_call_recording", "joining_call"])
+def test_in_call_status_on_a_deleted_room_leaves_the_bot_and_starts_no_worker(env, code):
+    env["meta"]["deletedAt"] = "2026-11-01T00:00:00Z"
+    before = dict(env["meta"]["meeting"])
+    assert _post(env["client"], _status(code)).status_code == 200
+    env["bot_leave"].assert_awaited_once_with("bot-1")
+    env["dispatch"].assert_not_awaited()
+    env["wake"].assert_not_called()
+    assert env["meta"]["meeting"] == before

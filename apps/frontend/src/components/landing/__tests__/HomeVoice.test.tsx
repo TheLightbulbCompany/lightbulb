@@ -101,7 +101,7 @@ describe("Phone page voice", () => {
   it("names the three products and pricing in the nav, in order", () => {
     const { container } = render(<Navbar />);
     const links = [...container.querySelectorAll(".nav-links a:not(.nav-mobile-login)")].map((a) => a.textContent);
-    expect(links).toEqual(["Phone", "Meetings", "OS", "Pricing"]);
+    expect(links).toEqual(["Phone", "Meetings", "Spark", "Pricing"]);
     expect(container.textContent).toContain("Set up Lightbulb Phone");
     expect(container.textContent).not.toContain("Set up your assistant");
   });

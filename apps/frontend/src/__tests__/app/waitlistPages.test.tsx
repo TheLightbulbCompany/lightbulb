@@ -16,7 +16,6 @@ import { BANNED } from "@/content/__tests__/bannedCopy";
 
 const pages = [
   { path: "/meetings", Page: MeetingsPage, meta: meetingsMeta, h1: "Leave every meeting with the notes already written." },
-  { path: "/os", Page: OsPage, meta: osMeta, h1: "Your Mac, by voice." },
 ];
 
 describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
@@ -49,11 +48,24 @@ describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
 });
 
 describe("/os", () => {
-  it("offers no download", () => {
+  it("meets Spark and offers the Mac download, with no waitlist form", () => {
     const { container } = render(<OsPage />);
-    for (const a of container.querySelectorAll("a")) {
-      expect(a.getAttribute("href") ?? "").not.toMatch(/download|\.dmg/i);
-    }
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Meet Spark");
+    expect(container.textContent).toContain("One-click voice interface for your Mac.");
+    expect(container.textContent).toContain("For Mac with Apple silicon (M1 or later). Requires macOS 14 or later.");
+    expect(screen.getByRole("link", { name: "Download for Mac" }).getAttribute("href")).toBe("/download/spark");
+    expect(container.querySelector("form")).toBeNull();
+    expect(osMeta.alternates?.canonical).toBe("https://thelightbulb.company/os");
+    expect(String(osMeta.title)).toContain("Spark");
+  });
+
+  it("keeps AI, banned words, prices and dashes out", () => {
+    const { container } = render(<OsPage />);
+    const text = container.textContent ?? "";
+    expect(container.querySelector("h1")?.textContent).not.toMatch(/\bAI\b/);
+    expect(text).not.toMatch(BANNED);
+    expect(text).not.toMatch(/\$\d/);
+    expect(text).not.toMatch(/[—–]/);
   });
 });
 
@@ -68,12 +80,14 @@ describe("/", () => {
     expect([...cards].map((c) => c.querySelector("h2")?.textContent)).toEqual([
       "Lightbulb Phone",
       "Lightbulb Meetings",
-      "Lightbulb OS",
+      "Spark",
     ]);
+    const spark = cards[2];
+    expect(spark.querySelector("p")?.textContent).toBe("One-click voice interface for your Mac.");
+    expect(screen.getByRole("link", { name: "Download for Mac" }).getAttribute("href")).toBe("/os");
     expect(screen.getByRole("link", { name: "Set up Lightbulb Phone" }).getAttribute("href")).toBe("/sign-up");
     expect(screen.getAllByRole("link", { name: "Join the waitlist" }).map((a) => a.getAttribute("href"))).toEqual([
       "/meetings",
-      "/os",
     ]);
     expect(screen.getByRole("link", { name: "See how it works" }).getAttribute("href")).toBe("/phone");
     expect(screen.getByRole("link", { name: "Talk to a founder" }).getAttribute("href")).toBe("/request-setup");

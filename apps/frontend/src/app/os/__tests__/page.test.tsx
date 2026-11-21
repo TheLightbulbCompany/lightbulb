@@ -8,7 +8,6 @@ const s = vi.hoisted(() => ({ query: "" }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(s.query) }));
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
-vi.mock("@/components/requestSetup/RequestSetupForm", () => ({ RequestSetupForm: () => null }));
 
 const INVITE = "Open Spark to apply this invite";
 

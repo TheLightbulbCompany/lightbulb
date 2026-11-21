@@ -22,7 +22,7 @@ export default function HomePage() {
           <h1>The voice AI application company.</h1>
           <p className="lb-sub">
             Lightbulb makes assistants you talk to. Lightbulb Phone answers your business line and books appointments.
-            Lightbulb Meetings joins your Google Meet and keeps the notes. Lightbulb OS is a voice app for the Mac.
+            Lightbulb Meetings joins your Google Meet and keeps the notes. Spark is a voice app for the Mac.
           </p>
           <HubProducts />
         </div>

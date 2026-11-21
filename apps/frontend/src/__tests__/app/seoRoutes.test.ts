@@ -57,7 +57,7 @@ describe("/llms.txt", () => {
   it("names the three products and their pages", async () => {
     const text = await body(llms());
     for (const path of ["/phone", "/meetings", "/os"]) expect(text).toContain(`${SITE_URL}${path})`);
-    expect(text).toContain("Lightbulb OS");
+    expect(text).toContain("Spark");
   });
 });
 

@@ -32,7 +32,7 @@ describe('search metadata', () => {
     expect(HOME_TITLE).toBe('The Voice AI Application Company | Lightbulb');
     expect(HOME_TITLE.length).toBeLessThanOrEqual(60);
     expect(HOME_DESCRIPTION).toBe(
-      'Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Lightbulb OS is a voice app for the Mac.',
+      'Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Spark is a voice app for the Mac.',
     );
     expect(HOME_DESCRIPTION.length).toBeLessThanOrEqual(160);
   });
@@ -100,7 +100,7 @@ describe('root layout default', () => {
   it('is neutral: not the home headline and not the receptionist', () => {
     expect(SITE_TITLE).toBe('Lightbulb');
     expect(SITE_DESCRIPTION).toBe(
-      'Lightbulb makes voice assistants: Lightbulb Phone, Lightbulb Meetings and Lightbulb OS.',
+      'Lightbulb makes voice assistants: Lightbulb Phone, Lightbulb Meetings and Spark.',
     );
     for (const s of [SITE_TITLE, SITE_DESCRIPTION]) {
       expect(s).not.toMatch(/number one/i);

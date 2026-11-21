@@ -90,14 +90,14 @@ describe("RequestSetupForm", () => {
 
     it("a 422 asks to check the email and shows no thanks", async () => {
       fetchMock.mockResolvedValue({ ok: false, status: 422 });
-      render(<RequestSetupForm waitlist="os" />);
+      render(<RequestSetupForm waitlist="meetings" />);
       join();
       expect(await screen.findByRole("alert")).toHaveTextContent("Check your email address and try again.");
       expect(screen.queryByText(/on the list/)).toBeNull();
     });
 
     it("a double click sends one request", async () => {
-      render(<RequestSetupForm waitlist="os" />);
+      render(<RequestSetupForm waitlist="meetings" />);
       join();
       expect(screen.getByRole("button", { name: "Sending…" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Sending…" }));
@@ -106,10 +106,10 @@ describe("RequestSetupForm", () => {
     });
 
     it("the waitlist thanks has no sign-up link", async () => {
-      render(<RequestSetupForm waitlist="os" />);
+      render(<RequestSetupForm waitlist="meetings" />);
       join();
       await screen.findByRole("status");
-      expect(screen.getByRole("status")).toHaveTextContent("Lightbulb OS is ready for you");
+      expect(screen.getByRole("status")).toHaveTextContent("Lightbulb Meetings is ready for you");
       expect(screen.queryByRole("link")).toBeNull();
     });
   });

@@ -6,7 +6,7 @@ import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
-/** The company home's three doors: sign up for Phone, or join a waitlist. */
+/** The company home's three doors: sign up for Phone, join the Meetings waitlist, or get Spark. */
 export function HubProducts() {
   return (
     <>
@@ -45,11 +45,11 @@ export function HubProducts() {
           </div>
         </li>
         <li className="lb-plan lb-hub-card">
-          <h2>Lightbulb OS</h2>
-          <p>A voice app for the Mac. Not out yet.</p>
+          <h2>Spark</h2>
+          <p>One-click voice interface for your Mac.</p>
           <div>
             <Link href="/os" className="lb-btn lb-btn-s lb-btn-xl">
-              Join the waitlist
+              Download for Mac
             </Link>
           </div>
         </li>

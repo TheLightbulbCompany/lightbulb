@@ -16,16 +16,15 @@ from typing import Annotated
 from fastapi import APIRouter
 from pydantic import AwareDatetime, BaseModel, Field
 
-from core.auth import AuthContext
 from core.billing import voice_billing
 from core.dynamodb import utc_now_iso
-from core.repositories import messaging_repo
+from core.engine import api
+from core.engine.contract import LineIn, OpenIn, Principal
+from core.engine.contract import QuestionRef as AnswerRef
 from core.voice import store
-from core.services import messaging
 from core.voice.rooms import _voice_requester
 from core.voice.worker_api import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
-from core.voice.room_lines import QuestionRef, agent_lines, assistant_name, latest_seq
-from routers.voice_meet import answer_said_question
+from core.voice.room_lines import QuestionRef, assistant_name
 from core.voice.phone.calls import transcript_lines
 
 router = APIRouter(dependencies=[_Worker])
@@ -39,13 +38,13 @@ async def _owner(room_id: str, body: OwnerIn) -> tuple[str, str, str | None]:
     """(room, the member speaking, the DM's agent) or 404/403."""
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    meta, members = await asyncio.gather(messaging_repo.get_room(room_id), messaging_repo.list_members(room_id))
-    if not meta or meta.get("ownerId") != body.ownerId or meta.get("kind") != "dm":
+    conv = await api.get_conversation(body.ownerId, room_id, with_members=True)
+    if not conv or conv.kind != "dm":
         raise _problem(404, "room_not_found")
-    member = _voice_requester(members, body.ownerId, body.speakerUserId)
+    member = _voice_requester(conv.members, body.ownerId, body.speakerUserId)
     if member is None:
         raise _problem(403, "not_a_member")
-    return room_id, member, next((m["id"] for m in members if m.get("kind") == "agent"), None)
+    return room_id, member, next((m["id"] for m in conv.members if m.get("kind") == "agent"), None)
 
 
 def _cursor_key(room: str, member: str) -> str:
@@ -61,7 +60,11 @@ async def start(room_id: str, body: OwnerIn) -> dict:
     name, row = await asyncio.gather(
         assistant_name(body.ownerId), store.get_voice_run(body.ownerId, _cursor_key(room, member))
     )
-    after = int(row["spoken"]) if row and row.get("spoken") is not None else await latest_seq(room)
+    after = (
+        int(row["spoken"])
+        if row and row.get("spoken") is not None
+        else (await api.read_lines(body.ownerId, room, None))["after"]
+    )
     return {"assistantName": name, "agentId": agent, "after": after}
 
 
@@ -77,23 +80,20 @@ async def turn(room_id: str, body: TurnIn) -> dict:
     """One spoken line becomes the member's message in the DM (`via: voice`), exactly as a typed one: it wakes the
     Router (admission), which decides it like any other. Keyed on the talk and line: a retry is the same message."""
     room_id, member, _agent = await _owner(room_id, body)
-    key = f"voice-turn:{room_id}:{body.sessionId}:{body.n}"
     # an answer to the question just said is still the DM's line, but wakes nobody: the answer is the input
-    answered = await answer_said_question(body.ownerId, room_id, member, body.answers, body.text, key)
-    msg = await messaging.create_human_message(
-        AuthContext(user_id=member, org_id=body.ownerId),
-        room_id,
-        messaging.CreateMessageRequest(
-            client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+    line = await api.append_line(
+        LineIn(
+            tenant_id=body.ownerId,
+            conversation_id=room_id,
+            principal=Principal(kind="member", id=member),
             text=body.text,
-            reply_to_message_id=None,
-            thread_root_message_id=None,
-        ),
-        via="voice",
-        **({"wake": False} if answered else {}),
+            idempotency_key=f"voice-turn:{room_id}:{body.sessionId}:{body.n}",
+            via="voice",
+            answers=AnswerRef(task_id=body.answers.taskId, qid=body.answers.qid) if body.answers else None,
+        )
     )
-    out = {"messageId": str(msg.message_id)}
-    return {**out, "answered": body.answers.qid} if answered else out
+    out = {"messageId": line.message_id}
+    return {**out, "answered": body.answers.qid} if line.answered else out
 
 
 class EventsIn(OwnerIn):
@@ -108,7 +108,7 @@ async def events(room_id: str, body: EventsIn) -> dict:
     room, member, _agent = await _owner(room_id, body)
     if body.spoken is not None:
         await store.put_voice_run(body.ownerId, _cursor_key(room, member), {"spoken": body.spoken})
-    return await agent_lines(room, body.after)
+    return await api.read_lines(body.ownerId, room, body.after)
 
 
 class UsageSession(BaseModel):
@@ -159,17 +159,16 @@ async def _keep_talk(room_id: str, member: str, body: EndIn) -> dict:
         "dmRoomId": room_id,
     }
     talk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-owner-talk:{room_id}:{body.sessionId}"))
-    name = "You and the assistant"
-    members = [{"kind": "human", "id": member, "displayName": None, "mentionHandle": None, "role": "owner",
-                "listenMode": None}]  # fmt: skip
-    try:
-        await messaging_repo.create_room(
-            owner_id=body.ownerId, room_id=talk_id, client_room_id=f"owner-talk:{room_id}:{body.sessionId}",
-            creator_user_id=member, name=name, kind="call", members=members,
-            req_hash=messaging_repo.request_hash(name, "call", talk_id),
-            extra={"call": call, "hidden": True, "ownerUserId": member},
-        )  # fmt: skip
-    except messaging_repo.MessagingRepoError:
-        if await messaging_repo.get_room(talk_id) is None:  # a retry keeps the row it made
-            raise
+    await api.open_conversation(  # a retry gets the record the first end kept
+        OpenIn(
+            tenant_id=body.ownerId,
+            conversation_id=talk_id,
+            client_key=f"owner-talk:{room_id}:{body.sessionId}",
+            kind="call",
+            name="You and the assistant",
+            creator=Principal(kind="member", id=member),
+            hidden=True,
+            annotations={"call": call, "ownerUserId": member},
+        )
+    )
     return {"kept": True, "roomId": talk_id}

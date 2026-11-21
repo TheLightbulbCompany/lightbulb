@@ -604,9 +604,9 @@ async def test_line_problem_counts_a_pending_move_as_unconfirmed(client, google,
     o = await row(old)
     titles, real = [], vp.start_work
 
-    async def spy(call_id, body):
+    async def spy(call_id, body, ws):
         titles.append(body.title)
-        return await real(call_id, body)
+        return await real(call_id, body, ws)
 
     monkeypatch.setattr(vp, "start_work", spy)
     google.failures[("PATCH", f"/calendars/{CALENDAR}/events/{o['eventId']}")] = (500, {})
@@ -618,10 +618,10 @@ async def test_concurrent_failures_raise_one_line_problem(client, google, monkey
     call, _ = await begin(client)
     titles, real = [], vp.start_work
 
-    async def spy(call_id, body):
+    async def spy(call_id, body, ws):
         titles.append(body.title)
         await asyncio.sleep(0)
-        return await real(call_id, body)
+        return await real(call_id, body, ws)
 
     monkeypatch.setattr(vp, "start_work", spy)
     cfg = await vp.agent_config("org_1")

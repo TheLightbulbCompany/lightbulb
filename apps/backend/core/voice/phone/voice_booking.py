@@ -26,7 +26,7 @@ import httpx
 
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact
-from core.repositories import tasks_repo
+from core.engine import api
 from core.services.credentials import access_token
 
 logger = logging.getLogger(__name__)
@@ -100,7 +100,7 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
     vp, pk, table, now_s = _vp(), owner_pk(ws), messaging_table(), int(time.time())
     pointer = await get_item(table, pk, _PROBLEM_SK)
     if pointer and pointer.get("taskId"):
-        if (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:
+        if (await api.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:
             return
     elif pointer and int(pointer.get("claimUntil", 0)) > now_s:
         return  # another failure is raising it now
@@ -125,10 +125,9 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
         f"{title}. External booking outcomes may be unknown; preserve holds and verify the provider before changing them. Ask the owner "
         "to check Google in Settings and reconcile the recorded booking operation. Do not assume sign-in expired."
     )
-    # start_work stays in the router: its task starts through routers.internal_automations.
     from routers import voice_phone
 
-    out = await voice_phone.start_work(call_id, voice_phone.WorkIn(title=title, brief=brief))
+    out = await voice_phone.start_work(call_id, voice_phone.WorkIn(title=title, brief=brief), ws)
     await run_in_thread(table.put_item, Item={"pk": pk, "sk": _PROBLEM_SK, "taskId": out["taskId"]})
 
 

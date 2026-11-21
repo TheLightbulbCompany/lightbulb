@@ -17,6 +17,8 @@ from moto import mock_aws
 
 from core import dynamodb, tasks_schema as ts
 from core.auth import AuthContext
+from core.engine import api as engine
+from core.engine.contract import EngineError, OpenIn, Principal as Who, StartIn as TaskStart
 from core.repositories import messaging_repo, questions_repo, tasks_repo
 from core.services import admission, messaging, questions, task_conversation, tasks_access
 from core.temporal import client as temporal_client
@@ -168,8 +170,8 @@ async def test_caller_turn_ids_base(call):
     the same message and the same trigger."""
     await _call_room()
     text = "Open Sunday?"
-    out = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=0, text=text))
-    again = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=0, text=text))
+    out = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=0, text=text), WS)
+    again = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=0, text=text), WS)
     assert out == again == {"messageId": out["messageId"], "triggerId": f"voice:{CALL}:turn-0"}
     msg = await messaging_repo.get_message_by_id(CALL, out["messageId"])
     assert (msg["messageSeq"], msg["silent"], msg["via"], msg["clientMessageId"], msg["dispatchTargets"]) == (
@@ -201,7 +203,7 @@ async def _open_thread_world(call, monkeypatch, blocked=None):
 async def test_caller_turn_open_thread_base(call, monkeypatch):
     """The call's open caller thread takes the line: the trigger is written routed to it and the task is signalled."""
     await _open_thread_world(call, monkeypatch)
-    out = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=1, text="The first time works."))
+    out = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=1, text="The first time works."), WS)
     assert out == {"messageId": out["messageId"], "triggerId": f"voice:{CALL}:turn-1", "taskId": TASK}
     trig = await tasks_repo.get_trigger(WS, out["triggerId"])
     assert trig["routedTo"] == {"taskId": TASK}
@@ -216,7 +218,7 @@ async def test_caller_turn_open_thread_base(call, monkeypatch):
 async def test_caller_turn_gate_blocked_base(call, monkeypatch):
     """The open thread's gate refuses: its line is posted in the call room in reply, and no task is signalled."""
     await _open_thread_world(call, monkeypatch, blocked="Paused for now.")
-    out = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=1, text="Hello?"))
+    out = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=1, text="Hello?"), WS)
     assert out == {"messageId": out["messageId"], "triggerId": f"voice:{CALL}:turn-1"}
     task_conversation.post_as_lightbulb.assert_awaited_once_with(
         WS,
@@ -258,7 +260,7 @@ async def test_contact_line_ids_identical(call, monkeypatch):
 
     await _call_room()
     text = "Open Sunday?"
-    before = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=0, text=text))
+    before = await call.vp.caller_turn(CALL, call.vp.TurnIn(n=0, text=text), WS)
     out = await api.append_line(_contact_line(0, text))
     assert (out.message_id, out.seq, out.trigger_id, out.task_id) == (
         before["messageId"], 1, f"voice:{CALL}:turn-0", None,
@@ -881,3 +883,181 @@ async def test_annotate_rejects_fields_the_store_would_drop(tables, field):
         await api.annotate(_annotate(set={field: "x"}))
     assert (refused.value.status, refused.value.detail) == (400, {"code": "not_product_field", "fields": [field]})
     assert field not in await messaging_repo.get_room(CALL)
+
+
+# --- conversations: products read and open them, the tenant's only (Task 6) ------------------------------------
+
+OTHER = "org_2"
+
+
+@pytest.fixture
+def front(monkeypatch):
+    monkeypatch.setattr(task_conversation, "_front_agent", AsyncMock(return_value=_agent()))
+
+
+async def test_get_conversation_reads_the_record_and_its_members(tables):
+    await _room(CALL, "call", extra={"call": {"status": "live"}, "callToken": "t", "hidden": True})
+    conv = await engine.get_conversation(WS, CALL, with_members=True)
+    assert (conv.tenant_id, conv.kind, conv.revision) == (WS, "call", 1)
+    assert conv.annotations == {"call": {"status": "live"}, "callToken": "t"}  # product fields only, never `hidden`
+    assert {m["id"] for m in conv.members} == {OWNER, FRONT}
+    assert (await engine.get_conversation(WS, CALL)).members == []  # members only when asked
+
+
+async def test_get_conversation_refuses_another_tenants_conversation(tables):
+    await _room(CALL, "call")
+    assert await engine.get_conversation(OTHER, CALL, with_members=True) is None
+    assert await engine.get_conversation(WS, DM) is None  # missing
+
+
+async def test_find_conversation_names_the_tenant_and_never_a_deleted_one(tables):
+    await _room(CALL, "call", extra={"callToken": "t"})
+    conv = await engine.find_conversation(CALL)
+    assert (conv.tenant_id, conv.annotations["callToken"]) == (WS, "t")
+    tables.update_item(
+        Key={"pk": messaging_repo.room_pk(CALL), "sk": "META"},
+        UpdateExpression="SET deletedAt = :d",
+        ExpressionAttributeValues={":d": "2026-11-21T00:00:00Z"},
+    )
+    assert await engine.find_conversation(CALL) is None
+    assert await engine.find_conversation(DM) is None
+
+
+async def test_list_conversations_is_the_tenants_newest_of_a_kind(tables):
+    await _room(CALL, "call", extra={"call": {"n": 1}})
+    await _room(DM, "dm")
+    convs = await engine.list_conversations(WS, ["call"], 10)
+    assert [(c.conversation_id, c.annotations) for c in convs] == [(CALL, {"call": {"n": 1}})]
+    assert (
+        await engine.list_conversations(WS, ["call", "dm"], 1)
+        and len(await engine.list_conversations(WS, ["dm"], 5)) == 1
+    )
+
+
+async def test_list_conversations_refuses_another_tenants_conversation(tables):
+    await _room(CALL, "call")
+    assert await engine.list_conversations(OTHER, ["call"], 10) == []
+
+
+async def test_open_conversation_is_idempotent(tables, front):
+    req = OpenIn(
+        tenant_id=WS,
+        conversation_id=CALL,
+        client_key="call:room-1",
+        kind="call",
+        name="Call · Sam",
+        creator=Who(kind="member", id=OWNER, display_name="Studio"),
+        hidden=True,
+        seat_front_agent=True,
+        annotations={"call": {"status": "live"}, "callToken": "t1"},
+    )
+    first = await engine.open_conversation(req)
+    again = await engine.open_conversation(req.model_copy(update={"name": "Call · Samantha", "annotations": {}}))
+    assert first.front_agent_id == FRONT and again.conversation_id == first.conversation_id == CALL
+    assert again.annotations["callToken"] == "t1"  # the record the first open made
+    rows = [i for i in tables.scan()["Items"] if i["pk"] == messaging_repo.owner_pk(WS) and i["sk"].startswith("ROOM#")]
+    assert len(rows) == 1  # one conversation
+    meta = await messaging_repo.get_room(CALL)
+    assert meta["hidden"] is True and meta["frontAgentId"] == FRONT
+    assert {m["id"] for m in await messaging_repo.list_members(CALL)} == {OWNER, FRONT}
+
+
+async def test_open_conversation_hashes_tenant_kind_and_client_key(tables, front):
+    req = OpenIn(
+        tenant_id=WS,
+        conversation_id=CALL,
+        client_key="call:room-1",
+        kind="call",
+        creator=Who(kind="member", id=OWNER),
+    )
+    await engine.open_conversation(req)
+    receipt = await messaging_repo._get(
+        messaging_repo.room_pk(CALL), messaging_repo.human_idemp_sk(OWNER, "call:room-1")
+    )
+    assert receipt["requestHash"] == messaging_repo.request_hash(WS, "call", "call:room-1")
+
+
+async def test_open_conversation_refuses_another_tenants_conversation(tables, front):
+    await _room(CALL, "call")  # the id is WS's
+    req = OpenIn(
+        tenant_id=OTHER, conversation_id=CALL, client_key="c:x", kind="call", creator=Who(kind="member", id=OWNER)
+    )
+    with pytest.raises(messaging_repo.MessagingRepoError):
+        await engine.open_conversation(req)
+
+
+async def test_open_conversation_without_a_front_agent_still_opens(tables, monkeypatch):
+    monkeypatch.setattr(task_conversation, "_front_agent", AsyncMock(side_effect=task_conversation.NoFrontAgent("x")))
+    req = OpenIn(
+        tenant_id=WS, conversation_id=CALL, client_key="c:1", kind="call", creator=Who(kind="member", id=OWNER),
+        seat_front_agent=True,
+    )  # fmt: skip
+    assert (await engine.open_conversation(req)).front_agent_id is None
+
+
+async def test_open_conversation_refuses_engine_fields(tables):
+    req = OpenIn(
+        tenant_id=WS, conversation_id=CALL, client_key="c:1", kind="call", creator=Who(kind="member", id=OWNER),
+        annotations={"frontAgentId": "a"},
+    )  # fmt: skip
+    with pytest.raises(EngineError) as e:
+        await engine.open_conversation(req)
+    assert e.value.code == "not_product_field"
+
+
+async def test_read_lines_says_the_agent_lines_and_the_cursor(tables):
+    await _room(CALL, "call")
+    first = await _agent_line(CALL, "Hello.", "IDEMP#AGENT#k1")
+    assert await engine.read_lines(WS, CALL, None) == {"messages": [], "after": int(first["messageSeq"])}
+    out = await engine.read_lines(WS, CALL, 0)
+    assert [m["text"] for m in out["messages"]] == ["Hello."] and out["after"] == int(first["messageSeq"])
+
+
+async def test_read_lines_refuses_another_tenants_conversation(tables):
+    await _room(CALL, "call")
+    with pytest.raises(EngineError) as e:
+        await engine.read_lines(OTHER, CALL, 0)
+    assert e.value.status == 404
+
+
+async def test_read_history_is_the_newest_messages_oldest_first(tables):
+    await _room(CALL, "call")
+    for i in range(3):
+        await _agent_line(CALL, f"line {i}", f"IDEMP#AGENT#h{i}")
+    assert [r["text"] for r in await engine.read_history(WS, CALL, 2)] == ["line 1", "line 2"]
+
+
+async def test_read_history_refuses_another_tenants_conversation(tables):
+    await _room(CALL, "call")
+    with pytest.raises(EngineError):
+        await engine.read_history(OTHER, CALL, 50)
+
+
+async def test_get_task_reads_only_the_tenants_task(tables):
+    tasks_repo._table().put_item(Item={"pk": ts.ws_pk(WS), "sk": ts.task_sk("t-1"), "taskId": "t-1", "status": "idle"})
+    assert (await engine.get_task(WS, "t-1"))["status"] == "idle"
+    assert await engine.get_task(OTHER, "t-1") is None
+
+
+async def test_get_front_agent_is_none_when_unavailable(monkeypatch):
+    monkeypatch.setattr(task_conversation, "front_agent_id", AsyncMock(return_value=FRONT))
+    assert await engine.get_front_agent(WS) == FRONT
+    monkeypatch.setattr(task_conversation, "front_agent_id", AsyncMock(side_effect=task_conversation.NoFrontAgent("x")))
+    assert await engine.get_front_agent(WS) is None
+
+
+async def test_start_task_names_the_opening_questions_qid(tables, monkeypatch):
+    from core.services import admission
+
+    await _room(CALL, "call")
+    enq = AsyncMock(return_value=True)
+    monkeypatch.setattr(admission, "enqueue_trigger", enq)
+    req = TaskStart(
+        tenant_id=WS, principal=Who(kind="member", id=OWNER), conversation_id=CALL, trigger_id="voice:c:r",
+        source="voice", title="Answer", brief="b", ask={"kind": "question", "title": "Answer"},
+    )  # fmt: skip
+    out = await engine.start_task(req)
+    assert out.qid == questions.qid_for("voice:c:r:ask") == enq.await_args.args[1].ref["ask"]["qid"]
+    assert (await engine.start_task(req)).qid == out.qid  # a retried start opens the same Question
+    given = await engine.start_task(req.model_copy(update={"ask": {**req.ask, "qid": "q-own"}}))
+    assert given.qid == "q-own"

@@ -154,6 +154,38 @@ class EventOut(Model):
     created: bool
 
 
+class OpenIn(Model):
+    tenant_id: str
+    #: the conversation's id, chosen by the product: a `call` needs one, a `dm` is found or created by the engine
+    conversation_id: str | None = None
+    #: the open's idempotency key: the same key is the same conversation
+    client_key: str
+    kind: Literal["call", "dm"]
+    name: str | None = None
+    #: the person who opens it, its one human member (the owner). A `dm` is the creator's with the front agent.
+    creator: Principal
+    hidden: bool = False
+    #: seat the tenant's front agent. Without one the conversation still opens (`front_agent_id` None), except a
+    #: `dm`, which is with the front agent and is refused (`no_front_agent`)
+    seat_front_agent: bool = False
+    #: product fields of the record (`PRODUCT_META_FIELDS`), written with it
+    annotations: dict[str, Any] = {}
+
+
+class ConversationOut(Model):
+    conversation_id: str
+    tenant_id: str
+    kind: str
+    revision: int = 0
+    created_at: str | None = None
+    #: the front agent the conversation seats, when it pins one
+    front_agent_id: str | None = None
+    #: only when asked for (`with_members`)
+    members: list[dict] = []
+    #: the product fields on the record (`PRODUCT_META_FIELDS`)
+    annotations: dict[str, Any] = {}
+
+
 class AnnotateIn(Model):
     tenant_id: str
     conversation_id: str

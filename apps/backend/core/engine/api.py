@@ -30,11 +30,13 @@ from core.engine.contract import (
     ActIn,
     AnnotateIn,
     AnswerIn,
+    ConversationOut,
     EngineError,
     EventIn,
     EventOut,
     LineIn,
     LineOut,
+    OpenIn,
     Principal,
     QuestionRef,
     StartIn,
@@ -75,6 +77,127 @@ async def _owned(tenant_id: str, conversation_id: str) -> dict:
     if not meta or meta.get("ownerId") != tenant_id or meta.get("deletedAt"):
         raise _not_found()
     return meta
+
+
+# --- conversations ------------------------------------------------------------------------------------------------
+
+
+def _conversation(conversation_id: str, meta: dict, members: list[dict] | None = None) -> ConversationOut:
+    return ConversationOut(
+        conversation_id=conversation_id,
+        tenant_id=meta["ownerId"],
+        kind=meta.get("kind") or "",
+        revision=int(meta.get("revision", 0)),
+        created_at=meta.get("createdAt"),
+        front_agent_id=meta.get("frontAgentId"),
+        members=members or [],
+        annotations={k: meta[k] for k in PRODUCT_META_FIELDS if k in meta},
+    )
+
+
+async def get_conversation(
+    tenant_id: str, conversation_id: str, *, with_members: bool = False
+) -> ConversationOut | None:
+    """The tenant's conversation (its members too, `with_members`), or None: missing, deleted or another tenant's."""
+    try:
+        meta, members = await asyncio.gather(
+            _owned(tenant_id, conversation_id),
+            messaging_repo.list_members(conversation_id) if with_members else asyncio.sleep(0),
+        )
+    except EngineError:
+        return None
+    return _conversation(conversation_id, meta, members)
+
+
+async def get_front_agent(tenant_id: str) -> str | None:
+    """The agent that speaks for the tenant as Lightbulb, or None when its chosen one (or every one) is unavailable."""
+    try:
+        return await task_conversation.front_agent_id(tenant_id)
+    except task_conversation.NoFrontAgent:
+        return None
+
+
+async def find_conversation(conversation_id: str) -> ConversationOut | None:
+    """The one read keyed without a tenant: a conversation by id alone, or None (missing or deleted). Only for a
+    product's entry point that is handed nothing but the id and authenticates it with a credential the product stored
+    on the conversation (a call's token); the tenant it returns is passed to every later operation."""
+    meta = await messaging_repo.get_room(conversation_id)
+    return _conversation(conversation_id, meta) if meta and not meta.get("deletedAt") else None
+
+
+async def list_conversations(tenant_id: str, kinds: list[str], limit: int) -> list[ConversationOut]:
+    """The tenant's `limit` newest conversations of `kinds`, newest first (by when they opened)."""
+    rows = [r for r in await messaging_repo.list_owner_rooms(tenant_id) if r.get("kind") in kinds]
+    rows = sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)[:limit]
+    metas = await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows))
+    return [
+        _conversation(r["roomId"], m)
+        for r, m in zip(rows, metas)
+        if m and m.get("ownerId") == tenant_id and not m.get("deletedAt")
+    ]
+
+
+async def open_conversation(req: OpenIn) -> ConversationOut:
+    """Open a conversation, or get the one `client_key` already opened (a retry). A `call`: the creator as its owner
+    member, the front agent seated when asked and there is one. A `dm`: the creator's with the front agent, found or
+    created as the app opens it. The request hash is (tenant, kind, client key)."""
+    if fields := sorted(set(req.annotations) - PRODUCT_META_FIELDS):
+        raise _problem(400, "not_product_field", fields=fields)
+    if req.kind == "dm":
+        return await _open_dm(req)
+    if not req.conversation_id:
+        raise _problem(400, "invalid_open", missing=["conversationId"])
+    ws = req.tenant_id
+    members = [{"kind": "human", "id": req.creator.id, "displayName": req.creator.display_name,
+                "mentionHandle": None, "role": "owner", "listenMode": None}]  # fmt: skip
+    front = None
+    if req.seat_front_agent:
+        try:
+            front = await task_conversation._front_agent(ws)
+            members.append(front)
+        except Exception:  # noqa: BLE001 -- no front agent yet: it opens without one (front_agent_id None)
+            logger.info("conversation %s opened without a front agent ws=%s", req.conversation_id, ws, exc_info=True)
+    try:
+        meta = await messaging_repo.create_room(
+            owner_id=ws,
+            room_id=req.conversation_id,
+            client_room_id=req.client_key,
+            creator_user_id=req.creator.id,
+            name=req.name,
+            kind=req.kind,
+            members=members,
+            req_hash=messaging_repo.request_hash(ws, req.kind, req.client_key),
+            extra={
+                **req.annotations,
+                **({"hidden": True} if req.hidden else {}),
+                **({"frontAgentId": front["id"]} if front else {}),
+            },
+        )
+    except messaging_repo.MessagingRepoError:
+        meta = await messaging_repo.get_room(req.conversation_id)  # a replay keeps the conversation it opened
+        if not meta or meta.get("ownerId") != ws:
+            raise
+    return _conversation(req.conversation_id, meta)
+
+
+async def _open_dm(req: OpenIn) -> ConversationOut:
+    ws, member = req.tenant_id, req.creator.id
+    try:
+        front = await task_conversation._front_agent(ws)
+        room = await messaging.create_room(
+            AuthContext(user_id=member, org_id=ws),
+            messaging.CreateRoomRequest(
+                client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{req.client_key}|{front['id']}"),
+                name=None,
+                kind="dm",
+                members=[messaging.CreateRoomMember(kind="agent", id=front["id"], role="member", listen_mode="active")],
+            ),
+        )
+    except task_conversation.NoFrontAgent as e:
+        raise _problem(409, "no_front_agent") from e
+    except messaging.ApiProblem as e:  # a member no longer in the workspace
+        raise _problem(e.status_code, e.code) from e
+    return _conversation(str(room.room_id), await _owned(ws, str(room.room_id)))
 
 
 # --- annotate -------------------------------------------------------------------------------------------------------
@@ -268,6 +391,8 @@ async def start_task(req: StartIn) -> StartOut:
         lane = ts.router_lane_key(requester) if meta.get("kind") == "dm" else "shared"
     trigger_id = req.trigger_id
     task_id = ts.router_task_id(trigger_id, 0, 0)
+    # the opening Question's id: the product's, or one the trigger names, so a retried start opens it once
+    ask = {**req.ask, "qid": req.ask.get("qid") or questions.qid_for(f"{trigger_id}:ask")} if req.ask else None
     start = ts.StartTask(
         kind="start_task",
         trigger_ids=[trigger_id],
@@ -295,11 +420,11 @@ async def start_task(req: StartIn) -> StartOut:
             "start": start.model_dump(by_alias=True),
             **({"origin": req.origin} if req.origin else {}),
             **({"confirmAll": True} if req.confirm_all else {}),  # every effect of the task gets a card
-            **({"ask": req.ask} if req.ask else {}),
+            **({"ask": ask} if ask else {}),
         },
     )
     created = await admission.enqueue_trigger(req.tenant_id, trigger, room_id=req.conversation_id)
-    return StartOut(task_id=task_id, trigger_id=trigger_id, created=created, qid=(req.ask or {}).get("qid"))
+    return StartOut(task_id=task_id, trigger_id=trigger_id, created=created, qid=(ask or {}).get("qid"))
 
 
 async def submit_event(req: EventIn) -> EventOut:
@@ -330,6 +455,15 @@ async def submit_event(req: EventIn) -> EventOut:
 
 
 # --- voice lines ---------------------------------------------------------------------------------------------------
+
+
+async def read_lines(tenant_id: str, conversation_id: str, after: int | None) -> dict:
+    """The agent lines a voice says in the conversation after seq `after`, and the next cursor (`agent_lines`). With
+    `after` None, no lines: only the first cursor, the newest seq, so a voice says only what comes after it."""
+    await _owned(tenant_id, conversation_id)
+    if after is None:
+        return {"messages": [], "after": await latest_seq(conversation_id)}
+    return await agent_lines(conversation_id, after)
 
 
 async def latest_seq(room_id: str) -> int:
@@ -373,6 +507,20 @@ async def agent_lines(room_id: str, after: int) -> dict:
                          **({"question": question} if question else {}),
                          **{k: r[k] for k in ("inReplyTo", "action", "voiceDelivery") if r.get(k)}})  # fmt: skip
     return {"messages": said, "after": int(rows[-1]["messageSeq"]) if rows else after}
+
+
+async def read_history(tenant_id: str, conversation_id: str, limit: int) -> list[dict]:
+    """The conversation's `limit` newest messages, oldest first (the stored rows)."""
+    await _owned(tenant_id, conversation_id)
+    return await messaging_repo.list_messages_before(conversation_id, 10**19, limit)
+
+
+# --- tasks ---------------------------------------------------------------------------------------------------------
+
+
+async def get_task(tenant_id: str, task_id: str) -> dict | None:
+    """The tenant's task, or None (tasks are keyed by tenant: another tenant's reads as missing)."""
+    return await tasks_repo.get_task(tenant_id, task_id)
 
 
 # --- answer --------------------------------------------------------------------------------------------------------

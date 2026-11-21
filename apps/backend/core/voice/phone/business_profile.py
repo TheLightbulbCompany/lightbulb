@@ -52,12 +52,12 @@ async def facts_text(ws: str, cfg: dict | None = None, *, max_chars: int | None 
     not facts). As on the phone (voice_phone.start_call), the facts are left out when the Agent page's "answer
     questions" is off or the line is paused. The explicit facts tool reads the complete saved facts;
     only the caller profile requests an excerpt."""
-    from core.repositories import messaging_repo
     from core.services import clerk_admin
+    from core.voice import store
     from core.voice.phone import calls as vp
 
     if cfg is None:
-        if not await messaging_repo.get_voice_agent(ws):
+        if not await store.get_voice_agent(ws):
             return ""
         cfg = await vp.agent_config(ws)
     head = f"Business: {await _org_name(ws, clerk_admin) or 'not named'}. Time zone: {vp._tz(cfg).key}."
@@ -125,13 +125,13 @@ async def _callers_bookings(ws: str, caller: str, now: datetime) -> str:
 
 
 async def _build(ws: str, caller: str | None) -> str:
-    from core.repositories import messaging_repo
+    from core.voice import store
     from core.voice.phone import calls as vp
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TIMEOUT_S
     async with asyncio.timeout_at(deadline):
-        if not await messaging_repo.get_voice_agent(ws):
+        if not await store.get_voice_agent(ws):
             return ""  # no saved Agent page: nothing is known, and the phone's defaults are not facts
         cfg = await vp.agent_config(ws)
     now, minutes = vp._now(cfg), vp._minutes(cfg, "")
@@ -206,15 +206,15 @@ async def business_profile(ws: str, caller: str | None = None) -> str:
     return text
 
 
-async def caller_of(trigger: dict | None) -> str | None:
+async def caller_of(ws: str, trigger: dict | None) -> str | None:
     """The phone caller's number behind a `phone_contact` trigger (the call record start_call wrote) when the carrier
     attested it, else None."""
     ref = (trigger or {}).get("ref") or {}
     if ref.get("origin") != "phone_contact" or not ref.get("callId"):
         return None
-    from core.repositories import messaging_repo
+    from core.engine import api
 
-    meta = await messaging_repo.get_room(ref["callId"]) or {}
-    call = meta.get("call") or {}
+    conv = await api.get_conversation(ws, ref["callId"])
+    call = (conv.annotations.get("call") if conv else None) or {}
     # Only an A-attested number lists "This caller's upcoming bookings": a spoofed one would read the victim's.
-    return call.get("caller") or None if meta.get("kind") == "call" and call.get("callerVerified") is True else None
+    return call.get("caller") or None if conv and conv.kind == "call" and call.get("callerVerified") is True else None

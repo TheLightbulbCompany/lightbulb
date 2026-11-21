@@ -68,8 +68,8 @@ async def test_sweep_reports_open_windows():
 async def test_phone_sweep_reads_every_page_of_the_open_call_index():
     from unittest.mock import MagicMock
 
-    pages = [{"Items": [{"pk": "p", "sk": "a", "startedAtEpoch": 0}], "LastEvaluatedKey": {"k": 1}},
-             {"Items": [{"pk": "p", "sk": "b", "startedAtEpoch": 0}]}]  # fmt: skip
+    pages = [{"Items": [{"pk": "p", "sk": "a", "ownerId": "org_1", "startedAtEpoch": 0}], "LastEvaluatedKey": {"k": 1}},
+             {"Items": [{"pk": "p", "sk": "b", "ownerId": "org_1", "startedAtEpoch": 0}]}]  # fmt: skip
     table = MagicMock()
     table.query.side_effect = pages
     from routers import voice_phone

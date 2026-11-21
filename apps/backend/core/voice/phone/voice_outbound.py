@@ -19,7 +19,6 @@ from livekit import api
 
 from core.config import settings
 from core.dynamodb import get_item, messaging_table, utc_now_iso
-from core.repositories import messaging_repo
 from core.voice import store
 from core.voice import livekit_huddles
 
@@ -51,7 +50,7 @@ async def forward_check(ws: str, cfg: dict) -> dict:
         return {"ok": False, "reason": "check_in_progress"}
     # Written before the dial so the call coming back always finds it. A failed dial leaves it (and the lock), so a
     # retry waits out the window too.
-    await messaging_repo.put_voice_agent(
+    await store.put_voice_agent(
         ws, {**cfg, "forwardingCheck": {"startedAt": utc_now_iso(), "callId": call_id}}, "voice"
     )
     try:
@@ -65,11 +64,11 @@ async def forward_check(ws: str, cfg: dict) -> dict:
         logger.warning("forward check dial failed ws=%s", ws, exc_info=True)
         return {"ok": False, "reason": "dial_failed"}
     # The dial started: only now does the old tick go (unless this check already came back and set a new one).
-    now = await messaging_repo.get_voice_agent(ws) or {}
+    now = await store.get_voice_agent(ws) or {}
     if (now.get("forwardingCheck") or {}).get("callId") == call_id:
         for k in ("forwardingOk", "forwardingOkAt"):
             now.pop(k, None)
-        await messaging_repo.put_voice_agent(ws, now, "voice")
+        await store.put_voice_agent(ws, now, "voice")
     return {"ok": True}
 
 

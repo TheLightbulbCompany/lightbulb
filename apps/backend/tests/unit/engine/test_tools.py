@@ -8,7 +8,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 
-from core.repositories import tasks_repo as repo
+from core.repositories import messaging_repo, tasks_repo as repo
 from routers import runtime_internal as ri
 
 from ..super_agent.orchestration.test_activities_task import WS, _task, world  # noqa: F401
@@ -52,7 +52,7 @@ def _json(r):
 async def test_front_desk_route_bodies(api, monkeypatch):
     from routers import voice_phone as vp
 
-    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
     monkeypatch.setattr(vp, "book", AsyncMock(return_value={"booked": True, "start": "2026-11-14T14:00"}))
     run = await _caller_run(monkeypatch)
     body = {**run, "action": "book", "start": "2026-11-14T14:00", "service": "Cut", "name": "Ana"}
@@ -65,7 +65,7 @@ async def test_front_desk_route_bodies(api, monkeypatch):
         422,
         {"detail": "invalid_arguments"},
     )
-    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": "org_x"}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": "org_x"}))
     assert _json(await api.post(url, json=body, headers=H)) == (403, {"detail": "not_a_caller_thread"})
     member = await _task()
     mref = await _running(member)
@@ -95,7 +95,7 @@ async def test_transfer_call_route_bodies(api, monkeypatch):
     from routers import voice_phone as vp
 
     rooms = {CALL: {"kind": "call", "ownerId": WS, "call": {}}}
-    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
     monkeypatch.setattr(vp, "agent_config", AsyncMock(return_value={}))
     state = {"line": "live", "to": "+14155550199"}
     monkeypatch.setattr(vp, "_line_state", lambda cfg, caller: state["line"])

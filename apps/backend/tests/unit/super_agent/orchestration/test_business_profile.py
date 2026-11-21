@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.repositories import billing_repo, messaging_repo
+from core.repositories import billing_repo
+from core.voice import store
 from core.voice.phone import business_profile as bp
 from core.services import clerk_admin
 from core.voice.phone import voice_booking
@@ -28,7 +29,7 @@ _real_busy_across = voice_booking.busy_across
 def sources(monkeypatch):
     bp._cache.clear()
     get = AsyncMock(return_value=CFG)
-    monkeypatch.setattr(messaging_repo, "get_voice_agent", get)
+    monkeypatch.setattr(store, "get_voice_agent", get)
     monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Glow Nails"}))
     monkeypatch.setattr(vp, "_taken", AsyncMock(return_value=[]))
@@ -89,7 +90,7 @@ async def test_the_profile_never_holds_the_turn_past_its_bound(sources, monkeypa
         await asyncio.sleep(5)
 
     monkeypatch.setattr(bp, "TIMEOUT_S", 0.05)
-    monkeypatch.setattr(messaging_repo, "get_voice_agent", slow)
+    monkeypatch.setattr(store, "get_voice_agent", slow)
     assert await bp.business_profile("org_x") == ""
 
 

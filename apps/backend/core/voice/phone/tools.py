@@ -24,47 +24,51 @@ async def front_desk(call: ToolCall) -> dict:
 
     owner_id, body, trig = call.tenant_id, SimpleNamespace(**call.args), (call.triggers or [None])[0]
     call_id = ((trig or {}).get("ref") or {}).get("callId")
-    meta = await vp.messaging_repo.get_room(call_id) if call_id else None
-    if (meta or {}).get("kind") != "call" or meta.get("ownerId") != owner_id:
+    conv = await api.get_conversation(owner_id, call_id) if call_id else None
+    if not conv or conv.kind != "call":
         raise HTTPException(status_code=403, detail="not_a_caller_thread")
     try:
         if body.action == "availability":
-            return await vp.availability(call_id, vp.DateIn(date=body.date, service=body.service))
+            return await vp.availability(call_id, vp.DateIn(date=body.date, service=body.service), owner_id)
         if body.action == "my_bookings":
-            return await vp.my_bookings(call_id)
+            return await vp.my_bookings(call_id, owner_id)
         if body.action == "waitlist":
             # The waitlist has no owner screen (founder 10 Nov: hidden), so the ask is also a message: the owner
             # sees it in Needs you, and the caller is told what was recorded, never a spot nobody sees.
             try:
                 await vp.join_waitlist(
-                    call_id, vp.WaitlistIn(date=body.date, service=body.service, name=body.name, note=body.note)
+                    call_id,
+                    vp.WaitlistIn(date=body.date, service=body.service, name=body.name, note=body.note),
+                    owner_id,
                 )
             except (HTTPException, ValidationError):
                 pass  # off on the Agent page, a bad or past date, no caller number: the message below still goes
             want = " ".join(x for x in (body.service, body.date, body.note) if x)
             text = f"Wants a waitlist spot{': ' + want if want else ''}"[:500]
-            await vp.take_message(call_id, vp.MessageIn(name=body.name, text=text))
+            await vp.take_message(call_id, vp.MessageIn(name=body.name, text=text), owner_id)
             return {
                 "messageTaken": True,
                 "say": "A message was taken for the owner, who will call back about a "
                 "spot. Nobody is on a waitlist yet: do not promise one.",
             }
         if body.action == "message":
-            if not await vp.callers_own_words(call_id, body.text):
+            if not await vp.callers_own_words(owner_id, call_id, body.text):
                 return {
                     "taken": False,
                     "say": "Not taken: a message is what the caller asked to pass on to the owner, in their own "
                     "words. Answer the caller in your reply; take a message only when they ask to leave one.",
                 }
             return await vp.take_message(
-                call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number)
+                call_id, vp.MessageIn(name=body.name, text=body.text, callbackNumber=body.callback_number), owner_id
             )
         try:
             if body.action == "book":
-                return await vp.book(call_id, vp.BookIn(start=body.start, service=body.service, name=body.name))
+                return await vp.book(
+                    call_id, vp.BookIn(start=body.start, service=body.service, name=body.name), owner_id
+                )
             new = body.new_start if body.action == "move" else None
             return await vp.change_booking(
-                call_id, vp.ChangeIn(start=body.start, newStart=new, bookingId=body.booking_id)
+                call_id, vp.ChangeIn(start=body.start, newStart=new, bookingId=body.booking_id), owner_id
             )
         finally:  # the caller's batch and thread see the change at once, not after the 60 s cache
             business_profile.forget(owner_id)
@@ -86,15 +90,17 @@ async def transfer_call(call: ToolCall) -> dict:
     call_id = next(iter(calls)) if len(calls) == 1 else None
     if not call_id or any(r.get("roomId") != call_id for r in refs):
         raise HTTPException(status_code=403, detail="not_a_caller")
-    meta = await vp.messaging_repo.get_room(call_id) if call_id else None
-    if not meta or meta.get("kind") != "call" or meta.get("ownerId") != owner_id:
+    conv = await api.get_conversation(owner_id, call_id)
+    if not conv or conv.kind != "call":
         raise HTTPException(status_code=403, detail="not_a_caller")
     cfg = await vp.agent_config(owner_id)
-    if vp.call_mode(cfg, meta.get("call") or {}) != "live":
+    if vp.call_mode(cfg, conv.annotations.get("call") or {}) != "live":
         raise HTTPException(status_code=403, detail="not_allowed")  # a paused line only takes messages
     if not vp.handoff_to(cfg):  # closed or no number: refuse BEFORE the caller hears "hang on"
         await vp._patch_call(  # the same bookkeeping /transfer does, so /end raises the hand-off Question
-            call_id, lambda c: {"handoffMissed": True, "steps": vp._step(c, "Asked for a person; nobody was available")}
+            owner_id,
+            call_id,
+            lambda c: {"handoffMissed": True, "steps": vp._step(c, "Asked for a person; nobody was available")},
         )
         raise HTTPException(status_code=403, detail={"code": "nobody_available"})
     line = await api.append_line(

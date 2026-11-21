@@ -99,8 +99,16 @@ def _no_registry_outside_moto(request, monkeypatch):
     async def voice_agent(*args, **kwargs):
         return await real_voice_agent(*args, **kwargs) if MockAWS._mocks_active else None
 
+    from core.voice import store
+
+    real_product_voice_agent = store.get_voice_agent
+
+    async def product_voice_agent(*args, **kwargs):  # the product's reader of the same document
+        return await real_product_voice_agent(*args, **kwargs) if MockAWS._mocks_active else None
+
     async def owner_row(self, *args, **kwargs):
         return await real_owner_row(self, *args, **kwargs) if MockAWS._mocks_active else None
 
     monkeypatch.setattr(messaging_repo, "get_voice_agent", voice_agent)
+    monkeypatch.setattr(store, "get_voice_agent", product_voice_agent)
     monkeypatch.setattr(WorkspaceRepo, "resolve_owner_row", owner_row)

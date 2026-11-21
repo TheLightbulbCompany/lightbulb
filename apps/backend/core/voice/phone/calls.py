@@ -19,9 +19,9 @@ from core.billing import voice_billing
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact, utc_now_iso
 from core.engine import api
-from core.engine.contract import AnnotateIn, EngineError
-from core.repositories import billing_repo, messaging_repo
-from core.services import questions
+from core.engine.contract import AnnotateIn, ConversationOut, EngineError
+from core.repositories import billing_repo
+from core.voice import store
 from core.voice.phone import voice_booking, voice_preferences
 
 # The name these lines always logged under (routers/voice_phone.py): the W85 alarm matches loggers `routers.voice*`.
@@ -64,7 +64,7 @@ def _err(status: int, code: str) -> HTTPException:
 
 
 async def agent_config(owner_id: str) -> dict:
-    cfg = {**DEFAULTS, **(await messaging_repo.get_voice_agent(owner_id) or {})}
+    cfg = {**DEFAULTS, **(await store.get_voice_agent(owner_id) or {})}
     for k in ("allow", "hours", "handoff"):
         cfg[k] = {**DEFAULTS[k], **(cfg.get(k) or {})}
     account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
@@ -80,11 +80,12 @@ def owner_instructions(cfg: dict) -> str:
     return str(cfg.get("instructions") or "").strip()[:4000]
 
 
-async def _call(call_id: str) -> tuple[dict, dict]:
-    meta = await messaging_repo.get_room(call_id)
-    if not meta or meta.get("kind") != "call" or not isinstance(meta.get("call"), dict):
+async def _call(owner_id: str, call_id: str) -> tuple[ConversationOut, dict]:
+    """The owner's call conversation and its record, or 404."""
+    conv = await api.get_conversation(owner_id, call_id)
+    if not conv or conv.kind != "call" or not isinstance(conv.annotations.get("call"), dict):
         raise _err(404, "call_not_found")
-    return meta, meta["call"]
+    return conv, conv.annotations["call"]
 
 
 # A card number: 13-19 digits, spaces or dashes between them, Luhn-valid; then an expiry or CVV said after it.
@@ -158,20 +159,17 @@ def real_name(name: str | None) -> str:
     return "" if n.lower().strip(".") in _NO_NAMES else n
 
 
-async def _patch_call(call_id: str, change) -> dict:
+async def _patch_call(owner_id: str, call_id: str, change) -> dict:
     """Read-modify-write of META.call under the revision CAS (one worker per call, so a race is rare). Every write
     of the record (steps, transcript, messages, summary) is card-scrubbed and keeps only a real caller name."""
     for attempt in (1, 2, 3):
-        meta, call = await _call(call_id)
+        conv, call = await _call(owner_id, call_id)
         merged = _scrub({**call, **change(call)})
         merged["callerName"] = real_name(merged.get("callerName"))
         try:
             await api.annotate(
                 AnnotateIn(
-                    tenant_id=meta.get("ownerId") or "",
-                    conversation_id=call_id,
-                    set={"call": merged},
-                    expected_revision=int(meta.get("revision", 0)),
+                    tenant_id=owner_id, conversation_id=call_id, set={"call": merged}, expected_revision=conv.revision
                 )
             )
             return merged
@@ -263,15 +261,14 @@ KNOWLEDGE_SOURCE = "you answered this in Needs you"
 
 
 def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
-    """`task_asks.open_ask`'s arguments for one call Question (a blocking `question`, subkind = the card's kind).
-    Its qid is the call, kind and question, so a retried end opens it once."""
+    """`task_asks.open_ask`'s arguments for one call Question (a blocking `question`, subkind = the card's kind),
+    but its qid: the task it opens on names it (`api.start_task`), so a retried end opens it once."""
     who = call.get("callerName") or call.get("caller") or "a caller"
     title = {"didnt_know": f"Answer {who}: {question}", "handoff": f"{who} wanted a person",
              "line_problem": f"{who}'s call hit a problem on the line",
              # the message is in the title: the title is the call's task id (_start_task), one per message
              "message": f"Message from {who}: {question}"}[kind]  # fmt: skip
     return {
-        "qid": questions.qid_for(f"{call_id}:{kind}:{question}"),
         "kind": "question",
         "subkind": kind,
         "title": title[:200],
@@ -305,7 +302,7 @@ async def remember_answer(owner_id: str, question: str, answer: str, by: str) ->
             "toAdd": [t for t in to_add if t != question[:TO_ADD_CHARS]],
         }
 
-    await messaging_repo.modify_voice_agent(owner_id, change, by)
+    await store.modify_voice_agent(owner_id, change, by)
 
 
 TO_ADD_MAX, TO_ADD_CHARS = 20, 200  # the Agent page's "questions to add": caller text, so capped (oldest drop)
@@ -314,10 +311,12 @@ TO_ADD_MAX, TO_ADD_CHARS = 20, 200  # the Agent page's "questions to add": calle
 async def resolve_call(owner_id: str, call_id: str, by: str) -> None:
     """A call's Question was answered: the call is handled (`resolvedAt`), so Home's
     "Needs you" stops listing it. ponytail: the first answered Question resolves a call that had several."""
-    meta = await messaging_repo.get_room(call_id)
-    if not meta or meta.get("ownerId") != owner_id or meta.get("kind") != "call":
+    conv = await api.get_conversation(owner_id, call_id)
+    if not conv or conv.kind != "call":
         return
-    await _patch_call(call_id, lambda c: {} if c.get("resolvedAt") else {"resolvedAt": utc_now_iso(), "resolvedBy": by})
+    await _patch_call(
+        owner_id, call_id, lambda c: {} if c.get("resolvedAt") else {"resolvedAt": utc_now_iso(), "resolvedBy": by}
+    )
 
 
 def _service(cfg: dict, service: str) -> dict:
@@ -685,16 +684,17 @@ def _release(table: str, pk: str, row: dict, keep: set[str] = frozenset()) -> li
     return out
 
 
-async def after_call(room_id: str, item: dict) -> None:
+async def after_call(owner_id: str, room_id: str, item: dict) -> None:
     """A team answer that lands in a call's room after the caller hung up (8 Nov prod re-run #3: the booking
     confirmation and the card answer, 8-10 s after hang-up): kept on the call record (`afterCall`, and a step the
     Home row shows) so the owner sees what the caller never heard. Thread and progress lines are not answers."""
     if item.get("progress") or item.get("threadRootMessageId") or not (text := (item.get("text") or "").strip()):
         return
-    meta = await messaging_repo.get_room(room_id)
-    if not meta or meta.get("kind") != "call" or (meta.get("call") or {}).get("status") != "ended":
+    conv = await api.get_conversation(owner_id, room_id)
+    if not conv or conv.kind != "call" or (conv.annotations.get("call") or {}).get("status") != "ended":
         return
     await _patch_call(
+        owner_id,
         room_id,
         lambda c: {
             "afterCall": [*c.get("afterCall", []), {"messageId": item.get("messageId"), "text": text[:2000]}],

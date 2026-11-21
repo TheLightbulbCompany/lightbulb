@@ -4,11 +4,11 @@ agent lines after it."""
 from pydantic import BaseModel, Field
 
 from core.engine import api
-from core.repositories import messaging_repo
+from core.voice import store
 
 
 async def assistant_name(owner_id: str) -> str:
-    name = (((await messaging_repo.get_voice_agent(owner_id)) or {}).get("name") or "").strip()
+    name = (((await store.get_voice_agent(owner_id)) or {}).get("name") or "").strip()
     return name or "Lightbulb"
 
 

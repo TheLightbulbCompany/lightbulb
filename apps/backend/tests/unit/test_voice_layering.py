@@ -6,8 +6,8 @@ from pathlib import Path
 CORE = Path(__file__).resolve().parents[2] / "core"
 VOICE_ROUTERS = ("routers.voice", "routers.huddles", "routers.meetings")
 
-#: The router imports left in core/voice, all lazy. `voice_booking` and `voice_calls`: `end_call` and `start_work` start
-#: a Worker task through `routers.internal_automations.start_voice_work`, which is not voice code. `phone/tools.py`: the
+#: The router imports left in core/voice, all lazy. `voice_booking` and `voice_calls`: the phone's `start_work` and
+#: `end_call` routes (a line problem's task, a stale call's end). `phone/tools.py`: the
 #: front desk and transfer-call tools moved here from the engine's routes (engine-service Task 3), which made the same
 #: lazy `routers.voice_phone` imports; they act through the phone's route functions (`start_call` / `end_call`
 #: bookkeeping and the booking helpers) and go when those leave the router. Keyed by file and enclosing function, so a
@@ -136,15 +136,6 @@ KNOWN_PRODUCT_TO_ENGINE = [
     "core/voice/meetings/meeting_notes.py: <module>: core.tasks_schema",
     "core/voice/meetings/records.py: <module>: core.repositories.messaging_repo",
     "core/voice/meetings/records.py: <module>: core.repositories.tasks_repo",
-    "core/voice/phone/business_profile.py: _build: core.repositories.messaging_repo",
-    "core/voice/phone/business_profile.py: caller_of: core.repositories.messaging_repo",
-    "core/voice/phone/business_profile.py: facts_text: core.repositories.messaging_repo",
-    "core/voice/phone/calls.py: <module>: core.repositories.messaging_repo",
-    "core/voice/phone/calls.py: <module>: core.services.questions",
-    "core/voice/phone/voice_booking.py: <module>: core.repositories.tasks_repo",
-    "core/voice/phone/voice_onboarding.py: <module>: core.repositories.messaging_repo",
-    "core/voice/phone/voice_outbound.py: <module>: core.repositories.messaging_repo",
-    "core/voice/room_lines.py: <module>: core.repositories.messaging_repo",
     "core/voice/rooms.py: <module>: core.repositories.messaging_repo",
     "core/voice/rooms.py: <module>: core.services.messaging",
     "core/voice/voice_calls.py: <module>: core.repositories.messaging_repo",
@@ -156,17 +147,8 @@ KNOWN_PRODUCT_TO_ENGINE = [
     "routers/meet_bot.py: <module>: core.repositories.messaging_repo",
     "routers/meetings.py: <module>: core.repositories.messaging_repo",
     "routers/meetings.py: <module>: core.services.messaging",
-    "routers/voice.py: <module>: core.repositories.messaging_repo",
-    "routers/voice.py: <module>: core.services.task_conversation",
     "routers/voice_meet.py: <module>: core.repositories.messaging_repo",
     "routers/voice_meet.py: <module>: core.services.messaging",
-    "routers/voice_owner.py: <module>: core.repositories.messaging_repo",
-    "routers/voice_owner.py: <module>: core.services.messaging",
-    "routers/voice_phone.py: <module>: core.repositories.messaging_repo",
-    "routers/voice_phone.py: <module>: core.services.messaging",
-    "routers/voice_phone.py: <module>: core.services.task_conversation",
-    "routers/voice_phone.py: <module>: routers.internal_automations",
-    "routers/voice_phone.py: callers_own_words: core.temporal.router_prompt",
 ]
 
 
@@ -249,3 +231,32 @@ def test_engine_does_not_import_product():
 
 def test_product_imports_only_the_contract():
     assert _crossing(PRODUCT, [p for p in ENGINE if p != "core/engine"]) == KNOWN_PRODUCT_TO_ENGINE
+
+
+# --- the one tenantless read --------------------------------------------------------------------------------------
+
+#: The product functions that may call `api.find_conversation` (a conversation by id alone), as `file: function`.
+#: Each is an entry point handed nothing but the conversation id, and each authenticates that conversation with a
+#: credential the product stored on it before it trusts the tenant the lookup returns.
+FIND_CONVERSATION_ENTRY_POINTS = [
+    # the per-call token `start_call` minted and keeps on the call (`callToken`), sent on every per-call route
+    "routers/voice_phone.py: _require_call_token",
+]
+
+
+def test_find_conversation_is_called_only_from_entry_points():
+    found = []
+    for path in _files(PRODUCT):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(fn):
+                    if isinstance(node, ast.Attribute) and node.attr == "find_conversation":
+                        found.append(f"{path.relative_to(BACKEND)}: {fn.name}")
+    module_level = [
+        str(path.relative_to(BACKEND))
+        for path in _files(PRODUCT)
+        if "find_conversation" in path.read_text()
+        and not any(f.startswith(str(path.relative_to(BACKEND))) for f in found)
+    ]
+    assert sorted(set(found)) == FIND_CONVERSATION_ENTRY_POINTS and not module_level

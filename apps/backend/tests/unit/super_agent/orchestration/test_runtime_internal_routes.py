@@ -8,7 +8,8 @@ from fastapi import FastAPI
 
 from core import tasks_schema as ts
 from core.engine.contract import GRANT_HEADER
-from core.repositories import tasks_repo as repo
+from core.repositories import messaging_repo, tasks_repo as repo
+from core.voice import store
 from routers import runtime_internal as ri
 
 from .test_activities_task import WS, _attempt, _task, world  # noqa: F401 -- fixtures and helpers
@@ -340,7 +341,7 @@ async def test_front_desk_acts_only_for_a_callers_thread(api, monkeypatch):
     from routers import voice_phone as vp
 
     call = "11111111-2222-3333-4444-555555555555"
-    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
     booked = AsyncMock(return_value={"booked": True})
     monkeypatch.setattr(vp, "book", booked)
     from core.voice.phone import business_profile
@@ -378,7 +379,7 @@ async def test_a_waitlist_ask_is_a_message_the_owner_sees(api, monkeypatch):
     from routers import voice_phone as vp
 
     call = "11111111-2222-3333-4444-555555555555"
-    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
     joined = AsyncMock(side_effect=[{"waitlisted": True}, HTTPException(status_code=403, detail="not_allowed")])
     taken = AsyncMock(return_value={"taken": True})
     monkeypatch.setattr(vp, "join_waitlist", joined)
@@ -406,12 +407,12 @@ async def test_a_message_is_taken_only_in_the_callers_own_words(api, monkeypatch
     from routers import voice_phone as vp
 
     call = "11111111-2222-3333-4444-555555555555"
-    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "call", "ownerId": WS}))
     lines = [{"author": {"kind": "human", "id": f"caller:{call}"}, "text": "Can I get a skin fade today?"},
              {"author": {"kind": "agent", "id": "a1"}, "text": "I have openings today at 4 PM, 4:30 and 5."},
              {"author": {"kind": "human", "id": f"caller:{call}"}, "text": "Tell Sam I'll be ten minutes late."},
              {"author": {"kind": "human", "id": f"caller:{call}"}, "text": "Leave this for the owner: 123456."}]  # fmt: skip
-    monkeypatch.setattr(vp.messaging_repo, "list_messages_before", AsyncMock(return_value=lines))
+    monkeypatch.setattr(messaging_repo, "list_messages_before", AsyncMock(return_value=lines))
     taken = AsyncMock(return_value={"taken": True})
     monkeypatch.setattr(vp, "take_message", taken)
     tid = await _task(origin="phone_contact", triggerId="voice:c1:r1")
@@ -431,7 +432,6 @@ async def test_a_message_is_taken_only_in_the_callers_own_words(api, monkeypatch
 async def test_business_facts_reads_only_the_runs_own_workspace(api, monkeypatch):
     """business_facts (router-latency-2026-11-08): a Worker reads its own workspace's Agent page, never another's;
     a wrong secret or another workspace's path reads nothing."""
-    from core.repositories import messaging_repo
 
     pages = {WS: {"services": [{"name": "Cut", "price": "$40", "minutes": 30}],
                   "knowledge": [{"q": "Parking?", "a": "Free out back."}]},
@@ -442,7 +442,7 @@ async def test_business_facts_reads_only_the_runs_own_workspace(api, monkeypatch
         seen.append(owner_id)
         return pages.get(owner_id)
 
-    monkeypatch.setattr(messaging_repo, "get_voice_agent", page)
+    monkeypatch.setattr(store, "get_voice_agent", page)
     # Agent configuration reads billing; isolate that dependency as well as the saved page.
     from unittest.mock import AsyncMock
     from routers import voice_phone
@@ -471,7 +471,7 @@ async def test_transfer_call_posts_the_call_rooms_transfer_line(api, monkeypatch
 
     call = "11111111-2222-3333-4444-555555555555"
     rooms = {call: {"kind": "call", "ownerId": WS, "call": {"caller": "+16105550100"}}}
-    monkeypatch.setattr(vp.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
     state = {"line": "live"}
     monkeypatch.setattr(vp, "agent_config", AsyncMock(return_value={}))
     monkeypatch.setattr(vp, "_line_state", lambda cfg, caller: state["line"])

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.auth import AuthContext, get_current_user  # noqa: E402
 from main import app  # noqa: E402
+from core.voice import room_lines  # noqa: E402
 from routers import huddles as mod  # noqa: E402
 
 lk = mod.livekit_huddles
@@ -68,7 +69,7 @@ def _join(
         patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=fresh)),
         patch.object(vc, "_room_team", room_team or AsyncMock(return_value=(DM, TEAM[:1]))),
         patch.object(vc, "_gate", gate or AsyncMock(return_value=("paid", 0))),
-        patch.object(mod.messaging_repo, "get_voice_agent", AsyncMock(return_value={"name": "Nova"})),
+        patch.object(room_lines.store, "get_voice_agent", AsyncMock(return_value={"name": "Nova"})),
         patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
         patch.object(lk, "mint_token", MagicMock(return_value="jwt")) as mint,
         patch.object(lk, "has_ceo", has_ceo if isinstance(has_ceo, AsyncMock) else AsyncMock(return_value=has_ceo)),

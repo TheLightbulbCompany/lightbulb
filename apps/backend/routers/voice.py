@@ -16,7 +16,6 @@ number at Go live (core/voice/phone/voice_onboarding.py).
 
 from __future__ import annotations
 
-import asyncio
 import httpx
 import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -30,8 +29,11 @@ from boto3.dynamodb.conditions import Key
 from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
 from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
-from core.repositories import messaging_repo, billing_repo
-from core.services import agent_registry, task_conversation
+from core.engine import api
+from core.engine.contract import ConversationOut
+from core.repositories import billing_repo
+from core.services import agent_registry
+from core.voice import store
 from core.voice.phone import phone_pin, voice_onboarding, voice_outbound, voice_preferences
 from core.voice.phone.numbers import _e164, us_number
 
@@ -72,29 +74,27 @@ def _epoch_ms(v: Any) -> int:
         return 0
 
 
-def _items(meta: dict) -> list[dict]:
-    if meta.get("deletedAt"):
-        return []
-    if meta.get("kind") == "call":
-        call = meta.get("call") or {}
+def _items(conv: ConversationOut) -> list[dict]:
+    if conv.kind == "call":
+        call = conv.annotations.get("call") or {}
         return [
             {
                 **call,
                 "type": "call",
-                "roomId": meta["roomId"],
-                "at": _epoch_ms(call.get("startedAt") or meta["createdAt"]),
+                "roomId": conv.conversation_id,
+                "at": _epoch_ms(call.get("startedAt") or conv.created_at),
             }
         ]
-    meeting = meta.get("meeting")
+    meeting = conv.annotations.get("meeting")
     if not meeting:
         return []
     roster = meeting.get("roster") or {}
     current = {
         **{k: meeting[k] for k in _MEETING_FIELDS if k in meeting},
         "type": "meeting",
-        "roomId": meta["roomId"],
+        "roomId": conv.conversation_id,
         "people": [p["name"] for p in roster.values() if p.get("name")],
-        "at": _epoch_ms(meeting.get("startAt") or meta["createdAt"]),
+        "at": _epoch_ms(meeting.get("startAt") or conv.created_at),
     }
     # A recurring series has moved on by the time its notes land: each held occurrence (meeting_invites history)
     # is its own past row, keyed by ``occurrence``, with what that occurrence kept.
@@ -105,7 +105,7 @@ def _items(meta: dict) -> list[dict]:
             "status": "ended",
             "hasTranscript": bool(h.get("transcriptId")),
             "type": "meeting",
-            "roomId": meta["roomId"],
+            "roomId": conv.conversation_id,
             "occurrence": h["startAt"],
             "at": _epoch_ms(h["startAt"]),
         }
@@ -118,10 +118,7 @@ def _items(meta: dict) -> list[dict]:
 @router.get("/voice/timeline")
 async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = resolve_owner_id(auth)
-    rows = [r for r in await messaging_repo.list_owner_rooms(ws) if r.get("kind") in ("call", "channel")]
-    rows = sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)[:TIMELINE_ROOMS]
-    metas = await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows))
-    items = [i for m in metas if m and m.get("ownerId") == ws for i in _items(m)]
+    items = [i for c in await api.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS) for i in _items(c)]
     return {"items": sorted(items, key=lambda i: i["at"], reverse=True)}
 
 
@@ -134,17 +131,17 @@ async def month_seconds(ws: str, tz_name: str | None) -> int:
     if counted is not None:
         return counted
     start = voice_billing.month_start(tz_name)
-    rows = [r for r in await messaging_repo.list_owner_rooms(ws) if r.get("kind") in ("call", "channel")]
-    rows = sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)[:TIMELINE_ROOMS]
     total, since = 0, start.timestamp()
-    for m in await asyncio.gather(*(messaging_repo.get_room(r["roomId"]) for r in rows)):
-        if not m or m.get("ownerId") != ws:
-            continue
-        if m.get("kind") == "call":
-            call = m.get("call") or {}
-            if _epoch_ms(call.get("startedAt") or m["createdAt"]) >= since * 1000:
+    for c in await api.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS):
+        if c.kind == "call":
+            call = c.annotations.get("call") or {}
+            if _epoch_ms(call.get("startedAt") or c.created_at) >= since * 1000:
                 total += int(call.get("durationSec") or 0)
-        elif (mt := m.get("meeting") or {}).get("inCallAt") and mt.get("endedAt") and int(mt["inCallAt"]) >= since:
+        elif (
+            (mt := c.annotations.get("meeting") or {}).get("inCallAt")
+            and mt.get("endedAt")
+            and int(mt["inCallAt"]) >= since
+        ):
             total += max(0, int(mt["endedAt"]) - int(mt["inCallAt"]))
     return total
 
@@ -153,7 +150,7 @@ async def month_seconds(ws: str, tz_name: str | None) -> int:
 async def usage(auth: AuthContext = Depends(get_current_user)) -> dict:
     """The Settings "Billing & minutes" card: this month's minutes, the plan, and what happens when they run out."""
     ws = resolve_owner_id(auth)
-    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    cfg = await store.get_voice_agent(ws) or {}
     account = await billing_repo.get_by_owner_id(ws, consistent_read=True) or {}
     if account.get("metronome_voice_contract_id"):
         try:
@@ -242,14 +239,10 @@ class AgentConfigIn(BaseModel):
 @router.get("/voice/agent")
 async def get_agent(auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = resolve_owner_id(auth)
-    try:
-        current = await task_conversation.front_agent_id(ws)
-        issue = None
-    except task_conversation.NoFrontAgent:
-        current = None
-        issue = "Choose an active front-door agent. Your saved selection is unavailable."
+    current = await api.get_front_agent(ws)
+    issue = None if current else "Choose an active front-door agent. Your saved selection is unavailable."
     return {
-        "config": await messaging_repo.get_voice_agent(ws),
+        "config": await store.get_voice_agent(ws),
         "frontAgentId": current,
         "frontAgentIssue": issue,
         "agents": [
@@ -261,7 +254,7 @@ async def get_agent(auth: AuthContext = Depends(get_current_user)) -> dict:
 @router.put("/voice/agent")
 async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current_user)) -> dict:
     require_org_admin(auth)
-    body.config = messaging_repo.voice_agent_config(body.config)
+    body.config = store.voice_agent_config(body.config)
     if len(json.dumps(body.config)) > MAX_CONFIG_BYTES:
         raise HTTPException(status_code=413, detail={"code": "too_large"})
     if "spanish" in body.config and type(body.config["spanish"]) is not bool:
@@ -288,7 +281,7 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
             raise HTTPException(status_code=422, detail={"code": "handoff_is_forwarded_line"})
         body.config["handoff"] = {**handoff, "number": number}
     ws = resolve_owner_id(auth)
-    previous = await messaging_repo.get_voice_agent(ws) or {}
+    previous = await store.get_voice_agent(ws) or {}
     # Older clients save the whole document. Omitting the new field retains the existing choice.
     if "frontAgentId" not in body.config and "frontAgentId" in previous:
         body.config["frontAgentId"] = previous["frontAgentId"]
@@ -302,7 +295,7 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
                 status_code=422,
                 detail={"code": "front_agent_unavailable", "message": "Choose an active agent from this workspace."},
             )
-    if body.config.get("live") and not (await messaging_repo.get_voice_agent(ws) or {}).get("live"):
+    if body.config.get("live") and not (await store.get_voice_agent(ws) or {}).get("live"):
         require_org(auth)  # going live gives the tenant a number
         try:  # Go live: the number is given (bought, once buying is on) now, never at sign-up
             body.config["number"] = await voice_onboarding.provision_at_go_live(ws, body.config, auth.user_id)
@@ -310,7 +303,7 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
             if str(exc) == "voice_payment_required":
                 raise HTTPException(status_code=402, detail={"code": "voice_payment_required"}) from None
             raise HTTPException(status_code=409, detail={"code": "number_unavailable", "reason": str(exc)}) from None
-    await messaging_repo.put_voice_agent(ws, body.config, auth.user_id)
+    await store.put_voice_agent(ws, body.config, auth.user_id)
     return {"config": body.config}
 
 
@@ -325,7 +318,7 @@ async def forward_check(body: ForwardCheckIn | None = None, auth: AuthContext = 
     require_org(auth)
     require_org_admin(auth)
     ws = resolve_owner_id(auth)
-    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    cfg = await store.get_voice_agent(ws) or {}
     if body and body.forwardFrom:
         cfg["forwardFrom"] = body.forwardFrom
     return await voice_outbound.forward_check(ws, cfg)

@@ -74,6 +74,12 @@ async def test_needs_you_lists_only_mine(world):
     assert resp.json()["next"] is None
 
 
+@pytest.mark.parametrize("cursor", ["%%%", "bm90LWpzb24", "\x80"])  # not base64 / base64 of not-JSON / not ASCII
+async def test_needs_you_cursor_it_did_not_hand_out_is_400(world, cursor):
+    resp = await world["client"].get("/api/v1/needs-you", params={"cursor": cursor})
+    assert resp.status_code == 400 and resp.json()["detail"]["code"] == "bad_cursor"
+
+
 async def test_needs_you_drops_answered(world):
     task = await _task({"kind": "person", "userIds": [SAM]})
     await questions_repo.open_question(WS, _q(task))

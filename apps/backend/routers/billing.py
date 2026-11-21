@@ -14,6 +14,7 @@ from core.auth import (
     AuthContext,
     get_current_user,
     resolve_owner_id,
+    require_org,
     require_org_admin,
 )
 from core.config import settings
@@ -70,6 +71,7 @@ async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
 @router.post("/voice-plan/checkout")
 async def checkout_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Depends(get_current_user)):
     """Accept the plan and open Stripe Checkout for the $250/month subscription (promotion codes allowed)."""
+    require_org(auth)
     require_org_admin(auth)
     if body.expectedOwnerId != resolve_owner_id(auth):
         raise HTTPException(status_code=409, detail={"code": "workspace_changed"})
@@ -250,8 +252,7 @@ def _future_epoch(value) -> int | None:
 async def create_portal(
     auth: AuthContext = Depends(get_current_user),
 ):
-    if auth.is_org_context:
-        require_org_admin(auth)
+    require_org_admin(auth)
 
     account = await _get_billing_account(auth)
     if not account:
@@ -290,6 +291,7 @@ async def create_workspace_checkout(
     auth: AuthContext = Depends(get_current_user),
 ):
     """The only subscription Checkout entry point for an active workspace."""
+    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     account = await _get_billing_account(auth)
@@ -340,6 +342,7 @@ async def create_front_desk(
     auth: AuthContext = Depends(get_current_user),
 ):
     """The line itself is provisioned by the Stripe webhook, never by this click."""
+    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     account = await _get_billing_account(auth)

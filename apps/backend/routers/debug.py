@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -75,13 +75,11 @@ async def provision_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    if auth.is_org_context:
-        require_org_admin(auth)
-    owner_type = get_owner_type(auth)
+    require_org_admin(auth)
 
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing and existing.get("status") in ("running", "provisioning"):
-        return {"status": "already_running", "owner_id": owner_id, "owner_type": owner_type}
+        return {"status": "already_running", "owner_id": owner_id}
 
     # The SAME entry point production uses, rather than a hand-rolled sequence: the
     # runner owns the role / gate-token mint, the roster profiles and the AgentCore
@@ -89,7 +87,7 @@ async def provision_container(
     # re-minting here is the only honest recovery -- which is exactly what the runner does. ``dispatch_provision`` never raises; a failed
     # dispatch leaves a retryable error row.
     await dispatch_provision(owner_id)
-    return {"status": "provisioning", "owner_id": owner_id, "owner_type": owner_type}
+    return {"status": "provisioning", "owner_id": owner_id}
 
 
 @router.patch(
@@ -111,9 +109,7 @@ async def redeploy_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    if auth.is_org_context:
-        require_org_admin(auth)
-    owner_type = get_owner_type(auth)
+    require_org_admin(auth)
 
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
@@ -133,7 +129,6 @@ async def redeploy_container(
     return {
         "status": "profiles_rewritten",
         "owner_id": owner_id,
-        "owner_type": owner_type,
     }
 
 
@@ -152,8 +147,7 @@ async def remove_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    if auth.is_org_context:
-        require_org_admin(auth)
+    require_org_admin(auth)
 
     try:
         # NOT delete_profiles: this is a routine reprovision door, and destroying a migrated
@@ -189,8 +183,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # to wipe shared org-scoped state (containers, billing, api-keys, etc.)
     # via this endpoint just because dev/staging exposes it. Personal context
     # passes through (require_org_admin no-ops when not in org).
-    if auth.is_org_context:
-        require_org_admin(auth)
+    require_org_admin(auth)
 
     owner_id = resolve_owner_id(auth)
     # In an org context resolve_owner_id returns the org_id, but the `users`

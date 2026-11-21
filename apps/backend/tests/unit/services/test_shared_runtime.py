@@ -404,10 +404,9 @@ async def test_debug_restart_stops_the_live_legacy_vm(shared, monkeypatch):
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
     monkeypatch.setattr(hp.container_repo, "get_session_sync", lambda *a, **k: {"arn": OWN, "warm_until": 10**10})
     monkeypatch.setattr(debug, "resolve_owner_id", lambda auth: "org_a")
-    monkeypatch.setattr(debug, "get_owner_type", lambda auth: "org")
     monkeypatch.setattr(hp, "write_profiles", AsyncMock())
     monkeypatch.setattr(hp, "stop_runtime_session", AsyncMock(return_value=True))
-    await debug.redeploy_container(SimpleNamespace(is_org_context=False))
+    await debug.redeploy_container(SimpleNamespace(org_id="org_a", is_org_admin=True))
     hp.stop_runtime_session.assert_awaited_once_with("org_a", OWN)
 
 

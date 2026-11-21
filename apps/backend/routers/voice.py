@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from boto3.dynamodb.conditions import Key
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
 from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
@@ -303,6 +303,7 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
                 detail={"code": "front_agent_unavailable", "message": "Choose an active agent from this workspace."},
             )
     if body.config.get("live") and not (await messaging_repo.get_voice_agent(ws) or {}).get("live"):
+        require_org(auth)  # going live gives the tenant a number
         try:  # Go live: the number is given (bought, once buying is on) now, never at sign-up
             body.config["number"] = await voice_onboarding.provision_at_go_live(ws, body.config, auth.user_id)
         except voice_onboarding.NoNumber as exc:
@@ -321,6 +322,7 @@ class ForwardCheckIn(BaseModel):
 async def forward_check(body: ForwardCheckIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Onboarding "Keep my number": ring the business line once; the page polls GET /voice/agent for forwardingOk.
     `forwardFrom` is the line the owner just typed (step 4 saves only on Continue); it is kept on the document."""
+    require_org(auth)
     require_org_admin(auth)
     ws = resolve_owner_id(auth)
     cfg = await messaging_repo.get_voice_agent(ws) or {}
@@ -337,6 +339,7 @@ class DraftIn(BaseModel):
 
 @router.post("/voice/onboarding/draft")
 async def onboarding_draft(body: DraftIn, auth: AuthContext = Depends(get_current_user)) -> dict:
+    require_org(auth)
     require_org_admin(auth)
     return {"draft": await voice_onboarding.draft(body.website, body.business, body.city)}
 
@@ -352,6 +355,7 @@ class NumberIn(BaseModel):
 async def assign_number(body: NumberIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """With a body: store the onboarding choice (keep and forward, or new), nothing bought. Without: today's step 4,
     the configured line now. ponytail: the bodyless branch goes when Task 30's step 4 sends the choice."""
+    require_org(auth)
     require_org_admin(auth)
     if body and body.path:
         ws = resolve_owner_id(auth)

@@ -7,10 +7,13 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 import pytest
 from fastapi import HTTPException
 
-from core.auth import AuthContext, resolve_owner_id, get_owner_type, require_org_admin
+from core.auth import AuthContext, resolve_owner_id, require_org_admin
 
 
 class TestResolveOwnerId:
+    def test_signed_in_person_without_org_is_its_own_tenant(self):
+        assert resolve_owner_id(AuthContext(user_id="user_123", human_session=True)) == "user_123"
+
     def test_personal_context_requires_workspace(self):
         auth = AuthContext(user_id="user_123")
         with pytest.raises(HTTPException) as exc_info:
@@ -28,20 +31,11 @@ class TestResolveOwnerId:
         assert resolve_owner_id(auth) == "org_456"
 
 
-class TestGetOwnerType:
-    def test_personal_context_requires_workspace(self):
-        auth = AuthContext(user_id="user_123")
-        with pytest.raises(HTTPException) as exc_info:
-            get_owner_type(auth)
-        assert exc_info.value.status_code == 409
-        assert exc_info.value.detail["code"] == "workspace_required"
-
-    def test_org_returns_org(self):
-        auth = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")
-        assert get_owner_type(auth) == "org"
-
-
 class TestRequireOrgAdmin:
+    def test_signed_in_person_without_org_is_its_own_admin(self):
+        auth = AuthContext(user_id="user_123", human_session=True)
+        assert require_org_admin(auth) == auth
+
     def test_personal_context_requires_workspace(self):
         auth = AuthContext(user_id="user_123")
         with pytest.raises(HTTPException) as exc_info:

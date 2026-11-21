@@ -33,7 +33,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import HTTPException, Request
 
-from core.auth import AuthContext, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, require_org, require_org_admin, resolve_owner_id
 from core.repositories import messaging_repo
 from core.services import device_login, network_proof
 
@@ -181,6 +181,7 @@ async def approve(ctx: AuthContext, user_code: str) -> dict:
     purpose = row["purpose"]
     owner_id = ""
     if purpose == "agents":
+        require_org(ctx)  # a person's agents join a network once their tenant can provision
         require_org_admin(ctx)
         owner_id = resolve_owner_id(ctx)
         if row.get("computerUser") != ctx.user_id:

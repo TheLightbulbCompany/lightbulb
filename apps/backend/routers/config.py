@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import (
     AuthContext,
     get_current_user,
+    require_org,
     require_org_admin,
     resolve_owner_id,
 )
@@ -76,6 +77,7 @@ async def patch_config(
     auth: AuthContext = Depends(get_current_user),
 ):
     # Org admin check (personal context passes through)
+    require_org(auth)  # writes every agent's config.yaml
     require_org_admin(auth)
 
     owner_id = resolve_owner_id(auth)

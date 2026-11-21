@@ -23,6 +23,7 @@ from core.engine.contract import VOICE_NOTE_TEXT_MAX
 from core.auth import (
     AuthContext,
     get_current_user,
+    require_org,
     resolve_owner_id,
     security_optional,
 )
@@ -390,6 +391,7 @@ async def create_room_message(
     caller=Depends(person_or_computer),
 ):
     auth, label = caller
+    require_org(auth)  # a message can reach the model (addressing) and wake agents
     if label is None:
         try:  # a holder's Approve/Deny press on an A2A hold card decides it and wakes nobody
             # no workspace (resolve_owner_id's 409) is never a hold card

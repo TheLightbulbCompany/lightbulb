@@ -12,7 +12,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from core.auth import AuthContext, get_owner_type, resolve_owner_id
+from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.observability.logging import request_id_var
 from core.repositories import billing_repo, container_repo
@@ -68,7 +68,6 @@ async def _build_metadata(auth: AuthContext, req: SupportTicketRequest) -> dict:
             "user_id": auth.user_id,
             "email": auth.email,
             "owner_id": owner_id,
-            "owner_type": get_owner_type(auth),
             "env": settings.ENVIRONMENT or "local",
         },
         "billing": {

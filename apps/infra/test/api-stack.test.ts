@@ -606,6 +606,17 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
   });
 });
 
+describe("ApiStack — AppSync live channels authorize the person, not an org", () => {
+  // A live channel is /ws/<opaque workspace uuid>/...: subscribe is decided by the person's
+  // own `sub` against member rows, so the account being a person (no org) changes nothing here.
+  test("appsync subscribe reads no org claim", () => {
+    const code = wsHandlerCode("t", "dev");
+    const read = new Set([...code.matchAll(/ctx\.identity\.(\w+)/g)].map((m) => m[1]));
+    expect([...read].sort()).toEqual(["sub", "userArn"]);
+    expect(code).not.toMatch(/claims|org_?id|\bo\.id\b/i);
+  });
+});
+
 describe("ApiStack — ws frames/{roomId}/{deliveryKey} sub-channel (parsePath)", () => {
   // The handler code is an AppSync JS resolver template, not an ES module: strip the
   // import (no @aws-appsync/utils package here) and the `export` keywords, then eval

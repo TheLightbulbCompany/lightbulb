@@ -8,8 +8,9 @@ import { pageMetadata } from "@/lib/seo";
 import { OsInvite } from "./OsInvite";
 import { OsLanding, type SparkPrice } from "./OsLanding";
 
-// ponytail: dev-only until the founder approves; delete this switch and the short page to launch
-const landing = () => !(process.env.NEXT_PUBLIC_API_URL ?? "").includes("//api.thelightbulb.company");
+// ponytail: the landing page is live everywhere; SPARK_SHORT_PAGE=1 brings the short page back. Delete the
+// switch and the short page once the founder has settled the design.
+const landing = () => process.env.SPARK_SHORT_PAGE !== "1";
 
 export const metadata = pageMetadata({
   title: "Spark, a Voice App for the Mac | Lightbulb",
@@ -26,7 +27,7 @@ export default async function OsPage() {
   return landing() ? <OsLanding ready={ready} price={price} /> : <ShortPage ready={ready} price={price} />;
 }
 
-// Today's short page, unchanged: what production renders until the landing page is approved.
+// The earlier short page, kept as the fallback behind SPARK_SHORT_PAGE.
 function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
   return (
     <main className="ld-page min-h-screen">

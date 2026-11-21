@@ -237,21 +237,23 @@ async def start_voice_work(
     requester = run.requester_user_id
     if not requester:
         raise _err(403, "no_requester")  # a guest on a call starts nothing
-    out = await api.start_task(
-        StartIn(
-            tenant_id=owner_id,
-            principal=Principal(kind="member", id=requester),
-            conversation_id=body.room_id,
-            trigger_id=ts.trigger_id("voice", body.call_id, body.run_id),
-            source="voice",
-            lane="auto",
-            title=body.title.strip(),
-            brief=body.brief.strip(),
-            specialist=body.specialist,
-            origin=origin,
-            confirm_all=confirm_all,  # a meeting's task: every effect gets a card
-            ask=ask,
-            product_ref={"callId": body.call_id, "utteranceId": body.run_id, "agentId": run.agent_id},
+    out = await api.http(
+        api.start_task(
+            StartIn(
+                tenant_id=owner_id,
+                principal=Principal(kind="member", id=requester),
+                conversation_id=body.room_id,
+                trigger_id=ts.trigger_id("voice", body.call_id, body.run_id),
+                source="voice",
+                lane="auto",
+                title=body.title.strip(),
+                brief=body.brief.strip(),
+                specialist=body.specialist,
+                origin=origin,
+                confirm_all=confirm_all,  # a meeting's task: every effect gets a card
+                ask=ask,
+                product_ref={"callId": body.call_id, "utteranceId": body.run_id, "agentId": run.agent_id},
+            )
         )
     )
     return {"triggerId": out.trigger_id, "taskId": out.task_id, "created": out.created}

@@ -504,6 +504,7 @@ async def test_start_task_trigger_and_task_ids(tables):
     assert _picked(await tasks_repo.get_trigger(WS, out.trigger_id), expected) == expected
 
     meeting_notes, tid, title, meeting = _notes_args()
+    await _room("out-room", "channel")
     task_id = ts.router_task_id(tid, 0, 0)
     await admission.enqueue_trigger(
         WS, meeting_notes._notes_trigger(WS, tid, task_id, title, FRONT, OWNER, meeting), room_id="out-room"
@@ -535,6 +536,7 @@ async def test_submit_event_candidate(tables):
 
     tid, text = "meeting-followups:room-1:3", "Meeting completed. Review the original meeting source."
     followups = {"requestId": "meeting-notes:room-1:3", "occurrence": 3, "meetingRoomId": "room-1"}
+    await _room("room-1", "channel")
     now = utc_now_iso()
     await admission.enqueue_trigger(WS, ts.Trigger(
         ws=WS, created_at=now, updated_at=now, trigger_id=tid, source="webhook", admission="candidate",
@@ -554,31 +556,118 @@ async def test_submit_event_candidate(tables):
     assert (await api.submit_event(event)).created is False
 
 
-async def test_read_lines_shape_identical(tables):
-    """`read_lines` is `agent_lines` exactly: agent lines of the main chat, a question while open, the cursor."""
+# --- a conversation that is not the tenant's ------------------------------------------------------------------
+
+
+def _foreign(room_id, kind="dm"):
+    """A room of another workspace."""
+    return messaging_repo.create_room(
+        owner_id="org_other", room_id=room_id, client_room_id=f"c:{room_id}", creator_user_id="user_other",
+        name="r", kind=kind, members=[_human("user_other"), _agent()], req_hash=messaging_repo.request_hash(room_id),
+    )  # fmt: skip
+
+
+FOREIGN = "f0000000-0000-4000-8000-000000000001"
+
+
+async def _refused(call):
+    from core.engine.contract import EngineError
+
+    with pytest.raises(EngineError) as err:
+        await call
+    assert (err.value.status, err.value.detail) == (404, {"code": "not_found"})
+
+
+async def test_start_task_refuses_foreign_conversation(tables, monkeypatch):
+    """One tenant's task never lands in another's room: refused before anything is written."""
+    from core.engine import api
+    from core.engine.contract import Principal, StartIn
+
+    await _foreign(FOREIGN)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(admission, "enqueue_trigger", enqueue)
+    req = StartIn(tenant_id=WS, principal=Principal(kind="member", id=OWNER), conversation_id=FOREIGN,
+                  trigger_id="voice:c:r", source="voice", lane="shared", title="t", brief="b")  # fmt: skip
+    await _refused(api.start_task(req))
+    await _refused(api.start_task(req.model_copy(update={"conversation_id": "no-such-room"})))
+    enqueue.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", ["member", "contact", "system"])
+async def test_append_line_refuses_foreign_conversation(tables, monkeypatch, kind):
     from core.engine import api
 
-    await _room(DM, "dm")
-    plain = await _agent_line(DM, "Done.", "l1", {"taskRefs": [{"taskId": TASK}]})
-    await _agent_line(DM, "thinking", "l2", None)
-    await messaging_repo.create_message(
-        room_id=DM, owner_id=WS, idemp_pk=messaging_repo.owner_pk(WS), idemp_sk="l3", req_hash="l3",
-        author={"kind": "agent", "id": FRONT, "displayName": "Lightbulb"}, text="in a thread", mentions=[],
-        reply_to_message_id=None, thread_root_message_id=plain["messageId"], run_id=None, dispatch_targets=[],
-        source_agent_id=None, client_message_id=None, author_member_check=False, thread_root_seq=1,
-    )  # fmt: skip
-    await _agent_line(DM, "Which day?", "l4", {"kind": "question", "taskRefs": [{"taskId": TASK, "qid": "q-1"}]})
-    from core.voice import room_lines
+    await _foreign(FOREIGN)
+    for name in ("create_message", "_transact"):
+        monkeypatch.setattr(messaging_repo, name, AsyncMock(side_effect=AssertionError("wrote")))
+    monkeypatch.setattr(task_conversation, "post_as_lightbulb", AsyncMock(side_effect=AssertionError("posted")))
+    line = (_member_line("k", "hi") if kind == "member" else _contact_line(0, "hi")).model_copy(
+        update={"conversation_id": FOREIGN}
+    )
+    if kind == "system":
+        line = line.model_copy(update={"principal": line.principal.model_copy(update={"kind": "system"})})
+    await _refused(api.append_line(line))
 
-    questions_repo_get = AsyncMock(return_value={"state": "open"})
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(questions_repo, "get_question", questions_repo_get)
-        old = await room_lines.agent_lines(DM, 0)
-        new = await api.read_lines(WS, DM, 0)
-    assert new.model_dump() == old
-    assert [m["text"] for m in old["messages"]] == ["Done.", "thinking", "Which day?"]  # never a thread's line
-    assert old["messages"][2]["question"] == {"taskId": TASK, "qid": "q-1"}
-    assert old["after"] == 4 and await api.latest_seq(DM) == 4
+
+async def test_submit_event_refuses_foreign_conversation(tables, monkeypatch):
+    from core.engine import api
+    from core.engine.contract import EventIn
+
+    await _foreign(FOREIGN, "channel")
+    enqueue = AsyncMock()
+    monkeypatch.setattr(admission, "enqueue_trigger", enqueue)
+    await _refused(api.submit_event(EventIn(
+        tenant_id=WS, trigger_id="meeting-followups:x:1", source="webhook", admission="candidate", principal=None,
+        text="t", conversation_id=FOREIGN,
+    )))  # fmt: skip
+    enqueue.assert_not_awaited()
+
+
+async def test_warm_skips_a_foreign_conversation(tables, monkeypatch):
+    """Fire-and-forget, so nothing to raise to: a foreign room wakes nothing; an own room wakes as before."""
+    import asyncio
+
+    from core.engine import api
+
+    await _foreign(FOREIGN)
+    await _room(DM, "dm")
+    calls, fired = [], []
+    monkeypatch.setattr(api.container_rpc, "call", AsyncMock(side_effect=lambda *a, **k: calls.append(a[:2])))
+    monkeypatch.setattr(api, "_fire", lambda coro: fired.append(asyncio.ensure_future(coro)))
+    api.warm(WS, [FRONT], FOREIGN)
+    await asyncio.gather(*fired)
+    assert calls == []
+    api.warm(WS, [FRONT], DM)
+    await asyncio.gather(*fired)
+    assert calls == [(WS, "health"), (WS, "profile.warm")]
+
+
+@pytest.mark.parametrize("missing", ["via", "turn"])
+async def test_contact_line_needs_via_and_turn(call, missing):
+    from core.engine import api
+    from core.engine.contract import EngineError
+
+    await _call_room()
+    with pytest.raises(EngineError) as err:
+        await api.append_line(_contact_line(0, "hi").model_copy(update={missing: None}))
+    assert (err.value.status, err.value.detail) == (400, {"code": "invalid_line", "missing": [missing]})
+    assert _receipts(call.table) == []
+
+
+async def test_said_answer_refused_by_a_product_hook_is_a_message(dm, monkeypatch):
+    """As at base: an HTTPException from inside the answer path (the call's product hook: `call_not_found`) leaves
+    the line a message to the Router, not an error."""
+    from fastapi import HTTPException
+
+    from core.engine import api
+    from core.engine.contract import QuestionRef
+
+    await _agent_line(DM, "Which day?", "q-line", {"kind": "question", "taskRefs": [{"taskId": TASK, "qid": "q-1"}]})
+    monkeypatch.setattr(api, "submit_answer", AsyncMock(side_effect=HTTPException(404, "call_not_found")))
+    ref = QuestionRef(task_id=TASK, qid="q-1")
+    assert await api.answer_said_question(WS, DM, OWNER, ref, "Tuesday.", "k") is False
+    out = await api.append_line(_member_line("voice-turn:run-3", "Tuesday.", ref))
+    assert out.answered is False and len(_rows(dm, "WORK#ADMIT#")) == 1  # the line woke the Router
 
 
 # --- answers and actions: the same status and body, raised as EngineError -----------------------------------------

@@ -209,6 +209,9 @@ async def test_prewake_names_the_room_so_its_sessions_compact_before_the_first_q
     tasks = []
     monkeypatch.setattr(api.container_rpc, "call", fake_call)
     monkeypatch.setattr(api, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
+    monkeypatch.setattr(
+        api.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})
+    )  # the room is org_a's
     rooms.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}], "room-1")
     await asyncio.gather(*tasks)
     assert calls[1] == ("profile.warm", {"agentId": "a1", "roomId": "room-1"}, 10.0)

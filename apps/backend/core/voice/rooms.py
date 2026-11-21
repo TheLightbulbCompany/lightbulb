@@ -3,26 +3,17 @@ plan gate a call start passes, and the runtime prewake."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from core.billing import voice_billing
 from core.config import settings
 from core.engine import api
+from core.engine.api import _background, _fire  # noqa: F401 -- meetings fire their background work here
 from core.repositories import billing_repo, messaging_repo
 from core.services import messaging
 from core.voice.voice_calls import _problem
 
 logger = logging.getLogger(__name__)
-
-
-_background: set[asyncio.Task] = set()
-
-
-def _fire(coro) -> None:
-    task = asyncio.create_task(coro)
-    _background.add(task)
-    task.add_done_callback(_background.discard)
 
 
 async def room_agents(room_id: str) -> list[dict]:

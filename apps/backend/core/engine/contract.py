@@ -17,7 +17,7 @@ from pydantic.alias_generators import to_camel
 MessageVia = Literal["lightbulb_mcp", "ideas", "front_desk", "text", "apps", "voice", "meeting_notes", "meeting_chat"]
 
 #: The room `META` attributes the products write (call and meeting records, the call's token and live slot, a talk's
-#: owner). The engine stores them, returns them as `ConversationOut.annotations`, and never reads them.
+#: owner). The engine stores them and never reads them.
 PRODUCT_META_FIELDS: frozenset[str] = frozenset({"call", "callToken", "liveSlot", "meeting", "ownerUserId"})
 #: The trigger `ref` keys only products give meaning to. A trigger carrying one is a product's (`product_ref`): the
 #: engine asks that product's hooks about it and otherwise leaves the keys alone.
@@ -54,67 +54,12 @@ class Principal(Model):
     display_name: str | None = None
 
 
-class AgentRef(Model):
-    id: str
-    name: str
-    mention_handle: str | None = None
-
-
-class MemberIn(Model):
-    kind: Literal["human", "agent"]
-    id: str
-    display_name: str | None
-    role: Literal["owner", "member"] = "member"
-    listen_mode: str | None = None
-
-
 class QuestionRef(Model):
     task_id: str
     qid: str
 
 
 # --- operations (`core.engine.api`, Task 4) ----------------------------------------------------------------------
-
-
-class OpenIn(Model):
-    tenant_id: str
-    conversation_id: str | None = None
-    client_key: str
-    kind: str  # what messaging_repo.create_room takes: "call", and "channel" for a meeting's room
-    name: str
-    creator: Principal
-    members: list[MemberIn]
-    hidden: bool = False
-    seat_front_agent: bool = False
-    annotations: dict = {}
-
-
-class OpenOut(Model):
-    conversation_id: str
-    front_agent: AgentRef | None
-    after_seq: int
-    created: bool
-
-
-class AnnotateIn(Model):
-    tenant_id: str
-    conversation_id: str
-    set: dict
-    remove: list[str] = []
-    if_absent: str | None = None
-    expected_revision: int | None = None
-
-
-class ConversationOut(Model):
-    conversation_id: str
-    kind: str
-    hidden: bool
-    revision: int
-    last_seq: int
-    archived: bool
-    members: list[dict]
-    front_agent_id: str | None
-    annotations: dict
 
 
 class LineIn(Model):
@@ -170,11 +115,6 @@ class StartOut(Model):
     trigger_id: str
     created: bool
     qid: str | None = None
-
-
-class LinesOut(Model):
-    messages: list[dict]  # exactly `room_lines.agent_lines`'s item shape
-    after: int
 
 
 class AnswerIn(Model):

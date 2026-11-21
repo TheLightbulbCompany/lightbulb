@@ -5,7 +5,6 @@ import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
-import { WebSocketApi } from "aws-cdk-lib/aws-apigatewayv2";
 import * as appsync from "aws-cdk-lib/aws-appsync";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
@@ -1127,16 +1126,6 @@ def handler(event, context):
       service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
       vpc: props.vpc,
     });
-
-    // The WebSocket API is dead (its backend /api/v1/ws/* routes are gone). Only the bare
-    // API stays, with no routes, stage or domain, because the service and observability
-    // stacks still import its id this deploy; CloudFormation refuses to drop an export in use.
-    // ponytail: remove pin after one deploy (delete this API and the exportValue with it)
-    const wsApi = new WebSocketApi(this, "WebSocketApi", {
-      apiName: `lightbulb-${env}-websocket`,
-      routeSelectionExpression: "$request.body.action",
-    });
-    this.exportValue(wsApi.apiId);
 
     // =========================================================================
     // API Gateway account-level CloudWatch role (ACCOUNT singleton)

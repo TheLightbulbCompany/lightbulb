@@ -6,14 +6,17 @@ calls where a door writes them), carrying MARKER; then B, signed in, makes the c
   * nothing B gets back, and no outbound request B's call makes (HTTP, Stripe, a faked service), names A;
   * path id (`a_id=True`: B names A's room, task, key...): B gets 403 or 404, never 200;
   * token only: B's call succeeds, and no AWS call it makes names A either (B reads and writes only B's keys).
-`ok` overrides the expected statuses for a door whose answer to B is something else; the reason is beside it.
+`ok` overrides the expected statuses for a door whose answer to B is something else (the reason is beside it);
+`says` names the text that makes a refusal the tenant check rather than a generic one; `org_only` doors refuse a
+person (409 workspace_required) until a person's tenant can provision.
 Each case runs twice (`tenants`): as personal accounts (no `o` claim) and as two orgs.
 
-`test_every_tenant_door_has_a_case` walks the app: a new door with no case fails (no sampling)."""
+`test_every_tenant_door_has_a_case` walks the app: a new door with no case fails (no sampling);
+`test_every_router_seeds_a`: a router whose doors find nothing of A's fails unless NO_SEED says why."""
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -64,6 +67,8 @@ class Case:
     query: dict | None = None
     a_id: bool = False  # path id: B names A's resource
     ok: tuple[int, ...] = ()  # what this door answers B, when not the default
+    says: str = ""  # text B's answer must carry: the refusal is the tenant check, not a generic one
+    org_only: bool = False  # provisions, buys or bills: a person with no org gets 409 until Task 2
     files: bool = False  # a multipart image upload
 
     def __str__(self) -> str:
@@ -129,6 +134,12 @@ async def billing_rows(a: Tenant, b: Tenant, *, b_paid: bool = True) -> None:
         await billing_repo.create_if_not_exists(t.tenant, customer, owner_type="org" if t.org_id else "personal")
         if t is a or b_paid:
             await billing_repo.set_subscription(owner_id=t.tenant, subscription_id=f"sub_{customer}", status="active")
+
+
+async def a_runtime(a: Tenant) -> None:
+    """A running workspace: B's calls must never reach it (no AWS call or request names A)."""
+    await container_repo.mark_provision_error(a.tenant, last_error="", retryable=True)
+    await container_repo.update_fields(a.tenant, {"status": "running", "agentcore_runtime_arn": f"arn:{MARKER}"})
 
 
 # --- A's rows, per router -------------------------------------------------------------------------------
@@ -213,7 +224,10 @@ async def seed_link_wallet(a, b, mp, calls) -> dict:
     await billing_rows(a, b)
     limits = {"perPurchaseCents": 100, "projectMonthlyCents": 1000, "merchants": [f"https://{MARKER}.example"]}
     await billing_repo.set_purchase_limits(a.tenant, limits)
-    return {"request": f"req_{MARKER}"}
+    request = uuid.uuid4().hex
+    await put_row({"pk": messaging_repo.owner_pk(a.tenant), "sk": f"PURCHASE#{request}", "status": "needs_owner",
+                   "merchant": MARKER})  # fmt: skip
+    return {"request": request}
 
 
 async def _a_task(a: Tenant) -> str:
@@ -255,6 +269,7 @@ async def seed_questions(a, b, mp, calls) -> dict:
 
 async def seed_automations(a, b, mp, calls) -> dict:
     await workspaces(a, b)
+    await billing_rows(a, b)  # both paid: B's webhook automation reaches the seed
     fake(mp, calls, "core.services.automation_schedule.upsert")
     fake(mp, calls, "core.services.automation_schedule.delete")
     made = await ok(a, "POST", "/api/v1/automations", {"name": f"{MARKER} auto", "instructions": f"{MARKER} do it"})
@@ -337,6 +352,7 @@ async def seed_agent_mail(a, b, mp, calls) -> dict:
 
 async def seed_agent_text(a, b, mp, calls) -> dict:
     await workspaces(a, b)
+    mp.setattr("core.services.photon.enabled", lambda: True)  # else a reply is "disabled" before the key is read
     team = await _mail(a, "acme-a")
     for t, number in ((a, "+15551230000"), (b, "+15551239999")):
         assert await agent_email_repo.put_pending_line(owner_id=t.tenant, agent_id=ceo(t), operation_id="op")
@@ -364,11 +380,18 @@ async def seed_company_slug(a, b, mp, calls) -> dict:
 async def seed_connections(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     await integrations_repo.put_status(a.tenant, "github", identity=f"{MARKER}-gh")
+    await ok(a, "GET", "/api/v1/connections/aws/aws-setup")  # A's external id: B's complete must not use it
+    fake(mp, calls, "routers.connections._validate_token", True)
+    fake(mp, calls, "core.services.credentials.apply_connection.apply_connection")
     return {}
 
 
 async def seed_network_route(a, b, mp, calls) -> dict:
+    from core.services import app_wake
+
     await network_route._connections().put_route(key="key_a", user_id=a.user_id, generation="g1", name=f"{MARKER} mac")
+    await put_row({**app_wake._key(a.user_id, "app-a"), "app": "app-a", "client": MARKER, "state": "needs_key"})
+    await network_route.set_pin(b.user_id, "app-b", {"kind": "computer", "key": "key_b", "name": "b"}, "app-b", "b")
     return {"key": "key_a"}
 
 
@@ -381,6 +404,7 @@ async def seed_sessions(a, b, mp, calls) -> dict:
 async def seed_container(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     await billing_rows(a, b)
+    await a_runtime(a)
     fake(mp, calls, "core.services.provision_dispatch.dispatch_provision")
     return {}
 
@@ -394,11 +418,65 @@ async def seed_users(a, b, mp, calls) -> dict:
 
 
 async def seed_runtime_rpc(a, b, mp, calls) -> dict:
+    await a_runtime(a)
     op = str(uuid.uuid4())
     await messaging_repo.create_operation(
         owner_id=a.tenant, operation_id=op, requester_user_id=a.user_id, method="health", params={"q": MARKER}
     )
     return {"op": op}
+
+
+async def seed_network(a, b, mp, calls) -> dict:
+    """A's computer asked to bring A's agents onto a network (a bearer code: describing it shows the computer's
+    name, by design of a device flow; approving it is A's alone)."""
+    from core.services import device_login, network_login
+
+    fields = {"kind": network_login.KIND, "purpose": "agents", "computerKey": "key_a", "ticket": MARKER}
+    fields |= {"machineName": "a-mac", "startedAt": 1, "sourceIp": "", "computerUser": a.user_id}
+    code = await device_login.create(fields, network_login.PAGE, code_in_url=False)
+    return {"code": code["userCode"]}
+
+
+async def seed_oauth(a, b, mp, calls) -> dict:
+    """A's pending ChatGPT sign-in. The doors take no id: each reads only the caller's own row."""
+    from core.services import oauth_service
+
+    await billing_rows(a, b)  # both paid: B's start runs to OpenAI (the network fake), with B's ids only
+    row = {"user_id": a.user_id, "state": "pending", "device_auth_id": MARKER, "user_code": "AAAA-AAAA"}
+    await run_in_thread(oauth_service._table().put_item, Item={**row, "interval": 5, "bound_owner_id": a.tenant})
+    return {}
+
+
+async def seed_devices(a, b, mp, calls) -> dict:
+    await user_repo.put(a.user_id, None)
+    await user_repo.set_push_token(a.user_id, "dev-a", {"token": f"ExponentPushToken[{MARKER}]", "platform": "ios"})
+    return {}
+
+
+async def seed_debug(a, b, mp, calls) -> dict:
+    await workspaces(a, b)
+    await billing_rows(a, b)
+    await a_runtime(a)
+    fake(mp, calls, "core.services.provision_dispatch.dispatch_provision")
+    return {}
+
+
+async def seed_config(a, b, mp, calls) -> dict:
+    """Each agent's config.yaml, as provisioning leaves it (A's carry MARKER)."""
+    await workspaces(a, b)
+    for t, body in ((a, f"marker: {MARKER}\n"), (b, "x: 0\n")):
+        for agent in await messaging.load_agent_roster(t.tenant):
+            hermes_profiles.put_owner_object(
+                f"{hermes_profiles.profile_prefix(t.tenant, agent['id'])}config.yaml", body.encode()
+            )
+    return {}
+
+
+async def seed_orgs(a, b, mp, calls) -> dict:
+    """An org can be joined by link; a person (user mode) has nothing joinable, so A's id is refused as any is."""
+    if a.org_id:
+        await ok(a, "POST", f"/api/v1/orgs/{a.org_id}/join-link")
+    return {}
 
 
 SEEDS = {
@@ -424,6 +502,12 @@ SEEDS = {
     "container": seed_container,
     "users": seed_users,
     "runtime_rpc": seed_runtime_rpc,
+    "network": seed_network,
+    "oauth": seed_oauth,
+    "devices": seed_devices,
+    "debug": seed_debug,
+    "config": seed_config,
+    "orgs": seed_orgs,
 }
 
 VOICE_PLAN = {"expectedOwnerId": "{b_tenant}", "planVersion": "voice-agents-v1", "acceptMonthlyUsd": 250}
@@ -479,22 +563,27 @@ CASES = [
     Case("voice", "PUT", "/api/v1/voice/agent", {"config": {"greeting": "b greeting"}}),
     Case("voice", "POST", "/api/v1/voice/forward-check", {"forwardFrom": "+15550100004"}),
     Case("voice", "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}),
-    Case("voice", "POST", "/api/v1/voice/number", {"path": "new", "areaCode": "415"}),
+    Case("voice", "POST", "/api/v1/voice/number", {"path": "new", "areaCode": "415"}, org_only=True),
     # billing: tenant = caller; the owner checks out, opens the portal, cancels
     Case("billing", "GET", "/api/v1/billing/account"),
     Case("billing", "GET", "/api/v1/billing/trial-recap"),
     Case("billing", "GET", "/api/v1/billing/credits/balance"),
     Case("billing", "POST", "/api/v1/billing/portal"),
-    Case("billing", "POST", "/api/v1/billing/checkout", {"plan": "workspace"}),
-    Case("billing", "POST", "/api/v1/billing/front-desk", {}),
+    Case("billing", "POST", "/api/v1/billing/checkout", {"plan": "workspace"}, org_only=True),
+    Case("billing", "POST", "/api/v1/billing/front-desk", {}, org_only=True),
     Case("billing", "GET", "/api/v1/billing/voice-plan"),
-    Case("billing", "POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN),
+    Case("billing", "POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, org_only=True),
     Case("billing", "DELETE", "/api/v1/billing/voice-plan", query={"expectedOwnerId": "{b_tenant}"}),
     # apple_iap: tenant = caller (selling is off in prod)
-    Case("apple_iap", "POST", "/api/v1/billing/apple/purchase-intent"),
+    Case("apple_iap", "POST", "/api/v1/billing/apple/purchase-intent", org_only=True),
     Case(
-        "apple_iap", "POST", "/api/v1/billing/apple/link", {"signed_transaction": "not-a-jws"}, ok=(503,)
-    ),  # no Apple keys in tests
+        "apple_iap",
+        "POST",
+        "/api/v1/billing/apple/link",
+        {"signed_transaction": "not-a-jws"},
+        ok=(503,),
+        org_only=True,
+    ),  # no Apple keys in tests: the org case proves only that nothing of A's moves
     # company_link_wallet: tenant = caller
     Case("company_link_wallet", "GET", "/api/v1/company/link-wallet/status"),
     Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/connect"),
@@ -533,8 +622,7 @@ CASES = [
         "automations",
         "POST",
         "/api/v1/automations/from-integration",
-        {"provider": "stripe", "event_ids": ["x"]},
-        ok=(400, 402),
+        {"provider": "stripe", "event_ids": ["invoice.payment_failed"]},
     ),
     Case("automations", "PUT", "/api/v1/automations/{hook}/webhook-secret", {"webhook_secret": "whsec_b"}, a_id=True),
     Case("automations", "GET", "/api/v1/automations/{sid}", a_id=True),
@@ -578,16 +666,32 @@ CASES = [
     Case("memory", "POST", "/api/v1/memory/drafts/{draft}/approve", a_id=True),
     Case("memory", "POST", "/api/v1/memory/drafts/{draft}/dismiss", a_id=True),
     # network: person mode is the signed-in person
-    Case("network", "POST", "/api/v1/network/device/describe", {"userCode": "ABCD-EFGH"}, ok=(410,)),  # no such code
-    Case("network", "POST", "/api/v1/network/device/approve", {"userCode": "ABCD-EFGH"}, ok=(410,)),
-    Case("network", "POST", "/api/v1/network/leave", ok=(409,)),  # B's workspace is on no network
+    Case("network", "POST", "/api/v1/network/device/describe", {"userCode": "{code}"}, says="agents"),  # bearer code
+    Case(
+        "network",
+        "POST",
+        "/api/v1/network/device/approve",
+        {"userCode": "{code}"},
+        ok=(409,),
+        says="lightbulb login",
+        org_only=True,
+    ),  # A's computer, not B's
+    Case("network", "POST", "/api/v1/network/leave", ok=(409,), says="not on a network", org_only=True),
     # network_route: the person's own apps, wakes and computers
     Case("network_route", "GET", "/api/v1/network/apps"),
-    Case("network_route", "PUT", "/api/v1/network/apps/route", {"clientId": "app-b", "key": "{key}"}, a_id=True),
+    Case(
+        "network_route",
+        "PUT",
+        "/api/v1/network/apps/route",
+        {"clientId": "app-b", "key": "{key}"},
+        a_id=True,
+        ok=(409,),
+        says="offline",
+    ),  # B's own app, pinned to A's computer: not one of B's
     Case("network_route", "POST", "/api/v1/network/computers/{key}/sign-out", a_id=True),
     Case("network_route", "GET", "/api/v1/network/wakes"),
-    Case("network_route", "PUT", "/api/v1/network/wakes/app-b", {"key": "k"}, ok=(404,)),  # no wake-up request
-    Case("network_route", "DELETE", "/api/v1/network/wakes/app-b"),
+    Case("network_route", "PUT", "/api/v1/network/wakes/app-a", {"key": "k"}, a_id=True),  # A's app asked A
+    Case("network_route", "DELETE", "/api/v1/network/wakes/app-a"),
     # agent_keys: the caller's own keys
     Case("agent_keys", "GET", "/api/v1/settings/agent-keys"),
     Case("agent_keys", "POST", "/api/v1/settings/agent-keys", {"name": "b key"}),
@@ -596,7 +700,15 @@ CASES = [
     Case("agent_text", "GET", "/api/v1/agent-text/line"),
     Case("agent_text", "POST", "/api/v1/agent-text/me/phone/code"),
     Case("agent_text", "DELETE", "/api/v1/agent-text/me/phone"),
-    Case("agent_text", "POST", "/api/v1/agent-text/reply", {"key": "{key}", "text": "hi"}, a_id=True, ok=(200,)),
+    Case(
+        "agent_text",
+        "POST",
+        "/api/v1/agent-text/reply",
+        {"key": "{key}", "text": "hi"},
+        a_id=True,
+        ok=(200,),
+        says="bad_reply_key",
+    ),
     Case("agent_text", "POST", "/api/v1/agent-text/thread", {"key": "{key}", "mode": "human"}, a_id=True),
     # agent_mail: tenant = caller; mail keys and transcripts are read at the caller's own team address
     Case("agent_mail", "GET", "/api/v1/agent-mail/address"),
@@ -620,7 +732,7 @@ CASES = [
     Case("container", "POST", "/api/v1/browser/input", {"type": "key", "key": "a"}, ok=(409,)),  # no live page
     # connections: tenant = caller; the owner manages connections
     Case("connections", "GET", "/api/v1/connections"),
-    Case("connections", "POST", "/api/v1/connections/parallel", {"token": "b"}, ok=(422,)),  # the check call is refused
+    Case("connections", "POST", "/api/v1/connections/parallel", {"token": "b"}),
     Case("connections", "DELETE", "/api/v1/connections/github"),
     Case("connections", "GET", "/api/v1/connections/github/authorize", ok=(503,)),  # no GitHub OAuth app in tests
     Case("connections", "GET", "/api/v1/connections/aws/aws-setup"),
@@ -630,18 +742,19 @@ CASES = [
         "/api/v1/connections/aws/aws-complete",
         {"role_arn": "arn:aws:iam::123456789012:role/lightbulb-connector"},
         ok=(409,),
-    ),  # B ran no aws-setup
+        says="aws-setup",
+    ),  # A ran aws-setup, B did not: A's external id is not B's
     Case("connections", "PUT", "/api/v1/connections/x/byo-app", {"client_id": "b", "client_secret": "b"}),
     Case("connections", "DELETE", "/api/v1/connections/x/byo-app"),
     # oauth: tenant = caller; the ChatGPT binding belongs to the tenant that started it
     Case("oauth", "GET", "/api/v1/oauth/chatgpt/status"),
-    Case("oauth", "POST", "/api/v1/oauth/chatgpt/start", ok=(402,)),  # B has no paid plan
-    Case("oauth", "POST", "/api/v1/oauth/chatgpt/poll", ok=(502,)),  # the poll reads only B's own session: none
+    Case("oauth", "POST", "/api/v1/oauth/chatgpt/start", ok=(502,), says="usercode"),  # OpenAI is the network fake
+    Case("oauth", "POST", "/api/v1/oauth/chatgpt/poll", ok=(502,), says="user_b"),  # B's own row only: none
     Case("oauth", "POST", "/api/v1/oauth/chatgpt/disconnect"),
     # debug: 403 in prod; tenant = caller in dev
     Case("debug", "GET", "/api/v1/debug/ddb-rows", query={"owner_id": "{a_tenant}"}, a_id=True),
     Case("debug", "POST", "/api/v1/debug/provision"),
-    Case("debug", "PATCH", "/api/v1/debug/provision", ok=(404,)),  # B has no container
+    Case("debug", "PATCH", "/api/v1/debug/provision", ok=(404,)),  # B has no container; A's is untouched
     Case("debug", "DELETE", "/api/v1/debug/provision"),
     Case("debug", "DELETE", "/api/v1/debug/user-data"),
     # config: tenant = caller
@@ -693,33 +806,48 @@ CASES = [
 ]
 
 
-async def _no_seed(a, b, mp, calls) -> dict:
-    return {}
+# Routers with tenant doors and no seed for A, each with why there is nothing of A's to seed.
+NO_SEED = {
+    "a2a": "the path names a workspace; any caller not in it is refused before a row is read (in user mode A "
+    "itself is refused: A2A is org-only until Task 9)",
+    "main": "/protected echoes the caller's own id",
+    "support_tickets": "emails support about the caller; reads only the caller's own rows",
+    "desktop_auth": "mints a Clerk sign-in token for the caller; reads no tenant row (Clerk is the network fake)",
+}
 
 
-async def run_case(case: Case, tenants: tuple[Tenant, Tenant], calls, ddb, mp) -> None:
+@pytest.mark.parametrize("case", [pytest.param(c, id=f"{c.router} {c}") for c in CASES])
+async def test_cross_account(case, tenants, calls, ddb, monkeypatch):
     a, b = tenants
-    seeded = await SEEDS.get(case.router, _no_seed)(a, b, mp, calls)
+    seeded = await SEEDS[case.router](a, b, monkeypatch, calls) if case.router in SEEDS else {}
     ids = {"b": b.user_id, "b_tenant": b.tenant, "a_tenant": a.tenant, "new": str(uuid.uuid4()), "agent": ceo(a)}
     ids |= seeded
-    needles = [MARKER, *a.ids, *seeded.get("_needles", [])]
+    needles = {MARKER, a.user_id, a.tenant, *seeded.get("_needles", [])}
     before = snapshot(ddb, *needles)
     calls.clear()
     files = {"image": ("b.png", PNG, "image/png")} if case.files else None
-    r = await call(b, case.method, fill(case.path, ids), fill(case.body, ids), fill(case.query, ids), files)
+    path, query = fill(case.path, ids), fill(case.query, ids)
+    r = await call(b, case.method, path, fill(case.body, ids), query, files)
     out = [c for c in calls if case.a_id is False or c[0] != "aws"]  # a path id is looked up; nothing else may name A
     seen = json.dumps(out, default=str)
     assert snapshot(ddb, *needles) == before, "B's call changed A's rows"
-    assert not (r.status_code == 409 and "workspace_required" in r.text), "a person with no org is their own tenant"
-    expected = case.ok or ((403, 404) if case.a_id else tuple(range(200, 400)))
-    assert r.status_code in expected, f"{r.status_code} {r.text[:400]}"
-    reply = r.text if not case.a_id else r.text.replace(a.tenant, "")  # a 404 may echo the id B sent
+    if case.org_only and not b.org_id:
+        assert r.status_code == 409 and "workspace_required" in r.text, f"{r.status_code} {r.text[:300]}"
+    else:
+        expected = case.ok or ((403, 404) if case.a_id else tuple(range(200, 400)))
+        assert r.status_code in expected, f"{r.status_code} {r.text[:400]}"
+        assert case.says in r.text, r.text[:400]
+    reply = r.text
+    for sent in {*path.split("/"), *map(str, (query or {}).values())} & needles:
+        reply = reply.replace(sent, "")  # a refusal may echo the id B sent, and only that
     named = mentions(reply + seen, needles)
     assert not named, f"B's call named A ({named}): {r.text[:200]} {seen[:400]}"
 
 
-def cases(router: str) -> list:
-    return [pytest.param(c, id=str(c)) for c in CASES if c.router == router]
+def test_every_router_seeds_a():
+    """A router whose doors find nothing of A's proves nothing: each has a seed, or a named reason."""
+    routers = {c.router for c in CASES}
+    assert routers - SEEDS.keys() == NO_SEED.keys(), sorted(routers - SEEDS.keys() ^ NO_SEED.keys())
 
 
 # --- the meta-test: every door has a case -------------------------------------------------------------
@@ -776,169 +904,6 @@ def test_every_tenant_door_has_a_case():
     assert not stale, f"cases for doors that are gone: {stale}"
 
 
-# --- one test per router, parametrized over every one of its doors --------------------------------------
-
-
-@pytest.mark.parametrize("case", cases("messaging"))
-async def test_messaging_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("huddles"))
-async def test_huddles_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("voice"))
-async def test_voice_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("billing"))
-async def test_billing_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("apple_iap"))
-async def test_apple_iap_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("company_link_wallet"))
-async def test_company_link_wallet_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("tasks"))
-async def test_tasks_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("questions"))
-async def test_questions_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("automations"))
-async def test_automations_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("teams.agents"))
-async def test_teams_agents_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("workspace_files"))
-async def test_workspace_files_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("memory"))
-async def test_memory_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("network"))
-async def test_network_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("network_route"))
-async def test_network_route_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("agent_keys"))
-async def test_agent_keys_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("agent_text"))
-async def test_agent_text_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("agent_mail"))
-async def test_agent_mail_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("company_slug"))
-async def test_company_slug_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("container"))
-async def test_container_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("connections"))
-async def test_connections_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("oauth"))
-async def test_oauth_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("debug"))
-async def test_debug_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("config"))
-async def test_config_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("orgs"))
-async def test_orgs_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("users"))
-async def test_users_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("sessions"))
-async def test_sessions_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("devices"))
-async def test_devices_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("support_tickets"))
-async def test_support_tickets_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("desktop_auth"))
-async def test_desktop_auth_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("runtime_rpc"))
-async def test_runtime_rpc_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("a2a"))
-async def test_a2a_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
-@pytest.mark.parametrize("case", cases("main"))
-async def test_main_cross_account(case, tenants, calls, ddb, monkeypatch):
-    await run_case(case, tenants, calls, ddb, monkeypatch)
-
-
 # --- the rule itself ------------------------------------------------------------------------------------
 
 
@@ -953,12 +918,15 @@ async def test_live_config_cross_account(tenants, calls, ddb, monkeypatch):
     assert not mentions(" ".join(snapshot(ddb, f"WORKSPACE#{mine['workspaceId']}")), [b.user_id])
 
 
-@pytest.mark.parametrize(
-    "ctx",  # as the doors with no org build them: a signed computer's person, a paired Mac, a hosted-MCP token
-    [AuthContext(user_id="user_x"), AuthContext(user_id="user_x", org_id=None, verified_issuer="https://x")],
+@pytest.mark.parametrize(  # as the doors with no org build them from a person's own session
+    "ctx",
+    [
+        AuthContext(user_id="user_x", human_session=True),
+        AuthContext("user_x", None, verified_issuer="i", human_session=True),
+    ],
 )
 def test_admin_without_org_is_own_tenant_only(ctx):
-    """A context with no org is its person's own tenant and its admin, and nobody else's."""
+    """A signed-in person with no org is their own tenant and its admin, and nobody else's."""
     assert resolve_owner_id(ctx) == ctx.user_id
     assert ctx.is_org_admin and require_org_admin(ctx) is ctx
     synthetic = AuthContext(user_id="user_x", org_id="org_t")  # an internal door's org context, no role
@@ -966,6 +934,18 @@ def test_admin_without_org_is_own_tenant_only(ctx):
     with pytest.raises(HTTPException) as refused:
         require_org_admin(synthetic)
     assert refused.value.status_code == 403
+
+
+@pytest.mark.parametrize("token", ["oauth", "template"])
+async def test_non_session_token_without_org_has_no_tenant(token, tenants):
+    """An OAuth access token or a JWT-template token with no org is refused on tenant resolution as before this
+    task (409 workspace_required); with an org it is that org's, as before."""
+    _, b = tenants
+    r = await call(replace(b, token=token), "GET", "/api/v1/voice/timeline")
+    if b.org_id:
+        assert r.status_code == 200
+    else:
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "workspace_required"
 
 
 async def test_org_claim_still_wins_interim(tenants):
@@ -978,16 +958,48 @@ async def test_org_claim_still_wins_interim(tenants):
     assert resolve_owner_id(ctx) == (b.org_id or b.user_id)
 
 
-async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(ddb, calls, jwks):
-    """Accepted exposure until user tenants provision (Task 2): a session with no org resolves to the person on
-    every door. It reads its own, empty data, and every provisioning door still refuses it."""
+# Every door that would provision, buy, bill or join a network for a person with no org, and what it answers.
+REFUSED = [
+    ("GET", "/api/v1/container/status", None, 403),  # no trial row for a person (ensure_workspace_trial_default)
+    ("POST", "/api/v1/container/provision", None, 403),
+    ("POST", "/api/v1/container/retry", None, 403),
+    ("POST", "/api/v1/debug/provision", None, 200),  # answers "provisioning"; dispatch_provision refuses
+    ("POST", "/api/v1/network/device/approve", {"userCode": "{code}"}, 409),  # the person's own `agents` code
+    ("POST", "/api/v1/network/leave", None, 409),
+    ("POST", "/api/v1/billing/checkout", {"plan": "workspace"}, 409),
+    ("POST", "/api/v1/billing/front-desk", {}, 409),
+    ("POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, 409),
+    ("POST", "/api/v1/billing/apple/purchase-intent", None, 409),
+    ("POST", "/api/v1/billing/apple/link", {"signed_transaction": "x"}, 409),
+    ("POST", "/api/v1/voice/number", {}, 409),
+    ("PUT", "/api/v1/voice/agent", {"config": {"live": True}}, 409),  # going live gives a number
+    ("POST", "/api/v1/oauth/chatgpt/start", None, 402),  # needs a paid plan, which a person cannot buy yet
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body", "status"), REFUSED, ids=[f"{m} {p}" for m, p, _, _ in REFUSED])
+async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
+    method, path, body, status, ddb, calls, jwks, monkeypatch
+):
+    """Accepted exposure until user tenants provision (Task 2): a session with no org is the person's tenant on
+    every door. It reads its own, empty data; every door that would provision it, mint it a key or a line, bill
+    it or join its agents to a network refuses, and nothing is written or sent for it."""
+    from core.services import device_login, network_login
 
     person = Tenant("user_solo", None)
     timeline = await ok(person, "GET", "/api/v1/voice/timeline")
     assert not any(v for v in timeline.values() if isinstance(v, list))
     assert (await ok(person, "GET", "/api/v1/tasks"))["tasks"] == []
-    refused = await call(person, "POST", "/api/v1/container/provision")
-    assert refused.status_code == 403
+    fields = {"kind": network_login.KIND, "purpose": "agents", "computerKey": "k", "ticket": "t"}
+    fields |= {"machineName": "m", "startedAt": 1, "sourceIp": "", "computerUser": person.user_id}
+    code = (await device_login.create(fields, network_login.PAGE, code_in_url=False))["userCode"]
+    fake(monkeypatch, calls, "core.services.network_member.join_network")
+    calls.clear()
+    r = await call(person, method, path, fill(body, {"code": code, "b_tenant": person.user_id}))
+    assert r.status_code == status, r.text[:300]
+    if status == 409:
+        assert r.json()["detail"]["code"] == "workspace_required"
+    assert not [c for c in calls if c[0] in ("stripe", "http", "fake")]
     assert await dispatch_provision(person.user_id) is False
     assert await container_repo.get_by_owner_id(person.user_id) is None
     assert await billing_repo.get_by_owner_id(person.user_id) is None

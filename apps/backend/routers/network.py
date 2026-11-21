@@ -176,8 +176,9 @@ async def device_approve_desktop(body: DeviceCode, response: Response, device=De
 async def network_leave(ctx: AuthContext = Depends(get_current_user)):
     """An admin takes this workspace's agents off their network, so ``lightbulb invite --agents``
     can add them to another."""
-    from core.auth import require_org_admin, resolve_owner_id
+    from core.auth import require_org, require_org_admin, resolve_owner_id
 
+    require_org(ctx)  # workspace mode stays org-only (task 9)
     require_org_admin(ctx)
     await network_member.leave_network(resolve_owner_id(ctx))
     return {"state": "left"}

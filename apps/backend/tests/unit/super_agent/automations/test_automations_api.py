@@ -149,6 +149,13 @@ async def test_member_cannot_add_webhook_trigger(api):
     assert _as(api, PRIYA, admin=False).post(BASE, json=_IN).status_code == 200  # a schedule alone is fine
 
 
+async def test_unknown_provider_is_400_and_creates_nothing(api):
+    body = _IN | {"events": [{"provider": "nope", "eventIds": ["x"]}]}
+    r = _as(api, SAM).post(BASE, json=body)
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "invalid_trigger"
+    assert await repo.list_schedules(WS) == []
+
+
 async def test_create_with_event_trigger_seeds_a_hook(api):
     seed = AsyncMock(return_value={"trigger_public_id": "pub_1", "guided": True, "instructions": "paste"})
     with patch("core.services.automation_hooks.seed", seed):

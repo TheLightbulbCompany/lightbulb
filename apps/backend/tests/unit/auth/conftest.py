@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from moto import mock_aws
 
 from core import auth, dynamodb
+from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from tests.contract.conftest import _create_contract_tables
 
@@ -35,23 +36,25 @@ _JWK = {**jwt.algorithms.RSAAlgorithm.to_jwk(_KEY.public_key(), as_dict=True), "
 class Tenant:
     user_id: str
     org_id: str | None
+    token: str = "session"  # or "oauth" (an `at+jwt` access token), "template" (a JWT-template token: no `sid`)
 
     @property
     def tenant(self) -> str:
-        return self.org_id or self.user_id
-
-    @property
-    def ids(self) -> tuple[str, ...]:
-        return tuple(i for i in (self.user_id, self.org_id) if i)
+        return resolve_owner_id(AuthContext(user_id=self.user_id, org_id=self.org_id, human_session=True))
 
     @property
     def headers(self) -> dict:
         now = int(time.time())
-        claims = {"sub": self.user_id, "sid": f"sess_{self.user_id}", "iss": settings.CLERK_ISSUER}
-        claims |= {"iat": now, "exp": now + 3600, "email": f"{self.user_id}@example.com"}
+        claims = {"sub": self.user_id, "iss": settings.CLERK_ISSUER, "iat": now, "exp": now + 3600}
+        claims |= {"email": f"{self.user_id}@example.com"}
+        if self.token != "template":
+            claims["sid"] = f"sess_{self.user_id}"
+        if self.token == "oauth":
+            claims["client_id"] = "oauth_app"
         if self.org_id:
             claims["o"] = {"id": self.org_id, "rol": "admin", "slg": self.org_id}
-        token = jwt.encode(claims, _KEY, algorithm="RS256", headers={"kid": "test"})
+        typ = {"typ": "at+jwt"} if self.token == "oauth" else {}
+        token = jwt.encode(claims, _KEY, algorithm="RS256", headers={"kid": "test", **typ})
         return {"Authorization": f"Bearer {token}"}
 
 

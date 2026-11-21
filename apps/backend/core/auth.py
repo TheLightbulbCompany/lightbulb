@@ -60,7 +60,7 @@ class AuthContext:
 
     Provides convenient properties for checking user context:
     - is_org_context: True when user has active organization selected
-    - is_org_admin: True when user has admin role in current org, or has no org (they own their account)
+    - is_org_admin: True when user has admin role in current org, or is a signed-in person with no org
     """
 
     user_id: str
@@ -78,6 +78,9 @@ class AuthContext:
     email: str | None = None
     # Immutable JWT provenance; display/email and tenant ownership are separate.
     verified_issuer: str | None = None
+    # A first-party Clerk session token (`_session_token`). Only such a caller with no org is its own tenant;
+    # any other context with no org (an OAuth or template token, a signed computer) has no tenant.
+    human_session: bool = False
 
     @property
     def is_org_context(self) -> bool:
@@ -86,18 +89,34 @@ class AuthContext:
 
     @property
     def is_org_admin(self) -> bool:
-        """True for an admin of the current org, and for a person with no org: they are their own tenant's owner."""
-        return self.org_id is None or self.org_role == "org:admin"
+        """True for an admin of the current org, and for a signed-in person with no org: their own tenant's owner."""
+        return (not self.org_id and self.human_session) or self.org_role == "org:admin"
 
 
-# provision_gate's Layer-0 gate.
+# Shared by resolve_owner_id's 409 and provision_gate's Layer-0 gate.
 WORKSPACE_REQUIRED_CODE = "workspace_required"
 WORKSPACE_REQUIRED_MESSAGE = "Choose or create a workspace to continue."
 
 
+def _workspace_required() -> HTTPException:
+    return HTTPException(
+        status_code=409, detail={"code": WORKSPACE_REQUIRED_CODE, "message": WORKSPACE_REQUIRED_MESSAGE}
+    )
+
+
 def resolve_owner_id(auth: AuthContext) -> str:
-    """The tenant: the active org, else the person. ponytail: interim rule, the org part goes when orgs do."""
-    return auth.org_id or auth.user_id
+    """The tenant: the active org, else a signed-in person."""
+    if auth.org_id:
+        return auth.org_id
+    if not auth.human_session:
+        raise _workspace_required()
+    return auth.user_id
+
+
+def require_org(auth: AuthContext) -> None:
+    """The doors that provision, buy or bill stay org-only until a person's tenant can provision."""
+    if not auth.org_id:
+        raise _workspace_required()
 
 
 def is_org_owner_id(owner_id: str) -> bool:
@@ -112,7 +131,8 @@ def is_org_owner_id(owner_id: str) -> bool:
 
 
 def require_org_admin(auth: AuthContext) -> AuthContext:
-    """Require the tenant's admin: an org admin, or a person with no org (their own)."""
+    """Require the tenant's admin: an org admin, or a signed-in person with no org (their own)."""
+    resolve_owner_id(auth)
     if not auth.is_org_admin:
         put_metric("auth.org_admin.denied")
         raise HTTPException(status_code=403, detail="Organization admin access required")
@@ -213,6 +233,7 @@ async def get_current_user(
             org_permissions=org["org_permissions"],
             email=payload.get("email"),
             verified_issuer=payload.get("iss"),
+            human_session=_session_token(token),
         )
         bind_request_context(request_id_var.get() or "", payload["sub"])
         return ctx
@@ -240,6 +261,19 @@ async def get_current_user(
 HUMAN_SESSION_REQUIRED = "human_session_required"
 
 
+def _session_token(token: str) -> bool:
+    """A first-party Clerk session token: it carries `sid`, and is neither an OAuth access token issued as a JWT
+    (`typ: at+jwt`, a `client_id` claim) nor a JWT-template token (no `sid`). Verified elsewhere; this only
+    classifies it."""
+    header = jwt.get_unverified_header(token)
+    claims = jwt.decode(token, options={"verify_signature": False})
+    return not (
+        str(header.get("typ", "")).lower() in ("at+jwt", "application/at+jwt")
+        or "client_id" in claims
+        or not claims.get("sid")
+    )
+
+
 async def get_human_session(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> AuthContext:
@@ -249,15 +283,7 @@ async def get_human_session(
     claim) and a JWT-template token (no `sid`) are refused with 403. The web, desktop webview
     and mobile call these routes with Clerk's default session token (no template)."""
     ctx = await get_current_user(credentials)
-    token = credentials.credentials
-    # Already verified above; these reads only classify it.
-    header = jwt.get_unverified_header(token)
-    claims = jwt.decode(token, options={"verify_signature": False})
-    if (
-        str(header.get("typ", "")).lower() in ("at+jwt", "application/at+jwt")
-        or "client_id" in claims
-        or not claims.get("sid")
-    ):
+    if not _session_token(credentials.credentials):
         put_metric("auth.human_session.refused")
         logger.warning("AUTH REFUSED: not a first-party session token")
         raise HTTPException(status_code=403, detail=HUMAN_SESSION_REQUIRED)

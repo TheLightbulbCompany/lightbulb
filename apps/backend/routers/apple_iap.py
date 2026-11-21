@@ -22,7 +22,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo
 from core.services import apple_iap as apple_iap_service
@@ -50,6 +50,7 @@ router = APIRouter()
 )
 async def apple_purchase_intent(auth: AuthContext = Depends(get_current_user)):
     # Runs BEFORE StoreKit charges: every refusal here costs the customer nothing.
+    require_org(auth)
     require_org_admin(auth)
     if not settings.APPLE_IAP_SELLING:
         raise HTTPException(status_code=404, detail="In-app purchase is not available")
@@ -73,6 +74,7 @@ async def apple_purchase_intent(auth: AuthContext = Depends(get_current_user)):
 async def link_apple_purchase(payload: dict, auth: AuthContext = Depends(get_current_user)):
     # Deliberately NOT gated on APPLE_IAP_SELLING: a purchase Apple already charged
     # must always be linkable (restore, relaunch), even after selling is switched off.
+    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     signed_transaction = (payload or {}).get("signed_transaction")

@@ -41,6 +41,7 @@ from core.services.inbound_triggers import (
     seed_trigger_routine,
 )
 from core.services import automation_hooks, automation_schedule, chat_gate, tasks_access
+from core.services.credentials import registry
 from core.services.trigger_fire_url import trigger_fire_url
 from routers.rules import RuleBuiltin, RuleMatchIn, check_scope, rule_stats
 from core.services.entitlement_guards import WEBHOOK_AUTOMATIONS_MESSAGE, require_always_on_entitlement
@@ -414,6 +415,9 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
     await check_deliver_room(body.deliver_to, ws, auth.user_id)
     if body.events:  # a webhook on a provider is an org-admin act, as `from_integration` is today
         require_org_admin(auth)
+        unknown = sorted({ev.provider for ev in body.events} - registry.all_providers().keys())
+        if unknown:
+            raise _err(400, "invalid_trigger", message=f"unknown integration provider: {unknown[0]!r}")
     fields = _schedule_fields(body.schedule) if body.schedule else {"cron": [], "tz": "UTC"}
     if body.match is not None and (body.schedule is not None or body.events):
         raise _err(409, "rule_never_runs")  # a rule fires on its matches, never on a schedule or a webhook
@@ -457,7 +461,7 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
                 description=None,
                 actor_user_id=auth.user_id,
             )
-        except (ValueError, KeyError) as exc:  # KeyError: a provider the registry does not know
+        except ValueError as exc:
             await _destroy(ws, sid)
             raise _err(400, "invalid_trigger", message=str(exc)) from exc
         setup.append(

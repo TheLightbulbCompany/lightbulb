@@ -26,7 +26,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.repositories import messaging_repo, billing_repo
@@ -297,6 +297,7 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
                 detail={"code": "front_agent_unavailable", "message": "Choose an active agent from this workspace."},
             )
     if body.config.get("live") and not (await messaging_repo.get_voice_agent(ws) or {}).get("live"):
+        require_org(auth)  # going live gives the tenant a number
         try:  # Go live: the number is given (bought, once buying is on) now, never at sign-up
             body.config["number"] = await voice_onboarding.provision_at_go_live(ws, body.config, auth.user_id)
         except voice_onboarding.NoNumber as exc:
@@ -346,6 +347,7 @@ class NumberIn(BaseModel):
 async def assign_number(body: NumberIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """With a body: store the onboarding choice (keep and forward, or new), nothing bought. Without: today's step 4,
     the configured line now. ponytail: the bodyless branch goes when Task 30's step 4 sends the choice."""
+    require_org(auth)
     require_org_admin(auth)
     if body and body.path:
         ws = resolve_owner_id(auth)

@@ -456,17 +456,14 @@ class TestContainerStatusGate:
         assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_personal_context_meets_the_workspace_gate_until_user_tenants_provision(self, monkeypatch):
-        from routers import container
+    async def test_personal_context_requires_workspace_before_provisioning(self):
         from routers.container import container_status
 
-        monkeypatch.setattr(container.readiness_state, "resolve_onboarding_state", AsyncMock(return_value=None))
-        monkeypatch.setattr(container.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
         with pytest.raises(HTTPException) as exc_info:
             await container_status(AuthContext(user_id="user_x"))
 
-        assert exc_info.value.status_code == 402
-        assert exc_info.value.detail["blocked"]["code"] == "workspace_required"
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "workspace_required"
 
     @pytest.mark.asyncio
     async def test_org_admin_no_billing_returns_team_billing_required_402(self):

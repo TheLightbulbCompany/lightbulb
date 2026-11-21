@@ -1,13 +1,11 @@
-"""/api/v1/memory -- a person's recall, the lesson drafts the network CLI settles (`lightbulb memory`),
-and the Hermes plugin's internal channel (recall, board, link, remember). See core.services.workspace_memory.
-"""
+"""/api/v1/memory -- a person's recall, and the Hermes plugin's internal channel (recall, board, link, remember). See core.services.workspace_memory."""
 
 import logging
 from collections.abc import Awaitable
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org, resolve_owner_id
@@ -15,13 +13,10 @@ from core.repositories import tasks_repo
 from core.services import (
     container_auth,
     effect_doors,
-    evaluator,
     memory_api,
     memory_links,
-    session_store,
     workspace_memory,
 )
-from routers.sessions import caller
 
 logger = logging.getLogger(__name__)
 
@@ -106,56 +101,6 @@ async def recall(body: RecallBody, auth: AuthContext = Depends(get_current_user)
     require_org(auth)  # AgentCore memory retrieval
     owner_id = resolve_owner_id(auth)
     return await _guard(memory_api.recall_page(owner_id, auth.user_id, **body.model_dump()))
-
-
-class ApproveBody(BaseModel):
-    scope: Literal["me", "team"] | None = None  # default: team in a workspace, me for a solo person
-
-
-async def _draft(draft_id: str, auth: AuthContext) -> dict:
-    """The caller's still-proposed draft; anyone else's (or a settled one) is 404, never 403."""
-    d = await evaluator.find_draft(draft_id, user_id=auth.user_id, workspace_id=auth.org_id)
-    if not d or d.get("status") != "proposed":
-        raise HTTPException(status_code=404, detail="draft not found")
-    return d
-
-
-@router.get("/drafts")
-async def list_drafts(auth: AuthContext = Depends(caller)) -> dict:
-    return {"drafts": await evaluator.list_drafts(user_id=auth.user_id, workspace_id=auth.org_id)}
-
-
-@router.post("/drafts/{draft_id}/approve")
-async def approve_draft(draft_id: str, body: ApproveBody | None = None, auth: AuthContext = Depends(caller)) -> dict:
-    d = await _draft(draft_id, auth)
-    if d["kind"] != "lesson":  # a finding may hold a secret: it can only be dismissed
-        raise HTTPException(status_code=422, detail="Only lessons can be approved.")
-    scope = (body and body.scope) or ("team" if auth.org_id else "me")
-    # Subject: the repo of the first evidence session, else its harness, else the draft kind.
-    first = (d.get("evidence") or [None])[0]
-    sess = await session_store.get_session(first, user_id=d["user_id"], workspace_id=None) if first else None
-    subject = (sess or {}).get("repo") or (sess or {}).get("harness") or d["kind"]
-    if not await evaluator.set_draft_status(d, "approved"):  # first, so a retry or double-click writes once
-        raise HTTPException(status_code=409, detail="draft already settled")
-    if auth.org_id:
-        try:
-            out = await _guard(
-                memory_api.remember(
-                    auth.org_id, subject=subject, fact=d["text"], kind="lesson", scope=scope, on_behalf_of=auth.user_id
-                )
-            )
-        except BaseException:  # BaseException: the revert must also run when the request is cancelled
-            await evaluator.set_draft_status(d, "proposed", frm="approved")
-            raise
-        return {"queued": out["queued"]}
-    return {"subject": subject, "fact": d["text"], "kind": "lesson", "scope": scope}
-
-
-@router.post("/drafts/{draft_id}/dismiss", status_code=204)
-async def dismiss_draft(draft_id: str, auth: AuthContext = Depends(caller)) -> Response:
-    if not await evaluator.set_draft_status(await _draft(draft_id, auth), "dismissed"):
-        raise HTTPException(status_code=409, detail="draft already settled")
-    return Response(status_code=204)
 
 
 @internal_router.post("/recall/{owner_id}")

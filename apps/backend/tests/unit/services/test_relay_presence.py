@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 
 from core.services import task_address
 from core.services.connection_service import ConnectionService
-from core.services.machine_auth import MachineIdentity
+from types import SimpleNamespace as MachineIdentity  # the paired-device identity shape
 
 IDENT = MachineIdentity(
     user_id="user_1",

@@ -473,8 +473,8 @@ this file keeps the why, not inventories.
   Clerk user ids in `PLATFORM_ADMIN_USER_IDS`.
 
 **Machine doors.** No browser opens a WebSocket. One machine door remains: `wss://bv[-env]` (CloudFront
-VpcOrigin to an ALB listener path-capped to `/api/v1/gateway/*`: the CLI network daemon's
-`routers/network_route.py` and Recall's Meet audio in `routers/meet_audio.py`). The `BrowserView*` construct ids stay because a rename replaces the
+VpcOrigin to an ALB listener path-capped to `/api/v1/gateway/*`: Recall's Meet audio in
+`routers/meet_audio.py`). The `BrowserView*` construct ids stay because a rename replaces the
 distribution.
 
 ## Billing

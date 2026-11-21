@@ -91,7 +91,7 @@ ENGINE = [
     *(
         f"core/services/{m}.py"
         for m in (
-            "admission task_conversation questions task_asks tasks_access task_board messaging openclaw_work jev "
+            "admission task_conversation questions task_asks tasks_access messaging openclaw_work jev "
             "runtime_runs runtime_transport container_rpc runtime_rpc"
         ).split()
     ),

@@ -102,9 +102,8 @@ subagent's id), and `subagent_start` / `subagent_end` lifecycle events mark each
 Native provider credentials, approvals and ordinary terminal workflows stay on
 the human's machine.
 
-It only reads (`resources`, `read`): it never messages or stops a session. To
-message a session, use `lightbulb_network` (`directory` finds it, `send` sends):
-the session's own computer delivers it. You cannot stop a session's turn; its person does that in its terminal.
+It only reads (`resources`, `read`): you cannot message or stop a session; its
+person does that in its terminal.
 
 The grant behind this tool is bound to the current room turn or Paperclip run
 and lasts 30 minutes. There is no autonomous refresh or owner-wide hook

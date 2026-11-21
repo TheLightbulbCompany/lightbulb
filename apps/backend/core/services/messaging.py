@@ -4095,12 +4095,10 @@ async def create_human_message(
     *,
     via: MessageVia | None = None,
     text_reply_key: str | None = None,
-    author_override: dict | None = None,
     expected_room_revision: int | None = None,
     wake: bool = True,
 ) -> CanonicalMessage:
-    """``author_override`` is the hosted MCP's client identity; ``auth`` stays the accountable human.
-    ``wake=False`` stores and shows the message but dispatches no agent: an Ideas record whose work
+    """``wake=False`` stores and shows the message but dispatches no agent: an Ideas record whose work
     Paperclip already started.
     ``expected_room_revision`` fences the write: a room changed since that read (e.g. a DM turned
     into a group DM) refuses with MESSAGE_CONFLICT instead of posting to the new audience."""
@@ -4171,7 +4169,7 @@ async def create_human_message(
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    author = author_override or {
+    author = {
         "kind": "human",
         "id": auth.user_id,
         "displayName": await human_display_name(auth.user_id),
@@ -4253,7 +4251,6 @@ async def create_human_message(
             session_target_labels=session_target_labels,
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
-            acting_human_id=auth.user_id if author_override else None,
             expected_room_revision=expected_room_revision,
             addressing=_stored_addressing(addressing),
             admit=router and wake,  # a Router room: one WORK#ADMIT# row instead of per-agent WORK#MESSAGE# rows

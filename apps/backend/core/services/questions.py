@@ -205,10 +205,9 @@ async def add_always_allow(ws: str, kind: str, operands: dict, *, by: str) -> No
     """The card's Always allow: one workspace-wide `allow` rule for this action kind and target in the workspace's
     Rules document (any answerer may make it: ruling 6 Nov 2026). Idempotent: the id comes from kind and target.
     The write is conditional on the revision it read, so an admin's rules PUT in between is never overwritten; it
-    re-reads and tries again, then raises `RulesBusy`. (The admin PUT, a2a_tasks.put_rules, is still unconditional:
-    it can drop an always-* rule written after its own read. Follow-up: send a base revision there too.)"""
+    re-reads and tries again, then raises `RulesBusy`."""
     from core.repositories import a2a_repo
-    from core.services import a2a_rules, a2a_tasks
+    from core.services import a2a_rules
 
     target = _target(kind, operands)
     if target is None:
@@ -230,7 +229,7 @@ async def add_always_allow(ws: str, kind: str, operands: dict, *, by: str) -> No
                 when=a2a_rules.When(operands_equal={key: value}),
             )
         )
-        new = {**rules.model_dump(exclude_none=True), "revision": a2a_tasks.revision(rules)}
+        new = {**rules.model_dump(exclude_none=True), "revision": a2a_rules.revision(rules)}
         if await a2a_repo.put_rules_if(ws, new, doc):
             await audit(by, ws, "approval.always_allow", {"ruleId": rid, "kind": kind, key: value})
             return

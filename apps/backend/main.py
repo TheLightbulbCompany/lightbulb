@@ -19,16 +19,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse
 
 from core.auth import get_current_user
 from core.config import settings
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
-from core.services import hosted_mcp
-from core.services.a2a_auth import READ_SCOPE_A2A, RESOURCE_A2A, SEND_SCOPE
-from core.services.hosted_mcp import READ_SCOPE, RESOURCE, WRITE_SCOPE
 from core.services.update_service import run_scheduled_worker
 from core.voice import engine_hooks
 from routers import (
@@ -62,9 +59,6 @@ from routers import (
     platform_info,
     runtime_rpc,
     ses_inbound,
-    agent_keys as agent_keys_router,
-    network as network_router,
-    network_route as network_route_router,
     setup_requests,
     support_tickets,
     users,
@@ -217,11 +211,6 @@ async def lifespan(app: FastAPI):
         }
     )
 
-    # One MCP app + session manager PER lifespan entry (hosted_mcp.running): the
-    # SDK's manager runs once per instance and the test client re-enters this lifespan.
-    mcp_context = hosted_mcp.running()
-    await mcp_context.__aenter__()
-
     # Temporal client, connected in the background so startup never waits on it:
     # until it lands, or if it fails (bad key, Cloud outage), get_client() raises TemporalUnavailable and
     # every existing route still serves. temporalio is imported only in this branch.
@@ -299,7 +288,6 @@ async def lifespan(app: FastAPI):
             return_exceptions=True,
         )
     finally:
-        await mcp_context.__aexit__(None, None, None)
         system_health.BACKGROUND_TASKS.clear()
 
 
@@ -379,9 +367,6 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
-    if request.url.path.startswith("/api/v1/sessions"):
-        # uploaded sessions: FastAPI's default 422 would echo tool-call summaries.
-        return JSONResponse(status_code=422, content={"detail": "Invalid sessions upload."})
     return await request_validation_exception_handler(request, exc)
 
 
@@ -547,15 +532,6 @@ app.include_router(website_logins.internal_router, prefix="/api/v1/internal/webs
 # Config read/patch over the owner's roster profiles
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
-app.include_router(agent_keys_router.router, prefix="/api/v1/settings/agent-keys", tags=["settings"])
-# Under /internal/messaging: the bridge's `_post_backend` prefixes every callback with it.
-app.include_router(network_router.internal_router, prefix="/api/v1/internal/messaging/network", tags=["settings"])
-# `lightbulb login`/`logout`/`invite --agents` and the doorbell. The CLI's routes carry no Clerk
-# token (a signed challenge, or the doorbell's bearer, is the credential); the confirm is Clerk.
-app.include_router(network_router.router, prefix="/api/v1/network", tags=["network"])
-# Hosted apps on the free network: the computer route link (on the bv door's /gateway/ path),
-# its cross-task door, the wake-up page and the bridge's app-mail notice.
-app.include_router(network_route_router.router, prefix="/api/v1", tags=["network"])
 
 # Connections (Bucket A paste-key integrations: list / connect / disconnect)
 app.include_router(connections.router, prefix="/api/v1", tags=["connections"])
@@ -651,11 +627,6 @@ from routers import memory as memory_router  # noqa: E402
 app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
 app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memory", tags=["memory"])
 
-# Sessions a person uploads from the CLI, by choice (metadata or full).
-from routers import sessions as sessions_router  # noqa: E402
-
-app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
-
 
 @app.get(
     "/",
@@ -704,40 +675,3 @@ async def health_check():
 )
 async def protected_route(auth=Depends(get_current_user)):
     return {"message": "You are authenticated", "user_id": auth.user_id}
-
-
-@app.get("/.well-known/oauth-protected-resource/mcp", include_in_schema=False)
-async def mcp_protected_resource_metadata():
-    # The SDK gates basic read access; write is a separate consented tool scope.
-    return {
-        "resource": RESOURCE,
-        "authorization_servers": [settings.CLERK_ISSUER],
-        "scopes_supported": ["user:org:read", READ_SCOPE, WRITE_SCOPE],
-        "bearer_methods_supported": ["header"],
-    }
-
-
-@app.get("/.well-known/oauth-protected-resource/a2a", include_in_schema=False)
-async def a2a_protected_resource_metadata():
-    return {
-        "resource": RESOURCE_A2A,
-        "authorization_servers": [settings.CLERK_ISSUER],
-        "scopes_supported": ["user:org:read", READ_SCOPE_A2A, SEND_SCOPE],
-        "bearer_methods_supported": ["header"],
-    }
-
-
-@app.get("/.well-known/openai-apps-challenge", include_in_schema=False)
-async def openai_apps_challenge():
-    if not settings.OPENAI_APPS_CHALLENGE_TOKEN:
-        return PlainTextResponse("Not Found", status_code=404)
-    return PlainTextResponse(settings.OPENAI_APPS_CHALLENGE_TOKEN)
-
-
-from routers import a2a  # noqa: E402
-
-# The A2A door; before the MCP mount, which 404s every path it does not serve.
-app.include_router(a2a.router)
-
-# Keep this last: the SDK serves /mcp and its root well-known OAuth metadata.
-app.mount("/", hosted_mcp.mount)

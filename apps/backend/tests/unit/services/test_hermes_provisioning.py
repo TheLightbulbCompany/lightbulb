@@ -1076,7 +1076,7 @@ async def test_the_roster_fan_out_reads_the_line_once(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_seed", [False, True])
 async def test_pool_preparation_preserves_network_identity_and_refreshes_sessions(monkeypatch, legacy_seed):
-    """prepare_hermes_workspace makes every workspace a network member: the boot secret gets a
+    """prepare_hermes_workspace gives every workspace a cloud member: the boot secret gets a
     member key and ``<owner>/network/sessions.json`` is written (empty roster before step 0
     seeds it; write_profiles republishes it after)."""
     import json
@@ -1094,8 +1094,7 @@ async def test_pool_preparation_preserves_network_identity_and_refreshes_session
     )
     monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme"}))
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
-    wake = {"url": "https://api/x", "token": "org_a.t"}  # the doorbell's own tests: test_network_wake.py
-    monkeypatch.setattr("core.services.network_member._wake", AsyncMock(return_value=wake))
+    monkeypatch.setattr("core.services.network_member._arm_wake", AsyncMock())  # its own test: test_network_member.py
     # The members list the sessions file carries (no Paperclip workspace in this test).
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=[]))
 
@@ -1115,9 +1114,7 @@ async def test_pool_preparation_preserves_network_identity_and_refreshes_session
         assert json.loads(objects["org_a/network/sessions.json"]) == {
             "workspace": "Acme",
             "sessions": [],
-            "wake": wake,
             "members": [],
-            "revoked_keys": [],
         }
 
         # A reconcile keeps the key and refreshes sessions.json (#4359: workspaces always carry members).

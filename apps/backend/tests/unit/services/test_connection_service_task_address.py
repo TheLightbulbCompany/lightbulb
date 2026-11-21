@@ -26,7 +26,7 @@ from core.services.connection_service import (
     DesktopTargetStale,
     resolve_desktop_target,
 )
-from core.services.machine_auth import MachineIdentity
+from types import SimpleNamespace as MachineIdentity  # the paired-device identity shape
 
 
 @pytest.fixture

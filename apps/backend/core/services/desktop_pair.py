@@ -211,9 +211,7 @@ class DesktopPermissionGrant:
 async def declared_commands_for(owner_id: str, device_id: str) -> set[str]:
     """The node broker's command allowlist for one paired device.
 
-    Reads the backend-written ``paired_devices`` map on the owner's containers row -- the
-    same record ``machine_auth`` verifies the device's WS-upgrade token against, so a device
-    cannot be trusted for auth and unknown for commands. A missing row, a missing map or an
+    Reads the backend-written ``paired_devices`` map on the owner's containers row. A missing row, a missing map or an
     unpaired device id reads as an empty set and never raises: the relay intersects a
     connecting client's declared commands with this set, so an unreadable or not-yet-paired
     record simply grants nothing rather than failing the connect.

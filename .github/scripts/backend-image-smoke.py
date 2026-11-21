@@ -16,7 +16,6 @@ from cryptography.fernet import Fernet  # noqa: E402
 os.environ.update({
     "CLERK_ISSUER": "https://arm64-smoke.invalid",
     "ENCRYPTION_KEY": Fernet.generate_key().decode(),
-    "NETWORK_PROOF_KEY": secrets.token_urlsafe(32),
     "GATE_BEARER_HMAC_KEY": secrets.token_urlsafe(32),
     "AWS_ACCESS_KEY_ID": "testing",
     "AWS_SECRET_ACCESS_KEY": "testing",

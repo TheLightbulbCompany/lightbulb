@@ -280,14 +280,14 @@ async def test_member_wipe_removes_only_what_belongs_to_that_workspace(agentcore
         )
     from unittest.mock import AsyncMock
 
-    from core.services import memory_api, network_login
+    from core.services import memory_api
 
     keys, forget = AsyncMock(return_value=[]), AsyncMock()
     episodes = AsyncMock()
     with (
         patch.object(workspace_memory, "_wipe", return_value=None),
-        patch.object(network_login, "computer_keys", keys),
-        patch.object(network_login, "forget_keys", forget),
+        patch.object(workspace_memory, "_computer_keys", keys),
+        patch.object(workspace_memory, "_forget_keys", forget),
         patch.object(memory_api, "forget_on_behalf_of", AsyncMock(return_value=0)),
         patch.object(evaluator, "delete_episodes", episodes),
     ):
@@ -311,7 +311,6 @@ async def test_person_wipe_removes_everything_of_the_persons_own(agentcore):
     from unittest.mock import AsyncMock
 
     from core.repositories import messaging_repo as store
-    from core.services import network_login
 
     t = datetime(2026, 10, 27, 12, tzinfo=UTC)
     await session_store.put_sessions("user_a", [sess("s1")], True, "org_x")
@@ -321,7 +320,7 @@ async def test_person_wipe_removes_everything_of_the_persons_own(agentcore):
     agentcore.add_response("list_memory_records", listing(rec("rf", "a lesson", t, ("/users/user_a/",))))
     await evaluator.collect_drafts("user_a", workspace_id="org_x")
     episodes, forget = AsyncMock(return_value=0), AsyncMock()
-    with patch.object(evaluator, "delete_episodes", episodes), patch.object(network_login, "forget_keys", forget):
+    with patch.object(evaluator, "delete_episodes", episodes), patch.object(workspace_memory, "_forget_keys", forget):
         await workspace_memory.delete_person_memory("user_a", resweep_after_s=0)
     episodes.assert_awaited_once_with("user_a", resweep_after_s=0)
     forget.assert_awaited_once_with("user_a")

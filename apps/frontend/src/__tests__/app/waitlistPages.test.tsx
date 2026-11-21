@@ -52,7 +52,7 @@ describe("/os", () => {
   // backend for Spark's price (GET /os/config).
   const LINE = "Free for 3 days, then $20/month. Renews monthly until you cancel.";
   // Production's short page; the dev-only landing page is tested in app/os/__tests__/landing.test.tsx.
-  beforeEach(() => vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.thelightbulb.company/api/v1"));
+  beforeEach(() => vi.stubEnv("SPARK_SHORT_PAGE", "1"));
   beforeEach(() =>
     vi.stubGlobal(
       "fetch",

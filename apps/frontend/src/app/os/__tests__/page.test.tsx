@@ -51,7 +51,7 @@ async function page() {
 beforeEach(() => {
   vi.clearAllMocks();
   // Production's API: the short page (the dev-only landing page is in landing.test.tsx).
-  vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.thelightbulb.company/api/v1");
+  vi.stubEnv("SPARK_SHORT_PAGE", "1");
   installer(302);
   s.signedIn = false;
   post.mockResolvedValue({ applied: true });

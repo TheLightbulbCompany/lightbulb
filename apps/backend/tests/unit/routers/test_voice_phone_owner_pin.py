@@ -115,10 +115,10 @@ async def test_an_owner_mode_answer_to_a_workers_question_answers_it(client, rou
         attrs={"kind": "question", "taskRefs": [ref]},
     )  # fmt: skip
     sent = AsyncMock(return_value=type("M", (), {"message_id": "m-a"})())
-    from routers import questions
+    from core.engine import api
 
     with (
-        patch.object(questions, "submit_answer", AsyncMock()) as answer,
+        patch.object(api, "submit_answer", AsyncMock()) as answer,
         patch.object(voice_phone.messaging, "create_human_message", sent),
     ):
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn",

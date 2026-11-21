@@ -310,9 +310,9 @@ def _ask(**over):
 async def test_the_line_after_a_said_question_answers_it_like_a_typed_answer(m):
     """The spoken hours left LB-10 waiting (a message never answers a Question): now they answer it through the
     card's own path, as the inviting member, and no message wakes the Router to claim progress."""
-    from routers import questions as question_routes
-
     from types import SimpleNamespace
+
+    from core.engine import api as question_routes  # the answer path moved there (engine-service Task 4)
 
     with (
         patch.object(voice_meet.messaging_repo, "list_messages_before", AsyncMock(return_value=[QROW])),
@@ -336,12 +336,11 @@ async def test_the_line_after_a_said_question_answers_it_like_a_typed_answer(m):
 async def test_a_refused_or_foreign_question_falls_back_to_a_message(m):
     from types import SimpleNamespace
 
-    from fastapi import HTTPException
-
-    from routers import questions as question_routes
+    from core.engine import api as question_routes  # the answer path moved there (engine-service Task 4)
+    from core.engine.contract import EngineError
 
     posted = AsyncMock(return_value=SimpleNamespace(message_id="m9"))
-    refused = AsyncMock(side_effect=HTTPException(status_code=403, detail={"code": "not_answerer"}))
+    refused = AsyncMock(side_effect=EngineError("not_answerer", 403, {"code": "not_answerer"}))
     with (
         patch.object(voice_meet.messaging_repo, "list_messages_before", AsyncMock(return_value=[QROW])),
         patch.object(question_routes, "submit_answer", refused),

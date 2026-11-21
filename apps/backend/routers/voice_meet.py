@@ -15,15 +15,16 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import Field
 
 from core.auth import AuthContext
+from core.engine import api, contract
 from core.repositories import messaging_repo
 from core.services import messaging
 from core.voice.meetings import meeting_bots, meeting_invites
 from core.voice.meetings.records import inviting_member, record_transcription
-from core.voice.room_lines import QuestionRef, _question_ref, agent_lines, assistant_name, latest_seq
+from core.voice.room_lines import QuestionRef, agent_lines, assistant_name, latest_seq
 from core.voice.worker_api import RoomBody, _problem, _require_room_token, _room_id, _Worker
 
 router = APIRouter(dependencies=[_Worker])
@@ -52,25 +53,10 @@ async def _meeting(room_id: str, body: RoomBody) -> tuple[str, dict, dict]:
 
 async def answer_said_question(owner_id: str, room_id: str, member: str, ref: QuestionRef | None, text: str,
                                key: str) -> bool:  # fmt: skip
-    """The line said right after the voice said a Worker's question answers it, as `member`, through the card's own
-    path (routers/questions.submit_answer): a message in the room never answers a Question (task_questions.py).
-    False (the line then goes to the Router as a message): no ref, a question this room never got, or a refused
-    answer (closed, not an answerer, an approval: a spoken yes never approves)."""
-    if ref is None:
-        return False
-    from routers import questions as question_routes
-
-    rows = await messaging_repo.list_messages_before(room_id, 10**19, 100)
-    if not any(_question_ref(r) == ref.model_dump() for r in rows):
-        return False
-    body = question_routes.AnswerBody(option_id="answer", text=text[:4000],
-                                      client_answer_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex)  # fmt: skip
-    try:
-        await question_routes.submit_answer(owner_id, ref.taskId, ref.qid, member, body)
-    except HTTPException as e:
-        logger.info("voice room %s: question %s not answered by voice (%s)", room_id, ref.qid, e.detail)
-        return False
-    return True
+    """The line said right after the voice said a Worker's question answers it, as `member`
+    (`core.engine.api.answer_said_question`). False: the line goes to the Router as a message."""
+    said = contract.QuestionRef(task_id=ref.taskId, qid=ref.qid) if ref else None
+    return await api.answer_said_question(owner_id, room_id, member, said, text, key)
 
 
 class StartIn(RoomBody):

@@ -21,7 +21,7 @@ BODY = {"runId": RUN, "callId": CALL, "roomId": ROOM, "title": "Draft the launch
 @pytest.fixture
 def api(table, monkeypatch):
     rows = {RUN: {"runId": RUN, "roomId": ROOM, "agentId": "ceo-1", "requesterUserId": "user_sam"}}
-    meta = {"roomId": ROOM, "kind": "channel"}
+    meta = {"roomId": ROOM, "kind": "channel", "ownerId": WS}
 
     async def get_voice_run(owner_id, run_id):
         return rows.get(run_id)

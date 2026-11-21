@@ -9,7 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 from moto import mock_aws
 
-from core.repositories import messaging_repo
+from core.repositories import messaging_repo, tasks_repo
+from core.services import admission
 from core.voice.phone import calls as phone_calls
 from routers import voice_phone
 
@@ -1044,7 +1045,7 @@ def router_seat():
     with (
         patch.object(voice_phone.task_conversation, "_front_agent", AsyncMock(return_value=FRONT)),
         patch.object(voice_phone.rooms, "prewake_owner") as wake,
-        patch.object(voice_phone.admission, "enqueue_trigger", AsyncMock(return_value=True)) as enq,
+        patch.object(admission, "enqueue_trigger", AsyncMock(return_value=True)) as enq,
     ):
         yield wake, enq
 
@@ -1117,10 +1118,10 @@ async def test_a_callers_next_line_goes_to_the_calls_open_thread_not_a_new_one(c
     assert enq.await_count == 1  # the first line: the Router
     task = await _thread_in_call(cid, "idle")
     with (
-        patch.object(voice_phone.tasks_repo, "get_task", AsyncMock(return_value=task)),
-        patch.object(voice_phone.tasks_repo, "put_trigger", AsyncMock(return_value=({}, True))) as put,
+        patch.object(tasks_repo, "get_task", AsyncMock(return_value=task)),
+        patch.object(tasks_repo, "put_trigger", AsyncMock(return_value=({}, True))) as put,
         patch.object(voice_phone.task_conversation, "gate_input", AsyncMock(return_value=None)),
-        patch.object(voice_phone.admission, "_to_task", AsyncMock()) as to_task,
+        patch.object(admission, "_to_task", AsyncMock()) as to_task,
     ):
         out = client.post(url, json={"n": 1, "text": "The first time works."}, headers=W).json()
     assert enq.await_count == 1  # no new Router turn, so no new thread
@@ -1135,7 +1136,7 @@ async def test_a_callers_line_after_the_thread_closed_goes_to_the_router(client,
     _, enq = router_seat
     call = await _start(client)
     task = await _thread_in_call(call["callId"], "failed")
-    with patch.object(voice_phone.tasks_repo, "get_task", AsyncMock(return_value=task)):
+    with patch.object(tasks_repo, "get_task", AsyncMock(return_value=task)):
         client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn", json={"n": 1, "text": "Hi?"}, headers=W)
     assert enq.await_count == 1
 
@@ -1233,8 +1234,8 @@ async def test_another_calls_caller_thread_is_never_picked(client, router_seat):
     call = await _start(client)
     task = {**await _thread_in_call(call["callId"], "idle"), "audience": {"kind": "room", "roomId": "other-call"}}
     with (
-        patch.object(voice_phone.tasks_repo, "get_task", AsyncMock(return_value=task)),
-        patch.object(voice_phone.admission, "_to_task", AsyncMock()) as to_task,
+        patch.object(tasks_repo, "get_task", AsyncMock(return_value=task)),
+        patch.object(admission, "_to_task", AsyncMock()) as to_task,
     ):
         client.post(f"/api/v1/internal/voice/calls/{call['callId']}/turn", json={"n": 1, "text": "Yes."}, headers=W)
     assert enq.await_count == 1 and not to_task.called

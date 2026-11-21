@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import questions_repo, tasks_repo
+from core.engine import api  # the answer and action bodies moved there (engine-service Task 4)
 from routers import questions as router_mod
 
 WS = "org_1"
@@ -32,7 +33,7 @@ def _q(task_id, qid="q-1", **over):
 
 @pytest.fixture
 def world(table, monkeypatch):
-    monkeypatch.setattr(router_mod, "human_display_name", AsyncMock(side_effect=lambda u: u.split("_")[1].title()))
+    monkeypatch.setattr(api, "human_display_name", AsyncMock(side_effect=lambda u: u.split("_")[1].title()))
     who = {"user": SAM}
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")

@@ -197,7 +197,9 @@ async def test_answer_emits_question_answered_once_on_replay(seen, monkeypatch):
     monkeypatch.setattr(qr.tasks_repo, "get_task", AsyncMock(return_value={"taskId": "t1"}))
     monkeypatch.setattr(qr.tasks_access, "can_view", AsyncMock(return_value=True))
     monkeypatch.setattr(qr.questions_repo, "get_question", AsyncMock(side_effect=lambda *a: rows["q"]))
-    monkeypatch.setattr(qr, "_answered_view", AsyncMock(return_value={"question": {}}))
+    from core.engine import api
+
+    monkeypatch.setattr(api, "_answered_view", AsyncMock(return_value={"question": {}}))
     remember, resolve = AsyncMock(), AsyncMock()
     monkeypatch.setattr(calls, "remember_answer", remember)
     monkeypatch.setattr(calls, "resolve_call", resolve)

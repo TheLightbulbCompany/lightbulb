@@ -14,23 +14,17 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from temporalio.client import WorkflowUpdateFailedError
-from temporalio.service import RPCError
 
 from core import tasks_schema as ts
 from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.engine import api
+from core.engine.contract import ActIn, Principal
 from core.repositories import effects_repo, messaging_repo, questions_repo, tasks_repo
 from core.services import (
-    admission,
-    chat_gate,
-    messaging,
     runtime_runs,
     task_conversation,
     tasks_access,
 )
-from core.services.messaging import human_display_name
-from core.temporal import client as temporal_client
-from core.temporal.types import ActionRequest, StopRequest
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -43,7 +37,6 @@ _NEEDS_YOU_GROUPS = frozenset({"waiting_on_you", "ready_for_review"})
 # Its bounds: index pages read per source (100 rows each), and task trees read at once.
 _NEEDS_YOU_PAGES = 10
 _NEEDS_YOU_FETCHES = 10
-_GATED = frozenset({"retry"})  # a new attempt: today's chat gate first (§14.10). Reopen runs nothing.
 
 Auth = Annotated[AuthContext, Depends(get_current_user)]
 
@@ -65,23 +58,6 @@ def _matches(q: str | None, *fields: str | None) -> bool:
 async def _workspace(auth: AuthContext) -> str:
     ws = resolve_owner_id(auth)
     return ws
-
-
-async def _visible_tree(ws: str, task_id: str, user_id: str) -> dict:
-    tree = await tasks_repo.get_task_tree(ws, task_id)
-    if tree["task"] is None:
-        raise _err(404, "not_found")
-    if not await tasks_access.can_view(tree["task"], user_id):
-        raise _err(404, "not_found")  # hidden reads as missing: no existence leak (lead ruling, 5 Nov)
-    return tree
-
-
-async def _summary(tree: dict, viewer: str) -> dict:
-    ids = list(
-        dict.fromkeys(u for q in tree["questions"] if q.get("state") == "open" for u in q.get("answerers") or [])
-    )
-    names = dict(zip(ids, await asyncio.gather(*(human_display_name(u) for u in ids))))
-    return tasks_access.summarize({**tree, "userNames": names}, viewer)
 
 
 @router.get("/tasks")
@@ -119,7 +95,7 @@ async def list_tasks(
     found, next_cursor = await _search(ws, limit, keep) if q else await _walk(ws, cursor, limit, keep)
     # ponytail: one tree query per listed task (≤100); a summary index if lists get hot.
     trees = await asyncio.gather(*(tasks_repo.get_task_tree(ws, t["taskId"]) for t in found))
-    return {"tasks": [await _summary(tree, me) for tree in trees if tree["task"]], "next": next_cursor}
+    return {"tasks": [await api._summary(tree, me) for tree in trees if tree["task"]], "next": next_cursor}
 
 
 # `q` reads: fixed pages of the `by-status` index, filtered in memory, at most this many pages in all.
@@ -250,60 +226,10 @@ async def _needs_you(ws: str, me: str, keep) -> list[dict]:
     for found in trees:
         if found["task"] is None or not await keep(found["task"]):
             continue
-        summary = await _summary(found, me)
+        summary = await api._summary(found, me)
         if summary.get("shownGroup") in _NEEDS_YOU_GROUPS:
             out.append(summary)
     return sorted(out, key=lambda t: t.get("updatedAt") or "", reverse=True)
-
-
-async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | None) -> dict:
-    tree = await _visible_tree(ws, task_id, user_id)
-    task = tree["task"]
-    if version is not None and task["version"] != version:
-        raise _err(409, "version_conflict", version=task["version"])
-    if action in {"retry", "reopen"}:
-        trig = await tasks_repo.get_trigger(ws, task["triggerId"]) if task.get("triggerId") else None
-        if await admission.paused_room(ts.trigger_room(trig or {}) or (task.get("audience") or {}).get("roomId")):
-            raise _err(409, "project_paused", message=messaging.PAUSED_ROOM_TEXT)
-    if action in _GATED:
-        gate = await chat_gate.gate_chat(user_id=user_id, owner_id=ws, session_key=f"task:{task_id}")
-        if gate.get("blocked"):
-            raise _err(402, gate.get("code") or "blocked", message=gate.get("message"))
-    try:
-        if action == "stop":
-            await temporal_client.update_task(ws, task_id, "stop", StopRequest(by_user_id=user_id))
-        else:
-            await temporal_client.update_task(ws, task_id, action, ActionRequest(user_id, expected_version=version))
-    except WorkflowUpdateFailedError as exc:  # the workflow's validator refused this state
-        raise _err(409, "illegal_state") from exc
-    except (temporal_client.TemporalUnavailable, RPCError) as exc:
-        raise _err(503, "TEMPORAL_UNAVAILABLE", retryable=True) from exc
-    await _mark_action(ws, task, action, user_id)
-    return await _summary(await tasks_repo.get_task_tree(ws, task_id), user_id)
-
-
-_ACTION_MARKS = {"resolve": "Closed", "stop": "Stopped", "reopen": "Reopened"}
-
-
-async def _mark_action(ws: str, task: dict, action: str, user_id: str) -> None:
-    """The task room's marker for a person's Close, Stop or Reopen, by name ("Closed by Sam"); the workflow's own
-    status changes are marked by `activities._announce`. Keyed on the version acted on: one line per press."""
-    mark = _ACTION_MARKS.get(action)
-    if not mark:
-        return
-    try:
-        await task_conversation.ensure_task_room(ws, task)
-        await task_conversation.post_as_lightbulb(
-            ws,
-            ts.task_room_id(task["taskId"]),
-            text=f"{mark} by {await human_display_name(user_id)}",
-            event_id=f"task-mark:{task['taskId']}:{action}:{task['version']}",
-            kind="marker",
-            progress=True,
-            remember=False,
-        )
-    except Exception:  # noqa: BLE001 -- the action happened; its line is cosmetic
-        logger.warning("action marker not posted task=%s action=%s", task["taskId"], action, exc_info=True)
 
 
 _EXPORT_PAGE = 100
@@ -339,11 +265,11 @@ async def export_tasks(auth: Auth) -> StreamingResponse:
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str, auth: Auth):
     ws = await _workspace(auth)
-    tree = await _visible_tree(ws, task_id, auth.user_id)
+    tree = await api.http(api._visible_tree(ws, task_id, auth.user_id))
     room_id = await task_conversation.ensure_task_room(ws, tree["task"], seat_viewer=auth.user_id)
     effects = await effects_repo.effects_of_task(ws, task_id)
     return {
-        "task": await _summary({**tree, "effects": effects}, auth.user_id),
+        "task": await api._summary({**tree, "effects": effects}, auth.user_id),
         "attempts": [tasks_access.attempt_view(a) for a in tree["attempts"]],
         "questions": tree["questions"],
         "effects": effects,
@@ -371,7 +297,7 @@ async def mark_read(task_id: str, auth: Auth):
     """G26: no read state exists (contracts §3 cut `READ#`), so this is a visibility-checked no-op. Declared before
     `/{action}` so `read` is not taken for an action."""
     ws = await _workspace(auth)
-    await _visible_tree(ws, task_id, auth.user_id)
+    await api.http(api._visible_tree(ws, task_id, auth.user_id))
     return Response(status_code=204)
 
 
@@ -382,14 +308,16 @@ async def task_action(
     body: VersionBody,
     auth: Auth,
 ):
-    return await _act(await _workspace(auth), task_id, action, auth.user_id, body.version)
+    me = Principal(kind="member", id=auth.user_id)
+    req = ActIn(tenant_id=await _workspace(auth), task_id=task_id, action=action, principal=me, version=body.version)
+    return await api.http(api.act(req))
 
 
 @router.get("/tasks/{task_id}/trace")
 async def task_trace(task_id: str, auth: Auth, attempt: Annotated[int | None, Query(ge=1)] = None):
     """The Attempt's live `recentTools` from its run on the bridge (latest attempt by default)."""
     ws = await _workspace(auth)
-    tree = await _visible_tree(ws, task_id, auth.user_id)
+    tree = await api.http(api._visible_tree(ws, task_id, auth.user_id))
     attempts = {a["n"]: a for a in tree["attempts"]}
     n = attempt or max(attempts, default=None)
     if n not in attempts:

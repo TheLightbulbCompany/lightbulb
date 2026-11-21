@@ -16,10 +16,10 @@ from pydantic.alias_generators import to_camel
 from ulid import ULID
 
 from core import tasks_schema as ts
-from core.dynamodb import utc_now_iso
-from core.engine import hooks
+from core.engine import api, hooks
+from core.engine.contract import Principal, StartIn
 from core.repositories import automations_repo, messaging_repo, tasks_repo, user_repo
-from core.services import admission, automation_schedule, task_conversation
+from core.services import automation_schedule, task_conversation
 from core.temporal import client as temporal
 from core.temporal.watches import (
     MAX_EVERY_MIN,
@@ -237,44 +237,26 @@ async def start_voice_work(
     requester = run.requester_user_id
     if not requester:
         raise _err(403, "no_requester")  # a guest on a call starts nothing
-    meta = await messaging_repo.get_room(body.room_id) or {}
-    lane = ts.router_lane_key(requester) if meta.get("kind") == "dm" else "shared"
-    trigger_id = ts.trigger_id("voice", body.call_id, body.run_id)
-    task_id = ts.router_task_id(trigger_id, 0, 0)
-    start = ts.StartTask(
-        kind="start_task",
-        trigger_ids=[trigger_id],
-        title=body.title.strip(),
-        brief=body.brief.strip(),
-        specialist=body.specialist,
-        ack=f"On it: {body.title.strip()}",
-        visibility="room",
+    out = await api.http(
+        api.start_task(
+            StartIn(
+                tenant_id=owner_id,
+                principal=Principal(kind="member", id=requester),
+                conversation_id=body.room_id,
+                trigger_id=ts.trigger_id("voice", body.call_id, body.run_id),
+                source="voice",
+                lane="auto",
+                title=body.title.strip(),
+                brief=body.brief.strip(),
+                specialist=body.specialist,
+                origin=origin,
+                confirm_all=confirm_all,  # a meeting's task: every effect gets a card
+                ask=ask,
+                product_ref={"callId": body.call_id, "utteranceId": body.run_id, "agentId": run.agent_id},
+            )
+        )
     )
-    now = utc_now_iso()
-    trigger = ts.Trigger(
-        ws=owner_id,
-        trigger_id=trigger_id,
-        source="voice",
-        admission="respond",
-        lane=lane,
-        actor_user_id=requester,
-        received_at=now,
-        created_at=now,
-        updated_at=now,
-        ref={
-            "deliverRoomId": body.room_id,
-            "callId": body.call_id,
-            "utteranceId": body.run_id,
-            "agentId": run.agent_id,
-            "taskId": task_id,
-            "start": start.model_dump(by_alias=True),
-            **({"origin": origin} if origin else {}),
-            **({"confirmAll": True} if confirm_all else {}),  # a meeting's task: every effect gets a card
-            **({"ask": ask} if ask else {}),
-        },
-    )
-    created = await admission.enqueue_trigger(owner_id, trigger, room_id=body.room_id)
-    return {"triggerId": trigger_id, "taskId": task_id, "created": created}
+    return {"triggerId": out.trigger_id, "taskId": out.task_id, "created": out.created}
 
 
 # --- watches: a Worker asks its task to watch something that finishes later (Task 12) --------------------------

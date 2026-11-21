@@ -36,11 +36,12 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.engine import api
+from core.engine.contract import LineIn, Principal
 from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
-from core.repositories import agent_registry_repo, messaging_repo, tasks_repo, billing_repo
-from core import tasks_schema as ts
-from core.services import push_service, admission, clerk_admin, messaging, task_conversation
+from core.repositories import agent_registry_repo, messaging_repo, billing_repo
+from core.services import push_service, clerk_admin, messaging, task_conversation
 from core.voice import rooms
 from core.voice.phone import phone_pin, voice_booking, voice_outbound, voice_preferences
 from core.voice.worker_api import _Worker
@@ -953,89 +954,24 @@ async def caller_turn(call_id: str, body: TurnIn) -> dict:
     if call_mode(await agent_config(ws), call) != "live":
         raise _err(403, "not_allowed")  # a paused line only takes messages (/message)
     who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()
-    key = f"call-turn:{call_id}:{body.n}"
-    msg, _ = await messaging_repo.create_message(
-        room_id=call_id,
-        owner_id=ws,
-        idemp_pk=messaging_repo.owner_pk(ws),
-        idemp_sk=messaging_repo.agent_idemp_sk(key),
-        req_hash=messaging_repo.request_hash(call_id, body.n, body.text),
-        author={"kind": "human", "id": f"caller:{call_id}", "displayName": who},
-        text=body.text,
-        mentions=[],
-        reply_to_message_id=None,
-        thread_root_message_id=None,
-        run_id=None,
-        dispatch_targets=[],
-        source_agent_id=None,
-        client_message_id=None,
-        silent=True,
-        author_member_check=False,
-        via="voice",
+    line = await api.append_line(
+        LineIn(
+            tenant_id=ws,
+            conversation_id=call_id,
+            principal=Principal(kind="contact", id=f"caller:{call_id}", display_name=who),
+            text=body.text,
+            idempotency_key=f"call-turn:{call_id}:{body.n}",
+            turn=body.n,
+            via="voice",
+            requester_user_id=requester,  # the line's owner user, as start_work's tasks: written by start_call
+            trigger_key=f"turn-{body.n}",
+            hint=CALLER_HINT,
+            origin="phone_contact",
+            product_ref={"callId": call_id, "from": who},
+        )
     )
-    now = utc_now_iso()
-    trigger = ts.Trigger(
-        ws=ws,
-        trigger_id=ts.trigger_id("voice", call_id, f"turn-{body.n}"),
-        source="voice",
-        admission="respond",
-        lane="shared",  # the batch key is the call's room (trigger_scope): a call never shares a Router prompt
-        actor_user_id=requester,  # the line's owner user, as start_work's tasks: written by start_call, never the model
-        received_at=now,
-        created_at=now,
-        updated_at=now,
-        ref={
-            "roomId": call_id,
-            "messageId": msg["messageId"],
-            "callId": call_id,
-            "origin": "phone_contact",
-            "from": who,
-            "text": f"{body.text}\n\n{CALLER_HINT}",
-        },
-    )
-    if task_id := await _open_thread(ws, call_id, int(msg["messageSeq"])):
-        # The call's open thread takes the line, as a typed reply in a task's thread does (admission's
-        # pass-through): it already holds the times it offered and the caller's answers (8 Nov prod final smoke:
-        # each line started a new thread, and the "yes" thread asked again and picked a time never offered).
-        trig = {**trigger.model_dump(by_alias=True), "routedTo": {"taskId": task_id}}
-        trig["ref"]["deliverRoomId"] = call_id
-        await tasks_repo.put_trigger(ws, trig)
-        if blocked := await task_conversation.gate_input(ws, task_id, trig):  # §14.10, as admission's pass-through
-            await task_conversation.post_as_lightbulb(
-                ws,
-                call_id,
-                text=blocked,
-                event_id=f"task-gate:{task_id}:{trigger.trigger_id}",
-                remember=False,
-                in_reply_to=msg["messageId"],
-                attrs={"voiceWaiting": False},
-            )
-            task_id = None
-        else:
-            await admission._to_task(ws, task_id, trigger.trigger_id)
-    else:
-        await admission.enqueue_trigger(ws, trigger, room_id=call_id)
-    return {"messageId": msg["messageId"], "triggerId": trigger.trigger_id, **({"taskId": task_id} if task_id else {}),
-            **ended}  # fmt: skip
-
-
-_CLOSED = ("resolved", "failed")
-
-
-async def _open_thread(ws: str, call_id: str, before_seq: int) -> str | None:
-    """The call's latest caller thread still open (its card on a Lightbulb line in the call room), else None: a
-    call's first line, or a line after its thread failed or was closed, goes to the Router."""
-    for row in reversed(await messaging_repo.list_messages_before(call_id, before_seq, 50)):
-        for ref in reversed(row.get("taskRefs") or []):
-            task = await tasks_repo.get_task(ws, ref.get("taskId") or "")
-            if (
-                task
-                and task.get("origin") == "phone_contact"
-                and (task.get("audience") or {}).get("roomId") == call_id  # this call's, never another call's
-                and task.get("status") not in _CLOSED
-            ):
-                return task["taskId"]
-    return None
+    return {"messageId": line.message_id, "triggerId": line.trigger_id,
+            **({"taskId": line.task_id} if line.task_id else {}), **ended}  # fmt: skip
 
 
 class CallEventsIn(BaseModel):

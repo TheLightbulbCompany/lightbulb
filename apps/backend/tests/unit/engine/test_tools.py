@@ -300,7 +300,7 @@ async def test_voice_start_requester_from_context(monkeypatch):
 
     _with(monkeypatch, context=context)
     monkeypatch.setattr(messaging_repo, "get_voice_run", AsyncMock(side_effect=AssertionError("engine read")))
-    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm", "ownerId": WS}))
     enqueue = AsyncMock(return_value=True)
     monkeypatch.setattr(admission, "enqueue_trigger", enqueue)
     body = VoiceStartIn(run_id="run-1", call_id="c1", room_id="room-1", title="Mail", brief="Write it.")

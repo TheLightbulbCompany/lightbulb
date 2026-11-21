@@ -3,6 +3,8 @@ import { Navbar } from "@/components/landing/Navbar";
 import { RequestSetupForm } from "@/components/requestSetup/RequestSetupForm";
 import { pageMetadata } from "@/lib/seo";
 
+import { RefCapture } from "./RefCapture";
+
 export const metadata = pageMetadata({
   title: "Lightbulb OS, a Voice App for the Mac | Lightbulb",
   description:
@@ -14,6 +16,7 @@ export const metadata = pageMetadata({
 export default function OsPage() {
   return (
     <main className="ld-page min-h-screen">
+      <RefCapture />
       <Navbar />
       <section className="mx-auto max-w-2xl px-6 py-20 md:py-28">
         <h1 className="font-editorial-serif text-5xl leading-tight text-[var(--lb-ink)] md:text-6xl">

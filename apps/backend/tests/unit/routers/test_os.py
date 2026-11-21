@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from moto import mock_aws
 
 from core import dynamodb
+from core.config import settings
 from main import app
 from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
 
@@ -86,6 +87,9 @@ async def test_ticket_then_session_then_account_round_trip(users, clock):
         "trialEndsAt": clock[0] + 3 * DAY,
         "checkoutUrl": None,
         "portalUrl": None,
+        "referralUrl": f"{settings.FRONTEND_URL.rstrip('/')}/os?ref=a",
+        "referralDaysEarned": 0,
+        "referralCount": 0,
     }
 
 
@@ -222,3 +226,110 @@ async def test_a_failed_trim_still_signs_in(users, clock, monkeypatch):
     monkeypatch.setattr("routers.os._drop_tokens", AsyncMock(side_effect=RuntimeError("down")))
     token = await session()
     assert (await account(token)).status_code == 200
+
+
+C = Tenant("user_c", None)
+D = Tenant("user_d", None)
+
+
+async def sign_in(who: Tenant, ref=None):
+    r = await req("POST", "/os/ticket", who=who, body=None if ref is None else {"ref": ref})
+    assert r.status_code == 200, r.text
+    return r
+
+
+async def referrer_account(token: str) -> dict:
+    return (await account(token)).json()
+
+
+async def test_account_has_referral_fields(users, clock):
+    body = await referrer_account(await session())
+    assert body["referralUrl"] == f"{settings.FRONTEND_URL.rstrip('/')}/os?ref=a"
+    assert body["referralDaysEarned"] == 0 and body["referralCount"] == 0
+
+
+async def test_first_sign_in_with_ref_credits_referrer_one_day(users, clock):
+    token = await session(A)
+    before = (await referrer_account(token))["trialEndsAt"]
+    clock[0] += 100
+    await sign_in(B, ref="a")
+    body = await referrer_account(token)
+    assert body["trialEndsAt"] == before + DAY
+    assert body["referralCount"] == 1 and body["referralDaysEarned"] == 1
+    row = users.get_item(Key={"user_id": "user_b"})["Item"]
+    assert row["os_trial_ends_at"] == clock[0] + 3 * DAY
+    assert row["os_referred_by"] == "user_a"
+
+
+async def test_ref_on_a_later_sign_in_is_ignored(users, clock):
+    token = await session(A)
+    await sign_in(B)
+    await sign_in(B, ref="a")
+    body = await referrer_account(token)
+    assert body["referralCount"] == 0 and body["trialEndsAt"] == clock[0] + 3 * DAY
+    assert "os_referred_by" not in users.get_item(Key={"user_id": "user_b"})["Item"]
+
+
+async def test_self_referral_is_ignored(users, clock):
+    await sign_in(A, ref="a")
+    row = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert row["os_trial_ends_at"] == clock[0] + 3 * DAY
+    assert "os_referrals" not in row and "os_referred_by" not in row
+
+
+async def test_unknown_or_malformed_ref_is_ignored_and_sign_in_succeeds(users, clock):
+    from core.repositories import user_repo
+
+    await user_repo.put("user_c", "user_c@example.com")  # a users row with no Spark account
+    for bad in ["c", "nobody", "", "user_a", "a.b", "a b", "../x", "x" * 65, 7, None, ["a"]]:
+        await sign_in(B, ref=bad) if bad is not None else await sign_in(B)
+    assert users.get_item(Key={"user_id": "user_b"})["Item"]["os_trial_ends_at"] == clock[0] + 3 * DAY
+    assert "os_trial_ends_at" not in users.get_item(Key={"user_id": "user_c"})["Item"]
+    assert "Item" not in users.get_item(Key={"user_id": "user_nobody"})
+
+
+async def test_two_concurrent_first_sign_ins_credit_once(users, clock):
+    token = await session(A)
+    before = (await referrer_account(token))["trialEndsAt"]
+    await asyncio.gather(*[sign_in(B, ref="a") for _ in range(2)])
+    body = await referrer_account(token)
+    assert body["referralCount"] == 1 and body["trialEndsAt"] == before + DAY
+
+
+async def test_many_referrals_have_no_cap(users, clock):
+    token = await session(A)
+    before = (await referrer_account(token))["trialEndsAt"]
+    for who in (B, C, D):
+        await sign_in(who, ref="a")
+    body = await referrer_account(token)
+    assert body["referralCount"] == 3 and body["referralDaysEarned"] == 3
+    assert body["trialEndsAt"] == before + 3 * DAY
+
+
+async def test_ended_trial_still_gets_the_day(users, clock):
+    token = await session(A)
+    ends = (await referrer_account(token))["trialEndsAt"]
+    clock[0] += 10 * DAY
+    await sign_in(B, ref="a")
+    body = await referrer_account(token)
+    assert body["trialEndsAt"] == ends + DAY and body["status"] == "ended"
+
+
+async def test_credit_failure_does_not_fail_sign_in(users, clock, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    token = await session(A)
+    monkeypatch.setattr("routers.os._credit", AsyncMock(side_effect=RuntimeError("down")))
+    r = await sign_in(B, ref="a")
+    assert set(r.json()) == {"ticket"}
+    assert users.get_item(Key={"user_id": "user_b"})["Item"]["os_referred_by"] == "user_a"
+    assert (await referrer_account(token))["referralCount"] == 0
+
+
+async def test_response_is_identical_with_and_without_valid_ref(users, clock):
+    await session(A)
+    shapes = []
+    for who, ref in [(B, "a"), (C, "nobody"), (D, None)]:
+        r = await sign_in(who, ref=ref)
+        shapes.append((r.status_code, set(r.json()), dict(r.headers).get("content-type")))
+    assert shapes[0] == shapes[1] == shapes[2]

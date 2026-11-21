@@ -6,6 +6,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
+import { REF_KEY, REF_PATTERN } from "@/app/os/RefCapture";
 
 // Spark (the Mac app) opens this page to sign in. The signed-in person gets a one-time ticket,
 // handed back to the app on its own URL scheme, which the app trades for its token.
@@ -32,8 +33,20 @@ function SparkSignIn() {
     }
     if (asked.current) return;
     asked.current = true;
-    (api.post("/os/ticket", {}) as Promise<{ ticket: string }>)
+    let ref: string | null = null;
+    try {
+      ref = localStorage.getItem(REF_KEY);
+    } catch {
+      // storage blocked: sign in without a referral
+    }
+    const body = ref && REF_PATTERN.test(ref) ? { ref } : {};
+    (api.post("/os/ticket", body) as Promise<{ ticket: string }>)
       .then(({ ticket }) => {
+        try {
+          localStorage.removeItem(REF_KEY);
+        } catch {
+          // storage blocked: nothing was stored
+        }
         const url = `${scheme}://auth?ticket=${encodeURIComponent(ticket)}`;
         setLink(url);
         // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- the app's URL scheme, not a page

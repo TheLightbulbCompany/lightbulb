@@ -11,6 +11,7 @@ import logging
 import re
 import secrets
 import time
+from typing import Any
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -18,6 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_human_session
+from core.config import settings
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,10 @@ def _split(credential: str) -> tuple[str, str] | None:
     return user_id, _hash(secret)
 
 
+class TicketRequest(BaseModel):
+    ref: Any = None  # a referral code; anything that is not one is ignored, never refused
+
+
 class TicketResponse(BaseModel):
     ticket: str
 
@@ -78,12 +84,41 @@ class AccountResponse(BaseModel):
     trialEndsAt: int
     checkoutUrl: None = None
     portalUrl: None = None
+    referralUrl: str
+    referralDaysEarned: int
+    referralCount: int
+
+
+def _referrer(ref: Any, user_id: str) -> str | None:
+    """The user id a referral code names, or None for anything else (including the caller themself).
+    ponytail: the code is the Clerk user id without `user_`, an identifier and not a secret; a short vanity
+    code would need a lookup row."""
+    referrer = f"user_{ref}" if isinstance(ref, str) else ""
+    return referrer if _USER_ID.fullmatch(referrer) and referrer != user_id else None
+
+
+async def _credit(referrer: str) -> None:
+    """One more day and one more referral for a person who has a Spark account; anyone else is left as is."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"user_id": referrer},
+            UpdateExpression="ADD os_trial_ends_at :day, os_referrals :one",
+            ConditionExpression="attribute_exists(os_trial_ends_at)",
+            ExpressionAttributeValues={":day": 86400, ":one": 1},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
 
 @router.post("/ticket", response_model=TicketResponse, operation_id="os_ticket")
-async def create_ticket(auth: AuthContext = Depends(get_human_session)) -> TicketResponse:
+async def create_ticket(
+    body: TicketRequest | None = None, auth: AuthContext = Depends(get_human_session)
+) -> TicketResponse:
     """A one-time ticket for the signed-in person, valid 60 seconds. Creates the person's account (trial
-    ending three days from now) on first sign-in; a later sign-in never moves the trial."""
+    ending three days from now) on first sign-in; a later sign-in never moves the trial. A referral code on
+    the sign-in that creates the account gives the referrer one more day."""
     ticket, h = _mint(auth.user_id)
     now = _now()
     sets = ["os_ticket = :t", "os_trial_ends_at = if_not_exists(os_trial_ends_at, :trial)"]
@@ -92,12 +127,30 @@ async def create_ticket(auth: AuthContext = Depends(get_human_session)) -> Ticke
     if auth.email:
         sets.append("email = if_not_exists(email, :e)")
         values[":e"] = auth.email
-    await run_in_thread(
-        _table().update_item,
-        Key={"user_id": auth.user_id},
-        UpdateExpression="SET " + ", ".join(sets),
-        ExpressionAttributeValues=values,
-    )
+    key, expr = {"user_id": auth.user_id}, "SET " + ", ".join(sets)
+    referrer = _referrer(body.ref if body else None, auth.user_id)
+    if referrer:
+        # Only the write that creates the account records the referrer: a retry or a concurrent second
+        # first sign-in fails this condition and takes the plain write below, so a person counts once.
+        try:
+            await run_in_thread(
+                _table().update_item,
+                Key=key,
+                UpdateExpression=expr + ", os_referred_by = :ref",
+                ConditionExpression="attribute_not_exists(os_trial_ends_at)",
+                ExpressionAttributeValues={**values, ":ref": referrer},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            referrer = None
+    if referrer:
+        try:
+            await _credit(referrer)
+        except Exception:  # the person is signed in either way; os_referred_by keeps the lost credit visible
+            logger.exception("os referral credit failed: %s referred by %s", auth.user_id, referrer)
+    else:
+        await run_in_thread(_table().update_item, Key=key, UpdateExpression=expr, ExpressionAttributeValues=values)
     return TicketResponse(ticket=ticket)
 
 
@@ -187,4 +240,7 @@ async def get_account(found: tuple[dict, str] = Depends(get_os_account)) -> Acco
         name="",  # the backend stores no name for a person
         status="trial" if _now() < ends else "ended",
         trialEndsAt=ends,
+        referralUrl=f"{settings.FRONTEND_URL.rstrip('/')}/os?ref={row['user_id'].removeprefix('user_')}",
+        referralDaysEarned=int(row.get("os_referrals", 0)),  # one referral is one day
+        referralCount=int(row.get("os_referrals", 0)),
     )

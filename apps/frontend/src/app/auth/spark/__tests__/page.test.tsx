@@ -23,6 +23,7 @@ const original = window.location;
 beforeEach(() => {
   Object.assign(s, { signedIn: true, query: "scheme=spark" });
   vi.clearAllMocks();
+  localStorage.clear();
   s.post.mockResolvedValue({ ticket: "user_a.secret" });
   Object.defineProperty(window, "location", { configurable: true, value: { href: "", origin: "https://app.test" } });
 });
@@ -73,6 +74,22 @@ describe("Spark sign-in", () => {
     render(<StrictMode><SparkSignInPage /></StrictMode>);
     expect(await screen.findByText("You can go back to Spark")).toBeInTheDocument();
     expect(s.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a stored referral code with the ticket request and clears it after", async () => {
+    localStorage.setItem("lightbulb.os.ref", "abc123");
+    render(<SparkSignInPage />);
+    expect(await screen.findByText("You can go back to Spark")).toBeInTheDocument();
+    expect(s.post).toHaveBeenCalledWith("/os/ticket", { ref: "abc123" });
+    expect(localStorage.getItem("lightbulb.os.ref")).toBeNull();
+  });
+
+  it("keeps the stored code when the ticket request fails", async () => {
+    localStorage.setItem("lightbulb.os.ref", "abc123");
+    s.post.mockRejectedValue(new Error("boom"));
+    render(<SparkSignInPage />);
+    expect(await screen.findByText("Could not sign in. Reload the page to try again.")).toBeInTheDocument();
+    expect(localStorage.getItem("lightbulb.os.ref")).toBe("abc123");
   });
 
   it("a failed ticket says so and opens nothing", async () => {

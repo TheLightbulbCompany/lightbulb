@@ -1,5 +1,5 @@
-"""Spark sign-in (/os/ticket, /os/session) and the account read (/os/account), over moto DynamoDB with real
-Clerk session tokens (the cross-account suite's Tenant and test JWKS)."""
+"""Spark's account read (/os/account) and referrals (/os/referral), over moto DynamoDB with real Clerk session
+tokens (the cross-account suite's Tenant and test JWKS)."""
 
 import asyncio
 from dataclasses import replace
@@ -14,10 +14,9 @@ from core.config import settings
 from main import app
 from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
 
-A = Tenant("user_a", None)
-B = Tenant("user_b", None)
+A, B, C, D = (Tenant(f"user_{x}", None) for x in "abcd")
 DAY = 86400
-STATE = "state-from-the-app_0123"
+START = 1_800_000_000
 
 
 @pytest.fixture
@@ -36,337 +35,189 @@ def users(monkeypatch, jwks):  # noqa: F811
 
 @pytest.fixture
 def clock(monkeypatch):
-    now = [1_800_000_000]
+    now = [START]
     monkeypatch.setattr("routers.os._now", lambda: now[0])
     return now
 
 
-async def req(method, path, *, who: Tenant | None = None, token: str | None = None, body=None):
-    headers = who.headers if who else {"Authorization": f"Bearer {token}"} if token else {}
+async def req(method, path, who: Tenant | None = None, body=None):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        return await c.request(method, f"/api/v1{path}", headers=headers, json=body)
+        return await c.request(method, f"/api/v1{path}", headers=who.headers if who else {}, json=body)
 
 
-async def ticket(who: Tenant = A) -> str:
-    r = await req("POST", "/os/ticket", who=who, body={"state": STATE})
+async def account(who: Tenant = A) -> dict:
+    r = await req("GET", "/os/account", who)
     assert r.status_code == 200, r.text
-    assert set(r.json()) == {"ticket"}
-    return r.json()["ticket"]
+    return r.json()
 
 
-async def session(who: Tenant = A) -> str:
-    r = await redeem(await ticket(who))
+async def refer(who: Tenant, code) -> bool:
+    r = await req("POST", "/os/referral", who, {"code": code})
     assert r.status_code == 200, r.text
-    return r.json()["token"]
+    assert set(r.json()) == {"applied"}
+    return r.json()["applied"]
 
 
-async def redeem(t: str, state: str = STATE):
-    return await req("POST", "/os/session", body={"ticket": t, "state": state})
-
-
-async def account(token: str):
-    return await req("GET", "/os/account", token=token)
-
-
-TICKET_INVALID = (401, {"detail": "ticket_invalid"})
-REVOKED = (401, {"detail": "os_session_revoked"})
-
-
-def answer(r):
-    return r.status_code, r.json()
-
-
-async def test_ticket_then_session_then_account_round_trip(users, clock):
-    r = await redeem(await ticket())
-    assert r.status_code == 200
-    body = r.json()
-    assert set(body) == {"token", "accountId", "expiresAt"}
-    assert body["accountId"] == "user_a" and body["expiresAt"] is None
-    r = await account(body["token"])
-    assert r.status_code == 200
-    assert r.json() == {
+async def test_first_account_read_starts_a_three_day_trial(users, clock):
+    assert await account() == {
         "accountId": "user_a",
         "email": "user_a@example.com",
         "name": "",
         "status": "trial",
-        "trialEndsAt": clock[0] + 3 * DAY,
-        "checkoutUrl": None,
-        "portalUrl": None,
+        "trialEndsAt": START + 3 * DAY,
         "referralUrl": f"{settings.FRONTEND_URL.rstrip('/')}/os?ref=a",
         "referralDaysEarned": 0,
         "referralCount": 0,
+        "checkoutUrl": None,
+        "portalUrl": None,
     }
 
 
-async def test_ticket_is_one_time(users, clock):
-    t = await ticket()
-    assert (await redeem(t)).status_code == 200
-    assert answer(await redeem(t)) == TICKET_INVALID
-
-
-async def test_ticket_expires_after_60s(users, clock):
-    t = await ticket()
-    clock[0] += 60
-    assert answer(await redeem(t)) == TICKET_INVALID
-    t = await ticket()
-    clock[0] += 59
-    assert (await redeem(t)).status_code == 200
-
-
-async def test_ticket_unknown_user_and_wrong_secret_look_identical(users, clock):
-    t = await ticket()
-    secret = t.split(".", 1)[1]
-    for bad in [f"user_nobody.{secret}", "user_a.wrongsecret", "nonsense", "", "user_a.", ".x", "user_a"]:
-        assert answer(await redeem(bad)) == TICKET_INVALID, bad
-
-
-async def test_concurrent_redeem_yields_one_token(users, clock):
-    t = await ticket()
-    rs = await asyncio.gather(*[redeem(t) for _ in range(2)])
-    assert sorted(r.status_code for r in rs) == [200, 401]
-
-
-async def test_trial_starts_at_first_sign_in_and_is_not_reset(users, clock):
-    first = clock[0] + 3 * DAY
-    token = await session()
+async def test_later_reads_do_not_move_the_trial(users, clock):
+    await account()
     clock[0] += DAY
-    await ticket()
-    assert (await account(token)).json()["trialEndsAt"] == first
+    assert (await account())["trialEndsAt"] == START + 3 * DAY
+
+
+async def test_two_concurrent_first_reads_create_one_account(users, clock):
+    first = await asyncio.gather(*[account() for _ in range(3)])
+    assert {a["trialEndsAt"] for a in first} == {START + 3 * DAY}
+    assert len(users.scan()["Items"]) == 1
 
 
 async def test_status_is_ended_after_trial(users, clock):
-    token = await session()
+    await account()
     clock[0] += 3 * DAY - 1
-    assert (await account(token)).json()["status"] == "trial"
+    assert (await account())["status"] == "trial"
     clock[0] += 1
-    assert (await account(token)).json()["status"] == "ended"
-
-
-async def test_sign_out_revokes_only_that_token(users, clock):
-    one, two = await session(), await session()
-    assert (await req("DELETE", "/os/session", token=one)).status_code == 204
-    assert answer(await account(one)) == REVOKED
-    assert answer(await req("DELETE", "/os/session", token=one)) == REVOKED
-    assert (await account(two)).status_code == 200
-
-
-async def test_token_cap_drops_oldest(users, clock):
-    tokens = []
-    for _ in range(11):
-        clock[0] += 1
-        tokens.append(await session())
-    assert answer(await account(tokens[0])) == REVOKED
-    for t in tokens[1:]:
-        assert (await account(t)).status_code == 200
-
-
-async def test_one_persons_token_cannot_read_anothers_account(users, clock):
-    a, b = await session(A), await session(B)
-    assert (await account(a)).json()["accountId"] == "user_a"
-    forged = "user_b." + a.split(".", 1)[1]
-    r = await account(forged)
-    assert answer(r) == REVOKED
-    assert (await account(b)).json()["accountId"] == "user_b"
-    for bad in ["", "garbage", "user_a.", "user_nobody." + a.split(".", 1)[1]]:
-        assert answer(await account(bad)) == REVOKED, bad
-    assert answer(await req("GET", "/os/account")) == REVOKED
+    assert (await account())["status"] == "ended"
 
 
 @pytest.mark.parametrize("token", ["oauth", "template"])
-async def test_ticket_requires_a_human_session(users, clock, token):
-    r = await req("POST", "/os/ticket", who=replace(A, token=token), body={"state": STATE})
-    assert r.status_code == 403
+async def test_account_requires_a_human_session(users, clock, token):
+    assert (await req("GET", "/os/account", replace(A, token=token))).status_code == 403
+    assert (await req("POST", "/os/referral", replace(A, token=token), {"code": "b"})).status_code == 403
+    assert (await req("GET", "/os/account")).status_code in (401, 403)
+    assert (await req("POST", "/os/referral", body={"code": "b"})).status_code in (401, 403)
     assert users.scan()["Items"] == []
 
 
 async def test_works_with_and_without_an_organisation(users, clock):
-    without = await session(A)
+    without = await account(A)
     clock[0] += DAY
-    with_org = await session(replace(A, org_id="org_a"))
-    for t in (without, with_org):
-        body = (await account(t)).json()
-        assert body["accountId"] == "user_a" and body["trialEndsAt"] == 1_800_000_000 + 3 * DAY
+    with_org = await account(replace(A, org_id="org_a"))
+    assert without == with_org
     assert [i["user_id"] for i in users.scan()["Items"]] == ["user_a"]
 
 
-async def test_a_replayed_user_created_webhook_keeps_the_account(users, clock):
-    """Clerk's user.created writes the same users row (user_repo.put); a redelivery must not sign Spark out
-    or restart the trial."""
-    from core.repositories import user_repo
-
-    token = await session()
-    await user_repo.put("user_a", "user_a@example.com")
-    body = (await account(token)).json()
-    assert body["trialEndsAt"] == clock[0] + 3 * DAY
-
-
-async def user_deleted(monkeypatch, user_id: str):
-    from unittest.mock import AsyncMock
-
-    monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
-    monkeypatch.setattr("core.services.workspace_memory.delete_person_memory", AsyncMock())
-    monkeypatch.setattr("core.repositories.workspace_repo.WorkspaceRepo.delete", AsyncMock())
-    payload = {"type": "user.deleted", "data": {"id": user_id, "deleted": True}}
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        return await c.post("/api/v1/webhooks/clerk", json=payload, headers={"svix-timestamp": "1234567890"})
-
-
-async def test_a_deleted_clerk_account_is_signed_out_everywhere(users, clock, monkeypatch):
-    a, b = await session(A), await session(B)
-    assert (await user_deleted(monkeypatch, "user_a")).status_code == 200
-    assert answer(await account(a)) == REVOKED
-    assert (await account(b)).status_code == 200
-
-
-async def test_user_deleted_with_no_users_row_completes(users, clock, monkeypatch):
-    assert (await user_deleted(monkeypatch, "user_nobody")).status_code == 200
-    assert users.scan()["Items"] == []
-
-
-async def test_a_failed_trim_still_signs_in(users, clock, monkeypatch):
-    from unittest.mock import AsyncMock
-
-    for _ in range(10):
-        await session()
-    monkeypatch.setattr("routers.os._drop_tokens", AsyncMock(side_effect=RuntimeError("down")))
-    token = await session()
-    assert (await account(token)).status_code == 200
-
-
-C = Tenant("user_c", None)
-D = Tenant("user_d", None)
-
-
-async def sign_in(who: Tenant, ref=None):
-    r = await req("POST", "/os/ticket", who=who, body={"state": STATE} | ({} if ref is None else {"ref": ref}))
-    assert r.status_code == 200, r.text
-    return r
-
-
-async def referrer_account(token: str) -> dict:
-    return (await account(token)).json()
-
-
 async def test_account_has_referral_fields(users, clock):
-    body = await referrer_account(await session())
-    assert body["referralUrl"] == f"{settings.FRONTEND_URL.rstrip('/')}/os?ref=a"
+    body = await account(B)
+    assert body["referralUrl"] == f"{settings.FRONTEND_URL.rstrip('/')}/os?ref=b"
     assert body["referralDaysEarned"] == 0 and body["referralCount"] == 0
 
 
-async def test_first_sign_in_with_ref_credits_referrer_one_day(users, clock):
-    token = await session(A)
-    before = (await referrer_account(token))["trialEndsAt"]
+async def test_referral_credits_the_referrer_one_day(users, clock):
+    await account(A)
     clock[0] += 100
-    await sign_in(B, ref="a")
-    body = await referrer_account(token)
-    assert body["trialEndsAt"] == before + DAY
-    assert body["referralCount"] == 1 and body["referralDaysEarned"] == 1
-    row = users.get_item(Key={"user_id": "user_b"})["Item"]
-    assert row["os_trial_ends_at"] == clock[0] + 3 * DAY
-    assert row["os_referred_by"] == "user_a"
+    await account(B)
+    assert await refer(B, "a")
+    a = await account(A)
+    assert a["trialEndsAt"] == START + 4 * DAY
+    assert a["referralCount"] == 1 and a["referralDaysEarned"] == 1
+    b = await account(B)
+    assert b["trialEndsAt"] == clock[0] + 3 * DAY and b["referralCount"] == 0  # the referred person gets nothing
+    assert users.get_item(Key={"user_id": "user_b"})["Item"]["os_referred_by"] == "user_a"
 
 
-async def test_ref_on_a_later_sign_in_is_ignored(users, clock):
-    token = await session(A)
-    await sign_in(B)
-    await sign_in(B, ref="a")
-    body = await referrer_account(token)
-    assert body["referralCount"] == 0 and body["trialEndsAt"] == clock[0] + 3 * DAY
+async def test_referral_applies_once_per_referred_person(users, clock):
+    await account(A), await account(C), await account(B)
+    assert await refer(B, "a")
+    assert not await refer(B, "a")
+    assert not await refer(B, "c")
+    assert (await account(A))["referralCount"] == 1 and (await account(A))["trialEndsAt"] == START + 4 * DAY
+    assert (await account(C))["referralCount"] == 0
+
+
+async def test_referral_refused_for_an_account_older_than_a_day(users, clock):
+    await account(A), await account(B)
+    clock[0] += DAY
+    assert not await refer(B, "a")
+    assert (await account(A))["referralCount"] == 0
     assert "os_referred_by" not in users.get_item(Key={"user_id": "user_b"})["Item"]
 
 
-async def test_self_referral_is_ignored(users, clock):
-    await sign_in(A, ref="a")
-    row = users.get_item(Key={"user_id": "user_a"})["Item"]
-    assert row["os_trial_ends_at"] == clock[0] + 3 * DAY
-    assert "os_referrals" not in row and "os_referred_by" not in row
+async def test_self_referral_is_refused(users, clock):
+    await account(A)
+    assert not await refer(A, "a")
+    assert (await account(A)) == (await account(A)) | {"referralCount": 0, "trialEndsAt": START + 3 * DAY}
 
 
-async def test_unknown_or_malformed_ref_is_ignored_and_sign_in_succeeds(users, clock):
+async def test_unknown_or_malformed_code_is_refused_identically(users, clock):
     from core.repositories import user_repo
 
+    await account(A)
     await user_repo.put("user_c", "user_c@example.com")  # a users row with no Spark account
-    for bad in ["c", "nobody", "", "user_a", "a.b", "a b", "../x", "x" * 65, 7, None, ["a"]]:
-        await sign_in(B, ref=bad) if bad is not None else await sign_in(B)
-    assert users.get_item(Key={"user_id": "user_b"})["Item"]["os_trial_ends_at"] == clock[0] + 3 * DAY
+    await account(B)
+    bad = ["c", "nobody", "", "user_a", "a.b", "a b", "../x", "x" * 65, 7, None, ["a"], {"x": 1}]
+    answers = [await req("POST", "/os/referral", B, {"code": code}) for code in bad]
+    answers += [await req("POST", "/os/referral", B, body) for body in [None, {}, [], "a"]]
+    assert {(r.status_code, r.text) for r in answers} == {(200, '{"applied":false}')}
     assert "os_trial_ends_at" not in users.get_item(Key={"user_id": "user_c"})["Item"]
     assert "Item" not in users.get_item(Key={"user_id": "user_nobody"})
+    assert "os_referred_by" not in users.get_item(Key={"user_id": "user_b"})["Item"]
+    assert await refer(B, "a")  # the refusals left the one referral unused
 
 
-async def test_two_concurrent_first_sign_ins_credit_once(users, clock):
-    token = await session(A)
-    before = (await referrer_account(token))["trialEndsAt"]
-    await asyncio.gather(*[sign_in(B, ref="a") for _ in range(2)])
-    body = await referrer_account(token)
-    assert body["referralCount"] == 1 and body["trialEndsAt"] == before + DAY
+async def test_another_persons_referral_credits_them_but_never_marks_them_referred(users, clock):
+    await account(A), await account(B)
+    assert await refer(B, "a")
+    a_row = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert "os_referred_by" not in a_row and a_row["os_referrals"] == 1
+
+
+async def test_referral_needs_the_callers_spark_account(users, clock):
+    await account(A)
+    assert not await refer(B, "a")
+    assert "Item" not in users.get_item(Key={"user_id": "user_b"})
 
 
 async def test_many_referrals_have_no_cap(users, clock):
-    token = await session(A)
-    before = (await referrer_account(token))["trialEndsAt"]
+    await account(A)
     for who in (B, C, D):
-        await sign_in(who, ref="a")
-    body = await referrer_account(token)
-    assert body["referralCount"] == 3 and body["referralDaysEarned"] == 3
-    assert body["trialEndsAt"] == before + 3 * DAY
+        await account(who)
+        assert await refer(who, "a")
+    a = await account(A)
+    assert a["referralCount"] == 3 and a["referralDaysEarned"] == 3 and a["trialEndsAt"] == START + 6 * DAY
 
 
 async def test_ended_trial_still_gets_the_day(users, clock):
-    token = await session(A)
-    ends = (await referrer_account(token))["trialEndsAt"]
+    await account(A)
     clock[0] += 10 * DAY
-    await sign_in(B, ref="a")
-    body = await referrer_account(token)
-    assert body["trialEndsAt"] == ends + DAY and body["status"] == "ended"
+    await account(B)
+    assert await refer(B, "a")
+    a = await account(A)
+    assert a["trialEndsAt"] == START + 4 * DAY and a["status"] == "ended"
 
 
-async def test_credit_failure_does_not_fail_sign_in(users, clock, monkeypatch):
+async def test_two_concurrent_referral_posts_credit_once(users, clock):
+    await account(A), await account(B)
+    rs = await asyncio.gather(*[req("POST", "/os/referral", B, {"code": "a"}) for _ in range(3)])
+    applied = [r.json().get("applied") for r in rs if r.status_code == 200]
+    assert applied.count(True) <= 1 and all(r.status_code in (200, 503) for r in rs)
+    a = await account(A)
+    assert a["referralCount"] == applied.count(True) and a["trialEndsAt"] == START + (3 + a["referralCount"]) * DAY
+
+
+async def test_a_transport_failure_is_503(users, clock, monkeypatch):
     from unittest.mock import AsyncMock
 
-    token = await session(A)
-    monkeypatch.setattr("routers.os._credit", AsyncMock(side_effect=RuntimeError("down")))
-    r = await sign_in(B, ref="a")
-    assert set(r.json()) == {"ticket"}
-    assert users.get_item(Key={"user_id": "user_b"})["Item"]["os_referred_by"] == "user_a"
-    assert (await referrer_account(token))["referralCount"] == 0
+    from botocore.exceptions import EndpointConnectionError
+
+    await account(A), await account(B)
+    monkeypatch.setattr("routers.os.transact", AsyncMock(side_effect=EndpointConnectionError(endpoint_url="x")))
+    assert (await req("POST", "/os/referral", B, {"code": "a"})).status_code == 503
 
 
-async def test_response_is_identical_with_and_without_valid_ref(users, clock):
-    await session(A)
-    shapes = []
-    for who, ref in [(B, "a"), (C, "nobody"), (D, None)]:
-        r = await sign_in(who, ref=ref)
-        shapes.append((r.status_code, set(r.json()), dict(r.headers).get("content-type")))
-    assert shapes[0] == shapes[1] == shapes[2]
-
-
-async def test_session_requires_matching_state(users, clock):
-    t = await ticket()
-    for wrong in ["another-state-0123456", STATE + "x", STATE.upper()]:
-        assert answer(await redeem(t, wrong)) == TICKET_INVALID, wrong
-    assert (await redeem(t)).status_code == 200
-
-
-async def test_session_without_state_is_ticket_invalid(users, clock):
-    t = await ticket()
-    for body in [
-        {"ticket": t},
-        {"ticket": t, "state": ""},
-        {"ticket": t, "state": "short"},
-        {"ticket": t, "state": 7},
-        {"ticket": t, "state": "bad state with spaces!"},
-        {"state": STATE},
-        {"ticket": 7, "state": STATE},
-        {},
-        [],
-        "x",
-        None,
-    ]:
-        assert answer(await req("POST", "/os/session", body=body)) == TICKET_INVALID, body
-    assert (await redeem(t)).status_code == 200
-
-
-async def test_ticket_requires_state(users, clock):
-    for body in [None, {}, {"ref": "a"}, {"state": "short"}, {"state": "x" * 129}, {"state": "has space in it 012"}]:
-        assert (await req("POST", "/os/ticket", who=A, body=body)).status_code == 422, body
-    assert users.scan()["Items"] == []
+async def test_deleted_routes_are_gone(users, clock):
+    for method, path in [("POST", "/os/ticket"), ("POST", "/os/session"), ("DELETE", "/os/session")]:
+        assert (await req(method, path, A, {})).status_code in (404, 405), path

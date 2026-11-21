@@ -1,36 +1,28 @@
-"""Spark (the Mac app) sign-in and account status, keyed on the person, never an organisation.
+"""Spark (the Mac app) account and referrals, keyed on the person, never an organisation.
 
-The browser trades a Clerk session for a one-time ticket (POST /os/ticket); the app trades the ticket for an
-app token (POST /os/session) and sends that token on every later call. Both are `<user_id>.<secret>`: the
-users row of `user_id` holds the SHA-256 of each secret (`os_ticket`, `os_tokens`) and the trial end
-(`os_trial_ends_at`), so a lookup is one GetItem on the key the credential names."""
+The app signs in with Clerk's own SDK and sends its Clerk session token, like the web app. A person's Spark
+account is a few attributes on their users row: `os_trial_ends_at`, `os_created_at`, `os_referrals` (people
+they referred) and `os_referred_by`."""
 
-import hashlib
-import hmac
 import logging
 import re
-import secrets
 import time
 from typing import Any
 
-from botocore.exceptions import ClientError
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import BaseModel
 
 from core.auth import AuthContext, get_human_session
 from core.config import settings
-from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.dynamodb import get_table, is_cancelled, run_in_thread, transact, utc_now_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-TICKET_TTL_S = 60
-TRIAL_S = 3 * 86400
-MAX_TOKENS = 10
+DAY_S = 86400
+TRIAL_S = 3 * DAY_S
 _USER_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
-_STATE = r"[A-Za-z0-9_-]{16,128}"  # minted by the app per sign-in; binds a ticket to the sign-in it started
-_bearer = HTTPBearer(auto_error=False)
 
 
 def _now() -> int:
@@ -41,213 +33,114 @@ def _table():
     return get_table("users")
 
 
-def _hash(secret: str) -> str:
-    return hashlib.sha256(secret.encode()).hexdigest()
-
-
-def _mint(user_id: str) -> tuple[str, str]:
-    """(credential, hash of its secret)."""
-    secret = secrets.token_urlsafe(32)
-    return f"{user_id}.{secret}", _hash(secret)
-
-
-def _split(credential: str) -> tuple[str, str] | None:
-    """(user_id, hash of the secret), or None when the credential is not one we mint."""
-    user_id, _, secret = credential.partition(".")
-    if not secret or not _USER_ID.fullmatch(user_id):
-        return None
-    return user_id, _hash(secret)
-
-
-class TicketRequest(BaseModel):
-    state: str = Field(pattern=f"^{_STATE}$")
-    ref: Any = None  # a referral code; anything that is not one is ignored, never refused
-
-
-class TicketResponse(BaseModel):
-    ticket: str
-
-
-class SessionResponse(BaseModel):
-    token: str
-    accountId: str
-    expiresAt: None = None
-
-
 class AccountResponse(BaseModel):
     accountId: str
     email: str
     name: str
     status: str
     trialEndsAt: int
-    checkoutUrl: None = None
-    portalUrl: None = None
     referralUrl: str
     referralDaysEarned: int
     referralCount: int
+    checkoutUrl: None = None
+    portalUrl: None = None
 
 
-def _referrer(ref: Any, user_id: str) -> str | None:
-    """The user id a referral code names, or None for anything else (including the caller themself).
-    ponytail: the code is the Clerk user id without `user_`, an identifier and not a secret; a short vanity
-    code would need a lookup row."""
-    referrer = f"user_{ref}" if isinstance(ref, str) else ""
-    return referrer if _USER_ID.fullmatch(referrer) and referrer != user_id else None
-
-
-async def _credit(referrer: str) -> None:
-    """One more day and one more referral for a person who has a Spark account; anyone else is left as is."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"user_id": referrer},
-            UpdateExpression="ADD os_trial_ends_at :day, os_referrals :one",
-            ConditionExpression="attribute_exists(os_trial_ends_at)",
-            ExpressionAttributeValues={":day": 86400, ":one": 1},
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-
-@router.post("/ticket", response_model=TicketResponse, operation_id="os_ticket")
-async def create_ticket(body: TicketRequest, auth: AuthContext = Depends(get_human_session)) -> TicketResponse:
-    """A one-time ticket for the signed-in person, valid 60 seconds. Creates the person's account (trial
-    ending three days from now) on first sign-in; the ticket redeems only with the same `state`; a later sign-in never moves the trial. A referral code on
-    the sign-in that creates the account gives the referrer one more day."""
-    ticket, h = _mint(auth.user_id)
-    now = _now()
-    sets = ["os_ticket = :t", "os_trial_ends_at = if_not_exists(os_trial_ends_at, :trial)"]
-    sets.append("created_at = if_not_exists(created_at, :created)")
-    values = {
-        ":t": {"h": h, "s": _hash(body.state), "exp": now + TICKET_TTL_S},
-        ":trial": now + TRIAL_S,
-        ":created": utc_now_iso(),
-    }
-    if auth.email:
-        sets.append("email = if_not_exists(email, :e)")
-        values[":e"] = auth.email
-    key, expr = {"user_id": auth.user_id}, "SET " + ", ".join(sets)
-    referrer = _referrer(body.ref, auth.user_id)
-    if referrer:
-        # Only the write that creates the account records the referrer: a retry or a concurrent second
-        # first sign-in fails this condition and takes the plain write below, so a person counts once.
-        try:
-            await run_in_thread(
-                _table().update_item,
-                Key=key,
-                UpdateExpression=expr + ", os_referred_by = :ref",
-                ConditionExpression="attribute_not_exists(os_trial_ends_at)",
-                ExpressionAttributeValues={**values, ":ref": referrer},
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
-            referrer = None
-    if referrer:
-        try:
-            await _credit(referrer)
-        except Exception:  # the person is signed in either way; os_referred_by keeps the lost credit visible
-            logger.exception("os referral credit failed: %s referred by %s", auth.user_id, referrer)
-    else:
-        await run_in_thread(_table().update_item, Key=key, UpdateExpression=expr, ExpressionAttributeValues=values)
-    return TicketResponse(ticket=ticket)
-
-
-@router.post("/session", response_model=SessionResponse, operation_id="os_create_session")
-async def create_session(body: Any = Body(None)) -> SessionResponse:
-    """Redeem a ticket and its sign-in's `state` for an app token. Unauthenticated: every refusal, a missing
-    or malformed field included, is the same 401, so the door says nothing about what was wrong."""
-    fields = body if isinstance(body, dict) else {}
-    ticket, state = fields.get("ticket"), fields.get("state")
-    parts = _split(ticket) if isinstance(ticket, str) else None
-    if not parts or not isinstance(state, str) or not re.fullmatch(_STATE, state):
-        raise HTTPException(status_code=401, detail="ticket_invalid")
-    user_id, h = parts
-    token, token_hash = _mint(user_id)
-    try:
-        # One conditional write consumes the ticket and stores the token: two redeems yield one token.
-        row = await run_in_thread(
-            _table().update_item,
-            Key={"user_id": user_id},
-            UpdateExpression="REMOVE os_ticket ADD os_tokens :tok",
-            ConditionExpression="os_ticket.h = :h AND os_ticket.s = :s AND os_ticket.exp > :now",
-            ExpressionAttributeValues={
-                ":h": h,
-                ":s": _hash(state),
-                ":now": _now(),
-                ":tok": {f"{time.time_ns()}:{token_hash}"},
-            },
-            ReturnValues="ALL_NEW",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            raise HTTPException(status_code=401, detail="ticket_invalid")
-        raise
-    stored = sorted(row["Attributes"]["os_tokens"])  # entries start with their mint time in ns
-    if len(stored) > MAX_TOKENS:
-        try:  # housekeeping: the person is signed in either way, and the next sign-in trims again
-            await _drop_tokens(user_id, set(stored[:-MAX_TOKENS]))
-        except Exception:
-            logger.exception("os token trim failed for %s", user_id)
-    return SessionResponse(token=token, accountId=user_id)
-
-
-async def _drop_tokens(user_id: str, entries: set[str]) -> None:
-    await run_in_thread(
-        _table().update_item,
-        Key={"user_id": user_id},
-        UpdateExpression="DELETE os_tokens :gone",
-        ExpressionAttributeValues={":gone": entries},
-    )
-
-
-async def revoke_all(user_id: str) -> None:
-    """Sign every Mac of a deleted person out. A person with no users row has nothing to revoke."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"user_id": user_id},
-            UpdateExpression="REMOVE os_tokens, os_ticket",
-            ConditionExpression="attribute_exists(user_id)",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-
-async def get_os_account(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> tuple[dict, str]:
-    """The users row an app token belongs to, and the token's stored entry; 401 for anything else."""
-    parts = _split(creds.credentials) if creds else None
-    if parts:
-        user_id, h = parts
-        got = await run_in_thread(_table().get_item, Key={"user_id": user_id}, ConsistentRead=True)
-        row = got.get("Item") or {}
-        for entry in row.get("os_tokens", ()):
-            if hmac.compare_digest(entry.partition(":")[2], h):
-                return row, entry
-    raise HTTPException(status_code=401, detail="os_session_revoked")
-
-
-@router.delete("/session", status_code=204, operation_id="os_delete_session")
-async def delete_session(found: tuple[dict, str] = Depends(get_os_account)) -> Response:
-    """Sign this app token out; the person's other tokens keep working."""
-    row, entry = found
-    await _drop_tokens(row["user_id"], {entry})
-    return Response(status_code=204)
+class ReferralResponse(BaseModel):
+    applied: bool
 
 
 @router.get("/account", response_model=AccountResponse, operation_id="os_account")
-async def get_account(found: tuple[dict, str] = Depends(get_os_account)) -> AccountResponse:
-    row, _ = found
-    ends = int(row["os_trial_ends_at"])
+async def get_account(auth: AuthContext = Depends(get_human_session)) -> AccountResponse:
+    """The signed-in person's Spark account. The first read creates it (trial ending three days from now) in
+    the same single write every read makes: `if_not_exists` makes concurrent first reads agree, and a later
+    read never moves the trial."""
+    now = _now()
+    sets = [
+        "os_trial_ends_at = if_not_exists(os_trial_ends_at, :trial)",
+        "os_created_at = if_not_exists(os_created_at, :now)",
+        "created_at = if_not_exists(created_at, :created)",
+    ]
+    values: dict[str, Any] = {":trial": now + TRIAL_S, ":now": now, ":created": utc_now_iso()}
+    if auth.email:
+        sets.append("email = if_not_exists(email, :e)")
+        values[":e"] = auth.email
+    written = await run_in_thread(
+        _table().update_item,
+        Key={"user_id": auth.user_id},
+        UpdateExpression="SET " + ", ".join(sets),
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    row = written["Attributes"]
+    ends, referrals = int(row["os_trial_ends_at"]), int(row.get("os_referrals", 0))
     return AccountResponse(
-        accountId=row["user_id"],
+        accountId=auth.user_id,
         email=row.get("email") or "",
         name="",  # the backend stores no name for a person
-        status="trial" if _now() < ends else "ended",
+        status="trial" if now < ends else "ended",
         trialEndsAt=ends,
-        referralUrl=f"{settings.FRONTEND_URL.rstrip('/')}/os?ref={row['user_id'].removeprefix('user_')}",
-        referralDaysEarned=int(row.get("os_referrals", 0)),  # one referral is one day
-        referralCount=int(row.get("os_referrals", 0)),
+        referralUrl=f"{settings.FRONTEND_URL.rstrip('/')}/os?ref={auth.user_id.removeprefix('user_')}",
+        referralDaysEarned=referrals,  # one referral is one day
+        referralCount=referrals,
     )
+
+
+def _referrer(code: Any, user_id: str) -> str | None:
+    """The user id a referral code names, or None for anything else (including the caller themself).
+    ponytail: the code is the Clerk user id without `user_`, an identifier and not a secret; a short vanity
+    code would need a lookup row."""
+    referrer = f"user_{code}" if isinstance(code, str) else ""
+    return referrer if _USER_ID.fullmatch(referrer) and referrer != user_id else None
+
+
+@router.post("/referral", response_model=ReferralResponse, operation_id="os_referral")
+async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get_human_session)) -> ReferralResponse:
+    """One more day for the person whose code this is. Applies once per referred person, only to a Spark
+    account under a day old, and only for another person with a Spark account. Every refusal is the same
+    `applied: false`, so the route says nothing about whether a person exists."""
+    referrer = _referrer(body.get("code") if isinstance(body, dict) else None, auth.user_id)
+    if not referrer:
+        return ReferralResponse(applied=False)
+    table = _table()
+
+    def update(user_id: str, expr: str, cond: str, values: dict) -> dict:
+        return {
+            "Update": {
+                "TableName": table.name,
+                "Key": {"user_id": user_id},
+                "UpdateExpression": expr,
+                "ConditionExpression": cond,
+                "ExpressionAttributeValues": values,
+            }
+        }
+
+    try:
+        # Both rows or neither: the referred person is marked once, and the referrer is credited with it.
+        await transact(
+            table,
+            [
+                update(
+                    auth.user_id,
+                    "SET os_referred_by = :ref",
+                    "attribute_not_exists(os_referred_by) AND os_created_at > :cutoff",
+                    {":ref": referrer, ":cutoff": _now() - DAY_S},
+                ),
+                update(
+                    referrer,
+                    "ADD os_trial_ends_at :day, os_referrals :one",
+                    "attribute_exists(os_trial_ends_at)",
+                    {":day": DAY_S, ":one": 1},
+                ),
+            ],
+        )
+    except ClientError as e:
+        reasons = e.response.get("CancellationReasons") or []
+        if is_cancelled(e) and any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
+            return ReferralResponse(applied=False)
+        logger.warning("os referral not written for %s: %s", auth.user_id, e.response.get("Error", {}).get("Code"))
+        raise HTTPException(status_code=503, detail="referral_unavailable")
+    except BotoCoreError:
+        logger.warning("os referral not written for %s: transport", auth.user_id)
+        raise HTTPException(status_code=503, detail="referral_unavailable")
+    return ReferralResponse(applied=True)

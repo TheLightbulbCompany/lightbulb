@@ -26,14 +26,9 @@ def member(monkeypatch):
     app.dependency_overrides.clear()
 
 
-def test_recall_requires_member():
+def test_recall_requires_sign_in():
     app.dependency_overrides.clear()
     assert TestClient(app).post("/api/v1/memory/recall", json={"question": "x"}).status_code in (401, 403)
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_me", org_id=None, org_role=None)
-    try:
-        assert TestClient(app).post("/api/v1/memory/recall", json={"question": "x"}).status_code == 409
-    finally:
-        app.dependency_overrides.clear()
 
 
 def test_recall_starts_the_team_sync_and_recalls(member):

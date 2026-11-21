@@ -60,7 +60,7 @@ class AuthContext:
 
     Provides convenient properties for checking user context:
     - is_org_context: True when user has active organization selected
-    - is_org_admin: True when user has admin role in current org
+    - is_org_admin: True when user has admin role in current org, or has no org (they own their account)
     """
 
     user_id: str
@@ -86,29 +86,18 @@ class AuthContext:
 
     @property
     def is_org_admin(self) -> bool:
-        """True when user has admin role in current org."""
-        return self.org_role == "org:admin"
+        """True for an admin of the current org, and for a person with no org: they are their own tenant's owner."""
+        return self.org_id is None or self.org_role == "org:admin"
 
 
-# Shared by resolve_owner_id's 409 and provision_gate's Layer-0 gate.
+# provision_gate's Layer-0 gate.
 WORKSPACE_REQUIRED_CODE = "workspace_required"
 WORKSPACE_REQUIRED_MESSAGE = "Choose or create a workspace to continue."
 
 
 def resolve_owner_id(auth: AuthContext) -> str:
-    """Return the active organization workspace owner."""
-    if not auth.org_id:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": WORKSPACE_REQUIRED_CODE, "message": WORKSPACE_REQUIRED_MESSAGE},
-        )
-    return auth.org_id
-
-
-def get_owner_type(auth: AuthContext) -> str:
-    """Return the owner type after requiring an active organization."""
-    resolve_owner_id(auth)
-    return "org"
+    """The tenant: the active org, else the person. ponytail: interim rule, the org part goes when orgs do."""
+    return auth.org_id or auth.user_id
 
 
 def is_org_owner_id(owner_id: str) -> bool:
@@ -123,8 +112,7 @@ def is_org_owner_id(owner_id: str) -> bool:
 
 
 def require_org_admin(auth: AuthContext) -> AuthContext:
-    """Require an active organization whose current user is an admin."""
-    resolve_owner_id(auth)
+    """Require the tenant's admin: an org admin, or a person with no org (their own)."""
     if not auth.is_org_admin:
         put_metric("auth.org_admin.denied")
         raise HTTPException(status_code=403, detail="Organization admin access required")

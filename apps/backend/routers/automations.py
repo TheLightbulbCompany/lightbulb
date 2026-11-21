@@ -457,7 +457,7 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
                 description=None,
                 actor_user_id=auth.user_id,
             )
-        except ValueError as exc:
+        except (ValueError, KeyError) as exc:  # KeyError: a provider the registry does not know
             await _destroy(ws, sid)
             raise _err(400, "invalid_trigger", message=str(exc)) from exc
         setup.append(

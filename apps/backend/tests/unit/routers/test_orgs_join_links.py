@@ -279,10 +279,10 @@ def test_a_member_cannot_replace_a_link_that_cannot_be_shown(app, member_auth, r
 
 
 def test_personal_caller_is_rejected_before_any_write(app, personal_auth, repo):
-    """No active org -> resolve_owner_id 409s inside require_org_admin."""
+    """No active org: the person is their own tenant's admin, and an org is not their tenant."""
     _override_auth(app, personal_auth)
     resp = TestClient(app).post("/api/v1/orgs/org_test/join-link")
-    assert resp.status_code == 409
+    assert resp.status_code == 403
     assert repo.rows == {}
 
 

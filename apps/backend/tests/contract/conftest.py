@@ -65,7 +65,13 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     "integrations": ([("owner_id", "HASH", "S"), ("provider", "RANGE", "S")], {}),
     "workspace-join-links": ([("org_id", "HASH", "S")], {}),
     # The public A2A Agent Card reads the workspace's AGENT# roster rows here.
-    "tasks": ([("pk", "HASH", "S"), ("sk", "RANGE", "S")], {}),
+    "tasks": (
+        [("pk", "HASH", "S"), ("sk", "RANGE", "S")],
+        {
+            "by-status": [("statusKey", "HASH", "S"), ("updatedAt", "RANGE", "S")],
+            "ws-meta": [("metaKind", "HASH", "S"), ("pk", "RANGE", "S")],
+        },
+    ),
     "setup-requests": ([("id", "HASH", "S")], {}),
     "paperclip-companies": (
         [("user_id", "HASH", "S")],
@@ -186,9 +192,19 @@ def _mock_oauth_external_deps(monkeypatch):
                 {"AttributeName": "sk", "AttributeType": "S"},
                 {"AttributeName": "sweep", "AttributeType": "S"},
                 {"AttributeName": "deadlineAt", "AttributeType": "N"},
+                {"AttributeName": "memberKey", "AttributeType": "S"},
+                {"AttributeName": "memberSort", "AttributeType": "S"},
             ],
             # The run-ledger sweeper runs in this harness's lifespan and queries this index.
             GlobalSecondaryIndexes=[
+                {  # a signed-in person's rooms (a no-org account is its own tenant, so the routes run)
+                    "IndexName": "by-member",
+                    "KeySchema": [
+                        {"AttributeName": "memberKey", "KeyType": "HASH"},
+                        {"AttributeName": "memberSort", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
                 {
                     "IndexName": "by-run-deadline",
                     "KeySchema": [
@@ -196,11 +212,13 @@ def _mock_oauth_external_deps(monkeypatch):
                         {"AttributeName": "deadlineAt", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "KEYS_ONLY"},
-                }
+                },
             ],
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setattr(_settings, "MESSAGING_TABLE", "contract-test-messaging")
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="contract-test-owner-state")
+        monkeypatch.setattr(_settings, "OWNER_STATE_BUCKET", "contract-test-owner-state")
 
         # Pre-seed a pending device-code session for the contract test user
         # so /poll has a row to look up. /start would normally create this
@@ -279,6 +297,18 @@ def _mock_oauth_external_deps(monkeypatch):
         yield
     finally:
         mock.stop()
+
+
+@pytest.fixture(autouse=True)
+def _no_temporal(monkeypatch):
+    """Automation Schedules live in Temporal, which the contract suite does not run: keeping one in step is a no-op."""
+    from core.services import automation_schedule
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(automation_schedule, "upsert", _noop)
+    monkeypatch.setattr(automation_schedule, "delete", _noop)
 
 
 @pytest.fixture(autouse=True)

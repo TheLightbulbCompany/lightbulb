@@ -469,25 +469,6 @@ class TestStartOrgRules:
         assert resp.status_code == 200
         mock_request.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_start_rejects_missing_workspace(self, async_client, override_auth):
-        """No active workspace must fail before opening a device-code flow."""
-        override_auth(AuthContext(user_id="user_test_123"))
-        fake_resp = DeviceCodeResponse(
-            user_code="TEST-1234",
-            verification_uri="https://chatgpt.com/codex",
-            expires_in=900,
-            interval=5,
-        )
-        with patch(
-            "routers.oauth.request_device_code",
-            new=AsyncMock(return_value=fake_resp),
-        ) as mock_request:
-            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
-        assert resp.status_code == 409
-        assert resp.json()["detail"]["code"] == "workspace_required"
-        mock_request.assert_not_awaited()
-
 
 class TestPollOrgClaim:
     """POST /api/v1/oauth/chatgpt/poll — org ownership claim on completion.

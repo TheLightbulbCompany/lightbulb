@@ -72,16 +72,6 @@ async def test_workspace_checkout_rejects_a_member():
 
 
 @pytest.mark.asyncio
-async def test_workspace_checkout_requires_an_active_workspace():
-    with pytest.raises(HTTPException) as exc:
-        await billing.create_workspace_checkout(
-            billing.CheckoutRequest(plan="workspace"), auth=AuthContext(user_id="user_1")
-        )
-    assert exc.value.status_code == 409
-    assert exc.value.detail["code"] == "workspace_required"
-
-
-@pytest.mark.asyncio
 async def test_workspace_checkout_returns_same_plan_noop(monkeypatch):
     monkeypatch.setattr(
         billing,

@@ -30,14 +30,9 @@ async def require_live_member(auth: AuthContext) -> str:
     return owner_id
 
 
-def _owner(auth: AuthContext) -> str:
-    """A free account's keys are its own (owner = the user): they reach the network tools only."""
-    return auth.org_id or auth.user_id
-
-
 @router.get("")
 async def list_agent_keys(auth: AuthContext = Depends(get_current_user)):
-    return {"keys": await agent_keys.list_keys(_owner(auth), auth.user_id)}
+    return {"keys": await agent_keys.list_keys(resolve_owner_id(auth), auth.user_id)}
 
 
 @router.post("")
@@ -53,6 +48,6 @@ async def create_agent_key(body: CreateAgentKey, auth: AuthContext = Depends(get
 
 @router.delete("/{key_id}")
 async def revoke_agent_key(key_id: str, auth: AuthContext = Depends(get_current_user)):
-    if not await agent_keys.revoke_key(_owner(auth), auth.user_id, key_id):
+    if not await agent_keys.revoke_key(resolve_owner_id(auth), auth.user_id, key_id):
         raise HTTPException(status_code=404, detail="Key not found")
     return {"status": "ok"}

@@ -36,8 +36,7 @@ internal_router = APIRouter(dependencies=[Depends(_enabled)])
 
 
 def _owner(auth: AuthContext) -> str:
-    if auth.is_org_context:
-        require_org_admin(auth)
+    require_org_admin(auth)
     return resolve_owner_id(auth)
 
 

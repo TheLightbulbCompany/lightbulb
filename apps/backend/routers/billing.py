@@ -250,8 +250,7 @@ def _future_epoch(value) -> int | None:
 async def create_portal(
     auth: AuthContext = Depends(get_current_user),
 ):
-    if auth.is_org_context:
-        require_org_admin(auth)
+    require_org_admin(auth)
 
     account = await _get_billing_account(auth)
     if not account:

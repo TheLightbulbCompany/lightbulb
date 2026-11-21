@@ -106,7 +106,10 @@ async def needs_you(
     cursor: Annotated[str | None, Query(max_length=2048)] = None,
 ):
     ws = await _workspace(auth)
-    needs, nxt = await questions_repo.needs_for_user(ws, auth.user_id, cursor=cursor)
+    try:
+        needs, nxt = await questions_repo.needs_for_user(ws, auth.user_id, cursor=cursor)
+    except ValueError as exc:  # a cursor this route did not hand out (bad base64 or JSON)
+        raise _problem(400, "bad_cursor") from exc
     found = await asyncio.gather(*(questions_repo.get_question(ws, n["taskId"], n["qid"]) for n in needs))
     open_qs = [q for q in found if q and q["state"] == "open" and auth.user_id in (q.get("answerers") or [])]
     return {"items": await _views(open_qs, auth.user_id), "next": nxt}

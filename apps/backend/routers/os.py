@@ -120,7 +120,7 @@ async def _account(auth: AuthContext, now: int) -> dict:
         spark_events.server_event(auth.user_id, "account_created", auth.user_id, row=row, now=now)
     # Referred on the web before the account existed: the referrer gets their day now. Checked on every read,
     # not only the creating one, so a failed credit is retried; the condition makes it once.
-    if row.get("os_referred_by") and not row.get("os_referral_credited"):
+    if row.get("os_referred_by") and not row.get("os_referral_credited") and "os_deleted_at" not in row:
         try:
             if await _credit(auth.user_id, row["os_referred_by"], "SET os_referral_credited = :t", _NOT_CREDITED, {}):
                 row["os_referral_credited"] = True
@@ -154,7 +154,7 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
 @router.delete("/account", status_code=204, operation_id="os_account_delete")
 async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Response:
     """Delete the signed-in person's Spark account. Every step is idempotent, so a retry finishes a partial one:
-    cancel their Spark subscription, end their open voice session, remove every `os_*` attribute from their
+    cancel their Spark subscription, close their open voice session at OpenAI, remove every `os_*` attribute from their
     users row except the `os_deleted_at` tombstone (a later account starts with no trial), then delete the
     Clerk user. A person in any Clerk organization keeps their Clerk user, since their other Lightbulb product
     still uses it; the answer is 204 all the same. Referrers keep what they earned. Ended voice-session rows
@@ -165,7 +165,7 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
     try:
         await os_billing.cancel_for_deleted_user(uid)  # raises before any Spark data is removed
         for sid in (await os_billing._row(uid)).get(os_voice.ACTIVE) or ():
-            await os_voice.end_session(sid, "signed_out", 0)
+            await os_voice.close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
         row = await os_billing._row(uid)  # re-read: ending a session adds to os_voice_seconds
         spark = {f"#a{i}": k for i, k in enumerate(k for k in row if k.startswith("os_") and k != "os_deleted_at")}
         if spark:
@@ -214,7 +214,8 @@ async def _written(items: list[dict]) -> bool:
     return True
 
 
-_NOT_CREDITED = "attribute_not_exists(os_referral_credited)"
+_NEVER_DELETED = "attribute_not_exists(os_deleted_at)"  # a person who deleted Spark is never a referee again
+_NOT_CREDITED = f"attribute_not_exists(os_referral_credited) AND {_NEVER_DELETED}"
 
 
 async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dict) -> bool:
@@ -255,7 +256,7 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
                 auth.user_id,
                 referrer,
                 "SET os_referred_by = :ref, os_referral_credited = :t",
-                "attribute_not_exists(os_referred_by) AND os_created_at > :cutoff",
+                f"attribute_not_exists(os_referred_by) AND os_created_at > :cutoff AND {_NEVER_DELETED}",
                 {":ref": referrer, ":cutoff": _now() - REFERRAL_WINDOW_S},
             )
         else:
@@ -265,7 +266,7 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
                     _item(
                         "Update",
                         auth.user_id,
-                        "attribute_not_exists(os_referred_by) AND attribute_not_exists(os_created_at)",
+                        f"attribute_not_exists(os_referred_by) AND attribute_not_exists(os_created_at) AND {_NEVER_DELETED}",
                         {":ref": referrer},
                         "SET os_referred_by = :ref",
                     ),

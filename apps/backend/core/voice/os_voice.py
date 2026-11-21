@@ -201,8 +201,8 @@ async def get(sid: str) -> dict | None:
     return (await run_in_thread(_table().get_item, Key=_key(sid), ConsistentRead=True)).get("Item")
 
 
-async def request_close(sid: str) -> None:
-    """The app will not use this session: mark it `closeRequested: client_closed` (never over another reason)
+async def request_close(sid: str, reason: str = "client_closed") -> None:
+    """The app will not use this session: mark it `closeRequested: <reason>` (never over another reason)
     and let its sideband close it on the next tick. With no live sideband, attach one here now."""
     try:
         row = (
@@ -212,7 +212,7 @@ async def request_close(sid: str) -> None:
                 UpdateExpression="SET closeRequested = :r",
                 ConditionExpression="#st = :active AND attribute_not_exists(closeRequested)",
                 ExpressionAttributeNames={"#st": "status"},
-                ExpressionAttributeValues={":r": "client_closed", ":active": ACTIVE},
+                ExpressionAttributeValues={":r": reason, ":active": ACTIVE},
                 ReturnValues="ALL_NEW",
             )
         )["Attributes"]
@@ -222,6 +222,25 @@ async def request_close(sid: str) -> None:
         raise
     if row.get("liveId") and int(row.get("leaseUntil", 0)) < now():
         start_sideband(sid)
+
+
+CLOSE_POLL_S = 0.5
+CLOSE_SETTLE_S = 6.0  # three ticks: the sideband sends session.close, OpenAI answers session.closed
+
+
+async def close_and_wait(sid: str, reason: str) -> None:
+    """Close the session upstream through its sideband (`request_close`) and wait for it to end. A session
+    with no OpenAI id has nothing upstream to close and ends at once; one still active after the wait is
+    ended here (`os_voice.delete_close_timeout`), whatever OpenAI is still doing."""
+    await request_close(sid, reason)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + CLOSE_SETTLE_S
+    while (row := await get(sid)) and row.get("status") == ACTIVE and row.get("liveId"):
+        if loop.time() >= deadline:
+            put_metric("os_voice.delete_close_timeout")
+            break
+        await asyncio.sleep(CLOSE_POLL_S)
+    await end_session(sid, reason, 0)  # a no-op when the sideband ended it
 
 
 async def end_session(sid: str, reason: str, seconds: int) -> bool:

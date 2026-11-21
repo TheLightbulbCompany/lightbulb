@@ -938,6 +938,62 @@ async def test_a_referrer_keeps_their_day_when_the_referee_deletes(ddb, clock, f
     assert spark_keys(ddb, "user_b") == {"os_deleted_at"}
 
 
+def a_connected_session(ddb, monkeypatch, ends: bool):
+    """Give SID an OpenAI id and fake its sideband: when `ends`, attaching it ends the session the way
+    session.closed does, with the reason the close request stored and 7 seconds of usage."""
+    from core.voice import os_voice
+
+    containers = dynamodb._dynamodb_resource.Table(dynamodb.table_name("containers"))
+    containers.update_item(
+        Key=os_voice._key(SID), UpdateExpression="SET liveId = :l", ExpressionAttributeValues={":l": "sess_1"}
+    )
+    requested, metrics = [], []
+
+    def sideband(sid):
+        requested.append(containers.get_item(Key=os_voice._key(sid))["Item"].get("closeRequested"))
+        if ends:
+            asyncio.get_running_loop().create_task(os_voice.end_session(sid, requested[-1], 7))
+
+    monkeypatch.setattr(os_voice, "start_sideband", sideband)
+    monkeypatch.setattr(os_voice, "put_metric", lambda name, **kw: metrics.append(name))
+    monkeypatch.setattr(os_voice, "CLOSE_POLL_S", 0.01)
+    monkeypatch.setattr(os_voice, "CLOSE_SETTLE_S", 0.2)
+    return requested, metrics
+
+
+async def test_delete_closes_a_connected_session_through_its_sideband(ddb, clock, fake, gone, monkeypatch):
+    from core.voice import os_voice
+
+    await a_spark_account(ddb, fake)
+    requested, metrics = a_connected_session(ddb, monkeypatch, ends=True)
+    assert (await req("DELETE", "/os/account", A)).status_code == 204
+    ended = await os_voice.get(SID)
+    assert requested == ["signed_out"] and metrics == []
+    assert (ended["endedReason"], ended["usageSeconds"]) == ("signed_out", 7)
+    assert spark_keys(ddb) == {"os_deleted_at"}
+
+
+async def test_a_close_that_never_ends_is_ended_by_the_delete(ddb, clock, fake, gone, monkeypatch):
+    from core.voice import os_voice
+
+    await a_spark_account(ddb, fake)
+    requested, metrics = a_connected_session(ddb, monkeypatch, ends=False)
+    assert (await req("DELETE", "/os/account", A)).status_code == 204
+    assert requested == ["signed_out"] and metrics == ["os_voice.delete_close_timeout"]
+    assert (await os_voice.get(SID))["endedReason"] == "signed_out"
+    assert spark_keys(ddb) == {"os_deleted_at"}
+
+
+async def test_a_deleted_person_is_never_a_referee_again(ddb, clock, fake, gone):
+    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
+    await account(A), await account(B)
+    assert (await req("DELETE", "/os/account", B)).status_code == 204
+    await account(B)
+    assert (await req("POST", "/os/referral", B, json={"code": "a"})).json() == {"applied": False}
+    assert ddb.users.get_item(Key={"user_id": "user_a"})["Item"].get("os_referrals", 0) == 0
+    assert "os_referred_by" not in ddb.users.get_item(Key={"user_id": "user_b"})["Item"]
+
+
 async def test_a_deleted_account_read_again_has_no_new_trial(ddb, clock, fake, gone):
     gone.orgs = [{"id": "org_1", "role": "org:admin"}]
     await account()

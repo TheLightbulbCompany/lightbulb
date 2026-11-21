@@ -1407,3 +1407,31 @@ async def test_account_wipe_no_paperclip_steps(wipe_mocks):
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_wipe_account_cancels_a_spark_subscription_before_deleting_the_users_row(wipe_mocks, monkeypatch):
+    import stripe
+
+    order = []
+    wipe_mocks.user_get.return_value = _user_row(os_subscription_id="sub_1", os_subscription_status="trialing")
+    monkeypatch.setattr(stripe.Subscription, "cancel", lambda sub_id, **kw: order.append(("cancel", sub_id)))
+    wipe_mocks.user_delete.side_effect = lambda owner_id: order.append(("delete", owner_id))
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    (step,) = [s for s in report.steps if s.system == "user_row"]
+    assert step.status == "ok" and order == [("cancel", "sub_1"), ("delete", OWNER_ID)]
+
+
+@pytest.mark.asyncio
+async def test_wipe_account_keeps_the_users_row_when_the_spark_cancel_fails(wipe_mocks, monkeypatch):
+    import stripe
+
+    def down(*a, **kw):
+        raise stripe.APIConnectionError("stripe down")
+
+    wipe_mocks.user_get.return_value = _user_row(os_subscription_id="sub_1", os_subscription_status="active")
+    monkeypatch.setattr(stripe.Subscription, "cancel", down)
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    (step,) = [s for s in report.steps if s.system == "user_row"]
+    assert step.status == "failed" and "stripe down" in step.error
+    wipe_mocks.user_delete.assert_not_awaited()

@@ -728,3 +728,43 @@ async def test_an_expire_that_finds_it_already_expired_goes_on(ddb, clock, fake,
     monkeypatch.setattr(stripe.checkout.Session, "expire", raced)
     r = await open_link(url)
     assert r.headers["location"].endswith("/cs_2") and stored_session(ddb) == "cs_2"
+
+
+# --- account wipes cancel before the users row goes ----------------------------------------------------------
+
+
+async def test_the_workspace_wipe_cancels_a_spark_subscription_before_deleting_the_row(ddb, clock, fake):
+    from core.services.workspace_wipe import _user_rows_run
+
+    await account()
+    subscribe(ddb)
+    fake.subs["sub_1"] = "active"
+    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
+    assert await _user_rows_run(snap) == "deleted 1 users row(s)"
+    assert fake.calls == [("cancel", {"id": "sub_1"})]
+    assert "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})
+
+
+async def test_a_failed_cancel_keeps_the_row_and_fails_the_wipe_step(ddb, clock, fake, monkeypatch):
+    from core.services.workspace_wipe import _user_rows_run
+
+    await account()
+    subscribe(ddb)
+
+    def down(*a, **kw):
+        raise stripe.APIConnectionError("down")
+
+    monkeypatch.setattr(stripe.Subscription, "cancel", down)
+    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
+    with pytest.raises(stripe.APIConnectionError):
+        await _user_rows_run(snap)
+    assert ddb.users.get_item(Key={"user_id": "user_a"})["Item"]["os_subscription_id"] == "sub_1"
+
+
+async def test_a_wipe_of_a_person_without_spark_calls_no_stripe(ddb, clock, fake):
+    from core.services.workspace_wipe import _user_rows_run
+
+    await account()
+    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
+    await _user_rows_run(snap)
+    assert fake.calls == [] and "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})

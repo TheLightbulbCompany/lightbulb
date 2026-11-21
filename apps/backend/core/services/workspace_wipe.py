@@ -584,7 +584,10 @@ async def _billing_row_run(snap: WorkspaceSnapshot) -> str:
 
 async def _user_rows_run(snap: WorkspaceSnapshot) -> str:
     members = deletable_member_ids(snap)
+    from core.services.os_billing import cancel_for_deleted_user
+
     for uid in members:
+        await cancel_for_deleted_user(uid)  # a failure keeps the row: it holds the subscription id
         await user_repo.delete(uid)
     if not members:
         return "no users rows for workspace"

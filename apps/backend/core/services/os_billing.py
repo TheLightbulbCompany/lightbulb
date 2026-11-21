@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
+from core.repositories import user_repo
 from core.services.billing_service import (
     BillingServiceError,
     _checkout_idempotency_key,
@@ -293,9 +294,9 @@ async def extend_trial(user_id: str) -> None:
 
 
 async def cancel_for_deleted_user(user_id: str) -> None:
-    """Cancel a deleted person's Spark subscription now, so it stops charging. Raises on failure, so the
-    Clerk event is redelivered."""
-    row = await _row(user_id)
+    """Cancel a person's Spark subscription now, so it stops charging, before their users row (which holds
+    the subscription id) is deleted. Raises on failure, so the caller keeps the row and can retry."""
+    row = await user_repo.get(user_id) or {}
     if row.get("os_subscription_status") not in BILLED or not row.get("os_subscription_id"):
         return
     try:

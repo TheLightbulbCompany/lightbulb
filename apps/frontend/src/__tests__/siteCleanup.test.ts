@@ -5,8 +5,10 @@ import nextConfig from "../../next.config";
 describe("retired public pages", () => {
   it("retired pages are gone, not redirected", async () => {
     const redirects = await nextConfig.redirects!();
+    // The only unconditional redirects: the engine installer and Spark's download and update feed.
+    const allowed = ["/install", "/install.sh", "/download/spark", "/spark/appcast.xml"];
     for (const r of redirects) {
-      expect(r.has !== undefined || r.source === "/install" || r.source === "/install.sh").toBe(true);
+      expect(r.has !== undefined || allowed.includes(r.source)).toBe(true);
     }
     for (const path of ["/ai-agent-workspace", "/compare/slack", "/docs/get-started"]) {
       expect(redirects.some((r) => r.source === path)).toBe(false);

@@ -12,7 +12,7 @@ import { captureSignupCta } from "@/lib/signupFlow";
 const LINKS = [
   { href: "/phone", label: "Phone" },
   { href: "/meetings", label: "Meetings" },
-  { href: "/os", label: "OS" },
+  { href: "/os", label: "Spark" },
   { href: "/pricing", label: "Pricing" },
 ] as const;
 

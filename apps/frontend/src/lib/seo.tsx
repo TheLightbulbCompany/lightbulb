@@ -10,10 +10,10 @@ export const OG_IMAGE = "/og-lightbulb.png";
 /** The root layout's default for pages without their own metadata: neutral, not the home headline. */
 export const SITE_TITLE = "Lightbulb";
 export const SITE_DESCRIPTION =
-  "Lightbulb makes voice assistants: Lightbulb Phone, Lightbulb Meetings and Lightbulb OS.";
+  "Lightbulb makes voice assistants: Lightbulb Phone, Lightbulb Meetings and Spark.";
 export const HOME_TITLE = "The Voice AI Application Company | Lightbulb";
 export const HOME_DESCRIPTION =
-  "Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Lightbulb OS is a voice app for the Mac.";
+  "Lightbulb Phone answers your calls and books appointments. Lightbulb Meetings takes notes in Google Meet. Spark is a voice app for the Mac.";
 export const PHONE_TITLE = "AI Receptionist for Salons, Spas & Barbershops | Lightbulb";
 export const PHONE_DESCRIPTION =
   "Your salon's AI receptionist answers your calls day and night, books into Google Calendar, takes messages and hands callers to you. Keep your number.";
@@ -29,7 +29,7 @@ export const PRODUCT_SUMMARY =
   "It answers the business's phone day and night, books, moves and cancels appointments, takes messages, " +
   "and puts anything it can't decide in front of the owner. " +
   "Lightbulb Meetings joins a business's Google Meet when invited. " +
-  "Lightbulb OS is a voice app for the Mac, not yet released.";
+  "Spark is a voice app for the Mac.";
 
 export const PRODUCT_FACTS = [
   "Who Lightbulb Phone is for: independent salons (hair, nails, lashes, brows), day spas, massage studios and barbershops in the US.",
@@ -46,7 +46,7 @@ export const PRODUCT_FACTS = [
   "Lightbulb Meetings, for any business on Google Meet: joins when a member invites it, speaks only when named, and keeps notes, decisions and follow-ups. Google Meet only. The site offers it by waitlist at " + SITE_URL + "/meetings.",
   "Billing: one monthly plan per business with minutes included, then a per-minute rate. Month to month, a live minutes meter, and the owner chooses what happens when minutes run out. Cancel the renewal yourself in Settings. There is no free trial: going live needs a paid plan. See " + SITE_URL + "/pricing.",
   "Not a fit for: medical, dental or med-spa practices that handle health information, multi-location chains, businesses outside the US, outbound calling or text messaging.",
-  "Lightbulb OS: a voice app for the Mac, not released. Waitlist at " + SITE_URL + "/os.",
+  "Spark: a one-click voice interface for Macs with Apple silicon (M1 or later) on macOS 14 or later. Download at " + SITE_URL + "/os.",
 ];
 
 export function absoluteUrl(path = "/") {
@@ -104,7 +104,7 @@ export const organizationJsonLd = {
   logo: absoluteUrl("/icon.png"),
   description: PRODUCT_SUMMARY,
   disambiguatingDescription:
-    "Lightbulb (thelightbulb.company) makes Lightbulb Phone, an AI receptionist for salons, spas and barbershops, Lightbulb Meetings for Google Meet, and Lightbulb OS for the Mac. Not TheLightbulb.ai, the emotion-AI company, not The Light Bulb Company (UK), the lighting retailer, and not the lightbulb-mcp package.",
+    "Lightbulb (thelightbulb.company) makes Lightbulb Phone, an AI receptionist for salons, spas and barbershops, Lightbulb Meetings for Google Meet, and Spark for the Mac. Not TheLightbulb.ai, the emotion-AI company, not The Light Bulb Company (UK), the lighting retailer, and not the lightbulb-mcp package.",
   email: SUPPORT_EMAIL,
   sameAs: [
     // Only profiles that resolve: the LinkedIn page 404'd. Add LinkedIn or

@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import OsPage from "../page";
 
 const s = vi.hoisted(() => ({ query: "" }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(s.query) }));
+const capture = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/analytics", () => ({ capture }));
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
-vi.mock("@/components/requestSetup/RequestSetupForm", () => ({ RequestSetupForm: () => null }));
 
 const INVITE = "Open Spark to apply this invite";
 
@@ -32,5 +33,22 @@ describe("/os invite link", () => {
     s.query = query;
     render(<OsPage />);
     expect(screen.queryByRole("link", { name: INVITE })).toBeNull();
+  });
+});
+
+describe("/os download click", () => {
+  it.each([
+    ["", { source: "os_page" }],
+    ["?ref=abc123XYZ", { source: "os_page", has_referral: true }],
+  ])("%s: counts one click and keeps the plain link", (search, props) => {
+    capture.mockClear();
+    vi.stubGlobal("location", { hostname: "thelightbulb.company", search });
+    render(<OsPage />);
+    const link = screen.getByRole("link", { name: "Download for Mac" });
+    fireEvent.click(link);
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith("spark_download_clicked", props);
+    expect(link).toHaveAttribute("href", "/download/spark");
+    vi.unstubAllGlobals();
   });
 });

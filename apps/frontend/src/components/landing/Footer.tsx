@@ -56,7 +56,7 @@ export function Footer() {
               <h4>Product</h4>
               <Link href="/phone">Lightbulb Phone</Link>
               <Link href="/meetings">Lightbulb Meetings</Link>
-              <Link href="/os">Lightbulb OS</Link>
+              <Link href="/os">Spark</Link>
               <Link href="/pricing">Pricing</Link>
               <Link href="/compare">Compare</Link>
               <Link href="/request-setup">Talk to a founder</Link>
@@ -85,7 +85,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>Lightbulb Phone, Lightbulb Meetings and Lightbulb OS.</span>
+          <span>Lightbulb Phone, Lightbulb Meetings and Spark.</span>
         </div>
       </div>
     </footer>

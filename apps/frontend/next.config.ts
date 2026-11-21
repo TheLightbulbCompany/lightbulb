@@ -5,6 +5,7 @@ import path from "path";
 import { LAUNCH_HOSTS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
 
 const ENGINE_INSTALLER = "https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh";
+const SPARK_RELEASE = "https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark";
 
 const TURBOPACK_ROOT = path.resolve(__dirname, "../../");
 // Our API origin, derived per-environment rather than enumerated. The static
@@ -182,6 +183,11 @@ const nextConfig: NextConfig = {
         destination: ENGINE_INSTALLER,
         permanent: false,
       })),
+      // Spark, the Mac app: its download and its update feed. Both paths are
+      // public addresses (the appcast one is baked into shipped apps), so the
+      // sources never change; the destinations may be repointed.
+      { source: "/download/spark", destination: `${SPARK_RELEASE}/Spark.dmg`, permanent: false },
+      { source: "/spark/appcast.xml", destination: `${SPARK_RELEASE}/appcast.xml`, permanent: false },
     ];
   },
 

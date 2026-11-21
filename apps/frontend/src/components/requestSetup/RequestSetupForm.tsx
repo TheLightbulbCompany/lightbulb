@@ -38,7 +38,7 @@ function anonymousId(): string {
  * a founder calls. The payload is `POST /setup-requests` (schemas/setup_request.py);
  * `agents: ["other"]` is the one value that schema still requires.
  */
-export function RequestSetupForm({ waitlist }: { waitlist?: "meetings" | "os" } = {}) {
+export function RequestSetupForm({ waitlist }: { waitlist?: "meetings" } = {}) {
   const [state, setState] = useState<"idle" | "sending" | "error" | "invalid">("idle");
   const [done, setDone] = useState<string | null>(null);
 
@@ -78,7 +78,7 @@ export function RequestSetupForm({ waitlist }: { waitlist?: "meetings" | "os" } 
           Thanks, {done}. You&apos;re on the list.
         </h2>
         <p className="mt-4 text-lg leading-8 text-[var(--lb-ink-soft)]">
-          We&apos;ll email you when Lightbulb {waitlist === "os" ? "OS" : "Meetings"} is ready for you.
+          We&apos;ll email you when Lightbulb Meetings is ready for you.
         </p>
       </div>
     );

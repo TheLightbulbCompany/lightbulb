@@ -130,11 +130,16 @@ Paths are relative to the repo root `/Users/prasiddhaparthsarthy/Desktop/lb-mark
 | Meeting minutes count toward the plan | VERIFIED | `apps/backend/routers/meetings.py` `_report_minutes`. Say it if you explain minutes. |
 | Meetings is offered on the site by waitlist only; `/meetings` sells nothing and shows no price | VERIFIED | `app/meetings/page.tsx`; `waitlist` in `apps/backend/schemas/setup_request.py` |
 
-### Lightbulb OS
+### Spark (the Mac app, page `/os`; formerly "Lightbulb OS")
 
 | Capability | Status | Proof / what is missing |
 |---|---|---|
-| Lightbulb OS is a voice app for the Mac, not released; waitlist only | VERIFIED as a waitlist | `app/os/page.tsx`. The app is built outside this repo, so no capability of it may be claimed. |
+| The Mac app is called Spark; `/os` says "Meet Spark" and offers the download (no waitlist) | VERIFIED | Founder, 21 Nov 2026: "The thing on the page and home page card should say spark ... let people download the app". `app/os/page.tsx`. The URL stays `/os` because invite links `/os?ref=CODE` exist. |
+| "One-click voice interface for your Mac." | VERIFIED (founder wording) | Founder, 21 Nov 2026, verbatim: "The line should be one click voice interface for your mac". No other capability of the app may be claimed: it is built outside this repo. |
+| Download: `/download/spark` (DMG) and update feed `/spark/appcast.xml` | VERIFIED as redirects | `apps/frontend/next.config.ts` `redirects()` to the `spark` GitHub release. The download works only once the app team uploads `Spark.dmg` and `appcast.xml` to that release and prod is deployed. |
+| Requires macOS 14 or later | VERIFIED | The app's sign-in library needs macOS 14 (app team, 21 Nov 2026). |
+| Apple silicon only (M1 or later); no Intel build | VERIFIED | The app team's build is arm64 only (21 Nov 2026). Say "For Mac with Apple silicon (M1 or later)". |
+| A price or trial for Spark | DO NOT CLAIM on the page | Founder removed the price line from the app's sign-in screen, 21 Nov 2026 ("Get rid of the price line for now"); `/os` shows none. |
 
 ### Billing, trial, compliance
 
@@ -308,11 +313,11 @@ Confidence: **low.** No first-party salon interviews exist yet, and Reddit was b
 11. how to stop missing calls at my salon
 12. salon phone answering service 24/7
 
-**Current site state:** one site for three products. `/` is the company home. `/phone` sells Lightbulb Phone (the receptionist), and `/pricing` is its one plan. `/meetings` (Lightbulb Meetings) and `/os` (Lightbulb OS) are waitlist pages that sell nothing and show no price. The shared nav lists Phone, Meetings, OS and Pricing; its sign-up button and the footer's say "Set up Lightbulb Phone". The footer, sitemap, `llms.txt` and the facts in `lib/seo.tsx` name all three products. `/voice` layout metadata is "Your assistant's calls and meetings".
+**Current site state:** one site for three products. `/` is the company home. `/phone` sells Lightbulb Phone (the receptionist), and `/pricing` is its one plan. `/meetings` (Lightbulb Meetings) is a waitlist page that sells nothing and shows no price. `/os` (Spark, the Mac app) says "Meet Spark" and offers the Mac download, with no price. The shared nav lists Phone, Meetings, Spark and Pricing; its sign-up button and the footer's say "Set up Lightbulb Phone". The footer, sitemap, `llms.txt` and the facts in `lib/seo.tsx` name all three products. `/voice` layout metadata is "Your assistant's calls and meetings".
 
 ## What from the old product is kept (do not delete these routes)
 
-- **The CLI / agent network** is kept but is not the focus: `/network`, `/j`, `/join/*` and the CLI install paths. The Mac app and its download are deleted (founder, 19 Nov: business products are web only). Do not delete, do not feature on the voice homepage; a footer or nav link is fine.
+- **The CLI / agent network** is kept but is not the focus: `/network`, `/j`, `/join/*` and the CLI install paths. The old network Mac app and its download are deleted (founder, 19 Nov: business products are web only); Spark is a separate Mac app (see its section). Do not delete, do not feature on the voice homepage; a footer or nav link is fine.
 - **Texting is secondary, not deleted:** the Front desk texting add-on (`apps/backend/core/services/text_lines.py`, `apps/backend/routers/agent_text.py`, the `front_desk_price_usd` field) stays. Do not market it as part of the receptionist and do not remove it.
 - **Legal and account pages** (`/terms`, `/privacy`, `/security`, `/acceptable-use`, `/eula`, `/cookies`, `/disclaimer`, `/accessibility`, `/support`, `/sign-in`, `/sign-up`, `/onboarding`, `/welcome/*`, `/settings`, `/oauth`, `/auth`, `/checkout_redirect`) are live flows; edit copy only. The legal entity is "Isol8 Inc., doing business as Lightbulb AI"; write no other legal name.
 - Marketing agents change copy and page content. They delete no API or backend file. Retired old-product pages (the AI-workspace comparisons, posts and docs) were removed with 308 redirects in #5264 with the founder's approval; delete no other route.

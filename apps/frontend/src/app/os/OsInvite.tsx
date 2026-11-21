@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { sparkScheme } from "./sparkScheme";
 
 // A Spark referral code: the referrer's Clerk user id without its `user_` prefix.
-const CODE = /^[A-Za-z0-9]{1,64}$/;
+export const CODE = /^[A-Za-z0-9]{1,64}$/;
 
 // On a referral link (`/os?ref=CODE`), a link that hands the code to the Mac app.
 export function OsInvite() {

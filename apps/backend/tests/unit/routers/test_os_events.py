@@ -33,6 +33,7 @@ VALID = {
     "onboarding_completed": {"skipped_sign_in": False, "seconds_total": 120},
     "first_conversation": {},
     "task_completed": {},
+    "first_tidy": {"outcome": "already_tidy"},
     "task_failed": {"reason": "unreachable"},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},

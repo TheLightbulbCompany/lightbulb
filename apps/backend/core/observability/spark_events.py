@@ -49,6 +49,7 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "full_access_set": {"on": _bool},
     "onboarding_completed": {"skipped_sign_in": _bool, "seconds_total": _seconds},
     "first_conversation": {},
+    "first_tidy": {"outcome": _enum("done", "already_tidy", "declined", "stopped", "failed")},
     "task_completed": {},
     "task_failed": {"reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other")},
     "upgrade_clicked": {},

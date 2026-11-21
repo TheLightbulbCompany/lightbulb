@@ -62,11 +62,12 @@ function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
   );
 }
 
-// Whether the installer is published yet: the release asset answers 302 (or 200) once uploaded. Checked
-// at most every five minutes, so the button appears without a deploy.
+// Whether the installer is published yet: the `spark` release page answers 200 once the release exists.
+// The page, not the installer file, because replacing the file for a new version deletes it for a few
+// seconds. Checked at most every five minutes, so the button appears without a deploy.
 async function installerPublished(): Promise<boolean> {
   try {
-    const r = await fetch("https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark/Spark.dmg", {
+    const r = await fetch("https://github.com/TheLightbulbCompany/lightbulb/releases/tag/spark", {
       method: "HEAD",
       redirect: "manual",
       next: { revalidate: 300 },

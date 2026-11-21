@@ -200,6 +200,29 @@ async def get(sid: str) -> dict | None:
     return (await run_in_thread(_table().get_item, Key=_key(sid), ConsistentRead=True)).get("Item")
 
 
+async def request_close(sid: str) -> None:
+    """The app will not use this session: mark it `closeRequested: client_closed` (never over another reason)
+    and let its sideband close it on the next tick. With no live sideband, attach one here now."""
+    try:
+        row = (
+            await run_in_thread(
+                _table().update_item,
+                Key=_key(sid),
+                UpdateExpression="SET closeRequested = :r",
+                ConditionExpression="#st = :active AND attribute_not_exists(closeRequested)",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":r": "client_closed", ":active": ACTIVE},
+                ReturnValues="ALL_NEW",
+            )
+        )["Attributes"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # ended already, or already being closed
+        raise
+    if row.get("liveId") and int(row.get("leaseUntil", 0)) < now():
+        start_sideband(sid)
+
+
 async def end_session(sid: str, reason: str, seconds: int) -> bool:
     """Mark the session ended, free its slot and add its seconds to the person's total, once: the row's
     condition makes a replayed close (or a second task's) a no-op. False when it had already ended."""
@@ -298,8 +321,8 @@ async def _trial_ends_at(user_id: str) -> int | None:
 
 async def _due(s: dict, at: int) -> str | None:
     """Why the backend should close this session now, if it should."""
-    if s.get("closeRequested"):
-        return "replaced"
+    if s.get("closeRequested"):  # replaced by a newer session, or client_closed by the app
+        return s["closeRequested"]
     if s["trialEndsAt"] is not None and at >= s["trialEndsAt"]:
         s["trialEndsAt"] = await _trial_ends_at(s["userId"])  # a referral may have extended it
         if s["trialEndsAt"] is not None and at >= s["trialEndsAt"]:

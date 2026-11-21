@@ -795,3 +795,71 @@ async def test_a_trial_is_read_consistently_and_a_missing_one_never_closes(
         await asyncio.sleep(os_voice.TICK_S)
     assert sockets[0].sent == [] and rec(ddb, sid)["status"] == os_voice.ACTIVE
     assert reads and all(r is True for r in reads)
+
+
+# --- DELETE /os/voice-session/{id}: the app will not use it ------------------------------------------------
+
+
+async def test_the_owner_closes_an_active_session(ddb, clock, openai, sockets, users):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(3))
+    await until(lambda: rec(ddb, sid).get("usageSeconds") == 3)
+    r = await req("DELETE", f"/os/voice-session/{sid}")
+    assert (r.status_code, r.content) == (204, b"")
+    assert rec(ddb, sid)["closeRequested"] == "client_closed"
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    sockets[0].push(closed(4, reason="expired"), closed(4))
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    assert (await req("GET", f"/os/voice-session/{sid}")).json() == {"status": "ended", "endedReason": "client_closed"}
+    person = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert person["os_voice_seconds"] == 4 and "os_voice_active" not in person
+    again = await req("DELETE", f"/os/voice-session/{sid}")
+    assert again.status_code == 204
+    assert (
+        rec(ddb, sid)["endedReason"] == "client_closed"
+        and users.get_item(Key={"user_id": "user_a"})["Item"]["os_voice_seconds"] == 4
+    )
+
+
+async def test_a_second_delete_while_closing_changes_nothing(ddb, clock, openai, no_sideband):
+    sid = await opened_session()
+    assert (await req("DELETE", f"/os/voice-session/{sid}")).status_code == 204
+    before = rec(ddb, sid)
+    assert (await req("DELETE", f"/os/voice-session/{sid}")).status_code == 204
+    assert rec(ddb, sid) == before
+
+
+async def test_delete_never_overwrites_replaced(ddb, clock, openai, no_sideband):
+    first = await opened_session()
+    await opened_session()
+    assert (await req("DELETE", f"/os/voice-session/{first}")).status_code == 204
+    assert rec(ddb, first)["closeRequested"] == "replaced"
+
+
+async def test_delete_of_anything_not_yours_is_the_gets_404(ddb, clock, openai, no_sideband):
+    sid = await opened_session(A)
+    gets = [await req("GET", f"/os/voice-session/{x}", B) for x in (sid, "vs_" + "0" * 32, "bad-id")]
+    dels = [await req("DELETE", f"/os/voice-session/{x}", B) for x in (sid, "vs_" + "0" * 32, "bad-id")]
+    assert [(r.status_code, r.json()) for r in dels] == [(g.status_code, g.json()) for g in gets]
+    assert {r.status_code for r in dels} == {404}
+    assert "closeRequested" not in rec(ddb, sid)
+
+
+@pytest.mark.parametrize("token", ["oauth", "template", None])
+async def test_delete_requires_a_human_session(ddb, clock, openai, no_sideband, token):
+    sid = await opened_session()
+    r = await req("DELETE", f"/os/voice-session/{sid}", replace(A, token=token) if token else None)
+    assert r.status_code in (401, 403)
+    assert "closeRequested" not in rec(ddb, sid)
+
+
+async def test_a_closed_session_with_no_sideband_is_attached_and_closed_at_once(ddb, clock, openai, sockets):
+    sid = await opened_session()
+    await until(lambda: sockets)
+    await replaced(sid)  # its task is gone
+    clock[0] += os_voice.LEASE_S + 1
+    assert (await req("DELETE", f"/os/voice-session/{sid}")).status_code == 204
+    await until(lambda: len(sockets) == 2 and {"type": "session.close"} in sockets[1].sent)
+    sockets[1].push(closed(2))
+    await until(lambda: rec(ddb, sid).get("endedReason") == "client_closed")

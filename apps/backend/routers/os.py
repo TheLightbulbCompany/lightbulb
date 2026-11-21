@@ -2,7 +2,8 @@
 
 The app signs in with Clerk's own SDK and sends its Clerk session token, like the web app. A person's Spark
 account is a few attributes on their users row: `os_trial_ends_at`, `os_created_at`, `os_referrals` (people
-they referred), `os_referred_by`, and for voice `os_voice_active` (their open session ids) and
+they referred), `os_referred_by` and `os_referral_credited` (whose code they came with, and whether that person
+got their day; a web sign-up stores `os_referred_by` before the account exists), and for voice `os_voice_active` (their open session ids) and
 `os_voice_seconds` (their voice total). Voice sessions themselves are `core.voice.os_voice`."""
 
 import json
@@ -33,6 +34,7 @@ router = APIRouter()
 
 DAY_S = 86400
 TRIAL_S = 3 * DAY_S
+REFERRAL_WINDOW_S = 14 * DAY_S
 _USER_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
 
 
@@ -108,6 +110,14 @@ async def _account(auth: AuthContext, now: int) -> dict:
     row = {_DEFAULTS[k]: v for k, v in values.items()} | old  # every SET is if_not_exists
     if "os_created_at" not in old:
         spark_events.server_event(auth.user_id, "account_created", auth.user_id, row=row, now=now)
+    # Referred on the web before the account existed: the referrer gets their day now. Checked on every read,
+    # not only the creating one, so a failed credit is retried; the condition makes it once.
+    if row.get("os_referred_by") and not row.get("os_referral_credited"):
+        try:
+            if await _credit(auth.user_id, row["os_referred_by"], "SET os_referral_credited = :t", _NOT_CREDITED, {}):
+                row["os_referral_credited"] = True
+        except Exception:  # noqa: BLE001  a credit never fails the account read
+            logger.warning("os referral credit not written for %s", auth.user_id, exc_info=True)
     return row
 
 
@@ -141,59 +151,93 @@ def _referrer(code: Any, user_id: str) -> str | None:
     return referrer if _USER_ID.fullmatch(referrer) and referrer != user_id else None
 
 
-@router.post("/referral", response_model=ReferralResponse, operation_id="os_referral")
-async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get_human_session)) -> ReferralResponse:
-    """One more day for the person whose code this is. Applies once per referred person, only to a Spark
-    account under a day old, and only for another person with a Spark account. Every refusal is the same
-    `applied: false`, so the route says nothing about whether a person exists."""
-    referrer = _referrer(body.get("code") if isinstance(body, dict) else None, auth.user_id)
-    if not referrer:
-        return ReferralResponse(applied=False)
-    table = _table()
+def _item(kind: str, user_id: str, cond: str, values: dict, expr: str | None = None) -> dict:
+    item: dict[str, Any] = {"TableName": _table().name, "Key": {"user_id": user_id}, "ConditionExpression": cond}
+    if expr:
+        item["UpdateExpression"] = expr
+    if values:
+        item["ExpressionAttributeValues"] = values
+    return {kind: item}
 
-    def update(user_id: str, expr: str, cond: str, values: dict) -> dict:
-        return {
-            "Update": {
-                "TableName": table.name,
-                "Key": {"user_id": user_id},
-                "UpdateExpression": expr,
-                "ConditionExpression": cond,
-                "ExpressionAttributeValues": values,
-            }
-        }
 
+async def _written(items: list[dict]) -> bool:
+    """One transaction: True when written, False when a condition refused it. Anything else raises."""
     try:
-        # Both rows or neither: the referred person is marked once, and the referrer is credited with it.
-        await transact(
-            table,
-            [
-                update(
-                    auth.user_id,
-                    "SET os_referred_by = :ref",
-                    "attribute_not_exists(os_referred_by) AND os_created_at > :cutoff",
-                    {":ref": referrer, ":cutoff": _now() - DAY_S},
-                ),
-                update(
-                    referrer,
-                    "ADD os_trial_ends_at :day, os_referrals :one",
-                    "attribute_exists(os_trial_ends_at)",
-                    {":day": DAY_S, ":one": 1},
-                ),
-            ],
-        )
+        await transact(_table(), items)
     except ClientError as e:
         reasons = e.response.get("CancellationReasons") or []
         if is_cancelled(e) and any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
-            return ReferralResponse(applied=False)
+            return False
+        raise
+    return True
+
+
+_NOT_CREDITED = "attribute_not_exists(os_referral_credited)"
+
+
+async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dict) -> bool:
+    """Both rows or neither: the referred person is marked credited (`expr` under `cond`), and the referrer, who
+    must have a Spark account, gets one more day and one more referral."""
+    if not await _written(
+        [
+            _item("Update", user_id, cond, values | {":t": True}, expr),
+            _item(
+                "Update",
+                referrer,
+                "attribute_exists(os_trial_ends_at)",
+                {":day": DAY_S, ":one": 1},
+                "ADD os_trial_ends_at :day, os_referrals :one",
+            ),
+        ]
+    ):
+        return False
+    await os_billing.extend_trial(referrer)
+    spark_events.server_event(referrer, "referral_applied", user_id)
+    return True
+
+
+@router.post("/referral", response_model=ReferralResponse, operation_id="os_referral")
+async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get_human_session)) -> ReferralResponse:
+    """Whose code the signed-in person came with, once per person, and only for another person with a Spark
+    account. With a Spark account under 14 days old, the referrer gets their day now. With no Spark account
+    yet (a web sign-up), only the code is stored; the referrer gets their day when the account is created
+    (`_account`). Every refusal is the same `applied: false`, so the route says nothing about whether a
+    person exists."""
+    referrer = _referrer(body.get("code") if isinstance(body, dict) else None, auth.user_id)
+    if not referrer:
+        return ReferralResponse(applied=False)
+    try:
+        got = await run_in_thread(_table().get_item, Key={"user_id": auth.user_id}, ConsistentRead=True)
+        if "os_created_at" in (got.get("Item") or {}):
+            applied = await _credit(
+                auth.user_id,
+                referrer,
+                "SET os_referred_by = :ref, os_referral_credited = :t",
+                "attribute_not_exists(os_referred_by) AND os_created_at > :cutoff",
+                {":ref": referrer, ":cutoff": _now() - REFERRAL_WINDOW_S},
+            )
+        else:
+            applied = await _written(
+                [
+                    _item("ConditionCheck", referrer, "attribute_exists(os_trial_ends_at)", {}),
+                    _item(
+                        "Update",
+                        auth.user_id,
+                        "attribute_not_exists(os_referred_by) AND attribute_not_exists(os_created_at)",
+                        {":ref": referrer},
+                        "SET os_referred_by = :ref",
+                    ),
+                ]
+            )
+    except ClientError as e:
         logger.warning("os referral not written for %s: %s", auth.user_id, e.response.get("Error", {}).get("Code"))
         raise HTTPException(status_code=503, detail="referral_unavailable")
     except BotoCoreError:
         logger.warning("os referral not written for %s: transport", auth.user_id)
         raise HTTPException(status_code=503, detail="referral_unavailable")
-    await os_billing.extend_trial(referrer)
-    spark_events.server_event(referrer, "referral_applied", auth.user_id)
-    spark_events.server_event(auth.user_id, "referred_by_applied", auth.user_id)
-    return ReferralResponse(applied=True)
+    if applied:
+        spark_events.server_event(auth.user_id, "referred_by_applied", auth.user_id)
+    return ReferralResponse(applied=applied)
 
 
 MODELS = ("gpt-live-1.1", "gpt-live-1")  # the first is the default

@@ -140,12 +140,15 @@ async def test_referral_applies_once_per_referred_person(users, clock):
     assert (await account(C))["referralCount"] == 0
 
 
-async def test_referral_refused_for_an_account_older_than_a_day(users, clock):
-    await account(A), await account(B)
-    clock[0] += DAY
-    assert not await refer(B, "a")
-    assert (await account(A))["referralCount"] == 0
-    assert "os_referred_by" not in users.get_item(Key={"user_id": "user_b"})["Item"]
+async def test_referral_window_is_fourteen_days(users, clock):
+    await account(A), await account(B), await account(C)
+    clock[0] += 13 * DAY
+    assert await refer(B, "a")
+    assert (await account(A))["referralCount"] == 1
+    clock[0] += 2 * DAY
+    assert not await refer(C, "a")
+    assert (await account(A))["referralCount"] == 1
+    assert "os_referred_by" not in users.get_item(Key={"user_id": "user_c"})["Item"]
 
 
 async def test_self_referral_is_refused(users, clock):
@@ -177,10 +180,89 @@ async def test_another_persons_referral_credits_them_but_never_marks_them_referr
     assert "os_referred_by" not in a_row and a_row["os_referrals"] == 1
 
 
-async def test_referral_needs_the_callers_spark_account(users, clock):
+def row(user_id: str) -> dict:
+    return users_table().get_item(Key={"user_id": user_id}).get("Item") or {}
+
+
+def users_table():
+    return dynamodb.get_table("users")
+
+
+async def test_web_signup_records_the_code_without_an_account(users, clock):
     await account(A)
-    assert not await refer(B, "a")
+    assert await refer(B, "a")
+    assert row("user_b") == {"user_id": "user_b", "os_referred_by": "user_a"}  # no account, no trial
+    assert (await account(A))["referralCount"] == 0  # not credited yet
+    assert not await refer(B, "c") and not await refer(B, "a")
+    assert row("user_b")["os_referred_by"] == "user_a"
+
+
+async def test_web_signup_refuses_self_unknown_and_no_account_codes(users, clock):
+    from core.repositories import user_repo
+
+    await account(A)
+    await user_repo.put("user_c", "user_c@example.com")  # a users row with no Spark account
+    for code in ("b", "nobody", "c"):
+        assert not await refer(B, code)
     assert "Item" not in users.get_item(Key={"user_id": "user_b"})
+    assert await refer(B, "a")
+
+
+async def test_web_signup_on_an_existing_users_row_keeps_it(users, clock):
+    from core.repositories import user_repo
+
+    await account(A)
+    await user_repo.put("user_b", "user_b@example.com")
+    assert await refer(B, "a")
+    assert row("user_b")["email"] == "user_b@example.com" and row("user_b")["os_referred_by"] == "user_a"
+
+
+async def test_first_account_read_after_web_signup_credits_the_referrer_once(users, clock):
+    await account(A)
+    assert await refer(B, "a")
+    clock[0] += 100
+    b = await account(B)
+    assert b["trialEndsAt"] == clock[0] + 3 * DAY and b["status"] == "trial" and b["referralCount"] == 0
+    a = await account(A)
+    assert a["referralCount"] == 1 and a["referralDaysEarned"] == 1 and a["trialEndsAt"] == START + 4 * DAY
+    await account(B)
+    assert (await account(A))["referralCount"] == 1
+    assert row("user_b")["os_referral_credited"] is True
+
+
+async def test_concurrent_credits_credit_once(users, clock):
+    from routers import os as os_router
+
+    await account(A)
+    assert await refer(B, "a")
+    args = ("user_b", "user_a", "SET os_referral_credited = :t", os_router._NOT_CREDITED, {})
+    assert [await os_router._credit(*args), await os_router._credit(*args)] == [True, False]
+    await asyncio.gather(*[account(B) for _ in range(3)])
+    assert (await account(A))["referralCount"] == 1
+
+
+async def test_a_failed_credit_never_fails_the_account_read_and_is_retried(users, clock, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from botocore.exceptions import EndpointConnectionError
+
+    from core.dynamodb import transact
+
+    await account(A)
+    assert await refer(B, "a")
+    monkeypatch.setattr("routers.os.transact", AsyncMock(side_effect=EndpointConnectionError(endpoint_url="x")))
+    assert (await account(B))["status"] == "trial"
+    assert "os_referral_credited" not in row("user_b")
+    monkeypatch.setattr("routers.os.transact", transact)
+    await account(B)
+    assert (await account(A))["referralCount"] == 1
+
+
+async def test_in_app_referral_is_not_credited_again_by_the_account_read(users, clock):
+    await account(A), await account(B)
+    assert await refer(B, "a")
+    await account(B)
+    assert (await account(A))["referralCount"] == 1
 
 
 async def test_many_referrals_have_no_cap(users, clock):

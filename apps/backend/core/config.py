@@ -303,7 +303,7 @@ class Settings(BaseSettings):
     # The engine's wire: products call the engine service at ENGINE_URL (`core.engine.client`), and the engine's
     # processes call the products back at PRODUCT_CALLBACK_URL (`core.engine.http_hooks`). Both directions send
     # `Authorization: Bearer ENGINE_SERVICE_TOKEN`; empty refuses all.
-    ENGINE_URL: str = ""
+    ENGINE_URL: str = ""  # local dev must run engine_main and set this: there is no in-process fallback
     PRODUCT_CALLBACK_URL: str = ""
     ENGINE_SERVICE_TOKEN: str = ""
 

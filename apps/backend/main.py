@@ -369,7 +369,6 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
         (
             "/api/v1/messaging",
             "/api/v1/runtime",
-            "/api/v1/internal/messaging",
             # huddles too: a rejected turn would echo a live transcript.
             "/api/v1/internal/huddles",
             "/api/v1/internal/voice",

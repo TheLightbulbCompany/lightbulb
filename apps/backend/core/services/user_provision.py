@@ -15,7 +15,7 @@ import uuid
 
 from fastapi import HTTPException
 
-from core.auth import AuthContext, is_org_owner_id, resolve_owner_id
+from core.auth import AuthContext, resolve_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
@@ -36,19 +36,14 @@ _TRIAL_STARTED_NAMESPACE = uuid.UUID("6f6c9f2e-2d5b-4a1c-9a3f-3d5c8e1b7a40")
 
 
 async def ensure_workspace_trial_default(auth: AuthContext, workspace_id: str) -> None:
-    """Create the active workspace's unarmed trial once.
+    """Create the caller's tenant's unarmed trial once: an org's, or a signed-in person's own.
 
     The conditional put selects one creator across members and backend instances.
     Existing trial analytics describe row creation; runtime readiness arms its clock.
-
-    Workspace-only, and the id prefix is checked FIRST: this function only ever
-    CREATES, and the product never provisions a new personal workspace, so a
-    ``user_``-prefixed id is a 403 rather than the 409 ``resolve_owner_id``
-    would raise for a caller with no org claim. That makes it impossible to
-    mint a ``trial_local`` row for a personal owner from any door.
+    A ``workspace_id`` other than the caller's tenant is a 403.
     """
-    if not is_org_owner_id(workspace_id) or resolve_owner_id(auth) != workspace_id:
-        raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
+    if resolve_owner_id(auth) != workspace_id:
+        raise HTTPException(status_code=403, detail="Workspace does not match the caller's tenant")
     await _ensure_trial_row(workspace_id, actor_user_id=auth.user_id)
 
 
@@ -97,7 +92,7 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
 
 
 async def provision_new_workspace(org_id: str, created_by: str | None = None) -> None:
-    """Clerk ``organization.created``: start the new workspace's first provision.
+    """Start a new tenant's first provision (the Clerk ``organization.created`` webhook for an org).
 
     Creates the trial row and dispatches. No billing gate: a workspace on the shared pool costs
     nothing until it runs, and every door that spends (chat, orb, phone) has its own gate. A
@@ -105,8 +100,6 @@ async def provision_new_workspace(org_id: str, created_by: str | None = None) ->
     workspace and a retry on a failed one. Anything else RAISES: this webhook is the only thing
     that starts a first provision, so a failure must make Svix redeliver the event.
     """
-    if not is_org_owner_id(org_id):
-        return
     try:
         await _ensure_trial_row(org_id, actor_user_id=created_by)
         row = await container_repo.get_by_owner_id(org_id, consistent=True) or {}

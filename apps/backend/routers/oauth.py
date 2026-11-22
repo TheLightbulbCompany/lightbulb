@@ -21,7 +21,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo
 from core.services.container_auth import (
     push_oauth_credential_to_container,
@@ -178,19 +178,17 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     if result is DevicePollPending:
         return {"status": "pending"}
     assert isinstance(result, DevicePollResult)
-    if is_org_owner_id(result.bound_owner_id):
-        # The session was started (and owner-gated) FOR this org at /start; the
-        # caller's Clerk context at poll time is irrelevant — switching contexts
-        # between start and poll cannot re-target the binding or let an ungated
-        # personal session claim an org. Completing the first sign-in claims
-        # workspace ownership of the ChatGPT connection. claim_oauth_connector
-        # is set-once at the repo layer (conditional write), so this can never
-        # repoint an org whose owner is already recorded. Best-effort: a DDB
-        # blip must not fail an otherwise-completed OAuth.
-        try:
-            await billing_repo.claim_oauth_connector(result.bound_owner_id, connector_user_id=ctx.user_id)
-        except Exception:
-            logger.exception("Failed to claim oauth connector for owner %s", result.bound_owner_id)
+    # The session was started (and owner-gated) FOR this tenant at /start; the
+    # caller's Clerk context at poll time is irrelevant — switching contexts
+    # between start and poll cannot re-target the binding. Completing the first
+    # sign-in claims the tenant's ChatGPT connection. claim_oauth_connector is
+    # set-once at the repo layer (conditional write), so this can never repoint
+    # a tenant whose connector is already recorded. Best-effort: a DDB blip must
+    # not fail an otherwise-completed OAuth.
+    try:
+        await billing_repo.claim_oauth_connector(result.bound_owner_id, connector_user_id=ctx.user_id)
+    except Exception:
+        logger.exception("Failed to claim oauth connector for owner %s", result.bound_owner_id)
     # Push the freshly minted token into the running container. A same-provider
     # reconnect never reprovisions and never hits _hot_swap_provider, so without
     # this the container keeps its old (often spent) token while DDB holds the

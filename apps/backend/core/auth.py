@@ -93,14 +93,10 @@ class AuthContext:
         return (not self.org_id and self.human_session) or self.org_role == "org:admin"
 
 
-# Shared by resolve_owner_id's 409 and provision_gate's Layer-0 gate.
-WORKSPACE_REQUIRED_CODE = "workspace_required"
-WORKSPACE_REQUIRED_MESSAGE = "Choose or create a workspace to continue."
-
-
 def _workspace_required() -> HTTPException:
     return HTTPException(
-        status_code=409, detail={"code": WORKSPACE_REQUIRED_CODE, "message": WORKSPACE_REQUIRED_MESSAGE}
+        status_code=409,
+        detail={"code": "workspace_required", "message": "Choose or create a workspace to continue."},
     )
 
 
@@ -114,7 +110,7 @@ def resolve_owner_id(auth: AuthContext) -> str:
 
 
 def require_org(auth: AuthContext) -> None:
-    """The doors that provision, buy or bill stay org-only until a person's tenant can provision."""
+    """The doors that mint an identity, credential, grant, outside link or paid thing stay org-only for now."""
     if not auth.org_id:
         raise _workspace_required()
 

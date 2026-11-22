@@ -15,19 +15,6 @@ from core.services.provision_gate import (
 
 
 @pytest.mark.asyncio
-async def test_non_org_owner_returns_workspace_required():
-    """Personal workspaces no longer exist: a user_ owner id is refused with
-    workspace_required before any billing read — the one gate a server-side
-    door (wake, webhook, admin probe) handed a stale user_ id can see."""
-    with patch("core.services.provision_gate.billing_repo") as repo:
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
-        gate = await evaluate_provision_gate(owner_id="user_x")
-    assert gate is not None
-    assert gate.code == "workspace_required"
-    repo.get_by_owner_id.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_no_billing_row_is_no_gate_the_workspace_is_just_not_provisioned_yet():
     """Voice: no billing row means the provision has not written the trial yet. Nothing has run
     and nothing can spend, so the status read says pending, never a paywall (a member's read

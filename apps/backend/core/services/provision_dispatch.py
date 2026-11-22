@@ -29,7 +29,6 @@ import uuid
 
 import boto3
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.logging import bind_log_context
 from core.repositories import container_repo
@@ -48,7 +47,7 @@ def _client():
 
 
 def _name_prefix(owner_id: str) -> str:
-    # [0-9A-Za-z-_] only; Clerk org ids (org_ + 27 chars) carry no dash, so the
+    # [0-9A-Za-z-_] only; Clerk org and user ids carry no dash, so the
     # trailing dash makes the prefix unique per owner. prefix + 8 hex = ~49 of
     # SFN's 80-char name limit.
     return f"provision-{owner_id}-"
@@ -86,14 +85,6 @@ async def dispatch_provision(owner_id: str) -> bool:
     # Re-bind correlation ids: dispatched via create_task, this can run in a
     # detached task where the HTTP-middleware binds did not propagate.
     bind_log_context(user_id=owner_id)
-    if not is_org_owner_id(owner_id):
-        # Personal workspaces no longer exist. Refuse here — the one funnel every
-        # door goes through — before a row is written or an execution started (an
-        # admin reprovision whose Clerk lookup failed open hands this a user_ id).
-        # provision_runner step 0 refuses too, as a backstop.
-        logger.error("dispatch_provision: %s is not a workspace (org) — refusing to provision", owner_id)
-        emit_provision_metric("refused_non_org")
-        return False
     try:
         # Racy by design: two dispatchers can both see nothing running and both
         # start. That is safe ONLY because every provision step is idempotent, so
@@ -126,10 +117,6 @@ async def dispatch_provision(owner_id: str) -> bool:
 async def dispatch_reconcile(owner_id: str) -> bool:
     """Start a durable reconcile execution for the owner. Never raises."""
     bind_log_context(user_id=owner_id)
-    if not is_org_owner_id(owner_id):
-        logger.error("dispatch_reconcile: %s is not a workspace (org) — refusing to reconcile", owner_id)
-        emit_provision_metric("refused_non_org")
-        return False
     try:
         await asyncio.to_thread(
             _client().start_execution,

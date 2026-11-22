@@ -15,7 +15,7 @@ on:
         options: [dev, prod]
         default: dev
       owner_id:
-        description: One workspace org ID (no fleet roll)
+        description: One owner ID, org_ or user_ (no fleet roll)
         required: true
         type: string
 permissions:

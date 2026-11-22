@@ -27,14 +27,9 @@ def _mock_create_trial_local_if_absent():
         yield mock
 
 
-def _personal_auth(user_id: str = "user_123", email: str = "u@example.com") -> AuthContext:
+def _personal_auth(user_id: str = "user_123", email: str = "u@example.com", human_session=False) -> AuthContext:
     """Personal-context AuthContext (no org)."""
-    return AuthContext(
-        user_id=user_id,
-        org_id=None,
-        org_role=None,
-        email=email,
-    )
+    return AuthContext(user_id=user_id, org_id=None, org_role=None, email=email, human_session=human_session)
 
 
 def _org_admin_auth(
@@ -93,14 +88,13 @@ async def test_workspace_trial_is_unarmed_and_shared_by_all_members(
 @pytest.mark.parametrize(
     "auth,workspace_id,status",
     [
-        (_personal_auth(), "user_123", 403),
-        # A personal workspace id is refused even from an org-context caller:
-        # this helper only ever CREATES, and no new personal workspace exists.
+        (_personal_auth(), "user_123", 409),  # not a session token: no tenant
+        (_personal_auth(human_session=True), "user_other", 403),
         (_org_admin_auth(), "user_123", 403),
         (_org_admin_auth(), "org_other", 403),
     ],
 )
-async def test_workspace_trial_rejects_missing_or_mismatched_org(
+async def test_workspace_trial_rejects_missing_or_mismatched_tenant(
     auth, workspace_id, status, _mock_create_trial_local_if_absent
 ):
     from fastapi import HTTPException
@@ -272,11 +266,12 @@ async def test_provision_new_workspace_raises_so_svix_redelivers(monkeypatch, _n
 
 
 @pytest.mark.asyncio
-async def test_provision_new_workspace_ignores_a_non_org_id(monkeypatch):
+async def test_provision_new_workspace_provisions_a_user_tenant(monkeypatch):
     trial = AsyncMock()
-    dispatch = AsyncMock()
+    dispatch = AsyncMock(return_value=True)
     monkeypatch.setattr(user_provision, "_ensure_trial_row", trial)
+    monkeypatch.setattr(user_provision.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(user_provision, "dispatch_provision", dispatch)
-    await user_provision.provision_new_workspace("user_alone")
-    trial.assert_not_awaited()
-    dispatch.assert_not_awaited()
+    await user_provision.provision_new_workspace("user_alone", created_by="user_alone")
+    trial.assert_awaited_once_with("user_alone", actor_user_id="user_alone")
+    dispatch.assert_awaited_once_with("user_alone")

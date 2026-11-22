@@ -101,13 +101,6 @@ async def test_list_failure_starts_nothing(sfn, mark, monkeypatch):
     sfn.start_execution.assert_not_called()
 
 
-async def test_non_org_owner_is_refused_before_any_aws_call(sfn, mark):
-    assert await provision_dispatch.dispatch_provision("user_notanorg") is False
-    sfn.get_paginator.assert_not_called()
-    sfn.start_execution.assert_not_called()
-    mark.assert_not_awaited()
-
-
 async def test_running_execution_returns_the_owners_summary(sfn):
     summary = {"name": f"provision-{ORG}-deadbeef", "status": "RUNNING"}
     _running(sfn, [summary])
@@ -128,14 +121,6 @@ async def test_reconcile_starts_a_reconcile_execution_without_checks_or_row_writ
     assert json.loads(kwargs["input"]) == {"owner_id": ORG, "mode": "reconcile"}
     sfn.get_paginator.assert_not_called()
     mark.assert_not_awaited()
-
-
-async def test_reconcile_refuses_a_non_org_owner(sfn, mark, monkeypatch):
-    metrics = []
-    monkeypatch.setattr(provision_dispatch, "emit_provision_metric", metrics.append)
-    assert await provision_dispatch.dispatch_reconcile("user_notanorg") is False
-    sfn.start_execution.assert_not_called()
-    assert metrics == ["refused_non_org"]
 
 
 async def test_reconcile_start_failure_returns_false(sfn, mark, monkeypatch):

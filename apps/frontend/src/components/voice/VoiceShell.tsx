@@ -8,12 +8,12 @@ import "./voice.css";
 import Link from "next/link";
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { OrganizationList, UserButton, useAuth, useOrganization } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import { CircleAlert, Home, PhoneCall, Settings, Video } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
 import { notify, notifySuccess } from "@/lib/notify";
-import { LIGHTBULB as ASSISTANT_NAME, needsOnboarding, useAgentConfig, useGoLiveAfterPayment, useQuestions } from "./data";
+import { LIGHTBULB as ASSISTANT_NAME, needsOnboarding, useAgentConfig, useGoLiveAfterPayment, useProvisionOnOpen, useQuestions } from "./data";
 import { TalkSessionProvider } from "./TalkSessionProvider";
 
 export function useNeedsYouTotal(): number {
@@ -34,15 +34,17 @@ const OPEN_DURING_SETUP = new Set(["/voice", "/voice/settings", "/voice/setup"])
 
 export function VoiceShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  const { userId, orgRole } = useAuth();
-  const { organization, isLoaded } = useOrganization();
+  const { userId } = useAuth();
   const needs = useNeedsYouTotal();
+  useProvisionOnOpen();
   useGoLiveAfterPayment();
   const router = useRouter();
   const { data: config, isNew } = useAgentConfig();
-  // Admins only: setup saves need an admin (PUT /voice/agent), so a member is never held on steps they cannot finish.
-  const setupFirst = orgRole === "org:admin" && needsOnboarding(config, isNew) && !OPEN_DURING_SETUP.has(path);
-  useEffect(() => { if (setupFirst) router.replace("/voice"); }, [setupFirst, router]);
+  // The signed-in person owns their account: with no business saved they name it first (/onboarding), then every
+  // page but Home and Settings waits until setup is finished.
+  const noBusiness = !!config && !config.live && !config.business?.trim();
+  const setupFirst = noBusiness || (needsOnboarding(config, isNew) && !OPEN_DURING_SETUP.has(path));
+  useEffect(() => { if (setupFirst) router.replace(noBusiness ? "/onboarding" : "/voice"); }, [setupFirst, noBusiness, router]);
   // Stripe returns here with ?voice= (core/billing/voice_plan_checkout.py success_url / cancel_url).
   useEffect(() => {
     const flag = new URLSearchParams(window.location.search).get("voice");
@@ -54,13 +56,8 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
     });
     return () => clearTimeout(later);
   }, []);
-  if (isLoaded && !organization) {
-    // Clerk <OrganizationList> props: https://clerk.com/docs/components/organization/organization-list
-    return <main className="vx-page"><h1 className="vx-title">Choose your business</h1>
-      <div className="vx-orgs"><OrganizationList hidePersonal afterSelectOrganizationUrl="/voice" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen /></div></main>;
-  }
   return (
-    <HuddleProvider key={`${userId ?? "loading"}:${organization?.id ?? "loading"}`}>
+    <HuddleProvider key={userId ?? "loading"}>
       <TalkSessionProvider name={ASSISTANT_NAME}>
       <div className="vx-shell">
         <nav className="vx-rail" aria-label="Places">

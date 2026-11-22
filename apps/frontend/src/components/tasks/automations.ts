@@ -5,7 +5,7 @@
 
 import { useCallback } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { useAuth, useOrganization } from "@clerk/nextjs";
+import { useAuth } from "@clerk/nextjs";
 import {
   automationKey, automationRunsKey, automationsKey, canDecide, canEdit, deliveryRoomId, deliveryWords, roomDisplayName, specialistLabel, runNow as runNowShared,
   type AutomationSource, type AutomationView, type RoomSummary, type RunNowOutcome,
@@ -46,20 +46,17 @@ export function useAutomationActions() {
   return { act, remove, edit, refresh };
 }
 
-/** Who may turn a proposal on or resume it (shared `canDecide`, the server's two predicates). */
+/** Who may turn a proposal on or resume it (shared `canDecide`, the server's two predicates). The signed-in person owns
+ *  the account, so they are its admin; the server still decides. */
 export function useCanDecide(): (a: Pick<AutomationView, "deliverTo" | "ownerUserId" | "match">) => boolean {
-  const { userId, orgId } = useAuth();
-  const { membership } = useOrganization();
-  const admin = membership?.role === "org:admin";
-  return useCallback((a) => canDecide(a, { userId: userId ?? null, admin, orgId: orgId ?? null }), [admin, userId, orgId]);
+  const { userId } = useAuth();
+  return useCallback((a) => canDecide(a, { userId: userId ?? null, admin: true }), [userId]);
 }
 
-/** Who may pause it, run it now or drop a proposal (the server's `_may_edit`): an org admin or its owner. */
+/** Who may pause it, run it now or drop a proposal (the server's `_may_edit`): the account's owner. */
 export function useCanEdit(): (a: Pick<AutomationView, "ownerUserId">) => boolean {
   const { userId } = useAuth();
-  const { membership } = useOrganization();
-  const admin = membership?.role === "org:admin";
-  return useCallback((a) => canEdit(a, { userId: userId ?? null, admin }), [admin, userId]);
+  return useCallback((a) => canEdit(a, { userId: userId ?? null, admin: true }), [userId]);
 }
 
 export type { RunNowOutcome };

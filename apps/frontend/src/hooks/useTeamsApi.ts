@@ -68,19 +68,16 @@ function isTeamsPath(path: unknown): path is string {
  */
 export function useTeamsApi() {
   const api = useApi();
-  const { isLoaded, userId, orgId } = useAuth();
+  const { isLoaded, userId } = useAuth();
   const { mutate: globalMutate } = useSWRConfig();
-  const scope = useMemo(
-    () => isLoaded && userId ? [userId, orgId ?? null] as const : null,
-    [isLoaded, userId, orgId],
-  );
+  const scope = useMemo(() => isLoaded && userId ? [userId] as const : null, [isLoaded, userId]);
   const cacheKey = useCallback(
     (path: string) => scope && isTeamsPath(path) ? [path, ...scope] as const : null,
     [scope],
   );
   const isCurrentScopeKey = useCallback((key: unknown) => (
-    scope !== null && Array.isArray(key) && key.length === 3 &&
-    isTeamsPath(key[0]) && key[1] === scope[0] && key[2] === scope[1]
+    scope !== null && Array.isArray(key) && key.length === 2 &&
+    isTeamsPath(key[0]) && key[1] === scope[0]
   ), [scope]);
   const isCurrentScopeOrNonTeamsKey = useCallback((key: unknown) => (
     key !== undefined && (!isTeamsPath(Array.isArray(key) ? key[0] : key) || isCurrentScopeKey(key))

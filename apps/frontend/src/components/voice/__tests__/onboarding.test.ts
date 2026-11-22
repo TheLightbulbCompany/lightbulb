@@ -1,5 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
-vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({}) }));
+import { describe, expect, it } from "vitest";
 import { applyDraft, withTimezone } from "../Onboarding";
 import { DAYS, DEFAULT_CONFIG, needsOnboarding, saveRefusal, usPhone } from "../data";
 

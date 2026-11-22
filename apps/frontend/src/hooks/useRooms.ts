@@ -12,7 +12,7 @@ export const pageVisible = () => document.visibilityState === "visible" && docum
 /** `roomVisible` false: something covers the room (a session in focus), so it must not auto-read.
  *  `autoSelect` false: a second room slot (a session's chat) that never picks a listed room on its own. */
 export function useRooms(initialAgentId?: string | null, subscribeToRoom = true, roomVisible = true, autoSelect = true) {
-  const { isLoaded, userId, orgId } = useAuth();
+  const { isLoaded, userId } = useAuth();
   const live = useLiveEvents();
   // Both callbacks are []-stable so the shared hook's visibility effect
   // subscribes once, not once per render; `roomVisible` is read through a ref.
@@ -38,12 +38,12 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true,
   }, [roomVisible]);
   const platform = useMemo<RoomsPlatform>(() => ({
     userId: isLoaded ? userId ?? null : null,
-    orgId: orgId ?? null,
+    orgId: null, // the account is the signed-in person: the scope is the user id alone
     live,
     isVisible,
     onVisibilityChange,
     uuid: () => crypto.randomUUID(),
-  }), [isLoaded, userId, orgId, live, isVisible, onVisibilityChange]);
+  }), [isLoaded, userId, live, isVisible, onVisibilityChange]);
   // The package can be consumed from a previously built workspace declaration
   // during rolling CI installs. Keep the app boundary typed to the source
   // contract (bounded history + older-page loading) that the runtime implements.

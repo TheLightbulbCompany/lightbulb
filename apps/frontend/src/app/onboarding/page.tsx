@@ -2,15 +2,13 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { OrganizationList, useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { JoinTeamBlock } from "@/components/onboarding/JoinTeamBlock";
 import { SourceQuestion, reportSource, type SourceAnswer } from "@/components/onboarding/SourceQuestion";
 import { clearWorkspaceDoor, readWorkspaceDoor, touchPayload } from "@/lib/analytics";
 import { useNameGate } from "@/hooks/useNameGate";
 import { ApiError, useApi } from "@/lib/api";
-import { safeReturnTo } from "@/lib/returnTo";
+import { useAgentConfig } from "@/components/voice/data";
 
 /** Mirrors the backend's `company_identity.slugify`: the availability check rejects any
  *  slug this would change, so the two must agree. */
@@ -27,12 +25,13 @@ const SLUG_PROBLEM: Record<NonNullable<SlugCheck["reason"]>, string> = {
   taken: "That address is taken. Try another.",
 };
 
-/** "Set up your business": its name, plus the address its assistant gets Meet invites at. The slug
- *  is HELD before the Clerk org exists, so a lost race never leaves a workspace without one;
- *  the organization.created webhook then hands the hold to the workspace. */
-function CreateWorkspaceForm() {
+/** "Set up your business": its name, plus the address its assistant gets Meet invites at. The slug is HELD, then
+ *  claimed with the name for the signed-in person's own account; the name also opens the assistant's setup
+ *  (the voice document's `business`), so /voice knows a business is saved. No Clerk call. */
+function BusinessForm() {
   const api = useApi();
-  const { createOrganization, setActive } = useOrganizationList();
+  const router = useRouter();
+  const { data: config, save } = useAgentConfig();
   const [name, setName] = useState("");
   const [typedSlug, setTypedSlug] = useState<string | null>(null);
   const [check, setCheck] = useState<SlugCheck | null>(null);
@@ -54,16 +53,16 @@ function CreateWorkspaceForm() {
   }, [slug, api]);
 
   const current = check?.slug === slug ? check : null;
-  const ready = !!name.trim() && !!current?.available && !busy;
+  const ready = !!name.trim() && !!current?.available && !!config && !busy;
 
-  async function create(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!ready || !createOrganization || !setActive) return;
+    if (!ready || !config) return;
     setBusy(true);
     setError(null);
+    const business = name.trim();
     try {
-      // Where they came from, stashed BEFORE the org exists: the organization.created webhook
-      // moves it onto the workspace. Never blocks creating the workspace.
+      // Where they came from. Never blocks the setup.
       await api
         .post("/company/source", {
           answer: source.answer || null,
@@ -73,13 +72,14 @@ function CreateWorkspaceForm() {
         })
         .catch(() => undefined);
       await api.post("/company/slug/hold", { slug });
-      const org = await createOrganization({ name: name.trim() });
+      // An account that already has its address (a reload after this step) keeps it.
+      await api.post("/company/slug/claim", { slug, name: business }).catch((e) => {
+        if (!(e instanceof ApiError && e.status === 409 && (e.body as { detail?: string })?.detail === "slug_already_claimed")) throw e;
+      });
+      await save({ ...config, business, onboardingStep: config.onboardingStep || 1 });
       clearWorkspaceDoor();
-      reportSource("sign_up", source, { workspace_id: org.id });
-      await setActive({ organization: org.id });
-      // Hand the hold to the new workspace now (consistent, keyed); the organization.created
-      // webhook repeats it, so a failure here is not the user's problem.
-      await api.post("/company/slug/claim", { slug }).catch(() => undefined);
+      reportSource("sign_up", source);
+      router.replace("/voice");
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         setCheck({ slug, available: false, reason: "taken", domain: current?.domain ?? "" });
@@ -91,7 +91,7 @@ function CreateWorkspaceForm() {
   }
 
   return (
-    <form onSubmit={create} className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-border bg-card p-6 shadow-sm">
+    <form onSubmit={submit} className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-border bg-card p-6 shadow-sm">
       <label className="flex flex-col gap-1.5 text-sm font-medium">
         Business name
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your salon, spa or barbershop" autoFocus maxLength={64} />
@@ -139,105 +139,15 @@ function CreateWorkspaceForm() {
 }
 
 export default function OnboardingPage() {
-  const router = useRouter();
-  const { isLoaded, isSignedIn, orgId } = useAuth();
-  const { organization, isLoaded: orgLoaded } = useOrganization();
-  const { userMemberships, userInvitations, isLoaded: listLoaded, setActive } =
-    useOrganizationList({ userMemberships: true, userInvitations: true });
-  const [joiningOrgId, setJoiningOrgId] = useState<string | null>(null);
-  const [accepting, setAccepting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Ask for a name before a workspace exists: `loaded` stays false, so nothing below
-  // creates, activates or accepts while the person is on their way to /welcome/name.
+  // Ask for a name first, so the business is never set up under a nameless account.
   const naming = useNameGate();
-  const loaded = !naming && isLoaded && isSignedIn && orgLoaded && listLoaded &&
-    userMemberships?.data !== undefined && userInvitations?.data !== undefined &&
-    !userMemberships?.isLoading && !userInvitations?.isLoading;
-  const invitations = userInvitations?.data ?? [];
-  const count = userMemberships?.data?.length ?? 0;
-  const soleOrgId = loaded && !invitations.length && !organization && !joiningOrgId && count === 1
-    ? userMemberships?.data?.[0]?.organization.id : undefined;
-
-  useEffect(() => {
-    if (!soleOrgId || !setActive || error) return;
-    void setActive({ organization: soleOrgId }).catch(() => {
-      setError("We couldn't open your business. Please try again.");
-    });
-  }, [soleOrgId, setActive, error]);
-
-  useEffect(() => {
-    if (!loaded || invitations.length || !organization || orgId !== organization.id) return;
-    if (joiningOrgId && organization.id !== joiningOrgId) return;
-    router.replace(safeReturnTo(new URLSearchParams(window.location.search).get("returnTo")));
-  }, [loaded, invitations.length, organization, orgId, joiningOrgId, router]);
-
-  async function activateJoinedWorkspace(id: string) {
-    await userInvitations?.revalidate?.();
-    await userMemberships?.revalidate?.();
-    await setActive?.({ organization: id });
-  }
-
-  async function retryActivation() {
-    setError(null);
-    if (!joiningOrgId) return;
-    try {
-      await activateJoinedWorkspace(joiningOrgId);
-    } catch {
-      setError("We couldn't open your business. Please try again.");
-    }
-  }
-
-  async function acceptInvitation(invitation: (typeof invitations)[number]) {
-    setJoiningOrgId(invitation.publicOrganizationData.id);
-    setAccepting(true);
-    setError(null);
-    let accepted = false;
-    try {
-      await invitation.accept();
-      accepted = true;
-      await activateJoinedWorkspace(invitation.publicOrganizationData.id);
-    } catch {
-      if (!accepted) setJoiningOrgId(null);
-      setError("We couldn't join that business. Please try again.");
-    } finally {
-      setAccepting(false);
-    }
-  }
-
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-4">
-      {error && <p role="alert">{error}</p>}
-      {!loaded ? <p role="status">Loading…</p> : invitations.length > 0 ? (
-        <>
-          <h1 className="text-2xl font-bold">You have been invited</h1>
-          <p>Accept an invitation to join a business on Lightbulb.</p>
-          <div className="flex w-full max-w-md flex-col gap-3">
-            {invitations.map((invitation) => (
-              <div key={invitation.id} className="flex items-center justify-between gap-4 rounded-lg border border-border bg-card p-4">
-                <span>{invitation.publicOrganizationData.name || "Business"}</span>
-                <Button onClick={() => acceptInvitation(invitation)} disabled={accepting}>
-                  {accepting && joiningOrgId === invitation.publicOrganizationData.id ? "Accepting…" : "Accept"}
-                </Button>
-              </div>
-            ))}
-          </div>
-        </>
-      ) : joiningOrgId || organization || count === 1 ? (
-        <>
-          <p role="status">Opening your business…</p>
-          {error && <Button onClick={retryActivation}>Try again</Button>}
-        </>
-      ) : count > 1 ? (
-        <>
-          <h1 className="text-2xl font-bold">Choose your business</h1>
-          <OrganizationList hidePersonal afterSelectOrganizationUrl="/onboarding" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
-        </>
-      ) : (
+      {naming ? <p role="status">Loading…</p> : (
         <>
           <h1 className="text-2xl font-bold">Set up your business</h1>
           <p>Start with your business name. Then you&apos;ll tell your assistant your hours and services, set up its phone line, and pick its name.</p>
-          <CreateWorkspaceForm />
-          <JoinTeamBlock />
+          <BusinessForm />
         </>
       )}
     </main>

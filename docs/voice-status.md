@@ -141,7 +141,7 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 
 | # | Promise | Built | Prod | Machine | 1st | Owner | Note |
 |---|---|---|---|---|---|---|---|
-| 4.1 | Voice Home is where sign-in lands; `/chat` redirects | yes | yes | no | 1st | Product | Sign-in and sign-up open `/voice`. A signed-in person who types `/` stays on the marketing page |
+| 4.1 | Voice Home is where sign-in lands; `/chat` redirects | yes | part | no | 1st | Product | Sign-in and sign-up open `/voice`. A signed-in person who types `/` stays on the marketing page. Accounts without workspaces (Task 5, on `main` only after Clerk stops requiring organizations): sign-up makes a personal account with no organization; `/voice` provisions it on first open (`GET /container/status`, then `POST /container/provision`, or `/container/retry` after a failure), sends a person with no business saved to `/onboarding` (business name, meeting address, how they heard: `POST /company/source`, `/company/slug/hold`, `/company/slug/claim` with the name), then to the setup steps. No "Choose your business" screen and no organization pages. Prod: the organization flow until that change ships |
 | 4.2 | Home timeline by day, filter chips, footer counts | yes | yes | no | 1st | Product | |
 | 4.3 | Needs you: four card kinds with labels and fix links ("Reconnect Google") | yes | yes | no | 1st | Product | |
 | 4.4 | Agent page: one page, saves as you type, Pause, greeting style, Knowledge with "questions to add", instructions, hours, services, calendar status, number panel | yes | yes | no | 1st | Product | Labelled Phone in the nav since this PR; the Meetings section moved to its own Meetings page |

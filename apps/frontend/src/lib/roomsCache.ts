@@ -1,8 +1,8 @@
 import { ROOMS_SNAPSHOT_VERSION, type RoomsPersistence } from "@lightbulb/shared";
 
-// The last room list this browser saw for one person in one workspace, so a reload draws Home's projects and the
-// sidebar at once while the server's list loads behind it (W14-4). useRooms' `persistence` seam, as on mobile, but the
-// list only: no message history at rest in the browser. Read only for the exact `userId:orgId` scope that wrote it;
+// The last room list this browser saw for one signed-in person, so a reload draws Home's projects and the
+// sidebar at once while the server's list loads behind it (W14-4). useRooms' `persistence` seam, but the
+// list only: no message history at rest in the browser. Read only for the exact user scope that wrote it;
 // signing out drops every scope (clearRoomsCache, from SwrProvider). Blocked storage reads as "no snapshot".
 
 const PREFIX = "lightbulb.rooms:";
@@ -35,13 +35,13 @@ export const roomsCache: RoomsPersistence = {
   },
 };
 
-/** Sign-out: drop any pending write and every scope's list. With a `userId:orgId` scope (a 401/403 for it), that
- *  scope's only. */
-export function clearRoomsCache(scope?: string): void {
-  if (scope) pending.delete(PREFIX + scope);
-  else { if (timer) clearTimeout(timer); timer = null; pending.clear(); }
+/** Sign-out: drop any pending write and every scope's list. */
+export function clearRoomsCache(): void {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  pending.clear();
   try {
     const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
-    for (const key of keys) if (key && (scope ? key === PREFIX + scope : key.startsWith(PREFIX))) localStorage.removeItem(key);
+    for (const key of keys) if (key?.startsWith(PREFIX)) localStorage.removeItem(key);
   } catch { /* nothing to drop */ }
 }

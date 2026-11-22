@@ -10,8 +10,8 @@ interface RoomRow { roomId: string; kind: string; firstRun?: boolean; members?: 
  *  undefined while loading, null when there is none. */
 export function useAssistantDm(): RoomRow | null | undefined {
   const api = useApi();
-  const { isLoaded, userId, orgId } = useAuth();
-  const { data } = useSWR(isLoaded && userId && orgId ? ["/messaging/rooms#voice-dm", userId, orgId] : null, async () => {
+  const { isLoaded, userId } = useAuth();
+  const { data } = useSWR(isLoaded && userId ? ["/messaging/rooms#voice-dm", userId] : null, async () => {
     const { rooms } = (await api.get("/messaging/rooms")) as { rooms: RoomRow[] };
     return rooms.find((r) => r.firstRun) ?? rooms.find((r) => r.kind === "dm" && r.members?.some((m) => m.kind === "agent")) ?? null;
   });

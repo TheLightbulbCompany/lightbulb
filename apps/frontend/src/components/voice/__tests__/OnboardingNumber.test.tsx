@@ -3,7 +3,6 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const post = vi.hoisted(() => vi.fn());
 const get = vi.hoisted(() => vi.fn());
-vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({}) }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get }) }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => <section aria-label="Voice plan" /> }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: [], startOAuth: vi.fn() }) }));

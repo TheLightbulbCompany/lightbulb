@@ -63,8 +63,8 @@ export function textChats(rooms: RoomSummary[], me: string): TextChat[] {
 const CHATS_KEY = "/messaging/rooms#voice-chats";
 export function useTextChats() {
   const api = useApi();
-  const { isLoaded, userId, orgId } = useAuth();
-  return useSWR(isLoaded && userId && orgId ? [CHATS_KEY, userId, orgId] : null,
+  const { isLoaded, userId } = useAuth();
+  return useSWR(isLoaded && userId ? [CHATS_KEY, userId] : null,
     async () => textChats(((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms, userId!));
 }
 
@@ -190,6 +190,23 @@ export function useInviteAddress(): string | undefined {
   return data?.invite_address;
 }
 
+/** The account is provisioned on first open, not at sign-up (a sign-up for another product must cost nothing): the
+ * status read creates the trial row, then a missing workspace is provisioned and a failed one retried. Once a mount. */
+export function useProvisionOnOpen() {
+  const api = useApi();
+  const { isLoaded, userId } = useAuth();
+  const started = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isLoaded || !userId || started.current === userId) return;
+    started.current = userId;
+    void (async () => {
+      const { container_status: status } = (await api.get("/container/status")) as { container_status?: string | null };
+      if (!status) await api.post("/container/provision", {});
+      else if (status === "error" || status === "stopped") await api.post("/container/retry", {});
+    })().catch(() => undefined); // a 402 (trial over) or a failed call: the next open tries again
+  }, [api, isLoaded, userId]);
+}
+
 /** Onboarding shows until Go live: for a workspace with no document, or one that stopped part-way. */
 export const needsOnboarding = (c: AgentConfig | undefined, isNew: boolean | undefined) =>
   !!c && (!!isNew || (!c.live && !!c.onboardingStep));
@@ -229,8 +246,8 @@ export interface Usage {
 /** The server's measured allowance and billing period; unavailable usage must never become an estimated bill. */
 export function useUsage() {
   const api = useApi();
-  const { isLoaded, orgId, userId } = useAuth();
-  return useSWR<Usage>(isLoaded && userId ? ["/voice/usage", orgId ?? userId, userId] : null,
+  const { isLoaded, userId } = useAuth();
+  return useSWR<Usage>(isLoaded && userId ? ["/voice/usage", userId] : null,
     async () => { const u = (await api.get("/voice/usage")) as Usage; return { ...u, used: Math.round(u.used) }; }, // whole minutes: the server's 9.283 shows as 9, as the Home foot does
     { refreshInterval: 30_000 });
 }

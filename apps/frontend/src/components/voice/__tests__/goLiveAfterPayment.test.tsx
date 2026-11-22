@@ -1,7 +1,7 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: "org_1", userId: "u1", isLoaded: true }) }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "u1", isLoaded: true }) }));
 const get = vi.hoisted(() => vi.fn());
 const put = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get, put }) }));

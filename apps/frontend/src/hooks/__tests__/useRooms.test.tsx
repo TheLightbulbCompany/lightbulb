@@ -73,7 +73,7 @@ const live = {
   },
 };
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "user-a", orgId: "org-a" }) }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "user-a" }) }));
 
 import { mergeCanonicalMessages } from "@lightbulb/shared";
 import { useRooms } from "../useRooms";

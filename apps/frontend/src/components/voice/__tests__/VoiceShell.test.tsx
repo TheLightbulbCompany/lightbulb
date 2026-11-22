@@ -5,20 +5,17 @@ const nav = vi.hoisted(() => ({ path: "/voice/settings", replace: vi.fn() }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useRouter: () => ({ replace: nav.replace }) }));
 const toast = vi.hoisted(() => ({ notify: vi.fn(), notifySuccess: vi.fn() }));
 vi.mock("@/lib/notify", () => toast);
-const org = vi.hoisted(() => ({ current: { id: "o" } as { id: string } | null, userId: "u", role: "org:admin", list: vi.fn() }));
-vi.mock("@clerk/nextjs", () => ({
-  UserButton: () => null,
-  useAuth: () => ({ userId: org.userId, orgRole: org.role }),
-  OrganizationList: (p: object) => { org.list(p); return <p>org-list</p>; },
-  useOrganization: () => ({ organization: org.current, isLoaded: true }),
-}));
+const org = vi.hoisted(() => ({ userId: "u" }));
+// No organization hook or component: the shell reads only who is signed in.
+vi.mock("@clerk/nextjs", () => ({ UserButton: () => null, useAuth: () => ({ userId: org.userId }) }));
 vi.mock("../TalkSessionProvider", () => ({ TalkSessionProvider: ({ children }: { children: React.ReactNode }) => <div data-testid="talk-owner">{children}</div> }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ HuddleProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 const questions = vi.hoisted(() => ({ list: [] as { id: string }[] }));
-const agent = vi.hoisted(() => ({ setup: false }));
+const agent = vi.hoisted(() => ({ setup: false, config: { business: "Acme" } as { business?: string; live?: boolean } | undefined, provision: vi.fn() }));
 vi.mock("../data", () => ({
   LIGHTBULB: "Lightbulb", useQuestions: () => ({ data: questions.list }), useGoLiveAfterPayment: () => {},
-  useAgentConfig: () => ({ data: {}, isNew: false }), needsOnboarding: () => agent.setup,
+  useProvisionOnOpen: agent.provision,
+  useAgentConfig: () => ({ data: agent.config, isNew: false }), needsOnboarding: () => agent.setup,
 }));
 
 import { VoiceShell } from "../VoiceShell";
@@ -39,12 +36,29 @@ it("Meetings rail item opens /voice/meetings", () => {
   nav.path = "/voice/settings";
 });
 
-it("no-org user at /voice sees OrganizationList with afterSelect /voice", () => {
-  org.current = null;
-  render(<VoiceShell>x</VoiceShell>);
-  expect(screen.getByText("org-list")).toBeInTheDocument();
-  expect(org.list).toHaveBeenCalledWith(expect.objectContaining({ afterSelectOrganizationUrl: "/voice", afterCreateOrganizationUrl: "/onboarding" }));
-  org.current = { id: "o" };
+it("test_shell_has_no_org_gate: a signed-in person with no organization gets the shell, and it provisions on open", () => {
+  nav.path = "/voice"; nav.replace.mockClear();
+  render(<VoiceShell><p>home</p></VoiceShell>);
+  expect(screen.getByText("home")).toBeInTheDocument();
+  expect(screen.queryByText("Choose your business")).not.toBeInTheDocument();
+  expect(agent.provision).toHaveBeenCalled();
+  expect(nav.replace).not.toHaveBeenCalled();
+  nav.path = "/voice/settings";
+});
+
+it.each(["/voice", "/voice/settings", "/voice/agent"])("with no business saved, %s sends the person to name it", (path) => {
+  agent.config = { business: "" }; nav.path = path; nav.replace.mockClear();
+  render(<VoiceShell><p>page</p></VoiceShell>);
+  expect(nav.replace.mock.calls).toEqual([["/onboarding"]]);
+  expect(screen.queryByText("page")).not.toBeInTheDocument();
+  agent.config = { business: "Acme" }; nav.path = "/voice/settings";
+});
+
+it("a live assistant is never sent back to name its business", () => {
+  agent.config = { live: true }; nav.path = "/voice"; nav.replace.mockClear();
+  render(<VoiceShell><p>page</p></VoiceShell>);
+  expect(nav.replace).not.toHaveBeenCalled();
+  agent.config = { business: "Acme" }; nav.path = "/voice/settings";
 });
 
 it("the rail is Lightbulb (the logo) · Home · Phone · Meetings · Needs you · Settings, and Agent and Workspace are gone", () => {
@@ -68,19 +82,15 @@ it("Needs you keeps its badge and count", () => {
 });
 
 
-it("a workspace or user change creates a fresh talk and huddle owner", () => {
+it("a user change creates a fresh talk and huddle owner", () => {
   const { rerender } = render(<VoiceShell><h1>Settings</h1></VoiceShell>);
   const first = screen.getByTestId("talk-owner");
   rerender(<VoiceShell><h1>Agent</h1></VoiceShell>);
   expect(screen.getByTestId("talk-owner")).toBe(first);
-  org.current = { id: "another-workspace" };
-  rerender(<VoiceShell><h1>Agent</h1></VoiceShell>);
-  const second = screen.getByTestId("talk-owner");
-  expect(second).not.toBe(first);
   org.userId = "another-user";
   rerender(<VoiceShell><h1>Agent</h1></VoiceShell>);
-  expect(screen.getByTestId("talk-owner")).not.toBe(second);
-  org.current = { id: "o" }; org.userId = "u";
+  expect(screen.getByTestId("talk-owner")).not.toBe(first);
+  org.userId = "u";
 });
 
 it.each([["/voice/agent", true], ["/voice/meetings", true], ["/voice/lightbulb", true], ["/voice/settings", false], ["/voice", false]])(
@@ -103,10 +113,10 @@ it("reads Stripe's return flag and says what happened, a tick after mount so the
   window.history.replaceState(null, "", "/");
 });
 
-it("with setup unfinished, a member who is not an admin keeps every page", () => {
-  agent.setup = true; nav.path = "/voice/needs-you"; nav.replace.mockClear(); org.role = "org:member";
-  render(<VoiceShell>member-page</VoiceShell>);
-  expect(nav.replace).not.toHaveBeenCalled();
-  expect(screen.getByText("member-page")).toBeInTheDocument();
-  org.role = "org:admin"; agent.setup = false;
+it("test_setup_forced_for_owner: with setup unfinished, the signed-in person is held on Home whatever their organization role", () => {
+  agent.setup = true; nav.path = "/voice/needs-you"; nav.replace.mockClear();
+  render(<VoiceShell>owner-page</VoiceShell>);
+  expect(nav.replace).toHaveBeenCalledWith("/voice");
+  expect(screen.queryByText("owner-page")).not.toBeInTheDocument();
+  agent.setup = false; nav.path = "/voice/settings";
 });

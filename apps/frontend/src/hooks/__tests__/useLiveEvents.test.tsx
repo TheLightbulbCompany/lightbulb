@@ -5,11 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const auth = {
   userId: "user-a" as string | null,
-  orgId: "org-a" as string | null,
   getToken: vi.fn(async () => "session-token" as string | null),
 };
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ userId: auth.userId, orgId: auth.orgId, isLoaded: true, isSignedIn: !!auth.userId, getToken: auth.getToken }),
+  useAuth: () => ({ userId: auth.userId, isLoaded: true, isSignedIn: !!auth.userId, getToken: auth.getToken }),
 }));
 
 const WORKSPACE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -37,8 +36,6 @@ const shared = vi.hoisted(() => ({
   config: null as unknown,
   onConfigStale: null as (() => void) | null,
 }));
-const statusMutate = vi.hoisted(() => vi.fn());
-vi.mock("swr", async (importOriginal) => ({ ...(await importOriginal<typeof import("swr")>()), mutate: statusMutate }));
 vi.mock("@lightbulb/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@lightbulb/shared")>();
   return {
@@ -99,10 +96,8 @@ function RoomClaimProbe() {
 
 beforeEach(() => {
   get.mockClear();
-  statusMutate.mockClear();
   auth.getToken.mockClear();
   auth.userId = "user-a";
-  auth.orgId = "org-a";
   shared.liveConnected = false;
   shared.connectionRevision = 1;
   shared.roomChannel = null;
@@ -127,14 +122,6 @@ describe("LiveEventsProvider", () => {
     visibility.mockRestore();
   });
 
-  it("invalidates only the current account/workspace status key for health updates", async () => {
-    await act(async () => { render(<LiveEventsProvider><Probe /></LiveEventsProvider>); });
-    shared.onEvent?.({ type: "runtime.resource.invalidated", payload: { resource: "health" } });
-    expect(statusMutate).toHaveBeenCalledWith(["/container/status", "user-a:org-a"]);
-    statusMutate.mockClear();
-    shared.onEvent?.({ type: "runtime.resource.invalidated", payload: { resource: "agents" } });
-    expect(statusMutate).not.toHaveBeenCalled();
-  });
   it("loads live config for the signed-in user/owner while keeping HTTP ready during AppSync reconnect", async () => {
     render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
     expect(screen.getByText(/http-ready:reconnecting/)).toBeInTheDocument();

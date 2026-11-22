@@ -5,8 +5,8 @@ import type { ClerkProvider } from "@clerk/nextjs";
 /**
  * The neutral palette (globals.css `:root[data-chat-theme]`), applied to Clerk's forms.
  *
- * ONE appearance for every Clerk surface (SignIn, SignUp, UserButton,
- * OrganizationSwitcher), passed on <ClerkProvider> in app/layout.tsx, so the
+ * ONE appearance for every Clerk surface (SignIn, SignUp, UserButton),
+ * passed on <ClerkProvider> in app/layout.tsx, so the
  * form matches the page shell around it instead of shipping Clerk's defaults.
  *
  * It holds no colour literal: `variables` use `var()` tokens, `elements` use
@@ -19,45 +19,6 @@ import type { ClerkProvider } from "@clerk/nextjs";
  */
 type ClerkProviderProps = ComponentProps<typeof ClerkProvider>;
 type Appearance = NonNullable<ClerkProviderProps["appearance"]>;
-type Localization = NonNullable<ClerkProviderProps["localization"]>;
-type TaskUrls = NonNullable<ClerkProviderProps["taskUrls"]>;
-
-export const clerkTaskUrls: TaskUrls = {
-  "choose-organization": "/session-tasks/choose-organization",
-};
-
-export const clerkLocalization: Localization = {
-  formFieldLabel__organizationName: "Workspace name",
-  formFieldInputPlaceholder__organizationName: "Workspace name",
-  createOrganization: {
-    formButtonSubmit: "Create workspace",
-    title: "Create workspace",
-  },
-  organizationList: {
-    action__createOrganization: "Create workspace",
-    createOrganization: "Create workspace",
-    titleWithoutPersonal: "Choose a workspace",
-  },
-  taskChooseOrganization: {
-    chooseOrganization: {
-      action__createOrganization: "Create a workspace",
-      subtitle: "Join an invited workspace or create a new one",
-      subtitle__createOrganizationDisabled: "Join an invited workspace",
-      title: "Choose a workspace",
-    },
-    createOrganization: {
-      formFieldInputPlaceholder__name: "My workspace",
-      formFieldInputPlaceholder__slug: "my-workspace",
-      subtitle: "Enter your workspace details to continue",
-      title: "Create a workspace",
-    },
-    organizationCreationDisabled: {
-      subtitle: "Ask a workspace admin to invite you.",
-      title: "You must belong to a workspace",
-    },
-  },
-};
-
 export const clerkAppearance: Appearance = {
   // Clerk resolves `var()` in variables, so the card follows the neutral
   // ladder (and its dark variant) that app/globals.css stamps on <html>.

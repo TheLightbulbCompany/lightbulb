@@ -4,7 +4,6 @@
 // is the brake. One JSON document per workspace (GET/PUT /voice/agent).
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useOrganization } from "@clerk/nextjs";
 import { Check as Tick, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
@@ -21,7 +20,6 @@ type Save = "idle" | "saving" | "saved" | "error" | "payment";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
-  const { organization } = useOrganization();
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [saveState, setSaveState] = useState<Save>("idle");
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -54,7 +52,7 @@ export function AgentPage() {
   };
   const name = nameOf(c);
   // The name typed at setup is what callers hear (voice_phone.start_call); the workspace name is only a fallback.
-  const business = c.business?.trim() || organization?.name || "your business";
+  const business = c.business?.trim() || "your business";
   const status = c.paused ? "Paused" : c.live ? "Live" : "Not live yet";
 
   return <div className="vx-page">

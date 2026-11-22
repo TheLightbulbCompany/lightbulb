@@ -5,8 +5,7 @@
 // (3) where bookings go; (4) its number and forwarding; (5) name, greeting, voice, test call, Go live.
 // Every step after the first saves the Agent page document with `onboardingStep`, so leaving (e.g. for the Google
 // consent screen) resumes where the owner was. Shapes: routers/voice.py, core/voice/phone/voice_onboarding.py.
-import { useEffect, useState } from "react";
-import { useOrganization } from "@clerk/nextjs";
+import { useState } from "react";
 import { ArrowLeft, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
@@ -49,14 +48,12 @@ const digits10 = (n: string) => n.replace(/\D/g, "").slice(-10);
 export const withTimezone = (c: AgentConfig): AgentConfig => ({ ...c, timezone: c.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone });
 
 export function Onboarding({ config, save }: { config: AgentConfig; save: (c: AgentConfig) => Promise<void> }) {
-  const { organization } = useOrganization();
-  const [c, setC] = useState<AgentConfig>(() => ({ ...config, business: config.business || organization?.name || "" }));
+  const [c, setC] = useState<AgentConfig>(config); // `business`: the name typed at /onboarding
   const [step, setStep] = useState(config.onboardingStep || 1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [paymentRequired, setPaymentRequired] = useState(!!config.goLiveRequested);
   const set = (patch: Partial<AgentConfig>) => setC((x) => ({ ...x, ...patch }));
-  useEffect(() => { if (!c.business && organization?.name) set({ business: organization.name }); }, [organization?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = async (next: AgentConfig, to: number) => {
     setBusy(true); setErr(""); setPaymentRequired(false);

@@ -12,7 +12,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo as store
 from core.services import workspace_memory
-from core.services.workspace_memory import _BATCH, _client, _delete_events, _pages
+from core.services.workspace_memory import _client, _delete_events
 
 _DUE = "EVALDUE"
 
@@ -68,22 +68,7 @@ async def delete_workspace_drafts(workspace_id: str) -> int:
 
 def _delete_episodes(client, memory_id: str, user_id: str) -> int:
     base = _ns(user_id)
-    ids = list(
-        dict.fromkeys(
-            r["memoryRecordId"]
-            for ns in (base, f"{base}episodes/")
-            for r in _pages(client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespace=ns)
-        )
-    )
-    failed = 0
-    for i in range(0, len(ids), _BATCH):
-        resp = client.batch_delete_memory_records(
-            memoryId=memory_id, records=[{"memoryRecordId": r} for r in ids[i : i + _BATCH]]
-        )
-        failed += len(resp.get("failedRecords") or [])
-    if failed:
-        raise RuntimeError(f"episode wipe: {failed} of {len(ids)} records failed to delete")
-    return len(ids)
+    return workspace_memory._delete_records(client, f"user={user_id}", memory_id, [base, f"{base}episodes/"])
 
 
 async def delete_episodes(

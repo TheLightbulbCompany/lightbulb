@@ -174,3 +174,69 @@ async def test_delete_episodes_removes_events_and_records(agentcore):
         assert await evaluator.delete_episodes("u", resweep_after_s=0) == 2
         await asyncio.sleep(0)
     assert tail.await_args.args[2] == ["/users/u/", "/users/u/episodes/"]
+
+
+async def test_delete_episodes_for_a_person_who_never_wrote_memory_succeeds(agentcore):
+    """AgentCore answers ListSessions for an unknown actor with ResourceNotFoundException
+    ("Actor <id> not found"): nothing to delete, so the wipe succeeds."""
+    from unittest.mock import AsyncMock
+
+    agentcore.add_response("list_memory_records", listing(), {"memoryId": MEM, "namespace": "/users/u/"})
+    agentcore.add_response("list_memory_records", listing(), {"memoryId": MEM, "namespace": "/users/u/episodes/"})
+    agentcore.add_client_error(
+        "list_sessions",
+        "ResourceNotFoundException",
+        "Actor u not found",
+        expected_params={"memoryId": MEM, "actorId": "u"},
+    )
+    with patch.object(workspace_memory, "_tail", new=AsyncMock()):
+        assert await evaluator.delete_episodes("u", resweep_after_s=0) == 0
+        await asyncio.sleep(0)
+
+
+async def test_delete_episodes_treats_an_already_deleted_event_and_record_as_deleted(agentcore):
+    from unittest.mock import AsyncMock
+
+    t = datetime(2026, 10, 27, 12, tzinfo=UTC)
+    agentcore.add_response(
+        "list_memory_records", listing(rec("rf", "x", t)), {"memoryId": MEM, "namespace": "/users/u/"}
+    )
+    agentcore.add_response("list_memory_records", listing(), {"memoryId": MEM, "namespace": "/users/u/episodes/"})
+    agentcore.add_response(
+        "batch_delete_memory_records",
+        {"successfulRecords": [], "failedRecords": [
+            {"memoryRecordId": "rf".ljust(40, "-"), "status": "FAILED", "errorCode": 404, "errorMessage": "not found"}]},
+    )  # fmt: skip
+    agentcore.add_response("list_sessions", {"sessionSummaries": [{"sessionId": "s1", "actorId": "u", "createdAt": t}]})
+    agentcore.add_response("list_events", {"events": [
+        {"eventId": "e1", "memoryId": MEM, "actorId": "u", "sessionId": "s1", "eventTimestamp": t, "payload": []}]})  # fmt: skip
+    agentcore.add_client_error("delete_event", "ResourceNotFoundException", "Event e1 not found")
+    with patch.object(workspace_memory, "_tail", new=AsyncMock()):
+        assert await evaluator.delete_episodes("u", resweep_after_s=0) == 1
+        await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize("code", ["ThrottledException", "AccessDeniedException", "ValidationException"])
+async def test_delete_episodes_still_fails_on_any_other_error(agentcore, code):
+    from botocore.exceptions import ClientError
+
+    agentcore.add_response("list_memory_records", listing(), {"memoryId": MEM, "namespace": "/users/u/"})
+    agentcore.add_response("list_memory_records", listing(), {"memoryId": MEM, "namespace": "/users/u/episodes/"})
+    agentcore.add_client_error("list_sessions", code, "nope")
+    with pytest.raises(ClientError):
+        await evaluator.delete_episodes("u", resweep_after_s=0)
+
+
+async def test_delete_episodes_still_fails_when_a_record_delete_fails_for_another_reason(agentcore):
+    t = datetime(2026, 10, 27, 12, tzinfo=UTC)
+    agentcore.add_response(
+        "list_memory_records", listing(rec("rf", "x", t)), {"memoryId": MEM, "namespace": "/users/u/"}
+    )
+    agentcore.add_response("list_memory_records", listing(), {"memoryId": MEM, "namespace": "/users/u/episodes/"})
+    agentcore.add_response(
+        "batch_delete_memory_records",
+        {"successfulRecords": [], "failedRecords": [
+            {"memoryRecordId": "rf".ljust(40, "-"), "status": "FAILED", "errorCode": 429, "errorMessage": "throttled"}]},
+    )  # fmt: skip
+    with pytest.raises(RuntimeError, match="1 of 1 records failed"):
+        await evaluator.delete_episodes("u", resweep_after_s=0)

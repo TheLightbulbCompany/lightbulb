@@ -20,10 +20,12 @@ import pytest
 from moto import mock_aws
 
 from core.services import webhook_dedup as _webhook_dedup
+from core.services import workspace_memory as _workspace_memory
 from tests.unit.services.test_account_wipe import OWNER_ID, wipe_mocks  # noqa: F401
 
 _REAL_BEGIN_EVENT_PROCESSING = _webhook_dedup.begin_event_processing
 _REAL_COMPLETE_EVENT_PROCESSING = _webhook_dedup.complete_event_processing
+_REAL_PERSON_WIPE = _workspace_memory.delete_person_memory
 
 
 @pytest.fixture(autouse=True)
@@ -469,6 +471,54 @@ async def test_user_deleted_fails_the_event_and_the_redelivery_finishes(async_cl
     from core.services import webhook_dedup
 
     webhook_dedup.complete_event_processing.assert_awaited_once()
+
+
+def _real_person_wipe(monkeypatch, wipe_mocks, list_sessions_error: str):  # noqa: F811
+    """Run the real person-memory wipe against a fake AgentCore whose ListSessions raises ``list_sessions_error``."""
+    from botocore.exceptions import ClientError
+
+    from core.services import evaluator, session_store, workspace_memory
+
+    client = MagicMock()
+    client.list_memory_records.return_value = {"memoryRecordSummaries": []}
+    client.list_sessions.side_effect = ClientError(
+        {"Error": {"Code": list_sessions_error, "Message": f"Actor {OWNER_ID} not found"}}, "ListSessions"
+    )
+    monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_SESSIONS_MEMORY_ID", "mem-1", raising=False)
+    monkeypatch.setattr(evaluator, "_client", lambda: client)
+    monkeypatch.setattr(workspace_memory, "_tail", AsyncMock())
+    monkeypatch.setattr(session_store, "delete_sessions", AsyncMock(return_value=0))
+    monkeypatch.setattr(evaluator, "delete_drafts", AsyncMock(return_value=0))
+    monkeypatch.setattr(workspace_memory, "_forget_keys", AsyncMock())
+
+    async def real(user_id):
+        await _REAL_PERSON_WIPE(user_id, resweep_after_s=0)
+
+    wipe_mocks.person_memory_delete.side_effect = real
+    return client
+
+
+@pytest.mark.asyncio
+async def test_user_deleted_for_a_person_without_memory_completes(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    """A person who never wrote memory has no AgentCore actor: ListSessions answers not found, which is nothing to delete."""
+    _bypass_svix(monkeypatch)
+    client = _real_person_wipe(monkeypatch, wipe_mocks, "ResourceNotFoundException")
+
+    resp = await _user_deleted(async_client)
+
+    assert resp.status_code == 200, resp.text
+    client.list_sessions.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["ThrottledException", "AccessDeniedException"])
+async def test_user_deleted_still_redelivers_when_memory_errors_otherwise(async_client, monkeypatch, wipe_mocks, code):  # noqa: F811
+    _bypass_svix(monkeypatch)
+    _real_person_wipe(monkeypatch, wipe_mocks, code)
+
+    resp = await _user_deleted(async_client)
+
+    assert resp.status_code == 503 and "person_memory" in resp.text
 
 
 @pytest.mark.asyncio

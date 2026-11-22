@@ -296,7 +296,6 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
                 detail={"code": "front_agent_unavailable", "message": "Choose an active agent from this workspace."},
             )
     if body.config.get("live") and not (await store.get_voice_agent(ws) or {}).get("live"):
-        require_org(auth)  # going live gives the tenant a number
         try:  # Go live: the number is given (bought, once buying is on) now, never at sign-up
             body.config["number"] = await voice_onboarding.provision_at_go_live(ws, body.config, auth.user_id)
         except voice_onboarding.NoNumber as exc:
@@ -315,7 +314,6 @@ class ForwardCheckIn(BaseModel):
 async def forward_check(body: ForwardCheckIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Onboarding "Keep my number": ring the business line once; the page polls GET /voice/agent for forwardingOk.
     `forwardFrom` is the line the owner just typed (step 4 saves only on Continue); it is kept on the document."""
-    require_org(auth)
     require_org_admin(auth)
     ws = resolve_owner_id(auth)
     cfg = await store.get_voice_agent(ws) or {}
@@ -348,7 +346,6 @@ class NumberIn(BaseModel):
 async def assign_number(body: NumberIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """With a body: store the onboarding choice (keep and forward, or new), nothing bought. Without: today's step 4,
     the configured line now. ponytail: the bodyless branch goes when Task 30's step 4 sends the choice."""
-    require_org(auth)
     require_org_admin(auth)
     if body and body.path:
         ws = resolve_owner_id(auth)
@@ -356,6 +353,7 @@ async def assign_number(body: NumberIn | None = None, auth: AuthContext = Depend
             ws, body.path, body.areaCode, body.carrier, body.mode, user_id=auth.user_id
         )
         return {"numberChoice": choice}
+    require_org(auth)  # the bodyless branch takes the environment's shared line
     try:
         return {"number": await voice_onboarding.assign_number(resolve_owner_id(auth), auth.user_id)}
     except voice_onboarding.NoNumber as exc:

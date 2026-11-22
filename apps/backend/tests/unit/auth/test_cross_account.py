@@ -550,9 +550,9 @@ CASES = [
     Case("voice", "PUT", "/api/v1/voice/phone-pin", {"mobile": "+15550100003", "pin": "8765"}),
     Case("voice", "GET", "/api/v1/voice/agent"),
     Case("voice", "PUT", "/api/v1/voice/agent", {"config": {"greeting": "b greeting"}}),
-    Case("voice", "POST", "/api/v1/voice/forward-check", {"forwardFrom": "+15550100004"}, org_only=True),
+    Case("voice", "POST", "/api/v1/voice/forward-check", {"forwardFrom": "+15550100004"}),
     Case("voice", "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}, org_only=True),
-    Case("voice", "POST", "/api/v1/voice/number", {"path": "new", "areaCode": "415"}, org_only=True),
+    Case("voice", "POST", "/api/v1/voice/number", {"path": "new", "areaCode": "415"}),
     # billing: tenant = caller; the owner checks out, opens the portal, cancels
     Case("billing", "GET", "/api/v1/billing/account"),
     Case("billing", "GET", "/api/v1/billing/trial-recap"),
@@ -682,7 +682,7 @@ CASES = [
     ),
     Case("agent_text", "POST", "/api/v1/agent-text/thread", {"key": "{key}", "mode": "human"}, a_id=True),
     # agent_mail: tenant = caller; mail keys and transcripts are read at the caller's own team address
-    Case("agent_mail", "GET", "/api/v1/agent-mail/address", org_only=True),  # creates the slug and mailbox
+    Case("agent_mail", "GET", "/api/v1/agent-mail/address"),  # an org's read creates its mailbox; a person's reads
     Case("agent_mail", "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, org_only=True),
     Case("agent_mail", "GET", "/api/v1/agent-mail/inbox"),
     Case("agent_mail", "GET", "/api/v1/agent-mail/inbox/new", query={"since": "2026-01-01T00:00:00+00:00"}),
@@ -940,7 +940,6 @@ REFUSED = [
     ("POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, 409),
     ("POST", "/api/v1/billing/apple/purchase-intent", None, 409),
     ("POST", "/api/v1/billing/apple/link", {"signed_transaction": "x"}, 409),
-    ("GET", "/api/v1/agent-mail/address", None, 409),  # would mint a company slug and an agents@ mailbox
     ("PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, 409),
     ("GET", "/api/v1/connections/aws/aws-setup", None, 409),  # mints the STS ExternalId
     ("GET", "/api/v1/connections/github/authorize", None, 409),  # starts a provider OAuth grant
@@ -956,13 +955,11 @@ REFUSED = [
     ("PUT", "/api/v1/container/workspace/ceo/file", {"path": "USER.md", "content": "x", "tab": "config"}, 409),
     ("POST", "/api/v1/automations", {"name": "n", "instructions": "i"}, 409),  # a Temporal Schedule
     ("POST", "/api/v1/automations/from-integration", {"provider": "stripe", "event_ids": ["x"]}, 409),
-    ("POST", "/api/v1/voice/forward-check", {}, 409),  # rings a phone
     ("POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}, 409),  # a model call
     ("POST", "/api/v1/runtime/rpc", {"requestId": "{new}", "method": "agents.create", "params": {}}, 409),
     ("PATCH", "/api/v1/config", {"patch": {"x": 1}}, 409),  # writes every agent's config.yaml
     ("PUT", "/api/v1/automations/hook1/webhook-secret", {"webhook_secret": "whsec_x"}, 409),
-    ("POST", "/api/v1/voice/number", {}, 409),
-    ("PUT", "/api/v1/voice/agent", {"config": {"live": True}}, 409),  # going live gives a number
+    ("POST", "/api/v1/voice/number", {}, 409),  # with no body: takes the environment's shared line
     ("POST", "/api/v1/oauth/chatgpt/start", None, 402),  # needs a paid plan, which a person cannot buy yet
 ]
 
@@ -994,3 +991,49 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_mint_buy_or_bill(
     assert await company_slug_repo.get_by_owner(person.user_id) is None  # no company slug
     assert await agent_email_repo.query_by_owner(person.user_id) == []  # no mailbox
     assert await integration_secret_store.get(person.user_id, "aws") is None  # no ExternalId
+
+
+# --- the Phone setup doors a person passes on their own tenant ----------------------------------------------
+
+
+async def test_person_mail_address_reads_none_claimed_and_mints_nothing(ddb, calls, jwks):
+    """A person's address read never makes a slug or mailbox: before the claim it is `none_claimed`; a claimed slug
+    with no mailbox row is still `none_claimed` (the claim door makes the row); with the row it is theirs."""
+    person = Tenant("user_solo", None)
+    none = {"address": None, "invite_address": None, "status": "none_claimed"}
+    assert await ok(person, "GET", "/api/v1/agent-mail/address") == none
+    assert await company_slug_repo.get_by_owner(person.user_id) is None
+    assert await company_slug_repo.hold(slug="solo-co", user_id=person.user_id)
+    assert await company_slug_repo.claim(slug="solo-co", user_id=person.user_id, owner_id=person.user_id)
+    assert await ok(person, "GET", "/api/v1/agent-mail/address") == none
+    assert await agent_email_repo.query_by_owner(person.user_id) == []
+    await agent_email_repo.put(address="agents@solo-co.mail.test", owner_id=person.user_id, verified_senders=[])
+    assert (await ok(person, "GET", "/api/v1/agent-mail/address"))["invite_address"] == "agents@solo-co.mail.test"
+    assert not [c for c in calls if c[0] in ("stripe", "http", "fake")]
+
+
+async def test_go_live_buys_only_with_a_voice_plan(tenants, calls, monkeypatch):
+    """Where numbers are bought, Go live with no voice plan is 402 for a person as for an org: nothing is bought."""
+    _, b = tenants
+    monkeypatch.setattr(settings, "VOICE_BUY_NUMBERS", True)
+    await workspaces(b)
+    calls.clear()
+    r = await call(b, "PUT", "/api/v1/voice/agent", {"config": {"live": True}})
+    assert r.status_code == 402 and r.json()["detail"]["code"] == "voice_payment_required", r.text[:300]
+    assert not [c for c in calls if c[0] in ("stripe", "http", "fake")]
+    assert not (await store.get_voice_agent(b.tenant) or {}).get("live")
+
+
+async def test_go_live_cannot_take_another_tenants_line(tenants, ddb, calls, monkeypatch):
+    """Where numbers are not bought, Go live gives the one shared line to the first tenant; B gets 409 and A's line
+    and Agent page are unchanged."""
+    a, b = tenants
+    monkeypatch.setattr(settings, "VOICE_BUY_NUMBERS", False)
+    monkeypatch.setattr(settings, "VOICE_LINE_NUMBER", "+15550100009")
+    await workspaces(a, b)
+    assert (await ok(a, "PUT", "/api/v1/voice/agent", {"config": {"live": True}}))["config"]["number"]
+    before = snapshot(ddb, a.tenant, a.user_id, "+15550100009")
+    r = await call(b, "PUT", "/api/v1/voice/agent", {"config": {"live": True}})
+    assert r.status_code == 409 and r.json()["detail"] == {"code": "number_unavailable", "reason": "taken"}
+    assert snapshot(ddb, a.tenant, a.user_id, "+15550100009") == before
+    assert not (await store.get_voice_agent(b.tenant) or {}).get("live")

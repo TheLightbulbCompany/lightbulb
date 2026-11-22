@@ -407,8 +407,11 @@ roster in `agent_registry`, role-keyed uuid5 ids, so concurrent runs converge), 
 org, as their own provisioner, through `GET /container/status`, `POST /container/provision` and
 `POST /container/retry` (Clerk `user.created` only writes the users row: a sign-up provisions nothing until the
 person opens the product). A person gets a company slug and team address only by claiming one
-(`POST /company/slug/claim`). Every other door that mints a credential, number, mailbox, grant or paid thing still
-calls `require_org` until the later tasks of the accounts-without-workspaces plan. `user.deleted` runs
+(`POST /company/slug/claim`). The Phone setup doors a person passes on their own tenant: `POST /voice/number` with a
+choice, `POST /voice/forward-check`, `GET /agent-mail/address` (it only reads: `none_claimed` before the claim) and
+Go live (`PUT /voice/agent` with `live`; where numbers are bought it needs a voice plan). Every other door that mints a
+credential, number, mailbox, grant or paid thing still calls `require_org` until the later tasks of the
+accounts-without-workspaces plan. `user.deleted` runs
 `account_wipe.wipe_account` on the person's own tenant (profiles and memory included; no Clerk read, no org
 touched, a held phone line kept for an admin wipe); a failed step fails the event so Svix redelivers. Per-owner runtimes are legacy (about 25 remain, being retired by exact
 allowlist; their identity seeds are kept until network identity custody has a replacement).

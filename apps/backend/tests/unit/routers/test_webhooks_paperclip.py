@@ -473,7 +473,7 @@ async def test_user_deleted_fails_the_event_and_the_redelivery_finishes(async_cl
     webhook_dedup.complete_event_processing.assert_awaited_once()
 
 
-def _real_person_wipe(monkeypatch, wipe_mocks, list_sessions_error: str):  # noqa: F811
+def _real_person_wipe(monkeypatch, wipe_mocks, list_sessions_error: str, message: str = f"Actor {OWNER_ID} not found"):  # noqa: F811
     """Run the real person-memory wipe against a fake AgentCore whose ListSessions raises ``list_sessions_error``."""
     from botocore.exceptions import ClientError
 
@@ -482,7 +482,7 @@ def _real_person_wipe(monkeypatch, wipe_mocks, list_sessions_error: str):  # noq
     client = MagicMock()
     client.list_memory_records.return_value = {"memoryRecordSummaries": []}
     client.list_sessions.side_effect = ClientError(
-        {"Error": {"Code": list_sessions_error, "Message": f"Actor {OWNER_ID} not found"}}, "ListSessions"
+        {"Error": {"Code": list_sessions_error, "Message": message}}, "ListSessions"
     )
     monkeypatch.setattr(workspace_memory.settings, "AGENTCORE_SESSIONS_MEMORY_ID", "mem-1", raising=False)
     monkeypatch.setattr(evaluator, "_client", lambda: client)
@@ -511,10 +511,23 @@ async def test_user_deleted_for_a_person_without_memory_completes(async_client, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code", ["ThrottledException", "AccessDeniedException"])
-async def test_user_deleted_still_redelivers_when_memory_errors_otherwise(async_client, monkeypatch, wipe_mocks, code):  # noqa: F811
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("ThrottledException", "slow down"),
+        ("AccessDeniedException", "denied"),
+        ("ResourceNotFoundException", "Memory mem-1 not found"),
+    ],
+)
+async def test_user_deleted_still_redelivers_when_memory_errors_otherwise(
+    async_client,
+    monkeypatch,
+    wipe_mocks,  # noqa: F811
+    code,
+    message,
+):
     _bypass_svix(monkeypatch)
-    _real_person_wipe(monkeypatch, wipe_mocks, code)
+    _real_person_wipe(monkeypatch, wipe_mocks, code, message)
 
     resp = await _user_deleted(async_client)
 

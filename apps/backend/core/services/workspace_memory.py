@@ -117,10 +117,15 @@ def _client():
     )
 
 
+# AgentCore's ResourceNotFoundException carries only a message. An actor, session, event or record
+# missing inside the memory (ListSessions: "Actor <id> not found") is nothing to list or delete; any
+# other not-found, the memory itself included ("Memory <id> not found"), is an error.
+_ABSENT_ITEM = re.compile(r"(actor|session|event|(memory )?record)( \S+)? not found\.?", re.IGNORECASE)
+
+
 def _not_found(exc: ClientError) -> bool:
-    """AgentCore's answer for an actor, session, event or record that does not exist (e.g.
-    ListSessions: "Actor <id> not found"): nothing to list or delete."""
-    return exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException"
+    err = exc.response.get("Error", {})
+    return err.get("Code") == "ResourceNotFoundException" and bool(_ABSENT_ITEM.fullmatch(err.get("Message", "")))
 
 
 def _pages(call, key: str, **kwargs) -> list:

@@ -240,3 +240,12 @@ async def test_delete_episodes_still_fails_when_a_record_delete_fails_for_anothe
     )  # fmt: skip
     with pytest.raises(RuntimeError, match="1 of 1 records failed"):
         await evaluator.delete_episodes("u", resweep_after_s=0)
+
+
+async def test_delete_episodes_still_fails_when_the_memory_itself_is_missing(agentcore):
+    """A missing memory store is not "nothing to delete": the person's memory may sit in a store we did not reach."""
+    from botocore.exceptions import ClientError
+
+    agentcore.add_client_error("list_memory_records", "ResourceNotFoundException", f"Memory {MEM} not found")
+    with pytest.raises(ClientError):
+        await evaluator.delete_episodes("u", resweep_after_s=0)

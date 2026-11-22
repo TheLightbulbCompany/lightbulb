@@ -2300,11 +2300,11 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // W89: a Clerk user.deleted whose tenant wipe failed a step. The webhook answers 503 so Svix
+    // W90: a Clerk user.deleted whose tenant wipe failed a step. The webhook answers 503 so Svix
     // redelivers, but once Svix gives up a failed Stripe step leaves a held-back billing row and a
     // live subscription that nothing else reports (routers/webhooks.py).
     this.createAlarm({
-      id: "W89",
+      id: "W90",
       name: "user-deleted-wipe-failed",
       description: "A deleted person's tenant wipe failed a step (Svix redelivers; a live subscription may remain)",
       metricName: "clerk.webhook.user_deleted_wipe_failed",

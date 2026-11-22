@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { NetworkStack } from "../lib/stacks/network-stack";
+import enginePaths from "../lib/engine-paths.json";
 
 function buildNetworkStack(environment: "dev" | "prod"): Template {
   const app = new cdk.App();
@@ -162,5 +163,42 @@ describe("NetworkStack: engine listener", () => {
       ),
     ];
     expect(ingress.filter((r: any) => r.FromPort <= 8082 && r.ToPort >= 8082)).toEqual([]);
+  });
+});
+
+describe("NetworkStack: the runtime's engine paths on :80", () => {
+  test.each(["dev", "prod"] as const)("one rule sends engine-paths.json to the engine, the rest stays on the backend (%s)", (env) => {
+    const template = buildNetworkStack(env);
+    const tgId = (name: string) =>
+      Object.keys(template.findResources("AWS::ElasticLoadBalancingV2::TargetGroup", { Properties: { Name: name } }))[0];
+    const listenerId = (port: number) =>
+      Object.keys(template.findResources("AWS::ElasticLoadBalancingV2::Listener", { Properties: { Port: port } }))[0];
+    const http = listenerId(80);
+    // The default action is unchanged: everything not listed goes to the backend.
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
+      Port: 80,
+      DefaultActions: [Match.objectLike({ Type: "forward", TargetGroupArn: { Ref: tgId(`lightbulb-${env}-backend`) } })],
+    });
+    const rules = Object.values(template.findResources("AWS::ElasticLoadBalancingV2::ListenerRule"))
+      .map((r: any) => r.Properties)
+      .filter((p: any) => p.ListenerArn.Ref === http);
+    expect(rules).toEqual([
+      {
+        ListenerArn: { Ref: http },
+        Priority: 10,
+        Conditions: [{ Field: "path-pattern", PathPatternConfig: { Values: enginePaths.paths } }],
+        Actions: [{ Type: "forward", TargetGroupArn: { Ref: tgId(`lightbulb-${env}-engine`) } }],
+      },
+    ]);
+    // The engine's own callbacks into the products land on the backend.
+    expect(enginePaths.paths.some((p) => "/api/v1/internal/engine/".startsWith(p.replace("*", "")))).toBe(false);
+    // The browser-view listener gets no engine rule.
+    for (const port of [8081]) {
+      const id = listenerId(port);
+      const forwards = Object.values(template.findResources("AWS::ElasticLoadBalancingV2::ListenerRule"))
+        .map((r: any) => r.Properties)
+        .filter((p: any) => p.ListenerArn.Ref === id && JSON.stringify(p.Actions).includes(tgId(`lightbulb-${env}-engine`)));
+      expect(forwards).toEqual([]);
+    }
   });
 });

@@ -113,3 +113,11 @@ describe("deploy.yml prod promotion gate", () => {
     expect(auth).toContain("- Build-Synth");
   });
 });
+
+describe("alarms deploy after the services they watch", () => {
+  it.each(["dev", "prod"])("%s observability needs the %s service deploy (W89 pages on a missing engine target)", (env) => {
+    const block = jobBlocks(readFileSync(DEPLOY_YML, "utf8")).get(`${env}-lightbulb-${env}-observability-Deploy`);
+    expect(block).toBeDefined();
+    expect(block).toContain(`- ${env}-lightbulb-${env}-service-Deploy`);
+  });
+});

@@ -8,6 +8,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import { Construct } from "constructs";
 import { alertTopicArn, resourcePrefix } from "../table-names";
+import enginePaths from "../engine-paths.json";
 
 export interface NetworkStackProps extends cdk.StackProps {
   environment: string;
@@ -443,6 +444,15 @@ export class NetworkStack extends cdk.Stack {
       protocol: elbv2.ApplicationProtocol.HTTP,
       open: false,
       defaultTargetGroups: [engineTargetGroup],
+    });
+    // The agent runtime calls one base URL (the public API, through API Gateway to :80). Its callbacks that land on
+    // engine code go to the engine service by path (engine-paths.json); every other path, the engine's own
+    // /api/v1/internal/engine/* callbacks into the products included, stays on the backend (the default action).
+    // The engine's SG admits the ALB on 8000, which covers this listener too.
+    httpListener.addAction("EngineRuntimePaths", {
+      priority: 10,
+      conditions: [elbv2.ListenerCondition.pathPatterns(enginePaths.paths)],
+      action: elbv2.ListenerAction.forward([engineTargetGroup]),
     });
 
     return { alb, targetGroup, engineTargetGroup, httpListenerArn: httpListener.listenerArn, httpsListenerArn };

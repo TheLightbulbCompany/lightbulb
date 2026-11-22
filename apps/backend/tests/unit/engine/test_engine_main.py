@@ -92,6 +92,47 @@ async def test_callbacks_round_trip(product, monkeypatch):
     line.assert_awaited_once_with(task, "idle")
 
 
+async def test_a_tool_gets_its_own_budget_and_a_timeout_says_it_may_have_run(product, monkeypatch):
+    """A tool runs under 15 s (the runtime plugin waits 20 s), sent once; a timeout after it went out reaches the
+    agent's tool route as a 504 that says the action may still have completed, not a bare 500."""
+    import asyncio
+
+    assert transport.HOOK_BUDGET_S < transport.TOOL_BUDGET_S == transport.TOOL_ATTEMPT_S <= 15
+
+    async def nap(call):
+        await asyncio.sleep(1)
+        return {}
+
+    slow = AsyncMock(side_effect=nap)
+    monkeypatch.setitem(engine_hooks._TOOLS, "meeting_chat", slow)
+    monkeypatch.setattr(transport, "TOOL_ATTEMPT_S", 0.2)
+    monkeypatch.setattr(transport, "TOOL_BUDGET_S", 0.2)
+    with pytest.raises(HTTPException) as timed_out:
+        await hooks.tool("meeting_chat", ToolCall(tenant_id="org_1"))
+    assert (timed_out.value.status_code, timed_out.value.detail) == (504, http_hooks.TOOL_TIMEOUT)
+    assert "may still have completed" in http_hooks.TOOL_TIMEOUT
+    slow.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("exc", "status", "detail"),
+    [
+        (httpx.ConnectTimeout("x"), 503, http_hooks.TOOL_NOT_SENT),
+        (httpx.PoolTimeout("x"), 503, http_hooks.TOOL_NOT_SENT),
+        (httpx.ConnectError("x"), 503, http_hooks.TOOL_NOT_SENT),
+        (httpx.ReadTimeout("x"), 504, http_hooks.TOOL_TIMEOUT),
+        (httpx.WriteTimeout("x"), 504, http_hooks.TOOL_TIMEOUT),
+        (TimeoutError(), 504, http_hooks.TOOL_TIMEOUT),
+    ],
+)
+async def test_every_tool_timeout_is_a_clear_answer(monkeypatch, exc, status, detail):
+    """Not sent: says nothing was done. Sent or maybe sent: says it may have completed. Never a bare 500."""
+    monkeypatch.setattr(transport, "send", AsyncMock(side_effect=exc))
+    with pytest.raises(HTTPException) as failed:
+        await http_hooks.tool("front_desk", ToolCall(tenant_id="org_1"))
+    assert (failed.value.status_code, failed.value.detail) == (status, detail)
+
+
 async def test_a_failed_context_raises(product, monkeypatch):
     """A product's failure reaches the engine as a failure (an activity retries it), never an empty answer."""
     monkeypatch.setattr(engine_hooks, "_context", AsyncMock(side_effect=RuntimeError("profile store down")))

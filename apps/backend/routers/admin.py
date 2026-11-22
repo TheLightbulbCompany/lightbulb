@@ -339,7 +339,7 @@ async def admin_container_reprovision(
     # Resolve owner_id so org-member targets hit ``openclaw-{org_id}-{hash}``,
     # not the non-existent ``openclaw-{user_id}-{hash}`` (admin-org-owner-id
     # P1). Audit decorator still captures the URL path param (user_id).
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     # Durable: an idle-session wait can outlast the request, so a Step Functions reconcile
     # execution does the work. dispatch_reconcile never raises.
     await dispatch_reconcile(owner_id)
@@ -385,7 +385,7 @@ async def admin_provision_retry(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     row = await container_repo.get_by_owner_id(owner_id)
     if not row:
         raise HTTPException(status_code=404, detail="No container row for this owner")
@@ -444,7 +444,7 @@ async def admin_billing_cancel_subscription(
     # Billing accounts are partitioned on owner_id (= org_id for org members).
     # Without the resolver the mutation targets a personal-key account that
     # doesn't exist for org members (admin-org-owner-id P1).
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(await billing_service.cancel_subscription_for_owner(owner_id))
 
 
@@ -459,7 +459,7 @@ async def admin_billing_pause_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(await billing_service.pause_subscription_for_owner(owner_id))
 
 
@@ -474,7 +474,7 @@ async def admin_billing_resume_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(await billing_service.resume_subscription_for_owner(owner_id))
 
 
@@ -489,7 +489,7 @@ async def admin_billing_founding_team(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(await billing_service.mark_founding_team(owner_id))
 
 
@@ -506,7 +506,7 @@ async def admin_billing_pause_30_days(
 ):
     from core.services.trial_lifecycle import pause_once
 
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(await pause_once(owner_id))
 
 
@@ -522,7 +522,7 @@ async def admin_billing_issue_credit(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(
         await billing_service.issue_credit_for_owner(
             owner_id, amount_cents=body.amount_cents, reason=body.reason, request_id=body.request_id
@@ -542,7 +542,7 @@ async def admin_billing_mark_invoice_resolved(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(await billing_service.mark_invoice_resolved(owner_id, body.invoice_id))
 
 
@@ -621,7 +621,7 @@ async def admin_config_patch(
 ):
     # For org members owner_id is the org_id — patching {user_id} would target a
     # workspace that does not exist (admin-org-owner-id P1).
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     # M6 row #13: same S3-profile fan-out as the other two config-patch doors.
     await config_patch_roster(owner_id, body.patch, None)
     return {"status": "patched"}
@@ -640,7 +640,7 @@ async def admin_agent_delete(
 ):
     from core.services.agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
 
-    owner_id, _ = await resolve_admin_owner_id(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     try:
         return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
     except AgentLifecycleConflict as exc:

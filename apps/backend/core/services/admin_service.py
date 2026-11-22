@@ -25,6 +25,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi import HTTPException
+
 from core.dynamodb import run_in_thread
 from core.repositories import admin_actions_repo, billing_repo, container_repo, usage_repo
 from core.services import (
@@ -46,7 +48,7 @@ logger = logging.getLogger(__name__)
 _PARALLEL_TIMEOUT_S = 2.0
 
 
-async def resolve_admin_owner_id(user_id: str) -> tuple[str, dict | None]:
+async def resolve_admin_owner_id(user_id: str, *, mutating: bool = False) -> tuple[str, dict | None]:
     """Return (owner_id, org_context) for a target user viewed by an admin.
 
     The DDB partition key ``owner_id`` is the Clerk org_id for org-member
@@ -70,9 +72,12 @@ async def resolve_admin_owner_id(user_id: str) -> tuple[str, dict | None]:
     Returns:
       (org_id, org_context_dict) when the user is in an org; org_context is
         {"id", "slug", "name", "role"}.
-      (user_id, None) when the user is personal-mode (no orgs) or when the
-        Clerk lookup errors (fail-open: better to show personal-mode data
-        than to break the dashboard).
+      (user_id, None) when the user is personal-mode (no orgs) or, for a read,
+        when the Clerk lookup errors (fail-open: better to show personal-mode
+        data than to break the dashboard).
+
+    ``mutating=True``: a Clerk error is a 503, never a guess, so an admin action
+    can never act on (or provision) the member's own id in place of their org.
     """
     # Bound Clerk call with the same per-panel timeout budget used by
     # _with_timeout — a slow Clerk upstream must not block overview / agents /
@@ -83,15 +88,10 @@ async def resolve_admin_owner_id(user_id: str) -> tuple[str, dict | None]:
             clerk_admin.list_user_organizations(user_id),
             timeout=_PARALLEL_TIMEOUT_S,
         )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "admin_service.resolve_admin_owner_id Clerk timeout for %s after %ss; falling back to personal-mode",
-            user_id,
-            _PARALLEL_TIMEOUT_S,
-        )
-        return user_id, None
-    except Exception as e:  # noqa: BLE001 — defensive, Clerk must never take the dashboard down
-        logger.warning("admin_service.resolve_admin_owner_id Clerk error for %s: %s", user_id, e)
+    except Exception as e:  # noqa: BLE001 (incl. TimeoutError): Clerk must never take the dashboard down
+        logger.warning("admin_service.resolve_admin_owner_id Clerk error for %s: %r", user_id, e)
+        if mutating:
+            raise HTTPException(status_code=503, detail="Could not resolve the account's owner; retry later") from e
         return user_id, None
 
     if not orgs:

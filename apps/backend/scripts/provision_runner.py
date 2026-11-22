@@ -83,8 +83,12 @@ async def run(owner_id: str) -> int:
     # that boot-time change from the reconcile's restart decision (C1: a warm session kept
     # a bearer nothing restarts it off).
     from core.repositories import container_repo
+    from core.services.user_provision import _ensure_trial_row
 
     try:
+        # Every door creates the trial row before it dispatches; this covers one that did not (an
+        # admin or debug door), so the owner key is minted at the trial's daily cap, never the paid one.
+        await _ensure_trial_row(owner_id)
         row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
         if not row.get("agentcore_runtime_arn"):
             await hermes_provisioning.prepare_hermes_workspace(owner_id)

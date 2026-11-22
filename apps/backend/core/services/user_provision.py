@@ -15,7 +15,7 @@ import uuid
 
 from fastapi import HTTPException
 
-from core.auth import AuthContext, resolve_owner_id
+from core.auth import AuthContext, is_org_owner_id, resolve_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
@@ -66,9 +66,10 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
     capture_once_per_owner_per_day(
         owner_id=workspace_id, event="trial_start_requested", properties={}, distinct_id=actor_user_id
     )
+    owner_type = "org" if is_org_owner_id(workspace_id) else "personal"
     try:
         created = await billing_repo.create_trial_local_if_absent(
-            owner_id=workspace_id, owner_type="org", trial_end=None
+            owner_id=workspace_id, owner_type=owner_type, trial_end=None
         )
     except Exception as exc:
         capture_once_per_owner_per_day(
@@ -86,7 +87,7 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
         capture_product_event(
             distinct_id=actor_user_id or workspace_id,
             event="trial_started",
-            properties={**source, "owner_type": "org", "workspace_id": workspace_id},
+            properties={**source, "owner_type": owner_type, "workspace_id": workspace_id},
             event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
 

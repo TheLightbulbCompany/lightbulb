@@ -361,7 +361,7 @@ class TestAdminMutationOwnerResolution:
         assert res.status_code == 200
         assert res.json()["owner_id"] == "org_abc"
         dispatch.assert_awaited_once_with("org_abc")
-        org_mode.assert_awaited_once_with("user_123")
+        org_mode.assert_awaited_once_with("user_123", mutating=True)
 
     @pytest.mark.asyncio
     async def test_container_reprovision_personal_mode_uses_user_id(self, async_client, admin_env, personal_mode):
@@ -489,3 +489,26 @@ class TestAdminMutationOwnerResolution:
         assert res.status_code == 200
         mock_ban.assert_awaited_once_with("user_123")
         mock_resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,dispatch",
+    [
+        ("/api/v1/admin/users/user_123/container/reprovision", "routers.admin.dispatch_reconcile"),
+        ("/api/v1/admin/users/user_123/provisioning/retry", "routers.admin.dispatch_provision"),
+    ],
+)
+async def test_mutating_admin_door_refuses_on_clerk_error(async_client, admin_env, path, dispatch):
+    """A Clerk error while resolving the owner for an admin action is a 503 and nothing is dispatched:
+    falling back to the member's own id would provision a stray tenant with no billing row."""
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(side_effect=RuntimeError("clerk down")),
+        ),
+        patch(dispatch, new_callable=AsyncMock) as dispatched,
+    ):
+        res = await async_client.post(path)
+    assert res.status_code == 503
+    dispatched.assert_not_awaited()

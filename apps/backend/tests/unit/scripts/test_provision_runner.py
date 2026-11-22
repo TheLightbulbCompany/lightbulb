@@ -35,6 +35,8 @@ def hermes(monkeypatch):
     monkeypatch.setattr("core.services.onboarding_brief.reconcile_pending_brief", drain)
     arm_trial = AsyncMock(return_value=None)
     monkeypatch.setattr("core.repositories.billing_repo.arm_trial_if_unset", arm_trial)
+    trial = AsyncMock()
+    monkeypatch.setattr("core.services.user_provision._ensure_trial_row", trial)
     join_room = AsyncMock()
     monkeypatch.setattr("core.services.messaging.join_default_room", join_room)
     members = AsyncMock(return_value=[{"user_id": "user_creator"}, {"user_id": "user_early"}])
@@ -45,6 +47,7 @@ def hermes(monkeypatch):
         reconcile=reconcile,
         drain=drain,
         arm_trial=arm_trial,
+        trial=trial,
         join_room=join_room,
     )
 
@@ -103,6 +106,16 @@ async def test_every_teammate_is_seated_once_the_company_is_active(monkeypatch, 
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
     assert [c.args for c in hermes.join_room.await_args_list] == [("org_a", "user_creator"), ("org_a", "user_early")]
     repo.mark_provision_error.assert_not_awaited()
+
+
+async def test_the_trial_row_exists_before_the_owner_key_is_minted(monkeypatch, hermes, repo):
+    """A door that dispatched without a billing row must not leave the key minted at the paid cap."""
+    order = []
+    hermes.trial.side_effect = lambda *a, **k: order.append("trial")
+    hermes.prepare.side_effect = lambda *a, **k: order.append("prepare")
+    assert await provision_runner.run("user_p") == provision_runner.EXIT_OK
+    hermes.trial.assert_awaited_once_with("user_p")
+    assert order == ["trial", "prepare"]
 
 
 async def test_a_user_tenant_seats_the_person_alone(monkeypatch, hermes, repo):

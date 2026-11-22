@@ -83,6 +83,7 @@ valid to route). No collaborator exists yet for either.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Literal
 
@@ -282,6 +283,20 @@ class OrgWipeUnsupportedError(Exception):
         self.owner_id = owner_id
 
 
+class MalformedUserIdError(OrgWipeUnsupportedError):
+    """``owner_id`` is not a well-formed Clerk user id (``user_`` and alphanumerics): refused before any read
+    or delete, since every step deletes by this id or a prefix built from it. Callers map it as they map
+    ``OrgWipeUnsupportedError``."""
+
+    def __init__(self, owner_id: str):
+        Exception.__init__(self, f"Account wipe needs a Clerk user id: {owner_id!r} is not one.")
+        self.owner_id = owner_id
+
+
+#: A Clerk user id, in the engine's tenant-id style (``core.engine.api._TENANT_ID``).
+_USER_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
+
+
 @dataclass
 class WipeStep:
     system: str
@@ -383,6 +398,8 @@ async def _read_identifiers(owner_id: str, *, read_clerk: bool = True) -> _Ident
 def _refuse_org_owners(owner_id: str) -> None:
     if is_org_owner_id(owner_id):
         raise OrgWipeUnsupportedError(owner_id)
+    if not _USER_ID.fullmatch(owner_id or ""):
+        raise MalformedUserIdError(owner_id)
 
 
 async def _workspaces_of(user_id: str) -> list[str]:

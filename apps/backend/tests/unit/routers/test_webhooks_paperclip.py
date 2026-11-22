@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -910,3 +910,36 @@ async def test_user_deleted_redelivery_finishes_cleanup_after_the_row_is_gone(as
     assert first.status_code == 503 and "runtime" in first.text
     assert second.status_code == 200, second.text
     assert gone == [OWNER_ID, OWNER_ID]  # the row-less redelivery ran the cleanup again
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_id", ["user_", "user_a/b", "../x", "org_abc"])
+async def test_user_deleted_with_a_malformed_id_is_a_400_with_no_deletes(
+    async_client,
+    monkeypatch,
+    wipe_mocks,  # noqa: F811
+    user_id,
+):
+    _bypass_svix(monkeypatch)
+    metric = MagicMock()
+    monkeypatch.setattr("routers.webhooks.put_metric", metric)
+
+    resp = await _user_deleted(async_client, user_id)
+
+    assert resp.status_code == 400  # Svix does not retry a 4xx: no retry storm
+    metric.assert_any_call("clerk.webhook.user_deleted_wipe_failed")
+    wipe_mocks.user_get.assert_not_awaited()
+    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
+    wipe_mocks.user_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_deleted_counts_a_wipe_that_fails_before_its_steps(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    _bypass_svix(monkeypatch)
+    metric = MagicMock()
+    monkeypatch.setattr("routers.webhooks.put_metric", metric)
+    wipe_mocks.user_get.side_effect = RuntimeError("ddb down")
+
+    with pytest.raises(RuntimeError, match="ddb down"):  # the app error reaches the client: no 2xx to ack
+        await _user_deleted(async_client)
+    metric.assert_any_call("clerk.webhook.user_deleted_wipe_failed")

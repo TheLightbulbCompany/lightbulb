@@ -35,7 +35,7 @@ from core.services.workspace_wipe import (
 from tests.unit.services.test_account_wipe import EXPECTED_ORDER
 
 ORG_ID = "org_3JL4xJ1FSutobOuhukUl2091xw2"
-MEMBER_A = "user_member_a"
+MEMBER_A = "user_memberA"
 MEMBER_B = "user_member_b"
 
 

@@ -1462,3 +1462,22 @@ async def test_wipe_account_keeps_the_users_row_when_the_spark_cancel_fails(wipe
     (step,) = [s for s in report.steps if s.system == "user_row"]
     assert step.status == "failed" and "stripe down" in step.error
     wipe_mocks.user_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_id", ["", "user_", "user_a/b", "../x", "user_a b", ORG_ID])
+async def test_a_malformed_or_org_id_is_refused_before_any_read_or_delete(wipe_mocks, owner_id):
+    """Every step deletes by this id or a prefix built from it: anything but a Clerk user id is refused first."""
+    with pytest.raises(OrgWipeUnsupportedError):
+        await wipe_account(owner_id, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
+    wipe_mocks.user_get.assert_not_awaited()
+    wipe_mocks.container_get.assert_not_awaited()
+    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
+    wipe_mocks.user_delete.assert_not_awaited()
+    wipe_mocks.messaging_delete_owner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_well_formed_user_id_proceeds(wipe_mocks):
+    report = await wipe_account("user_2abcXYZ09", actor_admin_id="admin_1")
+    assert report.steps and report.owner_id == "user_2abcXYZ09"

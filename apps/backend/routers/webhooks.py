@@ -788,9 +788,16 @@ async def handle_clerk_webhook(request: Request):
         # their memory data and their Spark subscription (account_wipe). Orgs they belonged to are kept:
         # each org's organizationMembership.deleted removes them. Every step is idempotent and a no-op for a
         # person who never had a tenant; a failed step fails the event, so the redelivery retries the wipe.
-        from core.services.account_wipe import wipe_account
+        from core.services.account_wipe import OrgWipeUnsupportedError, wipe_account
 
-        report = await wipe_account(user_id, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
+        try:
+            report = await wipe_account(user_id, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
+        except OrgWipeUnsupportedError as exc:  # not a Clerk user id: a redelivery cannot fix it
+            put_metric("clerk.webhook.user_deleted_wipe_failed")
+            raise HTTPException(status_code=400, detail="Clerk user deletion target is not a user id") from exc
+        except Exception:  # before any step ran (a read failed): the redelivery retries it
+            put_metric("clerk.webhook.user_deleted_wipe_failed")
+            raise
         failed = [s.system for s in report.steps if s.status == "failed"]
         if failed:
             put_metric("clerk.webhook.user_deleted_wipe_failed")

@@ -135,7 +135,7 @@ async def _drain_pending_brief(owner_id: str) -> None:
 
 
 async def _seat_workspace_rooms(owner_id: str) -> None:
-    """Step 0 just made the workspace active: seat the person in ``#general``. Idempotent (a
+    """Step 0 just made the workspace active: seat the person (the owner is a person tenant) in ``#general``. Idempotent (a
     removed member is never re-seated: the AUTOJOIN marker stays). Never fails the provision."""
     from core.observability.metrics import put_metric
     from core.services.messaging import join_default_room

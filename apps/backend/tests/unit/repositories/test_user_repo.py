@@ -47,8 +47,7 @@ async def test_put_and_get(dynamodb_table):
 @pytest.mark.asyncio
 async def test_put_persists_email_when_supplied(dynamodb_table):
     """The Clerk user.created webhook supplies the primary email on put;
-    verifying it round-trips through DynamoDB so ``_lookup_owner_email``
-    (the Paperclip provisioning consumer) can read it back."""
+    verifying it round-trips through DynamoDB so owner-email lookups can read it back."""
     from core.repositories import user_repo
 
     result = await user_repo.put("user_email", email="owner@example.test")

@@ -530,8 +530,6 @@ app.include_router(support_tickets.router, prefix="/api/v1/support", tags=["supp
 # /api/v1/webhooks/metronome alongside the Clerk/Stripe webhook surface.
 app.include_router(metronome_webhook.router, prefix=settings.API_V1_STR, tags=["billing"])
 
-# Organization management (Gate A — invite-creation tenancy invariant)
-
 # Container lifecycle management (GET /status, POST /retry)
 app.include_router(container.router, prefix="/api/v1/container", tags=["container"])
 

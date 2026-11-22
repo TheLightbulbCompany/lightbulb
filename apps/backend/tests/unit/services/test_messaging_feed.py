@@ -300,29 +300,6 @@ def _cancelled():
 
 
 @pytest.mark.asyncio
-async def test_a_first_seat_between_revokes_room_list_and_stream_off_is_removed(workspace, monkeypatch):
-    """No marker is held for a user not yet seated: a seat landing after revoke listed the rooms
-    passes its own re-check (stream still on). Revoke's second pass removes it."""
-    await _general()
-    await repo.ensure_user_stream(OWNER, "user_C")
-    before = await repo.get_room(GENERAL)
-    real_list = repo.list_rooms_for_member
-    calls = {"n": 0}
-
-    async def seat_after_first_list(owner_id, kind, member_id):
-        rows = await real_list(owner_id, kind, member_id)
-        calls["n"] += 1
-        if calls["n"] == 1:
-            assert await messaging.join_default_room(OWNER, "user_C") is True  # lands in the window
-        return rows
-
-    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", seat_after_first_list)
-    await messaging.revoke_human_membership(OWNER, "user_C")
-    assert await repo.get_member(GENERAL, "human", "user_C") is None
-    assert (await repo.get_room(GENERAL))["deliveryKey"] != before["deliveryKey"]
-
-
-@pytest.mark.asyncio
 async def test_the_undo_retries_a_revision_race_and_still_unseats(workspace, monkeypatch):
     await _general()
     await repo.ensure_user_stream(OWNER, "user_C")
@@ -367,35 +344,6 @@ async def test_an_undo_that_cannot_remove_fails_loudly(workspace, monkeypatch):
 
 
 # ---- round 4: the GSI-backed list can miss a fresh seat -----
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("room", ["feed", "general"])
-async def test_revoke_removes_a_feed_or_general_seat_the_member_index_has_not_caught(workspace, monkeypatch, room):
-    """``list_rooms_for_member`` reads an eventually consistent GSI: a seat committed just before
-    stream-off may be missing from it. Revoke removes the feed and #general seats regardless."""
-    await _feed()
-    room_id = FEED
-    if room == "general":
-        room_id = messaging.default_room_id(OWNER)
-        owner = {"kind": "human", "id": "user_A", "role": "owner", "listenMode": None, "displayName": "A"}
-        await repo.create_room(
-            owner_id=OWNER,
-            room_id=room_id,
-            client_room_id="general",
-            creator_user_id="user_A",
-            name="general",
-            kind="channel",
-            members=[owner],
-            req_hash=repo.request_hash("general", "channel", [owner]),
-        )
-    await repo.ensure_user_stream(OWNER, "user_C")
-    assert await messaging._autojoin(OWNER, room_id, "user_C") is True
-    before = await repo.get_room(room_id)
-    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[]))
-    await messaging.revoke_human_membership(OWNER, "user_C")
-    assert await repo.get_member(room_id, "human", "user_C") is None
-    assert (await repo.get_room(room_id))["deliveryKey"] != before["deliveryKey"]
 
 
 # ---- Codex review on #4145: human top-level posts, the member cap, --why with --feed -----

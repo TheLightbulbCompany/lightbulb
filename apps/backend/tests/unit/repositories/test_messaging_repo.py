@@ -725,7 +725,7 @@ async def test_mark_unread_races_with_read_and_new_message_without_clearing_unre
 
 
 @pytest.mark.asyncio
-async def test_user_stream_is_stable_then_fresh_after_deactivation(table):
+async def test_user_stream_is_stable_and_stays_off_after_deactivation(table):
     first = await repo.ensure_user_stream(OWNER, USER_A)
     assert await repo.ensure_user_stream(OWNER, USER_A) == first
     reverse = await repo.get_stream(first)
@@ -734,12 +734,9 @@ async def test_user_stream_is_stable_then_fresh_after_deactivation(table):
     assert await repo.deactivate_user_stream(OWNER, USER_A) is False
     assert (await repo.get_stream(first))["active"] is False  # old channel goes permanently silent
     assert await repo.list_active_user_streams(OWNER) == []
-    # A removed member (stale JWT) never revives the stream; only a real rejoin does.
+    # A deactivated user (stale JWT) never revives the stream.
     assert await repo.ensure_user_stream(OWNER, USER_A) is None
     assert (await repo.get_user_stream(OWNER, USER_A))["active"] is False
-    second = await repo.ensure_user_stream(OWNER, USER_A, rejoin=True)
-    assert second != first and (await repo.get_stream(second))["active"] is True
-    assert (await repo.get_stream(first))["active"] is False
 
 
 @pytest.mark.asyncio

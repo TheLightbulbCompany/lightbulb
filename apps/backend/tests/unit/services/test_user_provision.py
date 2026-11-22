@@ -9,22 +9,21 @@ from core.services import user_provision
 
 
 @pytest.fixture(autouse=True)
-def _existing_billing_account():
-    with patch.object(
+def _existing_billing_account(monkeypatch):
+    # monkeypatch, as the tests' own overrides use: a `with patch` here exits before the earlier-created
+    # monkeypatch undoes those overrides, which would put this mock back on billing_repo for later modules.
+    monkeypatch.setattr(
         user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})
-    ):
-        yield
+    )
 
 
 @pytest.fixture(autouse=True)
-def _mock_create_trial_local_if_absent():
+def _mock_create_trial_local_if_absent(monkeypatch):
     """Stub the trial_local create so tests never touch real billing DDB. Tests that care
     about this call inspect/override the mock directly."""
-    with patch(
-        "core.services.user_provision.billing_repo.create_trial_local_if_absent",
-        new=AsyncMock(return_value=None),
-    ) as mock:
-        yield mock
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(user_provision.billing_repo, "create_trial_local_if_absent", mock)
+    return mock
 
 
 def _personal_auth(user_id: str = "user_123", email: str = "u@example.com", human_session=False) -> AuthContext:

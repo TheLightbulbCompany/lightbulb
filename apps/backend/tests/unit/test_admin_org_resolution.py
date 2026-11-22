@@ -267,7 +267,7 @@ async def test_resolve_owner_falls_back_to_personal_mode_on_clerk_timeout(caplog
         ),
         caplog.at_level(logging.WARNING, logger="core.services.admin_service"),
     ):
-        owner_id, org_context = await admin_service._resolve_owner_for_admin("user_slow")
+        owner_id, org_context = await admin_service._resolve_owner_for_admin("user_slow", mutating=False)
 
     assert owner_id == "user_slow"
     assert org_context is None

@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 _PARALLEL_TIMEOUT_S = 2.0
 
 
-async def resolve_admin_owner_id(user_id: str, *, mutating: bool = False) -> tuple[str, dict | None]:
+async def resolve_admin_owner_id(user_id: str, *, mutating: bool) -> tuple[str, dict | None]:
     """Return (owner_id, org_context) for a target user viewed by an admin.
 
     The DDB partition key ``owner_id`` is the Clerk org_id for org-member
@@ -162,7 +162,7 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
     # Clerk call with _PARALLEL_TIMEOUT_S and fails open to (user_id, None), so
     # a slow/down Clerk doesn't take the page down.
     resolutions = await asyncio.gather(
-        *(resolve_admin_owner_id(uid) for uid in user_ids),
+        *(resolve_admin_owner_id(uid, mutating=False) for uid in user_ids),
         return_exceptions=True,
     )
     owner_by_uid: dict[str, str] = {}
@@ -258,7 +258,7 @@ async def get_overview(user_id: str) -> dict:
     now = datetime.now(timezone.utc)
     period = f"{now.year}-{now.month:02d}"
 
-    owner_id, org_context = await resolve_admin_owner_id(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id, mutating=False)
 
     clerk, container, billing, usage = await asyncio.gather(
         _with_timeout(clerk_admin.get_user(user_id), "clerk"),
@@ -419,7 +419,7 @@ async def get_provisioning(user_id: str) -> dict:
     The ``paperclip``/``sfn_execution`` fields keep the raw sentinel on a failed
     read, same convention as ``container``.
     """
-    owner_id, org_context = await resolve_admin_owner_id(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id, mutating=False)
 
     container_raw = await _with_timeout(container_repo.get_by_owner_id(owner_id), "ddb_containers")
     container_read_failed = _read_failed(container_raw, label="ddb_containers")
@@ -466,7 +466,7 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     render an admin page. Those owners are answered from ``runtime_rpc.agentcore_agents_list``
     instead — the Paperclip roster the backend already owns.
     """
-    owner_id, org_context = await resolve_admin_owner_id(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id, mutating=False)
 
     container_row = await container_repo.get_by_owner_id(owner_id)
     if not container_row or container_row.get("status") != "running":
@@ -502,7 +502,7 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     Resolves org context first so org-keyed workspaces are found. ``org`` in the response is
     null for personal-mode users and {id, slug, name, role} otherwise.
     """
-    owner_id, org_context = await resolve_admin_owner_id(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id, mutating=False)
 
     container_row = await container_repo.get_by_owner_id(owner_id)
     if not container_row or container_row.get("status") != "running":

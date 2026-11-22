@@ -883,40 +883,46 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     # tree or access point left) -> delete the containers row (part of spec #11) -> reap the
     # owner's Bedrock footprint. One WipeStep stands in for spec
     # rows #3, #4, #5 and the containers-row slice of #11.
-    if ids.container is not None:
+    # Runs with or without a containers row, like the org wipe: the seam's row-independent cleanups
+    # (S3 profile prefix, browser state, Bedrock reap, workspace memory) are keyed by owner id alone and
+    # idempotent, and a re-run after a failure late in the seam finds the row already deleted. A missing
+    # row skips only what needs it (the runtime session and its row-named handles).
+    async def _s3() -> str:
+        try:  # end live voice calls before the ledger is archived; never abort the wipe
+            await wipe_owner_voice(owner_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("voice wipe failed owner=%s", owner_id, exc_info=True)
+        # M6-R42: this is one of exactly THREE terminal callers that pass
+        # ``delete_profiles=True`` -- this wipe (an admin's, or Clerk ``user.deleted``'s),
+        # ``workspace_wipe`` (org-keyed), and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
+        # empty-slate reset; debug is 403 in prod).
+        # Every other caller (entitlement_teardown on a lapsed card, debug's routine
+        # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
+        # auth.json. Do not re-broaden it.
+        report: dict = {}
+        row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True, report=report)
+        if ids.container is None and row_at_death is None:
+            hint = f" {_org_hint_for_missing_container(ids.workspaces)}" if ids.workspaces else ""
+            return (
+                "no containers row; owner-keyed cleanup done (S3 profiles, browser state, Bedrock footprint, "
+                f"workspace memory).{hint}"
+            )
+        detail = _runtime_detail(report)
+        # FINAL SWEEP — the last moment any gate-token hash is reachable.
+        # ``delete_workspace_runtime`` returns the row's own ALL_OLD image, so
+        # this covers exactly what step 2b could not see: a hash minted
+        # after its strongly-consistent re-read, and every hash at all if
+        # that step failed. Already-deleted hashes cost a free no-op
+        # DeleteItem and are reported as 0, so no bookkeeping is needed to
+        # tell the two apart. A failure here fails THIS step rather than
+        # passing silently — the residue is real and the wipe is retryable.
+        late_hashes = owner_gate_token_hashes(row_at_death)
+        swept = await delete_gate_token_rows(late_hashes) if late_hashes else 0
+        if swept:
+            detail += f" (+ swept {swept} gate-token row(s) still named on the row at delete time)"
+        return detail
 
-        async def _s3() -> str:
-            try:  # end live voice calls before the ledger is archived; never abort the wipe
-                await wipe_owner_voice(owner_id)
-            except Exception:  # noqa: BLE001
-                logger.warning("voice wipe failed owner=%s", owner_id, exc_info=True)
-            # M6-R42: this is one of exactly THREE terminal callers that pass
-            # ``delete_profiles=True`` -- this wipe (an admin's, or Clerk ``user.deleted``'s),
-            # ``workspace_wipe`` (org-keyed), and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
-            # empty-slate reset; debug is 403 in prod).
-            # Every other caller (entitlement_teardown on a lapsed card, debug's routine
-            # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
-            # auth.json. Do not re-broaden it.
-            report: dict = {}
-            row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True, report=report)
-            detail = _runtime_detail(report)
-            # FINAL SWEEP — the last moment any gate-token hash is reachable.
-            # ``delete_workspace_runtime`` returns the row's own ALL_OLD image, so
-            # this covers exactly what step 2b could not see: a hash minted
-            # after its strongly-consistent re-read, and every hash at all if
-            # that step failed. Already-deleted hashes cost a free no-op
-            # DeleteItem and are reported as 0, so no bookkeeping is needed to
-            # tell the two apart. A failure here fails THIS step rather than
-            # passing silently — the residue is real and the wipe is retryable.
-            late_hashes = owner_gate_token_hashes(row_at_death)
-            swept = await delete_gate_token_rows(late_hashes) if late_hashes else 0
-            if swept:
-                detail += f" (+ swept {swept} gate-token row(s) still named on the row at delete time)"
-            return detail
-
-        await _step(steps, system="runtime", action="delete_workspace_runtime", fn=_s3)
-    else:
-        _skip(steps, "runtime", "delete_workspace_runtime", _org_hint_for_missing_container(ids.workspaces))
+    await _step(steps, system="runtime", action="delete_workspace_runtime", fn=_s3)
 
     # --- Steps 5-6 (spec #6-7-8): Bedrock AIPs + owner role ----------------
     # Deliberately NOT separate steps any more. Both are reaped inside step 3's

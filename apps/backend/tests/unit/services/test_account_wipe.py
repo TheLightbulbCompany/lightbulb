@@ -601,14 +601,16 @@ async def test_skips_paperclip_user_steps_when_no_identity_row(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks):
+    """No containers row: the seam still runs for its owner-keyed cleanups (a re-run after a late failure
+    finds the row already gone); only the row-named handles have nothing to sweep."""
     wipe_mocks.container_get.return_value = None
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     by_system = {s.system: s for s in report.steps}
-    assert by_system["runtime"].status == "skipped"
-    # No containers row means the seam never runs, so nothing reaps the Bedrock
-    # footprint either — there is no row naming one.
+    assert by_system["runtime"].status == "ok"
+    assert by_system["runtime"].detail.startswith("no containers row; owner-keyed cleanup done")
+    assert ORG_ID in by_system["runtime"].detail  # the member is pointed at the workspace wipe
     assert "bedrock_aips" not in by_system
     assert "bedrock_role" not in by_system
     # The gate-token step always runs (it re-reads the row itself) but finds
@@ -616,9 +618,7 @@ async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks
     assert by_system["bedrock_gate_tokens"].status == "ok"
     assert by_system["bedrock_gate_tokens"].detail == "no bedrock-gate token hash on containers row"
     wipe_mocks.gate_tokens_delete.assert_not_awaited()
-    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
-    wipe_mocks.bedrock_aips_delete.assert_not_awaited()
-    wipe_mocks.bedrock_role_delete.assert_not_awaited()
+    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True, report={})
     # EFS workspace-dir delete is unconditional -- not gated on the containers row.
 
 

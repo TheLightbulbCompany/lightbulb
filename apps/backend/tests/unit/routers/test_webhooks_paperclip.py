@@ -447,7 +447,8 @@ async def test_user_deleted_without_a_tenant_is_a_clean_no_op(async_client, monk
     resp = await _user_deleted(async_client)
 
     assert resp.status_code == 200, resp.text
-    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
+    # The seam's owner-keyed cleanups still run (idempotent no-ops here); nothing row- or billing-named does.
+    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True, report={})
     wipe_mocks.stripe_delete.assert_not_awaited()
     wipe_mocks.user_delete.assert_not_awaited()
 
@@ -885,3 +886,27 @@ async def test_user_deleted_keeps_a_sign_in_bound_to_an_org(async_client, monkey
     assert resp.status_code == 200, resp.text
     wipe_mocks.oauth_revoke.assert_not_awaited()
     wipe_mocks.fast_gate_delete.assert_awaited_once_with(OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_user_deleted_redelivery_finishes_cleanup_after_the_row_is_gone(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    """The runtime seam deletes the containers row, then fails deleting the owner's memory: 503. The redelivery
+    finds no row and still runs the seam's owner-keyed cleanup (owner memory included), then acknowledges."""
+    _bypass_svix(monkeypatch)
+    gone = []
+
+    async def seam(owner_id, *, delete_profiles=False, report=None):
+        gone.append(owner_id)  # the row is deleted before the memory step
+        if len(gone) == 1:
+            raise RuntimeError("delete_owner_memory failed")
+        return None
+
+    wipe_mocks.delete_workspace_runtime.side_effect = seam
+    wipe_mocks.container_get.side_effect = lambda *a, **k: None if gone else {"owner_id": OWNER_ID}
+
+    first = await _user_deleted(async_client)
+    second = await _user_deleted(async_client)
+
+    assert first.status_code == 503 and "runtime" in first.text
+    assert second.status_code == 200, second.text
+    assert gone == [OWNER_ID, OWNER_ID]  # the row-less redelivery ran the cleanup again

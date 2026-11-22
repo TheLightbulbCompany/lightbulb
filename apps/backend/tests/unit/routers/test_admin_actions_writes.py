@@ -84,6 +84,12 @@ def non_admin_env(app):
 
 
 @pytest.fixture(autouse=True)
+def clerk_no_orgs(monkeypatch):
+    """Clerk answers that the target user is in no organization (the admin doors resolve the owner strictly)."""
+    monkeypatch.setattr("core.services.admin_service.clerk_admin.list_user_organizations", AsyncMock(return_value=[]))
+
+
+@pytest.fixture(autouse=True)
 def dedup_claims(monkeypatch):
     """Fake conditional claim backing @idempotency (core.services.webhook_dedup)
     for these tests -- the first call for a given key RECORDS, every repeat is

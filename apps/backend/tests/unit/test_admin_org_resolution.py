@@ -491,24 +491,55 @@ class TestAdminMutationOwnerResolution:
         mock_resolve.assert_not_awaited()
 
 
+def _clerk(answer):
+    """Clerk's HTTP layer: ``answer`` is the response, or the exception the request raises."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def client(*args, **kwargs):
+        get = AsyncMock(side_effect=answer) if isinstance(answer, BaseException) else AsyncMock(return_value=answer)
+        yield type("C", (), {"get": get})()
+
+    return patch("core.services.clerk_admin.httpx.AsyncClient", new=client)
+
+
+_DOORS = [
+    ("/api/v1/admin/users/user_123/container/reprovision", "routers.admin.dispatch_reconcile"),
+    ("/api/v1/admin/users/user_123/provisioning/retry", "routers.admin.dispatch_provision"),
+]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "path,dispatch",
-    [
-        ("/api/v1/admin/users/user_123/container/reprovision", "routers.admin.dispatch_reconcile"),
-        ("/api/v1/admin/users/user_123/provisioning/retry", "routers.admin.dispatch_provision"),
-    ],
-)
-async def test_mutating_admin_door_refuses_on_clerk_error(async_client, admin_env, path, dispatch):
-    """A Clerk error while resolving the owner for an admin action is a 503 and nothing is dispatched:
-    falling back to the member's own id would provision a stray tenant with no billing row."""
-    with (
-        patch(
-            "core.services.admin_service.clerk_admin.list_user_organizations",
-            new=AsyncMock(side_effect=RuntimeError("clerk down")),
-        ),
-        patch(dispatch, new_callable=AsyncMock) as dispatched,
-    ):
+@pytest.mark.parametrize("failure", ["http_500", "network", "timeout"])
+@pytest.mark.parametrize(("path", "dispatch"), _DOORS)
+async def test_mutating_admin_door_refuses_on_clerk_failure(
+    async_client, admin_env, monkeypatch, failure, path, dispatch
+):
+    """Any Clerk failure while resolving the owner for an admin action is a 503 and nothing is dispatched:
+    falling back to the member's own id would act on (or provision) a stray tenant instead of their org."""
+    import httpx
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    answer = {
+        "http_500": httpx.Response(500, json={"errors": []}),
+        "network": httpx.ConnectError("refused"),
+        "timeout": httpx.ReadTimeout("slow"),
+    }[failure]
+    clerk = _clerk(answer)
+    with clerk, patch(dispatch, new_callable=AsyncMock) as dispatched:
         res = await async_client.post(path)
-    assert res.status_code == 503
+    assert res.status_code == 503, res.text
     dispatched.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mutating_admin_door_acts_on_a_person_with_no_org(async_client, admin_env, monkeypatch):
+    """Clerk answering 200 with no memberships is a single-person account: the action targets the person."""
+    import httpx
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    clerk = _clerk(httpx.Response(200, json={"data": [], "total_count": 0}))
+    with clerk, patch("routers.admin.dispatch_reconcile", new_callable=AsyncMock) as dispatched:
+        res = await async_client.post("/api/v1/admin/users/user_123/container/reprovision")
+    assert res.status_code == 200, res.text
+    dispatched.assert_awaited_once_with("user_123")

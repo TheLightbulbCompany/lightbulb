@@ -85,7 +85,7 @@ async def resolve_admin_owner_id(user_id: str, *, mutating: bool) -> tuple[str, 
     # constant at call time so tests can monkeypatch _PARALLEL_TIMEOUT_S.
     try:
         orgs = await asyncio.wait_for(
-            clerk_admin.list_user_organizations(user_id),
+            clerk_admin.list_user_organizations(user_id, strict=mutating),
             timeout=_PARALLEL_TIMEOUT_S,
         )
     except Exception as e:  # noqa: BLE001 (incl. TimeoutError): Clerk must never take the dashboard down

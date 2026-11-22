@@ -1083,6 +1083,35 @@ async def test_person_draft_reads_a_public_site_and_refuses_a_private_one(ddb, c
     assert len(model) == 1
 
 
+async def test_person_draft_is_one_read_at_a_time_per_tenant(ddb, calls, jwks, monkeypatch):
+    """While a tenant's website read runs, a second for the same tenant is 409 `draft_in_progress` and fetches
+    nothing; another tenant's read is not held up, and the tenant reads again once the first ends."""
+    fake(monkeypatch, calls, "core.voice.phone.voice_onboarding.draft", {"read": True})
+    person, other = Tenant("user_solo", None), Tenant("user_other", None)
+    token = await container_repo.try_claim_owner_lifecycle(f"voice-draft#{person.user_id}", stale_s=120)
+    calls.clear()
+    r = await call(person, "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "draft_in_progress"
+    assert not [c for c in calls if c[0] == "fake"]
+    assert (await ok(other, "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}))["draft"]
+    await container_repo.release_owner_lifecycle_claim(f"voice-draft#{person.user_id}", token=token)
+    assert (await ok(person, "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}))["draft"]
+
+
+async def test_person_who_opens_checkout_and_never_pays_keeps_the_free_trial(ddb, calls, jwks, monkeypatch):
+    """A person whose first billing action is the voice-plan checkout gets the tenant's trial row (unarmed) with the
+    Stripe customer joined to it; with no webhook (they never pay) it stays the free trial."""
+    await seed_billing(Tenant("user_a", None), Tenant("user_b", None), monkeypatch, calls)  # the plan is sold
+    person = Tenant("user_solo", None)
+    plan = fill(VOICE_PLAN, {"b_tenant": person.user_id})
+    for _ in range(2):
+        assert (await ok(person, "POST", "/api/v1/billing/voice-plan/checkout", plan))["status"] == "checkout"
+    row = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
+    assert row["subscription_status"] == "trial_local" and "trial_end" not in row and row["stripe_customer_id"]
+    assert row["owner_type"] == "personal"
+    assert (await ok(person, "GET", "/api/v1/billing/voice-plan"))["status"] == "not_enrolled"
+
+
 def _voice_sub(sub_id: str, customer: str, owner: str, **extra) -> dict:
     return {
         "id": sub_id, "object": "subscription", "customer": customer, "status": "active",
@@ -1139,6 +1168,7 @@ async def test_person_buys_goes_live_and_cancels_their_own_voice_plan_and_spark_
     assert customer["metadata[workspace_id]"] == person.user_id
     (session,) = _stripe_posts(calls, "/v1/checkout/sessions")
     account = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
+    assert account["subscription_status"] == "trial_local" and "trial_end" not in account  # the trial, unarmed
     voice_customer = account["stripe_customer_id"]
     assert voice_customer != "cus_spark" and session["customer"] == voice_customer
     assert session["metadata[workspace_id]"] == person.user_id and session["metadata[purpose]"] == "voice_plan"
@@ -1164,6 +1194,7 @@ async def test_person_buys_goes_live_and_cancels_their_own_voice_plan_and_spark_
     event = {"id": "evt_voice", "type": "customer.subscription.created", "data": {"object": subs["sub_voice"]}}
     await _webhook(event, monkeypatch)
     assert (await ok(person, "GET", "/api/v1/billing/voice-plan"))["status"] == "active" and spark_row() == spark
+    assert (await billing_repo.get_by_owner_id(person.user_id))["subscription_status"] == "trial_local"
 
     paid_row = billing_repo.get_by_owner_id
     _buying(monkeypatch, True)

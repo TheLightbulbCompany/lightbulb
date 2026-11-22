@@ -31,7 +31,7 @@ from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in
 from core.billing import voice_billing, voice_plan
 from core.engine import engine
 from core.engine.contract import ConversationOut
-from core.repositories import billing_repo
+from core.repositories import billing_repo, container_repo
 from core.services import agent_registry
 from core.voice import store
 from core.voice.phone import phone_pin, voice_onboarding, voice_outbound, voice_preferences
@@ -330,8 +330,16 @@ class DraftIn(BaseModel):
 
 @router.post("/voice/onboarding/draft")
 async def onboarding_draft(body: DraftIn, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """One website read in flight per tenant: a second while the first runs is 409 `draft_in_progress`."""
     require_org_admin(auth)
-    return {"draft": await voice_onboarding.draft(body.website, body.business, body.city)}
+    lease = f"voice-draft#{resolve_owner_id(auth)}"
+    token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=120)  # 4 pages at 5 s + a 45 s model read
+    if not token:
+        raise HTTPException(status_code=409, detail={"code": "draft_in_progress"})
+    try:
+        return {"draft": await voice_onboarding.draft(body.website, body.business, body.city)}
+    finally:
+        await container_repo.release_owner_lifecycle_claim(lease, token=token)
 
 
 class NumberIn(BaseModel):

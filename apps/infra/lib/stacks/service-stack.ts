@@ -1683,11 +1683,6 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
-      // Per-member seat Price (T04), same live/test split. Empty fails closed.
-      STRIPE_SEAT_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_SEAT_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_SEAT_PRICE_ID_DEV ?? ""),
       // Front desk add-on Price, same live/test split. Empty fails closed.
       STRIPE_FRONT_DESK_PRICE_ID:
         env === "prod"

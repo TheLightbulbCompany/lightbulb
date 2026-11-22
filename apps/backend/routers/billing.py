@@ -23,7 +23,7 @@ from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.repositories.workspace_repo import customer_ops_agent_id
 from core.services import apple_iap, billing_service, openrouter_keys, os_billing, photon, text_lines, trial_cap
-from core.services.billing_service import SEATS_INCLUDED, BillingService
+from core.services.billing_service import BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
@@ -232,10 +232,8 @@ async def get_billing_account(
         workspace_price_usd=settings.WORKSPACE_PRICE_USD,
         base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,
-        seat_price_usd=settings.SEAT_PRICE_USD,
         front_desk=bool(account.get("front_desk")) if account else False,
         front_desk_price_usd=_front_desk_price_usd(),
-        included_members=SEATS_INCLUDED,
         managed_markup=settings.OPENROUTER_MARKUP or None,
         subscription_source=(account.get("subscription_source") if account else None),
         apple_iap_product_ids=list(apple_iap.SELLING_PRODUCTS) if settings.APPLE_IAP_SELLING else [],

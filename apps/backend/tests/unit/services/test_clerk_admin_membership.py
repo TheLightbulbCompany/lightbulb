@@ -1,4 +1,4 @@
-"""clerk_admin.create_organization_membership — the join link's Clerk call.
+"""clerk_admin.create_organization_membership — an outsider's Allow on a shared session.
 
 The behaviour worth pinning is the already-a-member branch: Clerk answers a
 duplicate membership with a 4xx, and the join flow has to read that as success

@@ -70,7 +70,6 @@ export type AnalyticsEvent =
   | "task_steer_sent"
   | "task_stopped"
   // Growth: the door into a workspace and the sharing surface (2026-09-30)
-  | "join_link_copied"
   | "session_opened"
   | "share_link_full_viewed"
   | "join_link_viewed"
@@ -277,7 +276,7 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
 // The product app, not the site. Every other path (/, /pricing, /request-setup, /docs, /blog,
 // comparison and legal pages, the [seoSlug] pages) is a marketing route for landing_viewed.
 const APP_ROUTE_PREFIXES = [
-  "/voice", "/chat", "/settings", "/onboarding", "/sign-in", "/sign-up", "/admin", "/join", "/welcome",
+  "/voice", "/chat", "/settings", "/onboarding", "/sign-in", "/sign-up", "/admin", "/welcome",
   "/auth", "/oauth", "/checkout_redirect", "/meet-bot", "/api",
 ];
 
@@ -287,31 +286,26 @@ export function isMarketingRoute(pathname: string | null | undefined): boolean {
   return !APP_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
-/** Routes whose DOM is a customer's conversation (/chat, /s) or names people and carries an
- *  invitation credential (/join/*): never recorded, never autocaptured. */
+/** Routes whose DOM is a customer's conversation (/chat, /s): never recorded, never autocaptured. */
 export function isPrivateRoute(pathname: string | null | undefined): boolean {
-  return pathname === "/chat" || pathname === "/s" || pathname === "/join" || !!pathname?.startsWith("/join/");
+  return pathname === "/chat" || pathname === "/s";
 }
 
 // /chat deep links can carry file paths in `?path=`, and /s carries a session
 // link's token in its fragment (a read credential) and the CLI's loopback port.
-// /join/{org}#token carries a join-link credential in its fragment, and
-// /join/invite carries Clerk's invitation ticket plus the inviter's and the
-// workspace's names. The route is enough for analytics; keep the query string
-// and fragment out of pageviews, replay URLs and SDK defaults.
-const JOIN_ROUTE = /^\/join(\/|$)/;
-// Clerk forwards its invitation ticket to /sign-up and /sign-in (and the invite
-// page passes it on): drop those params anywhere, keep the rest (UTM).
-// redirect_url: the invite page points it at the approval card the invitation carries
-// (/chat?panel=teams-approval-detail&detailId=…), which is the workspace's private id.
-const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "inviter", "workspace", "decision", "approval", "redirect_url"];
+// The route is enough for analytics; keep the query string and fragment out of
+// pageviews, replay URLs and SDK defaults.
+// Clerk forwards its sign-in ticket to /sign-up and /sign-in: drop those params
+// anywhere, keep the rest (UTM). redirect_url can be a private deep link
+// (/chat?panel=…&detailId=…), so it goes too.
+const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "redirect_url"];
 
 export function withoutChatQuery(value: string): string {
   try {
     const url = new URL(value, "https://thelightbulb.company");
     // /j carries a join ticket in its fragment: keep the route and query, drop the fragment.
     if (url.pathname === "/j") return value.split("#", 1)[0];
-    if (isPrivateRoute(url.pathname) || JOIN_ROUTE.test(url.pathname)) return value.split(/[?#]/, 1)[0];
+    if (isPrivateRoute(url.pathname)) return value.split(/[?#]/, 1)[0];
     if (!SECRET_PARAMS.some((key) => url.searchParams.has(key))) return value;
     for (const key of SECRET_PARAMS) url.searchParams.delete(key);
     const absolute = /^[a-z]+:\/\//i.test(value);

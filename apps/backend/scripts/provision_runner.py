@@ -135,29 +135,15 @@ async def _drain_pending_brief(owner_id: str) -> None:
 
 
 async def _seat_workspace_rooms(owner_id: str) -> None:
-    """Step 0 just made the workspace active: seat every current teammate in ``#general`` (the
-    person alone for a user tenant). An org member who joined before the room existed was missed by
-    the ``organizationMembership.created`` webhook's seat. Idempotent (a removed member is never
-    re-seated: the AUTOJOIN marker stays). Never fails the provision."""
-    from core.auth import is_org_owner_id
+    """Step 0 just made the workspace active: seat the person in ``#general``. Idempotent (a
+    removed member is never re-seated: the AUTOJOIN marker stays). Never fails the provision."""
     from core.observability.metrics import put_metric
-    from core.services.clerk_admin import list_organization_members
     from core.services.messaging import join_default_room
 
     try:
-        people = (
-            [m["user_id"] for m in await list_organization_members(owner_id)]
-            if is_org_owner_id(owner_id)
-            else [owner_id]
-        )
-        for user_id in people:
-            try:
-                await join_default_room(owner_id, user_id)
-            except Exception:  # noqa: BLE001
-                logger.exception("provision: default room join failed for owner %s user %s", owner_id, user_id)
-                put_metric("messaging.default_room.error")
-    except Exception:  # noqa: BLE001 — a roster read failure never fails the provision
-        logger.exception("provision: teammate roster read failed for owner %s", owner_id)
+        await join_default_room(owner_id, owner_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("provision: default room join failed for owner %s", owner_id)
         put_metric("messaging.default_room.error")
 
 

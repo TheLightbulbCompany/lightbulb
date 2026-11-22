@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import enum
 import functools
-import hashlib
 import logging
 import os
 import time
@@ -62,24 +61,8 @@ class WebhookProcessingInProgress(RuntimeError):
     """Another live worker owns this event's retryable processing lease."""
 
 
-class MembershipLifecycleInProgress(RuntimeError):
-    """An older membership event still owns this member's lifecycle lease."""
-
-
-class MembershipLifecycleSuperseded(RuntimeError):
-    """This worker no longer owns the member lifecycle it was processing."""
-
-
 class TopUpIntentConflict(RuntimeError):
     """A caller reused a top-up idempotency token with different money inputs."""
-
-
-def membership_lifecycle_key(owner_id: str, alias: str) -> str:
-    """Stable central key for one org/member lifecycle, independent of containers."""
-    if not isinstance(owner_id, str) or not owner_id or not isinstance(alias, str) or not alias:
-        raise ValueError("membership lifecycle identity is required")
-    digest = hashlib.sha256(f"{owner_id}\0{alias}".encode()).hexdigest()
-    return f"human-membership:{digest}"
 
 
 def _table():
@@ -403,142 +386,6 @@ async def complete_event_processing(event_id: str, claim_id: str) -> None:
     if item.get("state") == "completed":
         return
     raise RuntimeError(f"webhook event {event_id} processing lease was lost")
-
-
-async def begin_membership_lifecycle(
-    owner_id: str,
-    alias: str,
-    *,
-    event_id: str,
-    sequence: str,
-    access_state: str,
-    lease_seconds: int = 300,
-) -> str | None:
-    """Serialize one member's signed create/delete events in provider order.
-
-    The completed row intentionally has no TTL: it is the membership authority
-    even before an owner container exists. A newer event waits while an older
-    event owns the lease, then advances the durable epoch after that event
-    completes (or after its bounded lease expires following a worker crash).
-    """
-    if not isinstance(event_id, str) or not event_id or not isinstance(sequence, str) or not sequence:
-        raise ValueError("complete membership lifecycle epoch is required")
-    if access_state not in {"allowed", "revoked"}:
-        raise ValueError("invalid membership lifecycle state")
-    if lease_seconds < 1:
-        raise ValueError("lease_seconds must be positive")
-
-    key = membership_lifecycle_key(owner_id, alias)
-    now = int(time.time())
-    claim_id = str(uuid.uuid4())
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"event_id": key},
-            UpdateExpression=(
-                "SET #kind = :kind, lifecycle_event_id = :event, #sequence = :sequence, "
-                "access_state = :access, lifecycle_status = :processing, claim_id = :claim, "
-                "lease_until = :lease, recorded_at = if_not_exists(recorded_at, :now), updated_at = :now "
-                "REMOVE completed_at, #ttl"
-            ),
-            ConditionExpression=(
-                "attribute_not_exists(event_id) OR "
-                "(lifecycle_status = :processing AND lifecycle_event_id = :event "
-                "AND #sequence = :sequence AND lease_until < :lease_now) OR "
-                "((attribute_not_exists(claim_id) OR lease_until < :lease_now) AND #sequence < :sequence)"
-            ),
-            ExpressionAttributeNames={"#kind": "kind", "#sequence": "sequence", "#ttl": "ttl"},
-            ExpressionAttributeValues={
-                ":kind": "human-membership",
-                ":event": event_id,
-                ":sequence": sequence,
-                ":access": access_state,
-                ":processing": "processing",
-                ":claim": claim_id,
-                ":lease": now + lease_seconds,
-                ":lease_now": now + 1,
-                ":now": now,
-            },
-        )
-        return claim_id
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-    item = await _read_event(key)
-    stored_sequence = item.get("sequence")
-    if isinstance(stored_sequence, str) and stored_sequence > sequence:
-        return None
-    if stored_sequence == sequence and item.get("lifecycle_event_id") == event_id:
-        if item.get("lifecycle_status") == "completed":
-            return None
-        raise MembershipLifecycleInProgress(f"membership event {event_id} is already processing")
-    if isinstance(stored_sequence, str) and stored_sequence == sequence:
-        return None
-    raise MembershipLifecycleInProgress(f"an older membership event for {owner_id} is still processing")
-
-
-async def renew_membership_lifecycle(
-    owner_id: str,
-    alias: str,
-    claim_id: str,
-    *,
-    lease_seconds: int = 300,
-) -> None:
-    """Refresh the lifecycle lease, failing closed after takeover/supersession."""
-    if lease_seconds < 1:
-        raise ValueError("lease_seconds must be positive")
-    now = int(time.time())
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"event_id": membership_lifecycle_key(owner_id, alias)},
-            UpdateExpression="SET lease_until = :lease, updated_at = :now",
-            ConditionExpression="lifecycle_status = :processing AND claim_id = :claim",
-            ExpressionAttributeValues={
-                ":processing": "processing",
-                ":claim": claim_id,
-                ":lease": now + lease_seconds,
-                ":now": now,
-            },
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        raise MembershipLifecycleSuperseded("membership lifecycle lease was lost") from exc
-
-
-async def membership_revocation_current(owner_id: str, alias: str, event_id: str) -> bool:
-    """True while this delete event is still the member's latest lifecycle epoch (processing
-    or completed). A later create -- a re-add -- replaces the epoch, and this turns False."""
-    item = await _read_event(membership_lifecycle_key(owner_id, alias))
-    return item.get("lifecycle_event_id") == event_id and item.get("access_state") == "revoked"
-
-
-async def complete_membership_lifecycle(owner_id: str, alias: str, claim_id: str) -> None:
-    """Publish the permanent access epoch only while this worker owns it."""
-    now = int(time.time())
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"event_id": membership_lifecycle_key(owner_id, alias)},
-            UpdateExpression=(
-                "SET lifecycle_status = :completed, completed_at = :now, updated_at = :now "
-                "REMOVE claim_id, lease_until, #ttl"
-            ),
-            ConditionExpression="lifecycle_status = :processing AND claim_id = :claim",
-            ExpressionAttributeNames={"#ttl": "ttl"},
-            ExpressionAttributeValues={
-                ":completed": "completed",
-                ":processing": "processing",
-                ":claim": claim_id,
-                ":now": now,
-            },
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        raise MembershipLifecycleSuperseded("membership lifecycle lease was lost") from exc
 
 
 async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int | None = None) -> WebhookDedupResult:

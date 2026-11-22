@@ -28,7 +28,7 @@ usage counters), ``paperclip`` (the workspace row + deleted members'
 identity rows + pending briefs, old agent-key secrets), ``messaging``
 (room partitions + owner partition), ``secrets`` (owner secrets, OpenRouter
 key, integrations, OAuth tokens, agent email, slack installs), ``identity``
-(per-member users rows, slug, join link, per-member Clerk users, Clerk org —
+(per-member users rows, slug, per-member Clerk users, Clerk org —
 ALWAYS LAST), ``billing`` (Metronome + fast-gate row, Stripe customer +
 company-stripe deauthorize, billing row).
 
@@ -98,7 +98,6 @@ from core.repositories import (
     slack_installs_repo,
     usage_repo,
     user_repo,
-    workspace_join_repo,
 )
 from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import clerk_admin, company_stripe, connection_service
@@ -225,7 +224,6 @@ class WorkspaceSnapshot:
     slack_rows: list[dict]
     slug_row: dict | None
     gate_hashes: list[str]
-    join_link: dict | None = None
     openrouter_row: dict | None = None
     # The options this snapshot was taken FOR — part of the fingerprint, so a
     # preview binds exactly what executes.
@@ -319,7 +317,6 @@ async def _read_workspace_snapshot(
         slack_rows=slack_rows,
         slug_row=slug_row,
         gate_hashes=owner_gate_token_hashes(container),
-        join_link=await workspace_join_repo.get_link(org_id),
         openrouter_row=await openrouter_key_repo.get(org_id),
         layers=layers,
         include_billing=include_billing,
@@ -353,7 +350,6 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
         "slack_teams": sorted(r.get("team_id", "?") for r in snapshot.slack_rows),
         "slug": (snapshot.slug_row or {}).get("slug", ""),
         "gate_hash_count": len(snapshot.gate_hashes),
-        "join_link": snapshot.join_link is not None,
         "openrouter_state": (snapshot.openrouter_row or {}).get("state", ""),
         "layers": sorted(snapshot.layers),
         "include_billing": snapshot.include_billing,
@@ -684,11 +680,6 @@ def _openrouter_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
     return True, f"managed OpenRouter key (state={snap.openrouter_row.get('state')}): retire, then row + secret"
 
 
-async def _join_link_run(snap: WorkspaceSnapshot) -> str:
-    await workspace_join_repo.delete_link(snap.org_id)
-    return "workspace join link deleted"
-
-
 def member_plan(snap: WorkspaceSnapshot) -> list[dict]:
     """Per person: delete the account, or remove only this org's membership."""
     deletable = set(deletable_member_ids(snap))
@@ -850,13 +841,6 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
         _slack_run,
     ),
     WorkspaceStepDef("company_slug", "delete_for_owner", LAYER_IDENTITY, _slug_preview, _slug_run),
-    WorkspaceStepDef(
-        "workspace_join_link",
-        "delete_link",
-        LAYER_IDENTITY,
-        lambda snap: (True, "workspace join link") if snap.join_link else (False, "no workspace join link"),
-        _join_link_run,
-    ),
     WorkspaceStepDef("clerk_user", "delete_user", LAYER_IDENTITY, _clerk_users_preview, _clerk_users_run),
     WorkspaceStepDef(
         "clerk_org",
@@ -1109,8 +1093,7 @@ async def wipe_own_workspace(org_id: str, *, user_id: str) -> WorkspaceWipeRepor
     ``SelfServeBlockedError`` when only a leftover row names someone else (a
     retry cannot clear that). Both raise before anything is deleted.
 
-    Then the join link goes FIRST, so nobody can join between the snapshot
-    and the teardown, and the full wipe runs: every layer, billing armed
+    Then the full wipe runs: every layer, billing armed
     (``delete_stripe_customer`` cancels the subscription before deleting the
     customer), the caller's account deleted even if they are in other orgs.
     Every ``wipe_workspace`` guard still applies (vendor org, fingerprint).
@@ -1126,7 +1109,6 @@ async def wipe_own_workspace(org_id: str, *, user_id: str) -> WorkspaceWipeRepor
             "This workspace still has records for people who are no longer members, so it can't be "
             f"deleted in-app. Retrying won't fix this — contact {settings.EMAIL_SUPPORT_ADDRESS}."
         )
-    await workspace_join_repo.delete_link(org_id)
     preview = await preview_workspace_wipe(org_id, **options)
     return await wipe_workspace(
         org_id,

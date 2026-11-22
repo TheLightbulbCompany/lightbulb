@@ -56,7 +56,6 @@ from routers import (
     metronome_webhook,
     oauth,
     ops,
-    orgs,
     os as os_router,
     os_billing as os_billing_router,
     photon_inbound,
@@ -532,7 +531,6 @@ app.include_router(support_tickets.router, prefix="/api/v1/support", tags=["supp
 app.include_router(metronome_webhook.router, prefix=settings.API_V1_STR, tags=["billing"])
 
 # Organization management (Gate A — invite-creation tenancy invariant)
-app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])
 
 # Container lifecycle management (GET /status, POST /retry)
 app.include_router(container.router, prefix="/api/v1/container", tags=["container"])

@@ -129,8 +129,7 @@ function PostHogInit() {
       person_profiles: "identified_only",
       capture_pageview: false,
       capture_pageleave: true,
-      // ON everywhere EXCEPT /chat, /s (a session link's transcript) and /join/* (an invitation
-      // names the inviter and the workspace on the page, and carries a credential in the URL).
+      // ON everywhere EXCEPT /chat and /s (a session link's transcript).
       //
       // The hand-instrumented events in @/lib/analytics cover the funnel we
       // knew to measure. Launch is the case they cannot cover: you cannot
@@ -155,7 +154,7 @@ function PostHogInit() {
       //
       // Heatmaps are a separate subsystem (`capture_heatmaps`), unaffected.
       autocapture: {
-        url_ignorelist: [/\/chat/, /^[a-z]+:\/\/[^/]+\/s(?:[?#]|$)/, /^[a-z]+:\/\/[^/]+\/join(?:[/?#]|$)/],
+        url_ignorelist: [/\/chat/, /^[a-z]+:\/\/[^/]+\/s(?:[?#]|$)/],
       },
       // CEO observability: keep session replay, but sample it instead of
       // recording every session. rrweb installs a document-wide

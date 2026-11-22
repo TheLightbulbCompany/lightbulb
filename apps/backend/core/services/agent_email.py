@@ -144,14 +144,17 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
     (``send_to_anyone``) unless the owner still has legacy per-agent rows: then
     it is born with the strictest of their settings, so closed email or a
     complaint pause never reopens. An existing row is never rewritten, so the
-    owner's settings survive. Never raises. A person's tenant (``user_``) has no
-    team address yet: "disabled", and no company slug is allocated.
+    owner's settings survive. Never raises. A person's tenant (``user_``) gets its
+    address only from the slug they claim themselves (``POST /company/slug/claim``):
+    with no claimed slug this answers "disabled" and allocates nothing.
     """
     try:
-        if not _domain() or not is_org_owner_id(owner_id):
+        if not _domain():
             return None, "disabled"
         address = await team_address(owner_id)
         if not address:
+            if not is_org_owner_id(owner_id):
+                return None, "disabled"
             slug = await allocate_company_slug(owner_id=owner_id, name=await workspace_name(owner_id))
             if not slug:
                 return None, "slug_allocation_failed"

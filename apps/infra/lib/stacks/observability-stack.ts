@@ -2323,6 +2323,20 @@ def handler(event, context):
       severity: "warn",
     });
 
+    // W90: a Clerk user.deleted whose tenant wipe failed a step. The webhook answers 503 so Svix
+    // redelivers, but once Svix gives up a failed Stripe step leaves a held-back billing row and a
+    // live subscription that nothing else reports (routers/webhooks.py).
+    this.createAlarm({
+      id: "W90",
+      name: "user-deleted-wipe-failed",
+      description: "A deleted person's tenant wipe failed a step (Svix redelivers; a live subscription may remain)",
+      metricName: "clerk.webhook.user_deleted_wipe_failed",
+      periodMinutes: 5,
+      threshold: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
+    });
+
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.
     // A Cost Anomaly Detection monitor is an ACCOUNT-GLOBAL resource; a
     // per-environment stack (dev + prod both deploy this stack) cannot own

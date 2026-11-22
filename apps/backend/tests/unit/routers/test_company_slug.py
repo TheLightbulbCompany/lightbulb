@@ -62,11 +62,22 @@ def test_claim_hands_the_hold_to_the_callers_new_workspace(monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_new", org_id="org_new")
     try:
         claim = AsyncMock(return_value=True)
+        named = AsyncMock()
         monkeypatch.setattr(mod.company_slug_repo, "claim", claim)
+        monkeypatch.setattr(mod.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
+        monkeypatch.setattr(mod.WorkspaceRepo, "set_name", named)
         c = TestClient(app)
-        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club"}).status_code == 200
+        body = {"slug": "bench-club", "name": " Bench Club "}
+        assert c.post("/api/v1/company/slug/claim", json=body).status_code == 200
         claim.assert_awaited_once_with(slug="bench-club", user_id="user_new", owner_id="org_new")
+        named.assert_awaited_once_with("org_new", "Bench Club")
         claim.return_value = False
-        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club"}).status_code == 409
+        assert c.post("/api/v1/company/slug/claim", json=body).status_code == 409
+        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club", "name": " "}).status_code == 422
+        # The org page sends the slug alone: still claimed, and no name is written.
+        named.reset_mock()
+        claim.return_value = True
+        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club"}).status_code == 200
+        named.assert_not_awaited()
     finally:
         app.dependency_overrides.clear()

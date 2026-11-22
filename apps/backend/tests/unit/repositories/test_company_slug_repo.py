@@ -202,3 +202,15 @@ async def test_get_by_owner_returns_the_oldest_of_two_rows(slug_table, order):
         slug_table.put_item(Item={"slug": slug, "owner_id": "org_1", "created_at": stamps[slug]})
     for _ in range(3):
         assert (await company_slug_repo.get_by_owner("org_1"))["slug"] == "zeta"
+
+
+@pytest.mark.asyncio
+async def test_delete_for_owner_releases_every_slug_row_of_the_owner(slug_table):
+    from core.repositories import company_slug_repo
+
+    for slug in ("acme", "acme-two"):
+        assert await company_slug_repo.reserve(slug=slug, owner_id="user_1") is True
+    assert await company_slug_repo.reserve(slug="other", owner_id="user_2") is True
+    assert await company_slug_repo.delete_for_owner("user_1") in ("acme", "acme-two")
+    assert await company_slug_repo.get_by_owner("user_1") is None
+    assert (await company_slug_repo.get_by_slug("other"))["owner_id"] == "user_2"

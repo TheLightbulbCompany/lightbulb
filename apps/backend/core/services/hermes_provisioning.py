@@ -610,7 +610,8 @@ async def delete_workspace_runtime(
     past-due subscription) and ``routers/debug.py``'s ``DELETE /debug/provision`` (a
     routine reprovision) -- and passing ``True`` from those destroyed a migrated owner's
     memory / skills / SOUL.md / auth.json. Exactly THREE terminal callers pass ``True``:
-    ``account_wipe`` (user-keyed), ``workspace_wipe`` (org-keyed), and
+    ``account_wipe`` (user-keyed: the admin wipe and the Clerk ``user.deleted`` webhook),
+    ``workspace_wipe`` (org-keyed), and
     ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
     empty-slate reset; debug is 403 in prod). Do not re-broaden it.
 

@@ -1921,3 +1921,27 @@ async def test_changed_occurrence_of_an_unknown_series_is_booked_standalone(room
         "org_1", f"{UID}#{_epoch(2026, 10, 10, 15, 0)}"
     )
     bots.create.assert_awaited_once()
+
+
+PERSON_TEAM = {**TEAM, "owner_id": "user_a", "address": "agents@alice.thelightbulb.company"}
+
+
+async def test_invite_from_stranger_makes_no_bot(room, monkeypatch):
+    """Person B's invite to person A's address: B is not A's tenant's person, so no room and no bot (the CEO
+    reads it as mail). A's own invite, from A's primary email, is a meeting."""
+    monkeypatch.setattr(
+        meeting_invites.clerk_admin,
+        "get_primary_email",
+        AsyncMock(side_effect=lambda u: {"user_a": "a@alice.example"}[u]),
+    )
+    out = await meeting_invites.handle_team_mail(
+        "user_a", _mail(GOOGLE, sender="b@bob.example"), PERSON_TEAM, verified_sender_user_id="user_b"
+    )
+    assert out is None
+    room.create.assert_not_awaited()
+    room.sync.assert_not_awaited()
+    room.members.assert_not_awaited()  # a person's tenant reads no org roster
+    assert await meeting_invites.handle_team_mail(
+        "user_a", _mail(GOOGLE, sender="A <A@alice.example>"), PERSON_TEAM
+    ) == ("meeting_scheduled")
+    assert room.create.await_args.kwargs["creator_user_id"] == "user_a"

@@ -1,4 +1,7 @@
-"""The shared agent address routes by authenticated membership, never a founder alias."""
+"""The shared agent address routes by the authenticated sender: their own tenant once they have claimed a team
+address, else their one org membership; never a founder alias.
+
+Rule before: shared mail went to the sender's one org. Rule after: to the sender's own tenant when they have one."""
 
 from unittest.mock import AsyncMock
 
@@ -17,6 +20,7 @@ def shared(monkeypatch):
     fixtures._dedup_recorded(monkeypatch)
     monkeypatch.setattr(inbound.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
     monkeypatch.setattr(inbound, "is_team_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(inbound, "team_address", AsyncMock(return_value=None))  # no person has claimed an address
     lookup = AsyncMock(
         return_value={
             "id": "user_sender",
@@ -187,3 +191,30 @@ def test_first_shared_sender_cannot_self_authorize_a_closed_legacy_mailbox(clien
     assert response.json()["status"] == "stored_not_woken"
     assert state["verified_senders"] == ["owner@business.example"]
     deliver.assert_not_awaited()
+
+
+def test_shared_address_routes_to_sender_tenant(client, shared, monkeypatch):
+    """A person who claimed a team address gets the shared mail they send in their own tenant; no org is read."""
+    _, orgs, handler = shared
+    own = {"user_a": "agents@alice.thelightbulb.company", "user_sender": "agents@bob.thelightbulb.company"}
+    monkeypatch.setattr(inbound, "team_address", AsyncMock(side_effect=own.get))
+    inbound.ensure_team_address.return_value = (own["user_sender"], "ok")
+    inbound.get_by_address.return_value = {**fixtures._row(address=own["user_sender"]), "owner_id": "user_sender"}
+    assert fixtures._post(client, payload()).json()["status"] == "meeting_scheduled"
+    inbound.ensure_team_address.assert_awaited_once_with("user_sender", None)
+    assert handler.await_args.args[0] == "user_sender"
+    assert handler.await_args.kwargs == {"verified_sender_user_id": "user_sender"}
+    orgs.assert_not_awaited()
+
+
+def test_shared_address_never_routes_to_other_tenant(client, shared, monkeypatch):
+    """B, with no address of their own and no org, mails the shared address: nothing reaches A's tenant."""
+    _, orgs, handler = shared
+    orgs.return_value = []
+    monkeypatch.setattr(
+        inbound, "team_address", AsyncMock(side_effect={"user_a": "agents@alice.thelightbulb.company"}.get)
+    )
+    assert fixtures._post(client, payload()).json()["status"] == "dropped_unregistered_sender"
+    inbound.team_address.assert_awaited_once_with("user_sender")
+    inbound.ensure_team_address.assert_not_awaited()
+    handler.assert_not_awaited()

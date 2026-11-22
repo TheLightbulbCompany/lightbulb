@@ -118,7 +118,8 @@ async def adopt_for_workspace(org_id: str, user_id: str) -> dict:
     Idempotent: a workspace that already has a record keeps it. Never raises."""
     try:
         existing = await webhook_dedup._read_event(f"ws-source:{org_id}")
-        if existing.get("record"):
+        # A person's tenant id is their user id, so their stash is this same item: adopted means kept (no ttl).
+        if existing.get("record") and not existing.get("ttl"):
             return as_properties(existing["record"])
         stash = await webhook_dedup._read_event(f"ws-source:{user_id}") if user_id else {}
         record = stash.get("record") if stash and int(stash.get("ttl") or 0) > time.time() else None

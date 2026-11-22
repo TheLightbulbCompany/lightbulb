@@ -365,7 +365,7 @@ async def seed_agent_text(a, b, mp, calls) -> dict:
 
 
 async def seed_company_slug(a, b, mp, calls) -> dict:
-    await _mail(a, "acme-a")  # A's claimed slug, as an org's claim leaves it (a person cannot claim one yet)
+    await _mail(a, "acme-a")  # A's claimed slug, as a claim leaves it
     await ok(a, "POST", "/api/v1/company/slug/hold", {"slug": "held-a"})
     return {}
 
@@ -691,7 +691,7 @@ CASES = [
     # company_slug: a claim moves only the caller's own hold
     Case("company_slug", "GET", "/api/v1/company/slug-availability", query={"slug": "acme-b"}),
     Case("company_slug", "POST", "/api/v1/company/slug/hold", {"slug": "acme-a"}, a_id=True, ok=(409,)),  # taken
-    Case("company_slug", "POST", "/api/v1/company/slug/claim", {"slug": "held-a"}, a_id=True, ok=(409,), org_only=True),
+    Case("company_slug", "POST", "/api/v1/company/slug/claim", {"slug": "held-a", "name": "B"}, a_id=True, ok=(409,)),
     Case("company_slug", "POST", "/api/v1/company/source", {"source": "web"}),
     # container: tenant = caller, an org or a person alike; the owner reads status, provisions and retries. B's own
     # answers: B's gate wants credits (402), B's own provision starts (200), B has no container to retry (404).
@@ -942,7 +942,6 @@ REFUSED = [
     ("POST", "/api/v1/billing/apple/link", {"signed_transaction": "x"}, 409),
     ("GET", "/api/v1/agent-mail/address", None, 409),  # would mint a company slug and an agents@ mailbox
     ("PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, 409),
-    ("POST", "/api/v1/company/slug/claim", {"slug": "solo-co"}, 409),
     ("GET", "/api/v1/connections/aws/aws-setup", None, 409),  # mints the STS ExternalId
     ("GET", "/api/v1/connections/github/authorize", None, 409),  # starts a provider OAuth grant
     ("POST", "/api/v1/connections/parallel", {"token": "t"}, 409),  # stores a credential
@@ -978,7 +977,6 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_mint_buy_or_bill(
     for name in ("LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"):  # the wallet doors exist
         monkeypatch.setattr(settings, name, "test")
     person = Tenant("user_solo", None)
-    await company_slug_repo.hold(slug="solo-co", user_id=person.user_id)  # a held slug a claim would bind
     timeline = await ok(person, "GET", "/api/v1/voice/timeline")
     assert not any(v for v in timeline.values() if isinstance(v, list))
     assert (await ok(person, "GET", "/api/v1/tasks"))["tasks"] == []

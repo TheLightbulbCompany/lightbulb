@@ -80,7 +80,7 @@ from core.repositories.container_repo import try_claim_daily_system_notice, try_
 from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import agent_email, clerk_admin
 from core.voice.meetings import meeting_invites
-from core.services.agent_email import ensure_team_address, sender_allowed
+from core.services.agent_email import ensure_team_address, sender_allowed, team_address
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
 from core.services.agent_mail_delivery import deliver_to_agent
@@ -189,9 +189,10 @@ class SesInboundBody(BaseModel):
 
 
 async def _shared_team_mailbox(body: SesInboundBody) -> tuple[dict | None, str | None, str | None]:
-    """Resolve the shared address only from authenticated, verified current membership.
+    """Resolve the shared address only from an authenticated, verified sender: their own tenant when
+    they have claimed a team address, else their one current org membership.
 
-    A personal account or several businesses is not an implicit workspace selection.
+    Several businesses is not an implicit workspace selection.
     Failures from Clerk/DynamoDB remain retryable through the ingest's existing 503 path.
     """
     verdicts = body.verdicts or {}
@@ -207,8 +208,10 @@ async def _shared_team_mailbox(body: SesInboundBody) -> tuple[dict | None, str |
         for e in user.get("email_addresses", [])
     ):
         return None, "dropped_unregistered_sender", None
-    memberships = await clerk_admin.list_user_organizations(user["id"], limit=100, strict=True)
-    owners = {m["id"] for m in memberships}
+    # The sender's own tenant once they have claimed a team address; else their one org.
+    has_own = await team_address(user["id"])
+    memberships = [] if has_own else await clerk_admin.list_user_organizations(user["id"], limit=100, strict=True)
+    owners = {user["id"]} if has_own else {m["id"] for m in memberships}
     if len(owners) > 1:
         return None, "dropped_ambiguous_workspace", None
     if not owners:

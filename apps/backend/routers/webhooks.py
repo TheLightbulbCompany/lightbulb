@@ -21,7 +21,8 @@ fail-closed path is the only one that runs off a laptop.
     (join-only; a still-provisioning org self-heals on the member's next /teams request)
   * ``organizationMembership.deleted`` -> ``remove_member`` from THAT org's workspace only
   * ``organization.deleted``           -> ``disable_workspace`` (purged after the grace window)
-  * ``user.deleted``                   -> delete that user's stored identity row
+  * ``user.created``                   -> the users row only (a person is provisioned when they open the product)
+  * ``user.deleted``                   -> ``account_wipe.wipe_account`` of the person's own tenant
 """
 
 import base64
@@ -63,8 +64,7 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     design (Clerk has no bearer token to present), so the signature IS the
     authentication. A misconfigured secret previously fell through to
     "accept everything", which let anyone who knew the URL forge events —
-    a forged ``user.deleted`` disables Paperclip and deletes the
-    memory data for that user id. Unverifiable mail is now rejected instead.
+    a forged ``user.deleted`` wipes that person's tenant and memory data. Unverifiable mail is now rejected instead.
 
     The skip survives only for local dev (ENVIRONMENT unset), where there is
     no Clerk instance to sign anything.
@@ -594,18 +594,6 @@ async def _handle_organization_deleted(data: dict) -> None:
         logger.exception("disable_workspace on organization.deleted failed for org=%s", org_id)
 
 
-async def _handle_user_deleted_paperclip(user_id: str) -> None:
-    """Forget a deleted Clerk user's Paperclip identity row. Their company
-    memberships go with each org's ``organizationMembership.deleted``."""
-    from core.repositories.workspace_repo import WorkspaceRepo
-
-    try:
-        await WorkspaceRepo().delete(user_id)
-        put_metric("paperclip.webhook.disable", dimensions={"trigger": "user_deleted"})
-    except Exception:
-        logger.exception("identity delete on user_deleted failed for user=%s", user_id)
-
-
 # ----------------------------------------------------------------------
 # Routes
 # ----------------------------------------------------------------------
@@ -796,19 +784,24 @@ async def handle_clerk_webhook(request: Request):
         if not user_id:
             raise HTTPException(status_code=400, detail="Clerk user deletion target unavailable")
 
-        # Disable Paperclip for this user (account-level deletion). Org
-        # membership cleanup is handled via the organizationMembership
-        # event stream — we don't enumerate orgs here.
-        await _handle_user_deleted_paperclip(user_id)
-        # Their own memory data (sessions, drafts, episodes, computer keys). Memory records never
-        # expire, so a failure fails the event and the redelivery retries it.
-        from core.services.workspace_memory import delete_person_memory
+        # The person's own tenant goes for good: runtime, profiles, memory, credentials, rooms, billing,
+        # their memory data and their Spark subscription (account_wipe). Orgs they belonged to are kept:
+        # each org's organizationMembership.deleted removes them. Every step is idempotent and a no-op for a
+        # person who never had a tenant; a failed step fails the event, so the redelivery retries the wipe.
+        from core.services.account_wipe import OrgWipeUnsupportedError, wipe_account
 
-        await delete_person_memory(user_id)
-        # A live Spark subscription would keep charging; a failure fails the event so the redelivery retries it.
-        from core.services.os_billing import cancel_for_deleted_user
-
-        await cancel_for_deleted_user(user_id)
+        try:
+            report = await wipe_account(user_id, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
+        except OrgWipeUnsupportedError as exc:  # not a Clerk user id: a redelivery cannot fix it
+            put_metric("clerk.webhook.user_deleted_wipe_failed")
+            raise HTTPException(status_code=400, detail="Clerk user deletion target is not a user id") from exc
+        except Exception:  # before any step ran (a read failed): the redelivery retries it
+            put_metric("clerk.webhook.user_deleted_wipe_failed")
+            raise
+        failed = [s.system for s in report.steps if s.status == "failed"]
+        if failed:
+            put_metric("clerk.webhook.user_deleted_wipe_failed")
+            raise HTTPException(status_code=503, detail=f"user teardown incomplete: {', '.join(failed)}")
 
     elif event_type == "organization.created":
         await _handle_organization_created(data)  # never deduped (above): a redelivery retries it

@@ -202,20 +202,32 @@ async def _twilio(method: str, path: str, **params: str) -> dict:
     return resp.json() if resp.content else {}
 
 
-async def release_number(ws: str) -> str:
-    """Delete the workspace's `PHONE#` line row, so its number answers nobody, and give a bought number back to
-    Twilio. The number released, or "" when the workspace had none. Wipes call it before the owner partition goes
-    (the Agent page's `number` is how a bought number is found). A lapsed voice plan's number goes back through
-    `release_lapsed_numbers` instead."""
+async def _held_line(ws: str) -> tuple[str, dict]:
+    """The number whose line the workspace holds and its line row, or ("", {})."""
     cfg = await store.get_voice_agent(ws) or {}
-    provision_key = {"pk": owner_pk(ws), "sk": "VOICENUMBER"}
-    pending = await get_item(messaging_table(), **provision_key) or {}
+    pending = await get_item(messaging_table(), owner_pk(ws), "VOICENUMBER") or {}
     number = str(cfg.get("number") or pending.get("number") or "") or settings.VOICE_LINE_NUMBER
     line = await get_item(messaging_table(), f"PHONE#{number}", "LINE") if number else None
     if not line and pending.get("number") == number and pending.get("sid"):
         line = {"ownerId": ws, "sid": pending["sid"]}  # purchase succeeded before config/line save failed
     if not line or line.get("ownerId") != ws:
-        return ""  # no line, or another workspace's
+        return "", {}  # no line, or another workspace's
+    return number, line
+
+
+async def held_number(ws: str) -> str:
+    """The number whose line the workspace holds, or ""."""
+    return (await _held_line(ws))[0]
+
+
+async def release_number(ws: str) -> str:
+    """Delete the workspace's `PHONE#` line row, so its number answers nobody, and give a bought number back to
+    Twilio. The number released, or "" when the workspace had none. Wipes call it before the owner partition goes
+    (the Agent page's `number` is how a bought number is found). A lapsed voice plan's number goes back through
+    `release_lapsed_numbers` instead."""
+    number, line = await _held_line(ws)
+    if not number:
+        return ""
     if line.get("sid"):  # bought by provision_at_go_live: back to Twilio first, so a retried wipe still finds it
         try:
             await _twilio("DELETE", f"IncomingPhoneNumbers/{line['sid']}.json")
@@ -225,7 +237,7 @@ async def release_number(ws: str) -> str:
         if settings.VOICE_INBOUND_TRUNK_ID:
             await _route_number(number, remove=True)
     await run_in_thread(messaging_table().delete_item, Key={"pk": f"PHONE#{number}", "sk": "LINE"})
-    await run_in_thread(messaging_table().delete_item, Key=provision_key)
+    await run_in_thread(messaging_table().delete_item, Key={"pk": owner_pk(ws), "sk": "VOICENUMBER"})
     return number
 
 

@@ -716,6 +716,12 @@ async def maybe_clear_phantom_connector(owner_id: str, account: dict | None) -> 
     return cleared
 
 
+async def bound_owner_of(user_id: str) -> str | None:
+    """The workspace the user's OAuth row is bound to (its own user id for a legacy row), or None with no row."""
+    row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=True).get("Item")
+    return (row.get("bound_owner_id") or row.get("user_id")) if row else None
+
+
 async def revoke_user_oauth(*, user_id: str) -> None:
     """Delete the user's OAuth row. The staged profile copy is the caller's job
     (``hermes_profiles.unstage_codex_auth``)."""

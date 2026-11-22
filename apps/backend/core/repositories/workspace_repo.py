@@ -394,6 +394,17 @@ class WorkspaceRepo:
         await self._ws_call("update_item", self._ws_key(ws.org_id), **kwargs)
         publish_status_changed(ws.org_id)
 
+    async def set_name(self, org_id: str, name: str) -> None:
+        """The workspace's display name. Before the workspace row exists this leaves a name-only item, which
+        ``get_workspace`` does not read as a workspace and the provision keeps (``put_workspace`` never
+        writes ``name``)."""
+        await self._ws_call(
+            "update_item",
+            self._ws_key(org_id),
+            UpdateExpression="SET name = :n",
+            ExpressionAttributeValues={":n": name},
+        )
+
     async def get_workspace(self, org_id: str, *, consistent_read: bool = False) -> Optional[Workspace]:
         resp = await self._ws_call("get_item", self._ws_key(org_id), ConsistentRead=consistent_read)
         item = resp.get("Item")

@@ -157,16 +157,24 @@ async def wipe_engine_state(owner_id: str) -> str:
             await meeting_records.end_meeting(room_id, meeting)
             meetings += 1
         except Exception:  # noqa: BLE001 -- one refused bot must not keep the rest booked
-            logger.warning("wipe: meeting bot not cancelled room=%s", room_id, exc_info=True)
-            stuck.append(str(meeting.get("recallBotId")))
-    engine = await engine_api.delete_tenant(owner_id)
-    connections = await connection_service.delete_all_for_user(owner_id)
+            bot = str(meeting.get("recallBotId"))
+            logger.warning("wipe: meeting bot not cancelled room=%s bot=%s", room_id, bot, exc_info=True)
+            stuck.append(bot)
+    # The room is deleted after this step, so its error is the only place a stuck bot id survives.
+    stuck_note = f"Recall did not cancel bot(s) {', '.join(stuck)}: cancel them by hand" if stuck else ""
+    try:
+        engine = await engine_api.delete_tenant(owner_id)
+        connections = await connection_service.delete_all_for_user(owner_id)
+    except Exception as exc:
+        if stuck_note:
+            raise RuntimeError(f"{exc}; {stuck_note}") from exc
+        raise
     detail = (
         f"closed {meetings} meeting room(s); terminated {engine['workflows']} workflow(s), deleted {engine['schedules']} "
         f"schedule(s), {engine['rows']} tasks row(s) and {connections} ws-connection row(s)"
     )
-    if stuck:
-        raise RuntimeError(f"{detail}; Recall did not cancel bot(s) {', '.join(stuck)}: cancel them by hand")
+    if stuck_note:
+        raise RuntimeError(f"{detail}; {stuck_note}")
     return detail
 
 

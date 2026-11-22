@@ -104,11 +104,14 @@ def world(monkeypatch):
             "room-a-future": {"ownerId": A, "meeting": {"recallBotId": "bot-a1", "status": "scheduled"}},
             "room-a-live": {"ownerId": A, "meeting": {"recallBotId": "bot-a2", "status": "in_call"}},
             "room-a-over": {"ownerId": A, "meeting": {"recallBotId": "bot-a3", "status": "ended"}},
+            # a cancel or a failed move whose leave failed keeps the bot id: the bot is still booked
+            "room-a-cancelled": {"ownerId": A, "meeting": {"recallBotId": "bot-a4", "status": "cancelled"}},
+            "room-a-failed": {"ownerId": A, "meeting": {"recallBotId": "bot-a5", "status": "bot_failed"}},
             "room-a-chat": {"ownerId": A},
             "room-shared": {"ownerId": B, "meeting": {"recallBotId": "bot-b-shared", "status": "scheduled"}},
             "room-b": {"ownerId": B, "meeting": {"recallBotId": "bot-b1", "status": "scheduled"}},
         }
-        owned = {A: ["room-a-future", "room-a-live", "room-a-over", "room-a-chat", "room-shared"], B: ["room-b"]}
+        owned = {A: [*(r for r in rooms if r.startswith("room-a-")), "room-shared"], B: ["room-b"]}
         leave = AsyncMock()
         connections = AsyncMock(return_value=2)
         with (
@@ -129,7 +132,8 @@ async def test_wipe_engine_state_clears_tasks_schedules_bots(world):
     assert not {r for r in _rows(world.table) if A in r[0] or r[0] == ts.agent_owner_pk(f"{A}-ag1")}
     assert set(world.temporal.terminated) == _workflows(A)
     assert ts.schedule_workflow_id(A, "s1") not in world.temporal.schedules
-    assert sorted(c.args[0] for c in world.leave.await_args_list) == ["bot-a1", "bot-a2"]  # an ended one is left
+    # every bot still on a meeting row is pulled, a cancelled or failed one too; only an ended meeting's is left
+    assert sorted(c.args[0] for c in world.leave.await_args_list) == ["bot-a1", "bot-a2", "bot-a4", "bot-a5"]
     world.connections.assert_awaited_once_with(A)
     assert "terminated 6 workflow(s)" in detail and "deleted 1 schedule(s), 5 tasks row(s)" in detail
 
@@ -194,3 +198,43 @@ async def test_both_wipes_run_engine_step(wipe_mocks):  # noqa: F811 -- the impo
         assert await engine.run(snap) == "done"
     step.assert_awaited_once_with("org_x")
     conns.assert_awaited_once_with("user_m")
+
+
+@pytest.mark.asyncio
+async def test_a_temporal_failure_still_reports_the_stuck_bot_ids(world):
+    world.leave.side_effect = lambda bot: (_ for _ in ()).throw(RuntimeError("402")) if bot == "bot-a4" else None
+    temporal_client.set_client(None)  # Temporal unreachable: delete_tenant raises
+
+    with pytest.raises(RuntimeError, match="bot-a4") as err:
+        await account_wipe.wipe_engine_state(A)
+
+    assert "Temporal client is not connected" in str(err.value) and "bot-a4" in str(err.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"DELETE": 404},  # never dispatched, already deleted
+        {"DELETE": 405, "POST": 404},  # dispatched, already gone from the call
+    ],
+)
+async def test_a_bot_already_gone_is_done(monkeypatch, answers):
+    """A re-run of a wipe whose rooms survived meets bots Recall no longer has; that is success, not a stuck bot."""
+    import httpx
+
+    from core.voice.meetings import meeting_bots
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.method)
+        return httpx.Response(answers.get(request.method, 500))
+
+    monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(handler))
+    await meeting_bots.leave("bot-gone")
+    assert seen == list(answers)
+
+    monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(lambda r: httpx.Response(500)))
+    with pytest.raises(meeting_bots.RecallError):  # anything else still fails
+        await meeting_bots.leave("bot-x")

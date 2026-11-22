@@ -927,8 +927,8 @@ _TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
 
 
 async def delete_tenant(tenant_id: str) -> dict[str, int]:
-    """Stop and delete the tenant's engine state, for a terminal wipe: every running workflow it names is
-    terminated, every automation's Temporal Schedule deleted, then its tasks partition (META included) and agent-id
+    """Stop and delete the tenant's engine state, for a terminal wipe: every automation's Temporal Schedule is
+    deleted, every running workflow it names terminated, then its tasks partition (META included) and agent-id
     pointers. Idempotent: what is already gone is skipped. Returns what it did, counted."""
     if not tenant_id or any(c in tenant_id for c in "'\"\\"):
         raise ValueError("bad tenant id")
@@ -944,11 +944,11 @@ async def delete_tenant(tenant_id: str) -> dict[str, int]:
                 raise
             return 0
 
-    terminated = await terminate(ts.router_workflow_id(tenant_id))  # by name, first: no query, no visibility lag
-    async for wf in client.list_workflows(f"ExecutionStatus = 'Running' AND ({names})"):
-        terminated += await terminate(wf.id)
-    schedules = await automations_repo.list_schedules(tenant_id)
+    schedules = await automations_repo.list_schedules(tenant_id)  # first, so none starts a fire after the scan
     for row in schedules:
         await automation_schedule.delete(tenant_id, row["scheduleId"])
+    terminated = await terminate(ts.router_workflow_id(tenant_id))  # by name: no query, no visibility lag
+    async for wf in client.list_workflows(f"ExecutionStatus = 'Running' AND ({names})"):
+        terminated += await terminate(wf.id)
     rows = await tasks_repo.delete_partition(tenant_id)
     return {"workflows": terminated, "schedules": len(schedules), "rows": rows}

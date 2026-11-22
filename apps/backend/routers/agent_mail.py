@@ -30,7 +30,8 @@ from core.auth import (
     resolve_owner_id,
 )
 from core.dynamodb import run_in_thread
-from core.repositories import agent_email_repo, container_repo, messaging_repo
+from core.repositories import agent_email_repo, billing_repo, container_repo, messaging_repo
+from core.services.provision_gate import has_always_on_entitlement
 from core.repositories.agent_mail_inbox_repo import (
     MAX_TEXT_CHARS,
     count_received_after,
@@ -221,6 +222,11 @@ class AddressSettings(BaseModel):
 async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    widens = body.send_to_anyone or ("outbound_disabled" in body.model_fields_set and body.outbound_disabled is None)
+    if widens and not is_org_owner_id(owner_id):
+        # A person mails anyone, or clears a complaint pause, only on a paid plan (Team or the voice plan).
+        if not has_always_on_entitlement(await billing_repo.get_by_owner_id(owner_id)):
+            raise HTTPException(status_code=402, detail={"status": "paid_plan_required"})
     row, owner_email = await _team_row(owner_id)
     kwargs: dict = {}
     if body.verified_senders is not None:

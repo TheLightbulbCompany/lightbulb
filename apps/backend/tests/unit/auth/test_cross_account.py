@@ -918,10 +918,12 @@ async def test_org_claim_still_wins_interim(tenants):
 
 
 # The doors that still refuse a person on their own tenant, and what they answer: the ChatGPT sign-in needs the
-# paid workspace plan (402, exactly as for an unpaid org), and the member, invite and join-link doors are an org's
-# own (a person's tenant has no other people; those doors are being deleted).
+# paid workspace plan (402, exactly as for an unpaid org); the bodyless number door would hand any sign-up the
+# environment's one shared line (402: a person's number comes with the voice plan, at Go live); and the member,
+# invite and join-link doors are an org's own (a person's tenant has no other people; those doors are being deleted).
 REFUSED = [
     ("POST", "/api/v1/oauth/chatgpt/start", None, 402),
+    ("POST", "/api/v1/voice/number", {}, 402),  # no body: the shared line; a person's number comes with the voice plan
     ("GET", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
     ("POST", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
     ("DELETE", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
@@ -1270,10 +1272,10 @@ async def test_person_workspace_checkout_bills_no_seats_and_never_reads_an_org_r
     assert row["subscription_status"] == "trial_local" and row["owner_type"] == "personal"
 
 
-async def test_person_takes_the_shared_line_only_when_no_tenant_holds_it(tenants, ddb, calls, monkeypatch):
-    """The bodyless `POST /voice/number` gives the environment's one shared line to the first tenant, for a person as
-    for an org; B then gets 409 and A's line is unchanged."""
-    a, b = tenants
+async def test_org_takes_the_shared_line_only_when_no_tenant_holds_it(ddb, calls, jwks, monkeypatch):
+    """The bodyless `POST /voice/number` gives the environment's one shared line to the first org; B then gets 409
+    and A's line is unchanged. A person is refused that door (REFUSED)."""
+    a, b = Tenant("user_a", "org_a"), Tenant("user_b", "org_b")
     monkeypatch.setattr(settings, "VOICE_LINE_NUMBER", "+15550100009")
     await workspaces(a, b)
     assert (await ok(a, "POST", "/api/v1/voice/number", {}))["number"] == "+15550100009"
@@ -1281,3 +1283,52 @@ async def test_person_takes_the_shared_line_only_when_no_tenant_holds_it(tenants
     r = await call(b, "POST", "/api/v1/voice/number", {})
     assert r.status_code == 409, r.text[:300]
     assert snapshot(ddb, a.tenant, a.user_id, "+15550100009") == before
+
+
+@pytest.mark.parametrize("paid", [False, True])
+async def test_a_free_person_cannot_widen_their_mailbox_and_a_paid_one_can(paid, ddb, calls, jwks, monkeypatch):
+    """A person on no paid plan cannot let their mailbox send to anyone or clear a complaint pause (402
+    `paid_plan_required`), and every other setting still saves; on a paid plan both pass."""
+    monkeypatch.setattr("routers.agent_mail._owner_email", AsyncMock(return_value=None))
+    person, other = Tenant("user_solo", None), Tenant("user_other", None)
+    await billing_rows(other, person, b_paid=paid)  # the person has a billing row, paid or not
+    address = await _mail(person, "solo-co")
+    await agent_email_repo.update_settings(address, send_to_anyone=False)  # closed by the owner (new rows are open)
+    for body in ({"send_to_anyone": True}, {"outbound_disabled": None}):
+        r = await call(person, "PATCH", "/api/v1/agent-mail/address", body)
+        assert r.status_code == (200 if paid else 402), r.text[:300]
+        if not paid:
+            assert r.json()["detail"] == {"status": "paid_plan_required"}
+    assert (await agent_email_repo.get_by_address(address)).get("send_to_anyone", False) is paid
+    assert (await ok(person, "PATCH", "/api/v1/agent-mail/address", {"footer_enabled": False}))["address"] == address
+    assert (await ok(person, "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}))["address"] == address
+
+
+async def test_a_free_org_still_widens_its_mailbox(ddb, calls, jwks, monkeypatch):
+    """An organization's mailbox settings are unchanged: a free org may still send to anyone."""
+    monkeypatch.setattr("routers.agent_mail._owner_email", AsyncMock(return_value=None))
+    org, other = Tenant("user_a", "org_a"), Tenant("user_b", "org_b")
+    await workspaces(org, other)
+    await billing_rows(other, org, b_paid=False)
+    address = await _mail(org, "acme-a")
+    await agent_email_repo.update_settings(address, send_to_anyone=False)
+    assert (await ok(org, "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": True}))["address"] == address
+    assert (await agent_email_repo.get_by_address(address))["send_to_anyone"] is True
+
+
+async def test_pending_oauth_states_are_deleted_for_exactly_one_owner(ddb, calls, jwks, monkeypatch):
+    """The wipe's `oauth_state` step: a person's pending Link wallet connect is deleted, another person's stays, so a
+    callback after the wipe cannot store a credential for the deleted account."""
+    from core.repositories import oauth_state_repo
+
+    for name in ("LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"):
+        monkeypatch.setattr(settings, name, "test")
+    person, other = Tenant("user_solo", None), Tenant("user_solo2", None)
+    await billing_rows(person, other)
+    for t in (person, other):
+        assert (await ok(t, "POST", "/api/v1/company/link-wallet/connect"))["authorizeUrl"]
+    states = {i["owner_id"]: i["state"] for i in dynamodb.get_table("oauth-state").scan()["Items"]}
+    assert set(states) == {person.user_id, other.user_id}
+    assert await oauth_state_repo.delete_all_for_owner(person.user_id) == 1
+    assert await oauth_state_repo.consume(states[person.user_id]) is None
+    assert (await oauth_state_repo.consume(states[other.user_id]))["owner_id"] == other.user_id

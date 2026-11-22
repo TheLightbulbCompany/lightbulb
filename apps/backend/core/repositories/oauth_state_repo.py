@@ -72,3 +72,22 @@ async def consume(state: str) -> dict | None:
     if int(rec["ttl"]) < int(time.time()):  # belt-and-suspenders (DDB TTL can lag)
         return None
     return rec
+
+
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete every pending state of this owner (an account wipe: a later callback must not store a credential).
+    The table is keyed by state and holds at most ten minutes of rows, so this scans it."""
+
+    def _delete() -> int:
+        table, n = _table(), 0
+        kwargs: dict = {"FilterExpression": "owner_id = :o", "ExpressionAttributeValues": {":o": owner_id}}
+        while True:
+            page = table.scan(**kwargs)
+            for item in page.get("Items", []):
+                table.delete_item(Key={"state": item["state"]})
+                n += 1
+            if "LastEvaluatedKey" not in page:
+                return n
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    return await run_in_thread(_delete)

@@ -411,8 +411,12 @@ person opens the product). A person gets a company slug and team address only by
 Every other door a person reaches acts on their own tenant exactly as for an org on the same plan, and a person is
 the admin of their own tenant: messaging, automations, connections and OAuth grants, the link wallet, voice, the
 voice plan and Team checkouts (a Stripe customer on the tenant's own billing row, separate from Spark's on the users
-row; a person's tenant bills no seats). Still refused: the ChatGPT sign-in needs the paid Team plan (402, as for an
-unpaid org), and the org join-link and invitation doors (`/orgs/{org_id}/...`) answer 403. `user.deleted` runs
+row; a person's tenant bills no seats). Still refused for a person: the ChatGPT sign-in needs the paid Team plan
+(402, as for an unpaid org); `POST /voice/number` with no body (402 `voice_plan_required`: a person's number comes
+with the voice plan, at Go live); on a free plan, turning on `send_to_anyone` or clearing a complaint pause in
+`PATCH /agent-mail/address` (402 `paid_plan_required`); and the org join-link and invitation doors
+(`/orgs/{org_id}/join-link`, `/orgs/{org_id}/invitations`, 403). `POST /orgs/{org_id}/join` (redeeming another
+org's link) is unchanged until the member doors are deleted. `user.deleted` runs
 `account_wipe.wipe_account` on the person's own tenant (profiles and memory included; no Clerk read, no org
 touched, a held phone line kept for an admin wipe); a failed step fails the event so Svix redelivers. Per-owner runtimes are legacy (about 25 remain, being retired by exact
 allowlist; their identity seeds are kept until network identity custody has a replacement).

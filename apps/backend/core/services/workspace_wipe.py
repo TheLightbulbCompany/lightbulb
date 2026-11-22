@@ -103,11 +103,12 @@ from core.repositories import (
     workspace_join_repo,
 )
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import clerk_admin, company_stripe
+from core.services import clerk_admin, company_stripe, connection_service
 from core.voice.phone import voice_onboarding
 from core.services.account_wipe import (
     release_text_lines,
     text_release_note,
+    ENGINE_PREVIEW,
     WipeReport,
     WipeStep,
     _archive_metronome_customer,
@@ -115,6 +116,7 @@ from core.services.account_wipe import (
     _runtime_detail,
     _skip,
     _step,
+    wipe_engine_state,
 )
 from core.services.billing_service import delete_stripe_customer
 from core.services.credentials import integration_secret_store
@@ -437,6 +439,13 @@ async def _gate_tokens_run(snap: WorkspaceSnapshot) -> str:
         return "no bedrock-gate token hash on containers row"
     deleted = await delete_gate_token_rows(hashes)
     return f"deleted {deleted} of {len(hashes)} gate-token row(s)"
+
+
+async def _engine_run(snap: WorkspaceSnapshot) -> str:
+    detail = await wipe_engine_state(snap.org_id)
+    for uid in deletable_member_ids(snap):  # a member's connection rows carry their own user id
+        await connection_service.delete_all_for_user(uid)
+    return detail
 
 
 def _runtime_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
@@ -784,6 +793,7 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
     WorkspaceStepDef(
         "bedrock_gate_tokens", "delete_gate_token_rows", LAYER_RUNTIME, _gate_tokens_preview, _gate_tokens_run
     ),
+    WorkspaceStepDef("engine", "wipe_engine_state", LAYER_RUNTIME, lambda snap: (True, ENGINE_PREVIEW), _engine_run),
     WorkspaceStepDef("runtime", "delete_workspace_runtime", LAYER_RUNTIME, _runtime_preview, _runtime_run),
     WorkspaceStepDef("metronome", "archive_customer", LAYER_BILLING, _metronome_preview, _metronome_run),
     WorkspaceStepDef(

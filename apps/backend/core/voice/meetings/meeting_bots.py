@@ -178,13 +178,30 @@ async def reschedule(bot_id: str, *, room_id: str, meeting: dict) -> None:
 
 
 async def leave(bot_id: str) -> None:
-    """DELETE a bot that has not been dispatched; Recall answers 405 once it has, so pull it out."""
+    """DELETE a bot that has not been dispatched; Recall answers 405 once it has, so pull it out. A 404 from either
+    is a bot that is already gone: done."""
     try:
-        await _call("DELETE", f"/api/v1/bot/{bot_id}/")
+        try:
+            await _call("DELETE", f"/api/v1/bot/{bot_id}/")
+        except RecallError as exc:
+            if exc.code != "405":
+                raise
+            await _call("POST", f"/api/v1/bot/{bot_id}/leave_call/")
     except RecallError as exc:
-        if exc.code != "405":
+        if exc.code != "404":
             raise
-        await _call("POST", f"/api/v1/bot/{bot_id}/leave_call/")
+        logger.warning("meeting bot %s: Recall has no such bot (404), counted as gone", bot_id)
+
+
+async def gone(bot_id: str) -> bool:
+    """Whether Recall is done with the bot: its last status is an ending one, or it has no such bot (404)."""
+    try:
+        bot = await _call("GET", f"/api/v1/bot/{bot_id}/")
+    except RecallError as exc:
+        if exc.code != "404":
+            raise
+        return True
+    return (bot.get("status_changes") or [{}])[-1].get("code") in _ENDED
 
 
 async def say(bot_id: str, text: str) -> None:

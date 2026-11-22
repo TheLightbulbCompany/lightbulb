@@ -637,3 +637,42 @@ async def put_slots(ws: str, leases: dict[str, int], waiters: list[str], *, expe
         if not _is_condition_failure(exc):
             raise
     return False
+
+
+# --- Terminal wipe -----------------------------------------------------------------------------------
+
+
+async def list_partition(ws: str) -> list[dict]:
+    """Every row under `WS#{ws}`, read strongly consistent (a row written just before the read is in it)."""
+    kwargs: dict[str, Any] = {
+        "KeyConditionExpression": "pk = :pk",
+        "ExpressionAttributeValues": {":pk": ts.ws_pk(ws)},
+        "ConsistentRead": True,
+    }
+    rows: list[dict] = []
+    while True:
+        page = await run_in_thread(_table().query, **kwargs)
+        rows.extend(plain(page.get("Items", [])))
+        if "LastEvaluatedKey" not in page:
+            return rows
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
+async def delete_partition(ws: str, rows: list[dict]) -> int:
+    """Delete `rows` (the partition `list_partition` read, META included) and the agent-id pointers that still
+    name `ws`; the count."""
+    table = _table()
+    keys = [{"pk": r["pk"], "sk": r["sk"]} for r in rows]
+    for k in [k for k in keys if k["sk"].startswith(ts.agent_sk(""))]:
+        pointer = {"pk": ts.agent_owner_pk(k["sk"].removeprefix(ts.agent_sk(""))), "sk": ts.AGENT_OWNER_SK}
+        resp = await run_in_thread(table.get_item, Key=pointer, ConsistentRead=True)
+        if (resp.get("Item") or {}).get("ws") == ws:  # an id another workspace now holds keeps its pointer
+            keys.append(pointer)
+
+    def _batch() -> None:
+        with table.batch_writer() as batch:
+            for k in keys:
+                batch.delete_item(Key={"pk": k["pk"], "sk": k["sk"]})
+
+    await run_in_thread(_batch)
+    return len(keys)

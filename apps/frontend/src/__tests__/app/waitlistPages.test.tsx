@@ -5,6 +5,10 @@ vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 vi.mock("@/components/landing/PricingThreeCard", () => ({ PricingThreeCard: () => null }));
 vi.mock("@/lib/pricing", () => ({ getPricing: async () => null }));
+// jsdom has no canvas or media playback: the Spark bulb is canvas art, and the home demos drive a <video>.
+vi.mock("@/app/os/SparkStage", () => ({ SparkStage: () => null }));
+Object.defineProperty(HTMLMediaElement.prototype, "pause", { configurable: true, value: () => {} });
+Object.defineProperty(HTMLMediaElement.prototype, "play", { configurable: true, value: () => Promise.resolve() });
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
 
@@ -93,17 +97,19 @@ describe("/os", () => {
 const HUB_H1_AI_EXCEPTION = "The voice AI application company.";
 
 describe("/", () => {
-  it("leads with the company line and gives each product its own card and door", () => {
+  it("leads with the company line, demos all three products equally and gives each its own door", () => {
     const { container } = render(<HubPage />);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(HUB_H1_AI_EXCEPTION);
-    const cards = container.querySelectorAll(".lb-hub-card");
-    expect([...cards].map((c) => c.querySelector("h2")?.textContent)).toEqual([
+    // One demo tab per product, Meetings (waitlisted) last.
+    expect(screen.getAllByRole("tab").map((t) => t.querySelector("b")?.textContent)).toEqual([
       "Lightbulb Phone",
-      "Lightbulb Meetings",
       "Spark",
+      "Lightbulb Meetings",
     ]);
-    const spark = cards[2];
-    expect(spark.querySelector("p")?.textContent).toBe("One-click voice interface for your Mac.");
+    // Then a section per product, in the same order.
+    const sections = [...container.querySelectorAll("section.hp-product")];
+    expect(sections.map((s) => s.id)).toEqual(["phone", "spark", "meetings"]);
+    expect(sections[1].querySelector(".hp-lead")?.textContent).toBe("One-click voice interface for your Mac.");
     expect(screen.getByRole("link", { name: "Download for Mac" }).getAttribute("href")).toBe("/os");
     expect(screen.getByRole("link", { name: "Set up Lightbulb Phone" }).getAttribute("href")).toBe("/sign-up");
     expect(screen.getAllByRole("link", { name: "Join the waitlist" }).map((a) => a.getAttribute("href"))).toEqual([

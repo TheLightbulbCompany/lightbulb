@@ -21,6 +21,10 @@ export function Navbar() {
   const { isSignedIn, isLoaded } = useAuth();
   const pathname = usePathname() ?? "/";
   const theme = useLampTheme();
+  // The company home gives the three products equal weight, so its sign-up door names none of them.
+  // Every other page keeps the Phone door. The ctaIds stay put; only the label changes.
+  const home = pathname === "/";
+  const signUp = home ? "Sign up" : "Set up Lightbulb Phone";
   useEffect(() => {
     hydrateFromStorage(); // adopt a stored choice into the store; the inline script already painted it
   }, []);
@@ -59,10 +63,10 @@ export function Navbar() {
               href="/sign-up"
               className="nav-mobile-login"
               onClick={() =>
-                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: "Set up Lightbulb Phone", surface: "landing_nav_mobile" })
+                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: signUp, surface: "landing_nav_mobile" })
               }
             >
-              Set up Lightbulb Phone
+              {signUp}
             </Link>
           </>
         )}
@@ -125,14 +129,14 @@ export function Navbar() {
               onClick={() =>
                 captureSignupCta({
                   ctaId: "nav_sign_up",
-                  label: "Set up Lightbulb Phone",
+                  label: signUp,
                   surface: "landing_nav",
                 })
               }
             >
               {/* The long label would push the bar past a phone's width; phones get the short one. */}
-              <span className="nav-cta-long">Set up Lightbulb Phone</span>
-              <span className="nav-cta-short">Set up</span>
+              <span className="nav-cta-long">{signUp}</span>
+              <span className="nav-cta-short">{home ? "Sign up" : "Set up"}</span>
             </Link>
           </>
         )}

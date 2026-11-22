@@ -4,7 +4,9 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/image", () => ({ default: () => null }));
-vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
+// This suite reads the Phone page, so the nav renders as it does on /phone. One test switches to "/".
+const nav = vi.hoisted(() => ({ path: "/phone" }));
+vi.mock("next/navigation", () => ({ usePathname: () => nav.path }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: false }), UserButton: () => null }));
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
@@ -112,5 +114,18 @@ describe("Phone page voice", () => {
     fireEvent.click(screen.getByRole("link", { name: "Talk to a founder" }));
     fireEvent.click(screen.getAllByRole("link", { name: /Set up/ }).at(-1)!);
     expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["nav_request_setup", "nav_sign_up"]);
+  });
+
+  it("names no product in the sign-up door on the company home, under the same ctaId", () => {
+    nav.path = "/";
+    try {
+      captureSignupCta.mockClear();
+      const { container } = render(<Navbar />);
+      expect(container.textContent).not.toContain("Set up Lightbulb Phone");
+      fireEvent.click(container.querySelector(".nav-right a[href='/sign-up']")!);
+      expect(captureSignupCta.mock.calls.map(([o]) => [o.ctaId, o.label])).toEqual([["nav_sign_up", "Sign up"]]);
+    } finally {
+      nav.path = "/phone";
+    }
   });
 });

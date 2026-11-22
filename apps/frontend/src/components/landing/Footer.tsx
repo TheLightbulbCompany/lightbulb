@@ -8,7 +8,8 @@ import { Arrow } from "./Arrow";
 
 /**
  * Footer, shared by the marketing pages. It carries the page's final call to
- * action, so the homepage has no separate closing section.
+ * action (the Phone one). Pages that close on their own turn it off with
+ * `cta={false}`: /os (its own Download) and the company home (all three products).
  *
  * The backdrop is a CSS gradient rather than a photograph: the illustrations we
  * had were ~900px wide and visibly stretched when bled full width. A gradient
@@ -19,7 +20,7 @@ export function Footer({ cta = true }: { cta?: boolean }) {
     <footer className="lb-foot">
       <div className="lb-foot-in">
         <div className="lb-foot-top">
-          {/* Off on /os, whose page has its own Download. */}
+          {/* Off on /os (its own Download) and on / (its own three-product close). */}
           {cta && (
             <div className="lb-foot-cta">
               <h2>
